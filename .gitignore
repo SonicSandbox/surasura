@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Data (Private)
+data/HighPriority/*
+data/LowPriority/*
+data/GoalContent/*
+data/Processed/*
+results/*
+!results/.gitkeep
+
+# User Config
+User Files/KnownWord.json
+User Files/IgnoreList.txt
+# Keep sample files
+!User Files/KnownWordsSample.json
+!User Files/IgnoreListSample.txt
+!User Files/Netflix_Frequency_Tier_1.txt
+!User Files/Netflix_Frequency_Tier_2.txt
+!User Files/Netflix_Frequency_Tier_3.txt
+
+# Local Env
+.env
+
+# Distribution
+dist/
+build/
+
+# Other Files
+RELEASE_NOTES.md
+app_debug_log.txt
+build_log.txt
+test_hello.py
+RELEASE_NOTES.md
+build_log_retry.txt
+

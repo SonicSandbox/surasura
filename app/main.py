@@ -1,0 +1,496 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import subprocess
+import os
+import sys
+import threading
+from typing import Optional
+
+# Custom Dark Theme Configuration
+BG_COLOR = "#1e1e1e"
+SURFACE_COLOR = "#2d2d2d"
+TEXT_COLOR = "#e0e0e0"
+ACCENT_COLOR = "#bb86fc"
+SECONDARY_COLOR = "#03dac6"
+ERROR_COLOR = "#cf6679"
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window: tk.Toplevel | None = None
+        self.id = None
+        self.widget.bind("<Enter>", self.schedule_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+        self.widget.bind("<ButtonPress>", self.hide_tip)
+
+    def schedule_tip(self, event=None):
+        self.unschedule()
+        # Add delay to prevent flickering and improve "feel"
+        self.id = self.widget.after(500, self.show_tip)
+
+    def unschedule(self):
+        id = self.id
+        self.id = None
+        if id:
+            self.widget.after_cancel(id)
+
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+            
+        # Optimization: Calculate position carefully to avoid "flashing" (cursor overlap)
+        # Position to the right of the widget by default, or below if it's too wide
+        bbox = self.widget.bbox("insert") 
+        # Simple usage of root coordinates
+        root_x = self.widget.winfo_rootx()
+        root_y = self.widget.winfo_rooty()
+        widget_height = self.widget.winfo_height()
+        widget_width = self.widget.winfo_width()
+        
+        # Position: Bottom-Right of the start of the widget, but ensuring it's not under cursor
+        # Moving it slightly down and right
+        x = root_x + 20
+        y = root_y + widget_height + 2
+        
+        # For very wide widgets (like checkboxes), maybe force it further right?
+        # The user requested: "Add the tooltip to the right so it's visible for the 2 exclude toggles"
+        if "Checkbutton" in self.widget.winfo_class():
+             x = root_x + widget_width + 10
+             y = root_y
+
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        # MacOS/Linux might need this to float on top
+        try: 
+            tw.wm_attributes("-topmost", True)
+            tw.wm_attributes("-transparent", True) # Not supported on all, but harmless
+        except:
+             pass
+             
+        tw.wm_geometry(f"+{x}+{y}")
+        
+        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
+                      background=SURFACE_COLOR, foreground=TEXT_COLOR,
+                      relief=tk.FLAT, borderwidth=0,
+                      padx=8, pady=4, font=("Segoe UI", 9))
+        label.pack()
+        
+        # XML-like border using frame or just background
+        tw.configure(background=ACCENT_COLOR, padx=1, pady=1)
+
+    def hide_tip(self, event=None):
+        self.unschedule()
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
+
+class MasterDashboardApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("日本語 Readability Analyzer")
+        self.root.geometry("520x680") 
+        self.root.resizable(False, False)
+        self.root.configure(bg=BG_COLOR)
+        
+        self.style = ttk.Style()
+        self.apply_dark_theme()
+        
+        # Initialize variables for Analyzer settings
+        self.var_exclude_single = tk.BooleanVar(value=True) 
+        self.var_min_freq = tk.IntVar(value=1) 
+        self.var_zen_limit = tk.IntVar(value=50) 
+
+        # Initialize status var early to satisfy linter
+        self.status_var = tk.StringVar(value="Ready")
+        self.terminal: Optional[tk.Text] = None
+        self.spinner: Optional[ttk.Progressbar] = None
+
+        self.setup_ui()
+        
+    def apply_dark_theme(self):
+        self.style.theme_use('default')
+        
+        # General
+        self.style.configure(".", 
+            background=BG_COLOR, 
+            foreground=TEXT_COLOR, 
+            fieldbackground=SURFACE_COLOR,
+            font=('Segoe UI', 10)
+        )
+        
+        # Frames and Labelframes
+        self.style.configure("TFrame", background=BG_COLOR)
+        self.style.configure("TLabelframe", background=BG_COLOR, bordercolor=SURFACE_COLOR)
+        self.style.configure("TLabelframe.Label", background=BG_COLOR, foreground=ACCENT_COLOR, font=('Segoe UI', 11, 'bold'))
+        
+        # Label
+        self.style.configure("TLabel", background=BG_COLOR, foreground=TEXT_COLOR)
+        self.style.configure("Header.TLabel", font=('Segoe UI', 18, 'bold'), foreground=SECONDARY_COLOR)
+        self.style.configure("Footer.TLabel", font=('Segoe UI', 8), foreground="#666")
+        self.style.configure("Link.TLabel", font=('Segoe UI', 8, 'underline'), foreground=ACCENT_COLOR)
+        
+        # Checkbutton
+        self.style.configure("TCheckbutton", background=BG_COLOR, foreground=TEXT_COLOR)
+        self.style.map("TCheckbutton",
+            background=[('active', BG_COLOR)],
+            foreground=[('active', ACCENT_COLOR)]
+        )
+        # Buttons
+        self.style.configure("TButton", 
+            background=SURFACE_COLOR, 
+            foreground=TEXT_COLOR, 
+            borderwidth=0,
+            padding=8,
+            font=('Segoe UI', 10, 'bold')
+        )
+        self.style.map("TButton",
+            background=[('active', ACCENT_COLOR), ('pressed', ACCENT_COLOR)],
+            foreground=[('active', BG_COLOR), ('pressed', BG_COLOR)]
+        )
+
+        # Progressbar
+        self.style.configure("TProgressbar", thickness=4, background=ACCENT_COLOR, troughcolor=SURFACE_COLOR, borderwidth=0)
+        
+        # Specific Button Styles
+        self.style.configure("Action.TButton", width=22)
+        
+    def setup_ui(self):
+        main_frame = ttk.Frame(self.root, padding="25")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Header
+        header = ttk.Label(main_frame, text="⚡ 日本語 Readability Analyzer", style="Header.TLabel")
+        header.pack(pady=(0, 20))
+        
+        # 1. Pipeline Tools (Data)
+        tools_frame = ttk.LabelFrame(main_frame, text=" 📦 Data Preparation", padding="15")
+        tools_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Data Preparation Buttons - Horizontal Layout
+        data_btns_frame = ttk.Frame(tools_frame)
+        data_btns_frame.pack(fill=tk.X, pady=(0, 10))
+
+        btn_migaku = ttk.Button(data_btns_frame, text="Migaku Word List Importer", style="Action.TButton", 
+                   command=self.run_migaku_importer)
+        btn_migaku.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(btn_migaku, "Import known words from Migaku database export.")
+
+        btn_open_data = ttk.Button(data_btns_frame, text="Open Data Folder", style="Action.TButton",
+                                    command=self.open_data_folder)
+        btn_open_data.pack(side=tk.LEFT)
+        ToolTip(btn_open_data, "Open your input data folder in File Explorer.")
+
+        btn_epub = ttk.Button(tools_frame, text="Launch EPUB Extractor", style="Action.TButton", 
+                   command=self.run_epub_extractor)
+        btn_epub.pack(anchor=tk.W)
+        ToolTip(btn_epub, "Extract text from Japanese EPUBs for analysis.")
+
+        # 2. Analyzer Tools
+        analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="15")
+        analyze_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Checkboxes with Tooltips
+        chk_single = ttk.Checkbutton(analyze_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
+        chk_single.pack(anchor=tk.W, pady=(0, 5))
+        ToolTip(chk_single, "Ignore 1-char words (Recommended)")
+        
+        # Frequency Slider
+        freq_frame = ttk.Frame(analyze_frame)
+        freq_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(freq_frame, text="Min Frequency:").pack(side=tk.LEFT)
+        
+        freq_slider = tk.Scale(freq_frame, from_=0, to=10, orient=tk.HORIZONTAL, 
+                               variable=self.var_min_freq, showvalue=False,
+                               bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
+                               activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
+        freq_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        
+        freq_val_label = ttk.Label(freq_frame, textvariable=self.var_min_freq, width=2)
+        freq_val_label.pack(side=tk.LEFT)
+        
+        ToolTip(freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words). 0 shows everything.")
+
+        # Run Analyzer Button
+        btn_analyze = ttk.Button(analyze_frame, text="Run Analysis", style="Action.TButton",
+                                 command=self.run_analyzer)
+        btn_analyze.pack(anchor=tk.W)
+        ToolTip(btn_analyze, "Analyze text files and generate readability report. Auto-launches static page.")
+
+        # Spinner (Initially hidden)
+        self.spinner = ttk.Progressbar(analyze_frame, mode='indeterminate', style="TProgressbar")
+        
+        # 3. Terminal / Logs
+        log_frame = ttk.LabelFrame(main_frame, text=" 💻 Processing Log", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        self.terminal = tk.Text(log_frame, height=1, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
+                                insertbackground=TEXT_COLOR, font=("Consolas", 9),
+                                relief=tk.FLAT, borderwidth=0, state=tk.DISABLED,
+                                wrap=tk.NONE)
+        self.terminal.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(log_frame, command=self.terminal.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.terminal.config(yscrollcommand=scrollbar.set)
+
+        # 4. Results Viewer
+        view_frame = ttk.LabelFrame(main_frame, text=" 📊 Results Viewer", padding="15")
+        view_frame.pack(fill=tk.X)
+
+        # Theme Selector
+        themes = ['Default (Dark)', 'World Class (Flow)', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
+        self.combo_theme = ttk.Combobox(view_frame, values=themes, state="readonly", width=20)
+        self.combo_theme.set('World Class (Flow)')
+        self.combo_theme.pack(anchor=tk.W, pady=(0, 10))
+        ToolTip(self.combo_theme, "Select the visual theme for the generated reading list.")
+        
+        # Zen Limit Slider (Inline with Results)
+        zen_frame = ttk.Frame(view_frame)
+        zen_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(zen_frame, text="Zen Word Limit:").pack(side=tk.LEFT)
+        
+        zen_limit_slider = tk.Scale(zen_frame, from_=25, to=125, orient=tk.HORIZONTAL, 
+                                    variable=self.var_zen_limit, showvalue=False,
+                                    bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
+                                    activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
+        zen_limit_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        
+        zen_val_label = ttk.Label(zen_frame, textvariable=self.var_zen_limit, width=3)
+        zen_val_label.pack(side=tk.LEFT)
+        
+        ToolTip(zen_frame, "Only for Zen Focus mode: Number of words to include across all files.")
+
+        btn_static = ttk.Button(view_frame, text="View Vocab Journey", style="Action.TButton", 
+                   command=self.run_static_page)
+        btn_static.pack(anchor=tk.W)
+        ToolTip(btn_static, "Refresh and open your personalized learning path in the web browser.")
+        
+        # Footer
+        footer_frame = ttk.Frame(self.root, padding=(10, 5))
+        footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Status Bar
+        status_bar = ttk.Label(footer_frame, textvariable=self.status_var, style="Footer.TLabel")
+        status_bar.pack(side=tk.LEFT)
+        
+        # Credit
+        credit_box = ttk.Frame(footer_frame)
+        credit_box.pack(side=tk.RIGHT)
+        
+        ttk.Label(credit_box, text="Created by SonicSandbox | ", style="Footer.TLabel").pack(side=tk.LEFT)
+        link = ttk.Label(credit_box, text="GitHub", style="Link.TLabel", cursor="hand2")
+        link.pack(side=tk.LEFT)
+        link.bind("<Button-1>", lambda e: subprocess.Popen(["start", "https://github.com/SonicSandbox/readability-analyzer"], shell=True))
+
+    def log_to_terminal(self, message):
+        """Appends text to the terminal widget safely"""
+        if self.terminal:
+            self.terminal.config(state=tk.NORMAL)
+            self.terminal.insert(tk.END, message + "\n")
+            self.terminal.see(tk.END)
+            self.terminal.config(state=tk.DISABLED)
+
+    def open_data_folder(self):
+        """Opens the data folder in File Explorer"""
+        try:
+            from app.path_utils import get_user_file
+            data_path = get_user_file("data")
+            
+            # Create if it doesn't exist (safety)
+            if not os.path.exists(data_path):
+                os.makedirs(data_path, exist_ok=True)
+                
+            # Cross-platform opening
+            if sys.platform == "win32":
+                os.startfile(data_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", data_path])
+            else:
+                subprocess.Popen(["xdg-open", data_path])
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open data folder: {e}")
+            
+    def run_command_async(self, cmd, desc, capture_output=False):
+        """Runs a command with optional output redirection to the terminal"""
+        def task():
+            self.status_var.set(f"Running {desc}...")
+            
+            # Dispatch Mapping for Frozen Environment
+            SCRIPT_MAP = {
+                'analyzer.py': 'analyzer',
+                'epub_importer.py': 'epub_importer',
+                'migaku_db_importer_gui.py': 'migaku_importer',
+                'static_html_generator.py': 'static_generator',
+                'migaku_converter.py': 'convert_db'
+            }
+            
+            if getattr(sys, 'frozen', False):
+                # Frozen: Use the keyword mapped in app_entry.py
+                command_name = SCRIPT_MAP.get(cmd[0], cmd[0])
+                final_args = [sys.executable, command_name] + cmd[1:]
+            else:
+                # Source: Use app_entry.py as a dispatcher to ensure correct environment
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                app_entry_path = os.path.join(project_root, "app_entry.py")
+                
+                command_name = SCRIPT_MAP.get(cmd[0], cmd[0])
+                final_args = [sys.executable, app_entry_path, command_name] + cmd[1:]
+
+            if capture_output and self.terminal and self.spinner:
+                self.terminal.config(state=tk.NORMAL)
+                self.terminal.delete(1.0, tk.END)
+                self.terminal.config(state=tk.DISABLED)
+                self.spinner.pack(fill=tk.X, pady=(10, 0))
+                self.spinner.start(10)
+            
+            try:
+                self.status_var.set(f"Running {desc}...")
+                
+                from app.path_utils import is_frozen
+                
+                if is_frozen():
+                    # Dispatch mapping for frozen executable
+                    dispatch_map = {
+                        'analyzer.py': 'analyzer',
+                        'epub_importer.py': 'epub_importer',
+                        'migaku_db_importer_gui.py': 'migaku_importer',
+                        'static_html_generator.py': 'static_generator'
+                    }
+                    
+                    script_name = cmd[0]
+                    dispatch_key = dispatch_map.get(script_name)
+                    
+                    if dispatch_key:
+                        # [Exe, dispatch_key, ...args]
+                        # Use sys.executable as the launcher
+                        final_args = [sys.executable, dispatch_key] + cmd[1:]
+                    else:
+                        # Fallback for unexpected scripts
+                        final_args = [sys.executable] + cmd
+                else:
+                    # Normal Source Mode
+                    app_dir = os.path.dirname(os.path.abspath(__file__))
+                    # script path relative to projects root? No, main.py is in app/
+                    # project_root is one level up.
+                    project_root = os.path.dirname(app_dir)
+                    script_path = os.path.join(app_dir, cmd[0])
+                    final_args = [sys.executable, script_path] + cmd[1:]
+
+                if capture_output and self.terminal and self.spinner:
+                    self.terminal.config(state=tk.NORMAL)
+                    self.terminal.delete(1.0, tk.END)
+                    self.terminal.config(state=tk.DISABLED)
+                    self.spinner.pack(fill=tk.X, pady=(10, 0))
+                    self.spinner.start(10)
+                
+                # SET ENVIRONMENT (Fix for No module named 'app')
+                env = os.environ.copy()
+                if not is_frozen():
+                    # In source mode, add the project root to PYTHONPATH
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    if "PYTHONPATH" in env:
+                        env["PYTHONPATH"] = project_root + os.pathsep + env["PYTHONPATH"]
+                    else:
+                        env["PYTHONPATH"] = project_root
+                
+                # subprocess.CREATE_NO_WINDOW can cause issues for GUI apps
+                # but it's good for console tools like analyzer if we capture output.
+                creation_flags = 0
+                if sys.platform == "win32" and capture_output:
+                    creation_flags = 0x08000000 # CREATE_NO_WINDOW
+
+                process = subprocess.Popen(
+                    final_args,
+                    stdout=subprocess.PIPE if capture_output else None,
+                    stderr=subprocess.STDOUT if capture_output else None,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    creationflags=creation_flags,
+                    env=env
+                )
+                
+                if capture_output and process.stdout:
+                    for line in process.stdout:
+                        self.log_to_terminal(line.strip())
+                    process.wait()
+                else:
+                    process.wait()
+                
+                if process.returncode != 0:
+                    self.log_to_terminal(f"\n[ERROR] {desc} exited with code {process.returncode}")
+                
+                self.status_var.set("Ready")
+                
+            except Exception as e:
+                import traceback
+                print(traceback.format_exc())
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to run {desc}:\n{e}"))
+                self.status_var.set("Error")
+            finally:
+                if capture_output and self.spinner:
+                    self.spinner.stop()
+                    self.spinner.pack_forget()
+                    
+        threading.Thread(target=task, daemon=True).start()
+
+    def run_migaku_importer(self):
+        self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
+
+    def run_epub_extractor(self):
+        self.run_command_async(['epub_importer.py'], "EPUB Extractor")
+
+    def run_analyzer(self):
+        args = ['analyzer.py']
+        if not self.var_exclude_single.get():
+            args.append('--include-single-chars')
+        
+        min_freq = self.var_min_freq.get()
+        if min_freq > 0:
+            args.append(f'--min-freq={min_freq}')
+        
+        args.append('--static')
+        
+        # Add theme argument
+        theme_map = {
+            'Default (Dark)': 'default',
+            'World Class (Flow)': 'world-class',
+            'Midnight (Vibrant)': 'midnight-vibrant',
+            'Modern Light': 'modern-light',
+            'Zen Focus': 'zen-focus'
+        }
+        selected_theme = self.combo_theme.get()
+        theme_arg = theme_map.get(selected_theme, 'default')
+        args.append(f'--theme={theme_arg}')
+        args.append(f'--zen-limit={self.var_zen_limit.get()}')
+            
+        self.run_command_async(args, "Analyzer", capture_output=True)
+
+    def run_static_page(self):
+        # Add theme argument for static page generation only
+        args = ['static_html_generator.py']
+        theme_map = {
+            'Default (Dark)': 'default',
+            'World Class (Flow)': 'world-class',
+            'Midnight (Vibrant)': 'midnight-vibrant',
+            'Modern Light': 'modern-light',
+            'Zen Focus': 'zen-focus'
+        }
+        selected_theme = self.combo_theme.get()
+        theme_arg = theme_map.get(selected_theme, 'default')
+        args.append(f'--theme={theme_arg}')
+        args.append(f'--zen-limit={self.var_zen_limit.get()}')
+
+        self.run_command_async(args, "Static Page")
+
+def main():
+    root = tk.Tk()
+    app = MasterDashboardApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()

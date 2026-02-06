@@ -1,0 +1,1423 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reading List Visualizer</title>
+    <style>
+        :root {
+            --primary: #6200ee;
+            --primary-variant: #3700b3;
+            --secondary: #03dac6;
+            --background: #121212;
+            --surface: #1e1e1e;
+            --error: #cf6679;
+            --on-primary: #ffffff;
+            --on-background: #ffffff;
+            --on-surface: #ffffff;
+            --text-secondary: #b0b0b0;
+            --card-border: #333;
+            --header-height: 60px;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--background);
+            color: var(--on-background);
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Loading Screen --- */
+        #loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--background);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: var(--primary);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* --- Header & Tabs --- */
+        header {
+            background-color: var(--surface);
+            padding: 0 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            height: 60px;
+            flex-shrink: 0;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-right: 40px;
+        }
+
+        .main-tabs {
+            display: flex;
+            height: 100%;
+        }
+
+        .main-tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1rem;
+            padding: 0 20px;
+            cursor: pointer;
+            height: 100%;
+            transition: color 0.2s, border-bottom 0.2s;
+            border-bottom: 3px solid transparent;
+            font-weight: 500;
+        }
+
+        .main-tab-btn:hover {
+            color: var(--on-surface);
+        }
+
+        .main-tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        /* --- Main Content Area --- */
+        #content-area {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .view {
+            display: none;
+            flex: 1;
+            overflow: hidden;
+            flex-direction: column;
+            /* Flex column so the inner parts can scroll correctly */
+        }
+
+        .view.active {
+            display: flex;
+        }
+
+        /* --- Progressive View Layout --- */
+        /* Takes up full height of view. Has Sidebar + Main List */
+        .progressive-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .file-sidebar {
+            width: 250px;
+            background-color: #181818;
+            border-right: 1px solid var(--card-border);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .file-tab {
+            padding: 15px 20px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            border-left: 3px solid transparent;
+            transition: background 0.2s;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+
+        .file-tab:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .file-tab.active {
+            background-color: rgba(98, 0, 238, 0.1);
+            color: var(--primary);
+            border-left-color: var(--primary);
+        }
+
+        .word-list-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        /* --- Cards --- */
+        .card {
+            background-color: var(--surface);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--card-border);
+            transition: transform 0.2s;
+            content-visibility: auto;
+            contain-intrinsic-size: 1px 200px;
+            /* Estimate height to prevent scrollbar jumping */
+        }
+
+        .card.ignored {
+            opacity: 0.5;
+            filter: grayscale(100%);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .word-main {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--secondary);
+            margin-right: 10px;
+        }
+
+        .reading {
+            font-size: 1rem;
+            color: var(--text-secondary);
+        }
+
+        .tier-badge {
+            background-color: #333;
+            color: #ddd;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .tier-badge.tier-1 {
+            background-color: #b71c1c;
+            color: white;
+        }
+
+        .tier-badge.tier-2 {
+            background-color: #f57f17;
+            color: black;
+        }
+
+        .tier-badge.tier-3 {
+            background-color: #1b5e20;
+            color: white;
+        }
+
+        .context-box {
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+            font-size: 1.1rem;
+            line-height: 1.6;
+            color: #eee;
+        }
+
+        .context-box em {
+            color: var(--secondary);
+            font-style: normal;
+            font-weight: bold;
+            text-decoration: underline;
+        }
+
+        .card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 12px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .stats span {
+            margin-right: 15px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            background: transparent;
+            border: 1px solid var(--text-secondary);
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            border-color: var(--on-surface);
+            color: var(--on-surface);
+        }
+
+        .btn-ignore:hover {
+            border-color: var(--error);
+            color: var(--error);
+        }
+
+        /* --- Sources Toggle --- */
+        .sources-section {
+            margin-top: 10px;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+
+        .sources-toggle {
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.85rem;
+            user-select: none;
+        }
+
+        .sources-list {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #888;
+            display: none;
+        }
+
+        .sources-list.visible {
+            display: block;
+        }
+
+        /* --- Extra Contexts --- */
+        .extra-contexts {
+            display: none;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed #444;
+        }
+
+        .extra-contexts.visible {
+            display: block;
+        }
+
+        .context-item {
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+            color: #ccc;
+            padding-left: 10px;
+            border-left: 2px solid var(--primary);
+        }
+
+        .toggle-contexts-btn {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.03);
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 1rem;
+            padding: 4px 0;
+            transition: background 0.2s, color 0.2s;
+            border-radius: 4px;
+            margin-top: -8px;
+            /* Pull closer to context box */
+            margin-bottom: 4px;
+        }
+
+        .toggle-contexts-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--primary);
+        }
+
+        .toggle-contexts-btn .arrow {
+            transition: transform 0.3s;
+            font-size: 0.8rem;
+            opacity: 0.6;
+        }
+
+        .toggle-contexts-btn.active .arrow {
+            transform: rotate(180deg);
+        }
+
+        /* --- Comprehension Bar --- */
+        .comprehension-stats {
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.95rem;
+        }
+
+        .progress-container {
+            height: 12px;
+            background: #333;
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+        }
+
+        .progress-segment {
+            height: 100%;
+            transition: width 0.5s ease-out;
+        }
+
+        .segment-base {
+            background: #4caf50;
+            opacity: 0.3;
+        }
+
+        .segment-start {
+            background: #4caf50;
+            opacity: 0.6;
+        }
+
+        .segment-target {
+            background: #4caf50;
+        }
+
+        .legend {
+            display: flex;
+            gap: 15px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        /* --- THEME: Zen Focus --- */
+        body.theme-zen-focus {
+            --background: #000000;
+            --surface: #0a0a0a;
+            --card-border: #1a1a1a;
+            --primary: #ffffff;
+            --secondary: #aaaaaa;
+            --text-primary: #dddddd;
+            --text-secondary: #666666;
+            background-color: var(--background);
+            color: var(--text-primary);
+            font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+            overflow-y: auto !important;
+            height: auto !important;
+            display: block !important;
+        }
+
+        body.theme-zen-focus #content-area,
+        body.theme-zen-focus .view,
+        body.theme-zen-focus .progressive-container,
+        body.theme-zen-focus .word-list-container {
+            overflow: visible !important;
+            height: auto !important;
+            flex: none !important;
+            display: block !important;
+        }
+
+        body.theme-zen-focus .word-list-container {
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        body.theme-zen-focus header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background-color: rgba(0, 0, 0, 0.9);
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 20px;
+        }
+
+        body.theme-zen-focus header h1 {
+            margin: 0;
+            padding: 10px 0;
+            font-size: 1.2rem;
+            opacity: 0.5;
+        }
+
+        body.theme-zen-focus * {
+            box-shadow: none !important;
+            transition: none !important;
+            animation: none !important;
+            backdrop-filter: none !important;
+        }
+
+
+
+        body.theme-zen-focus .card {
+            background-color: transparent;
+            border: 1px solid var(--card-border);
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+
+        body.theme-zen-focus .word-main {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        body.theme-zen-focus .reading {
+            color: var(--secondary);
+            font-size: 1.2rem;
+            margin-left: 12px;
+        }
+
+        body.theme-zen-focus .context-box {
+            background: transparent;
+            border: none;
+            border-left: 1px solid var(--text-secondary);
+            padding-left: 10px;
+            font-size: 1.2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        body.theme-zen-focus .context-item-zen {
+            line-height: 1.5;
+        }
+
+        line-height: 1.4;
+        }
+
+        body.theme-zen-focus .context-box em {
+            color: var(--primary);
+            font-weight: bold;
+            text-decoration: underline;
+        }
+
+        body.theme-zen-focus .file-sidebar {
+            background-color: var(--background);
+            border-right: 1px solid var(--card-border);
+        }
+
+        body.theme-zen-focus .file-tab {
+            border: none;
+            padding: 8px 15px;
+            font-size: 0.85rem;
+        }
+
+        body.theme-zen-focus .file-tab.active {
+            background-color: var(--card-border);
+            color: var(--primary);
+        }
+
+        body.theme-zen-focus .comprehension-stats {
+            background-color: var(--background);
+            border: 1px solid var(--card-border);
+            padding: 10px;
+            font-size: 0.8rem;
+        }
+
+        body.theme-zen-focus .progress-container {
+            height: 4px;
+            background: #111;
+        }
+
+        body.theme-zen-focus .progress-segment.segment-base {
+            background: #333;
+        }
+
+        body.theme-zen-focus .progress-segment.segment-start {
+            background: #666;
+        }
+
+        body.theme-zen-focus .progress-segment.segment-target {
+            background: #999;
+        }
+
+        body.theme-zen-focus .btn-ignore {
+            background: transparent;
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+        }
+
+        body.theme-zen-focus .btn-ignore:hover {
+            border-color: #ff0000;
+            color: #ff0000;
+        }
+
+        /* --- THEME: Midnight (Vibrant) --- */
+        body.theme-midnight-vibrant {
+            --background: #0d0c1d;
+            --surface: #1b1a37;
+            --card-border: rgba(255, 255, 255, 0.05);
+            --primary: #ff5f6d;
+            --secondary: #ffc371;
+            --accent-purple: #6c5ce7;
+            --text-primary: #ffffff;
+            --text-secondary: #b2bec3;
+            --gradient: linear-gradient(90deg, #ff5f6d 0%, #ffc371 100%);
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+
+        body.theme-midnight-vibrant header {
+            background-color: var(--surface);
+            border-bottom: 2px solid var(--accent-purple);
+        }
+
+        body.theme-midnight-vibrant .card {
+            background-color: var(--surface);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 16px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        body.theme-midnight-vibrant .word-main {
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: inline-block;
+        }
+
+        body.theme-midnight-vibrant .main-tab-btn.active {
+            background: var(--gradient) !important;
+            border: none;
+            border-radius: 12px;
+            color: white;
+            font-weight: 600;
+        }
+
+        body.theme-midnight-vibrant .tier-badge {
+            background: var(--accent-purple);
+            border-radius: 8px;
+            color: white;
+        }
+
+        body.theme-midnight-vibrant .context-box em {
+            color: var(--secondary);
+            font-weight: bold;
+        }
+
+        /* --- THEME: World Class (Flow) --- */
+        body.theme-world-class {
+            --background: #0a0a0a;
+            --surface: #141414;
+            --card-border: #222;
+            --primary: #bb86fc;
+            --secondary: #03dac6;
+            --text-secondary: #888;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            /* Cleaner font stack */
+        }
+
+        body.theme-world-class header {
+            background-color: rgba(20, 20, 20, 0.8);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: none;
+        }
+
+        body.theme-world-class .card {
+            background-color: transparent;
+            /* Simplicity */
+            border: none;
+            border-bottom: 1px solid var(--card-border);
+            border-radius: 0;
+            padding: 25px 0;
+            /* More breathing room */
+            margin-bottom: 0;
+            box-shadow: none;
+        }
+
+        body.theme-world-class .card-header {
+            margin-bottom: 12px;
+        }
+
+        body.theme-world-class .word-main {
+            font-size: 2rem;
+            /* Larger focus */
+            font-weight: 300;
+            /* Lighter weight for elegance */
+            color: #fff;
+            letter-spacing: 0.05em;
+        }
+
+        body.theme-world-class .reading {
+            font-size: 1.1rem;
+            color: var(--primary);
+            opacity: 0.8;
+            font-weight: 400;
+        }
+
+        body.theme-world-class .context-box {
+            background: transparent;
+            padding: 0;
+            font-size: 1.25rem;
+            /* Larger reading text */
+            line-height: 1.8;
+            /* Better flow */
+            color: #ccc;
+            border-left: 2px solid var(--secondary);
+            padding-left: 15px;
+        }
+
+        body.theme-world-class .context-box em {
+            color: var(--secondary);
+            font-weight: 600;
+            text-decoration: none;
+            border-bottom: 1px solid rgba(3, 218, 198, 0.3);
+        }
+
+        body.theme-world-class .tier-badge {
+            background: transparent;
+            border: 1px solid #333;
+            font-weight: normal;
+            font-size: 0.7rem;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        body.theme-world-class .file-sidebar {
+            background-color: #050505;
+            border-right: 1px solid #111;
+        }
+
+        body.theme-world-class .file-tab {
+            border-left: none;
+            border-right: 2px solid transparent;
+            opacity: 0.6;
+        }
+
+        body.theme-world-class .file-tab.active {
+            background-color: transparent;
+            border-color: var(--primary);
+            color: #fff;
+            opacity: 1;
+        }
+
+        /* --- THEME: Modern Light --- */
+        body.theme-modern-light {
+            --background: #f8f9fa;
+            --surface: #ffffff;
+            --card-border: #e9ecef;
+            --primary: #6c5ce7;
+            --secondary: #00cec9;
+            --on-background: #2d3436;
+            --on-surface: #2d3436;
+            --text-secondary: #636e72;
+            background-color: var(--background);
+            color: var(--on-background);
+        }
+
+        body.theme-modern-light header {
+            background-color: var(--surface);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        body.theme-modern-light .card {
+            background-color: var(--surface);
+            border-radius: 12px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        body.theme-modern-light .word-main {
+            color: var(--on-surface);
+            font-weight: 700;
+        }
+
+        body.theme-modern-light .reading {
+            color: var(--primary);
+        }
+
+        body.theme-modern-light .context-box {
+            background-color: #f1f2f6;
+            border-left: 4px solid var(--primary);
+            color: #2d3436;
+        }
+
+        body.theme-modern-light .context-box em {
+            color: var(--primary);
+            background-color: rgba(108, 92, 231, 0.1);
+            padding: 0 2px;
+            border-radius: 3px;
+        }
+
+        body.theme-modern-light .file-sidebar {
+            background-color: var(--surface);
+            border-right: 1px solid var(--card-border);
+        }
+
+        body.theme-modern-light .file-tab {
+            color: var(--text-secondary);
+        }
+
+        body.theme-modern-light .file-tab.active {
+            background-color: rgba(108, 92, 231, 0.05);
+            color: var(--primary);
+            border-left: 3px solid var(--primary);
+        }
+
+        body.theme-modern-light .comprehension-stats {
+            background-color: var(--surface);
+            border: 1px solid var(--card-border);
+        }
+
+        body.theme-modern-light .progress-segment.segment-base {
+            background: #dfe6e9;
+        }
+
+        body.theme-modern-light .progress-segment.segment-start {
+            background: #81ecec;
+        }
+
+        body.theme-modern-light .progress-segment.segment-target {
+            background: #00cec9;
+        }
+
+        body.theme-modern-light .btn-ignore {
+            background-color: #f1f2f6;
+            color: #636e72;
+        }
+
+        body.theme-modern-light .btn-ignore:hover {
+            background-color: #ffeaa7;
+            color: #d63031;
+        }
+
+        body.theme-modern-light .card {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+            border: 1px solid transparent;
+        }
+
+        /* --- THEME: Zen Focus --- */
+        body.theme-zen-focus {
+            --background: #000000;
+            --surface: #000000;
+            --card-border: #111;
+            --primary: #ffffff;
+            --secondary: #ffffff;
+            --on-background: #bbbbbb;
+            --text-secondary: #555;
+        }
+
+        body.theme-zen-focus .main-tabs,
+        body.theme-zen-focus header h1,
+        body.theme-zen-focus .tier-badge,
+        body.theme-zen-focus .card-footer {
+            opacity: 0.1;
+            /* Fade out non-essentials */
+            transition: opacity 0.3s;
+        }
+
+        body.theme-zen-focus header:hover h1,
+        body.theme-zen-focus .card:hover .card-footer {
+            opacity: 1;
+        }
+
+        body.theme-zen-focus .word-main {
+            color: #fff;
+        }
+
+        body.theme-zen-focus .context-box {
+            color: #999;
+        }
+
+        body.theme-zen-focus .context-box em {
+            color: #fff;
+            font-weight: bold;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading-screen">
+        <div class="spinner"></div>
+        <p>Analyzing Library...</p>
+    </div>
+    <header>
+        <h1>Reading List</h1>
+    </header>
+    <div id="content-area">
+        <!-- Progressive View -->
+        <div id="view-progressive" class="view active">
+            <div class="progressive-container">
+                <div class="file-sidebar" id="file-tabs">
+                    <!-- File tabs injected here -->
+                </div>
+                <div class="word-list-container" id="progressive-list">
+                    <!-- Cards injected here -->
+                </div>
+            </div>
+        </div>
+        <!-- Priority View -->
+        <div id="view-priority" class="view">
+            <div class="word-list-container" id="priority-list">
+                <!-- Cards injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Efficient Chunked Rendering Helper ---
+        async function renderChunked(container, items, createFn, chunkSize = 25) {
+            let index = 0;
+            return new Promise(resolve => {
+                function next() {
+                    if (index >= items.length) {
+                        resolve();
+                        return;
+                    }
+
+                    const chunk = items.slice(index, index + chunkSize);
+                    const fragment = document.createDocumentFragment();
+
+                    chunk.forEach(item => {
+                        fragment.appendChild(createFn(item));
+                    });
+
+                    container.appendChild(fragment);
+                    index += chunkSize;
+
+                    // Yield to main thread for responsiveness
+                    requestAnimationFrame(next);
+                }
+                next();
+            });
+        }
+    </script>
+
+    <script>
+        let globalData = null;
+
+        // --- Initialization ---
+        window.addEventListener('load', async () => {
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+
+            if (typeof globalTheme !== 'undefined' && globalTheme) {
+                document.body.classList.add('theme-' + globalTheme);
+            } else {
+                document.body.classList.add('theme-default');
+            }
+
+            // Injected tabs if NOT zen
+            if (!isZen) {
+                const header = document.querySelector('header');
+                const tabsDiv = document.createElement('div');
+                tabsDiv.className = 'main-tabs';
+                tabsDiv.innerHTML = `
+                    <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
+                    <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
+                `;
+                header.appendChild(tabsDiv);
+            }
+
+            await fetchData();
+        });
+
+        async function fetchData() {
+
+            // Static Mode: Data is already injected into globalData
+            try {
+                // Hide loading
+                document.getElementById('loading-screen').style.display = 'none';
+
+                // Render Views
+                const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+                await renderProgressiveView();
+                if (!isZen) {
+                    await renderPriorityView();
+                } else {
+                    const priorityView = document.getElementById('view-priority');
+                    if (priorityView) priorityView.remove();
+                }
+
+            }
+
+            catch (error) {
+                console.error("Error rendering data:", error);
+                document.getElementById('loading-screen').innerHTML = "<p style='color:red'>Error rendering data. Check console.</p>";
+            }
+        }
+
+        // --- Tabs Logic ---
+        function switchMainTab(tabName) {
+            document.querySelectorAll('.main-tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`.main-tab-btn[onclick="switchMainTab('${tabName}')"]`).classList.add('active');
+
+            document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+
+            document.getElementById(`view-${tabName}`).classList.add('active');
+        }
+
+        // --- Progressive View Rendering ---
+        async function renderProgressiveView() {
+            const tabsContainer = document.getElementById('file-tabs');
+            const listContainer = document.getElementById('progressive-list');
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+
+            tabsContainer.innerHTML = "";
+            listContainer.innerHTML = "";
+
+            if (!globalData.progressive || globalData.progressive.length === 0) {
+                listContainer.innerHTML = "<p style='padding:20px'>No progressive data available.</p>";
+                return;
+            }
+
+            if (isZen) {
+                // Continuous Scroll for Zen
+                tabsContainer.style.display = 'none';
+                document.querySelector('.progressive-container').style.display = 'block'; // No grid
+
+                // Chunk the files themselves if there are many? 
+                // Zen mode limits to 10 files, so files loop is cheap. 
+                // BUT the words WITHIN files can be large.
+
+                for (const fileData of globalData.progressive) {
+                    const fileSection = document.createElement('div');
+                    fileSection.className = 'zen-file-section';
+                    fileSection.innerHTML = `<h2 class="zen-file-title" style="margin-top:40px; border-bottom:1px solid #333; padding-bottom:5px;">${fileData.filename}</h2>`;
+
+                    const stats = calculateFileStats(fileData.words);
+                    if (stats) {
+                        fileSection.appendChild(createComprehensionBar(stats));
+                    }
+
+                    listContainer.appendChild(fileSection);
+
+                    // Render words chunked into this section
+                    await renderChunked(fileSection, fileData.words, createWordCard);
+                }
+            } else {
+                // Standard Tabs
+                globalData.progressive.forEach((fileData, index) => {
+                    const tab = document.createElement('div');
+                    tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
+                    tab.textContent = fileData.filename;
+                    tab.onclick = async () => {
+                        document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                        tab.classList.add('active');
+                        await renderFileWords(fileData.words);
+                    }
+                    tabsContainer.appendChild(tab);
+                });
+
+                if (globalData.progressive.length > 0) {
+                    await renderFileWords(globalData.progressive[0].words);
+                }
+            }
+        }
+
+        async function renderFileWords(words) {
+            const listContainer = document.getElementById('progressive-list');
+            listContainer.innerHTML = "";
+
+            if (!words || words.length === 0) {
+                listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
+                return;
+            }
+
+            // Create Comprehension Bar
+            const stats = calculateFileStats(words);
+            const statsBar = createComprehensionBar(stats);
+            listContainer.appendChild(statsBar);
+
+            // Chunked render
+            await renderChunked(listContainer, words, createWordCard);
+        }
+
+        function calculateFileStats(words) {
+            if (!words.length) return null;
+            const first = words[0];
+            const last = words[words.length - 1];
+
+            return {
+                baseline: parseFloat(first["Baseline %"]) || 0,
+                start: parseFloat(first["Current %"]) || 0,
+                target: parseFloat(last["New %"]) || 0
+            }
+
+                ;
+        }
+
+        function createComprehensionBar(stats) {
+            const el = document.createElement('div');
+            el.className = 'comprehension-stats';
+
+            const baseWidth = stats.baseline;
+            const startWidth = stats.start - stats.baseline;
+            const targetWidth = stats.target - stats.start;
+            const remainingWidth = 100 - stats.target;
+
+            el.innerHTML = ` <div class="stats-row"><span style="font-weight: bold; color: var(--secondary);">Learning Growth</span><span>Target: <strong>${stats.target.toFixed(2)}%</strong></span></div><div class="progress-container"><div class="progress-segment segment-base" style="width: ${baseWidth}%" title="Baseline: ${stats.baseline}%"></div><div class="progress-segment segment-start" style="width: ${startWidth}%" title="Previous Progress: ${(stats.start - stats.baseline).toFixed(2)}%"></div><div class="progress-segment segment-target" style="width: ${targetWidth}%" title="Target Progress: ${(stats.target - stats.start).toFixed(2)}%"></div></div><div class="legend"><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.3;"></span>Baseline (${stats.baseline.toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.6;"></span>Carried Over (+${(stats.start - stats.baseline).toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50;"></span>This File (+${(stats.target - stats.start).toFixed(1)}%)</div></div>`;
+            return el;
+        }
+
+        // --- Priority View Rendering ---
+        async function renderPriorityView() {
+            const container = document.getElementById('priority-list');
+            container.innerHTML = "";
+
+            if (!globalData.priority || globalData.priority.length === 0) {
+                container.innerHTML = "<p>No priority data available.</p>";
+                return;
+            }
+
+            // Only show top 100 for performance initially? Or all?
+            // Let's modify to lazy load or just show top 500.
+            const limit = 500;
+            const dataToShow = globalData.priority.slice(0, limit);
+
+            if (globalData.priority.length > limit) {
+                const note = document.createElement('div');
+                note.style.padding = "10px";
+                note.style.color = "#888";
+
+                note.textContent = `Showing top ${limit} of ${globalData.priority.length} words.`;
+                container.appendChild(note);
+            }
+
+            await renderChunked(container, dataToShow, createWordCard);
+        }
+
+        // --- Card Component ---
+        // --- Word Card Component (Optimized) ---
+        function createWordCard(data) {
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+            const el = document.createElement('div');
+            el.className = 'card';
+
+            const word = data.Word;
+            const safeWord = escapeHtml(word);
+
+            const escapedWordForRegex = safeWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escapedWordForRegex, 'gi');
+
+            function formatContext(ctx) {
+                if (!ctx) return "";
+                const safeCtx = escapeHtml(ctx);
+                return safeCtx.replace(regex, `<em>${safeWord}</em>`);
+            }
+
+            const c1 = data["Context 1"] || data.Context || "";
+            const displayC1 = formatContext(c1);
+
+            if (isZen) {
+                const c2 = data["Context 2"] || "";
+                const c3 = data["Context 3"] || "";
+                const dC2 = formatContext(c2);
+                const dC3 = formatContext(c3);
+
+                const freq = data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : null);
+                const displayFreq = (freq !== null) ? `<span class="freq-zen" style="margin-left:auto; opacity:0.4; font-size:1.1rem; font-family:monospace;">F:${freq}</span>` : '';
+
+                el.innerHTML = `
+                    <div class="card-header" style="margin-bottom:8px; display:flex; align-items:baseline;">
+                        <span class="word-main">${safeWord}</span>
+                        <span class="reading">${data.Reading || ''}</span>
+                        ${displayFreq}
+                    </div>
+                    <div class="context-box">
+                        <div class="context-item-zen">${displayC1}</div>
+                        ${c2 ? `<div class="context-item-zen">${dC2}</div>` : ''}
+                        ${c3 ? `<div class="context-item-zen">${dC3}</div>` : ''}
+                    </div>
+                `;
+                return el;
+            }
+
+            // Standard Card: Base HTML
+            el.innerHTML = `
+                <div class="card-header">
+                    <div style="display:flex; align-items:center; gap: 10px;">
+                        <span class="word-main">${safeWord}</span>
+                        <span class="reading">${data.Reading || ''}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap: 15px;">
+                        <div class="stats" style="font-size: 0.9rem; color: var(--text-secondary);">
+                            ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
+                            ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
+                        </div>
+                        <span class="tier-badge tier-${data.Tier}">${data.Tier}</span>
+                    </div>
+                </div>
+                <div class="context-box">${displayC1}</div>
+            `;
+
+            // Extra Contexts (DOM Pruning)
+            const c2 = data["Context 2"] || "";
+            const c3 = data["Context 3"] || "";
+            if (c2 || c3) {
+                const btn = document.createElement('button');
+                btn.className = "toggle-contexts-btn";
+                btn.innerHTML = `<span class="arrow">▼</span>`;
+                const extraDiv = document.createElement('div');
+                extraDiv.className = "extra-contexts";
+                let loaded = false;
+                btn.onclick = () => {
+                    if (!loaded) {
+                        const dC2 = formatContext(c2);
+                        const dC3 = formatContext(c3);
+                        extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
+                        loaded = true;
+                    }
+                    extraDiv.classList.toggle('visible');
+                    btn.classList.toggle('active');
+                };
+                el.appendChild(btn);
+                el.appendChild(extraDiv);
+            }
+
+            // Footer
+            const footer = document.createElement('div');
+            footer.className = "card-footer";
+            footer.innerHTML = `<div></div><div class="actions"><button class="btn btn-ignore" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
+            el.appendChild(footer);
+
+            // Sources (DOM Pruned)
+            if (data.Sources) {
+                const sSection = document.createElement('div');
+                sSection.className = "sources-section";
+                const sToggle = document.createElement('div');
+                sToggle.className = "sources-toggle";
+                sToggle.textContent = `Show Sources (${data.Sources.split(',').length})`;
+                const sList = document.createElement('div');
+                sList.className = "sources-list";
+                let sLoaded = false;
+                sToggle.onclick = () => {
+                    if (!sLoaded) {
+                        sList.textContent = data.Sources;
+                        sLoaded = true;
+                    }
+                    if (sList.style.display === 'block') {
+                        sList.style.display = 'none';
+                        sToggle.textContent = sToggle.textContent.replace("Hide", "Show");
+                    } else {
+                        sList.style.display = 'block';
+                        sToggle.textContent = sToggle.textContent.replace("Show", "Hide");
+                    }
+                };
+                sSection.appendChild(sToggle);
+                sSection.appendChild(sList);
+                el.appendChild(sSection);
+            }
+            return el;
+        }
+
+        function toggleExtraContexts(btn) {
+            const extra = btn.nextElementSibling;
+            extra.classList.toggle('visible');
+            btn.classList.toggle('active');
+        }
+
+        // --- Actions ---
+        function toggleSources(el) {
+            const list = el.nextElementSibling;
+
+            if (list.style.display === "block") {
+                list.style.display = "none";
+                el.textContent = el.textContent.replace("Hide", "Show");
+            }
+
+            else {
+                list.style.display = "block";
+                el.textContent = el.textContent.replace("Show", "Hide");
+            }
+        }
+
+        async function ignoreWord(word, btnElement) {
+            try {
+                // Copy to clipboard in static mode
+                await navigator.clipboard.writeText(word);
+                const originalText = btnElement.textContent;
+                btnElement.textContent = "Copied!";
+                btnElement.classList.add('ignored');
+                btnElement.disabled = true;
+
+                // Show floating notification or just a temp change
+                setTimeout(() => {
+                    btnElement.textContent = originalText;
+                    btnElement.disabled = false;
+                    btnElement.classList.remove('ignored');
+                }
+
+                    , 1000);
+
+                // Option: also mark the whole card?
+                // const card = btnElement.closest('.card');
+                // card.classList.add('ignored');
+
+            }
+
+            catch (err) {
+                // Fallback for older browsers or restricted contexts
+                const textArea = document.createElement("textarea");
+                textArea.value = word;
+                document.body.appendChild(textArea);
+                textArea.select();
+
+                try {
+                    document.execCommand('copy');
+                    const originalText = btnElement.textContent;
+                    btnElement.textContent = "Copied!";
+                    btnElement.disabled = true;
+
+                    setTimeout(() => {
+                        btnElement.textContent = originalText;
+                        btnElement.disabled = false;
+                    }
+
+                        , 1000);
+                }
+
+                catch (fallbackErr) {
+                    console.error('Fallback copy failed', fallbackErr);
+                    alert('Failed to copy: ' + word);
+                }
+
+                document.body.removeChild(textArea);
+            }
+        }
+
+        // --- Utils ---
+        function escapeHtml(text) {
+            if (!text) return "";
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, " &quot; ")
+                .replace(/'/g, "&#039;");
+
+        }
+
+        // --- Smart Navigation ---
+        document.addEventListener('keydown', (e) => {
+            if (e.repeat) return;
+
+            const isNext = e.code === 'Space' || e.code === 'ArrowRight';
+            const isPrev = e.code === 'ArrowLeft';
+
+            if (!isNext && !isPrev) return;
+
+            // Don't navigate if user is typing in an input/textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            if (e.code === 'Space') e.preventDefault();
+
+            const isZen = document.body.classList.contains('theme-zen-focus');
+
+            // Selection: Standard themes have scrollable containers, Zen uses window
+            let scroller = isZen ? window : document.querySelector('.view.active .word-list-container');
+            if (!scroller && !isZen) return;
+
+            const activeCards = Array.from(document.querySelectorAll('.view.active .card, body.theme-zen-focus .card'));
+            if (activeCards.length === 0) return;
+
+            const scrollerHeight = isZen ? window.innerHeight : scroller.clientHeight;
+            const scrollerTop = isZen ? 0 : scroller.getBoundingClientRect().top;
+            const centerLine = scrollerTop + (scrollerHeight / 2);
+
+            let currentIndex = -1;
+            let minDistance = Infinity;
+
+            activeCards.forEach((card, index) => {
+                const rect = card.getBoundingClientRect();
+                const cardCenter = rect.top + (rect.height / 2);
+                const distance = Math.abs(cardCenter - centerLine);
+
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    currentIndex = index;
+                }
+            });
+
+            if (currentIndex === -1) return;
+
+            let targetIndex = isNext ? currentIndex + 1 : currentIndex - 1;
+            if (targetIndex < 0) targetIndex = 0;
+            if (targetIndex >= activeCards.length) targetIndex = activeCards.length - 1;
+
+            const targetCard = activeCards[targetIndex];
+            if (targetCard) {
+                const rect = targetCard.getBoundingClientRect();
+                const cardHeight = rect.height;
+
+                // Target: Card center at 35% from top of scroller viewport (15% above middle)
+                const offset = (scrollerHeight * 0.35) - (cardHeight / 2);
+
+                if (isZen) {
+                    const cardTop = rect.top + window.pageYOffset;
+                    window.scrollTo({
+                        top: cardTop - offset,
+                        behavior: 'smooth'
+                    });
+                } else {
+                    const containerRect = scroller.getBoundingClientRect();
+                    const currentScroll = scroller.scrollTop;
+                    const cardTopRelativeToContainer = rect.top - containerRect.top;
+
+                    scroller.scrollTo({
+                        top: currentScroll + cardTopRelativeToContainer - offset,
+                        behavior: 'smooth'
+                    });
+                }
+            }
+        });
+
+    </script>
+</body>
+
+</html>

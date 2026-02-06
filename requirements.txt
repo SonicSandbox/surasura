@@ -1,0 +1,7 @@
+pandas
+fugashi
+unidic-lite
+pysrt
+EbookLib
+beautifulsoup4
+tkinterdnd2; platform_system=='Windows'

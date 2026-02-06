@@ -17,7 +17,7 @@ from app.path_utils import get_user_file, get_resource
 class MigakuImporterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Known-Word DB Importer")
+        self.root.title("Surasura - Known-Word DB Importer")
         self.root.geometry("600x450")
         self.root.resizable(False, False)
         

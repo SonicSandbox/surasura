@@ -4,6 +4,7 @@ import subprocess
 import os
 import sys
 import threading
+import queue
 from typing import Optional
 
 # Custom Dark Theme Configuration
@@ -89,7 +90,7 @@ class ToolTip:
 class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("日本語 Readability Analyzer")
+        self.root.title("Surasura - Readability Analyzer")
         self.root.geometry("520x680") 
         self.root.resizable(False, False)
         self.root.configure(bg=BG_COLOR)
@@ -101,13 +102,30 @@ class MasterDashboardApp:
         self.var_exclude_single = tk.BooleanVar(value=True) 
         self.var_min_freq = tk.IntVar(value=1) 
         self.var_zen_limit = tk.IntVar(value=50) 
-
+        
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
+        
+        # Queue for thread-safe GUI updates
+        self.gui_queue = queue.Queue()
+        self.check_queue()
 
         self.setup_ui()
+        
+    def check_queue(self):
+        """Poll the queue for GUI updates"""
+        try:
+            while True:
+                task = self.gui_queue.get_nowait()
+                if callable(task):
+                    task()
+                self.gui_queue.task_done()
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(100, self.check_queue)
         
     def apply_dark_theme(self):
         self.style.theme_use('default')
@@ -161,7 +179,7 @@ class MasterDashboardApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
-        header = ttk.Label(main_frame, text="⚡ 日本語 Readability Analyzer", style="Header.TLabel")
+        header = ttk.Label(main_frame, text="⚡ Surasura - Readability Analyzer", style="Header.TLabel")
         header.pack(pady=(0, 20))
         
         # 1. Pipeline Tools (Data)
@@ -284,15 +302,18 @@ class MasterDashboardApp:
         ttk.Label(credit_box, text="Created by SonicSandbox | ", style="Footer.TLabel").pack(side=tk.LEFT)
         link = ttk.Label(credit_box, text="GitHub", style="Link.TLabel", cursor="hand2")
         link.pack(side=tk.LEFT)
-        link.bind("<Button-1>", lambda e: subprocess.Popen(["start", "https://github.com/SonicSandbox/readability-analyzer"], shell=True))
+        # UPDATED LINK to the new repo
+        link.bind("<Button-1>", lambda e: subprocess.Popen(["start", "https://github.com/SonicSandbox/surasura"], shell=True))
 
     def log_to_terminal(self, message):
-        """Appends text to the terminal widget safely"""
-        if self.terminal:
-            self.terminal.config(state=tk.NORMAL)
-            self.terminal.insert(tk.END, message + "\n")
-            self.terminal.see(tk.END)
-            self.terminal.config(state=tk.DISABLED)
+        """Appends text to the terminal widget safely via queue"""
+        def _update():
+            if self.terminal:
+                self.terminal.config(state=tk.NORMAL)
+                self.terminal.insert(tk.END, message + "\n")
+                self.terminal.see(tk.END)
+                self.terminal.config(state=tk.DISABLED)
+        self.gui_queue.put(_update)
 
     def open_data_folder(self):
         """Opens the data folder in File Explorer"""
@@ -316,9 +337,21 @@ class MasterDashboardApp:
             
     def run_command_async(self, cmd, desc, capture_output=False):
         """Runs a command with optional output redirection to the terminal"""
-        def task():
+        
+        # UI updates must be queued
+        def _start_loading():
             self.status_var.set(f"Running {desc}...")
-            
+            # If the spinner or terminal are not initialized, skip this
+            if capture_output and self.terminal and self.spinner:
+                self.terminal.config(state=tk.NORMAL)
+                self.terminal.delete(1.0, tk.END)
+                self.terminal.config(state=tk.DISABLED)
+                self.spinner.pack(fill=tk.X, pady=(10, 0))
+                self.spinner.start(10)
+        
+        self.gui_queue.put(_start_loading)
+
+        def task():
             # Dispatch Mapping for Frozen Environment
             SCRIPT_MAP = {
                 'analyzer.py': 'analyzer',
@@ -328,65 +361,21 @@ class MasterDashboardApp:
                 'migaku_converter.py': 'convert_db'
             }
             
-            if getattr(sys, 'frozen', False):
-                # Frozen: Use the keyword mapped in app_entry.py
-                command_name = SCRIPT_MAP.get(cmd[0], cmd[0])
-                final_args = [sys.executable, command_name] + cmd[1:]
-            else:
-                # Source: Use app_entry.py as a dispatcher to ensure correct environment
-                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                app_entry_path = os.path.join(project_root, "app_entry.py")
-                
-                command_name = SCRIPT_MAP.get(cmd[0], cmd[0])
-                final_args = [sys.executable, app_entry_path, command_name] + cmd[1:]
-
-            if capture_output and self.terminal and self.spinner:
-                self.terminal.config(state=tk.NORMAL)
-                self.terminal.delete(1.0, tk.END)
-                self.terminal.config(state=tk.DISABLED)
-                self.spinner.pack(fill=tk.X, pady=(10, 0))
-                self.spinner.start(10)
-            
             try:
-                self.status_var.set(f"Running {desc}...")
-                
                 from app.path_utils import is_frozen
                 
                 if is_frozen():
-                    # Dispatch mapping for frozen executable
-                    dispatch_map = {
-                        'analyzer.py': 'analyzer',
-                        'epub_importer.py': 'epub_importer',
-                        'migaku_db_importer_gui.py': 'migaku_importer',
-                        'static_html_generator.py': 'static_generator'
-                    }
-                    
-                    script_name = cmd[0]
-                    dispatch_key = dispatch_map.get(script_name)
-                    
-                    if dispatch_key:
-                        # [Exe, dispatch_key, ...args]
-                        # Use sys.executable as the launcher
-                        final_args = [sys.executable, dispatch_key] + cmd[1:]
-                    else:
-                        # Fallback for unexpected scripts
-                        final_args = [sys.executable] + cmd
+                    # Frozen: Use the keyword mapped in app_entry.py
+                    command_name = SCRIPT_MAP.get(cmd[0], cmd[0])
+                    # Use sys.executable as the launcher
+                    final_args = [sys.executable, command_name] + cmd[1:]
                 else:
                     # Normal Source Mode
                     app_dir = os.path.dirname(os.path.abspath(__file__))
-                    # script path relative to projects root? No, main.py is in app/
-                    # project_root is one level up.
                     project_root = os.path.dirname(app_dir)
                     script_path = os.path.join(app_dir, cmd[0])
                     final_args = [sys.executable, script_path] + cmd[1:]
 
-                if capture_output and self.terminal and self.spinner:
-                    self.terminal.config(state=tk.NORMAL)
-                    self.terminal.delete(1.0, tk.END)
-                    self.terminal.config(state=tk.DISABLED)
-                    self.spinner.pack(fill=tk.X, pady=(10, 0))
-                    self.spinner.start(10)
-                
                 # SET ENVIRONMENT (Fix for No module named 'app')
                 env = os.environ.copy()
                 if not is_frozen():
@@ -416,25 +405,34 @@ class MasterDashboardApp:
                 
                 if capture_output and process.stdout:
                     for line in process.stdout:
+                        # Log line safely
                         self.log_to_terminal(line.strip())
                     process.wait()
                 else:
                     process.wait()
                 
                 if process.returncode != 0:
-                    self.log_to_terminal(f"\n[ERROR] {desc} exited with code {process.returncode}")
+                     self.log_to_terminal(f"\n[ERROR] {desc} exited with code {process.returncode}")
                 
-                self.status_var.set("Ready")
+                self.gui_queue.put(lambda: self.status_var.set("Ready"))
                 
             except Exception as e:
                 import traceback
                 print(traceback.format_exc())
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to run {desc}:\n{e}"))
-                self.status_var.set("Error")
+                # Queue the error message
+                def _show_error(err=e):
+                     # Wait, messagebox blocks. Be careful. 
+                     # Better to just log state error, or use after.
+                     # But messagebox is usually main-thread only.
+                     messagebox.showerror("Error", f"Failed to run {desc}:\n{err}")
+                     self.status_var.set("Error")
+                self.gui_queue.put(_show_error)
             finally:
-                if capture_output and self.spinner:
-                    self.spinner.stop()
-                    self.spinner.pack_forget()
+                def _stop_loading():
+                    if capture_output and self.spinner:
+                        self.spinner.stop()
+                        self.spinner.pack_forget()
+                self.gui_queue.put(_stop_loading)
                     
         threading.Thread(target=task, daemon=True).start()
 
@@ -485,7 +483,7 @@ class MasterDashboardApp:
         args.append(f'--theme={theme_arg}')
         args.append(f'--zen-limit={self.var_zen_limit.get()}')
 
-        self.run_command_async(args, "Static Page")
+        self.run_command_async(args, "Static Page", capture_output=True)
 
 def main():
     root = tk.Tk()

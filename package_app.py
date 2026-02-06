@@ -23,7 +23,7 @@ def build():
         sys.executable, "-m", "PyInstaller",
         "--clean",
         "--noconfirm",
-        "--name", "ReadabilityAnalyzer",
+        "--name", "Surasura_v1.0",
         "--onedir",
         "--windowed",
         "--add-data", "templates;templates",
@@ -49,7 +49,7 @@ def build():
 
     # Post-Build: Create Distribution Folder
     print("Creating Distribution Package...")
-    final_dist = os.path.join("dist", "ReadabilityAnalyzer_v1.0")
+    final_dist = os.path.join("dist", "Surasura_Distribution_v1.0")
     
     # Clean previous distribution
     if os.path.exists(final_dist):
@@ -60,8 +60,8 @@ def build():
             print(f"Warning: Could not clean {final_dist}: {e}")
 
     # 1. Handle Built Files
-    src_dir = os.path.join("dist", "ReadabilityAnalyzer")
-    src_exe = os.path.join("dist", "ReadabilityAnalyzer.exe")
+    src_dir = os.path.join("dist", "Surasura_v1.0")
+    src_exe = os.path.join("dist", "Surasura_v1.0.exe")
     
     if os.path.exists(src_dir):
         # Onedir mode: Rename/Move the folder to the final name
@@ -71,7 +71,7 @@ def build():
         # Onefile mode: Create folder and move exe
         os.makedirs(final_dist, exist_ok=True)
         print(f"Moving {src_exe} to {final_dist}")
-        shutil.move(src_exe, os.path.join(final_dist, "ReadabilityAnalyzer.exe"))
+        shutil.move(src_exe, os.path.join(final_dist, "Surasura_v1.0.exe"))
     else:
         print("Error: Build output not found in dist/")
         return

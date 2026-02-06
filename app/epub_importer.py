@@ -37,7 +37,7 @@ SECONDARY_COLOR = "#03dac6"
 class EpubImporterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Japanese EPUB Importer & Splitter")
+        self.root.title("Surasura - EPUB Extractor")
         self.root.geometry("600x450")
         self.root.configure(bg=BG_COLOR)
         

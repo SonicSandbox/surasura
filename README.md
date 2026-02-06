@@ -10,7 +10,7 @@ A tool to analyze (Japanese) text based on:
 - your immersion content 
 - word frequency
 
-After analyzing, it will generate a study plan with multiple examples. Easy sentence mining for Migaku or Yomichan.
+After analyzing, it will generate a study plan with multiple examples. Easy sentence mining for Migaku or Anki.
 
 ## 🎯 Why? - The Diminishing Returns of Vocab
 
@@ -53,17 +53,9 @@ Use Surasura to know every word you learn is immediately relevant to your goals.
 
 ## 📥 Latest Release Zip
 
-Download the latest release zip file from the [Releases page](https://github.com/SonicSandbox/readability-analyzer/releases).
+Download the latest release zip file from the [Releases page](https://github.com/SonicSandbox/surasura/releases).
 
-> **Quick Start:** Download -> Extract -> Run Exe
-
-## Install packages yourself
-1. Clone the repository.
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. (Windows only) Ensure `tkinterdnd2` is installed for GUI features.
+> **Quick Start:** Download -> Extract -> Run `Surasura_v1.0.exe`
 
 ## Screenshots
 
@@ -71,12 +63,10 @@ Download the latest release zip file from the [Releases page](https://github.com
 | :---: | :---: |
 | ![Dashboard](docs/assets/images/img_readability_gui.PNG) | ![Zen Mode](docs/assets/images/img_readability_results_zen.PNG) |
 
+## 🚀 Get Started
 
-## 🚀 Usage
-1. Launch the master dashboard: Download and run the Exe file or:
-   ```bash
-   python app/main.py
-   ```
+1. Run `Surasura_v1.0.exe` to launch the application.
+
 2. Use the **Migaku Word List Importer** to set up your known words.
 
 3. Place your text files in the corresponding folders:
@@ -91,17 +81,54 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 5. View results via **View Vocab Journey**.
 
-## Directory Structure
-- `app/`: Core application scripts.
-- `scripts/`: Shared utilities and converters.
+
+## 🛠️ Running from Source
+If you prefer to run Surasura from source rather than using the pre-built executable:
+
+### 1. Requirements
+- Python 3.9 or higher.
+- (Windows only) Ensure `tkinter` is installed (usually bundled with Python).
+
+### 2. Setup
+1. Clone the repository: `git clone https://github.com/SonicSandbox/surasura.git`
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### 3. Launching
+Run the master entry point:
+```bash
+python app_entry.py
+```
+This dispatcher ensures the correct environment is set up and launches the main dashboard.
+
+## 🛠️ Building the Application
+To create your own standalone executable:
+
+1. Ensure you have the dev dependencies installed:
+   ```bash
+   pip install pyinstaller
+   ```
+2. Run the packaging script:
+   ```bash
+   python package_app.py
+   ```
+This will clean previous builds, run PyInstaller with the correct configurations, and create a ready-to-use package in `dist/Surasura_Distribution_v1.0`.
+
+## 📂 Project Structure
+- `app/`: Core application scripts and GUI modules.
+- `app_entry.py`: Main entry point and dispatcher.
+- `package_app.py`: Build and packaging script.
+- `scripts/`: Shared utilities and data conversion scripts.
 - `templates/`: HTML templates for visualization.
-- `data/`: Input text files (TXT, SRT).
+- `data/`: Input text files (Place your TXT/SRT files here).
 - `User Files/`: Configuration and frequency lists.
 - `results/`: Generated CSVs and HTML reports.
 
 ## 🤝 Support & Issues
 
-Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/readability-analyzer/issues) page to see if it's already being worked on. If not, feel free to open a new issue.
+Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/surasura/issues) page to see if it's already being worked on. If not, feel free to open a new issue.
 
 ## 💡 Motivation
 *I was tired of learning words I never see, and I also like reading physical books. Otherwise, mining from physical books is a pain.* Surasura solves that friction.

@@ -5,7 +5,7 @@
 
 ![Results](docs/assets/images/img_readability_results.PNG)
 
-A tool to analyze (Japanese) text based on:
+A tool to analyze (Japanese) text to tell you the episode-by-episode breakdown best words based on:
 - known vocabulary
 - your immersion content 
 - word frequency
@@ -14,24 +14,26 @@ After analyzing, it will generate a study plan with multiple examples. Easy sent
 
 ## 🎯 Why? - The Diminishing Returns of Vocab
 
-**The only frequency list that matters is the one based on YOUR watch / read list.**
+> **The only frequency list that matters is the one based on YOUR watch / read list.**
 
 Otherwise you're wasting time learning words you'll just forget.
 
-This is a tool to help you:
+Useful if you:
 
-- Eliminate lookups with *immersive Pre-Study*
+- Hit 5000+ words
 
-- Say no to 'some day' words - *Every word is on your watch-list*
+- Have limited immersion time
 
-- Acquire fast with the only *words you'll need over and over again*
+- Are tired of adding words you'll never see
 
-- Sentence-mine easily with *multiple examples for each word*
+- Want to see mulitple examples and pick the best one
 
-- Bridge the gap between *digital mining and analog reading*
+- Enjoy seeing your progress %
+
+- Like using physical books
 
 
-Use Surasura to know every word you learn is immediately relevant to your goals.
+Use Surasura to know every word you learn is immediately relevant to your content goals.
 
 ## ⚡ Features
 
@@ -40,6 +42,8 @@ Use Surasura to know every word you learn is immediately relevant to your goals.
 - 📖 **EPUB Extractor**: Extract and split text from Japanese EPUBs.
 
 - 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
+
+- 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
 
 - 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
 
@@ -50,6 +54,13 @@ Use Surasura to know every word you learn is immediately relevant to your goals.
 - ⌨️ **Hotkey Navigation**: Navigate between word cards with hotkeys (Left/Right).
 
 - 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
+
+
+### Current Limitations
+- Windows Only
+- Occasional Wacky Parsing
+- 'Ignore' only adds to clipboard
+- Only works with Migaku known-words (for now)
 
 ## 📥 Latest Release Zip
 

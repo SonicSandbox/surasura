@@ -58,6 +58,10 @@ Download the latest release zip file from the [Releases page](https://github.com
 > **Quick Start:** Download -> Extract -> Run `Surasura_v1.0.exe`
 
 ## Screenshots
+> Dashboard with Migaku extension
+
+![Results](docs/assets/images/img_readability_results_Migaku_extension.PNG)
+
 
 | Dashboard Overview | Zen Mode |
 | :---: | :---: |

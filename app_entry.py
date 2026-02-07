@@ -12,6 +12,16 @@ def log_error(msg):
     with open("app_debug_log.txt", "a", encoding="utf-8") as f:
         f.write(f"{msg}\n")
 
+# Windows Taskbar Icon Fix (Set AppUserModelID)
+if sys.platform == "win32":
+    try:
+        import ctypes
+        from app import __version__
+        myappid = f'SonicSandbox.Surasura.ReadabilityAnalyzer.{__version__}'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
+
 import multiprocessing
 
 def main():

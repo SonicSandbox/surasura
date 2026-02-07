@@ -16,6 +16,33 @@ OUTPUT_FILE = os.path.join(RESULTS_DIR, "reading_list_static.html")
 # Resources (Templates)
 WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
 
+def open_as_app(file_path):
+    """
+    Attempts to open the HTML file in a 'tightened' browser window (App Mode).
+    Falls back to the default browser if Chrome is not found.
+    """
+    import subprocess
+    url = f"file://{os.path.abspath(file_path)}"
+    
+    if sys.platform == "win32":
+        # Search for Chrome which supports the --app flag
+        possible_browsers = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        ]
+        
+        for browser_path in possible_browsers:
+            if os.path.exists(browser_path):
+                try:
+                    # Launch in app mode
+                    subprocess.Popen([browser_path, f"--app={url}"])
+                    return
+                except Exception as e:
+                    print(f"Warning: Failed to launch {browser_path} in app mode: {e}")
+    
+    # Fallback to standard browser behavior
+    webbrowser.open(url)
+
 def generate_static_html(theme="default", zen_limit=50):
     print(f"Generating static HTML (Theme: {theme})...")
 
@@ -98,7 +125,7 @@ def generate_static_html(theme="default", zen_limit=50):
         f.write(html_content)
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
-    webbrowser.open(f"file://{OUTPUT_FILE}")
+    open_as_app(OUTPUT_FILE)
 
 def main():
     import argparse

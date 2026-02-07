@@ -39,7 +39,11 @@ def get_user_file(path):
 
 def get_icon_path():
     """Returns the path to the application icon."""
-    return get_resource(os.path.join("docs", "assets", "images", "icon_512.png"))
+    return get_resource(os.path.join("app", "assets", "images", "app_icon.png"))
+
+def get_ico_path():
+    """Returns the path to the application .ico file (Windows)."""
+    return get_resource(os.path.join("app", "assets", "images", "app_icon.ico"))
 
 def ensure_data_setup():
     """

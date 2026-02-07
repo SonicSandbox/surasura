@@ -10,6 +10,15 @@ from typing import Optional
 from app import __version__
 from app.update_checker import check_for_updates
 
+# Windows Taskbar Icon Fix (Set AppUserModelID)
+if sys.platform == "win32":
+    try:
+        import ctypes
+        myappid = f'SonicSandbox.Surasura.ReadabilityAnalyzer.{__version__}'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
+
 # Custom Dark Theme Configuration
 BG_COLOR = "#1e1e1e"
 SURFACE_COLOR = "#2d2d2d"
@@ -117,11 +126,22 @@ class MasterDashboardApp:
 
         # Set Application Icon
         try:
-            from app.path_utils import get_icon_path
+            from app.path_utils import get_icon_path, get_ico_path
             icon_path = get_icon_path()
             if os.path.exists(icon_path):
                 self.icon_photo = tk.PhotoImage(file=icon_path)
-                self.root.iconphoto(False, self.icon_photo)
+                self.root.iconphoto(True, self.icon_photo) # True applies to all windows
+                
+                # Header Logo (Small version)
+                # 512 / 12 ~= 42px. Good for header.
+                self.logo_header = self.icon_photo.subsample(12, 12)
+            
+            # Windows Taskbar Icon - iconbitmap is often more reliable
+            if sys.platform == "win32":
+                ico_path = get_ico_path()
+                if os.path.exists(ico_path):
+                    self.root.iconbitmap(ico_path)
+                    
         except Exception as e:
             print(f"Warning: Could not set icon: {e}")
 
@@ -195,8 +215,15 @@ class MasterDashboardApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
-        header = ttk.Label(main_frame, text="⚡ Surasura - Readability Analyzer", style="Header.TLabel")
-        header.pack(pady=(0, 20))
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(pady=(0, 20))
+        
+        if hasattr(self, 'logo_header'):
+            logo_label = ttk.Label(header_frame, image=self.logo_header)
+            logo_label.pack(side=tk.LEFT, padx=(0, 10))
+            
+        header_text = ttk.Label(header_frame, text="Surasura - Readability Analyzer", style="Header.TLabel")
+        header_text.pack(side=tk.LEFT)
         
         # 1. Pipeline Tools (Data)
         tools_frame = ttk.LabelFrame(main_frame, text=" 📦 Data Preparation", padding="15")

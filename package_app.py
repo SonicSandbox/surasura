@@ -29,7 +29,7 @@ def build():
         "--add-data", "templates;templates",
         "--add-data", "scripts;scripts",
         "--add-data", "app/assets;app/assets",
-        "--icon", "app/assets/images/app_icon.png",
+        "--icon", "app/assets/images/app_icon.ico",
         "--collect-all", "unidic_lite",
         "--hidden-import", "pandas",
         "--hidden-import", "fugashi",

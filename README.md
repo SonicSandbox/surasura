@@ -5,12 +5,13 @@
 
 ![Results](docs/assets/images/img_readability_results.PNG)
 
-A tool to analyze (Japanese) text to tell you the episode-by-episode breakdown best words based on:
+A tool that gives you episode-by-episode highest-leverage words and custom word order based on:
 - known vocabulary
 - your immersion content 
 - word frequency
 
-After analyzing, it will generate a study plan with multiple examples. Easy sentence mining for Migaku or Anki.
+After analyzing, it will generate a study plan with multiple examples. 
+Optimizes the order you learn words. Easy sentence mining for Migaku or Anki.
 
 ## 🎯 Why? - The Diminishing Returns of Vocab
 

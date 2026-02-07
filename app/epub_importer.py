@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import warnings
 import re
+from ebooklib import epub
 
 # Suppress EbookLib FutureWarnings/UserWarnings
 warnings.filterwarnings("ignore", category=UserWarning, module='ebooklib')
@@ -34,10 +35,10 @@ TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#bb86fc"
 SECONDARY_COLOR = "#03dac6"
 
-class EpubImporterApp:
+class FileImporterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Surasura - EPUB Extractor")
+        self.root.title("Surasura - File Converter & Splitter")
         self.root.geometry("600x450")
         self.root.configure(bg=BG_COLOR)
         
@@ -101,7 +102,7 @@ class EpubImporterApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # File Selection
-        ttk.Label(main_frame, text="Select EPUB File:").grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        ttk.Label(main_frame, text="Select File (EPUB, TXT, MD, SRT):").grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
         self.file_path_var = tk.StringVar()
         ttk.Entry(main_frame, textvariable=self.file_path_var, width=50).grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
         ttk.Button(main_frame, text="Browse...", command=self.browse_file).grid(row=1, column=2, padx=(5, 0), pady=(0, 10))
@@ -147,8 +148,14 @@ class EpubImporterApp:
 
     def browse_file(self):
         file_path = filedialog.askopenfilename(
-            title="Select EPUB file",
-            filetypes=[("EPUB files", "*.epub"), ("All files", "*.*")]
+            title="Select File",
+            filetypes=[
+                ("Supported files", "*.epub *.txt *.md *.srt"),
+                ("EPUB files", "*.epub"),
+                ("Text files", "*.txt *.md"),
+                ("Subtitle files", "*.srt"),
+                ("All files", "*.*")
+            ]
         )
         if file_path:
             self.file_path_var.set(file_path)
@@ -164,7 +171,7 @@ class EpubImporterApp:
         split_value = self.split_value_var.get()
 
         if not epub_path or not os.path.exists(epub_path):
-            messagebox.showerror("Error", "Please select a valid EPUB file.")
+            messagebox.showerror("Error", "Please select a valid file.")
             return
         if not output_name:
             messagebox.showerror("Error", "Please enter an output name.")
@@ -174,7 +181,7 @@ class EpubImporterApp:
             self.status_var.set("Extracting text...")
             self.root.update_idletasks()
             
-            full_text, error = self.convert_epub_to_text(epub_path)
+            full_text, error = self.extract_text_from_file(epub_path)
             if error:
                 messagebox.showerror("Extraction Error", error)
                 return
@@ -201,7 +208,10 @@ class EpubImporterApp:
                 messagebox.showerror("Save Error", save_error)
             else:
                 self.status_var.set("Success!")
-                messagebox.showinfo("Success", f"Extraction complete!\nSaved {len(chunks)} files to:\n{save_dir}")
+                messagebox.showinfo("Success", 
+                    f"Extraction complete!\nSaved {len(chunks)} files to:\n{save_dir}\n\n"
+                    "👉 PLEASE MOVE the desired files from this folder into the "
+                    "HighPriority, LowPriority, or GoalContent folders for analysis.")
                 self.root.destroy() # Close window on completion
 
         except Exception as e:
@@ -213,6 +223,59 @@ class EpubImporterApp:
                     self.status_var.set("Ready")
             except tk.TclError:
                 pass # Root already destroyed
+
+    def extract_text_from_file(self, file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".epub":
+            return self.convert_epub_to_text(file_path)
+        elif ext == ".srt":
+            return self.extract_text_from_srt(file_path)
+        else:
+            return self.extract_text_from_generic(file_path)
+
+    def extract_text_from_generic(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
+            return text, None
+        except Exception as e:
+            return None, f"Failed to read file: {e}"
+
+    def has_japanese(self, text):
+        # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
+        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
+        return bool(pattern.search(text))
+
+    def extract_text_from_srt(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            
+            lines = content.splitlines()
+            cleaned_lines = []
+            
+            # Pattern for timestamp line
+            timestamp_re = re.compile(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Skip numeric indices
+                if line.isdigit():
+                    continue
+                # Skip timestamps
+                if timestamp_re.match(line):
+                    continue
+                
+                # NEW: Only keep lines with Japanese characters
+                # This excludes English-only lines/credits and weird numbers
+                if self.has_japanese(line):
+                    cleaned_lines.append(line)
+            
+            return "\n".join(cleaned_lines), None
+        except Exception as e:
+            return None, f"Failed to parse SRT: {e}"
 
     def convert_epub_to_text(self, epub_path):
         try:
@@ -280,8 +343,47 @@ class EpubImporterApp:
 
     def split_by_length(self, text, limit):
         chunks = []
-        for i in range(0, len(text), limit):
-            chunks.append(text[i:i+limit].strip())
+        pos = 0
+        total_len = len(text)
+        overflow_limit = 150
+        
+        # Sentence boundary characters (Japanese and English)
+        # Includes closing quotes/brackets that might follow punctuation
+        boundaries = "。？！.?! \n"
+        closing_marks = "」』)\"']}"
+        
+        while pos < total_len:
+            # Target end position
+            target_end = pos + limit
+            
+            if target_end >= total_len:
+                chunks.append(text[pos:].strip())
+                break
+            
+            # Look ahead for a natural boundary
+            found_boundary = -1
+            # Search from target_end up to target_end + overflow_limit
+            search_end = min(target_end + overflow_limit, total_len)
+            
+            for i in range(target_end, search_end):
+                char = text[i]
+                if char in boundaries:
+                    # Look one more char ahead for closing quotes/brackets
+                    actual_end = i + 1
+                    while actual_end < total_len and text[actual_end] in closing_marks:
+                        actual_end += 1
+                    found_boundary = actual_end
+                    break
+            
+            if found_boundary != -1:
+                end_pos = found_boundary
+            else:
+                # No boundary found in buffer, force split at overflow limit
+                end_pos = search_end
+            
+            chunks.append(text[pos:end_pos].strip())
+            pos = end_pos
+            
         return [c for c in chunks if c]
 
     def save_chunks(self, chunks, base_name):
@@ -304,7 +406,7 @@ def main():
         os.makedirs(PROCESSED_DIR)
         
     root = tk.Tk()
-    app = EpubImporterApp(root)
+    app = FileImporterApp(root)
     root.mainloop()
 
 if __name__ == "__main__":

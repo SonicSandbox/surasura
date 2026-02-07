@@ -6,6 +6,7 @@ import sys
 import threading
 import queue
 import webbrowser
+import json
 from typing import Optional
 from app import __version__
 from app.update_checker import check_for_updates
@@ -114,6 +115,7 @@ class MasterDashboardApp:
         self.var_exclude_single = tk.BooleanVar(value=True) 
         self.var_min_freq = tk.IntVar(value=1) 
         self.var_zen_limit = tk.IntVar(value=50) 
+        self.var_open_app_mode = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
@@ -146,6 +148,16 @@ class MasterDashboardApp:
             print(f"Warning: Could not set icon: {e}")
 
         self.setup_ui()
+        
+        # Load saved settings
+        self.load_settings()
+        
+        # Add traces for auto-saving settings after initial load
+        self.var_exclude_single.trace_add("write", self.save_settings)
+        self.var_min_freq.trace_add("write", self.save_settings)
+        self.var_zen_limit.trace_add("write", self.save_settings)
+        self.var_open_app_mode.trace_add("write", self.save_settings)
+        self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
         threading.Thread(target=self.check_updates_thread, daemon=True).start()
@@ -243,10 +255,10 @@ class MasterDashboardApp:
         btn_open_data.pack(side=tk.LEFT)
         ToolTip(btn_open_data, "Open your input data folder in File Explorer.")
 
-        btn_epub = ttk.Button(tools_frame, text="Launch EPUB Extractor", style="Action.TButton", 
-                   command=self.run_epub_extractor)
+        btn_epub = ttk.Button(tools_frame, text="Launch File Importer", style="Action.TButton", 
+                   command=self.run_file_importer)
         btn_epub.pack(anchor=tk.W)
-        ToolTip(btn_epub, "Extract text from Japanese EPUBs for analysis.")
+        ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
 
         # 2. Analyzer Tools
         analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="15")
@@ -301,12 +313,19 @@ class MasterDashboardApp:
         view_frame = ttk.LabelFrame(main_frame, text=" 📊 Results Viewer", padding="15")
         view_frame.pack(fill=tk.X)
 
-        # Theme Selector
+        # Theme Selector and App Mode Toggle
+        theme_app_frame = ttk.Frame(view_frame)
+        theme_app_frame.pack(fill=tk.X, pady=(0, 10))
+
         themes = ['Default (Dark)', 'World Class (Flow)', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
-        self.combo_theme = ttk.Combobox(view_frame, values=themes, state="readonly", width=20)
+        self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
         self.combo_theme.set('World Class (Flow)')
-        self.combo_theme.pack(anchor=tk.W, pady=(0, 10))
+        self.combo_theme.pack(side=tk.LEFT)
         ToolTip(self.combo_theme, "Select the visual theme for the generated reading list.")
+        
+        chk_app_mode = ttk.Checkbutton(theme_app_frame, text="Open in New Window", variable=self.var_open_app_mode)
+        chk_app_mode.pack(side=tk.LEFT, padx=(20, 0))
+        ToolTip(chk_app_mode, "RECOMMENDS keeping it off until the migaku or lookupextension is turned on for that site.")
         
         # Zen Limit Slider (Inline with Results)
         zen_frame = ttk.Frame(view_frame)
@@ -377,6 +396,39 @@ class MasterDashboardApp:
                 self.terminal.see(tk.END)
                 self.terminal.config(state=tk.DISABLED)
         self.gui_queue.put(_update)
+
+    def load_settings(self):
+        try:
+            from app.path_utils import get_user_file
+            settings_path = get_user_file("settings.json")
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    self.var_exclude_single.set(settings.get("exclude_single", True))
+                    self.var_min_freq.set(settings.get("min_freq", 1))
+                    self.var_zen_limit.set(settings.get("zen_limit", 50))
+                    self.var_open_app_mode.set(settings.get("open_app_mode", False))
+                    theme = settings.get("theme", "World Class (Flow)")
+                    if theme in self.combo_theme['values']:
+                        self.combo_theme.set(theme)
+        except Exception as e:
+            print(f"Warning: Could not load settings: {e}")
+
+    def save_settings(self, *args):
+        try:
+            from app.path_utils import get_user_file
+            settings_path = get_user_file("settings.json")
+            settings = {
+                "exclude_single": self.var_exclude_single.get(),
+                "min_freq": self.var_min_freq.get(),
+                "zen_limit": self.var_zen_limit.get(),
+                "open_app_mode": self.var_open_app_mode.get(),
+                "theme": self.combo_theme.get()
+            }
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Warning: Could not save settings: {e}")
 
     def open_data_folder(self):
         """Opens the data folder in File Explorer"""
@@ -503,8 +555,8 @@ class MasterDashboardApp:
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
 
-    def run_epub_extractor(self):
-        self.run_command_async(['epub_importer.py'], "EPUB Extractor")
+    def run_file_importer(self):
+        self.run_command_async(['epub_importer.py'], "File Importer")
 
     def run_analyzer(self):
         from app.path_utils import ensure_data_setup
@@ -531,6 +583,9 @@ class MasterDashboardApp:
         theme_arg = theme_map.get(selected_theme, 'default')
         args.append(f'--theme={theme_arg}')
         args.append(f'--zen-limit={self.var_zen_limit.get()}')
+        
+        if self.var_open_app_mode.get():
+            args.append('--app-mode')
             
         self.run_command_async(args, "Analyzer", capture_output=True)
 
@@ -548,6 +603,9 @@ class MasterDashboardApp:
         theme_arg = theme_map.get(selected_theme, 'default')
         args.append(f'--theme={theme_arg}')
         args.append(f'--zen-limit={self.var_zen_limit.get()}')
+
+        if self.var_open_app_mode.get():
+            args.append('--app-mode')
 
         self.run_command_async(args, "Static Page", capture_output=True)
 

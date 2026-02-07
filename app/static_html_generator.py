@@ -43,7 +43,7 @@ def open_as_app(file_path):
     # Fallback to standard browser behavior
     webbrowser.open(url)
 
-def generate_static_html(theme="default", zen_limit=50):
+def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     print(f"Generating static HTML (Theme: {theme})...")
 
     # 1. Load Data
@@ -125,15 +125,20 @@ def generate_static_html(theme="default", zen_limit=50):
         f.write(html_content)
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
-    open_as_app(OUTPUT_FILE)
+    if app_mode:
+        open_as_app(OUTPUT_FILE)
+    else:
+        url = f"file://{os.path.abspath(OUTPUT_FILE)}"
+        webbrowser.open(url)
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--theme", default="default", help="Theme name")
     parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode")
+    parser.add_argument("--app-mode", action="store_true", help="Launch in professional app mode")
     args = parser.parse_args()
-    generate_static_html(theme=args.theme, zen_limit=args.zen_limit)
+    generate_static_html(theme=args.theme, zen_limit=args.zen_limit, app_mode=args.app_mode)
 
 if __name__ == "__main__":
     main()

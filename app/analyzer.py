@@ -155,6 +155,11 @@ def load_known_words(json_path, tokenizer):
     print(f"Loaded {len(known_tuples)} known word variations and {len(known_lemmas)} unique lemmas.")
     return known_tuples, known_lemmas
 
+def has_japanese(text):
+    # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
+    pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
+    return bool(pattern.search(text))
+
 def extract_text(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
@@ -163,7 +168,12 @@ def extract_text(file_path):
             subs = pysrt.open(file_path)
             parts = []
             for sub in subs:
-                parts.append(sub.text)
+                # Filter out lines without Japanese characters
+                # This removes English-only credits or technical markings
+                lines = sub.text.splitlines()
+                filtered_lines = [l for l in lines if has_japanese(l)]
+                if filtered_lines:
+                    parts.append("\n".join(filtered_lines))
             text = "\n".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
@@ -359,8 +369,8 @@ def main():
     for label, folder, weight in scan_targets:
         if not os.path.exists(folder):
             continue
-        # Get files
-        f = glob.glob(os.path.join(folder, "**"), recursive=True)
+        # Get files recursively from subfolders
+        f = glob.glob(os.path.join(folder, "**", "*"), recursive=True)
         f = [x for x in f if not os.path.isdir(x) and x.lower().endswith(('.txt', '.srt'))]
         
         # Sort ONLY this folder's files alphabetically

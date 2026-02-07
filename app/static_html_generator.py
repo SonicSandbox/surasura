@@ -65,12 +65,33 @@ def generate_static_html(theme="default", zen_limit=50):
     with open(WEB_APP_FILE, "r", encoding="utf-8") as f:
         html_content = f.read()
 
-    # 3. Inject Data and Theme
+    # 3. Inject Data, Theme, and Favicon
+    import base64
+    from app.path_utils import get_icon_path
+    
     json_str = json.dumps(data)
     html_content = html_content.replace(
         "let globalData = null;", 
         f"let globalData = {json_str};\n        let globalTheme = '{theme}';"
     )
+
+    # Embed Icon as Favicon and Header Logo
+    icon_path = get_icon_path()
+    if os.path.exists(icon_path):
+        try:
+            with open(icon_path, "rb") as icon_file:
+                encoded_string = base64.b64encode(icon_file.read()).decode()
+                
+                # Injects favicon
+                favicon_tag = f'<link rel="icon" type="image/png" href="data:image/png;base64,{encoded_string}">'
+                html_content = html_content.replace("<head>", f"<head>\n    {favicon_tag}")
+                
+                # Injects logo into header
+                logo_html = f'<img src="data:image/png;base64,{encoded_string}" alt="Logo" style="height: 32px; width: 32px; margin-right: 15px; border-radius: 4px;">'
+                html_content = html_content.replace("<h1>Surasura List</h1>", 
+                                                 f'<div style="display:flex; align-items:center;">{logo_html}<h1>Surasura List</h1></div>')
+        except Exception as e:
+            print(f"Warning: Could not embed icon in HTML: {e}")
 
     # 4. Write Output
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:

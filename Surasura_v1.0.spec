@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('templates', 'templates'), ('scripts', 'scripts')]
+datas = [('templates', 'templates'), ('scripts', 'scripts'), ('app/assets', 'app/assets')]
 binaries = []
 hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4']
 tmp_ret = collect_all('unidic_lite')
@@ -39,6 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['app\\assets\\images\\app_icon.png'],
 )
 coll = COLLECT(
     exe,

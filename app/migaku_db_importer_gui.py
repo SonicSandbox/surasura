@@ -35,6 +35,16 @@ class MigakuImporterGUI:
         self.script_path = Path(get_resource("scripts/extract-database-file.js"))
         self.converter_path = Path(get_resource("app/migaku_converter.py")) # It's in app/ now
         
+        # Set Application Icon
+        try:
+            from app.path_utils import get_icon_path
+            icon_path = get_icon_path()
+            if os.path.exists(icon_path):
+                self.icon_photo = tk.PhotoImage(file=icon_path)
+                self.root.iconphoto(False, self.icon_photo)
+        except Exception as e:
+            print(f"Warning: Could not set icon: {e}")
+
         self.create_widgets()
         
     def create_widgets(self):

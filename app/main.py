@@ -5,7 +5,10 @@ import os
 import sys
 import threading
 import queue
+import webbrowser
 from typing import Optional
+from app import __version__
+from app.update_checker import check_for_updates
 
 # Custom Dark Theme Configuration
 BG_COLOR = "#1e1e1e"
@@ -112,7 +115,20 @@ class MasterDashboardApp:
         self.gui_queue = queue.Queue()
         self.check_queue()
 
+        # Set Application Icon
+        try:
+            from app.path_utils import get_icon_path
+            icon_path = get_icon_path()
+            if os.path.exists(icon_path):
+                self.icon_photo = tk.PhotoImage(file=icon_path)
+                self.root.iconphoto(False, self.icon_photo)
+        except Exception as e:
+            print(f"Warning: Could not set icon: {e}")
+
         self.setup_ui()
+        
+        # Start update check in background
+        threading.Thread(target=self.check_updates_thread, daemon=True).start()
         
     def check_queue(self):
         """Poll the queue for GUI updates"""
@@ -300,10 +316,30 @@ class MasterDashboardApp:
         credit_box.pack(side=tk.RIGHT)
         
         ttk.Label(credit_box, text="Created by SonicSandbox | ", style="Footer.TLabel").pack(side=tk.LEFT)
-        link = ttk.Label(credit_box, text="GitHub", style="Link.TLabel", cursor="hand2")
-        link.pack(side=tk.LEFT)
+        self.github_link = ttk.Label(credit_box, text="GitHub", style="Link.TLabel", cursor="hand2")
+        self.github_link.pack(side=tk.LEFT)
         # UPDATED LINK to the new repo
-        link.bind("<Button-1>", lambda e: subprocess.Popen(["start", "https://github.com/SonicSandbox/surasura"], shell=True))
+        self.github_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/SonicSandbox/surasura"))
+
+    def check_updates_thread(self):
+        """Background thread to check for updates"""
+        try:
+            update_info = check_for_updates(__version__)
+            if update_info:
+                new_tag, release_url = update_info
+                def _notify_update():
+                    self.github_link.config(
+                        text=f"Update Available! ({new_tag})",
+                        foreground=ACCENT_COLOR # Ensure it stands out if theme allows
+                    )
+                    # Tooltip update would be nice but requires ToolTip instance access
+                    # For now, just change text and link
+                    self.github_link.bind("<Button-1>", lambda e: webbrowser.open(release_url))
+                    self.status_var.set(f"Update Available: {new_tag}")
+                
+                self.gui_queue.put(_notify_update)
+        except Exception as e:
+            print(f"Update check failed: {e}")
 
     def log_to_terminal(self, message):
         """Appends text to the terminal widget safely via queue"""
@@ -318,7 +354,8 @@ class MasterDashboardApp:
     def open_data_folder(self):
         """Opens the data folder in File Explorer"""
         try:
-            from app.path_utils import get_user_file
+            from app.path_utils import get_user_file, ensure_data_setup
+            ensure_data_setup()
             data_path = get_user_file("data")
             
             # Create if it doesn't exist (safety)
@@ -443,6 +480,8 @@ class MasterDashboardApp:
         self.run_command_async(['epub_importer.py'], "EPUB Extractor")
 
     def run_analyzer(self):
+        from app.path_utils import ensure_data_setup
+        ensure_data_setup()
         args = ['analyzer.py']
         if not self.var_exclude_single.get():
             args.append('--include-single-chars')

@@ -43,6 +43,17 @@ class EpubImporterApp:
         
         self.style = ttk.Style()
         self.apply_dark_theme()
+        
+        # Set Application Icon
+        try:
+            from app.path_utils import get_icon_path
+            icon_path = get_icon_path()
+            if os.path.exists(icon_path):
+                self.icon_photo = tk.PhotoImage(file=icon_path)
+                self.root.iconphoto(False, self.icon_photo)
+        except Exception as e:
+            print(f"Warning: Could not set icon: {e}")
+
         self.setup_ui()
         
     def apply_dark_theme(self):

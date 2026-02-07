@@ -58,7 +58,8 @@ class MigakuImporterGUI:
                                   bg=self.bg_color, fg=self.accent_color, padx=20, pady=15)
         step1_frame.pack(fill="x", padx=30, pady=10)
         
-        instructions1 = tk.Label(step1_frame, text="1. Click 'Copy Script'\n2. Go to Migaku Browser\n3. Press F12 -> Console\n4. Paste and press Enter", 
+        instructions1 = tk.Label(step1_frame, 
+                               text="1. Open Migaku (Dictionary or Options page)\n2. Press F12 -> Console\n3. Type or paste code below and press Enter:\n   await coreApi.Database_downloadAsFile({})", 
                                justify="left", bg=self.bg_color, fg=self.text_color, font=('Segoe UI', 10))
         instructions1.pack(side="left")
         

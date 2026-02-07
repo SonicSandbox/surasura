@@ -114,7 +114,7 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
                 html_content = html_content.replace("<head>", f"<head>\n    {favicon_tag}")
                 
                 # Injects logo into header
-                logo_html = f'<img src="data:image/png;base64,{encoded_string}" alt="Logo" style="height: 32px; width: 32px; margin-right: 15px; border-radius: 4px;">'
+                logo_html = f'<img src="data:image/png;base64,{encoded_string}" alt="Logo" class="header-logo" style="height: 32px; width: 32px; margin-right: 15px; border-radius: 4px;">'
                 html_content = html_content.replace("<h1>Surasura List</h1>", 
                                                  f'<div style="display:flex; align-items:center;">{logo_html}<h1>Surasura List</h1></div>')
         except Exception as e:

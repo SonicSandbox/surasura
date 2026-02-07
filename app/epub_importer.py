@@ -38,7 +38,7 @@ SECONDARY_COLOR = "#03dac6"
 class FileImporterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Surasura - File Converter & Splitter")
+        self.root.title("Surasura - File Importer v1.0")
         self.root.geometry("600x450")
         self.root.configure(bg=BG_COLOR)
         

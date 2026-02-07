@@ -855,6 +855,7 @@
             --text-secondary: #555;
         }
 
+        body.theme-zen-focus .header-logo,
         body.theme-zen-focus .main-tabs,
         body.theme-zen-focus header h1,
         body.theme-zen-focus .tier-badge,
@@ -864,6 +865,7 @@
             transition: opacity 0.3s;
         }
 
+        body.theme-zen-focus header:hover .header-logo,
         body.theme-zen-focus header:hover h1,
         body.theme-zen-focus .card:hover .card-footer {
             opacity: 1;
@@ -882,6 +884,58 @@
             font-weight: bold;
             text-decoration: underline;
         }
+
+        /* --- Navigation Hint --- */
+        #nav-hint {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: rgba(98, 0, 238, 0.2);
+            color: var(--on-background);
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: help;
+            z-index: 1000;
+            opacity: 0.4;
+            transition: opacity 0.3s, background-color 0.3s;
+            font-size: 1.1rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        #nav-hint:hover {
+            opacity: 1;
+            background-color: var(--primary);
+        }
+
+        #nav-hint .hint-tooltip {
+            visibility: hidden;
+            width: 220px;
+            background-color: var(--surface);
+            color: var(--on-surface);
+            text-align: center;
+            border-radius: 8px;
+            padding: 12px;
+            position: absolute;
+            z-index: 1001;
+            bottom: 45px;
+            right: 0;
+            opacity: 0;
+            transition: opacity 0.3s, visibility 0.3s;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--card-border);
+            font-size: 0.9rem;
+            pointer-events: none;
+            line-height: 1.4;
+        }
+
+        #nav-hint:hover .hint-tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
     </style>
 </head>
 
@@ -889,6 +943,11 @@
     <div id="loading-screen">
         <div class="spinner"></div>
         <p>Analyzing Library...</p>
+    </div>
+
+    <div id="nav-hint">
+        ⓘ
+        <div class="hint-tooltip">Tip: Use <b>Left/Right keys</b> or <b>Space</b> to quickly move between words.</div>
     </div>
     <header>
         <h1>Surasura List</h1>
@@ -1354,7 +1413,8 @@
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-            if (e.code === 'Space') e.preventDefault();
+            // Prevent default scrolling/caret movement for all navigation keys
+            e.preventDefault();
 
             const isZen = document.body.classList.contains('theme-zen-focus');
 

@@ -103,7 +103,7 @@ class ToolTip:
 class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Surasura - Readability Analyzer")
+        self.root.title("Surasura - Readability Analyzer Dashboard v1.0")
         self.root.geometry("520x680") 
         self.root.resizable(False, False)
         self.root.configure(bg=BG_COLOR)
@@ -250,15 +250,23 @@ class MasterDashboardApp:
         btn_migaku.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_migaku, "Import known words from Migaku database export.")
 
-        btn_open_data = ttk.Button(data_btns_frame, text="Open Data Folder", style="Action.TButton",
+        btn_open_data = ttk.Button(data_btns_frame, text="Manage Content", style="Action.TButton",
                                     command=self.open_data_folder)
         btn_open_data.pack(side=tk.LEFT)
-        ToolTip(btn_open_data, "Open your input data folder in File Explorer.")
+        ToolTip(btn_open_data, "Open your input data folder. Files in the Processed Folder will not be analyzed.")
 
-        btn_epub = ttk.Button(tools_frame, text="Launch File Importer", style="Action.TButton", 
+        importer_frame = ttk.Frame(tools_frame)
+        importer_frame.pack(fill=tk.X)
+
+        btn_epub = ttk.Button(importer_frame, text="Launch File Importer", style="Action.TButton", 
                    command=self.run_file_importer)
-        btn_epub.pack(anchor=tk.W)
+        btn_epub.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
+
+        btn_ignore = ttk.Button(importer_frame, text="Edit Ignore List", style="Action.TButton", 
+                    command=self.open_ignore_list)
+        btn_ignore.pack(side=tk.LEFT)
+        ToolTip(btn_ignore, "Open your IgnoreList.txt to manually edit excluded words.")
 
         # 2. Analyzer Tools
         analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="15")
@@ -317,9 +325,9 @@ class MasterDashboardApp:
         theme_app_frame = ttk.Frame(view_frame)
         theme_app_frame.pack(fill=tk.X, pady=(0, 10))
 
-        themes = ['Default (Dark)', 'World Class (Flow)', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
+        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
         self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
-        self.combo_theme.set('World Class (Flow)')
+        self.combo_theme.set('Dark Flow')
         self.combo_theme.pack(side=tk.LEFT)
         ToolTip(self.combo_theme, "Select the visual theme for the generated reading list.")
         
@@ -408,7 +416,7 @@ class MasterDashboardApp:
                     self.var_min_freq.set(settings.get("min_freq", 1))
                     self.var_zen_limit.set(settings.get("zen_limit", 50))
                     self.var_open_app_mode.set(settings.get("open_app_mode", False))
-                    theme = settings.get("theme", "World Class (Flow)")
+                    theme = settings.get("theme", "Dark Flow")
                     if theme in self.combo_theme['values']:
                         self.combo_theme.set(theme)
         except Exception as e:
@@ -450,6 +458,27 @@ class MasterDashboardApp:
                 subprocess.Popen(["xdg-open", data_path])
         except Exception as e:
             messagebox.showerror("Error", f"Could not open data folder: {e}")
+
+    def open_ignore_list(self):
+        try:
+            from app.path_utils import get_user_file
+            ignore_path = get_user_file("User Files/IgnoreList.txt")
+            
+            # Ensure file exists
+            if not os.path.exists(ignore_path):
+                os.makedirs(os.path.dirname(ignore_path), exist_ok=True)
+                with open(ignore_path, "w", encoding="utf-8") as f:
+                    f.write("# Add words to ignore here (one per line)\n")
+            
+            # Cross-platform opening
+            if sys.platform == "win32":
+                os.startfile(ignore_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", ignore_path])
+            else:
+                subprocess.Popen(["xdg-open", ignore_path])
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open ignore list: {e}")
             
     def run_command_async(self, cmd, desc, capture_output=False):
         """Runs a command with optional output redirection to the terminal"""
@@ -574,7 +603,7 @@ class MasterDashboardApp:
         # Add theme argument
         theme_map = {
             'Default (Dark)': 'default',
-            'World Class (Flow)': 'world-class',
+            'Dark Flow': 'world-class',
             'Midnight (Vibrant)': 'midnight-vibrant',
             'Modern Light': 'modern-light',
             'Zen Focus': 'zen-focus'
@@ -594,7 +623,7 @@ class MasterDashboardApp:
         args = ['static_html_generator.py']
         theme_map = {
             'Default (Dark)': 'default',
-            'World Class (Flow)': 'world-class',
+            'Dark Flow': 'world-class',
             'Midnight (Vibrant)': 'midnight-vibrant',
             'Modern Light': 'modern-light',
             'Zen Focus': 'zen-focus'

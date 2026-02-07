@@ -58,7 +58,7 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 
 ### Current Limitations
-- Windows Only
+- Only executable for Windows (macOS/Linux can run from source)
 - Occasional Wacky Parsing
 - 'Ignore' only adds to clipboard
 - Only works with Migaku known-words (for now)

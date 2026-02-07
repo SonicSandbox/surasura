@@ -1,4 +1,4 @@
-# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ)🇯 - Readability Analyzer
+# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - Readability Analyzer
 ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 
 *For Intermediate-Advanced learners.* 

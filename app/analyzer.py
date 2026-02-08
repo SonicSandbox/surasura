@@ -400,8 +400,14 @@ def main():
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
+                # Skip tokens that contain no Japanese characters (e.g. SSA/ASS tags like {\an8},
+                # timestamps, markup, or other ASCII-only tokens). These should not count
+                # toward totals or be considered unknown words.
+                if not has_japanese(lemma) and not has_japanese(surface):
+                    continue
+
                 file_total_words += 1
-                if lemma in ignore_list: 
+                if lemma in ignore_list:
                     file_known_words += 1
                     continue
                 if SKIP_SINGLE_CHARS and len(lemma) == 1:

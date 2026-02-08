@@ -52,22 +52,38 @@ def fetch_jiten_vocabulary(api_key, output_json=None):
             else:
                 return "LEARNING"
         
+        # Convert Jiten cards into Migaku-like JSON schema so analyzer and other tools
+        # that expect Migaku exports can consume the result.
         words = []
         for card in cards:
             word_text = card.get('wordText', '').strip()
             if not word_text:
                 continue
-            
+
             state = card.get('state')
             status = map_state_to_status(state)
-            
+
+            # Determine hasCard flag (Migaku uses hasCard)
+            has_card = 1 if card.get('cardId') else 0
+
             words.append({
-                'wordText': word_text,
+                # Migaku-compatible fields
+                'dictForm': word_text,
+                'secondary': card.get('reading', '') or card.get('furigana', '') or '',
+                'partOfSpeech': card.get('partOfSpeech', ''),
+                'language': 'ja',
+                'knownStatus': status,
+                'hasCard': has_card,
+                'tracked': 0,
+                'created': card.get('created') or card.get('lastReview'),
+                'mod': card.get('lastReview'),
+                'isModern': 1,
+
+                # Original Jiten metadata retained for reference
                 'wordId': card.get('wordId'),
                 'cardId': card.get('cardId'),
                 'frequencyRank': card.get('frequencyRank'),
                 'readingType': card.get('readingType'),
-                'knownStatus': status,
                 'lastReview': card.get('lastReview'),
                 'due': card.get('due'),
                 'state': state
@@ -78,9 +94,11 @@ def fetch_jiten_vocabulary(api_key, output_json=None):
         # Calculate statistics
         stats = {
             'totalWords': len(words),
-            'knownWords': sum(1 for w in words if w['knownStatus'] == "KNOWN"),
-            'learningWords': sum(1 for w in words if w['knownStatus'] == "LEARNING"),
-            'unknownWords': sum(1 for w in words if w['knownStatus'] == "UNKNOWN"),
+            'knownWords': sum(1 for w in words if w.get('knownStatus') == "KNOWN"),
+            'learningWords': sum(1 for w in words if w.get('knownStatus') == "LEARNING"),
+            'unknownWords': sum(1 for w in words if w.get('knownStatus') == "UNKNOWN"),
+            'ignoredWords': sum(1 for w in words if w.get('knownStatus') == "IGNORED"),
+            'languages': sorted(list(set(w.get('language', '') for w in words)))
         }
         
         print("\nStatistics:")

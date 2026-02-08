@@ -173,8 +173,13 @@ def extract_text(file_path):
                 lines = sub.text.splitlines()
                 filtered_lines = [l for l in lines if has_japanese(l)]
                 if filtered_lines:
-                    parts.append("\n".join(filtered_lines))
-            text = "\n".join(parts)
+                    # Join lines within a subtitle block with spaces to preserve word boundaries
+                    block_text = " ".join(filtered_lines)
+                    # Add a period (。) at the end only if it doesn't already end with sentence punctuation
+                    if not block_text or block_text[-1] not in '。！？!?':
+                        block_text += "。"
+                    parts.append(block_text)
+            text = "".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     else:

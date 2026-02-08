@@ -8,10 +8,10 @@ if __name__ == "__main__" and __package__ is None:
 import json
 import glob
 import re
+import csv
 import pandas as pd
 import fugashi
 import pysrt
-import zipfile
 from collections import defaultdict, Counter
 from datetime import datetime
 
@@ -34,30 +34,13 @@ DATA_DIR = get_user_file("data")
 KNOWN_WORDS_FILE = os.path.join(USER_FILES_DIR, "KnownWord.json") 
 IGNORE_LIST_FILE = os.path.join(USER_FILES_DIR, "IgnoreList.txt")
 
-# Yomitan frequency lists mapping: name -> filepath
-YOMITAN_FREQ_LISTS = {
-    "Anime": os.path.join(USER_FILES_DIR, "jiten_freq_Anime.zip"),
-    "Drama": os.path.join(USER_FILES_DIR, "jiten_freq_Drama.zip"),
-    "Global": os.path.join(USER_FILES_DIR, "jiten_freq_global.zip"),
-    "Manga": os.path.join(USER_FILES_DIR, "jiten_freq_Manga.zip"),
-    "Movie": os.path.join(USER_FILES_DIR, "jiten_freq_Movie.zip"),
-    "NonFiction": os.path.join(USER_FILES_DIR, "jiten_freq_NonFiction.zip"),
-    "Novel": os.path.join(USER_FILES_DIR, "jiten_freq_Novel.zip"),
-    "VideoGame": os.path.join(USER_FILES_DIR, "jiten_freq_VideoGame.zip"),
-    "VisualNovel": os.path.join(USER_FILES_DIR, "jiten_freq_VisualNovel.zip"),
-    "WebNovel": os.path.join(USER_FILES_DIR, "jiten_freq_WebNovel.zip"),
-}
-
-# Default frequency list selection (prioritized order)
-DEFAULT_FREQ_LIST = "Novel"  # Primary source
-FALLBACK_FREQ_LISTS = ["Anime", "Manga", "Global"]  # Try these if word not in primary
-
 RESULTS_DIR = get_user_file("results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 OUTPUT_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
 OUTPUT_STATS = os.path.join(RESULTS_DIR, "file_statistics.txt")
 OUTPUT_PROGRESSIVE = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
+
 
 # --- Classes & Functions ---
 
@@ -115,54 +98,63 @@ def load_simple_list(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         return set(line.strip() for line in f if line.strip())
 
-def load_yomitan_frequency_list(zip_path):
+def discover_yomitan_frequency_lists(user_files_dir):
     """
-    Load a yomitan-format frequency list from a zip file.
-    Returns a dictionary mapping word -> rank (1-based).
+    Scan User Files directory for frequency_list_*.csv files.
+    Returns a dictionary mapping frequency list name -> filepath.
+    Example: frequency_list_Anime.csv -> {"Anime": "/path/to/frequency_list_Anime.csv"}
+    """
+    freq_lists = {}
+    if not os.path.exists(user_files_dir):
+        return freq_lists
     
-    Yomitan format: term_meta_bank_*.json contains:
-    [["word", "freq", {"value": rank, ...}], ...]
-    or
-    [["word", "freq", {"reading": "reading", "frequency": {"value": rank, ...}}], ...]
+    try:
+        for filename in os.listdir(user_files_dir):
+            if filename.startswith("frequency_list_") and filename.endswith(".csv"):
+                # Extract name: frequency_list_Novel.csv -> Novel
+                list_name = filename.replace("frequency_list_", "").replace(".csv", "")
+                filepath = os.path.join(user_files_dir, filename)
+                freq_lists[list_name] = filepath
+    except Exception as e:
+        print(f"Warning: Error scanning frequency lists: {e}")
+    
+    return freq_lists
+
+def load_yomitan_frequency_list(csv_path):
+    """
+    Load a frequency list from a CSV file.
+    Returns a dictionary mapping word -> rank (int).
+    
+    CSV format: Two columns: Word, Rank
+    Example:
+    Word,Rank
+    の,1
+    は,2
+    ...
+    
+    Note: Multiple words can have the same rank value.
+    Uses csv module for fast loading of large files.
     """
     word_to_rank = {}
     
-    if not os.path.exists(zip_path):
-        print(f"Warning: Frequency list not found: {zip_path}")
+    if not os.path.exists(csv_path):
+        print(f"Warning: Frequency list not found: {csv_path}")
         return word_to_rank
     
     try:
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            # Find all term_meta_bank_*.json files
-            bank_files = [f for f in zf.namelist() if f.startswith('term_meta_bank_') and f.endswith('.json')]
-            
-            for bank_file in sorted(bank_files):
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
                 try:
-                    data = json.loads(zf.read(bank_file).decode('utf-8'))
-                    for entry in data:
-                        if len(entry) >= 3:
-                            word = entry[0]
-                            meta_type = entry[1]
-                            meta_data = entry[2]
-                            
-                            if meta_type == "freq" and isinstance(meta_data, dict):
-                                # Extract rank from either direct value or nested frequency
-                                rank = None
-                                if "value" in meta_data:
-                                    rank = meta_data["value"]
-                                elif "frequency" in meta_data and "value" in meta_data["frequency"]:
-                                    rank = meta_data["frequency"]["value"]
-                                
-                                if rank is not None and isinstance(rank, int):
-                                    # Store the word with its rank (use minimum if exists)
-                                    if word not in word_to_rank or rank < word_to_rank[word]:
-                                        word_to_rank[word] = rank
-                except Exception as e:
-                    print(f"Warning: Error reading {bank_file} from {zip_path}: {e}")
+                    word = row['Word']
+                    rank = int(row['Rank'])
+                    word_to_rank[word] = rank
+                except (ValueError, KeyError):
+                    continue  # Skip malformed rows
     except Exception as e:
-        print(f"Warning: Error loading frequency list {zip_path}: {e}")
+        print(f"Warning: Error loading frequency list {csv_path}: {e}")
     
-    print(f"Loaded {len(word_to_rank)} words from {os.path.basename(zip_path)}")
+    print(f"Loaded {len(word_to_rank)} words from {os.path.basename(csv_path)}")
     return word_to_rank
 
 def get_tier_from_rank(rank):
@@ -352,21 +344,22 @@ def group_sources(source_list):
 
 def get_tier_label(word, freq_data):
     """
-    Get tier label for a word using frequency data.
-    freq_data is a dictionary with frequency lists in priority order.
+    Get tier labels for a word from all frequency lists.
+    Returns a list of (source_name, tier_number) tuples.
+    Example: [("Novel", "1"), ("Anime", "2")]
+    Empty list means word is not in any frequency list (Outside).
     """
-    # First check primary frequency list
-    if DEFAULT_FREQ_LIST in freq_data and word in freq_data[DEFAULT_FREQ_LIST]:
-        rank = freq_data[DEFAULT_FREQ_LIST][word]
-        return get_tier_from_rank(rank)
+    tiers_found = []
     
-    # Then check fallback frequency lists
-    for list_name in FALLBACK_FREQ_LISTS:
-        if list_name in freq_data and word in freq_data[list_name]:
-            rank = freq_data[list_name][word]
-            return get_tier_from_rank(rank)
+    # Check all frequency lists and collect all tiers
+    for source_name in sorted(freq_data.keys()):
+        if word in freq_data[source_name]:
+            rank = freq_data[source_name][word]
+            tier = get_tier_from_rank(rank)
+            if tier != "Outside":
+                tiers_found.append((source_name, tier))
     
-    return "Outside"
+    return tiers_found
 
 def main():
     import sys
@@ -435,16 +428,19 @@ def main():
     known_words_initial, known_lemmas_initial = load_known_words(KNOWN_WORDS_FILE, tokenizer)
     ignore_list = load_simple_list(IGNORE_LIST_FILE)
     
-    # Load yomitan frequency lists
-    freq_data = {}
-    # Load primary frequency list (Novel)
-    if DEFAULT_FREQ_LIST in YOMITAN_FREQ_LISTS:
-        freq_data[DEFAULT_FREQ_LIST] = load_yomitan_frequency_list(YOMITAN_FREQ_LISTS[DEFAULT_FREQ_LIST])
+    # Discover and load all yomitan frequency lists from User Files
+    print("Scanning for frequency lists...")
+    available_freq_lists = discover_yomitan_frequency_lists(USER_FILES_DIR)
     
-    # Load fallback frequency lists
-    for list_name in FALLBACK_FREQ_LISTS:
-        if list_name in YOMITAN_FREQ_LISTS:
-            freq_data[list_name] = load_yomitan_frequency_list(YOMITAN_FREQ_LISTS[list_name])
+    if not available_freq_lists:
+        print("Warning: No frequency lists found in User Files/")
+        print("Expected format: jiten_freq_*.zip")
+    
+    freq_data = {}
+    for list_name, filepath in sorted(available_freq_lists.items()):
+        freq_data[list_name] = load_yomitan_frequency_list(filepath)
+    
+    print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
     
     # 2. Define Scanning targets
     # ORDER MATTERS: High -> Low -> Goal
@@ -572,13 +568,15 @@ def main():
         if MIN_FREQ > 0 and data["total_count"] <= MIN_FREQ:
             continue
 
-        tier_label = get_tier_label(lemma, freq_data)
+        tier_labels = get_tier_label(lemma, freq_data)
+        # Format tiers as "Source1:Tier1;Source2:Tier2" or "Outside" if not in any list
+        tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
         source_display = group_sources(data["sources"])
 
         row = {
             "Word": lemma,
             "Reading": reading,
-            "Tier": tier_label,
+            "Tier": tier_str,
             "Score": data["score"],
             "Occurrences": data["total_count"],
             "Context 1": data.get("first_context", "").strip(),
@@ -703,7 +701,8 @@ def main():
         
         for (lemma, reading), count in file_unknown_token_counts.items():
             # It's a new word for this progressive sequence
-            tier_label = get_tier_label(lemma, freq_data)
+            tier_labels = get_tier_label(lemma, freq_data)
+            tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
             stats = word_stats.get((lemma, reading), {
                 "score": 0, "total_count": 0, 
                 "first_context": "", "best_extra_contexts": []
@@ -717,7 +716,7 @@ def main():
                 "Source File": filename,
                 "Word": lemma,
                 "Reading": reading,
-                "Tier": tier_label,
+                "Tier": tier_str,
                 "Score": stats["score"],
                 "Occurrences (Global)": stats["total_count"],
                 "Occurrences (File)": count,

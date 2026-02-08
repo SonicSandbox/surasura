@@ -219,6 +219,7 @@
             border-radius: 4px;
             font-size: 0.8rem;
             font-weight: bold;
+            white-space: nowrap;
         }
 
         .tier-badge.tier-1 {
@@ -244,6 +245,11 @@
         .tier-badge.tier-5 {
             background-color: #4a148c;
             color: white;
+        }
+
+        .tier-badge.tier-outside {
+            background-color: #616161;
+            color: #ddd;
         }
 
         .context-box {
@@ -1329,6 +1335,27 @@
                 return el;
             }
 
+            // Parse Tier data and create tier badges
+            let tierBadgesHtml = '';
+            if (data.Tier) {
+                const tierStr = String(data.Tier).trim();
+                if (tierStr === 'Outside') {
+                    tierBadgesHtml = '<span class="tier-badge tier-outside">Outside</span>';
+                } else {
+                    // Format: "Source1:Tier1;Source2:Tier2" or old format "1"
+                    const tierParts = tierStr.split(';');
+                    tierBadgesHtml = tierParts.map(part => {
+                        if (part.includes(':')) {
+                            const [source, tier] = part.split(':');
+                            return `<span class="tier-badge tier-${tier}" title="${source}">${source}:${tier}</span>`;
+                        } else {
+                            // Fallback for old format
+                            return `<span class="tier-badge tier-${part}">${part}</span>`;
+                        }
+                    }).join('');
+                }
+            }
+
             // Standard Card: Base HTML
             el.innerHTML = `
                 <div class="card-header">
@@ -1341,7 +1368,9 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        <span class="tier-badge tier-${data.Tier}">${data.Tier}</span>
+                        <div style="display:flex; gap: 5px; flex-wrap: wrap;">
+                            ${tierBadgesHtml}
+                        </div>
                     </div>
                 </div>
                 <div class="context-box">${displayC1}</div>

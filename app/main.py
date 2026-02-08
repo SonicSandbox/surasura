@@ -577,6 +577,7 @@ class MasterDashboardApp:
                 'analyzer.py': 'analyzer',
                 'epub_importer.py': 'epub_importer',
                 'migaku_db_importer_gui.py': 'migaku_importer',
+                'jiten_db_importer_gui.py': 'jiten_importer',
                 'content_importer_gui.py': 'content_importer',
                 'static_html_generator.py': 'static_generator',
                 'migaku_converter.py': 'convert_db'

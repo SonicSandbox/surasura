@@ -104,9 +104,13 @@ class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Surasura - Readability Analyzer Dashboard v1.0")
-        self.root.geometry("520x680") 
-        self.root.resizable(False, False)
+        self.root.geometry("520x720") 
+        self.root.resizable(True, True)
+        self.root.minsize(520, 600)
         self.root.configure(bg=BG_COLOR)
+        
+        # Bind Escape key to close
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
         
         self.style = ttk.Style()
         self.apply_dark_theme()
@@ -238,6 +242,18 @@ class MasterDashboardApp:
 
         # Progressbar
         self.style.configure("TProgressbar", thickness=4, background=ACCENT_COLOR, troughcolor=SURFACE_COLOR, borderwidth=0)
+        
+        # Combobox Styling (Fix for theme text visibility)
+        self.style.configure("TCombobox", 
+            fieldbackground=SURFACE_COLOR, 
+            background=SURFACE_COLOR,
+            foreground=TEXT_COLOR,
+            arrowcolor=ACCENT_COLOR
+        )
+        self.style.map("TCombobox",
+            fieldbackground=[('readonly', SURFACE_COLOR)],
+            foreground=[('readonly', TEXT_COLOR)]
+        )
         
         # Specific Button Styles
         self.style.configure("Action.TButton", width=22)

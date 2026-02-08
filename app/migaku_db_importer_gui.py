@@ -19,8 +19,11 @@ class MigakuImporterGUI:
         self.root = root
         self.root.title("Surasura - Known-Word DB Importer")
         self.root.geometry("600x500")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(500, 400)
         
+        # Bind Escape key to close
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
         # Set colors and styles
         self.bg_color = "#2c3e50"
         self.text_color = "#ecf0f1"

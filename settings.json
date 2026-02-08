@@ -3,7 +3,7 @@
     "min_freq": 5,
     "zen_limit": 79,
     "open_app_mode": true,
-    "theme": "Zen Focus",
+    "theme": "Default (Dark)",
     "strategy": "coverage",
     "target_coverage": 96
 }

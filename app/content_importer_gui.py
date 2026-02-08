@@ -19,8 +19,11 @@ class ContentImporterApp:
         self.root = root
         self.root.title("Surasura - Content Manager")
         self.root.geometry("650x700")  # Expanded size
+        self.root.minsize(600, 600)
         self.root.configure(bg=BG_COLOR)
         
+        # Bind Escape key to close
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
         self.style = ttk.Style()
         self.apply_dark_theme()
         

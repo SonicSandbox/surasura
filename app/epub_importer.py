@@ -40,8 +40,12 @@ class FileImporterApp:
         self.root = root
         self.root.title("Surasura - File Importer v1.0")
         self.root.geometry("600x450")
+        self.root.resizable(True, True)
+        self.root.minsize(500, 400)
         self.root.configure(bg=BG_COLOR)
         
+        # Bind Escape key to close
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
         self.style = ttk.Style()
         self.apply_dark_theme()
         

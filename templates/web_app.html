@@ -1083,10 +1083,7 @@
                 tabsContainer.style.display = 'none';
                 document.querySelector('.progressive-container').style.display = 'block'; // No grid
 
-                // Chunk the files themselves if there are many? 
-                // Zen mode limits to 10 files, so files loop is cheap. 
-                // BUT the words WITHIN files can be large.
-
+                // Render active files
                 for (const fileData of globalData.progressive) {
                     const fileSection = document.createElement('div');
                     fileSection.className = 'zen-file-section';
@@ -1098,12 +1095,30 @@
                     }
 
                     listContainer.appendChild(fileSection);
-
-                    // Render words chunked into this section
                     await renderChunked(fileSection, fileData.words, createWordCard);
                 }
+
+                // Render completed files (Zen Mode) - just a summary list at bottom?
+                if (globalData.completed_files && globalData.completed_files.length > 0) {
+                    const completedSection = document.createElement('div');
+                    completedSection.className = 'zen-file-section';
+                    completedSection.innerHTML = `<h2 class="zen-file-title" style="margin-top:60px; border-bottom:1px solid #333; padding-bottom:5px; color:#4caf50;">Completed Files (${globalData.completed_files.length})</h2><p style="color:#888; font-style:italic;">These files require no new learning to meet your target coverage.</p>`;
+
+                    globalData.completed_files.forEach(file => {
+                        const fDiv = document.createElement('div');
+                        fDiv.style.padding = "10px 0";
+                        fDiv.style.borderBottom = "1px solid #222";
+                        fDiv.style.color = "#aaa";
+                        const stats = file.stats || {};
+                        fDiv.innerHTML = `<div style="display:flex; justify-content:space-between;"><span>${file.filename}</span><span>${stats["Coverage (%)"]}% Coverage</span></div>`;
+                        completedSection.appendChild(fDiv);
+                    });
+                    listContainer.appendChild(completedSection);
+                }
+
             } else {
                 // Standard Tabs
+                // 1. Active Files
                 globalData.progressive.forEach((fileData, index) => {
                     const tab = document.createElement('div');
                     tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
@@ -1116,10 +1131,74 @@
                     tabsContainer.appendChild(tab);
                 });
 
+                // 2. Completed Files
+                if (globalData.completed_files && globalData.completed_files.length > 0) {
+                    // Divider
+                    const divider = document.createElement('div');
+                    divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
+                    tabsContainer.appendChild(divider);
+
+                    globalData.completed_files.forEach((fileData) => {
+                        const tab = document.createElement('div');
+                        tab.className = `file-tab`;
+                        tab.style.opacity = "0.7";
+                        tab.textContent = fileData.filename;
+                        tab.onclick = () => {
+                            document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                            tab.classList.add('active');
+                            renderCompletedFile(fileData);
+                        }
+                        tabsContainer.appendChild(tab);
+                    });
+                }
+
                 if (globalData.progressive.length > 0) {
                     await renderFileWords(globalData.progressive[0].words);
+                } else if (globalData.completed_files && globalData.completed_files.length > 0) {
+                    // If no progressive words at all, show first completed file
+                    renderCompletedFile(globalData.completed_files[0]);
+                    // Set first tab active (logic above sets first progressive as active, need to fix if empty)
+                    setTimeout(() => {
+                        const firstTab = tabsContainer.querySelector('.file-tab');
+                        if (firstTab) firstTab.classList.add('active');
+                    }, 0);
                 }
             }
+        }
+
+        async function renderCompletedFile(fileData) {
+            const listContainer = document.getElementById('progressive-list');
+            listContainer.innerHTML = "";
+
+            const stats = fileData.stats || {};
+            const coverage = parseFloat(stats["Coverage (%)"]) || 100;
+            const known = stats["Known Count"] || 0;
+            const total = stats["Total Words"] || 0;
+
+            const content = `
+                <div style="padding: 40px; text-align: center; color: var(--text-secondary);">
+                    <div style="font-size: 4rem; margin-bottom: 20px; color: #4caf50;">✓</div>
+                    <h2 style="color: var(--on-surface);">Target Met</h2>
+                    <p style="font-size: 1.2rem; margin-bottom: 30px;">
+                        You have already met your target coverage for <strong>${fileData.filename}</strong>.
+                    </p>
+                    
+                    <div style="display: inline-block; text-align: left; background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--card-border); min-width: 300px;">
+                        <div style="margin-bottom: 10px; display:flex; justify-content:space-between;">
+                            <span>Coverage</span>
+                            <strong style="color: #4caf50;">${coverage}%</strong>
+                        </div>
+                        <div style="margin-bottom: 10px; display:flex; justify-content:space-between;">
+                            <span>Known Words</span>
+                            <strong>${known} / ${total}</strong>
+                        </div>
+                        <div style="width: 100%; height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin-top: 15px;">
+                            <div style="width: ${coverage}%; height: 100%; background: #4caf50;"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            listContainer.innerHTML = content;
         }
 
         async function renderFileWords(words) {

@@ -115,7 +115,10 @@ class MasterDashboardApp:
         self.var_exclude_single = tk.BooleanVar(value=True) 
         self.var_min_freq = tk.IntVar(value=1) 
         self.var_zen_limit = tk.IntVar(value=50) 
+        self.var_zen_limit = tk.IntVar(value=50) 
         self.var_open_app_mode = tk.BooleanVar(value=False)
+        self.var_strategy = tk.StringVar(value="freq")
+        self.var_target_coverage = tk.IntVar(value=90)
         
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
@@ -203,6 +206,23 @@ class MasterDashboardApp:
             background=[('active', BG_COLOR)],
             foreground=[('active', ACCENT_COLOR)]
         )
+        # Radiobutton
+        self.style.configure("TRadiobutton", background=BG_COLOR, foreground=TEXT_COLOR, focuscolor=ACCENT_COLOR)
+        self.style.map("TRadiobutton",
+            foreground=[('active', TEXT_COLOR)],
+            background=[('active', BG_COLOR)]
+        )
+        # Entry
+        self.style.configure("TEntry",
+            fieldbackground=SURFACE_COLOR,
+            foreground=TEXT_COLOR,
+            insertbackground=TEXT_COLOR, # Cursor color
+            bordercolor=ACCENT_COLOR,
+            lightcolor=ACCENT_COLOR,
+            darkcolor=ACCENT_COLOR,
+            selectbackground=ACCENT_COLOR,
+            selectforeground=BG_COLOR
+        )
         # Buttons
         self.style.configure("TButton", 
             background=SURFACE_COLOR, 
@@ -221,6 +241,16 @@ class MasterDashboardApp:
         
         # Specific Button Styles
         self.style.configure("Action.TButton", width=22)
+
+    def update_strategy_ui(self):
+        strategy = self.var_strategy.get()
+        if strategy == "freq":
+            self.freq_frame.pack(side=tk.TOP, fill=tk.X)
+            self.coverage_frame.pack_forget()
+        else:
+            self.freq_frame.pack_forget()
+            self.coverage_frame.pack(side=tk.TOP, fill=tk.X)
+            self.save_settings() # Save on switch
         
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="25")
@@ -250,15 +280,15 @@ class MasterDashboardApp:
         btn_migaku.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_migaku, "Import known words from Migaku database export.")
 
-        btn_open_data = ttk.Button(data_btns_frame, text="Manage Content", style="Action.TButton",
-                                    command=self.open_data_folder)
+        btn_open_data = ttk.Button(data_btns_frame, text="Launch Content Importer", style="Action.TButton",
+                                    command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT)
-        ToolTip(btn_open_data, "Open your input data folder. Files in the Processed Folder will not be analyzed.")
+        ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
 
         importer_frame = ttk.Frame(tools_frame)
         importer_frame.pack(fill=tk.X)
 
-        btn_epub = ttk.Button(importer_frame, text="Launch File Importer", style="Action.TButton", 
+        btn_epub = ttk.Button(importer_frame, text="Extract / Splice", style="Action.TButton", 
                    command=self.run_file_importer)
         btn_epub.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
@@ -277,22 +307,40 @@ class MasterDashboardApp:
         chk_single.pack(anchor=tk.W, pady=(0, 5))
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
         
-        # Frequency Slider
-        freq_frame = ttk.Frame(analyze_frame)
-        freq_frame.pack(fill=tk.X, pady=(0, 10))
+        # Strategy Selection
+        strategy_frame = ttk.Frame(analyze_frame)
+        strategy_frame.pack(fill=tk.X, pady=(0, 10))
         
-        ttk.Label(freq_frame, text="Min Frequency:").pack(side=tk.LEFT)
+        ttk.Label(strategy_frame, text="Generation Mode:").pack(side=tk.LEFT)
+        ttk.Radiobutton(strategy_frame, text="Min Frequency", variable=self.var_strategy, value="freq", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(strategy_frame, text="Target % Coverage", variable=self.var_strategy, value="coverage", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Dynamic Options Frame
+        self.options_container = ttk.Frame(analyze_frame)
+        self.options_container.pack(fill=tk.X, pady=(0, 10))
+
+        # 1. Frequency Slider (Default)
+        self.freq_frame = ttk.Frame(self.options_container)
         
-        freq_slider = tk.Scale(freq_frame, from_=0, to=10, orient=tk.HORIZONTAL, 
+        ttk.Label(self.freq_frame, text="Min Frequency:").pack(side=tk.LEFT)
+        freq_slider = tk.Scale(self.freq_frame, from_=0, to=10, orient=tk.HORIZONTAL, 
                                variable=self.var_min_freq, showvalue=False,
                                bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
                                activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
         freq_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        ttk.Label(self.freq_frame, textvariable=self.var_min_freq, width=2).pack(side=tk.LEFT)
+        ToolTip(self.freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words). 0 shows everything.")
+
+        # 2. Coverage Entry (Hidden initially)
+        self.coverage_frame = ttk.Frame(self.options_container)
         
-        freq_val_label = ttk.Label(freq_frame, textvariable=self.var_min_freq, width=2)
-        freq_val_label.pack(side=tk.LEFT)
-        
-        ToolTip(freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words). 0 shows everything.")
+        ttk.Label(self.coverage_frame, text="Target Coverage (%):").pack(side=tk.LEFT)
+        ttk.Entry(self.coverage_frame, textvariable=self.var_target_coverage, width=5).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(self.coverage_frame, text="(e.g. 90, 95)").pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.coverage_frame, "Generate a word list to reach this cumulative coverage % across all selected files.")
+
+        # Initialize UI state
+        self.update_strategy_ui()
 
         # Run Analyzer Button
         btn_analyze = ttk.Button(analyze_frame, text="Run Analysis", style="Action.TButton",
@@ -419,6 +467,10 @@ class MasterDashboardApp:
                     theme = settings.get("theme", "Dark Flow")
                     if theme in self.combo_theme['values']:
                         self.combo_theme.set(theme)
+                    
+                    self.var_strategy.set(settings.get("strategy", "freq"))
+                    self.var_target_coverage.set(settings.get("target_coverage", 90))
+                    self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
 
@@ -431,7 +483,9 @@ class MasterDashboardApp:
                 "min_freq": self.var_min_freq.get(),
                 "zen_limit": self.var_zen_limit.get(),
                 "open_app_mode": self.var_open_app_mode.get(),
-                "theme": self.combo_theme.get()
+                "theme": self.combo_theme.get(),
+                "strategy": self.var_strategy.get(),
+                "target_coverage": self.var_target_coverage.get()
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
@@ -502,6 +556,7 @@ class MasterDashboardApp:
                 'analyzer.py': 'analyzer',
                 'epub_importer.py': 'epub_importer',
                 'migaku_db_importer_gui.py': 'migaku_importer',
+                'content_importer_gui.py': 'content_importer',
                 'static_html_generator.py': 'static_generator',
                 'migaku_converter.py': 'convert_db'
             }
@@ -584,6 +639,9 @@ class MasterDashboardApp:
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
 
+    def run_content_importer(self):
+        self.run_command_async(['content_importer_gui.py'], "Content Importer")
+
     def run_file_importer(self):
         self.run_command_async(['epub_importer.py'], "File Importer")
 
@@ -594,9 +652,13 @@ class MasterDashboardApp:
         if not self.var_exclude_single.get():
             args.append('--include-single-chars')
         
-        min_freq = self.var_min_freq.get()
-        if min_freq > 0:
-            args.append(f'--min-freq={min_freq}')
+        if self.var_strategy.get() == "coverage":
+            coverage_target = self.var_target_coverage.get()
+            args.append(f'--target-coverage={coverage_target}')
+        else:
+            min_freq = self.var_min_freq.get()
+            if min_freq > 0:
+                args.append(f'--min-freq={min_freq}')
         
         args.append('--static')
         

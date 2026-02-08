@@ -297,6 +297,7 @@ def main():
     parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
     parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode (25-125)")
+    parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
 
     args, unknown = parser.parse_known_args()
 
@@ -400,7 +401,9 @@ def main():
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
                 file_total_words += 1
-                if lemma in ignore_list: continue
+                if lemma in ignore_list: 
+                    file_known_words += 1
+                    continue
                 if SKIP_SINGLE_CHARS and len(lemma) == 1:
                     file_known_words += 1
                     continue
@@ -475,12 +478,47 @@ def main():
     df = pd.DataFrame(output_rows)
     if not df.empty:
         df = df.sort_values(by="Score", ascending=False)
+        
+        # TARGET COVERAGE LOGIC
+        if args.target_coverage > 0:
+            total_tokens = sum(s['Total Words'] for s in file_stats)
+            current_known = sum(s['Known Count'] for s in file_stats)
+            
+            if total_tokens > 0:
+                current_pct = (current_known / total_tokens) * 100
+                print(f"Current Cumulative Coverage: {current_pct:.2f}% (Target: {args.target_coverage}%)")
+                
+                if current_pct >= args.target_coverage:
+                    print(f"Goal Achieved: Target coverage of {args.target_coverage}% is already met ({current_pct:.2f}%).")
+                    df = df.iloc[0:0] # Empty dataframe
+                else:
+                    # Greedy selection logic
+                    needed_rows = []
+                    running_known = current_known
+                    target_tokens = (args.target_coverage / 100) * total_tokens
+                    
+                    for index, row in df.iterrows():
+                        needed_rows.append(row)
+                        running_known += row['Occurrences']
+                        if running_known >= target_tokens:
+                            break
+                    
+                    final_pct = (running_known / total_tokens) * 100
+                    df = pd.DataFrame(needed_rows)
+                    
+                    if final_pct >= args.target_coverage:
+                        print(f"Successfully reached {final_pct:.2f}% coverage by adding {len(df)} words.")
+                    else:
+                        print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {len(df)} unknown words.")
+                        print(f"  (This is because some unique tokens remain that were not in the candidate list.)")
+
         df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
         print(f"Saved priority list to {OUTPUT_CSV}")
     else:
         print("No unknown words found!")
 
     # Output Stats
+    OUTPUT_STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
     with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
         f.write("--- File Statistics ---\n")
         f.write(f"Configuration: Skip Single Chars = {SKIP_SINGLE_CHARS}\n\n")
@@ -491,6 +529,10 @@ def main():
             f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
             f.write("\n")
     print(f"Saved stats to {OUTPUT_STATS}")
+    
+    with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
+        json.dump(file_stats, f, indent=4, ensure_ascii=False)
+    print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
     
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
@@ -570,15 +612,24 @@ def main():
             file_new_words.add((lemma, reading))
         
         # 3. Sort by priority
+        # This determines the order we "learn" them to reach coverage
         file_rows_buffer.sort(key=lambda x: (x["Score"], x["Occurrences (Global)"]), reverse=True)
         
-        # 4. Calculate Progressive Understanding
+        # 4. Calculate Progressive Understanding with Target Coverage
         current_known = file_current_start_count
         baseline_pct = (file_baseline_known_count / file_total_tokens * 100) if file_total_tokens > 0 else 0
+        
+        words_learned_this_file = set()
         
         for row in file_rows_buffer:
             start_pct = (current_known / file_total_tokens * 100) if file_total_tokens > 0 else 0
             
+            # Helper to check if we met target
+            if args.target_coverage > 0 and start_pct >= args.target_coverage:
+                # Target met for this file! valid to stop here.
+                # Words skipped here remain "unknown" for future files.
+                break
+
             word_count_in_file = row["Occurrences (File)"]
             current_known += word_count_in_file
             
@@ -588,11 +639,16 @@ def main():
             row["Current %"] = round(start_pct, 2)
             row["New %"] = round(end_pct, 2)
             
-        progressive_rows.extend(file_rows_buffer)
-
+            progressive_rows.append(row)
+            
+            # Track what we actually learned
+            lemma = row["Word"]
+            reading = row["Reading"]
+            words_learned_this_file.add((lemma, reading))
+            
         # After finishing the file, these words are now "Known" for the next file
-        session_known.update(file_new_words)
-        session_lemmas.update([x[0] for x in file_new_words])
+        session_known.update(words_learned_this_file)
+        session_lemmas.update([x[0] for x in words_learned_this_file])
         
     df_prog = pd.DataFrame(progressive_rows)
     if not df_prog.empty:

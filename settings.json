@@ -1,7 +1,9 @@
 {
     "exclude_single": true,
-    "min_freq": 2,
-    "zen_limit": 50,
-    "open_app_mode": false,
-    "theme": "Midnight (Vibrant)"
+    "min_freq": 5,
+    "zen_limit": 79,
+    "open_app_mode": true,
+    "theme": "Zen Focus",
+    "strategy": "coverage",
+    "target_coverage": 96
 }

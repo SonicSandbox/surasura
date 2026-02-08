@@ -76,6 +76,31 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")
 
+    # Load File Statistics (to find files with no new words - i.e. Completed)
+    STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
+    data["completed_files"] = []
+    
+    if os.path.exists(STATS_JSON):
+        try:
+            with open(STATS_JSON, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+                
+            # specific progressive files
+            prog_filenames = {item["filename"] for item in data["progressive"]}
+            
+            # Find files in stats but not in progressive
+            for file_stat in stats:
+                fname = file_stat.get("File")
+                # We assume files in stats are in reading order
+                if fname and fname not in prog_filenames:
+                    data["completed_files"].append({
+                        "filename": fname,
+                        "stats": file_stat
+                    })
+                    
+        except Exception as e:
+             print(f"Error loading stats JSON: {e}")
+
     # Load Priority
     if os.path.exists(PRIORITY_CSV):
         try:

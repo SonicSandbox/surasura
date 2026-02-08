@@ -10,6 +10,7 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Project Data (Private)
 data/HighPriority/*
@@ -32,16 +33,15 @@ User Files/IgnoreList.txt
 # Local Env
 .env
 
-# Distribution
+# Distribution & Build
 dist/
 build/
+*.spec
+!packaging/*.spec
 
-# Other Files
-RELEASE_NOTES.md
+# Logs & Temp
 app_debug_log.txt
 build_log.txt
-test_hello.py
-RELEASE_NOTES.md
 build_log_retry.txt
+test_hello.py
 
-RELEASE_v1.0.md

@@ -280,7 +280,10 @@ class ContentImporterApp:
         else:
             subprocess.Popen(['xdg-open', path])
 
-if __name__ == "__main__":
+def main():
     root = tk.Tk()
     app = ContentImporterApp(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()

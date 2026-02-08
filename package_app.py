@@ -19,25 +19,15 @@ def build():
             pass
 
     # PyInstaller Command
+    # Use the spec file in packaging/ directory
+    # distpath and workpath default to dist/ and build/ in the current directory
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--clean",
         "--noconfirm",
-        "--name", "Surasura_v1.0",
-        "--onedir",
-        "--windowed",
-        "--add-data", "templates;templates",
-        "--add-data", "scripts;scripts",
-        "--add-data", "app/assets;app/assets",
-        "--icon", "app/assets/images/app_icon.ico",
-        "--collect-all", "unidic_lite",
-        "--hidden-import", "pandas",
-        "--hidden-import", "fugashi",
-        "--hidden-import", "tkinter",
-        "--hidden-import", "ebooklib",
-        "--hidden-import", "bs4",
-        "--exclude-module", "pandas.tests",
-        "app_entry.py"
+        "--distpath", "dist",
+        "--workpath", "build",
+        os.path.join("packaging", "Surasura_v1.1.spec")
     ]
     
     print(f"Running: {' '.join(cmd)}")
@@ -51,41 +41,42 @@ def build():
 
     # Post-Build: Create Distribution Folder
     print("Creating Distribution Package...")
-    final_dist = os.path.join("dist", "Surasura_Distribution_v1.0")
+    final_dist = os.path.join("dist", "Surasura_v1.1")
     
-    # Clean previous distribution
-    if os.path.exists(final_dist):
-        print(f"Cleaning previous distribution: {final_dist}")
-        try:
-            shutil.rmtree(final_dist)
-        except Exception as e:
-            print(f"Warning: Could not clean {final_dist}: {e}")
+    # Clean previous distribution logic removed because we already cleaned dist at the start
+    # and PyInstaller works directly in this folder now.
+
 
     # 1. Handle Built Files
-    src_dir = os.path.join("dist", "Surasura_v1.0")
-    src_exe = os.path.join("dist", "Surasura_v1.0.exe")
+    # The spec file is configured to output directly to dist/Surasura_v1.1
+    # So we just need to verify it exists.
     
-    if os.path.exists(src_dir):
-        # Onedir mode: Rename/Move the folder to the final name
-        print(f"Moving {src_dir} to {final_dist}")
-        shutil.move(src_dir, final_dist)
-    elif os.path.exists(src_exe):
-        # Onefile mode: Create folder and move exe
-        os.makedirs(final_dist, exist_ok=True)
-        print(f"Moving {src_exe} to {final_dist}")
-        shutil.move(src_exe, os.path.join(final_dist, "Surasura_v1.0.exe"))
-    else:
-        print("Error: Build output not found in dist/")
+    if not os.path.exists(final_dist):
+        print(f"Error: Build output not found at {final_dist}")
         return
 
-    # 2. Copy User Files (Config/Lists) into the package folder
-    print("Copying User Files...")
-    src_user_files = "User Files"
+    print(f"Build output verified at {final_dist}")
+
+    # 2. Copy User Files (SANITIZED)
+    print("Copying User Files (Sanitized)...")
     dst_user_files = os.path.join(final_dist, "User Files")
-    if os.path.exists(src_user_files):
-        shutil.copytree(src_user_files, dst_user_files, dirs_exist_ok=True)
-    else:
-        os.makedirs(dst_user_files, exist_ok=True)
+    os.makedirs(dst_user_files, exist_ok=True)
+    
+    # A. Copy Sample Known Words as the default
+    src_sample_json = os.path.join("User Files", "KnownWordsSample.json")
+    if os.path.exists(src_sample_json):
+        shutil.copy2(src_sample_json, os.path.join(dst_user_files, "KnownWord.json"))
+        # Sample file is now just KnownWord.json, no need for duplicate
+    
+    # B. Create Empty Ignore List
+    with open(os.path.join(dst_user_files, "IgnoreList.txt"), "w", encoding="utf-8") as f:
+        f.write("# Add words to ignore here (one per line)\n")
+        
+    # C. Copy Frequency Lists
+    for freq_file in ["Netflix_Frequency_Tier_1.txt", "Netflix_Frequency_Tier_2.txt", "Netflix_Frequency_Tier_3.txt"]:
+        src_freq = os.path.join("User Files", freq_file)
+        if os.path.exists(src_freq):
+            shutil.copy2(src_freq, os.path.join(dst_user_files, freq_file))
 
     # 3. Create Data Directories and Copy Samples
     print("Creating Data Directories and Copying Samples...")
@@ -104,6 +95,23 @@ def build():
 
     # 4. Create Results Directory
     os.makedirs(os.path.join(final_dist, "results"), exist_ok=True)
+    
+    # 5. Copy Documentation
+    # 5. Copy Documentation
+    # We copy these from the docs/ folder to the root of the distribution
+    # so the user sees them immediately upon opening the folder.
+    
+    docs_to_copy = [
+        ("README.md", "README.md"),
+        (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
+        (os.path.join("docs", "releases", "RELEASE_v1.1.md"), "RELEASE_v1.1.md")
+    ]
+
+    for src, dst_name in docs_to_copy:
+        if os.path.exists(src):
+             shutil.copy2(src, os.path.join(final_dist, dst_name))
+        else:
+            print(f"Warning: Documentation file not found: {src}")
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")

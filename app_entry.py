@@ -72,6 +72,12 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:] 
                 migaku_converter.main()
                 return
+
+            elif command == 'content_importer':
+                from app import content_importer_gui
+                sys.argv = [sys.argv[0]] + sys.argv[2:] 
+                content_importer_gui.main()
+                return
             else:
                 log_error(f"Unknown command: {command}")
 

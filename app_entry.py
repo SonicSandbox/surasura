@@ -61,6 +61,12 @@ def main():
                 migaku_db_importer_gui.main()
                 return
                 
+            elif command == 'jiten_importer':
+                from app import jiten_db_importer_gui
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                jiten_db_importer_gui.main()
+                return
+                
             elif command == 'static_generator':
                 from app import static_html_generator
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
@@ -71,6 +77,12 @@ def main():
                 from app import migaku_converter
                 sys.argv = [sys.argv[0]] + sys.argv[2:] 
                 migaku_converter.main()
+                return
+
+            elif command == 'convert_jiten':
+                from app import jiten_converter
+                sys.argv = [sys.argv[0]] + sys.argv[2:] 
+                jiten_converter.main()
                 return
 
             elif command == 'content_importer':

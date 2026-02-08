@@ -296,6 +296,11 @@ class MasterDashboardApp:
         btn_migaku.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_migaku, "Import known words from Migaku database export.")
 
+        btn_jiten = ttk.Button(data_btns_frame, text="Jiten Sync", style="Action.TButton", 
+                   command=self.run_jiten_importer)
+        btn_jiten.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(btn_jiten, "Import known words from Jiten API using your API key.")
+
         btn_open_data = ttk.Button(data_btns_frame, text="Launch Content Importer", style="Action.TButton",
                                     command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT)
@@ -654,6 +659,9 @@ class MasterDashboardApp:
 
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
+
+    def run_jiten_importer(self):
+        self.run_command_async(['jiten_db_importer_gui.py'], "Jiten Sync")
 
     def run_content_importer(self):
         self.run_command_async(['content_importer_gui.py'], "Content Importer")

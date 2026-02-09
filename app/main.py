@@ -364,7 +364,7 @@ class MasterDashboardApp:
                                activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
         freq_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         ttk.Label(self.freq_frame, textvariable=self.var_min_freq, width=2).pack(side=tk.LEFT)
-        ToolTip(self.freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words).")
+        ToolTip(self.freq_frame, "Show words with this frequency or higher. Default is 1 (shows all words).")
 
         # 2. Coverage Entry (Hidden initially)
         self.coverage_frame = ttk.Frame(self.options_container)

@@ -394,7 +394,7 @@ def main():
     # Flags for standard run
     parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
     parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
-    parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency <= this value (default 0)")
+    parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
     
     # These are handled manually above but good to have in help
     parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
@@ -420,11 +420,11 @@ def main():
     # Min Frequency Logic
     if args.min_freq > 0:
         MIN_FREQ = args.min_freq
-        print(f"Configuration: Words with frequency <= {MIN_FREQ} EXCLUDED.")
+        print(f"Configuration: Words with frequency < {MIN_FREQ} EXCLUDED.")
     elif args.exclude_freq_one:
         # Backward compatibility
         MIN_FREQ = 1
-        print("Configuration: Frequency 1 words EXCLUDED (via flag).")
+        print("Configuration: Frequency < 1 words EXCLUDED (via flag).")
     else:
         MIN_FREQ = 0
         print("Configuration: All frequencies INCLUDED (Default).")
@@ -779,7 +779,7 @@ def main():
                 "first_context": "", "best_extra_contexts": []
             })
             
-            if MIN_FREQ > 0 and stats["total_count"] <= MIN_FREQ:
+            if MIN_FREQ > 0 and stats["total_count"] < MIN_FREQ:
                 continue
 
             file_rows_buffer.append({

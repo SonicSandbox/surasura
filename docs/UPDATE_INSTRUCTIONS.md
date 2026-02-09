@@ -21,8 +21,11 @@ Before updating, **always backup your `User Files` folder**. This folder contain
     *   **Restore** this folder to the new location.
 
 4.  **Launch**:
-    *   Run `Surasura_v1.x.exe`.
+    *   Run `Surasura.exe`.
     *   Verify your known words are loaded correctly in the dashboard.
 
 ## Release Notes
 Check the `RELEASE_*.md` files or the GitHub Releases page for details on what's new in each version.
+
+## Issues & Contributions
+If you encounter any issues or have suggestions, please open an issue on the [GitHub repository](https://github.com/SonicSandbox/surasura).

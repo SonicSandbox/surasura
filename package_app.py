@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import argparse
 
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
@@ -13,7 +14,7 @@ def get_version():
                 return line.split(delim)[1]
     return "0.0"
 
-def build():
+def build(zip_output=False):
     version = get_version()
     build_name = f"Surasura_v{version}"
     print(f"Building Readability Analyzer {build_name}...")
@@ -153,10 +154,26 @@ def build():
         else:
             print(f"Warning: Documentation file not found: {src}")
 
+    # 6. Create Zip Archive
+    if zip_output:
+        print("Creating Zip Archive...")
+        archive_base = os.path.join("dist", build_name) # Will create {build_name}.zip in dist/
+        try:
+            shutil.make_archive(archive_base, 'zip', final_dist)
+            print(f"Zip archive created: {archive_base}.zip")
+        except Exception as e:
+            print(f"Warning: Could not create zip archive: {e}")
+    else:
+        print("Skipping Zip Archive creation (use --zip to enable).")
+
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")
-    print("You can zip this folder and share it.")
+    if zip_output:
+        print(f"Zip Archive: {os.path.abspath(archive_base + '.zip')}")
     print("---------------------------------------------------")
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description="Build and package Surasura.")
+    parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")
+    args = parser.parse_known_args()[0]
+    build(zip_output=args.zip)

@@ -84,8 +84,24 @@ def build():
     with open(os.path.join(dst_user_files, "IgnoreList.txt"), "w", encoding="utf-8") as f:
         f.write("# Add words to ignore here (one per line)\n")
         
-    # C. Copy Yomitan Frequency Lists
-    freq_lists = [
+    # Copy Blacklist
+    src_blacklist = os.path.join("User Files", "Blacklist.txt")
+    if os.path.exists(src_blacklist):
+        shutil.copy2(src_blacklist, os.path.join(dst_user_files, "Blacklist.txt"))
+        
+    # C. Copy Frequency Lists (CSV)
+    # Copy any file matching frequency_list_*.csv
+    user_files_src = "User Files"
+    if os.path.exists(user_files_src):
+        for f in os.listdir(user_files_src):
+            if f.startswith("frequency_list_") and f.endswith(".csv"):
+                src_path = os.path.join(user_files_src, f)
+                dst_path = os.path.join(dst_user_files, f)
+                shutil.copy2(src_path, dst_path)
+                print(f"Bundled frequency list: {f}")
+
+    # D. Copy Legacy Yomitan Frequency Lists (Zips) - Optional/Legacy
+    freq_lists_legacy = [
         "jiten_freq_Anime.zip",
         "jiten_freq_Drama.zip",
         "jiten_freq_global.zip",
@@ -97,7 +113,7 @@ def build():
         "jiten_freq_VisualNovel.zip",
         "jiten_freq_WebNovel.zip",
     ]
-    for freq_file in freq_lists:
+    for freq_file in freq_lists_legacy:
         src_freq = os.path.join("User Files", freq_file)
         if os.path.exists(src_freq):
             shutil.copy2(src_freq, os.path.join(dst_user_files, freq_file))

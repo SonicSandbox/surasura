@@ -5,7 +5,9 @@ import sys
 
 # Paths are now relative to the spec file location (packaging/)
 # We need to go up one level to reach the project root.
-project_root = '..'
+# When running from project root via package_app.py, use absolute path to be safe
+# CWD is root, so abspath('.') gives root
+project_root = os.path.abspath('.')
 
 # -----------------------------------------------------------------------------
 # DYNAMIC VERSION LOGIC

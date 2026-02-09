@@ -16,7 +16,9 @@ Before updating, **always backup your `User Files` folder**. This folder contain
 3.  **Restore Your Data**:
     *   Open the new Surasura folder.
     *   **Delete** the default `User Files` folder inside it.
+    *   **Delete** the default `User Files` folder inside it.
     *   **Move** your backed-up `User Files` folder (from Step 1) into this new folder.
+    *   **Restore** this folder to the new location.
 
 4.  **Launch**:
     *   Run `Surasura_v1.x.exe`.

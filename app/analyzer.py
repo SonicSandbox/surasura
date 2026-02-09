@@ -32,6 +32,7 @@ USER_FILES_DIR = get_user_file("User Files")
 DATA_DIR = get_user_file("data")
 
 KNOWN_WORDS_FILE = os.path.join(USER_FILES_DIR, "KnownWord.json") 
+BLACK_LIST_FILE = os.path.join(USER_FILES_DIR, "Blacklist.txt")
 IGNORE_LIST_FILE = os.path.join(USER_FILES_DIR, "IgnoreList.txt")
 
 RESULTS_DIR = get_user_file("results")
@@ -251,7 +252,15 @@ def extract_text(file_path):
                 # Filter out lines without Japanese characters
                 # This removes English-only credits or technical markings
                 lines = sub.text.splitlines()
-                filtered_lines = [l for l in lines if has_japanese(l)]
+                filtered_lines = []
+                for l in lines:
+                    if not has_japanese(l):
+                        continue
+                    # Remove furigana in parens: (れい) or （れい）
+                    # Matches: (anything), （anything）
+                    l = re.sub(r'[\(（].*?[\)）]', '', l)
+                    filtered_lines.append(l)
+
                 if filtered_lines:
                     # Join lines within a subtitle block with spaces to preserve word boundaries
                     block_text = " ".join(filtered_lines)
@@ -427,6 +436,8 @@ def main():
     tokenizer = JapaneseTokenizer()
     known_words_initial, known_lemmas_initial = load_known_words(KNOWN_WORDS_FILE, tokenizer)
     ignore_list = load_simple_list(IGNORE_LIST_FILE)
+    black_list = load_simple_list(BLACK_LIST_FILE)
+    ignore_list.update(black_list) # Merge blacklist into ignore list
     
     # Discover and load all yomitan frequency lists from User Files
     print("Scanning for frequency lists...")
@@ -565,7 +576,7 @@ def main():
     # Output Priority CSV
     output_rows = []
     for (lemma, reading), data in word_stats.items():
-        if MIN_FREQ > 0 and data["total_count"] <= MIN_FREQ:
+        if MIN_FREQ > 0 and data["total_count"] < MIN_FREQ:
             continue
 
         tier_labels = get_tier_label(lemma, freq_data)
@@ -708,7 +719,7 @@ def main():
                 "first_context": "", "best_extra_contexts": []
             })
             
-            if MIN_FREQ > 0 and stats["total_count"] <= MIN_FREQ:
+            if MIN_FREQ > 0 and stats["total_count"] < MIN_FREQ:
                 continue
 
             file_rows_buffer.append({

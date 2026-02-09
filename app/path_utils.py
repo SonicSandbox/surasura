@@ -77,3 +77,16 @@ def ensure_data_setup():
                         shutil.copy2(s, d)
                     elif os.path.isdir(s):
                         shutil.copytree(s, d, dirs_exist_ok=True)
+
+    # 3. Ensure Blacklist.txt exists in User Files
+    user_files_dir = get_user_file("User Files")
+    if not os.path.exists(user_files_dir):
+        os.makedirs(user_files_dir, exist_ok=True)
+        
+    blacklist_path = os.path.join(user_files_dir, "Blacklist.txt")
+    if not os.path.exists(blacklist_path):
+        try:
+            with open(blacklist_path, "w", encoding="utf-8") as f:
+                f.write("一人\n彼の\n")
+        except Exception as e:
+            print(f"Warning: Could not create Blacklist.txt: {e}")

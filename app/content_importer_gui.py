@@ -214,8 +214,13 @@ class ContentImporterApp:
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
+        processed_dir = os.path.join(self.data_root, "Processed")
+        if not os.path.exists(processed_dir):
+            os.makedirs(processed_dir)
+
         filepaths = filedialog.askopenfilenames(
             title="Select Content Files",
+            initialdir=processed_dir,
             filetypes=[
                 ("All Supported", "*.txt *.md *.epub *.srt"),
                 ("Text Files", "*.txt"),

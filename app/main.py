@@ -104,13 +104,12 @@ class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"Surasura - Readability Analyzer Dashboard v{__version__}")
-        self.root.geometry("520x720") 
+        self.root.geometry("520x650") 
         self.root.resizable(True, True)
-        self.root.minsize(520, 600)
+        self.root.minsize(520, 550)
         self.root.configure(bg=BG_COLOR)
         
-        # Bind Escape key to close
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
+
         
         self.style = ttk.Style()
         self.apply_dark_theme()
@@ -128,6 +127,7 @@ class MasterDashboardApp:
         self.status_var = tk.StringVar(value="Ready")
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
+        self.settings_window: Optional[tk.Toplevel] = None
         
         # Queue for thread-safe GUI updates
         self.gui_queue = queue.Queue()
@@ -256,7 +256,7 @@ class MasterDashboardApp:
         )
         
         # Specific Button Styles
-        self.style.configure("Action.TButton", width=16)
+        self.style.configure("Action.TButton", width=24)
 
     def update_strategy_ui(self):
         strategy = self.var_strategy.get()
@@ -269,12 +269,12 @@ class MasterDashboardApp:
             self.save_settings() # Save on switch
         
     def setup_ui(self):
-        main_frame = ttk.Frame(self.root, padding="25")
+        main_frame = ttk.Frame(self.root, padding="15") # Reduced padding 25 -> 15
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
         header_frame = ttk.Frame(main_frame)
-        header_frame.pack(pady=(0, 20))
+        header_frame.pack(pady=(0, 10)) # Reduced pady 20 -> 10
         
         if hasattr(self, 'logo_header'):
             logo_label = ttk.Label(header_frame, image=self.logo_header)
@@ -283,55 +283,51 @@ class MasterDashboardApp:
         header_text = ttk.Label(header_frame, text="Surasura - Readability Analyzer", style="Header.TLabel")
         header_text.pack(side=tk.LEFT)
         
-        # 1. Pipeline Tools (Data)
-        tools_frame = ttk.LabelFrame(main_frame, text=" 📦 Data Preparation", padding="15")
-        tools_frame.pack(fill=tk.X, pady=(0, 15))
+        # 1. Vocabulary Tools
+        vocab_frame = ttk.LabelFrame(main_frame, text=" 📚 Import Vocabulary", padding="10")
+        vocab_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
         
-        # Data Preparation Buttons - Row 1
-        data_btns_frame1 = ttk.Frame(tools_frame)
-        data_btns_frame1.pack(fill=tk.X, pady=(0, 5))
+        # Single Row: [Migaku] [Jiten] [Edit Ignore List (fills rest)]
+        vocab_row = ttk.Frame(vocab_frame)
+        vocab_row.pack(fill=tk.X)
 
-        btn_migaku = ttk.Button(data_btns_frame1, text="Migaku Word List Importer", style="Action.TButton", 
+        btn_migaku = ttk.Button(vocab_row, text="Migaku", width=12,
                    command=self.run_migaku_importer)
         btn_migaku.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(btn_migaku, "Import known words from Migaku database export.")
 
-        btn_jiten = ttk.Button(data_btns_frame1, text="Jiten Sync", style="Action.TButton", 
+        btn_jiten = ttk.Button(vocab_row, text="Jiten", width=12,
                    command=self.run_jiten_importer)
-        btn_jiten.pack(side=tk.LEFT, padx=(0, 5))
+        btn_jiten.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(btn_jiten, "Import known words from Jiten API using your API key.")
-
-        # Data Preparation Buttons - Row 2
-        data_btns_frame2 = ttk.Frame(tools_frame)
-        data_btns_frame2.pack(fill=tk.X, pady=(0, 10))
-
-        btn_open_data = ttk.Button(data_btns_frame2, text="Launch Content Importer", style="Action.TButton",
-                                    command=self.run_content_importer)
-        btn_open_data.pack(side=tk.LEFT, padx=(0, 5))
-        ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
-
-        btn_epub = ttk.Button(data_btns_frame2, text="Extract / Splice", style="Action.TButton", 
-                   command=self.run_file_importer)
-        btn_epub.pack(side=tk.LEFT, padx=(0, 5))
-        ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
-
-        btn_ignore = ttk.Button(data_btns_frame2, text="Edit Ignore List", style="Action.TButton", 
-                    command=self.open_ignore_list)
-        btn_ignore.pack(side=tk.LEFT)
+        
+        # This button expands to fill all remaining space
+        btn_ignore = ttk.Button(vocab_row, text="Edit Ignore List", style="Action.TButton",
+                     command=self.open_ignore_list)
+        btn_ignore.pack(side=tk.LEFT, expand=True, fill=tk.X)
         ToolTip(btn_ignore, "Open your IgnoreList.txt to manually edit excluded words.")
 
-        # 2. Analyzer Tools
-        analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="15")
-        analyze_frame.pack(fill=tk.X, pady=(0, 15))
+        # 2. Library Tools
+        lib_frame = ttk.LabelFrame(main_frame, text=" 📦 Library Content", padding="10")
+        lib_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
 
-        # Checkboxes with Tooltips
-        chk_single = ttk.Checkbutton(analyze_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
-        chk_single.pack(anchor=tk.W, pady=(0, 5))
-        ToolTip(chk_single, "Ignore 1-char words (Recommended)")
-        
+        btn_open_data = ttk.Button(lib_frame, text="Launch Content Importer", style="Action.TButton",
+                                    command=self.run_content_importer)
+        btn_open_data.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
+
+        btn_epub = ttk.Button(lib_frame, text="Extract / Splice", style="Action.TButton", 
+                   command=self.run_file_importer)
+        btn_epub.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
+
+        # 3. Analyzer Tools
+        analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="10")
+        analyze_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
+
         # Strategy Selection
         strategy_frame = ttk.Frame(analyze_frame)
-        strategy_frame.pack(fill=tk.X, pady=(0, 10))
+        strategy_frame.pack(fill=tk.X, pady=(0, 8))
         
         ttk.Label(strategy_frame, text="Generation Mode:").pack(side=tk.LEFT)
         ttk.Radiobutton(strategy_frame, text="Min Frequency", variable=self.var_strategy, value="freq", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
@@ -339,19 +335,19 @@ class MasterDashboardApp:
 
         # Dynamic Options Frame
         self.options_container = ttk.Frame(analyze_frame)
-        self.options_container.pack(fill=tk.X, pady=(0, 10))
+        self.options_container.pack(fill=tk.X, pady=(0, 8))
 
         # 1. Frequency Slider (Default)
         self.freq_frame = ttk.Frame(self.options_container)
         
         ttk.Label(self.freq_frame, text="Min Frequency:").pack(side=tk.LEFT)
-        freq_slider = tk.Scale(self.freq_frame, from_=0, to=10, orient=tk.HORIZONTAL, 
+        freq_slider = tk.Scale(self.freq_frame, from_=1, to=10, orient=tk.HORIZONTAL, 
                                variable=self.var_min_freq, showvalue=False,
                                bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
                                activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
         freq_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         ttk.Label(self.freq_frame, textvariable=self.var_min_freq, width=2).pack(side=tk.LEFT)
-        ToolTip(self.freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words). 0 shows everything.")
+        ToolTip(self.freq_frame, "Hide words with frequency <= this value. Default is 1 (hides Freq 1 words).")
 
         # 2. Coverage Entry (Hidden initially)
         self.coverage_frame = ttk.Frame(self.options_container)
@@ -367,33 +363,19 @@ class MasterDashboardApp:
         # Run Analyzer Button
         btn_analyze = ttk.Button(analyze_frame, text="Run Analysis", style="Action.TButton",
                                  command=self.run_analyzer)
-        btn_analyze.pack(anchor=tk.W)
+        btn_analyze.pack(anchor=tk.W, fill=tk.X)
         ToolTip(btn_analyze, "Analyze text files and generate readability report. Auto-launches static page.")
 
         # Spinner (Initially hidden)
         self.spinner = ttk.Progressbar(analyze_frame, mode='indeterminate', style="TProgressbar")
         
-        # 3. Terminal / Logs
-        log_frame = ttk.LabelFrame(main_frame, text=" 💻 Processing Log", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
-
-        self.terminal = tk.Text(log_frame, height=1, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
-                                insertbackground=TEXT_COLOR, font=("Consolas", 9),
-                                relief=tk.FLAT, borderwidth=0, state=tk.DISABLED,
-                                wrap=tk.NONE)
-        self.terminal.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(log_frame, command=self.terminal.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.terminal.config(yscrollcommand=scrollbar.set)
-
         # 4. Results Viewer
-        view_frame = ttk.LabelFrame(main_frame, text=" 📊 Results Viewer", padding="15")
-        view_frame.pack(fill=tk.X)
+        view_frame = ttk.LabelFrame(main_frame, text=" 📊 Results Viewer", padding="10")
+        view_frame.pack(fill=tk.X, pady=(0, 2)) # Further reduced pady
 
         # Theme Selector and App Mode Toggle
         theme_app_frame = ttk.Frame(view_frame)
-        theme_app_frame.pack(fill=tk.X, pady=(0, 10))
+        theme_app_frame.pack(fill=tk.X, pady=(0, 8))
 
         themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
         self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
@@ -407,7 +389,7 @@ class MasterDashboardApp:
         
         # Zen Limit Slider (Inline with Results)
         zen_frame = ttk.Frame(view_frame)
-        zen_frame.pack(fill=tk.X, pady=(0, 10))
+        zen_frame.pack(fill=tk.X, pady=(0, 8))
         
         ttk.Label(zen_frame, text="Zen Word Limit:").pack(side=tk.LEFT)
         
@@ -424,11 +406,11 @@ class MasterDashboardApp:
 
         btn_static = ttk.Button(view_frame, text="View Vocab Journey", style="Action.TButton", 
                    command=self.run_static_page)
-        btn_static.pack(anchor=tk.W)
+        btn_static.pack(anchor=tk.W, fill=tk.X)
         ToolTip(btn_static, "Refresh and open your personalized learning path in the web browser.")
         
         # Footer
-        footer_frame = ttk.Frame(self.root, padding=(10, 5))
+        footer_frame = ttk.Frame(self.root, padding=(10, 0)) # Zero vertical padding for footer
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
         
         # Status Bar
@@ -444,6 +426,58 @@ class MasterDashboardApp:
         self.github_link.pack(side=tk.LEFT)
         # UPDATED LINK to the new repo
         self.github_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/SonicSandbox/surasura"))
+
+        # Settings Button (Icon only, Bottom Right)
+        # Use a simple gear unicode or similar if no image
+        btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
+        btn_settings.pack(side=tk.LEFT, padx=(10, 0))
+        ToolTip(btn_settings, "Open Settings & Logs")
+
+    def create_settings_window(self):
+        self.settings_window = tk.Toplevel(self.root)
+        self.settings_window.title("Settings & Logs")
+        self.settings_window.geometry("600x400")
+        self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
+        
+        # Bind Escape to hide the settings window
+        self.settings_window.bind("<Escape>", lambda e: self.toggle_settings_window())
+        
+        self.settings_window.withdraw() # Hide initially
+        
+        # Apply theme to settings window too (requires style sharing which ttk does automatically for same root)
+        self.settings_window.configure(bg=BG_COLOR)
+
+        # Settings
+        settings_frame = ttk.LabelFrame(self.settings_window, text=" Advanced Settings", padding="10")
+        settings_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        chk_single = ttk.Checkbutton(settings_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
+        chk_single.pack(anchor=tk.W)
+        ToolTip(chk_single, "Ignore 1-char words (Recommended)")
+
+        # Logs
+        log_frame = ttk.LabelFrame(self.settings_window, text=" Processing Log", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.terminal = tk.Text(log_frame, height=10, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
+                                insertbackground=TEXT_COLOR, font=("Consolas", 9),
+                                relief=tk.FLAT, borderwidth=0, state=tk.DISABLED,
+                                wrap=tk.NONE)
+        self.terminal.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(log_frame, command=self.terminal.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.terminal.config(yscrollcommand=scrollbar.set)
+        
+    def toggle_settings_window(self):
+        if self.settings_window is None or not self.settings_window.winfo_exists():
+            self.create_settings_window()
+            
+        if self.settings_window.state() == "withdrawn":
+            self.settings_window.deiconify()
+            self.settings_window.lift()
+        else:
+            self.settings_window.withdraw()
 
     def check_updates_thread(self):
         """Background thread to check for updates"""
@@ -556,19 +590,23 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open ignore list: {e}")
             
-    def run_command_async(self, cmd, desc, capture_output=False):
+    def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False):
         """Runs a command with optional output redirection to the terminal"""
         
         # UI updates must be queued
         def _start_loading():
             self.status_var.set(f"Running {desc}...")
-            # If the spinner or terminal are not initialized, skip this
-            if capture_output and self.terminal and self.spinner:
+            
+            # Show spinner only if requested
+            if show_spinner and self.spinner:
+                self.spinner.pack(fill=tk.X, pady=(5, 0))
+                self.spinner.start(10)
+
+            # Clear terminal only if it exists
+            if capture_output and self.terminal:
                 self.terminal.config(state=tk.NORMAL)
                 self.terminal.delete(1.0, tk.END)
                 self.terminal.config(state=tk.DISABLED)
-                self.spinner.pack(fill=tk.X, pady=(10, 0))
-                self.spinner.start(10)
         
         self.gui_queue.put(_start_loading)
 
@@ -704,7 +742,7 @@ class MasterDashboardApp:
         if self.var_open_app_mode.get():
             args.append('--app-mode')
             
-        self.run_command_async(args, "Analyzer", capture_output=True)
+        self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True)
 
     def run_static_page(self):
         # Add theme argument for static page generation only
@@ -724,7 +762,7 @@ class MasterDashboardApp:
         if self.var_open_app_mode.get():
             args.append('--app-mode')
 
-        self.run_command_async(args, "Static Page", capture_output=True)
+        self.run_command_async(args, "Static Page", capture_output=True, show_spinner=True)
 
 def main():
     root = tk.Tk()

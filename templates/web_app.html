@@ -1340,14 +1340,20 @@
             if (data.Tier) {
                 const tierStr = String(data.Tier).trim();
                 if (tierStr === 'Outside') {
-                    tierBadgesHtml = '<span class="tier-badge tier-outside">Outside</span>';
+                    tierBadgesHtml = '';
                 } else {
                     // Format: "Source1:Tier1;Source2:Tier2" or old format "1"
                     const tierParts = tierStr.split(';');
                     tierBadgesHtml = tierParts.map(part => {
                         if (part.includes(':')) {
                             const [source, tier] = part.split(':');
-                            return `<span class="tier-badge tier-${tier}" title="${source}">${source}:${tier}</span>`;
+
+                            // Strictly abbreviate to the first letter in caps
+                            // e.g., "global50k" -> "G", "anime" -> "A"
+                            let displaySource = source.charAt(0).toUpperCase();
+
+                            // Format: "G-3"
+                            return `<span class="tier-badge tier-${tier}" title="${source}">${displaySource}-${tier}</span>`;
                         } else {
                             // Fallback for old format
                             return `<span class="tier-badge tier-${part}">${part}</span>`;

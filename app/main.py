@@ -256,7 +256,7 @@ class MasterDashboardApp:
         )
         
         # Specific Button Styles
-        self.style.configure("Action.TButton", width=22)
+        self.style.configure("Action.TButton", width=16)
 
     def update_strategy_ui(self):
         strategy = self.var_strategy.get()
@@ -287,29 +287,35 @@ class MasterDashboardApp:
         tools_frame = ttk.LabelFrame(main_frame, text=" 📦 Data Preparation", padding="15")
         tools_frame.pack(fill=tk.X, pady=(0, 15))
         
-        # Data Preparation Buttons - Horizontal Layout
-        data_btns_frame = ttk.Frame(tools_frame)
-        data_btns_frame.pack(fill=tk.X, pady=(0, 10))
+        # Data Preparation Buttons - Row 1
+        data_btns_frame1 = ttk.Frame(tools_frame)
+        data_btns_frame1.pack(fill=tk.X, pady=(0, 5))
 
-        btn_migaku = ttk.Button(data_btns_frame, text="Migaku Word List Importer", style="Action.TButton", 
+        btn_migaku = ttk.Button(data_btns_frame1, text="Migaku Word List Importer", style="Action.TButton", 
                    command=self.run_migaku_importer)
-        btn_migaku.pack(side=tk.LEFT, padx=(0, 10))
+        btn_migaku.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(btn_migaku, "Import known words from Migaku database export.")
 
-        btn_open_data = ttk.Button(data_btns_frame, text="Launch Content Importer", style="Action.TButton",
+        btn_jiten = ttk.Button(data_btns_frame1, text="Jiten Sync", style="Action.TButton", 
+                   command=self.run_jiten_importer)
+        btn_jiten.pack(side=tk.LEFT, padx=(0, 5))
+        ToolTip(btn_jiten, "Import known words from Jiten API using your API key.")
+
+        # Data Preparation Buttons - Row 2
+        data_btns_frame2 = ttk.Frame(tools_frame)
+        data_btns_frame2.pack(fill=tk.X, pady=(0, 10))
+
+        btn_open_data = ttk.Button(data_btns_frame2, text="Launch Content Importer", style="Action.TButton",
                                     command=self.run_content_importer)
-        btn_open_data.pack(side=tk.LEFT)
+        btn_open_data.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
 
-        importer_frame = ttk.Frame(tools_frame)
-        importer_frame.pack(fill=tk.X)
-
-        btn_epub = ttk.Button(importer_frame, text="Extract / Splice", style="Action.TButton", 
+        btn_epub = ttk.Button(data_btns_frame2, text="Extract / Splice", style="Action.TButton", 
                    command=self.run_file_importer)
-        btn_epub.pack(side=tk.LEFT, padx=(0, 10))
+        btn_epub.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
 
-        btn_ignore = ttk.Button(importer_frame, text="Edit Ignore List", style="Action.TButton", 
+        btn_ignore = ttk.Button(data_btns_frame2, text="Edit Ignore List", style="Action.TButton", 
                     command=self.open_ignore_list)
         btn_ignore.pack(side=tk.LEFT)
         ToolTip(btn_ignore, "Open your IgnoreList.txt to manually edit excluded words.")
@@ -572,6 +578,7 @@ class MasterDashboardApp:
                 'analyzer.py': 'analyzer',
                 'epub_importer.py': 'epub_importer',
                 'migaku_db_importer_gui.py': 'migaku_importer',
+                'jiten_db_importer_gui.py': 'jiten_importer',
                 'content_importer_gui.py': 'content_importer',
                 'static_html_generator.py': 'static_generator',
                 'migaku_converter.py': 'convert_db'
@@ -654,6 +661,9 @@ class MasterDashboardApp:
 
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
+
+    def run_jiten_importer(self):
+        self.run_command_async(['jiten_db_importer_gui.py'], "Jiten Sync")
 
     def run_content_importer(self):
         self.run_command_async(['content_importer_gui.py'], "Content Importer")

@@ -173,8 +173,13 @@ def extract_text(file_path):
                 lines = sub.text.splitlines()
                 filtered_lines = [l for l in lines if has_japanese(l)]
                 if filtered_lines:
-                    parts.append("\n".join(filtered_lines))
-            text = "\n".join(parts)
+                    # Join lines within a subtitle block with spaces to preserve word boundaries
+                    block_text = " ".join(filtered_lines)
+                    # Add a period (。) at the end only if it doesn't already end with sentence punctuation
+                    if not block_text or block_text[-1] not in '。！？!?':
+                        block_text += "。"
+                    parts.append(block_text)
+            text = "".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     else:
@@ -400,8 +405,14 @@ def main():
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
+                # Skip tokens that contain no Japanese characters (e.g. SSA/ASS tags like {\an8},
+                # timestamps, markup, or other ASCII-only tokens). These should not count
+                # toward totals or be considered unknown words.
+                if not has_japanese(lemma) and not has_japanese(surface):
+                    continue
+
                 file_total_words += 1
-                if lemma in ignore_list: 
+                if lemma in ignore_list:
                     file_known_words += 1
                     continue
                 if SKIP_SINGLE_CHARS and len(lemma) == 1:

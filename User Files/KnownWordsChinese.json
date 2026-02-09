@@ -1,0 +1,75 @@
+{
+    "exportDate": "2026-02-09T10:30:00.000000",
+    "databaseFile": "dummy_chinese_db.db",
+    "statistics": {
+        "totalWords": 10,
+        "knownWords": 10,
+        "unknownWords": 0,
+        "ignoredWords": 0,
+        "languages": [
+            "zh"
+        ]
+    },
+    "words": [
+        {
+            "dictForm": "你好",
+            "secondary": "nǐ hǎo",
+            "partOfSpeech": "",
+            "language": "zh",
+            "knownStatus": "KNOWN",
+            "hasCard": 0,
+            "tracked": 0,
+            "created": 1739240858956,
+            "mod": 1739240858956,
+            "isModern": 1
+        },
+        {
+            "dictForm": "谢谢",
+            "secondary": "xiè xie",
+            "partOfSpeech": "",
+            "language": "zh",
+            "knownStatus": "KNOWN",
+            "hasCard": 0,
+            "tracked": 0,
+            "created": 1739240858956,
+            "mod": 1739240858956,
+            "isModern": 1
+        },
+        {
+            "dictForm": "中国",
+            "secondary": "zhōng guó",
+            "partOfSpeech": "",
+            "language": "zh",
+            "knownStatus": "KNOWN",
+            "hasCard": 0,
+            "tracked": 0,
+            "created": 1739240858956,
+            "mod": 1739240858956,
+            "isModern": 1
+        },
+        {
+            "dictForm": "我们",
+            "secondary": "wǒ men",
+            "partOfSpeech": "",
+            "language": "zh",
+            "knownStatus": "KNOWN",
+            "hasCard": 0,
+            "tracked": 0,
+            "created": 1739240858956,
+            "mod": 1739240858956,
+            "isModern": 1
+        },
+        {
+            "dictForm": "学习",
+            "secondary": "xué xí",
+            "partOfSpeech": "",
+            "language": "zh",
+            "knownStatus": "KNOWN",
+            "hasCard": 0,
+            "tracked": 0,
+            "created": 1739240858956,
+            "mod": 1739240858956,
+            "isModern": 1
+        }
+    ]
+}

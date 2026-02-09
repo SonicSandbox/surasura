@@ -422,8 +422,10 @@ class FileImporterApp:
         except Exception as e:
             return None, f"Failed to read file: {e}"
 
-    def has_japanese(self, text):
-        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
+    def contains_cjk(self, text):
+        # Matches Hiragana, Katakana, and CJK Unified Ideographs (Common + Rare + Ext A)
+        # Included: \u4E00-\u9FFF to cover common Chinese/Japanese Kanji
+        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
         return bool(pattern.search(text))
 
     def extract_text_from_srt(self, file_path):
@@ -439,7 +441,7 @@ class FileImporterApp:
                 line = line.strip()
                 if not line or line.isdigit() or timestamp_re.match(line):
                     continue
-                if self.has_japanese(line):
+                if self.contains_cjk(line):
                     cleaned_lines.append(line)
             
             return "\n".join(cleaned_lines), None

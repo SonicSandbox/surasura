@@ -123,6 +123,8 @@ class MasterDashboardApp:
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
         self.var_split_length = tk.IntVar(value=1500)
+        self.var_split_length = tk.IntVar(value=1500)
+        self.var_language = tk.StringVar(value="ja")
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -178,6 +180,12 @@ class MasterDashboardApp:
         
         # Start update check in background
         threading.Thread(target=self.check_updates_thread, daemon=True).start()
+        
+        # Initial UI update for language
+        self.update_ui_for_language()
+        
+        # Trace language changes
+        self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
         
     def check_queue(self):
         """Poll the queue for GUI updates"""
@@ -284,6 +292,17 @@ class MasterDashboardApp:
             self.freq_frame.pack_forget()
             self.coverage_frame.pack(side=tk.TOP, fill=tk.X)
             self.save_settings() # Save on switch
+            
+    def update_ui_for_language(self):
+        lang = self.var_language.get()
+        if lang == 'zh':
+            if hasattr(self, 'btn_jiten'):
+                self.btn_jiten.pack_forget()
+        else:
+            if hasattr(self, 'btn_jiten'):
+                # Re-insert in correct position (after migaku)
+                self.btn_jiten.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_migaku)
+        self.save_settings()
         
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="15") # Reduced padding 25 -> 15
@@ -308,15 +327,15 @@ class MasterDashboardApp:
         vocab_row = ttk.Frame(vocab_frame)
         vocab_row.pack(fill=tk.X)
 
-        btn_migaku = ttk.Button(vocab_row, text="Migaku", width=12,
+        self.btn_migaku = ttk.Button(vocab_row, text="Migaku", width=12,
                    command=self.run_migaku_importer)
-        btn_migaku.pack(side=tk.LEFT, padx=(0, 5))
-        ToolTip(btn_migaku, "Import known words from Migaku database export.")
+        self.btn_migaku.pack(side=tk.LEFT, padx=(0, 5))
+        ToolTip(self.btn_migaku, "Import known words from Migaku database export.")
 
-        btn_jiten = ttk.Button(vocab_row, text="Jiten", width=12,
+        self.btn_jiten = ttk.Button(vocab_row, text="Jiten", width=12,
                    command=self.run_jiten_importer)
-        btn_jiten.pack(side=tk.LEFT, padx=(0, 10))
-        ToolTip(btn_jiten, "Import known words from Jiten API using your API key.")
+        self.btn_jiten.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self.btn_jiten, "Import known words from Jiten API using your API key.")
         
         # This button expands to fill all remaining space
         btn_ignore = ttk.Button(vocab_row, text="Edit Ignore List", style="Action.TButton",
@@ -476,6 +495,13 @@ class MasterDashboardApp:
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
 
+        # Language Selection
+        lang_frame = ttk.Frame(settings_frame)
+        lang_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(lang_frame, text="Target Language:").pack(side=tk.LEFT)
+        ttk.Radiobutton(lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
+
         # Split Length Setting
         split_frame = ttk.Frame(settings_frame)
         split_frame.pack(fill=tk.X, pady=(10, 0))
@@ -560,7 +586,9 @@ class MasterDashboardApp:
                     
                     self.var_strategy.set(settings.get("strategy", "freq"))
                     self.var_target_coverage.set(settings.get("target_coverage", 90))
+                    self.var_target_coverage.set(settings.get("target_coverage", 90))
                     self.var_split_length.set(settings.get("split_length", 1500))
+                    self.var_language.set(settings.get("target_language", "ja"))
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
                     self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -578,7 +606,10 @@ class MasterDashboardApp:
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
                 "target_coverage": self.var_target_coverage.get(),
+                "strategy": self.var_strategy.get(),
+                "target_coverage": self.var_target_coverage.get(),
                 "split_length": self.var_split_length.get(),
+                "target_language": self.var_language.get(),
                 "onboarding_completed": self.onboarding_completed.get()
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
@@ -737,13 +768,13 @@ class MasterDashboardApp:
         threading.Thread(target=task, daemon=True).start()
 
     def run_migaku_importer(self):
-        self.run_command_async(['migaku_db_importer_gui.py'], "Migaku Importer")
+        self.run_command_async(['migaku_db_importer_gui.py', '--language', self.var_language.get()], "Migaku Importer")
 
     def run_jiten_importer(self):
         self.run_command_async(['jiten_db_importer_gui.py'], "Jiten Sync")
 
     def run_content_importer(self):
-        self.run_command_async(['content_importer_gui.py'], "Content Importer")
+        self.run_command_async(['content_importer_gui.py', '--language', self.var_language.get()], "Content Importer")
 
     def run_file_importer(self):
         self.run_command_async(['epub_importer.py'], "File Importer")
@@ -767,6 +798,9 @@ class MasterDashboardApp:
                 args.append(f'--min-freq={min_freq}')
         
         args.append('--static')
+        
+        # Add Language
+        args.append(f'--language={self.var_language.get()}')
         
         # Add theme argument
         theme_map = {

@@ -45,3 +45,7 @@ build_log.txt
 build_log_retry.txt
 test_hello.py
 
+# copyrighted materials
+tests/Chinese_2.epub
+tests/Chinese_1.epub
+

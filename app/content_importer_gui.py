@@ -16,8 +16,9 @@ ERROR_COLOR = "#cf6679"
 SUCCESS_COLOR = "#03dac6"
 
 class ContentImporterApp:
-    def __init__(self, root):
+    def __init__(self, root, language='ja'):
         self.root = root
+        self.language = language
         self.root.title("Surasura - Content Manager")
         self.root.geometry("650x700")  # Expanded size
         self.root.minsize(600, 600)
@@ -224,16 +225,19 @@ class ContentImporterApp:
         if os.path.exists(order_file):
             try:
                 with open(order_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return {"order": data, "metadata": {}}
+                    return data
             except Exception:
-                return []
-        return []
+                return {"order": [], "metadata": {}}
+        return {"order": [], "metadata": {}}
 
-    def save_order(self, target_dir, order):
+    def save_order(self, target_dir, data):
         order_file = self.get_order_file(target_dir)
         try:
             with open(order_file, 'w', encoding='utf-8') as f:
-                json.dump(order, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving order: {e}")
 
@@ -246,21 +250,27 @@ class ContentImporterApp:
             return []
         
         disk_items = [f for f in disk_items if f != "_order.json"]
-        saved_order = self.load_order(directory)
+        data = self.load_order(directory)
+        saved_order = data.get("order", [])
+        metadata = data.get("metadata", {})
+        
+        # Filter disk_items by language
+        # Items with no metadata tag are assumed to be 'ja' (legacy)
+        filtered_disk_items = []
+        for item in disk_items:
+            item_lang = metadata.get(item, {}).get("lang", "ja")
+            if item_lang == self.language:
+                filtered_disk_items.append(item)
         
         final_list = []
         for item in saved_order:
-            if item in disk_items:
+            if item in filtered_disk_items:
                 final_list.append(item)
-                disk_items.remove(item)
+                filtered_disk_items.remove(item)
         
-        disk_items.sort() # Alphabetical for new/unsorted items
-        final_list.extend(disk_items)
+        filtered_disk_items.sort() # Alphabetical for new/unsorted items
+        final_list.extend(filtered_disk_items)
         
-        # Sync back if list was modified by additions/removals
-        if len(saved_order) != len(final_list):
-            self.save_order(directory, final_list)
-            
         return final_list
 
     def refresh_file_list(self):
@@ -335,7 +345,9 @@ class ContentImporterApp:
         
         if filepaths:
             count = 0
-            order = self.load_order(target_dir)
+            data = self.load_order(target_dir)
+            order = data.get("order", [])
+            metadata = data.get("metadata", {})
             for path in filepaths:
                 try:
                     filename = os.path.basename(path)
@@ -343,13 +355,17 @@ class ContentImporterApp:
                     shutil.copy2(path, dest)
                     if filename not in order:
                         order.append(filename)
+                    # Tag with current language
+                    metadata[filename] = {"lang": self.language}
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
             
-            self.save_order(target_dir, order)
+            data["order"] = order
+            data["metadata"] = metadata
+            self.save_order(target_dir, data)
             self.refresh_file_list()
-            self.status_var.set(f"Added {count} files to {self.target_folder_var.get()}")
+            self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
             messagebox.showinfo("Success", f"Successfully added {count} files.")
 
     def add_folder(self):
@@ -399,10 +415,16 @@ class ContentImporterApp:
                 shutil.copytree(folder_path, dest)
                 
                 # Update order
-                order = self.load_order(target_dir)
+                data = self.load_order(target_dir)
+                order = data.get("order", [])
+                metadata = data.get("metadata", {})
                 if folder_name not in order:
                     order.append(folder_name)
-                self.save_order(target_dir, order)
+                # Tag with current language
+                metadata[folder_name] = {"lang": self.language}
+                data["order"] = order
+                data["metadata"] = metadata
+                self.save_order(target_dir, data)
                 
                 self.refresh_file_list()
                 self.status_var.set(f"Added folder '{folder_name}'")
@@ -443,13 +465,21 @@ class ContentImporterApp:
                         shutil.rmtree(path)
                     
                     # If it was a root item, remove from order
+                    # If it was a root item, remove from order
+                    data = self.load_order(target_dir)
+                    order = data.get("order", [])
+                    metadata = data.get("metadata", {})
                     if item_text in order:
                         order.remove(item_text)
+                    if item_text in metadata:
+                        del metadata[item_text]
+                    data["order"] = order
+                    data["metadata"] = metadata
+                    self.save_order(target_dir, data)
                     count += 1
                 except Exception as e:
                     print(f"Error deleting {path}: {e}")
             
-            self.save_order(target_dir, order)
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
 
@@ -601,8 +631,12 @@ class ContentImporterApp:
             directory = self.tree.item(parent_node, "values")[0]
             
         children = self.tree.get_children(parent_node)
-        order = [self.tree.item(c, "text") for c in children]
-        self.save_order(directory, order)
+        new_order_list = [self.tree.item(c, "text") for c in children]
+        
+        data = self.load_order(directory)
+        data["order"] = new_order_list
+        # Metadata is preserved as we only update the order flat list
+        self.save_order(directory, data)
 
     def open_data_folder(self):
         path = self.get_current_dir()
@@ -617,8 +651,13 @@ class ContentImporterApp:
             subprocess.Popen(['xdg-open', path])
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Surasura Content Importer")
+    parser.add_argument("--language", default="ja", help="Target language (ja, zh)")
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = ContentImporterApp(root)
+    app = ContentImporterApp(root, language=args.language)
     root.mainloop()
 
 if __name__ == "__main__":

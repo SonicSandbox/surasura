@@ -1,11 +1,12 @@
 {
     "exclude_single": true,
-    "min_freq": 2,
-    "zen_limit": 79,
+    "min_freq": 5,
+    "zen_limit": 50,
     "open_app_mode": true,
-    "theme": "Default (Dark)",
+    "theme": "Dark Flow",
     "strategy": "coverage",
     "target_coverage": 96,
     "split_length": 1500,
-    "onboarding_completed": true
+    "target_language": "zh",
+    "onboarding_completed": false
 }

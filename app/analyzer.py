@@ -729,6 +729,8 @@ def main():
     progressive_rows = []
     # Create a mapping so we can update file_stats entries when a file meets the target
     file_stats_map = { stat['File']: stat for stat in file_stats }
+    # Track which files had all words filtered by MIN_FREQ
+    files_filtered_by_min_freq = {}
     # Work with a COPY of known words so we don't pollute the global set if we re-run logic, 
     # but here we just have one run.
     # We need a new set tracking "Learned in this session" to exclude from later files.
@@ -771,6 +773,7 @@ def main():
         # 2. Identify and prepare unknown words
         file_new_words = set()
         file_rows_buffer = []
+        words_before_min_freq_filter = len(file_unknown_token_counts) > 0
         
         for (lemma, reading), count in file_unknown_token_counts.items():
             # It's a new word for this progressive sequence
@@ -802,6 +805,11 @@ def main():
         # 3. Sort by priority
         # This determines the order we "learn" them to reach coverage
         file_rows_buffer.sort(key=lambda x: (x["Score"], x["Occurrences (Global)"]), reverse=True)
+        
+        # If words existed before MIN_FREQ filter but buffer is now empty, track it
+        words_filtered_by_min_freq_for_file = words_before_min_freq_filter and len(file_rows_buffer) == 0
+        if words_filtered_by_min_freq_for_file:
+            files_filtered_by_min_freq[filename] = True
         
         # 4. Calculate Progressive Understanding with Target Coverage
         current_known = file_current_start_count
@@ -845,6 +853,13 @@ def main():
         # After finishing the file, these words are now "Known" for the next file
         session_known.update(words_learned_this_file)
         session_lemmas.update([x[0] for x in words_learned_this_file])
+    
+    # Mark files that had all words filtered by MIN_FREQ as Target Met if not already marked
+    for filename, was_filtered in files_filtered_by_min_freq.items():
+        fs = file_stats_map.get(filename)
+        if fs is not None and not fs.get('Target Met'):
+            fs['Target Met'] = True
+            fs['Target Met At (%)'] = 100.0  # All words filtered by frequency threshold
         
     df_prog = pd.DataFrame(progressive_rows)
     if not df_prog.empty:

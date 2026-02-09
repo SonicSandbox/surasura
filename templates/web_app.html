@@ -963,7 +963,8 @@
 
     <div id="nav-hint">
         ⓘ
-        <div class="hint-tooltip">Tip: Use <b>Left/Right keys</b> or <b>Space</b> to quickly move between words.</div>
+        <div class="hint-tooltip">Tip: Use <b>Left/Right keys</b> or <b>Space</b> to quickly move between words. Use
+            <b>Up/Down keys</b> to show or hide sentences.</div>
     </div>
     <header>
         <h1>Surasura List</h1>
@@ -1138,7 +1139,8 @@
                 globalData.progressive.forEach((fileData, index) => {
                     const tab = document.createElement('div');
                     tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
-                    tab.textContent = fileData.filename;
+                    const newWordsCount = fileData.words.length;
+                    tab.innerHTML = `<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${newWordsCount})</span>`;
                     tab.onclick = async () => {
                         document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                         tab.classList.add('active');
@@ -1534,16 +1536,21 @@
 
             const isNext = e.code === 'Space' || e.code === 'ArrowRight';
             const isPrev = e.code === 'ArrowLeft';
+            const isUp = e.code === 'ArrowUp';
+            const isDown = e.code === 'ArrowDown';
 
-            if (!isNext && !isPrev) return;
+            if (!isNext && !isPrev && !isUp && !isDown) return;
 
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-            // Prevent default scrolling/caret movement for all navigation keys
-            e.preventDefault();
-
             const isZen = document.body.classList.contains('theme-zen-focus');
+
+            // Prevent default scrolling/caret movement for all navigation keys
+            // Exception: Allow Up/Down in Zen mode if it's NOT a custom interaction
+            if (isNext || isPrev || (!isZen && (isUp || isDown))) {
+                e.preventDefault();
+            }
 
             // Selection: Standard themes have scrollable containers, Zen uses window
             let scroller = isZen ? window : document.querySelector('.view.active .word-list-container');
@@ -1572,33 +1579,51 @@
 
             if (currentIndex === -1) return;
 
-            let targetIndex = isNext ? currentIndex + 1 : currentIndex - 1;
-            if (targetIndex < 0) targetIndex = 0;
-            if (targetIndex >= activeCards.length) targetIndex = activeCards.length - 1;
+            // Handle Context Toggle (Up/Down) - only in standard mode
+            if (!isZen && (isUp || isDown)) {
+                const centeredCard = activeCards[currentIndex];
+                const toggleBtn = centeredCard.querySelector('.toggle-contexts-btn');
+                if (toggleBtn) {
+                    const isShown = toggleBtn.classList.contains('active');
+                    if (isDown && !isShown) {
+                        toggleBtn.click();
+                    } else if (isUp && isShown) {
+                        toggleBtn.click();
+                    }
+                }
+                return; // Don't perform navigation
+            }
 
-            const targetCard = activeCards[targetIndex];
-            if (targetCard) {
-                const rect = targetCard.getBoundingClientRect();
-                const cardHeight = rect.height;
+            // Handle Navigation (Next/Prev)
+            if (isNext || isPrev) {
+                let targetIndex = isNext ? currentIndex + 1 : currentIndex - 1;
+                if (targetIndex < 0) targetIndex = 0;
+                if (targetIndex >= activeCards.length) targetIndex = activeCards.length - 1;
 
-                // Target: Card center at 35% from top of scroller viewport (15% above middle)
-                const offset = (scrollerHeight * 0.35) - (cardHeight / 2);
+                const targetCard = activeCards[targetIndex];
+                if (targetCard) {
+                    const rect = targetCard.getBoundingClientRect();
+                    const cardHeight = rect.height;
 
-                if (isZen) {
-                    const cardTop = rect.top + window.pageYOffset;
-                    window.scrollTo({
-                        top: cardTop - offset,
-                        behavior: 'smooth'
-                    });
-                } else {
-                    const containerRect = scroller.getBoundingClientRect();
-                    const currentScroll = scroller.scrollTop;
-                    const cardTopRelativeToContainer = rect.top - containerRect.top;
+                    // Target: Card center at 35% from top of scroller viewport (15% above middle)
+                    const offset = (scrollerHeight * 0.35) - (cardHeight / 2);
 
-                    scroller.scrollTo({
-                        top: currentScroll + cardTopRelativeToContainer - offset,
-                        behavior: 'smooth'
-                    });
+                    if (isZen) {
+                        const cardTop = rect.top + window.pageYOffset;
+                        window.scrollTo({
+                            top: cardTop - offset,
+                            behavior: 'smooth'
+                        });
+                    } else {
+                        const containerRect = scroller.getBoundingClientRect();
+                        const currentScroll = scroller.scrollTop;
+                        const cardTopRelativeToContainer = rect.top - containerRect.top;
+
+                        scroller.scrollTo({
+                            top: currentScroll + cardTopRelativeToContainer - offset,
+                            behavior: 'smooth'
+                        });
+                    }
                 }
             }
         });

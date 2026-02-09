@@ -52,6 +52,18 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
         "priority": []
     }
 
+    # Load File Statistics
+    STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
+    stats_map = {}
+    if os.path.exists(STATS_JSON):
+        try:
+            with open(STATS_JSON, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+                for s in stats:
+                    stats_map[s["File"]] = s
+        except Exception as e:
+            print(f"Error loading stats JSON: {e}")
+
     # Load Progressive
     if os.path.exists(PROGRESSIVE_CSV):
         try:
@@ -69,37 +81,30 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
             for filename in files_order:
                 group = grouped.get_group(filename)
                 words = group.to_dict(orient="records")
+                
+                # Get total words from stats if available
+                total_words = stats_map.get(filename, {}).get("Total Words", 0)
+                
                 data["progressive"].append({
                     "filename": filename,
-                    "words": words
+                    "words": words,
+                    "total_words": total_words
                 })
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")
 
-    # Load File Statistics (to find files with no new words - i.e. Completed)
-    STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
     data["completed_files"] = []
     
-    if os.path.exists(STATS_JSON):
-        try:
-            with open(STATS_JSON, 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-                
-            # specific progressive files
-            prog_filenames = {item["filename"] for item in data["progressive"]}
-            
-            # Find files in stats but not in progressive
-            for file_stat in stats:
-                fname = file_stat.get("File")
-                # We assume files in stats are in reading order
-                if fname and fname not in prog_filenames:
-                    data["completed_files"].append({
-                        "filename": fname,
-                        "stats": file_stat
-                    })
-                    
-        except Exception as e:
-             print(f"Error loading stats JSON: {e}")
+    # specific progressive files
+    prog_filenames = {item["filename"] for item in data["progressive"]}
+    
+    # Find files in stats but not in progressive
+    for fname, fstat in stats_map.items():
+        if fname not in prog_filenames:
+            data["completed_files"].append({
+                "filename": fname,
+                "stats": fstat
+            })
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):

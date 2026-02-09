@@ -36,11 +36,9 @@ Useful if you:
 
 Use Surasura to know every word you learn is immediately relevant to your content goals.
 
-## ⚡ Features
+- 🗄️ **Migaku & Jiten Sync**: Import known words from Migaku or Jiten.moe.
 
-- 🗄️ **Migaku Integration**: Import your known words directly from Migaku.
-
-- 📖 **EPUB Extractor**: Extract and split text from Japanese EPUBs.
+- 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
 
 - 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
 
@@ -48,7 +46,7 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
 
-- 🎨 **Themes**: Multiple themes to customize your learning experience.
+- 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
 
 - 🧘 **Zen Mode**: A distraction-free mode for focused learning.
 
@@ -61,13 +59,12 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 - Only executable for Windows (macOS/Linux can run from source)
 - Occasional Wacky Parsing
 - 'Ignore' only adds to clipboard
-- Only works with Migaku known-words (for now)
 
 ## 📥 Latest Release Zip
 
 Download the latest release zip file from the [Releases page](https://github.com/SonicSandbox/surasura/releases).
 
-> **Quick Start:** Download -> Extract -> Run `Surasura_v1.0.exe`
+> **Quick Start:** Download -> Extract -> Run `Surasura.exe`
 
 ## Screenshots
 > Dashboard with Migaku extension
@@ -81,9 +78,9 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 ## 🚀 Get Started
 
-1. Run `Surasura_v1.0.exe` to launch the application.
+1. Run `Surasura.exe` to launch the application.
 
-2. Use the **Migaku Word List Importer** to set up your known words.
+2. Use the **Word Importer** to set up your known words.
 
 3. Place your text files in the corresponding folders:
 
@@ -126,11 +123,7 @@ To create your own standalone executable:
    ```bash
    pip install pyinstaller
    ```
-2. Run the packaging script:
-   ```bash
-   python package_app.py
-   ```
-This will clean previous builds, run PyInstaller with the correct configurations, and create a ready-to-use package in `dist/Surasura_Distribution_v1.0`.
+This will clean previous builds, run PyInstaller with the correct configurations, and create a ready-to-use package in `dist/Surasura_v1.2`.
 
 ## 📂 Project Structure
 - `app/`: Core application scripts and GUI modules.

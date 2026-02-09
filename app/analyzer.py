@@ -6,7 +6,6 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
-import glob
 import re
 import csv
 import pandas as pd
@@ -780,7 +779,7 @@ def main():
                 "first_context": "", "best_extra_contexts": []
             })
             
-            if MIN_FREQ > 0 and stats["total_count"] < MIN_FREQ:
+            if MIN_FREQ > 0 and stats["total_count"] <= MIN_FREQ:
                 continue
 
             file_rows_buffer.append({

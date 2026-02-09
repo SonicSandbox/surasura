@@ -9,11 +9,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import warnings
 import re
-from ebooklib import epub
-
-# Suppress EbookLib FutureWarnings/UserWarnings
-warnings.filterwarnings("ignore", category=UserWarning, module='ebooklib')
-
 try:
     import ebooklib
     from ebooklib import epub

@@ -123,6 +123,7 @@ class MasterDashboardApp:
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
         self.var_split_length = tk.IntVar(value=1500)
+        self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
@@ -159,6 +160,14 @@ class MasterDashboardApp:
         
         # Load saved settings
         self.load_settings()
+
+        # Show onboarding if not completed
+        if not self.onboarding_completed.get():
+            try:
+                from app.onboarding_gui import OnboardingGuide
+                self.root.after(500, lambda: OnboardingGuide(self.root, self.complete_onboarding))
+            except Exception as e:
+                print(f"Warning: Could not show onboarding: {e}")
         
         # Add traces for auto-saving settings after initial load
         self.var_exclude_single.trace_add("write", self.save_settings)
@@ -441,6 +450,10 @@ class MasterDashboardApp:
         btn_settings.pack(side=tk.LEFT, padx=(10, 0))
         ToolTip(btn_settings, "Open Settings & Logs")
 
+    def complete_onboarding(self):
+        self.onboarding_completed.set(True)
+        self.save_settings()
+
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
@@ -548,6 +561,7 @@ class MasterDashboardApp:
                     self.var_strategy.set(settings.get("strategy", "freq"))
                     self.var_target_coverage.set(settings.get("target_coverage", 90))
                     self.var_split_length.set(settings.get("split_length", 1500))
+                    self.onboarding_completed.set(settings.get("onboarding_completed", False))
                     self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
@@ -564,7 +578,8 @@ class MasterDashboardApp:
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
                 "target_coverage": self.var_target_coverage.get(),
-                "split_length": self.var_split_length.get()
+                "split_length": self.var_split_length.get(),
+                "onboarding_completed": self.onboarding_completed.get()
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)

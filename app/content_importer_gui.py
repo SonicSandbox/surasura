@@ -325,10 +325,9 @@ class ContentImporterApp:
             title="Select Content Files",
             initialdir=initial_dir,
             filetypes=[
-                ("All Supported", "*.txt *.md *.epub *.srt"),
+                ("All Supported", "*.txt *.md *.srt"),
                 ("Text Files", "*.txt"),
                 ("Markdown", "*.md"),
-                ("EPUB Books", "*.epub"),
                 ("Subtitles", "*.srt"),
                 ("All Files", "*.*")
             ]

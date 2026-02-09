@@ -471,6 +471,11 @@ class MasterDashboardApp:
         self.var_split_length.trace_add("write", self.save_settings)
         ToolTip(split_frame, "Initial character limit used when splitting files in the File Importer.")
 
+        # Frequency List Manager
+        btn_freq = ttk.Button(settings_frame, text="Add Frequency List", command=self.run_frequency_list_manager)
+        btn_freq.pack(anchor=tk.W, pady=(10, 0))
+        ToolTip(btn_freq, "Manage custom frequency lists for word analysis.")
+
         # Logs
         log_frame = ttk.LabelFrame(self.settings_window, text=" Processing Log", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -637,7 +642,8 @@ class MasterDashboardApp:
                 'jiten_db_importer_gui.py': 'jiten_importer',
                 'content_importer_gui.py': 'content_importer',
                 'static_html_generator.py': 'static_generator',
-                'migaku_converter.py': 'convert_db'
+                'migaku_converter.py': 'convert_db',
+                'frequency_list_gui.py': 'frequency_list_manager'
             }
             
             try:
@@ -726,6 +732,9 @@ class MasterDashboardApp:
 
     def run_file_importer(self):
         self.run_command_async(['epub_importer.py'], "File Importer")
+
+    def run_frequency_list_manager(self):
+        self.run_command_async(['frequency_list_gui.py'], "Frequency List Manager")
 
     def run_analyzer(self):
         from app.path_utils import ensure_data_setup

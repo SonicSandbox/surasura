@@ -90,6 +90,12 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:] 
                 content_importer_gui.main()
                 return
+
+            elif command == 'frequency_list_manager':
+                from app import frequency_list_gui
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                frequency_list_gui.main()
+                return
             else:
                 log_error(f"Unknown command: {command}")
 

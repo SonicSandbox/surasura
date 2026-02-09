@@ -4,6 +4,7 @@
     "zen_limit": 79,
     "open_app_mode": true,
     "theme": "Default (Dark)",
-    "strategy": "freq",
-    "target_coverage": 96
+    "strategy": "coverage",
+    "target_coverage": 96,
+    "split_length": 1500
 }

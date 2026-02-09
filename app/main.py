@@ -118,11 +118,9 @@ class MasterDashboardApp:
         self.var_exclude_single = tk.BooleanVar(value=True) 
         self.var_min_freq = tk.IntVar(value=1) 
         self.var_zen_limit = tk.IntVar(value=50) 
-        self.var_zen_limit = tk.IntVar(value=50) 
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
-        self.var_split_length = tk.IntVar(value=1500)
         self.var_split_length = tk.IntVar(value=1500)
         self.var_language = tk.StringVar(value="ja")
         self.onboarding_completed = tk.BooleanVar(value=False)
@@ -470,8 +468,11 @@ class MasterDashboardApp:
         ToolTip(btn_settings, "Open Settings & Logs")
 
     def complete_onboarding(self):
+        # Reload to get the settings written by the onboarding window
+        self.load_settings()
+        # Mark as completed and save everything back
         self.onboarding_completed.set(True)
-        self.save_settings()
+        self.update_ui_for_language() # Force UI update and save
 
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
@@ -586,9 +587,12 @@ class MasterDashboardApp:
                     
                     self.var_strategy.set(settings.get("strategy", "freq"))
                     self.var_target_coverage.set(settings.get("target_coverage", 90))
-                    self.var_target_coverage.set(settings.get("target_coverage", 90))
                     self.var_split_length.set(settings.get("split_length", 1500))
-                    self.var_language.set(settings.get("target_language", "ja"))
+                    
+                    lang = settings.get("target_language", "ja")
+                    if not lang: lang = "ja" # Safeguard against empty string
+                    self.var_language.set(lang)
+                    
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
                     self.update_strategy_ui() # Apply state
         except Exception as e:

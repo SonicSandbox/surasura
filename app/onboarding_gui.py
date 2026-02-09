@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+import os
 import json
 from app.path_utils import get_icon_path, get_user_file
 

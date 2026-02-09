@@ -103,7 +103,7 @@ class ToolTip:
 class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Surasura - Readability Analyzer Dashboard v1.0")
+        self.root.title(f"Surasura - Readability Analyzer Dashboard v{__version__}")
         self.root.geometry("520x720") 
         self.root.resizable(True, True)
         self.root.minsize(520, 600)

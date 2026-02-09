@@ -1,9 +1,9 @@
 {
     "exclude_single": true,
-    "min_freq": 5,
+    "min_freq": 2,
     "zen_limit": 79,
     "open_app_mode": true,
     "theme": "Default (Dark)",
-    "strategy": "coverage",
+    "strategy": "freq",
     "target_coverage": 96
 }

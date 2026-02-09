@@ -3,8 +3,20 @@ import shutil
 import subprocess
 import sys
 
+def get_version():
+    """Reads the version from app/__init__.py without importing the package."""
+    init_path = os.path.join("app", "__init__.py")
+    with open(init_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.startswith('__version__'):
+                delim = '"' if '"' in line else "'"
+                return line.split(delim)[1]
+    return "0.0"
+
 def build():
-    print("Building Readability Analyzer...")
+    version = get_version()
+    build_name = f"Surasura_v{version}"
+    print(f"Building Readability Analyzer {build_name}...")
     
     # Clean previous build
     if os.path.exists("dist"):
@@ -27,7 +39,7 @@ def build():
         "--noconfirm",
         "--distpath", "dist",
         "--workpath", "build",
-        os.path.join("packaging", "Surasura_v1.1.spec")
+        os.path.join("packaging", "Surasura.spec")
     ]
     
     print(f"Running: {' '.join(cmd)}")
@@ -41,14 +53,14 @@ def build():
 
     # Post-Build: Create Distribution Folder
     print("Creating Distribution Package...")
-    final_dist = os.path.join("dist", "Surasura_v1.1")
+    final_dist = os.path.join("dist", build_name)
     
     # Clean previous distribution logic removed because we already cleaned dist at the start
     # and PyInstaller works directly in this folder now.
 
 
     # 1. Handle Built Files
-    # The spec file is configured to output directly to dist/Surasura_v1.1
+    # The spec file is configured to output directly to dist/{build_name}
     # So we just need to verify it exists.
     
     if not os.path.exists(final_dist):
@@ -116,7 +128,7 @@ def build():
     docs_to_copy = [
         ("README.md", "README.md"),
         (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
-        (os.path.join("docs", "releases", "RELEASE_v1.1.md"), "RELEASE_v1.1.md")
+        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), f"RELEASE_v{version}.md")
     ]
 
     for src, dst_name in docs_to_copy:

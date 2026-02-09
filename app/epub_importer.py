@@ -22,8 +22,7 @@ except ImportError:
     pass
 
 from app.path_utils import get_user_file
-
-from app.path_utils import get_user_file
+from app.anki_utils import load_anki_data, extract_field_text, cleanup_temp_dir
 
 # --- Configuration ---
 PROCESSED_DIR = get_user_file("data/Processed")
@@ -34,20 +33,27 @@ SURFACE_COLOR = "#2d2d2d"
 TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#bb86fc"
 SECONDARY_COLOR = "#03dac6"
+ERROR_COLOR = "#cf6679"
 
 class FileImporterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Surasura - File Importer v1.0")
-        self.root.geometry("600x450")
+        self.root.geometry("600x650") # Expanded for Anki preview/warning
         self.root.resizable(True, True)
-        self.root.minsize(500, 400)
+        self.root.minsize(500, 500)
         self.root.configure(bg=BG_COLOR)
         
         # Bind Escape key to close
         self.root.bind("<Escape>", lambda e: self.root.destroy())
         self.style = ttk.Style()
         self.apply_dark_theme()
+        
+        # Anki State
+        self.anki_notes = []
+        self.anki_fields = []
+        self.anki_model_map = {}
+        self.anki_temp_dir = None
         
         # Set Application Icon
         try:
@@ -61,9 +67,23 @@ class FileImporterApp:
 
         self.setup_ui()
         
+        # Add trace for dynamic UI
+        self.file_path_var.trace_add("write", self.on_file_change)
+
+    def __del__(self):
+        if hasattr(self, 'anki_temp_dir') and self.anki_temp_dir:
+            cleanup_temp_dir(self.anki_temp_dir)
+        
     def apply_dark_theme(self):
         # Configure general style
         self.style.theme_use('default')
+        
+        # Cross-platform Fix for TCombobox Dropdown (Listbox) Visibility
+        self.root.option_add('*TCombobox*Listbox.background', SURFACE_COLOR)
+        self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
+        self.root.option_add('*TCombobox*Listbox.selectBackground', ACCENT_COLOR)
+        self.root.option_add('*TCombobox*Listbox.selectForeground', BG_COLOR)
+        self.root.option_add('*TCombobox*Listbox.font', ('Segoe UI', 10))
         self.style.configure(".", 
             background=BG_COLOR, 
             foreground=TEXT_COLOR, 
@@ -91,8 +111,8 @@ class FileImporterApp:
             focuscolor=ACCENT_COLOR
         )
         self.style.map("TButton",
-            background=[('active', ACCENT_COLOR), ('pressed', ACCENT_COLOR)],
-            foreground=[('active', BG_COLOR), ('pressed', BG_COLOR)]
+            background=[('active', ACCENT_COLOR), ('pressed', ACCENT_COLOR), ('disabled', SURFACE_COLOR)],
+            foreground=[('active', BG_COLOR), ('pressed', BG_COLOR), ('disabled', '#555')]
         )
         
         self.style.configure("TRadiobutton", background=BG_COLOR, foreground=TEXT_COLOR, focuscolor=ACCENT_COLOR)
@@ -101,60 +121,208 @@ class FileImporterApp:
             background=[('active', BG_COLOR)]
         )
 
+        self.style.configure("TCheckbutton", background=BG_COLOR, foreground=TEXT_COLOR)
+        self.style.map("TCheckbutton",
+            foreground=[('active', ACCENT_COLOR)],
+            background=[('active', BG_COLOR)]
+        )
+
     def setup_ui(self):
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        self.main_frame = ttk.Frame(self.root, padding="20")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         # File Selection
-        ttk.Label(main_frame, text="Select File (EPUB, TXT, MD, SRT):").grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        ttk.Label(self.main_frame, text="Select File (APKG, EPUB, TXT, MD, SRT):").pack(anchor=tk.W, pady=(0, 5))
+        
+        file_sel_frame = ttk.Frame(self.main_frame)
+        file_sel_frame.pack(fill=tk.X, pady=(0, 10))
+        
         self.file_path_var = tk.StringVar()
-        ttk.Entry(main_frame, textvariable=self.file_path_var, width=50).grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
-        ttk.Button(main_frame, text="Browse...", command=self.browse_file).grid(row=1, column=2, padx=(5, 0), pady=(0, 10))
+        ttk.Entry(file_sel_frame, textvariable=self.file_path_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(file_sel_frame, text="Browse...", command=self.browse_file).pack(side=tk.LEFT, padx=(5, 0))
 
-        # Output Name
-        ttk.Label(main_frame, text="Output Folder/Base Name:").grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
+        # Output Name (Shared)
+        ttk.Label(self.main_frame, text="Output Folder/Base Name:").pack(anchor=tk.W, pady=(0, 5))
         self.output_name_var = tk.StringVar()
-        ttk.Entry(main_frame, textvariable=self.output_name_var, width=50).grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(0, 20))
+        ttk.Entry(self.main_frame, textvariable=self.output_name_var).pack(fill=tk.X, pady=(0, 20))
 
-        # Split Options
-        split_frame = ttk.LabelFrame(main_frame, text="Splitting Options", padding="15")
-        split_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(0, 20))
+        # --- OPTION CONTAINERS ---
+        self.options_container = ttk.Frame(self.main_frame)
+        self.options_container.pack(fill=tk.BOTH, expand=True)
+
+        # 1. STANDARD OPTIONS (Split)
+        self.standard_options_frame = ttk.Frame(self.options_container)
+        
+        split_frame = ttk.LabelFrame(self.standard_options_frame, text="Splitting Options", padding="15")
+        split_frame.pack(fill=tk.X, pady=(0, 20))
 
         self.split_method_var = tk.StringVar(value="delimiter")
         
-        ttk.Radiobutton(split_frame, text="By Delimiter (Regex)", variable=self.split_method_var, value="delimiter", command=self.update_split_ui).grid(row=0, column=0, sticky=tk.W)
-        ttk.Radiobutton(split_frame, text="By Length (Chars)", variable=self.split_method_var, value="length", command=self.update_split_ui).grid(row=1, column=0, sticky=tk.W)
+        ttk.Radiobutton(split_frame, text="By Delimiter (Regex)", variable=self.split_method_var, value="delimiter", command=self.update_split_ui).pack(anchor=tk.W)
+        ttk.Radiobutton(split_frame, text="By Length (Chars)", variable=self.split_method_var, value="length", command=self.update_split_ui).pack(anchor=tk.W)
 
         self.split_value_label = ttk.Label(split_frame, text="Regex Pattern:")
-        self.split_value_label.grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
+        self.split_value_label.pack(anchor=tk.W, pady=(10, 0))
         
-        self.split_value_var = tk.StringVar(value=r"\n\d+\n")
-        self.split_value_entry = ttk.Entry(split_frame, textvariable=self.split_value_var, width=30)
-        self.split_value_entry.grid(row=3, column=0, sticky=tk.W, pady=(5, 0))
+        # Load default split length from settings
+        default_split = 1500
+        try:
+            import json
+            settings_path = get_user_file("settings.json")
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    default_split = settings.get("split_length", 1500)
+        except Exception:
+            pass
+            
+        self.split_value_var = tk.StringVar(value=str(default_split)) # Start with settings value
+        self.split_value_entry = ttk.Entry(split_frame, textvariable=self.split_value_var)
+        self.split_value_entry.pack(fill=tk.X, pady=(5, 0))
 
-        # Import Button
-        ttk.Button(main_frame, text="Extract and Import", command=self.process_import).grid(row=5, column=0, columnspan=3, pady=(10, 0))
+        # 2. ANKI OPTIONS
+        self.anki_options_frame = ttk.Frame(self.options_container)
+        
+        ttk.Label(self.anki_options_frame, text="Select field containing sentences:").pack(anchor=tk.W, pady=(0, 5))
+        self.anki_field_var = tk.StringVar()
+        self.anki_field_combo = ttk.Combobox(self.anki_options_frame, textvariable=self.anki_field_var, state="readonly")
+        self.anki_field_combo.pack(fill=tk.X, pady=(0, 10))
+        self.anki_field_combo.bind("<<ComboboxSelected>>", self.update_anki_preview)
+        
+        ttk.Label(self.anki_options_frame, text="Example Preview:").pack(anchor=tk.W, pady=(0, 5))
+        self.anki_preview_text = tk.Text(self.anki_options_frame, height=4, bg=SURFACE_COLOR, fg="#888", font=("Segoe UI", 9), relief=tk.FLAT, borderwidth=0)
+        self.anki_preview_text.pack(fill=tk.X, pady=(0, 15))
+        self.anki_preview_text.config(state=tk.DISABLED)
 
-        # Status Label
+        warning_text = (
+            "WARNING: Only use an Anki Deck if it is 100% immersion content. "
+            "Otherwise your content frequency list will be innacurate. \n\n"
+            "This is simply an alternative to uploading subtitles / VN text."
+        )
+        warn_label = tk.Label(self.anki_options_frame, text=warning_text, foreground=ERROR_COLOR, 
+                             background=BG_COLOR, justify=tk.LEFT, wraplength=550, font=("Segoe UI", 9, "bold"))
+        warn_label.pack(fill=tk.X, pady=(0, 10))
+        
+        self.understand_var = tk.BooleanVar(value=False)
+        self.chk_understand = ttk.Checkbutton(self.anki_options_frame, text="I Understand", 
+                                             variable=self.understand_var, command=self.update_btn_state)
+        self.chk_understand.pack(anchor=tk.W, pady=(0, 10))
+
+        # Bottom UI
+        self.import_btn = ttk.Button(self.main_frame, text="Extract and Import", command=self.process_import)
+        self.import_btn.pack(pady=(10, 0))
+
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(main_frame, textvariable=self.status_var, foreground="#888").grid(row=6, column=0, columnspan=3, pady=(10, 0))
+        ttk.Label(self.main_frame, textvariable=self.status_var, foreground="#888").pack(pady=(10, 0))
+
+        # Initial View
+        self.standard_options_frame.pack(fill=tk.BOTH, expand=True)
+
+    def on_file_change(self, *args):
+        path = self.file_path_var.get()
+        if not path:
+            return
+            
+        is_anki = path.lower().endswith('.apkg')
+        
+        if is_anki:
+            self.standard_options_frame.pack_forget()
+            self.anki_options_frame.pack(fill=tk.BOTH, expand=True)
+            self.load_anki_schema(path)
+        else:
+            self.anki_options_frame.pack_forget()
+            self.standard_options_frame.pack(fill=tk.BOTH, expand=True)
+            self.clear_anki_data()
+        
+        self.update_btn_state()
+
+    def clear_anki_data(self):
+        if self.anki_temp_dir:
+            cleanup_temp_dir(self.anki_temp_dir)
+            self.anki_temp_dir = None
+        self.anki_notes = []
+        self.anki_fields = []
+        self.anki_model_map = {}
+        self.anki_field_var.set("")
+        self.anki_field_combo['values'] = []
+        self.anki_preview_text.config(state=tk.NORMAL)
+        self.anki_preview_text.delete(1.0, tk.END)
+        self.anki_preview_text.config(state=tk.DISABLED)
+
+    def load_anki_schema(self, path):
+        if not os.path.exists(path):
+            return
+        try:
+            self.status_var.set("Reading Anki Deck schema...")
+            self.root.update_idletasks()
+            
+            # Cleanup previous
+            if self.anki_temp_dir:
+                cleanup_temp_dir(self.anki_temp_dir)
+            
+            self.anki_fields, self.anki_notes, self.anki_model_map, self.anki_temp_dir = load_anki_data(path)
+            self.anki_field_combo['values'] = self.anki_fields
+            
+            # Auto-select "Sentence" or "Expression" if they exist
+            if "Sentence" in self.anki_fields:
+                self.anki_field_var.set("Sentence")
+            elif "Expression" in self.anki_fields:
+                self.anki_field_var.set("Expression")
+            
+            self.update_anki_preview()
+            self.status_var.set("Ready")
+        except Exception as e:
+            messagebox.showerror("Anki Error", f"Failed to load Anki data:\n{e}")
+            self.status_var.set("Error")
+
+    def update_anki_preview(self, event=None):
+        field = self.anki_field_var.get()
+        if not field or not self.anki_notes:
+            return
+            
+        # Extract a small sample
+        sample_text = extract_field_text(self.anki_notes[:10], self.anki_model_map, field)
+        
+        self.anki_preview_text.config(state=tk.NORMAL)
+        self.anki_preview_text.delete(1.0, tk.END)
+        self.anki_preview_text.insert(tk.END, sample_text)
+        self.anki_preview_text.config(state=tk.DISABLED)
+
+    def update_btn_state(self):
+        is_anki = self.file_path_var.get().lower().endswith('.apkg')
+        if is_anki:
+            if self.understand_var.get():
+                self.import_btn.config(state=tk.NORMAL)
+            else:
+                self.import_btn.config(state=tk.DISABLED)
+        else:
+            self.import_btn.config(state=tk.NORMAL)
 
     def update_split_ui(self):
         method = self.split_method_var.get()
         if method == "delimiter":
             self.split_value_label.config(text="Regex Pattern (e.g. \\n\\d+\\n):")
-            if not self.split_value_var.get() or self.split_value_var.get() == "1500":
+            if not self.split_value_var.get() or self.split_value_var.get().isdigit():
                 self.split_value_var.set(r"\n\d+\n")
         else:
             self.split_value_label.config(text="Character Limit (e.g. 1500):")
-            if self.split_value_var.get() == r"\n\d+\n":
-                self.split_value_var.set("1500")
+            # If current value is NOT a number, reset to setting default
+            if not self.split_value_var.get().isdigit():
+                try:
+                    import json
+                    settings_path = get_user_file("settings.json")
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                        self.split_value_var.set(str(settings.get("split_length", 1500)))
+                except Exception:
+                    self.split_value_var.set("1500")
 
     def browse_file(self):
         file_path = filedialog.askopenfilename(
             title="Select File",
             filetypes=[
-                ("Supported files", "*.epub *.txt *.md *.srt"),
+                ("Supported files", "*.epub *.txt *.md *.srt *.apkg"),
+                ("Anki Decks", "*.apkg"),
                 ("EPUB files", "*.epub"),
                 ("Text files", "*.txt *.md"),
                 ("Subtitle files", "*.srt"),
@@ -169,39 +337,54 @@ class FileImporterApp:
                 self.output_name_var.set(base)
 
     def process_import(self):
-        epub_path = self.file_path_var.get()
+        file_path = self.file_path_var.get()
         output_name = self.output_name_var.get().strip()
-        split_method = self.split_method_var.get()
-        split_value = self.split_value_var.get()
-
-        if not epub_path or not os.path.exists(epub_path):
+        
+        if not file_path or not os.path.exists(file_path):
             messagebox.showerror("Error", "Please select a valid file.")
             return
         if not output_name:
             messagebox.showerror("Error", "Please enter an output name.")
             return
 
+        is_anki = file_path.lower().endswith('.apkg')
+        
+        if is_anki and not self.understand_var.get():
+            messagebox.showwarning("Incomplete", "Please confirm you understand the warning before extracting Anki Decks.")
+            return
+
         try:
             self.status_var.set("Extracting text...")
             self.root.update_idletasks()
             
-            full_text, error = self.extract_text_from_file(epub_path)
-            if error:
-                messagebox.showerror("Extraction Error", error)
-                return
-
-            self.status_var.set("Splitting text...")
-            self.root.update_idletasks()
-            
-            if split_method == "delimiter":
-                chunks = self.split_by_delimiter(full_text, split_value)
-            else:
-                try:
-                    limit = int(split_value)
-                    chunks = self.split_by_length(full_text, limit)
-                except ValueError:
-                    messagebox.showerror("Error", "Length must be a number.")
+            if is_anki:
+                selected_field = self.anki_field_var.get()
+                if not selected_field:
+                    messagebox.showerror("Error", "Please select an Anki field to extract.")
                     return
+                full_text = extract_field_text(self.anki_notes, self.anki_model_map, selected_field)
+                chunks = [full_text]
+            else:
+                full_text, error = self.extract_text_from_file(file_path)
+                if error:
+                    messagebox.showerror("Extraction Error", error)
+                    return
+
+                self.status_var.set("Splitting text...")
+                self.root.update_idletasks()
+                
+                split_method = self.split_method_var.get()
+                split_value = self.split_value_var.get()
+                
+                if split_method == "delimiter":
+                    chunks = self.split_by_delimiter(full_text, split_value)
+                else:
+                    try:
+                        limit = int(split_value)
+                        chunks = self.split_by_length(full_text, limit)
+                    except ValueError:
+                        messagebox.showerror("Error", "Length must be a number.")
+                        return
 
             self.status_var.set(f"Saving {len(chunks)} files...")
             self.root.update_idletasks()
@@ -216,17 +399,16 @@ class FileImporterApp:
                     f"Extraction complete!\nSaved {len(chunks)} files to:\n{save_dir}\n\n"
                     "👉 PLEASE MOVE the desired files from this folder into the "
                     "HighPriority, LowPriority, or GoalContent folders for analysis.")
-                self.root.destroy() # Close window on completion
+                self.root.destroy() 
 
         except Exception as e:
             messagebox.showerror("Unexpected Error", str(e))
         finally:
-            # Check if root still exists (in case destroy() was called or failed before destroy)
             try:
                 if self.root.winfo_exists():
                     self.status_var.set("Ready")
             except tk.TclError:
-                pass # Root already destroyed
+                pass
 
     def extract_text_from_file(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
@@ -246,7 +428,6 @@ class FileImporterApp:
             return None, f"Failed to read file: {e}"
 
     def has_japanese(self, text):
-        # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
         pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
         return bool(pattern.search(text))
 
@@ -257,23 +438,12 @@ class FileImporterApp:
             
             lines = content.splitlines()
             cleaned_lines = []
-            
-            # Pattern for timestamp line
             timestamp_re = re.compile(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}')
             
             for line in lines:
                 line = line.strip()
-                if not line:
+                if not line or line.isdigit() or timestamp_re.match(line):
                     continue
-                # Skip numeric indices
-                if line.isdigit():
-                    continue
-                # Skip timestamps
-                if timestamp_re.match(line):
-                    continue
-                
-                # NEW: Only keep lines with Japanese characters
-                # This excludes English-only lines/credits and weird numbers
                 if self.has_japanese(line):
                     cleaned_lines.append(line)
             
@@ -293,30 +463,18 @@ class FileImporterApp:
                 content = item.get_content()
                 soup = BeautifulSoup(content, 'html.parser')
                 
-                # Remove Furigana (rt and rp tags)
-                for rt in soup.find_all('rt'):
-                    rt.decompose()
-                for rp in soup.find_all('rp'):
-                    rp.decompose()
-
-                # 1. Handle <br>
-                for br in soup.find_all('br'):
-                    br.replace_with('\n')
+                for rt in soup.find_all('rt'): rt.decompose()
+                for rp in soup.find_all('rp'): rp.decompose()
+                for br in soup.find_all('br'): br.replace_with('\n')
                     
-                # 2. Append newlines to block elements
                 block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'li']
-                for tag in soup.find_all(block_tags):
-                    tag.append('\n')
+                for tag in soup.find_all(block_tags): tag.append('\n')
 
-                # Extract text without BS4 delimiter (to keep words with ruby/span intact)
                 text = soup.get_text(separator='')
-                
                 lines = [line.strip() for line in text.splitlines() if line.strip()]
                 cleaned_text = "\n".join(lines)
-                
                 if cleaned_text:
                     full_text_list.append(cleaned_text)
-                    
             except Exception as e:
                 print(f"Warning: Failed to parse item {item.get_name()}: {e}")
 
@@ -325,24 +483,17 @@ class FileImporterApp:
     def split_by_delimiter(self, text, pattern):
         if "(" not in pattern:
             pattern = f"({pattern})"
-            
         parts = re.split(pattern, text)
-        
         chunks = []
         current_chunk = parts[0]
-        
         for i in range(1, len(parts), 2):
             delimiter = parts[i]
             following_text = parts[i+1] if i+1 < len(parts) else ""
-            
             if current_chunk.strip():
                 chunks.append(current_chunk.strip())
-            
             current_chunk = delimiter + following_text
-            
         if current_chunk.strip():
             chunks.append(current_chunk.strip())
-            
         return chunks
 
     def split_by_length(self, text, limit):
@@ -350,54 +501,35 @@ class FileImporterApp:
         pos = 0
         total_len = len(text)
         overflow_limit = 150
-        
-        # Sentence boundary characters (Japanese and English)
-        # Includes closing quotes/brackets that might follow punctuation
         boundaries = "。？！.?! \n"
         closing_marks = "」』)\"']}"
         
         while pos < total_len:
-            # Target end position
             target_end = pos + limit
-            
             if target_end >= total_len:
                 chunks.append(text[pos:].strip())
                 break
-            
-            # Look ahead for a natural boundary
             found_boundary = -1
-            # Search from target_end up to target_end + overflow_limit
             search_end = min(target_end + overflow_limit, total_len)
-            
             for i in range(target_end, search_end):
-                char = text[i]
-                if char in boundaries:
-                    # Look one more char ahead for closing quotes/brackets
+                if text[i] in boundaries:
                     actual_end = i + 1
                     while actual_end < total_len and text[actual_end] in closing_marks:
                         actual_end += 1
                     found_boundary = actual_end
                     break
-            
-            if found_boundary != -1:
-                end_pos = found_boundary
-            else:
-                # No boundary found in buffer, force split at overflow limit
-                end_pos = search_end
-            
+            end_pos = found_boundary if found_boundary != -1 else search_end
             chunks.append(text[pos:end_pos].strip())
             pos = end_pos
-            
         return [c for c in chunks if c]
 
     def save_chunks(self, chunks, base_name):
         output_sub_dir = os.path.join(PROCESSED_DIR, base_name)
         if not os.path.exists(output_sub_dir):
             os.makedirs(output_sub_dir)
-            
         try:
             for i, chunk in enumerate(chunks, 1):
-                filename = f"{base_name}_{i:02d}.txt"
+                filename = f"{base_name}_{i:02d}.txt" if len(chunks) > 1 else f"{base_name}.txt"
                 path = os.path.join(output_sub_dir, filename)
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(chunk)
@@ -408,7 +540,6 @@ class FileImporterApp:
 def main():
     if not os.path.exists(PROCESSED_DIR):
         os.makedirs(PROCESSED_DIR)
-        
     root = tk.Tk()
     app = FileImporterApp(root)
     root.mainloop()

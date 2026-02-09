@@ -696,6 +696,7 @@ def main():
                     
                     if final_pct >= args.target_coverage:
                         print(f"Successfully reached {final_pct:.2f}% coverage by adding {len(df)} words.")
+                    else:
                         print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {len(df)} unknown words.")
                         print(f"  (This is because some unique tokens remain that were not in the candidate list.)")
             
@@ -824,6 +825,8 @@ def main():
             row["Baseline %"] = round(baseline_pct, 2)
             row["Current %"] = round(start_pct, 2)
             row["New %"] = round(end_pct, 2)
+            row["Known Count"] = current_known
+            row["Total Count"] = file_total_tokens
             
             progressive_rows.append(row)
             

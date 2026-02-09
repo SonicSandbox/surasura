@@ -1243,13 +1243,14 @@
             return {
                 baseline: parseFloat(first["Baseline %"]) || 0,
                 start: parseFloat(first["Current %"]) || 0,
-                target: parseFloat(last["New %"]) || 0
-            }
-
-                ;
+                target: parseFloat(last["New %"]) || 0,
+                known: last["Known Count"] || 0,
+                total: last["Total Count"] || 0
+            };
         }
 
         function createComprehensionBar(stats) {
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
             const el = document.createElement('div');
             el.className = 'comprehension-stats';
 
@@ -1258,7 +1259,9 @@
             const targetWidth = stats.target - stats.start;
             const remainingWidth = 100 - stats.target;
 
-            el.innerHTML = ` <div class="stats-row"><span style="font-weight: bold; color: var(--secondary);">Learning Growth</span><span>Target: <strong>${stats.target.toFixed(2)}%</strong></span></div><div class="progress-container"><div class="progress-segment segment-base" style="width: ${baseWidth}%" title="Baseline: ${stats.baseline}%"></div><div class="progress-segment segment-start" style="width: ${startWidth}%" title="Previous Progress: ${(stats.start - stats.baseline).toFixed(2)}%"></div><div class="progress-segment segment-target" style="width: ${targetWidth}%" title="Target Progress: ${(stats.target - stats.start).toFixed(2)}%"></div></div><div class="legend"><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.3;"></span>Baseline (${stats.baseline.toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.6;"></span>Carried Over (+${(stats.start - stats.baseline).toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50;"></span>This File (+${(stats.target - stats.start).toFixed(1)}%)</div></div>`;
+            const countsHtml = isZen ? '' : `<span style="opacity: 0.5; margin-right: 12px; font-size: 0.85em;">(${stats.known} / ${stats.total})</span>`;
+
+            el.innerHTML = ` <div class="stats-row"><span style="font-weight: bold; color: var(--secondary);">Learning Growth</span><span>${countsHtml}Target: <strong>${stats.target.toFixed(2)}%</strong></span></div><div class="progress-container"><div class="progress-segment segment-base" style="width: ${baseWidth}%" title="Baseline: ${stats.baseline}%"></div><div class="progress-segment segment-start" style="width: ${startWidth}%" title="Previous Progress: ${(stats.start - stats.baseline).toFixed(2)}%"></div><div class="progress-segment segment-target" style="width: ${targetWidth}%" title="Target Progress: ${(stats.target - stats.start).toFixed(2)}%"></div></div><div class="legend"><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.3;"></span>Baseline (${stats.baseline.toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.6;"></span>Carried Over (+${(stats.start - stats.baseline).toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50;"></span>This File (+${(stats.target - stats.start).toFixed(1)}%)</div></div>`;
             return el;
         }
 

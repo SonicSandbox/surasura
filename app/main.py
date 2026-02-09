@@ -122,6 +122,7 @@ class MasterDashboardApp:
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
+        self.var_split_length = tk.IntVar(value=1500)
         
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
@@ -184,6 +185,13 @@ class MasterDashboardApp:
         
     def apply_dark_theme(self):
         self.style.theme_use('default')
+        
+        # Cross-platform Fix for TCombobox Dropdown (Listbox) Visibility
+        self.root.option_add('*TCombobox*Listbox.background', SURFACE_COLOR)
+        self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
+        self.root.option_add('*TCombobox*Listbox.selectBackground', ACCENT_COLOR)
+        self.root.option_add('*TCombobox*Listbox.selectForeground', BG_COLOR)
+        self.root.option_add('*TCombobox*Listbox.font', ('Segoe UI', 10))
         
         # General
         self.style.configure(".", 
@@ -455,6 +463,14 @@ class MasterDashboardApp:
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
 
+        # Split Length Setting
+        split_frame = ttk.Frame(settings_frame)
+        split_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(split_frame, text="Default Split Length (Chars):").pack(side=tk.LEFT)
+        ttk.Entry(split_frame, textvariable=self.var_split_length, width=8).pack(side=tk.LEFT, padx=5)
+        self.var_split_length.trace_add("write", self.save_settings)
+        ToolTip(split_frame, "Initial character limit used when splitting files in the File Importer.")
+
         # Logs
         log_frame = ttk.LabelFrame(self.settings_window, text=" Processing Log", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -526,6 +542,7 @@ class MasterDashboardApp:
                     
                     self.var_strategy.set(settings.get("strategy", "freq"))
                     self.var_target_coverage.set(settings.get("target_coverage", 90))
+                    self.var_split_length.set(settings.get("split_length", 1500))
                     self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
@@ -541,7 +558,8 @@ class MasterDashboardApp:
                 "open_app_mode": self.var_open_app_mode.get(),
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
-                "target_coverage": self.var_target_coverage.get()
+                "target_coverage": self.var_target_coverage.get(),
+                "split_length": self.var_split_length.get()
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)

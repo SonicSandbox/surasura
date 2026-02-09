@@ -466,7 +466,8 @@ def main():
         "high_count": 0, "low_count": 0, "goal_count": 0,
         "first_context": "", 
         "best_extra_contexts": [], # List of (unknown_count, sentence_text)
-        "surface": ""
+        "surface": "",
+        "min_seq": float('inf') # Track first appearance sequence index
     })
     
     file_stats = [] 
@@ -474,36 +475,78 @@ def main():
     # 3. Process Files (Aggregation Phase)
     # To handle progressive reporting correctly, we need a consistent order of all files found.
     # We want HighPriority files first, then Low, then Goal.
-    # Within each category, sort alphabetically.
-    
+    # Within each category, we must respect the user's custom order from _order.json.
+
+    def get_ordered_files(directory):
+        """
+        Recursively Get files from directory, respecting _order.json at each level.
+        Returns a list of absolute file paths.
+        """
+        if not os.path.exists(directory):
+            return []
+
+        results = []
+        
+        # 1. Get all actual items in this directory
+        try:
+            items = os.listdir(directory)
+        except Exception:
+            return []
+            
+        # 2. Load order file
+        order_file = os.path.join(directory, "_order.json")
+        order = []
+        if os.path.exists(order_file):
+            try:
+                with open(order_file, 'r', encoding='utf-8') as f:
+                    order = json.load(f)
+            except Exception:
+                pass
+        
+        # 3. Sort items: Ordered items first, then the rest alphabetically
+        # Create a map for rank to support fast lookup
+        rank_map = {name: i for i, name in enumerate(order)}
+        
+        def sort_key(name):
+            # Returns (is_unordered, rank_or_name)
+            # Ordered items: (0, rank)
+            # Unordered items: (1, name)
+            if name in rank_map:
+                return (0, rank_map[name])
+            return (1, name)
+            
+        items.sort(key=sort_key)
+        
+        # 4. Process items
+        for item in items:
+            if item == "_order.json": continue
+            
+            full_path = os.path.join(directory, item)
+            
+            if os.path.isdir(full_path):
+                # Recurse
+                results.extend(get_ordered_files(full_path))
+            elif os.path.isfile(full_path):
+                if full_path.lower().endswith(('.txt', '.srt', '.epub', '.md')): # Added more extensions to be safe
+                    results.append(full_path)
+                    
+        return results
+
     found_files = []
-    
-    priority_order = {
-        "HighPriority": 0,
-        "LowPriority": 1,
-        "GoalContent": 2
-    }
     
     for label, folder, weight in scan_targets:
         if not os.path.exists(folder):
             continue
-        # Get files recursively from subfolders
-        f = glob.glob(os.path.join(folder, "**", "*"), recursive=True)
-        f = [x for x in f if not os.path.isdir(x) and x.lower().endswith(('.txt', '.srt'))]
+            
+        ordered_paths = get_ordered_files(folder)
         
-        # Sort ONLY this folder's files alphabetically
-        f.sort(key=lambda x: os.path.basename(x))
-        
-        for path in f:
+        for path in ordered_paths:
             found_files.append((path, label, weight))
             
-    # found_files is now implicitly sorted by Priority (due to loop order) and then Name (due to sort).
-    # We do NOT sort found_files again globally, or we lose priority order.
-    
     print(f"Found {len(found_files)} files to process.")
-
+    
     # --- AGGREGATION PASS ---
-    for file_path, label, weight in found_files:
+    for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
         try:
             print(f"Processing {os.path.basename(file_path)}...")
         except UnicodeEncodeError:
@@ -547,9 +590,14 @@ def main():
                 entry["total_count"] += 1
                 entry["sources"].add(os.path.basename(file_path))
                 entry["surface"] = surface
+                entry["surface"] = surface
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1
                 elif label == "GoalContent": entry["goal_count"] += 1
+                
+                # Track first appearance sequence
+                if seq_idx < entry["min_seq"]:
+                    entry["min_seq"] = seq_idx
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
             for (lemma, reading) in unique_lrs:
@@ -596,13 +644,28 @@ def main():
             "Count (High)": data["high_count"],
             "Count (Low)": data["low_count"],
             "Count (Goal)": data["goal_count"],
-            "Sources": source_display # Moved to end
+            "Sources": source_display, # Moved to end
+            "_MinSeq": data["min_seq"] # Helper for sorting
         }
         output_rows.append(row)
         
     df = pd.DataFrame(output_rows)
     if not df.empty:
-        df = df.sort_values(by="Score", ascending=False)
+        # Sort Logic: Primary = Score (Desc), Secondary = First Appearance (Asc)
+        # To do mixed sort in pandas:
+        # We can sort by ["Score", "MinSeq"], with ascending=[False, True]
+        # But we need "MinSeq" column first.
+        
+        # Add MinSeq to DF temporarily for sorting if not present (it isn't in output_rows)
+        # Actually, let's just make sure output_rows has it or sort before DF creation.
+        # It's easier to sort the list of dicts.
+        output_rows.sort(key=lambda x: (-x["Score"], x["_MinSeq"]))
+        
+        # Re-create DF from sorted list
+        df = pd.DataFrame(output_rows)
+        
+        # Drop the helper key if we added it (we need to add it to row first)
+        df_display = df.drop(columns=["_MinSeq"])
         
         # TARGET COVERAGE LOGIC
         if args.target_coverage > 0:
@@ -633,11 +696,13 @@ def main():
                     
                     if final_pct >= args.target_coverage:
                         print(f"Successfully reached {final_pct:.2f}% coverage by adding {len(df)} words.")
-                    else:
                         print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {len(df)} unknown words.")
                         print(f"  (This is because some unique tokens remain that were not in the candidate list.)")
+            
+            # Use the filtered DF for output, but make sure to drop _MinSeq
+            df_display = df.drop(columns=["_MinSeq"], errors='ignore')
 
-        df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+        df_display.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
         print(f"Saved priority list to {OUTPUT_CSV}")
     else:
         print("No unknown words found!")
@@ -670,11 +735,6 @@ def main():
     session_known = set(known_words_initial)
     session_lemmas = set(known_lemmas_initial) 
     
-    for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
-        filename = os.path.basename(file_path)
-        text = extract_text(file_path)
-        tokens = tokenizer.tokenize(text)
-        
     for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
         text = extract_text(file_path)

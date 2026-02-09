@@ -4,6 +4,7 @@ import shutil
 import os
 import subprocess
 import sys
+import json
 from app.path_utils import get_user_file, ensure_data_setup, get_icon_path
 
 # --- Constants & Theme ---
@@ -45,6 +46,16 @@ class ContentImporterApp:
         self.target_folder_var.trace("w", self.on_folder_change)
         
         self.status_var = tk.StringVar(value="Ready")
+        
+        # Drag and Drop State
+        self.tree: ttk.Treeview = None
+        self.list_frame: ttk.Frame = None
+        self.count_label: ttk.Label = None
+        self._drag_item = None
+        self._drag_start_y = 0
+        self._drag_highlight = None
+        self._last_drop_region = None
+        self._last_drop_target = None
 
         self.setup_ui()
         self.refresh_file_list()
@@ -144,6 +155,9 @@ class ContentImporterApp:
         add_btn = ttk.Button(btn_frame, text="+ Add Files", command=self.add_files)
         add_btn.pack(side=tk.LEFT, padx=(0, 10))
         
+        folder_btn = ttk.Button(btn_frame, text="+ Add Folder", command=self.add_folder)
+        folder_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
         del_btn = ttk.Button(btn_frame, text="- Remove Selected", command=self.remove_files)
         del_btn.pack(side=tk.LEFT)
         
@@ -153,37 +167,44 @@ class ContentImporterApp:
         explorer_btn = ttk.Button(btn_frame, text="📂 Open in Explorer", command=self.open_data_folder)
         explorer_btn.pack(side=tk.RIGHT, padx=(0, 10))
 
-        # Listbox with Scrollbar
-        list_frame = ttk.Frame(step2_frame)
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        # Treeview with Scrollbar
+        self.list_frame = ttk.Frame(step2_frame)
+        self.list_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.file_listbox = tk.Listbox(list_frame, 
-                                       bg=SURFACE_COLOR, 
-                                       fg=TEXT_COLOR, 
-                                       selectbackground=ACCENT_COLOR, 
-                                       selectforeground=BG_COLOR,
-                                       borderwidth=1, 
-                                       highlightthickness=0, 
-                                       height=15,
-                                       font=("Consolas", 10),
-                                       selectmode=tk.EXTENDED) # Multiple selection
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Define style for Treeview
+        self.style.configure("Treeview", 
+                             background=SURFACE_COLOR, 
+                             foreground=TEXT_COLOR, 
+                             fieldbackground=SURFACE_COLOR,
+                             borderwidth=0,
+                             font=("Segoe UI", 10))
+        self.style.map("Treeview",
+                       background=[('selected', ACCENT_COLOR)],
+                       foreground=[('selected', BG_COLOR)])
+
+        self.tree = ttk.Treeview(self.list_frame, 
+                                 columns=("full_path",), 
+                                 show="tree", 
+                                 selectmode="extended")
         
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.file_listbox.yview)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.list_frame, orient=tk.VERTICAL, command=self.tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_listbox.config(yscrollcommand=scrollbar.set)
+        self.tree.config(yscrollcommand=scrollbar.set)
+        
+        # DnD Events
+        self.tree.bind("<Button-1>", self.on_drag_start)
+        self.tree.bind("<B1-Motion>", self.on_drag_motion)
+        self.tree.bind("<ButtonRelease-1>", self.on_drag_stop)
         
         # Hint label
+        hint_label = ttk.Label(step2_frame, text="Drag and drop your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
+        hint_label.pack(side=tk.LEFT, pady=(5,0))
+
         self.count_label = ttk.Label(step2_frame, text="0 files found", foreground="#888")
-        self.count_label.pack(anchor=tk.E, pady=(5,0))
+        self.count_label.pack(side=tk.RIGHT, pady=(5,0))
 
-        # --- FOOTER ---
-        action_frame = ttk.Frame(main_frame)
-        action_frame.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Button(action_frame, text="Open Data Folder", command=self.open_data_folder).pack(side=tk.RIGHT)
-
-        # Status Bar
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, foreground="#888")
         status_bar.pack(side=tk.LEFT, pady=(15, 0))
 
@@ -195,32 +216,114 @@ class ContentImporterApp:
         self.refresh_file_list()
         self.status_var.set(f"Switched to {self.target_folder_var.get()}")
 
+    def get_order_file(self, target_dir):
+        return os.path.join(target_dir, "_order.json")
+
+    def load_order(self, target_dir):
+        order_file = self.get_order_file(target_dir)
+        if os.path.exists(order_file):
+            try:
+                with open(order_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return []
+        return []
+
+    def save_order(self, target_dir, order):
+        order_file = self.get_order_file(target_dir)
+        try:
+            with open(order_file, 'w', encoding='utf-8') as f:
+                json.dump(order, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving order: {e}")
+
+    def _get_ordered_items_in_dir(self, directory):
+        """Returns a list of items in the directory, respecting _order.json if it exists."""
+        try:
+            if not os.path.isdir(directory): return []
+            disk_items = os.listdir(directory)
+        except Exception:
+            return []
+        
+        disk_items = [f for f in disk_items if f != "_order.json"]
+        saved_order = self.load_order(directory)
+        
+        final_list = []
+        for item in saved_order:
+            if item in disk_items:
+                final_list.append(item)
+                disk_items.remove(item)
+        
+        disk_items.sort() # Alphabetical for new/unsorted items
+        final_list.extend(disk_items)
+        
+        # Sync back if list was modified by additions/removals
+        if len(saved_order) != len(final_list):
+            self.save_order(directory, final_list)
+            
+        return final_list
+
     def refresh_file_list(self):
         target_dir = self.get_current_dir()
-        self.file_listbox.delete(0, tk.END)
         
+        # 1. Store Expansion State (by path for reliability)
+        expanded_paths = set()
+        def capture_expanded(parent):
+            for child in self.tree.get_children(parent):
+                if self.tree.item(child, "open"):
+                    vals = self.tree.item(child, "values")
+                    if vals: expanded_paths.add(vals[0])
+                capture_expanded(child)
+        if self.tree: capture_expanded("")
+
+        # Clear tree
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
             
-        files = [f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))]
-        
-        for f in files:
-            self.file_listbox.insert(tk.END, f)
+        # 2. Populate Treeview Recursively
+        def populate_level(parent_node, directory):
+            items = self._get_ordered_items_in_dir(directory)
+            for item in items:
+                path = os.path.join(directory, item)
+                is_dir = os.path.isdir(path)
+                
+                # Check if this path was previously expanded
+                should_open = path in expanded_paths
+                
+                node = self.tree.insert(parent_node, tk.END, text=item, values=(path,), open=should_open)
+                if is_dir:
+                    populate_level(node, path)
+
+        populate_level("", target_dir)
             
-        self.count_label.config(text=f"{len(files)} files found")
+        # Update total count
+        total_items = self.get_tree_count("")
+        if hasattr(self, 'count_label') and self.count_label:
+            self.count_label.config(text=f"{total_items} items tracked")
+
+    def get_tree_count(self, parent):
+        count = 0
+        for child in self.tree.get_children(parent):
+            count += 1
+            count += self.get_tree_count(child)
+        return count
 
     def add_files(self):
         target_dir = self.get_current_dir()
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
-        processed_dir = os.path.join(self.data_root, "Processed")
-        if not os.path.exists(processed_dir):
-            os.makedirs(processed_dir)
+        # Start in Sample/Processed folder if it exists
+        initial_dir = os.path.join(self.data_root, "Processed")
+        if not os.path.exists(initial_dir):
+            initial_dir = self.data_root
 
         filepaths = filedialog.askopenfilenames(
             title="Select Content Files",
-            initialdir=processed_dir,
+            initialdir=initial_dir,
             filetypes=[
                 ("All Supported", "*.txt *.md *.epub *.srt"),
                 ("Text Files", "*.txt"),
@@ -233,45 +336,274 @@ class ContentImporterApp:
         
         if filepaths:
             count = 0
+            order = self.load_order(target_dir)
             for path in filepaths:
                 try:
                     filename = os.path.basename(path)
                     dest = os.path.join(target_dir, filename)
                     shutil.copy2(path, dest)
+                    if filename not in order:
+                        order.append(filename)
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
             
+            self.save_order(target_dir, order)
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()}")
             messagebox.showinfo("Success", f"Successfully added {count} files.")
 
+    def add_folder(self):
+        target_dir = self.get_current_dir()
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+        # Start in Sample/Processed folder if it exists
+        initial_dir = os.path.join(self.data_root, "Processed")
+        if not os.path.exists(initial_dir):
+            initial_dir = self.data_root
+
+        folder_path = filedialog.askdirectory(title="Select Folder to Import", initialdir=initial_dir)
+        
+        if folder_path:
+            try:
+                # Handle cases where path ends with slash (e.g. "C:/" or "D:/")
+                folder_path = os.path.normpath(folder_path)
+                folder_name = os.path.basename(folder_path)
+
+                if not folder_name:
+                    messagebox.showerror("Error", "Cannot import a root drive or empty folder name.\nPlease select a subdirectory.")
+                    return
+                
+                dest = os.path.join(target_dir, folder_name)
+
+                #Prevent importing into itself (recursive copy)
+                if os.path.commonpath([folder_path, target_dir]) == os.path.normpath(folder_path):
+                     messagebox.showerror("Error", "Cannot import a parent folder into its own child.")
+                     return
+
+                # Prevent overwriting the target directory itself (redundant but safe)
+                if os.path.abspath(dest) == os.path.abspath(target_dir):
+                     messagebox.showerror("Error", "Invalid destination. Cannot overwrite the target folder.")
+                     return
+                
+                if os.path.exists(dest):
+                    if not messagebox.askyesno("Confirm Overwrite", f"Folder '{folder_name}' already exists in '{self.target_folder_var.get()}'.\nOverwrite it?"):
+                        return
+                    # Safe removal: verify it's inside target_dir before deleting
+                    if os.path.dirname(os.path.abspath(dest)) == os.path.abspath(target_dir):
+                        if os.path.isdir(dest):
+                            shutil.rmtree(dest)
+                        else:
+                            os.remove(dest) # In case it was a file
+                
+                shutil.copytree(folder_path, dest)
+                
+                # Update order
+                order = self.load_order(target_dir)
+                if folder_name not in order:
+                    order.append(folder_name)
+                self.save_order(target_dir, order)
+                
+                self.refresh_file_list()
+                self.status_var.set(f"Added folder '{folder_name}'")
+                messagebox.showinfo("Success", f"Successfully added folder '{folder_name}'.")
+            except Exception as e:
+                # If copy failed, try to clean up if we created an empty folder?
+                # For now just show error.
+                messagebox.showerror("Error", f"Failed to copy folder:\n{e}")
+
     def remove_files(self):
-        selected_indices = self.file_listbox.curselection()
-        if not selected_indices:
-            messagebox.showwarning("No Selection", "Please select files to remove.")
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("No Selection", "Please select items to remove.")
             return
 
-        files_to_remove = [self.file_listbox.get(i) for i in selected_indices]
-        
         confirm = messagebox.askyesno(
             "Confirm Deletion", 
-            f"Are you sure you want to delete {len(files_to_remove)} files?\nThis cannot be undone."
+            f"Are you sure you want to delete {len(selected_items)} selected items and their contents?\nThis cannot be undone."
         )
         
         if confirm:
             target_dir = self.get_current_dir()
             count = 0
-            for filename in files_to_remove:
+            
+            # We only remove root-level items from the order file
+            order = self.load_order(target_dir)
+            
+            for item_id in selected_items:
+                item_text = self.tree.item(item_id, "text")
+                item_values = self.tree.item(item_id, "values")
+                if not item_values: continue
+                path = item_values[0]
+                
                 try:
-                    path = os.path.join(target_dir, filename)
-                    os.remove(path)
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path)
+                    
+                    # If it was a root item, remove from order
+                    if item_text in order:
+                        order.remove(item_text)
                     count += 1
                 except Exception as e:
-                    print(f"Error deleting {filename}: {e}")
+                    print(f"Error deleting {path}: {e}")
             
+            self.save_order(target_dir, order)
             self.refresh_file_list()
-            self.status_var.set(f"Removed {count} files.")
+            self.status_var.set(f"Removed {count} items.")
+
+    def _get_drop_region(self, item, y):
+        """Determine if drop is above, below, or inside the target item."""
+        bbox = self.tree.bbox(item)
+        if not bbox: return "inside"
+        
+        h = bbox[3]
+        offset_y = y - bbox[1]
+        
+        region = "inside"
+        if offset_y < h * 0.25: region = "above"
+        elif offset_y > h * 0.75: region = "below"
+        
+        # Files cannot accept 'inside' drops
+        path = self.tree.item(item, "values")[0]
+        if not os.path.isdir(path):
+            if region == "inside":
+                 region = "below" if offset_y > h / 2 else "above"
+        
+        return region
+
+    def on_drag_start(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self._drag_item = item
+            self._drag_start_y = event.y
+
+    def on_drag_motion(self, event):
+        if not self._drag_item:
+            return
+
+        target_item = self.tree.identify_row(event.y)
+        self.tree.scan_dragto(event.x, event.y)
+        
+        # Clean up 'inside' highlight
+        if hasattr(self, '_drag_highlight') and self._drag_highlight:
+             try:
+                self.tree.item(self._drag_highlight, tags=())
+             except: pass
+             self._drag_highlight = None
+
+        if not target_item:
+            return
+
+        region = self._get_drop_region(target_item, event.y)
+        
+        # Prevent "inside" self
+        if target_item == self._drag_item and region == "inside":
+            region = "below"
+
+        self._last_drop_region = region
+        self._last_drop_target = target_item
+
+        # Visual Feedback: Only highlight folders for "inside" drops
+        if region == "inside":
+            self.tree.tag_configure('drop_target', background=ACCENT_COLOR, foreground=BG_COLOR)
+            self.tree.item(target_item, tags=('drop_target',))
+            self._drag_highlight = target_item
+
+    def on_drag_stop(self, event):
+        # Clean up visuals
+        if hasattr(self, '_drag_highlight') and self._drag_highlight:
+            self.tree.item(self._drag_highlight, tags=())
+            self._drag_highlight = None
+            
+        target_item = self.tree.identify_row(event.y)
+        source_item = getattr(self, "_drag_item", None)
+        
+        if not source_item or not target_item:
+            return
+
+        source_parent = self.tree.parent(source_item)
+        
+        # Determine region using helper
+        region = self._get_drop_region(target_item, event.y)
+            
+        if source_item == target_item: return
+
+        # ACTION: RE-PARENT (Move Into)
+        if region == "inside":
+             target_parent = target_item # The folder IS the parent
+             
+             # Move on disk
+             source_path = self.tree.item(source_item, "values")[0]
+             dest_dir = self.tree.item(target_item, "values")[0]
+             
+             if not os.path.isdir(dest_dir):
+                 return # Should highlight generic error, but UI logic prevents this path usually
+                 
+             filename = os.path.basename(source_path)
+             dest_path = os.path.join(dest_dir, filename)
+             
+             try:
+                 shutil.move(source_path, dest_path)
+                 self.tree.move(source_item, target_item, "end")
+             except Exception as e:
+                 messagebox.showerror("Error", f"Failed to move: {e}")
+                 
+        # ACTION: RE-ORDER (Insert Above/Below)
+        else:
+             target_parent = self.tree.parent(target_item)
+             
+             # We only support reordering if they share the same parent for now?
+             # Or we treat 'above/below' as 'move to same parent as target'.
+             # Let's support moving to target's parent.
+             
+             if source_parent != target_parent:
+                 # Move on disk first
+                 source_path = self.tree.item(source_item, "values")[0]
+                 if target_parent == "":
+                     dest_dir = self.get_current_dir()
+                 else:
+                     dest_dir = self.tree.item(target_parent, "values")[0]
+                     
+                 filename = os.path.basename(source_path)
+                 dest_path = os.path.join(dest_dir, filename)
+                 
+                 try:
+                     if os.path.abspath(source_path) != os.path.abspath(dest_path):
+                         shutil.move(source_path, dest_path)
+                 except Exception as e:
+                     messagebox.showerror("Error", f"Failed to move: {e}")
+                     return
+
+             # UI Move
+             index = self.tree.index(target_item)
+             if region == "below":
+                 index += 1
+             self.tree.move(source_item, target_parent, index)
+
+        # Save Order logic
+        self._save_level_order(source_parent)
+        if hasattr(self, '_last_drop_target'):
+             new_parent = self.tree.parent(source_item)
+             if new_parent != source_parent:
+                 self._save_level_order(new_parent)
+        
+        self.refresh_file_list()
+        self.status_var.set("Order updated.")
+
+    def _save_level_order(self, parent_node):
+        """Saves the current visible order of a node's children to its directory's _order.json"""
+        if parent_node == "":
+            directory = self.get_current_dir()
+        else:
+            directory = self.tree.item(parent_node, "values")[0]
+            
+        children = self.tree.get_children(parent_node)
+        order = [self.tree.item(c, "text") for c in children]
+        self.save_order(directory, order)
 
     def open_data_folder(self):
         path = self.get_current_dir()

@@ -284,7 +284,7 @@ class MasterDashboardApp:
         header_text.pack(side=tk.LEFT)
         
         # 1. Vocabulary Tools
-        vocab_frame = ttk.LabelFrame(main_frame, text=" 📚 Import Vocabulary", padding="10")
+        vocab_frame = ttk.LabelFrame(main_frame, text=" 📚 Import Known Vocabulary", padding="10")
         vocab_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
         
         # Single Row: [Migaku] [Jiten] [Edit Ignore List (fills rest)]

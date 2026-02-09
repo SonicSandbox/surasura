@@ -68,43 +68,39 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     if os.path.exists(PROGRESSIVE_CSV):
         try:
             df = pd.read_csv(PROGRESSIVE_CSV)
-            # Group by Source File
-            files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
             # Zen Focus: Limit to first X words across all files
             if theme == "zen-focus":
                 print(f"Zen Focus detected: Limiting to first {zen_limit} words across files.")
                 df = df.head(zen_limit)
-                files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
-                
+            
             grouped = df.groupby("Source File")
-            for filename in files_order:
-                group = grouped.get_group(filename)
-                words = group.to_dict(orient="records")
+            
+            # Iterate through all files in stats_map order (preserves analyzer's original order)
+            # This keeps Target Met files in their journey position, not moved to the bottom
+            for filename, fstat in stats_map.items():
+                if filename in grouped.groups:
+                    # Has progressive rows
+                    group = grouped.get_group(filename)
+                    words = group.to_dict(orient="records")
+                else:
+                    # No progressive rows (Target Met / completed file)
+                    words = []
                 
-                # Get total words from stats if available
-                total_words = stats_map.get(filename, {}).get("Total Words", 0)
+                # Get total words from stats
+                total_words = fstat.get("Total Words", 0)
                 
                 data["progressive"].append({
                     "filename": filename,
                     "words": words,
-                    "total_words": total_words
+                    "total_words": total_words,
+                    "stats": fstat
                 })
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")
 
+    # No separate completed_files grouping — leave list empty for compatibility
     data["completed_files"] = []
-    
-    # specific progressive files
-    prog_filenames = {item["filename"] for item in data["progressive"]}
-    
-    # Find files in stats but not in progressive
-    for fname, fstat in stats_map.items():
-        if fname not in prog_filenames:
-            data["completed_files"].append({
-                "filename": fname,
-                "stats": fstat
-            })
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):

@@ -727,6 +727,8 @@ def main():
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
     progressive_rows = []
+    # Create a mapping so we can update file_stats entries when a file meets the target
+    file_stats_map = { stat['File']: stat for stat in file_stats }
     # Work with a COPY of known words so we don't pollute the global set if we re-run logic, 
     # but here we just have one run.
     # We need a new set tracking "Learned in this session" to exclude from later files.
@@ -814,6 +816,12 @@ def main():
             if args.target_coverage > 0 and start_pct >= args.target_coverage:
                 # Target met for this file! valid to stop here.
                 # Words skipped here remain "unknown" for future files.
+                # Record target met info in the file stats so UI can surface it.
+                fs = file_stats_map.get(filename)
+                if fs is not None:
+                    fs['Target Met'] = True
+                    fs['Target Met At (%)'] = round(start_pct, 2)
+                    fs['Target Met Sequence'] = seq_idx
                 break
 
             word_count_in_file = row["Occurrences (File)"]
@@ -844,6 +852,25 @@ def main():
         print(f"Saved progressive report to {OUTPUT_PROGRESSIVE}")
     else:
         print("No progressive words found (all known).")
+
+    # Update the saved file statistics to include any 'Target Met' annotations
+    try:
+        with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
+            f.write("--- File Statistics ---\n")
+            f.write(f"Configuration: Skip Single Chars = {SKIP_SINGLE_CHARS}\n\n")
+            for stat in file_stats:
+                f.write(f"File: {stat['File']}\n")
+                f.write(f"  Total Words: {stat.get('Total Words', 0)}\n")
+                f.write(f"  Known Words: {stat.get('Known Count', 0)}\n")
+                f.write(f"  Coverage: {stat.get('Coverage (%)', 0)}%\n")
+                if stat.get('Target Met'):
+                    f.write(f"  Target Met: True (At {stat.get('Target Met At (%)')}%)\n")
+                f.write("\n")
+        with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
+            json.dump(file_stats, f, indent=4, ensure_ascii=False)
+        print(f"Updated stats with target info to {OUTPUT_STATS} and {OUTPUT_STATS_JSON}")
+    except Exception:
+        pass
 
     # --- VISUALIZER REMOVED ---
             

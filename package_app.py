@@ -72,8 +72,20 @@ def build():
     with open(os.path.join(dst_user_files, "IgnoreList.txt"), "w", encoding="utf-8") as f:
         f.write("# Add words to ignore here (one per line)\n")
         
-    # C. Copy Frequency Lists
-    for freq_file in ["Netflix_Frequency_Tier_1.txt", "Netflix_Frequency_Tier_2.txt", "Netflix_Frequency_Tier_3.txt"]:
+    # C. Copy Yomitan Frequency Lists
+    freq_lists = [
+        "jiten_freq_Anime.zip",
+        "jiten_freq_Drama.zip",
+        "jiten_freq_global.zip",
+        "jiten_freq_Manga.zip",
+        "jiten_freq_Movie.zip",
+        "jiten_freq_NonFiction.zip",
+        "jiten_freq_Novel.zip",
+        "jiten_freq_VideoGame.zip",
+        "jiten_freq_VisualNovel.zip",
+        "jiten_freq_WebNovel.zip",
+    ]
+    for freq_file in freq_lists:
         src_freq = os.path.join("User Files", freq_file)
         if os.path.exists(src_freq):
             shutil.copy2(src_freq, os.path.join(dst_user_files, freq_file))

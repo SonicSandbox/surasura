@@ -1,0 +1,1 @@
+﻿# Add words to ignore here (one per line)

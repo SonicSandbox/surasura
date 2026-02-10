@@ -8,14 +8,14 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file
+from app.path_utils import get_user_file, get_user_files_path
 
 def convert_db_to_json(db_path, output_json=None, language=None):
     if not output_json:
-        if language == 'zh':
-            output_json = get_user_file("User Files/KnownWord_zh.json")
-        else:
-            output_json = get_user_file("User Files/KnownWord.json")
+        # Save to User Files/<lang>/KnownWord.json
+        user_files_dir = get_user_files_path(language)
+        output_json = os.path.join(user_files_dir, "KnownWord.json")
+
 
     try:
         conn = sqlite3.connect(db_path)
@@ -113,6 +113,7 @@ def convert_db_to_json(db_path, output_json=None, language=None):
         traceback.print_exc()
         return False
 
+def main():
     import argparse
     parser = argparse.ArgumentParser(description="Migaku DB to JSON Converter")
     parser.add_argument("db_file", help="Path to Migaku .db file")

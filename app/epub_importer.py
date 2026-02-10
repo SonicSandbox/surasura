@@ -16,11 +16,11 @@ try:
 except ImportError:
     pass
 
-from app.path_utils import get_user_file
+from app.path_utils import get_user_file, get_data_path
 from app.anki_utils import load_anki_data, extract_field_text, cleanup_temp_dir
 
 # --- Configuration ---
-PROCESSED_DIR = get_user_file("data/Processed")
+# PROCESSED_DIR will be determined by the instance based on language
 
 # Colors for Dark Mode
 BG_COLOR = "#1e1e1e"
@@ -31,9 +31,11 @@ SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
 
 class FileImporterApp:
-    def __init__(self, root):
+    def __init__(self, root, language='ja'):
         self.root = root
-        self.root.title("Surasura - File Importer v1.0")
+        self.language = language
+        self.processed_dir = os.path.join(get_data_path(language), "Processed")
+        self.root.title(f"Surasura - File Importer v1.0 ({language})")
         self.root.geometry("600x650") # Expanded for Anki preview/warning
         self.root.resizable(True, True)
         self.root.minsize(500, 500)
@@ -521,7 +523,7 @@ class FileImporterApp:
         return [c for c in chunks if c]
 
     def save_chunks(self, chunks, base_name):
-        output_sub_dir = os.path.join(PROCESSED_DIR, base_name)
+        output_sub_dir = os.path.join(self.processed_dir, base_name)
         if not os.path.exists(output_sub_dir):
             os.makedirs(output_sub_dir)
         try:
@@ -535,10 +537,17 @@ class FileImporterApp:
             return None, str(e)
 
 def main():
-    if not os.path.exists(PROCESSED_DIR):
-        os.makedirs(PROCESSED_DIR)
+    import argparse
+    parser = argparse.ArgumentParser(description="File Importer")
+    parser.add_argument("--language", default='ja', help="Target language (default: ja)")
+    args = parser.parse_args()
+
+    processed_dir = os.path.join(get_data_path(args.language), "Processed")
+    if not os.path.exists(processed_dir):
+        os.makedirs(processed_dir)
+        
     root = tk.Tk()
-    app = FileImporterApp(root)
+    app = FileImporterApp(root, language=args.language)
     root.mainloop()
 
 if __name__ == "__main__":

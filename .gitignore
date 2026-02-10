@@ -22,7 +22,9 @@ results/*
 
 # User Config
 User Files/KnownWord.json
+User Files/ja/KnownWord.json
 User Files/IgnoreList.txt
+
 # Keep sample files
 !User Files/KnownWordsSample.json
 !User Files/IgnoreListSample.txt
@@ -45,7 +47,11 @@ build_log.txt
 build_log_retry.txt
 test_hello.py
 
-# copyrighted materials
+# Materials
 tests/Chinese_2.epub
-tests/Chinese_1.epub
+tests/Test Resources/zh/Chinese_1.epub
+tests/Test Resources/zh/Chinese_2.epub
+
+data/*
+
 

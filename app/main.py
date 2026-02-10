@@ -123,6 +123,7 @@ class MasterDashboardApp:
         self.var_target_coverage = tk.IntVar(value=90)
         self.var_split_length = tk.IntVar(value=1500)
         self.var_language = tk.StringVar(value="ja")
+        self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -296,10 +297,20 @@ class MasterDashboardApp:
         if lang == 'zh':
             if hasattr(self, 'btn_jiten'):
                 self.btn_jiten.pack_forget()
+            if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'lang_frame'):
+                 self.chk_reinforce_widget.pack(anchor=tk.W, after=self.lang_frame, padx=20)
         else:
             if hasattr(self, 'btn_jiten'):
                 # Re-insert in correct position (after migaku)
                 self.btn_jiten.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_migaku)
+            if hasattr(self, 'chk_reinforce_widget'):
+                self.chk_reinforce_widget.pack_forget()
+        
+        # Update Flag Icon
+        if hasattr(self, 'lbl_flag'):
+            flag_icon = "🇨🇳" if lang == 'zh' else "🇯🇵"
+            self.lbl_flag.config(text=flag_icon)
+
         self.save_settings()
         
     def setup_ui(self):
@@ -461,6 +472,10 @@ class MasterDashboardApp:
         # UPDATED LINK to the new repo
         self.github_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/SonicSandbox/surasura"))
 
+        # Language Flag
+        self.lbl_flag = ttk.Label(credit_box, text="🇯🇵", font=("Segoe UI Emoji", 10))
+        self.lbl_flag.pack(side=tk.LEFT, padx=(10, 0))
+
         # Settings Button (Icon only, Bottom Right)
         # Use a simple gear unicode or similar if no image
         btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
@@ -497,11 +512,18 @@ class MasterDashboardApp:
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
 
         # Language Selection
-        lang_frame = ttk.Frame(settings_frame)
-        lang_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(lang_frame, text="Target Language:").pack(side=tk.LEFT)
-        ttk.Radiobutton(lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
-        ttk.Radiobutton(lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
+        self.lang_frame = ttk.Frame(settings_frame)
+        self.lang_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(self.lang_frame, text="Target Language:").pack(side=tk.LEFT)
+        ttk.Radiobutton(self.lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(self.lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
+
+        # Reinforce Segmentation (Chinese)
+        self.chk_reinforce_widget = ttk.Checkbutton(settings_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
+        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
+        
+        # Initial visibility set by update_ui
+        self.update_ui_for_language()
 
         # Split Length Setting
         split_frame = ttk.Frame(settings_frame)
@@ -593,6 +615,8 @@ class MasterDashboardApp:
                     if not lang: lang = "ja" # Safeguard against empty string
                     self.var_language.set(lang)
                     
+                    self.var_reinforce.set(settings.get("reinforce_segmentation", False))
+
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
                     self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -614,6 +638,7 @@ class MasterDashboardApp:
                 "target_coverage": self.var_target_coverage.get(),
                 "split_length": self.var_split_length.get(),
                 "target_language": self.var_language.get(),
+                "reinforce_segmentation": self.var_reinforce.get(),
                 "onboarding_completed": self.onboarding_completed.get()
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
@@ -624,9 +649,10 @@ class MasterDashboardApp:
     def open_data_folder(self):
         """Opens the data folder in File Explorer"""
         try:
-            from app.path_utils import get_user_file, ensure_data_setup
-            ensure_data_setup()
-            data_path = get_user_file("data")
+            from app.path_utils import get_data_path, ensure_data_setup
+            lang = self.var_language.get()
+            ensure_data_setup(lang)
+            data_path = get_data_path(lang)
             
             # Create if it doesn't exist (safety)
             if not os.path.exists(data_path):
@@ -644,8 +670,10 @@ class MasterDashboardApp:
 
     def open_ignore_list(self):
         try:
-            from app.path_utils import get_user_file
-            ignore_path = get_user_file("User Files/IgnoreList.txt")
+            from app.path_utils import get_user_files_path
+            lang = self.var_language.get()
+            user_files_dir = get_user_files_path(lang)
+            ignore_path = os.path.join(user_files_dir, "IgnoreList.txt")
             
             # Ensure file exists
             if not os.path.exists(ignore_path):
@@ -775,20 +803,20 @@ class MasterDashboardApp:
         self.run_command_async(['migaku_db_importer_gui.py', '--language', self.var_language.get()], "Migaku Importer")
 
     def run_jiten_importer(self):
-        self.run_command_async(['jiten_db_importer_gui.py'], "Jiten Sync")
+        self.run_command_async(['jiten_db_importer_gui.py', '--language', self.var_language.get()], "Jiten Sync")
 
     def run_content_importer(self):
         self.run_command_async(['content_importer_gui.py', '--language', self.var_language.get()], "Content Importer")
 
     def run_file_importer(self):
-        self.run_command_async(['epub_importer.py'], "File Importer")
+        self.run_command_async(['epub_importer.py', '--language', self.var_language.get()], "File Importer")
 
     def run_frequency_list_manager(self):
-        self.run_command_async(['frequency_list_gui.py'], "Frequency List Manager")
+        self.run_command_async(['frequency_list_gui.py', '--language', self.var_language.get()], "Frequency List Manager")
 
     def run_analyzer(self):
         from app.path_utils import ensure_data_setup
-        ensure_data_setup()
+        ensure_data_setup(self.var_language.get())
         args = ['analyzer.py']
         if not self.var_exclude_single.get():
             args.append('--include-single-chars')
@@ -805,6 +833,10 @@ class MasterDashboardApp:
         
         # Add Language
         args.append(f'--language={self.var_language.get()}')
+        
+        # Add Reinforce Flag if applicable
+        if self.var_language.get() == 'zh' and self.var_reinforce.get():
+            args.append('--reinforce')
         
         # Add theme argument
         theme_map = {

@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import json
-from app.path_utils import get_user_file, ensure_data_setup, get_icon_path
+from app.path_utils import get_user_file, ensure_data_setup, get_icon_path, get_data_path
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -19,7 +19,7 @@ class ContentImporterApp:
     def __init__(self, root, language='ja'):
         self.root = root
         self.language = language
-        self.root.title("Surasura - Content Manager")
+        self.root.title(f"Surasura - Content Manager ({language})")
         self.root.geometry("650x700")  # Expanded size
         self.root.minsize(600, 600)
         self.root.configure(bg=BG_COLOR)
@@ -39,8 +39,8 @@ class ContentImporterApp:
             pass
 
         # Data Setup
-        ensure_data_setup()
-        self.data_root = get_user_file("data")
+        ensure_data_setup(language)
+        self.data_root = get_data_path(language)
         
         # State
         self.target_folder_var = tk.StringVar(value="HighPriority")

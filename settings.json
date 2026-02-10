@@ -8,5 +8,6 @@
     "target_coverage": 96,
     "split_length": 1500,
     "target_language": "ja",
+    "reinforce_segmentation": false,
     "onboarding_completed": false
 }

@@ -12,9 +12,10 @@ if __name__ == "__main__" and __package__ is None:
 from app.path_utils import get_user_file, get_resource
 
 class JitenImporterGUI:
-    def __init__(self, root):
+    def __init__(self, root, language='ja'):
         self.root = root
-        self.root.title("Surasura - Jiten Known-Word Importer")
+        self.language = language
+        self.root.title(f"Surasura - Jiten Known-Word Importer ({language})")
         self.root.geometry("600x450")
         self.root.resizable(True, True)
         self.root.minsize(500, 350)
@@ -138,12 +139,12 @@ class JitenImporterGUI:
             
             if getattr(sys, 'frozen', False):
                 # Frozen
-                cmd = [sys.executable, "convert_jiten", api_key]
+                cmd = [sys.executable, "convert_jiten", api_key, "--language", self.language]
             else:
                 # Source
                 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 app_entry_path = os.path.join(project_root, "app_entry.py")
-                cmd = [sys.executable, app_entry_path, "convert_jiten", api_key]
+                cmd = [sys.executable, app_entry_path, "convert_jiten", api_key, "--language", self.language]
             
             # Run subprocess
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
@@ -168,8 +169,13 @@ class JitenImporterGUI:
             messagebox.showerror("Error", f"Failed to run importer: {e}")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Surasura Jiten Importer")
+    parser.add_argument("--language", default="ja", help="Target language (ja, zh)")
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = JitenImporterGUI(root)
+    app = JitenImporterGUI(root, language=args.language)
     root.mainloop()
 
 if __name__ == "__main__":

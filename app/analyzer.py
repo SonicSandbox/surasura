@@ -16,7 +16,7 @@ from collections import defaultdict, Counter
 from datetime import datetime
 import abc
 
-from app.path_utils import get_user_file, get_resource
+from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
 
 # --- Configuration ---
 # Weights
@@ -28,15 +28,8 @@ WEIGHT_GOAL = 2
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
 
-# Paths
-USER_FILES_DIR = get_user_file("User Files")
-DATA_DIR = get_user_file("data")
-
-KNOWN_WORDS_FILE_JA = os.path.join(USER_FILES_DIR, "KnownWord.json")
-KNOWN_WORDS_FILE_ZH = os.path.join(USER_FILES_DIR, "KnownWord_zh.json")
-BLACK_LIST_FILE = os.path.join(USER_FILES_DIR, "Blacklist.txt")
-IGNORE_LIST_FILE = os.path.join(USER_FILES_DIR, "IgnoreList.txt")
-
+# Paths - Now determined dynamically in main()
+# RESULTS_DIR remains shared for the "Active" analysis result
 RESULTS_DIR = get_user_file("results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -107,8 +100,18 @@ class JapaneseTokenizer(Tokenizer):
                 yield s_text, current_sentence_tokens
 
 class ChineseTokenizer(Tokenizer):
-    def __init__(self):
-        pass
+    def __init__(self, reinforce_segmentation=False):
+        # Force separation of common collocations that users prefer to see split
+        # e.g. "就把" -> "就", "把" instead of "就把"
+        if reinforce_segmentation:
+            jieba.suggest_freq(('就', '把'), tune=True)
+            jieba.suggest_freq(('您', '不'), tune=True)
+            print("Configuration: Chinese segmentation reinforcement ENABLED.")
+        else:
+            # We can't easily "undo" suggest_freq cleanly without reloading jieba or messing with internal dicts
+            # but since strictness is usually preferred, we can just leave it or rely on script restart.
+            # In this architecture, analyzer.py is run as a subprocess, so it starts fresh each time.
+            pass
 
     def tokenize(self, text):
         """Returns a list of (lemma, pinyin_placeholder, original_surface) tuples."""
@@ -140,8 +143,12 @@ class ChineseTokenizer(Tokenizer):
             surface = word
             is_boundary = surface in punctuation or surface.strip() == '' and '\n' in surface # Handle newline
             
-            # Simple filtering: skip pure whitespace or punctuation for the *token list* (but keep in surface)
-            is_skippable = surface.strip() == '' or surface in punctuation or surface in ['，', ',', '：', ':'] 
+            # Strict filtering: Must contain at least one CJK character.
+            # AND must NOT contain any Japanese Hiragana/Katakana (to avoid mixed JA text noise).
+            has_cjk = re.search(r'[\u4E00-\u9FFF]', surface)
+            has_kana = re.search(r'[\u3040-\u30FF]', surface)
+            
+            is_skippable = (not has_cjk) or (has_kana is not None) 
             
             # For Chinese, "lemma" is just the word. "Reading" (Pinyin) requires pypinyin, 
             # but user didn't ask for Pinyin injection yet, and existing data might not have it.
@@ -479,7 +486,9 @@ def main():
     # Flags for standard run
     parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
     parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
+
     parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
+    parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
     
     # These are handled manually above but good to have in help
     parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
@@ -520,22 +529,35 @@ def main():
 
     print(f"\nLoading resources...")
     
+    print(f"\nLoading resources...")
+    
+    # Resolve Paths based on Language
+    data_dir = get_data_path(language)
+    user_files_dir = get_user_files_path(language)
+    
     # 1. Load Resources
     if language == 'zh':
-        tokenizer = ChineseTokenizer()
-        known_file = KNOWN_WORDS_FILE_ZH
+        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
+        # For consistency, we might look for KnownWord.json in the zh folder too?
+        # Legacy: KnownWord_zh.json in User Files?
+        # New Plan: User Files/zh/KnownWord.json
+        known_file = os.path.join(user_files_dir, "KnownWord.json")
     else:
         tokenizer = JapaneseTokenizer()
-        known_file = KNOWN_WORDS_FILE_JA
+        known_file = os.path.join(user_files_dir, "KnownWord.json")
         
     known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
-    ignore_list = load_simple_list(IGNORE_LIST_FILE)
-    black_list = load_simple_list(BLACK_LIST_FILE)
+    
+    ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
+    black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
+    
+    ignore_list = load_simple_list(ignore_list_file)
+    black_list = load_simple_list(black_list_file)
     ignore_list.update(black_list) # Merge blacklist into ignore list
     
     # Discover and load all yomitan frequency lists from User Files
-    print(f"Scanning for {language} frequency lists...")
-    available_freq_lists = discover_yomitan_frequency_lists(USER_FILES_DIR, language)
+    print(f"Scanning for {language} frequency lists in {user_files_dir}...")
+    available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)
     
     if not available_freq_lists:
         print("Warning: No frequency lists found in User Files/")
@@ -550,9 +572,9 @@ def main():
     # 2. Define Scanning targets
     # ORDER MATTERS: High -> Low -> Goal
     scan_targets = [
-        ("HighPriority", os.path.join(DATA_DIR, "HighPriority"), WEIGHT_HIGH),
-        ("LowPriority", os.path.join(DATA_DIR, "LowPriority"), WEIGHT_LOW),
-        ("GoalContent", os.path.join(DATA_DIR, "GoalContent"), WEIGHT_GOAL)
+        ("HighPriority", os.path.join(data_dir, "HighPriority"), WEIGHT_HIGH),
+        ("LowPriority", os.path.join(data_dir, "LowPriority"), WEIGHT_LOW),
+        ("GoalContent", os.path.join(data_dir, "GoalContent"), WEIGHT_GOAL)
     ]
     
     word_stats = defaultdict(lambda: {

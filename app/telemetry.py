@@ -86,6 +86,17 @@ def _send_heartbeat_thread():
     if TELEMETRY_ENV == "dev":
         return
 
+    # Check Opt-Out Setting
+    try:
+        settings_path = path_utils.get_user_file("settings.json")
+        if os.path.exists(settings_path):
+            with open(settings_path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                if not settings.get("telemetry_enabled", True):
+                    return
+    except Exception:
+        pass # proceed if settings fail to load (default is enabled)
+
     try:
         uid = get_telemetry_id()
         platform = sys.platform

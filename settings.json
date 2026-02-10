@@ -9,6 +9,7 @@
     "split_length": 3000,
     "target_language": "ja",
     "reinforce_segmentation": false,
+    "telemetry_enabled": true,
     "onboarding_completed": true,
     "logic": {
         "inline_completed_files": false,

@@ -136,6 +136,7 @@ class MasterDashboardApp:
         self.var_language = tk.StringVar(value="ja")
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
+        self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -193,7 +194,9 @@ class MasterDashboardApp:
         self.var_min_freq.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
+        self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
+        self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -544,6 +547,10 @@ class MasterDashboardApp:
         chk_inline.pack(anchor=tk.W)
         ToolTip(chk_inline, "If met, files stay in order in sidebar with 'Target met' label instead of moving to the bottom.")
 
+        chk_telemetry = ttk.Checkbutton(settings_frame, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
+        chk_telemetry.pack(anchor=tk.W)
+        ToolTip(chk_telemetry, "Send anonymous daily usage statistics to help improve the app.")
+
         # Language Selection
         self.lang_frame = ttk.Frame(settings_frame)
         self.lang_frame.pack(fill=tk.X, pady=(0, 10))
@@ -656,6 +663,7 @@ class MasterDashboardApp:
                     self.var_language.set(lang)
 
                     self.var_reinforce.set(settings.get("reinforce_segmentation", False))
+                    self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
 
@@ -684,6 +692,7 @@ class MasterDashboardApp:
                 "split_length": self.var_split_length.get(),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
+                "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "logic": self.logic_settings
             }

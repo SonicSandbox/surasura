@@ -11,6 +11,9 @@ venv/
 env/
 ENV/
 
+# Dev
+docs/agent instructions/Pre-build_check.md
+
 # Distribution / packaging
 build/
 dist/
@@ -26,3 +29,6 @@ surasura_v*.zip
 
 # Pytest
 .pytest_cache/
+
+
+docs/agent instructions/Pre-build_check.md

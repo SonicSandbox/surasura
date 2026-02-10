@@ -210,6 +210,14 @@
         .reading {
             font-size: 1rem;
             color: var(--text-secondary);
+            user-select: none;
+            pointer-events: none;
+            display: inline-block;
+            margin-right: 5px;
+        }
+
+        .reading::after {
+            content: attr(data-reading);
         }
 
         /* --- Priority Markers --- */
@@ -1373,7 +1381,7 @@
                 el.innerHTML = `
                     <div class="card-header" style="margin-bottom:8px; display:flex; align-items:baseline;">
                         <span class="word-main">${safeWord}</span>
-                        <span class="reading">${data.Reading || ''}</span>
+                        <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
                         ${displayFreq}
                         ${markersHtml}
                     </div>
@@ -1418,7 +1426,7 @@
                 <div class="card-header">
                     <div style="display:flex; align-items:center; gap: 10px;">
                         <span class="word-main">${safeWord}</span>
-                        <span class="reading">${data.Reading || ''}</span>
+                        <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
                     </div>
                     <div style="display:flex; align-items:center; gap: 15px;">
                         <div class="stats" style="font-size: 0.9rem; color: var(--text-secondary);">

@@ -86,6 +86,7 @@ def _send_heartbeat_thread():
     if TELEMETRY_ENV == "dev":
         return
 
+    language = "ja" # Default
     # Check Opt-Out Setting
     try:
         settings_path = path_utils.get_user_file("settings.json")
@@ -94,6 +95,7 @@ def _send_heartbeat_thread():
                 settings = json.load(f)
                 if not settings.get("telemetry_enabled", True):
                     return
+                language = settings.get("target_language", "ja")
     except Exception:
         pass # proceed if settings fail to load (default is enabled)
 
@@ -105,7 +107,8 @@ def _send_heartbeat_thread():
             "uid": uid,
             "version": __version__,
             "platform": platform,
-            "env": TELEMETRY_ENV
+            "env": TELEMETRY_ENV,
+            "lang": language
         }
         
         requests.get(TELEMETRY_URL, params=params, timeout=2)

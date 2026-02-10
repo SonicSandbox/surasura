@@ -59,7 +59,7 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
 
-- 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content to use with Migaku / Yomitan, etc.
+- 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content. Supports **Migaku** (JSON), **Yomitan** (Zip with readings), and plain text formats.
 
 
 ### Current Limitations

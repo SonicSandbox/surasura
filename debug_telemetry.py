@@ -23,7 +23,7 @@ if env == 'dev':
 
 print(f"Attempting to send GET request to {url}...")
 try:
-    response = requests.get(url, params={"uid": "debug-user", "version": "debug-1.0", "platform": "debug-os"}, timeout=5)
+    response = requests.get(url, params={"uid": "debug-user", "version": "debug-1.0", "platform": "debug-os", "lang": "ja"}, timeout=5)
     print(f"Response Status Code: {response.status_code}")
     print(f"Response Body: {response.text}")
     

@@ -72,34 +72,46 @@ def build(zip_output=False):
 
     # 2. Copy User Files (SANITIZED)
     print("Copying User Files (Sanitized)...")
-    dst_user_files = os.path.join(final_dist, "User Files")
-    os.makedirs(dst_user_files, exist_ok=True)
+    dst_user_files_base = os.path.join(final_dist, "User Files")
+    os.makedirs(dst_user_files_base, exist_ok=True)
     
-    # A. Copy Sample Known Words as the default
-    src_sample_json = os.path.join("User Files", "KnownWordsSample.json")
-    if os.path.exists(src_sample_json):
-        shutil.copy2(src_sample_json, os.path.join(dst_user_files, "KnownWord.json"))
-        # Sample file is now just KnownWord.json, no need for duplicate
+    supported_languages = ["ja", "zh"]
     
-    # B. Create Empty Ignore List
-    with open(os.path.join(dst_user_files, "IgnoreList.txt"), "w", encoding="utf-8") as f:
-        f.write("# Add words to ignore here (one per line)\n")
+    # A. Global Files (None Currently)
+
+    # B. Language Specific User Files
+    for lang in supported_languages:
+        dst_user_files_lang = os.path.join(dst_user_files_base, lang)
+        os.makedirs(dst_user_files_lang, exist_ok=True)
         
-    # Copy Blacklist
-    src_blacklist = os.path.join("User Files", "Blacklist.txt")
-    if os.path.exists(src_blacklist):
-        shutil.copy2(src_blacklist, os.path.join(dst_user_files, "Blacklist.txt"))
+        # NOTE: KnownWord.json is explicitly EXCLUDED from build.
+        # Users start with a clean slate.
+
+        # Create/Copy Ignore List
+        src_ignore = os.path.join("User Files", lang, "IgnoreList.txt")
+        if os.path.exists(src_ignore):
+             shutil.copy2(src_ignore, os.path.join(dst_user_files_lang, "IgnoreList.txt"))
+        else:
+            with open(os.path.join(dst_user_files_lang, "IgnoreList.txt"), "w", encoding="utf-8") as f:
+                f.write("# Add words to ignore here (one per line)\n")
+
+        # Copy Blacklist
+        src_blacklist = os.path.join("User Files", lang, "Blacklist.txt")
+        if os.path.exists(src_blacklist):
+            print(f"Bundling Blacklist for {lang}...")
+            shutil.copy2(src_blacklist, os.path.join(dst_user_files_lang, "Blacklist.txt"))
         
-    # C. Copy Frequency Lists (CSV)
-    # Copy any file matching frequency_list_*.csv
-    user_files_src = "User Files"
-    if os.path.exists(user_files_src):
-        for f in os.listdir(user_files_src):
-            if f.startswith("frequency_list_") and f.endswith(".csv"):
-                src_path = os.path.join(user_files_src, f)
-                dst_path = os.path.join(dst_user_files, f)
-                shutil.copy2(src_path, dst_path)
-                print(f"Bundled frequency list: {f}")
+        # Copy Specific Frequency List (Only for JA)
+        if lang == "ja":
+            specific_freq_list = "frequency_list_ja_global50k.csv"
+            src_freq = os.path.join("User Files", "ja", specific_freq_list)
+            if os.path.exists(src_freq):
+                print(f"Bundling specific frequency list: {specific_freq_list}")
+                shutil.copy2(src_freq, os.path.join(dst_user_files_lang, specific_freq_list))
+        
+    # C. Copy Global Frequency Lists (CSV)
+    # Removed: We only bundle the specific 'frequency_list_ja_global50k.csv' now.
+
 
     # D. Copy Legacy Yomitan Frequency Lists (Zips) - Optional/Legacy
     freq_lists_legacy = [
@@ -117,22 +129,25 @@ def build(zip_output=False):
     for freq_file in freq_lists_legacy:
         src_freq = os.path.join("User Files", freq_file)
         if os.path.exists(src_freq):
-            shutil.copy2(src_freq, os.path.join(dst_user_files, freq_file))
+            shutil.copy2(src_freq, os.path.join(dst_user_files_base, freq_file))
 
     # 3. Create Data Directories and Copy Samples
     print("Creating Data Directories and Copying Samples...")
-    data_dir = os.path.join(final_dist, "data")
-    os.makedirs(data_dir, exist_ok=True)
+    data_dir_base = os.path.join(final_dist, "data")
     
-    for category in ["HighPriority", "LowPriority", "GoalContent", "Processed"]:
-        cat_dir = os.path.join(data_dir, category)
-        os.makedirs(cat_dir, exist_ok=True)
+    for lang in supported_languages:
+        data_dir_lang = os.path.join(data_dir_base, lang)
+        os.makedirs(data_dir_lang, exist_ok=True)
         
-        # Copy samples if they exist
-        sample_src = os.path.join("samples", category)
-        if os.path.exists(sample_src):
-            print(f"Bundling samples for {category}...")
-            shutil.copytree(sample_src, cat_dir, dirs_exist_ok=True)
+        for category in ["HighPriority", "LowPriority", "GoalContent", "Processed"]:
+            cat_dir = os.path.join(data_dir_lang, category)
+            os.makedirs(cat_dir, exist_ok=True)
+            
+            # Copy samples from samples/<lang>/<category>
+            sample_src = os.path.join("samples", lang, category)
+            if os.path.exists(sample_src):
+                print(f"Bundling samples for {lang}/{category}...")
+                shutil.copytree(sample_src, cat_dir, dirs_exist_ok=True)
 
     # 4. Create Results Directory
     os.makedirs(os.path.join(final_dist, "results"), exist_ok=True)

@@ -280,10 +280,11 @@ class ContentImporterApp:
         metadata = data.get("metadata", {})
         
         # Filter disk_items by language
-        # Items with no metadata tag are assumed to be 'ja' (legacy)
+        # Items with no metadata tag are assumed to belong to the CURRENT language
+        # (This fixed a bug where Chinese samples were hidden by default)
         filtered_disk_items = []
         for item in disk_items:
-            item_lang = metadata.get(item, {}).get("lang", "ja")
+            item_lang = metadata.get(item, {}).get("lang", self.language)
             if item_lang == self.language:
                 filtered_disk_items.append(item)
         

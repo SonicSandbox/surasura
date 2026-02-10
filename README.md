@@ -1,17 +1,20 @@
 # <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - Readability Analyzer
 ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 
-*For Intermediate-Advanced learners.* 
+*For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
 
 ![Results](docs/assets/images/img_readability_results.PNG)
 
-A tool that gives you episode-by-episode highest-leverage words and custom word order based on:
-- known vocabulary
-- your immersion content 
-- word frequency
+> **The only frequency list that matters is the one based on YOUR watch / read list.**
 
-After analyzing, it will generate a study plan with multiple examples. 
-Optimizes the order you learn words. Easy sentence mining for Migaku or Anki.
+A tool that generates THAT list, and gives you the episode-by-episode (or chapter) *highest-leverage* order order based on:
+
+- your known vocabulary
+- your immersion content 
+- your word frequency
+
+After analyzing, it will generate a study plan with curated examples. 
+Optimizes the order you learn words. Easy sentence mining for Anki or Migaku.
 
 ## 🎯 Why? - The Diminishing Returns of Vocab
 
@@ -38,28 +41,25 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Anki Decks or Jiten.moe.
 
-- 📖 **EPUB & Media Importer**: Extract and split text from Japanese/Chinese EPUBs, SRTs, Anki apkg, or Text files.
+- 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
 
-- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite (JA) or Jieba (ZH) and calculate comprehensive readability scores.
+- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
 
-- 💡 **i+1 Context Selection**: Automatically prioritizes sentences with only one unknown word for your vocabulary reports, making sentence mining and learning effortless.
-
-- 📊 **Custom Frequency Export**: Generate your own frequency lists based on your analyzed content to use in Yomitan or Migaku.
+- 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
 
 - 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
+
+- 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
 
 - 📈 **Progress Tracking**: Track your progress % before AND after watching/reading. Czlear visibility on "known" vs "to learn".
 
 - 🧘 **Zen Mode**: A distraction-free mode for focused learning.
 
-- 💎 **Priority Markers**: Identifies high-value words based on their distribution in your priority folders:
-  - ⚖ **Lopsided**: 80%+ of occurrences are in the `HighPriority` folder. (Pure focus).
-  - ✦ **Priority**: 50%+ of occurrences are in `HighPriority` + `LowPriority` combined.
-  - *Markers are mutually exclusive (Lopsided takes precedence) and extremely subtle in Zen Mode.*
-
-- ⌨️ **Hotkey Navigation**: Navigate between word cards with hotkeys (Left/Right).
-
 - 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
+
+- 🇨🇳 **Chinese Support**: Now supports Chinese (Simplified & Traditional) via Jieba segmentation.
+
+- **Custom Freq List**: Generate your own frequency list from your immersion content to use with Migaku / Yomitan, etc.
 
 
 ### Current Limitations
@@ -87,16 +87,19 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 1. Run `Surasura.exe` to launch the application.
 
-2. Use the **Vocabulary Tools** to set up your known words (Anki, Migaku, or Jiten).
+2. Use the **Word Importer** to set up your known words.
 
-3. Use the **Content Importer** to place your text files in priority folders:
-   - **HighPriority**: Content you want to consume immediately (next week).
-   - **LowPriority**: Content you want to consume in the next 6 months.
-   - **GoalContent**: Long-term aspirations.
+3. Place your text files in the corresponding folders:
+
+- data/HighPriority: Content you are consuming today.
+
+- data/LowPriority: Content for next week or next month.
+
+- data/GoalContent: Aspirations or "someday" books.
 
 4. Click **Run Analysis** to generate your reports.
 
-5. View results via **View Vocab Journey** or export your own frequency list from the **Settings** menu.
+5. View results via **View Vocab Journey**.
 
 
 ## 🛠️ Running from Source

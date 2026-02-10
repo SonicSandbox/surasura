@@ -96,6 +96,12 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 frequency_list_gui.main()
                 return
+
+            elif command == 'anki_importer':
+                from app import anki_db_importer_gui
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                anki_db_importer_gui.main()
+                return
             else:
                 log_error(f"Unknown command: {command}")
 

@@ -953,44 +953,93 @@ class MasterDashboardApp:
         self.run_command_async(args, "Static Page", capture_output=True, show_spinner=True)
 
     def generate_frequency_list(self):
-        """Export analyzed words as a JSON frequency list"""
-        from tkinter import filedialog
-        import pandas as pd
+        """Show dialog to choose export format"""
         from app.path_utils import get_user_file
-
+        
         results_dir = get_user_file("results")
         priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
 
         if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
             messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
             return
+            
+        # Dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Select Format")
+        dialog.geometry("400x250")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG_COLOR)
+        
+        # Center the dialog
+        dialog.transient(self.root)
+        dialog.grab_set()
 
+        # Bind Escape to close
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        
+        # UI
+        wrapper = ttk.Frame(dialog, padding=20)
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(wrapper, text="Which format would you like to create?", 
+                 font=('Segoe UI', 11, 'bold'), foreground=TEXT_COLOR, background=BG_COLOR).pack(pady=(0, 20))
+                 
+        # Buttons
+        btn_migaku = ttk.Button(wrapper, text="Migaku", command=lambda: self.export_wrapper(dialog, "migaku", priority_csv))
+        btn_migaku.pack(fill=tk.X, pady=5)
+        ToolTip(btn_migaku, "Export as a JSON array (Standard Migaku Format).")
+        
+        btn_yomitan = ttk.Button(wrapper, text="Yomichan / Yomitan", command=lambda: self.export_wrapper(dialog, "yomitan", priority_csv))
+        btn_yomitan.pack(fill=tk.X, pady=5)
+        ToolTip(btn_yomitan, "Export as a frequency dict ZIP file (v3 format).")
+        
+        btn_txt = ttk.Button(wrapper, text="Word List (Text)", command=lambda: self.export_wrapper(dialog, "txt", priority_csv))
+        btn_txt.pack(fill=tk.X, pady=5)
+        ToolTip(btn_txt, "Export as a plain text file (one word per line).")
+
+    def export_wrapper(self, dialog, format_type, csv_path):
+        from tkinter import filedialog
+        from app.frequency_exporter import FrequencyExporter
+        
+        dialog.destroy()
+        
+        file_types = []
+        def_ext = ""
+        initial_name = "MY Immersion FreqList"
+        
+        if format_type == "migaku":
+            file_types = [("JSON Files", "*.json")]
+            def_ext = ".json"
+        elif format_type == "yomitan":
+            file_types = [("Zip Files", "*.zip")]
+            def_ext = ".zip"
+        elif format_type == "txt":
+            file_types = [("Text Files", "*.txt")]
+            def_ext = ".txt"
+            
         save_path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            initialfile="MY Immersion FreqList.json",
-            filetypes=[("JSON Files", "*.json"), ("Text Files", "*.txt"), ("All Files", "*.*")],
-            title="Save Frequency List"
+            defaultextension=def_ext,
+            initialfile=f"{initial_name}{def_ext}",
+            filetypes=file_types,
+            title=f"Save {format_type.capitalize()} List"
         )
-
+        
         if not save_path:
             return
-
+            
         try:
-            df = pd.read_csv(priority_csv)
-            if 'Word' not in df.columns:
-                messagebox.showerror("Error", "Analysis results are malformed (Missing 'Word' column).")
-                return
-
-            # Extract words in order (Score desc, MinSeq asc as defined in analyzer.py)
-            word_list = df['Word'].tolist()
-
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(word_list, f, ensure_ascii=False, indent=2)
-
-            messagebox.showinfo("Success", f"Frequency list generated successfully!\n\nSaved to: {save_path}")
+            if format_type == "migaku":
+                FrequencyExporter.export_migaku(csv_path, save_path)
+            elif format_type == "yomitan":
+                lang = self.var_language.get()
+                FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
+            elif format_type == "txt":
+                FrequencyExporter.export_word_list(csv_path, save_path)
+                
+            messagebox.showinfo("Success", f"List generated successfully!\n\nSaved to: {save_path}")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to generate frequency list:\n{e}")
+            messagebox.showerror("Error", f"Failed to export:\n{e}")
 
 def main():
     root = tk.Tk()

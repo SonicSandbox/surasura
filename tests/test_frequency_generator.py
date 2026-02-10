@@ -41,7 +41,7 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     """
     App-level test:
     1. Run real analyzer logic to generate a priority list CSV.
-    2. Call the frequency list generator on that real CSV.
+    2. Call the frequency list export wrapper (simulating button click) on that real CSV.
     3. Verify the final JSON format and content.
     """
     results_dir = frequency_app_env["results"]
@@ -65,15 +65,18 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     words_in_csv = df['Word'].tolist()
     assert len(words_in_csv) >= 3 # '私', '君', '友達'
 
-    # 3. Call generate_frequency_list via DashboardApp logic
+    # 3. Call export_wrapper via DashboardApp logic (Simulating "Migaku" export)
     app_mock = MagicMock()
+    # Mock 'dialog' object which has destroy() method
+    dialog_mock = MagicMock()
+    
     save_path = frequency_app_env["root"] / "MY Immersion FreqList.json"
     
-    with patch("app.path_utils.get_user_file", side_effect=frequency_app_env["mock_get_user_file"]), \
-         patch("tkinter.filedialog.asksaveasfilename", return_value=str(save_path)), \
+    with patch("tkinter.filedialog.asksaveasfilename", return_value=str(save_path)), \
          patch("tkinter.messagebox.showinfo") as mock_info:
         
-        MasterDashboardApp.generate_frequency_list(app_mock)
+        # Calling the wrapper directly
+        MasterDashboardApp.export_wrapper(app_mock, dialog_mock, "migaku", str(priority_csv))
 
     # 4. Final verification: Does the JSON match the CSV?
     assert save_path.exists(), "Frequency list JSON was not saved"
@@ -83,12 +86,15 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     assert isinstance(data, list)
     assert data == words_in_csv
     assert "successfully" in mock_info.call_args[0][1]
+    
+    # Verify dialog was closed
+    dialog_mock.destroy.assert_called_once()
 
 # --- Unit Tests (Mocks) ---
 
-def test_generate_frequency_list_logic_mock(tmp_path):
+def test_export_wrapper_migaku(tmp_path):
     """
-    Simplified test using pre-defined CSV data to verify the export logic.
+    Test the wrapper logic specifically for Migaku path using mocked CSV.
     """
     results_dir = tmp_path / "results"
     results_dir.mkdir()
@@ -104,12 +110,12 @@ def test_generate_frequency_list_logic_mock(tmp_path):
     
     save_path = tmp_path / "MY Immersion FreqList.json"
     app_mock = MagicMock()
+    dialog_mock = MagicMock()
     
-    with patch('app.path_utils.get_user_file', return_value=str(results_dir)), \
-         patch('tkinter.filedialog.asksaveasfilename', return_value=str(save_path)), \
+    with patch('tkinter.filedialog.asksaveasfilename', return_value=str(save_path)), \
          patch('tkinter.messagebox.showinfo') as mock_info:
         
-        MasterDashboardApp.generate_frequency_list(app_mock)
+        MasterDashboardApp.export_wrapper(app_mock, dialog_mock, "migaku", str(priority_csv))
         
         assert save_path.exists()
         with open(save_path, 'r', encoding='utf-8') as f:
@@ -119,12 +125,13 @@ def test_generate_frequency_list_logic_mock(tmp_path):
         mock_info.assert_called_once()
 
 def test_generate_frequency_list_no_data(tmp_path):
-    """Test behavior when no analysis data exists."""
+    """Test behavior when no analysis data exists (still checking generate_frequency_list top level check)."""
     results_dir = tmp_path / "results"
     results_dir.mkdir()
     
     app_mock = MagicMock()
     
+    # Mocking get_user_file to return our tmp path
     with patch('app.path_utils.get_user_file', return_value=str(results_dir)), \
          patch('tkinter.messagebox.showwarning') as mock_warning:
         

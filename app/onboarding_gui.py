@@ -1,7 +1,8 @@
 import tkinter as tk
 from tkinter import ttk
 import os
-from app.path_utils import get_icon_path
+import json
+from app.path_utils import get_icon_path, get_user_file
 
 # --- Constants & Theme (Matching main app) ---
 BG_COLOR = "#1e1e1e"
@@ -50,6 +51,21 @@ class OnboardingGuide:
         title_label = tk.Label(main_frame, text="Welcome to Surasura (スラスラ)!", 
                               font=("Segoe UI", 18, "bold"), fg=SECONDARY_COLOR, bg=BG_COLOR)
         title_label.pack(pady=(0, 20))
+
+        # Language Selection
+        lang_frame = tk.Frame(main_frame, bg=BG_COLOR)
+        lang_frame.pack(pady=(0, 20))
+        
+        tk.Label(lang_frame, text="Target Language:", font=("Segoe UI", 11, "bold"), 
+                 fg=TEXT_COLOR, bg=BG_COLOR).pack(side=tk.LEFT, padx=(0, 10))
+                 
+        self.language_var = tk.StringVar(value="ja")
+        
+        style = ttk.Style()
+        style.configure("TRadiobutton", background=BG_COLOR, foreground=TEXT_COLOR, font=("Segoe UI", 10))
+        
+        ttk.Radiobutton(lang_frame, text="Japanese (日本語)", variable=self.language_var, value="ja").pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(lang_frame, text="Chinese (中文)", variable=self.language_var, value="zh").pack(side=tk.LEFT)
 
         # Core Philosophy
         philosophy_frame = tk.Frame(main_frame, bg=SURFACE_COLOR, padx=15, pady=15)
@@ -108,6 +124,21 @@ class OnboardingGuide:
         confirm_btn.pack(fill=tk.X)
 
     def complete(self):
+        # Save Language Code
+        try:
+            settings_path = get_user_file("settings.json")
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+            
+            settings["target_language"] = self.language_var.get()
+            
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
         if self.on_complete_callback:
             self.on_complete_callback()
         self.window.destroy()

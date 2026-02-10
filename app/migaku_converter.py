@@ -8,11 +8,14 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file
+from app.path_utils import get_user_file, get_user_files_path
 
-def convert_db_to_json(db_path, output_json=None):
+def convert_db_to_json(db_path, output_json=None, language=None):
     if not output_json:
-        output_json = get_user_file("User Files/KnownWord.json")
+        # Save to User Files/<lang>/KnownWord.json
+        user_files_dir = get_user_files_path(language)
+        output_json = os.path.join(user_files_dir, "KnownWord.json")
+
 
     try:
         conn = sqlite3.connect(db_path)
@@ -28,7 +31,11 @@ def convert_db_to_json(db_path, output_json=None):
             conn.close()
             return False
 
-        cursor.execute("SELECT * FROM WordList")
+        if language:
+            print(f"Filtering words for language: {language}")
+            cursor.execute("SELECT * FROM WordList WHERE language=?", (language,))
+        else:
+            cursor.execute("SELECT * FROM WordList")
         rows = cursor.fetchall()
 
         words = []
@@ -107,13 +114,14 @@ def convert_db_to_json(db_path, output_json=None):
         return False
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python migaku_converter.py <database-file.db> [output.json]")
-        return
+    import argparse
+    parser = argparse.ArgumentParser(description="Migaku DB to JSON Converter")
+    parser.add_argument("db_file", help="Path to Migaku .db file")
+    parser.add_argument("out_file", nargs='?', help="Optional output JSON path")
+    parser.add_argument("--language", help="Optional language filter (e.g., ja, zh)")
     
-    db_file = sys.argv[1]
-    out_file = sys.argv[2] if len(sys.argv) > 2 else None
-    convert_db_to_json(db_file, out_file)
+    args = parser.parse_args()
+    convert_db_to_json(args.db_file, args.out_file, args.language)
 
 if __name__ == "__main__":
     main()

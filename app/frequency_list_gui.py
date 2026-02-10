@@ -11,12 +11,13 @@ import glob
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, get_icon_path
+from app.path_utils import get_user_file, get_icon_path, get_user_files_path
 
 class FrequencyListGUI:
-    def __init__(self, root):
+    def __init__(self, root, language='ja'):
         self.root = root
-        self.root.title("Surasura - Frequency List Manager")
+        self.language = language
+        self.root.title(f"Surasura - Frequency List Manager ({language})")
         self.root.geometry("600x550")
         self.root.resizable(True, True)
         self.root.minsize(500, 450)
@@ -152,7 +153,7 @@ class FrequencyListGUI:
         messagebox.showinfo("Copied", "Link copied to clipboard!")
 
     def get_user_files_dir(self):
-        return get_user_file("User Files")
+        return get_user_files_path(self.language)
 
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
@@ -226,8 +227,13 @@ class FrequencyListGUI:
             self.refresh_file_list()
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Surasura Frequency List Manager")
+    parser.add_argument("--language", default="ja", help="Target language (ja, zh)")
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = FrequencyListGUI(root)
+    app = FrequencyListGUI(root, language=args.language)
     root.mainloop()
 
 if __name__ == "__main__":

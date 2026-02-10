@@ -15,8 +15,9 @@ if __name__ == "__main__" and __package__ is None:
 from app.path_utils import get_user_file, get_resource
 
 class MigakuImporterGUI:
-    def __init__(self, root):
+    def __init__(self, root, language='ja'):
         self.root = root
+        self.language = language
         self.root.title("Surasura - Known-Word DB Importer")
         self.root.geometry("600x500")
         self.root.resizable(True, True)
@@ -225,12 +226,12 @@ class MigakuImporterGUI:
             
             if getattr(sys, 'frozen', False):
                 # Frozen
-                cmd = [sys.executable, "convert_db", file_path]
+                cmd = [sys.executable, "convert_db", file_path, "--language", self.language]
             else:
                 # Source
                 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 app_entry_path = os.path.join(project_root, "app_entry.py")
-                cmd = [sys.executable, app_entry_path, "convert_db", file_path]
+                cmd = [sys.executable, app_entry_path, "convert_db", file_path, "--language", self.language]
             
             # Run subprocess
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
@@ -244,8 +245,9 @@ class MigakuImporterGUI:
             process.wait()
             
             if process.returncode == 0:
-                self.log("Success! KnownWord.json updated.")
-                messagebox.showinfo("Success", "Database processed successfully!\nKnownWord.json has been updated.")
+                json_name = "KnownWord_zh.json" if self.language == 'zh' else "KnownWord.json"
+                self.log(f"Success! {json_name} updated.")
+                messagebox.showinfo("Success", f"Database processed successfully!\n{json_name} has been updated.")
             else:
                 self.log("Error during processing.")
                 messagebox.showerror("Error", "An error occurred while processing. Check the log.")

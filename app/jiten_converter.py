@@ -8,11 +8,12 @@ import requests
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file
+from app.path_utils import get_user_file, get_user_files_path
 
-def fetch_jiten_vocabulary(api_key, output_json=None):
+def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
     if not output_json:
-        output_json = get_user_file("User Files/KnownWord.json")
+        user_files_dir = get_user_files_path(language)
+        output_json = os.path.join(user_files_dir, "KnownWord.json")
 
     try:
         print(f"Fetching vocabulary from Jiten API...")
@@ -142,13 +143,14 @@ def fetch_jiten_vocabulary(api_key, output_json=None):
         return False
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python jiten_converter.py <api-key> [output.json]")
-        return
+    import argparse
+    parser = argparse.ArgumentParser(description="Jiten API Importer")
+    parser.add_argument("api_key", help="Jiten API Key")
+    parser.add_argument("out_file", nargs='?', help="Optional output JSON path")
+    parser.add_argument("--language", default='ja', help="Target language (default: ja)")
     
-    api_key = sys.argv[1]
-    out_file = sys.argv[2] if len(sys.argv) > 2 else None
-    fetch_jiten_vocabulary(api_key, out_file)
+    args = parser.parse_args()
+    fetch_jiten_vocabulary(args.api_key, args.out_file, args.language)
 
 if __name__ == "__main__":
     main()

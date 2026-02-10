@@ -13,16 +13,17 @@ Before updating, **always backup your `User Files` folder**. This folder contain
     *   Download the latest release zip file (e.g., `Surasura_v1.x.zip`).
     *   Extract it to a new location.
 
-3.  **Restore Your Data**:
+3.  **Restore Your Data (Migration to v1.2+)**:
     *   Open the new Surasura folder.
-    *   **Delete** the default `User Files` folder inside it.
-    *   **Delete** the default `User Files` folder inside it.
-    *   **Move** your backed-up `User Files` folder (from Step 1) into this new folder.
-    *   **Restore** this folder to the new location.
+    *   Navigate into `User Files`. You will see language folders like `ja` (Japanese) and `zh` (Chinese).
+    *   **Open the language folder matching your previous usage** (likely `ja`).
+    *   **Delete** the default `KnownWord.json` and `IgnoreList.txt` inside that language folder.
+    *   **Copy** your backed-up `KnownWord.json` and `IgnoreList.txt` (from Step 1) into this language folder.
+    *   **Note**: If you had other files like frequency lists in your old `User Files`, check if they are already bundled in the new version. If not, copy them to the main `User Files` folder.
 
 4.  **Launch**:
     *   Run `Surasura.exe`.
-    *   Verify your known words are loaded correctly in the dashboard.
+    *   Verify your known words are loaded correctly in the dashboard (ensure the correct language is selected in settings).
 
 ## Release Notes
 Check the `RELEASE_*.md` files or the GitHub Releases page for details on what's new in each version.

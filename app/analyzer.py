@@ -11,10 +11,12 @@ import csv
 import pandas as pd
 import fugashi
 import pysrt
+import jieba
 from collections import defaultdict, Counter
 from datetime import datetime
+import abc
 
-from app.path_utils import get_user_file, get_resource
+from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
 
 # --- Configuration ---
 # Weights
@@ -26,14 +28,8 @@ WEIGHT_GOAL = 2
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
 
-# Paths
-USER_FILES_DIR = get_user_file("User Files")
-DATA_DIR = get_user_file("data")
-
-KNOWN_WORDS_FILE = os.path.join(USER_FILES_DIR, "KnownWord.json") 
-BLACK_LIST_FILE = os.path.join(USER_FILES_DIR, "Blacklist.txt")
-IGNORE_LIST_FILE = os.path.join(USER_FILES_DIR, "IgnoreList.txt")
-
+# Paths - Now determined dynamically in main()
+# RESULTS_DIR remains shared for the "Active" analysis result
 RESULTS_DIR = get_user_file("results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -44,7 +40,18 @@ OUTPUT_PROGRESSIVE = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 
 # --- Classes & Functions ---
 
-class JapaneseTokenizer:
+# --- Classes & Functions ---
+
+class Tokenizer(abc.ABC):
+    @abc.abstractmethod
+    def tokenize(self, text):
+        pass
+
+    @abc.abstractmethod
+    def tokenize_sentences(self, text):
+        pass
+
+class JapaneseTokenizer(Tokenizer):
     def __init__(self):
         self.tagger = fugashi.Tagger()
 
@@ -92,27 +99,106 @@ class JapaneseTokenizer:
             if s_text:
                 yield s_text, current_sentence_tokens
 
+class ChineseTokenizer(Tokenizer):
+    def __init__(self, reinforce_segmentation=False):
+        # Force separation of common collocations that users prefer to see split
+        # e.g. "就把" -> "就", "把" instead of "就把"
+        if reinforce_segmentation:
+            jieba.suggest_freq(('就', '把'), tune=True)
+            jieba.suggest_freq(('您', '不'), tune=True)
+            print("Configuration: Chinese segmentation reinforcement ENABLED.")
+        else:
+            # We can't easily "undo" suggest_freq cleanly without reloading jieba or messing with internal dicts
+            # but since strictness is usually preferred, we can just leave it or rely on script restart.
+            # In this architecture, analyzer.py is run as a subprocess, so it starts fresh each time.
+            pass
+
+    def tokenize(self, text):
+        """Returns a list of (lemma, pinyin_placeholder, original_surface) tuples."""
+        all_tokens = []
+        for _, tokens in self.tokenize_sentences(text):
+            all_tokens.extend(tokens)
+        return all_tokens
+
+    def tokenize_sentences(self, text):
+        """Yields (sentence_string, list_of_filtered_tokens)"""
+        # jieba.cut returns a generator
+        # We need to manually handle sentence splitting because jieba just streams tokens
+        
+        # 1. Split text into blocks by punctuation (broadly) to avoid feeding massive text to jieba if needed,
+        # but jieba is fast. However, we need to reconstruct sentences for context.
+        
+        # Simple approach: Tokenize everything, then buffer into sentences based on punctuation tokens
+        
+        seg_list = jieba.cut(text, cut_all=False)
+        
+        current_sentence_tokens = []
+        current_sentence_surface = []
+        
+        punctuation = set(['。', '！', '？', '!', '?', '\n', '；', ';', '……'])
+        # Common particles/punctuation to skip in "meaningful token" list might be needed,
+        # but for now we include everything that isn't strict punctuation/space.
+        
+        for word in seg_list:
+            surface = word
+            is_boundary = surface in punctuation or surface.strip() == '' and '\n' in surface # Handle newline
+            
+            # Strict filtering: Must contain at least one CJK character.
+            # AND must NOT contain any Japanese Hiragana/Katakana (to avoid mixed JA text noise).
+            has_cjk = re.search(r'[\u4E00-\u9FFF]', surface)
+            has_kana = re.search(r'[\u3040-\u30FF]', surface)
+            
+            is_skippable = (not has_cjk) or (has_kana is not None) 
+            
+            # For Chinese, "lemma" is just the word. "Reading" (Pinyin) requires pypinyin, 
+            # but user didn't ask for Pinyin injection yet, and existing data might not have it.
+            # We will use empty string for reading for now, or the word itself if that helps matching.
+            # Surasura uses (lemma, reading) as unique key.
+            # If we use "" for reading, we might merge homophones? 
+            # Japanese relies on reading for disambiguation sometimes? 
+            # Actually, (lemma, reading) tuple is the key. 
+            # For Chinese, (Word, "") is fine. Distinct words are distinct characters.
+            
+            current_sentence_surface.append(surface)
+            
+            if not is_skippable:
+                current_sentence_tokens.append((surface, "", surface))
+            
+            if is_boundary:
+                s_text = "".join(current_sentence_surface).strip()
+                if s_text:
+                    yield s_text, current_sentence_tokens
+                current_sentence_tokens = []
+                current_sentence_surface = []
+                
+        # Flush
+        if current_sentence_surface:
+            s_text = "".join(current_sentence_surface).strip()
+            if s_text:
+                yield s_text, current_sentence_tokens
+
 def load_simple_list(file_path):
     if not os.path.exists(file_path):
         return set()
     with open(file_path, 'r', encoding='utf-8') as f:
         return set(line.strip() for line in f if line.strip())
 
-def discover_yomitan_frequency_lists(user_files_dir):
+def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
-    Scan User Files directory for frequency_list_*.csv files.
+    Scan User Files directory for frequency_list_{lang}_*.csv files.
     Returns a dictionary mapping frequency list name -> filepath.
-    Example: frequency_list_Anime.csv -> {"Anime": "/path/to/frequency_list_Anime.csv"}
     """
     freq_lists = {}
     if not os.path.exists(user_files_dir):
         return freq_lists
     
+    prefix = f"frequency_list_{language}_"
+    
     try:
         for filename in os.listdir(user_files_dir):
-            if filename.startswith("frequency_list_") and filename.endswith(".csv"):
-                # Extract name: frequency_list_Novel.csv -> Novel
-                list_name = filename.replace("frequency_list_", "").replace(".csv", "")
+            if filename.startswith(prefix) and filename.endswith(".csv"):
+                # Extract name: frequency_list_ja_Novel.csv -> Novel
+                list_name = filename.replace(prefix, "").replace(".csv", "")
                 filepath = os.path.join(user_files_dir, filename)
                 freq_lists[list_name] = filepath
     except Exception as e:
@@ -235,12 +321,22 @@ def load_known_words(json_path, tokenizer):
     print(f"Loaded {len(known_tuples)} known word variations and {len(known_lemmas)} unique lemmas.")
     return known_tuples, known_lemmas
 
-def has_japanese(text):
-    # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
-    pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
-    return bool(pattern.search(text))
+def has_target_language(text, language='ja'):
+    if language == 'ja':
+        # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
+        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
+        return bool(pattern.search(text))
+    elif language == 'zh':
+        # Chinese: Mostly Kanji (Hanzi) \u4E00-\u9FFF
+        # We can also check for common Chinese punctuation if needed, but Hanzi is the main indicator.
+        # Japanese also uses Hanzi, but usually mixed with Kana. 
+        # Pure Chinese text will be almost all Hanzi + Punctuation.
+        # This check basically asks: "Is there any CJK character?"
+        pattern = re.compile(r'[\u4E00-\u9FFF]')
+        return bool(pattern.search(text))
+    return False
 
-def extract_text(file_path):
+def extract_text(file_path, language='ja'):
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
     if ext == '.srt':
@@ -248,22 +344,18 @@ def extract_text(file_path):
             subs = pysrt.open(file_path)
             parts = []
             for sub in subs:
-                # Filter out lines without Japanese characters
-                # This removes English-only credits or technical markings
+                # Filter out lines without Target characters
                 lines = sub.text.splitlines()
                 filtered_lines = []
                 for l in lines:
-                    if not has_japanese(l):
+                    if not has_target_language(l, language):
                         continue
-                    # Remove furigana in parens: (れい) or （れい）
-                    # Matches: (anything), （anything）
+                    # Remove furigana in parens (Japanese specific, but harmless for Chinese usually)
                     l = re.sub(r'[\(（].*?[\)）]', '', l)
                     filtered_lines.append(l)
 
                 if filtered_lines:
-                    # Join lines within a subtitle block with spaces to preserve word boundaries
                     block_text = " ".join(filtered_lines)
-                    # Add a period (。) at the end only if it doesn't already end with sentence punctuation
                     if not block_text or block_text[-1] not in '。！？!?':
                         block_text += "。"
                     parts.append(block_text)
@@ -394,7 +486,9 @@ def main():
     # Flags for standard run
     parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
     parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
+
     parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
+    parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
     
     # These are handled manually above but good to have in help
     parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
@@ -404,6 +498,7 @@ def main():
     parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode (25-125)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
+    parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
 
     args, unknown = parser.parse_known_args()
 
@@ -428,19 +523,41 @@ def main():
     else:
         MIN_FREQ = 0
         print("Configuration: All frequencies INCLUDED (Default).")
+        
+    language = args.language
+    print(f"Configuration: Target Language = {language}")
 
     print(f"\nLoading resources...")
     
+    print(f"\nLoading resources...")
+    
+    # Resolve Paths based on Language
+    data_dir = get_data_path(language)
+    user_files_dir = get_user_files_path(language)
+    
     # 1. Load Resources
-    tokenizer = JapaneseTokenizer()
-    known_words_initial, known_lemmas_initial = load_known_words(KNOWN_WORDS_FILE, tokenizer)
-    ignore_list = load_simple_list(IGNORE_LIST_FILE)
-    black_list = load_simple_list(BLACK_LIST_FILE)
+    if language == 'zh':
+        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
+        # For consistency, we might look for KnownWord.json in the zh folder too?
+        # Legacy: KnownWord_zh.json in User Files?
+        # New Plan: User Files/zh/KnownWord.json
+        known_file = os.path.join(user_files_dir, "KnownWord.json")
+    else:
+        tokenizer = JapaneseTokenizer()
+        known_file = os.path.join(user_files_dir, "KnownWord.json")
+        
+    known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
+    
+    ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
+    black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
+    
+    ignore_list = load_simple_list(ignore_list_file)
+    black_list = load_simple_list(black_list_file)
     ignore_list.update(black_list) # Merge blacklist into ignore list
     
     # Discover and load all yomitan frequency lists from User Files
-    print("Scanning for frequency lists...")
-    available_freq_lists = discover_yomitan_frequency_lists(USER_FILES_DIR)
+    print(f"Scanning for {language} frequency lists in {user_files_dir}...")
+    available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)
     
     if not available_freq_lists:
         print("Warning: No frequency lists found in User Files/")
@@ -455,9 +572,9 @@ def main():
     # 2. Define Scanning targets
     # ORDER MATTERS: High -> Low -> Goal
     scan_targets = [
-        ("HighPriority", os.path.join(DATA_DIR, "HighPriority"), WEIGHT_HIGH),
-        ("LowPriority", os.path.join(DATA_DIR, "LowPriority"), WEIGHT_LOW),
-        ("GoalContent", os.path.join(DATA_DIR, "GoalContent"), WEIGHT_GOAL)
+        ("HighPriority", os.path.join(data_dir, "HighPriority"), WEIGHT_HIGH),
+        ("LowPriority", os.path.join(data_dir, "LowPriority"), WEIGHT_LOW),
+        ("GoalContent", os.path.join(data_dir, "GoalContent"), WEIGHT_GOAL)
     ]
     
     word_stats = defaultdict(lambda: {
@@ -476,7 +593,7 @@ def main():
     # We want HighPriority files first, then Low, then Goal.
     # Within each category, we must respect the user's custom order from _order.json.
 
-    def get_ordered_files(directory):
+    def get_ordered_files(directory, language='ja'):
         """
         Recursively Get files from directory, respecting _order.json at each level.
         Returns a list of absolute file paths.
@@ -495,10 +612,16 @@ def main():
         # 2. Load order file
         order_file = os.path.join(directory, "_order.json")
         order = []
+        metadata = {}
         if os.path.exists(order_file):
             try:
                 with open(order_file, 'r', encoding='utf-8') as f:
-                    order = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        order = data
+                    else:
+                        order = data.get("order", [])
+                        metadata = data.get("metadata", {})
             except Exception:
                 pass
         
@@ -520,11 +643,17 @@ def main():
         for item in items:
             if item == "_order.json": continue
             
+            # Language Filter
+            # Items with no metadata tag are assumed to be 'ja' (legacy)
+            item_lang = metadata.get(item, {}).get("lang", "ja")
+            if item_lang != language:
+                continue
+                
             full_path = os.path.join(directory, item)
             
             if os.path.isdir(full_path):
                 # Recurse
-                results.extend(get_ordered_files(full_path))
+                results.extend(get_ordered_files(full_path, language))
             elif os.path.isfile(full_path):
                 if full_path.lower().endswith(('.txt', '.srt', '.epub', '.md')): # Added more extensions to be safe
                     results.append(full_path)
@@ -537,7 +666,7 @@ def main():
         if not os.path.exists(folder):
             continue
             
-        ordered_paths = get_ordered_files(folder)
+        ordered_paths = get_ordered_files(folder, language)
         
         for path in ordered_paths:
             found_files.append((path, label, weight))
@@ -550,7 +679,7 @@ def main():
             print(f"Processing {os.path.basename(file_path)}...")
         except UnicodeEncodeError:
             print(f"Processing file {found_files.index((file_path, label, weight)) + 1}...")
-        text = extract_text(file_path)
+        text = extract_text(file_path, language)
         
         file_total_words = 0
         file_known_words = 0
@@ -559,10 +688,10 @@ def main():
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
-                # Skip tokens that contain no Japanese characters (e.g. SSA/ASS tags like {\an8},
+                # Skip tokens that contain no Target characters (e.g. SSA/ASS tags like {\an8},
                 # timestamps, markup, or other ASCII-only tokens). These should not count
                 # toward totals or be considered unknown words.
-                if not has_japanese(lemma) and not has_japanese(surface):
+                if not has_target_language(lemma, language) and not has_target_language(surface, language):
                     continue
 
                 file_total_words += 1
@@ -577,6 +706,7 @@ def main():
                     file_known_words += 1
                     continue
                 sentence_unknowns.append((lemma, reading, surface))
+
 
             # Unique unknowns in this sentence for cost calculation
             unique_lrs = set((l, r) for l, r, s in sentence_unknowns)
@@ -737,7 +867,7 @@ def main():
     
     for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
-        text = extract_text(file_path)
+        text = extract_text(file_path, language)
         tokens = tokenizer.tokenize(text)
         
         # 1. Calculate File Baselines

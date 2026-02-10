@@ -540,10 +540,17 @@ class MasterDashboardApp:
         self.var_split_length.trace_add("write", self.save_settings)
         ToolTip(split_frame, "Initial character limit used when splitting files in the File Importer.")
 
-        # Frequency List Manager
-        btn_freq = ttk.Button(settings_frame, text="Add Frequency List", command=self.run_frequency_list_manager)
-        btn_freq.pack(anchor=tk.W, pady=(10, 0))
+        # Frequency List Manager & Exporter
+        freq_btn_row = ttk.Frame(settings_frame)
+        freq_btn_row.pack(fill=tk.X, pady=(10, 0))
+
+        btn_freq = ttk.Button(freq_btn_row, text="Add Frequency List", command=self.run_frequency_list_manager)
+        btn_freq.pack(side=tk.LEFT)
         ToolTip(btn_freq, "Manage custom frequency lists for word analysis.")
+
+        btn_export_freq = ttk.Button(freq_btn_row, text="Generate your content Freq list", command=self.generate_frequency_list)
+        btn_export_freq.pack(side=tk.LEFT, padx=(10, 0))
+        ToolTip(btn_export_freq, "Export a frequency list of all words from your analyzed content. Format: JSON array of strings. You can add this to Migaku or Yomitan.")
 
         # Logs
         log_frame = ttk.LabelFrame(self.settings_window, text=" Processing Log", padding="10")
@@ -886,6 +893,46 @@ class MasterDashboardApp:
             args.append('--app-mode')
 
         self.run_command_async(args, "Static Page", capture_output=True, show_spinner=True)
+
+    def generate_frequency_list(self):
+        """Export analyzed words as a JSON frequency list"""
+        from tkinter import filedialog
+        import pandas as pd
+        from app.path_utils import get_user_file
+
+        results_dir = get_user_file("results")
+        priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
+
+        if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
+            messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            initialfile="MY Immersion FreqList.json",
+            filetypes=[("JSON Files", "*.json"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+            title="Save Frequency List"
+        )
+
+        if not save_path:
+            return
+
+        try:
+            df = pd.read_csv(priority_csv)
+            if 'Word' not in df.columns:
+                messagebox.showerror("Error", "Analysis results are malformed (Missing 'Word' column).")
+                return
+
+            # Extract words in order (Score desc, MinSeq asc as defined in analyzer.py)
+            word_list = df['Word'].tolist()
+
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(word_list, f, ensure_ascii=False, indent=2)
+
+            messagebox.showinfo("Success", f"Frequency list generated successfully!\n\nSaved to: {save_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate frequency list:\n{e}")
 
 def main():
     root = tk.Tk()

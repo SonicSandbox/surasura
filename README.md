@@ -38,15 +38,19 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 🗄️ **Migaku & Jiten Sync**: Import known words from Migaku or Jiten.moe.
 
-- 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
+- 📖 **Anki / Migaku / Jiten Extractor**: Directly convert Anki decks into a "known words" list to sync your actual study progress.
 
-- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
+- 📖 **EPUB & Media Importer**: Extract and split text from Japanese/Chinese EPUBs, SRTs, or Text files.
 
-- 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
+- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite (JA) or Jieba (ZH) and calculate comprehensive readability scores.
+
+- 💡 **i+1 Context Selection**: Automatically prioritizes sentences with only one unknown word for your vocabulary reports, making sentence mining and learning effortless.
+
+- 📊 **Custom Frequency Export**: Generate your own frequency lists based on your analyzed content to use in Yomitan or Migaku.
 
 - 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
 
-- 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
+- 📈 **Progress Tracking**: Track your progress % before AND after watching/reading. Czlear visibility on "known" vs "to learn".
 
 - 🧘 **Zen Mode**: A distraction-free mode for focused learning.
 
@@ -80,19 +84,16 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 1. Run `Surasura.exe` to launch the application.
 
-2. Use the **Word Importer** to set up your known words.
+2. Use the **Vocabulary Tools** to set up your known words (Anki, Migaku, or Jiten).
 
-3. Place your text files in the corresponding folders:
-
-- data/HighPriority: Content you are consuming today.
-
-- data/LowPriority: Content for next week or next month.
-
-- data/GoalContent: Aspirations or "someday" books.
+3. Use the **Content Importer** to place your text files in priority folders:
+   - **HighPriority**: Content you want to consume immediately (next week).
+   - **LowPriority**: Content you want to consume in the next 6 months.
+   - **GoalContent**: Long-term aspirations.
 
 4. Click **Run Analysis** to generate your reports.
 
-5. View results via **View Vocab Journey**.
+5. View results via **View Vocab Journey** or export your own frequency list from the **Settings** menu.
 
 
 ## 🛠️ Running from Source

@@ -44,10 +44,10 @@
             "tooltip_delay": 500
         },
         "priority_markers": {
-            "_comment": "Thresholds and minimums for visual priority markers.",
+            "_comment": "Star (Priority): (High+Low)/Total >= priority_threshold AND Total >= priority_min. Scale (Lopsided): High/Total >= lopsided_threshold.",
             "priority_threshold": 0.5,
             "priority_min": 3,
-            "lopsided_threshold": 0.8
+            "lopsided_threshold": 0.85
         },
         "importer": {
             "_comment": "split_overflow: max chars to search past target length for a clean boundary.",

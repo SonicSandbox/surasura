@@ -165,12 +165,12 @@ class FileImporterApp:
         split_frame = ttk.LabelFrame(self.standard_options_frame, text="Splitting Options", padding="15")
         split_frame.pack(fill=tk.X, pady=(0, 20))
 
-        self.split_method_var = tk.StringVar(value="delimiter")
+        self.split_method_var = tk.StringVar(value="length")
         
-        ttk.Radiobutton(split_frame, text="By Delimiter (Regex)", variable=self.split_method_var, value="delimiter", command=self.update_split_ui).pack(anchor=tk.W)
         ttk.Radiobutton(split_frame, text="By Length (Chars)", variable=self.split_method_var, value="length", command=self.update_split_ui).pack(anchor=tk.W)
+        ttk.Radiobutton(split_frame, text="By Delimiter (Regex)", variable=self.split_method_var, value="delimiter", command=self.update_split_ui).pack(anchor=tk.W)
 
-        self.split_value_label = ttk.Label(split_frame, text="Regex Pattern:")
+        self.split_value_label = ttk.Label(split_frame, text="Character Limit (e.g. 1500):")
         self.split_value_label.pack(anchor=tk.W, pady=(10, 0))
         
         # Load default split length from settings
@@ -216,6 +216,22 @@ class FileImporterApp:
         self.chk_understand = ttk.Checkbutton(self.anki_options_frame, text="I Understand", 
                                              variable=self.understand_var, command=self.update_btn_state)
         self.chk_understand.pack(anchor=tk.W, pady=(0, 10))
+
+        # 3. GROUPING OPTIONS (New)
+        self.grouping_frame = ttk.Frame(self.options_container)
+        self.grouping_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.group_output_var = tk.BooleanVar(value=False)
+        self.chk_group = ttk.Checkbutton(self.grouping_frame, text="Group output into parts", 
+                                        variable=self.group_output_var, command=self.toggle_group_options)
+        self.chk_group.pack(anchor=tk.W)
+        
+        self.parts_frame = ttk.Frame(self.grouping_frame)
+        # Initially hidden, pack in toggle_group_options
+        
+        ttk.Label(self.parts_frame, text="How many parts would you like to split into?").pack(side=tk.LEFT)
+        self.parts_count_var = tk.StringVar(value="5")
+        ttk.Entry(self.parts_frame, textvariable=self.parts_count_var, width=5).pack(side=tk.LEFT, padx=(10, 0))
 
         # Bottom UI
         self.import_btn = ttk.Button(self.main_frame, text="Extract and Import", command=self.process_import)
@@ -300,12 +316,23 @@ class FileImporterApp:
     def update_btn_state(self):
         is_anki = self.file_path_var.get().lower().endswith('.apkg')
         if is_anki:
+            # Hide the grouping option for Anki
+            self.grouping_frame.pack_forget()
+            
             if self.understand_var.get():
                 self.import_btn.config(state=tk.NORMAL)
             else:
                 self.import_btn.config(state=tk.DISABLED)
         else:
+            # Show the grouping option for other files
+            self.grouping_frame.pack(fill=tk.X, pady=(0, 10), before=self.import_btn)
             self.import_btn.config(state=tk.NORMAL)
+
+    def toggle_group_options(self):
+        if self.group_output_var.get():
+            self.parts_frame.pack(fill=tk.X, pady=(5, 0), padx=20)
+        else:
+            self.parts_frame.pack_forget()
 
     def update_split_ui(self):
         method = self.split_method_var.get()
@@ -398,16 +425,28 @@ class FileImporterApp:
             self.status_var.set(f"Saving {len(chunks)} files...")
             self.root.update_idletasks()
             
-            save_dir, save_error = self.save_chunks(chunks, output_name)
-            
-            if save_error:
-                messagebox.showerror("Save Error", save_error)
+            # Grouping Logic
+            if self.group_output_var.get() and not is_anki:
+                try:
+                    num_parts = int(self.parts_count_var.get())
+                    if num_parts < 1: raise ValueError
+                except ValueError:
+                    messagebox.showerror("Error", "Number of parts must be a positive integer.")
+                    return
+
+                save_msg = self.save_chunks_grouped(chunks, output_name, num_parts)
             else:
-                self.status_var.set("Success!")
-                messagebox.showinfo("Success", 
-                    f"Extraction complete!\nSaved {len(chunks)} files to:\n{save_dir}\n\n"
-                    "👉 Manage your content in Content Importer")
-                self.root.destroy() 
+                save_dir, save_error = self.save_chunks(chunks, output_name)
+                if save_error:
+                    messagebox.showerror("Save Error", save_error)
+                    return
+                save_msg = f"Saved {len(chunks)} files to:\n{save_dir}"
+
+            self.status_var.set("Success!")
+            messagebox.showinfo("Success", 
+                f"Extraction complete!\n{save_msg}\n\n"
+                "👉 Manage your content in Content Importer")
+            self.root.destroy() 
 
         except Exception as e:
             messagebox.showerror("Unexpected Error", str(e))
@@ -546,6 +585,51 @@ class FileImporterApp:
             return output_sub_dir, None
         except Exception as e:
             return None, str(e)
+
+    def save_chunks_grouped(self, chunks, base_name, num_parts):
+        import math
+        total_items = len(chunks)
+        if total_items == 0:
+            return "No text chunks were generated."
+            
+        # Ensure at least 1 item per part if possible, otherwise cap parts
+        if num_parts > total_items:
+            num_parts = total_items
+            
+        chunk_size = math.ceil(total_items / num_parts)
+        
+        # Create Parent Folder
+        parent_dir = os.path.join(self.processed_dir, base_name)
+        if not os.path.exists(parent_dir):
+            os.makedirs(parent_dir)
+        
+        saved_paths = []
+        
+        for i in range(num_parts):
+            start = i * chunk_size
+            end = start + chunk_size
+            part_chunks = chunks[start:end]
+            
+            if not part_chunks:
+                continue
+                
+            # Subfolder: BaseName/BaseName_1
+            part_folder_name = f"{base_name}_{i+1}"
+            output_sub_dir = os.path.join(parent_dir, part_folder_name)
+            
+            if not os.path.exists(output_sub_dir):
+                os.makedirs(output_sub_dir)
+                
+            for j, chunk in enumerate(part_chunks, 1):
+                # Filename: BaseName_1_01.txt
+                filename = f"{part_folder_name}_{j:02d}.txt"
+                path = os.path.join(output_sub_dir, filename)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(chunk)
+            
+            saved_paths.append(part_folder_name)
+            
+        return f"Saved into {len(saved_paths)} folders inside '{base_name}':\n" + "\n".join(saved_paths)
 
 def main():
     import argparse

@@ -581,7 +581,7 @@ def main():
         "score": 0, "total_count": 0, "sources": set(), 
         "high_count": 0, "low_count": 0, "goal_count": 0,
         "first_context": "", 
-        "best_extra_contexts": [], # List of (unknown_count, sentence_text)
+        "best_extra_contexts": [], # List of (is_too_short, unknown_count, sentence_text)
         "surface": "",
         "min_seq": float('inf') # Track first appearance sequence index
     })
@@ -644,8 +644,8 @@ def main():
             if item == "_order.json": continue
             
             # Language Filter
-            # Items with no metadata tag are assumed to be 'ja' (legacy)
-            item_lang = metadata.get(item, {}).get("lang", "ja")
+            # Items with no metadata tag are assumed to belong to the current language
+            item_lang = metadata.get(item, {}).get("lang", language)
             if item_lang != language:
                 continue
                 
@@ -729,6 +729,9 @@ def main():
                     entry["min_seq"] = seq_idx
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
+            sentence_token_count = len(s_tokens)
+            is_too_short = 1 if sentence_token_count < 4 else 0
+            
             for (lemma, reading) in unique_lrs:
                 entry = word_stats[(lemma, reading)]
                 if not entry["first_context"]:
@@ -736,10 +739,11 @@ def main():
                 else:
                     if s_text == entry["first_context"]: continue
                     
-                    # Maintain top 2 easiest sentences (lowest cost)
+                    # Maintain top 2 easiest sentences (lowest cost), prioritizing those with >= 4 words
                     best = entry["best_extra_contexts"]
-                    best.append((cost, s_text))
-                    best.sort(key=lambda x: x[0])
+                    best.append((is_too_short, cost, s_text))
+                    # Sort by: 1. Not too short (0 preferred over 1), 2. Low cost (unknown count)
+                    best.sort(key=lambda x: (x[0], x[1]))
                     entry["best_extra_contexts"] = best[:2]
         
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
@@ -768,8 +772,8 @@ def main():
             "Score": data["score"],
             "Occurrences": data["total_count"],
             "Context 1": data.get("first_context", "").strip(),
-            "Context 2": data["best_extra_contexts"][0][1].strip() if len(data["best_extra_contexts"]) > 0 else "",
-            "Context 3": data["best_extra_contexts"][1][1].strip() if len(data["best_extra_contexts"]) > 1 else "",
+            "Context 2": data["best_extra_contexts"][0][2].strip() if len(data["best_extra_contexts"]) > 0 else "",
+            "Context 3": data["best_extra_contexts"][1][2].strip() if len(data["best_extra_contexts"]) > 1 else "",
             "Count (High)": data["high_count"],
             "Count (Low)": data["low_count"],
             "Count (Goal)": data["goal_count"],
@@ -922,8 +926,8 @@ def main():
                 "Occurrences (Global)": stats["total_count"],
                 "Occurrences (File)": count,
                 "Context 1": stats.get("first_context", "").strip(),
-                "Context 2": stats["best_extra_contexts"][0][1].strip() if len(stats["best_extra_contexts"]) > 0 else "",
-                "Context 3": stats["best_extra_contexts"][1][1].strip() if len(stats["best_extra_contexts"]) > 1 else "",
+                "Context 2": stats["best_extra_contexts"][0][2].strip() if len(stats["best_extra_contexts"]) > 0 else "",
+                "Context 3": stats["best_extra_contexts"][1][2].strip() if len(stats["best_extra_contexts"]) > 1 else "",
             })
             file_new_words.add((lemma, reading))
         

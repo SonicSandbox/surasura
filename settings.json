@@ -1,5 +1,5 @@
 {
-    "exclude_single": true,
+    "exclude_single": false,
     "min_freq": 3,
     "zen_limit": 50,
     "open_app_mode": true,
@@ -9,5 +9,5 @@
     "split_length": 1500,
     "target_language": "ja",
     "reinforce_segmentation": false,
-    "onboarding_completed": false
+    "onboarding_completed": true
 }

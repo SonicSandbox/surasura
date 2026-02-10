@@ -67,6 +67,18 @@ class FileImporterApp:
         # Add trace for dynamic UI
         self.file_path_var.trace_add("write", self.on_file_change)
 
+        # Load Logic Settings
+        self.logic_settings = {}
+        try:
+            settings_path = get_user_file("settings.json")
+            if os.path.exists(settings_path):
+                import json
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    self.logic_settings = settings.get("logic", {})
+        except Exception:
+            pass
+
     def __del__(self):
         if hasattr(self, 'anki_temp_dir') and self.anki_temp_dir:
             cleanup_temp_dir(self.anki_temp_dir)
@@ -499,7 +511,7 @@ class FileImporterApp:
         chunks = []
         pos = 0
         total_len = len(text)
-        overflow_limit = 150
+        overflow_limit = self.logic_settings.get("importer", {}).get("split_overflow", 150)
         boundaries = "。？！.?! \n"
         closing_marks = "」』)\"']}"
         

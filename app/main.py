@@ -40,8 +40,19 @@ class ToolTip:
 
     def schedule_tip(self, event=None):
         self.unschedule()
-        # Add delay to prevent flickering and improve "feel"
-        self.id = self.widget.after(500, self.show_tip)
+        # Use delay from settings if available, else default 500
+        delay = 500
+        try:
+            # Check if MasterDashboardApp has a stored delay
+            # Tooltips are bound to widgets which have a master (app)
+            # This is a bit hacky but works for this architecture
+            app = self.widget.winfo_toplevel()
+            if hasattr(app, 'logic_settings'):
+                delay = app.logic_settings.get("gui", {}).get("tooltip_delay", 500)
+        except Exception:
+            pass
+            
+        self.id = self.widget.after(delay, self.show_tip)
 
     def unschedule(self):
         id = self.id
@@ -131,6 +142,9 @@ class MasterDashboardApp:
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
+        
+        # Logic Settings (Magic Numbers)
+        self.logic_settings = {}
         
         # Queue for thread-safe GUI updates
         self.gui_queue = queue.Queue()
@@ -632,6 +646,10 @@ class MasterDashboardApp:
                     self.var_reinforce.set(settings.get("reinforce_segmentation", False))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
+
+                    # Load Logic Settings
+                    self.logic_settings = settings.get("logic", {})
+                    
                     self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
@@ -653,7 +671,8 @@ class MasterDashboardApp:
                 "split_length": self.var_split_length.get(),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
-                "onboarding_completed": self.onboarding_completed.get()
+                "onboarding_completed": self.onboarding_completed.get(),
+                "logic": self.logic_settings
             }
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)

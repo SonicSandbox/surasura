@@ -18,8 +18,7 @@ import abc
 
 from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
 
-# --- Configuration ---
-# Weights
+# Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
 WEIGHT_LOW = 5
 WEIGHT_GOAL = 2
@@ -27,6 +26,36 @@ WEIGHT_GOAL = 2
 # Filters
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
+
+# Load Logic Settings from settings.json
+LOGIC = {
+    "weights": {"high": 10, "low": 5, "goal": 2},
+    "tiers": {"thresholds": [2500, 5000, 7500, 10000]},
+    "context": {"search_range": 20, "min_words": 4, "max_extra": 2},
+    "sentence_boundaries": {
+        "ja": "。！？!?\n",
+        "zh": "。！？!?\n；;……"
+    },
+    "priority_markers": {
+        "priority_threshold": 0.5,
+        "priority_min": 3,
+        "lopsided_threshold": 0.8
+    }
+}
+
+try:
+    settings_path = get_user_file("settings.json")
+    if os.path.exists(settings_path):
+        with open(settings_path, 'r', encoding='utf-8') as f:
+            full_settings = json.load(f)
+            LOGIC.update(full_settings.get("logic", {}))
+            
+            # Update global weights for backward compatibility in the script
+            WEIGHT_HIGH = LOGIC["weights"].get("high", 10)
+            WEIGHT_LOW = LOGIC["weights"].get("low", 5)
+            WEIGHT_GOAL = LOGIC["weights"].get("goal", 2)
+except Exception as e:
+    print(f"Warning: Could not load logic settings: {e}")
 
 # Paths - Now determined dynamically in main()
 # RESULTS_DIR remains shared for the "Active" analysis result
@@ -76,8 +105,9 @@ class JapaneseTokenizer(Tokenizer):
             surface = word.surface
             pos = word.feature.pos1
             
-            # Boundary check
-            is_boundary = surface in ['。', '！', '？', '!', '?', '\n']
+            # Boundary check using logic settings
+            boundaries = LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n")
+            is_boundary = surface in boundaries
             
             lemma = word.feature.lemma if word.feature.lemma else word.surface
             reading = word.feature.kana if word.feature.kana else ""
@@ -135,7 +165,8 @@ class ChineseTokenizer(Tokenizer):
         current_sentence_tokens = []
         current_sentence_surface = []
         
-        punctuation = set(['。', '！', '？', '!', '?', '\n', '；', ';', '……'])
+        punctuation_str = LOGIC.get("sentence_boundaries", {}).get("zh", "。！?！？!\n；;……")
+        punctuation = set(list(punctuation_str))
         # Common particles/punctuation to skip in "meaningful token" list might be needed,
         # but for now we include everything that isn't strict punctuation/space.
         
@@ -253,18 +284,16 @@ def get_tier_from_rank(rank):
     - Tier 4: 7501-10000
     - Tier 5: 10001+ (least common)
     """
+    thresholds = LOGIC.get("tiers", {}).get("thresholds", [2500, 5000, 7500, 10000])
+    
     if not isinstance(rank, int) or rank <= 0:
         return "Outside"
-    if rank <= 2500:
-        return "1"
-    elif rank <= 5000:
-        return "2"
-    elif rank <= 7500:
-        return "3"
-    elif rank <= 10000:
-        return "4"
-    else:
-        return "5"
+    
+    for i, threshold in enumerate(thresholds):
+        if rank <= threshold:
+            return str(i + 1)
+            
+    return str(len(thresholds) + 1)
 
 def load_known_words(json_path, tokenizer):
     print(f"Loading known words from {json_path}...")
@@ -384,8 +413,9 @@ def find_context_sentence(full_text, target_surface):
             
     idx = full_text.find(target_surface)
     if idx != -1:
-        start = max(0, idx - 20)
-        end = min(len(full_text), idx + 20)
+        search_range = LOGIC.get("context", {}).get("search_range", 20)
+        start = max(0, idx - search_range)
+        end = min(len(full_text), idx + search_range)
         return "..." + full_text[start:end].replace("\n", " ") + "..."
     return ""
 
@@ -730,7 +760,8 @@ def main():
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
             sentence_token_count = len(s_tokens)
-            is_too_short = 1 if sentence_token_count < 4 else 0
+            min_words = LOGIC.get("context", {}).get("min_words", 4)
+            is_too_short = 1 if sentence_token_count < min_words else 0
             
             for (lemma, reading) in unique_lrs:
                 entry = word_stats[(lemma, reading)]
@@ -744,7 +775,8 @@ def main():
                     best.append((is_too_short, cost, s_text))
                     # Sort by: 1. Not too short (0 preferred over 1), 2. Low cost (unknown count)
                     best.sort(key=lambda x: (x[0], x[1]))
-                    entry["best_extra_contexts"] = best[:2]
+                    max_extra = LOGIC.get("context", {}).get("max_extra", 2)
+                    entry["best_extra_contexts"] = best[:max_extra]
         
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
@@ -910,6 +942,7 @@ def main():
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
             stats = word_stats.get((lemma, reading), {
                 "score": 0, "total_count": 0, 
+                "high_count": 0, "low_count": 0, "goal_count": 0,
                 "first_context": "", "best_extra_contexts": []
             })
             
@@ -925,6 +958,9 @@ def main():
                 "Score": stats["score"],
                 "Occurrences (Global)": stats["total_count"],
                 "Occurrences (File)": count,
+                "Count (High)": stats.get("high_count", 0),
+                "Count (Low)": stats.get("low_count", 0),
+                "Count (Goal)": stats.get("goal_count", 0),
                 "Context 1": stats.get("first_context", "").strip(),
                 "Context 2": stats["best_extra_contexts"][0][2].strip() if len(stats["best_extra_contexts"]) > 0 else "",
                 "Context 3": stats["best_extra_contexts"][1][2].strip() if len(stats["best_extra_contexts"]) > 1 else "",

@@ -36,11 +36,9 @@ Useful if you:
 
 Use Surasura to know every word you learn is immediately relevant to your content goals.
 
-- 🗄️ **Migaku & Jiten Sync**: Import known words from Migaku or Jiten.moe.
+- 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Anki Decks or Jiten.moe.
 
-- 📖 **Anki / Migaku / Jiten Extractor**: Directly convert Anki decks into a "known words" list to sync your actual study progress.
-
-- 📖 **EPUB & Media Importer**: Extract and split text from Japanese/Chinese EPUBs, SRTs, or Text files.
+- 📖 **EPUB & Media Importer**: Extract and split text from Japanese/Chinese EPUBs, SRTs, Anki apkg, or Text files.
 
 - 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite (JA) or Jieba (ZH) and calculate comprehensive readability scores.
 
@@ -53,6 +51,11 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 - 📈 **Progress Tracking**: Track your progress % before AND after watching/reading. Czlear visibility on "known" vs "to learn".
 
 - 🧘 **Zen Mode**: A distraction-free mode for focused learning.
+
+- 💎 **Priority Markers**: Identifies high-value words based on their distribution in your priority folders:
+  - ⚖ **Lopsided**: 80%+ of occurrences are in the `HighPriority` folder. (Pure focus).
+  - ✦ **Priority**: 50%+ of occurrences are in `HighPriority` + `LowPriority` combined.
+  - *Markers are mutually exclusive (Lopsided takes precedence) and extremely subtle in Zen Mode.*
 
 - ⌨️ **Hotkey Navigation**: Navigate between word cards with hotkeys (Left/Right).
 

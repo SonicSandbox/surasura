@@ -3,11 +3,53 @@
     "min_freq": 3,
     "zen_limit": 50,
     "open_app_mode": true,
-    "theme": "Dark Flow",
+    "theme": "Default (Dark)",
     "strategy": "freq",
     "target_coverage": 96,
     "split_length": 1500,
     "target_language": "ja",
     "reinforce_segmentation": false,
-    "onboarding_completed": true
+    "onboarding_completed": true,
+    "logic": {
+        "weights": {
+            "_comment": "Multipliers for word scores based on folder. Higher = more important.",
+            "high": 10,
+            "low": 5,
+            "goal": 2
+        },
+        "tiers": {
+            "_comment": "Frequency rank thresholds for Tiers 1-4. Rank > last value = Tier 5.",
+            "thresholds": [
+                2500,
+                5000,
+                7500,
+                10000
+            ]
+        },
+        "context": {
+            "_comment": "search_range: chars to look around a word if no sentence found. min_words: ideal sentence length.",
+            "search_range": 20,
+            "min_words": 4,
+            "max_extra": 2
+        },
+        "sentence_boundaries": {
+            "_comment": "Characters that trigger a sentence split for each language.",
+            "ja": "\u3002\uff01\uff1f!?\n",
+            "zh": "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
+        },
+        "gui": {
+            "_comment": "tooltip_delay: ms before tooltip appears.",
+            "tooltip_delay": 500
+        },
+        "priority_markers": {
+            "_comment": "Thresholds and minimums for visual priority markers.",
+            "priority_threshold": 0.5,
+            "priority_min": 3,
+            "lopsided_threshold": 0.8
+        },
+        "importer": {
+            "_comment": "split_overflow: max chars to search past target length for a clean boundary.",
+            "split_overflow": 150
+        }
+    }
 }

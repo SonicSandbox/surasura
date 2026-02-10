@@ -126,10 +126,22 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     import base64
     from app.path_utils import get_icon_path
     
+    # Load Logic Settings for injection
+    logic_settings = {}
+    try:
+        settings_path = get_user_file("settings.json")
+        if os.path.exists(settings_path):
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                logic_settings = settings.get("logic", {})
+    except Exception as e:
+        print(f"Warning: Could not load logic settings for HTML injection: {e}")
+
     json_str = json.dumps(data)
+    logic_json_str = json.dumps(logic_settings)
     html_content = html_content.replace(
         "let globalData = null;", 
-        f"let globalData = {json_str};\n        let globalTheme = '{theme}';"
+        f"let globalData = {json_str};\n        let globalTheme = '{theme}';\n        let globalLogic = {logic_json_str};"
     )
 
     # Embed Icon as Favicon and Header Logo

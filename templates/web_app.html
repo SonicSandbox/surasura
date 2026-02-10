@@ -212,6 +212,35 @@
             color: var(--text-secondary);
         }
 
+        /* --- Priority Markers --- */
+        .priority-marker {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            vertical-align: middle;
+            cursor: help;
+        }
+
+        .marker-priority::before {
+            content: "✦";
+            color: #FFD700;
+            text-shadow: 0 0 3px rgba(255, 215, 0, 0.4);
+        }
+
+        .marker-lopsided::before {
+            content: "⚖";
+            color: #03dac6;
+            text-shadow: 0 0 3px rgba(3, 218, 198, 0.4);
+        }
+
+        /* Zen Mode Specific Subtlety (Lowkey / Grayscale) */
+        body.theme-zen-focus .priority-marker {
+            filter: grayscale(100%) opacity(0.4);
+            font-size: 1.1rem;
+            margin-left: 18px;
+        }
+
         .tier-badge {
             background-color: #333;
             color: #ddd;
@@ -964,7 +993,8 @@
     <div id="nav-hint">
         ⓘ
         <div class="hint-tooltip">Tip: Use <b>Left/Right keys</b> or <b>Space</b> to quickly move between words. Use
-            <b>Up/Down keys</b> to show or hide sentences.</div>
+            <b>Up/Down keys</b> to show or hide sentences.
+        </div>
     </div>
     <header>
         <h1>Surasura List</h1>
@@ -1325,11 +1355,27 @@
                 const freq = data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : null);
                 const displayFreq = (freq !== null) ? `<span class="freq-zen" style="margin-left:auto; opacity:0.4; font-size:1.1rem; font-family:monospace;">F:${freq}</span>` : '';
 
+                // Priority Logic
+                // Priority Logic from Settings
+                const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
+
+                const high = parseInt(data["Count (High)"]) || 0;
+                const low = parseInt(data["Count (Low)"]) || 0;
+                const total = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
+
+                let markersHtml = '';
+                if (total > 0 && (high / total) >= pm.lopsided_threshold) {
+                    markersHtml += `<span class="priority-marker marker-lopsided" title="High Priority content contains ${(pm.lopsided_threshold * 100).toFixed(0)}%+ of occurrences (Lopsided)"></span>`;
+                } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
+                    markersHtml += `<span class="priority-marker marker-priority" title="High/Low Priority content contains ${(pm.priority_threshold * 100).toFixed(0)}%+ of occurrences (Priority)"></span>`;
+                }
+
                 el.innerHTML = `
                     <div class="card-header" style="margin-bottom:8px; display:flex; align-items:baseline;">
                         <span class="word-main">${safeWord}</span>
                         <span class="reading">${data.Reading || ''}</span>
                         ${displayFreq}
+                        ${markersHtml}
                     </div>
                     <div class="context-box">
                         <div class="context-item-zen">${displayC1}</div>
@@ -1379,6 +1425,19 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
+                        ${(() => {
+                    const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
+                    const high = parseInt(data["Count (High)"]) || 0;
+                    const low = parseInt(data["Count (Low)"]) || 0;
+                    const total = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
+                    let html = '';
+                    if (total > 0 && (high / total) >= pm.lopsided_threshold) {
+                        html += `<span class="priority-marker marker-lopsided" title="High Priority content contains ${(pm.lopsided_threshold * 100).toFixed(0)}%+ of occurrences (Lopsided)"></span>`;
+                    } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
+                        html += `<span class="priority-marker marker-priority" title="High/Low Priority content contains ${(pm.priority_threshold * 100).toFixed(0)}%+ of occurrences (Priority)"></span>`;
+                    }
+                    return html;
+                })()}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>

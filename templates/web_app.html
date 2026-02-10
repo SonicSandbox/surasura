@@ -989,6 +989,14 @@
             visibility: visible;
             opacity: 1;
         }
+
+        .target-met-inline {
+            color: #4caf50;
+            font-size: 0.85em;
+            margin-left: 10px;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
     </style>
 </head>
 
@@ -1152,8 +1160,7 @@
                     listContainer.appendChild(fileSection);
                     await renderChunked(fileSection, fileData.words, createWordCard);
                 }
-
-                // Render completed files (Zen Mode) - just a summary list at bottom?
+                // Render completed files (Zen Mode) - summary list at bottom
                 if (globalData.completed_files && globalData.completed_files.length > 0) {
                     const completedSection = document.createElement('div');
                     completedSection.className = 'zen-file-section';
@@ -1172,52 +1179,94 @@
                 }
 
             } else {
-                // Standard Tabs
-                // 1. Active Files
-                globalData.progressive.forEach((fileData, index) => {
-                    const tab = document.createElement('div');
-                    tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
-                    const newWordsCount = fileData.words.length;
-                    tab.innerHTML = `<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${newWordsCount})</span>`;
-                    tab.onclick = async () => {
-                        document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                        tab.classList.add('active');
-                        await renderFileWords(fileData.words);
-                    }
-                    tabsContainer.appendChild(tab);
-                });
+                const inlineCompleted = (typeof globalLogic !== 'undefined' && globalLogic.inline_completed_files);
 
-                // 2. Completed Files
-                if (globalData.completed_files && globalData.completed_files.length > 0) {
-                    // Divider
-                    const divider = document.createElement('div');
-                    divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
-                    tabsContainer.appendChild(divider);
+                if (inlineCompleted && globalData.file_order && globalData.file_order.length > 0) {
+                    const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
+                    const compFiles = new Map((globalData.completed_files || []).map(f => [f.filename, f]));
 
-                    globalData.completed_files.forEach((fileData) => {
+                    globalData.file_order.forEach((filename, index) => {
+                        const isProg = progFiles.has(filename);
+                        const isComp = compFiles.has(filename);
+                        if (!isProg && !isComp) return;
+
                         const tab = document.createElement('div');
-                        tab.className = `file-tab`;
-                        tab.style.opacity = "0.7";
-                        tab.textContent = fileData.filename;
-                        tab.onclick = () => {
-                            document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                            tab.classList.add('active');
-                            renderCompletedFile(fileData);
+                        tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
+
+                        if (isProg) {
+                            const fileData = progFiles.get(filename);
+                            tab.innerHTML = `<span>${filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
+                            tab.onclick = async () => {
+                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                                tab.classList.add('active');
+                                await renderFileWords(fileData.words);
+                            }
+                        } else {
+                            const fileData = compFiles.get(filename);
+                            tab.innerHTML = `<span>${filename}</span> <span class="target-met-inline">Target met ✓</span>`;
+                            tab.onclick = () => {
+                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                                tab.classList.add('active');
+                                renderCompletedFile(fileData);
+                            }
                         }
                         tabsContainer.appendChild(tab);
                     });
-                }
 
-                if (globalData.progressive.length > 0) {
-                    await renderFileWords(globalData.progressive[0].words);
-                } else if (globalData.completed_files && globalData.completed_files.length > 0) {
-                    // If no progressive words at all, show first completed file
-                    renderCompletedFile(globalData.completed_files[0]);
-                    // Set first tab active (logic above sets first progressive as active, need to fix if empty)
-                    setTimeout(() => {
-                        const firstTab = tabsContainer.querySelector('.file-tab');
-                        if (firstTab) firstTab.classList.add('active');
-                    }, 0);
+                    // Initial Content Load
+                    if (globalData.file_order.length > 0) {
+                        const first = globalData.file_order[0];
+                        if (progFiles.has(first)) await renderFileWords(progFiles.get(first).words);
+                        else if (compFiles.has(first)) renderCompletedFile(compFiles.get(first));
+                    }
+                } else {
+                    // Standard Tabs
+                    // 1. Active Files
+                    globalData.progressive.forEach((fileData, index) => {
+                        const tab = document.createElement('div');
+                        tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
+                        const newWordsCount = fileData.words.length;
+                        tab.innerHTML = `<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${newWordsCount})</span>`;
+                        tab.onclick = async () => {
+                            document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                            tab.classList.add('active');
+                            await renderFileWords(fileData.words);
+                        }
+                        tabsContainer.appendChild(tab);
+                    });
+
+                    // 2. Completed Files
+                    if (globalData.completed_files && globalData.completed_files.length > 0) {
+                        // Divider
+                        const divider = document.createElement('div');
+                        divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
+                        tabsContainer.appendChild(divider);
+
+                        globalData.completed_files.forEach((fileData) => {
+                            const tab = document.createElement('div');
+                            tab.className = `file-tab`;
+                            tab.style.opacity = "0.7";
+                            tab.textContent = fileData.filename;
+                            tab.onclick = () => {
+                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                                tab.classList.add('active');
+                                renderCompletedFile(fileData);
+                            }
+                            tabsContainer.appendChild(tab);
+                        });
+                    }
+
+                    if (globalData.progressive.length > 0) {
+                        await renderFileWords(globalData.progressive[0].words);
+                    } else if (globalData.completed_files && globalData.completed_files.length > 0) {
+                        // If no progressive words at all, show first completed file
+                        renderCompletedFile(globalData.completed_files[0]);
+                        // Set first tab active (logic above sets first progressive as active, need to fix if empty)
+                        setTimeout(() => {
+                            const firstTab = tabsContainer.querySelector('.file-tab');
+                            if (firstTab) firstTab.classList.add('active');
+                        }, 0);
+                    }
                 }
             }
         }

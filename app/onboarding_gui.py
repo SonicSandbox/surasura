@@ -16,8 +16,8 @@ class OnboardingGuide:
     def __init__(self, parent, on_complete_callback):
         self.window = tk.Toplevel(parent)
         self.window.title("Welcome to Surasura!")
-        self.window.geometry("500x620")
-        self.window.resizable(False, False)
+        self.window.geometry("500x650")
+        self.window.resizable(False, True) # Allow vertical resizing if needed
         self.window.configure(bg=BG_COLOR)
         self.window.transient(parent) # Stay on top of parent
         self.window.grab_set() # Modal
@@ -44,7 +44,7 @@ class OnboardingGuide:
         self.window.geometry(f'+{x}+{y}')
 
     def setup_ui(self):
-        main_frame = tk.Frame(self.window, bg=BG_COLOR, padx=30, pady=30)
+        main_frame = tk.Frame(self.window, bg=BG_COLOR, padx=30, pady=20) # Reduced pady 30 -> 20
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Welcome Title
@@ -96,18 +96,27 @@ class OnboardingGuide:
                  font=("Segoe UI", 9, "italic"), fg="#888", bg=BG_COLOR).pack(side=tk.LEFT, padx=(5, 0))
 
         tk.Label(main_frame, text="→ Add your Known-Words List", font=("Segoe UI", 11), 
-                 fg=TEXT_COLOR, bg=BG_COLOR).pack(anchor=tk.W, pady=(0, 15))
+                 fg=TEXT_COLOR, bg=BG_COLOR).pack(anchor=tk.W, pady=(0, 5))
+
+        step3_frame = tk.Frame(main_frame, bg=BG_COLOR)
+        step3_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 5))
+        tk.Label(step3_frame, text="→ Generate a frequency list", font=("Segoe UI", 11), 
+                 fg=TEXT_COLOR, bg=BG_COLOR).pack(side=tk.LEFT)
+        tk.Label(step3_frame, text="(based on your immersion)", 
+                 font=("Segoe UI", 9, "italic"), fg="#888", bg=BG_COLOR).pack(side=tk.LEFT, padx=(5, 0))
+
+        tk.Label(main_frame, text="→ Learn words in the order you'll see them", font=("Segoe UI", 11), 
+                 fg=TEXT_COLOR, bg=BG_COLOR).pack(anchor=tk.W, pady=(0, 10))
 
         tk.Label(main_frame, text="Then learn ONLY the words you'll actually see in your immersion.", 
                  font=("Segoe UI", 10, "bold"), fg=ACCENT_COLOR, bg=BG_COLOR, justify=tk.LEFT, wraplength=440)
-        tk.Label(main_frame, text="", bg=BG_COLOR).pack() # Spacer
 
         # Why section
         why_title = tk.Label(main_frame, text="Why?", font=("Segoe UI", 11, "italic"), 
                             fg="#aaa", bg=BG_COLOR)
-        why_title.pack(anchor=tk.W, pady=(10, 5))
+        why_title.pack(anchor=tk.W, pady=(5, 2))
 
-        why_text = "I was tired of learning words I never see, and I also like reading physical books.\n\nLearn words chapter by chapter, episode by episode with a スラスラ Vocabulary Journey!"
+        why_text = "I was tired of learning words I never see. Also makes book mining easy. Pre-study, chapter by chapter."
         tk.Label(main_frame, text=why_text, font=("Segoe UI", 10, "italic"), 
                  fg="#aaa", bg=BG_COLOR, justify=tk.LEFT, wraplength=440).pack(anchor=tk.W)
 
@@ -119,7 +128,7 @@ class OnboardingGuide:
         style = ttk.Style()
         style.configure("Onboard.TButton", font=("Segoe UI", 11, "bold"), padding=10)
         
-        confirm_btn = ttk.Button(btn_frame, text="Let's Start!", style="Onboard.TButton", 
+        confirm_btn = ttk.Button(btn_frame, text="Let's Go!", style="Onboard.TButton", 
                                 command=self.complete)
         confirm_btn.pack(fill=tk.X)
 

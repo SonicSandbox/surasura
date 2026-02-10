@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from tkinter import messagebox, ttk
 import subprocess
+import webbrowser
 
 # Ensure package root is in sys.path
 if __name__ == "__main__" and __package__ is None:
@@ -24,14 +25,30 @@ class JitenImporterGUI:
         self.root.bind("<Escape>", lambda e: self.root.destroy())
         
         # Set colors and styles
-        self.bg_color = "#2c3e50"
-        self.text_color = "#ecf0f1"
-        self.accent_color = "#3498db"
+        self.bg_color = "#1e1e1e"
+        self.surface_color = "#2d2d2d"
+        self.text_color = "#e0e0e0"
+        self.accent_color = "#bb86fc"
         self.root.configure(bg=self.bg_color)
         
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure("TButton", padding=10, font=('Segoe UI', 10))
+        style.configure("TButton", background=self.surface_color, foreground=self.text_color, borderwidth=0, padding=8)
+        style.map("TButton",
+            background=[('active', self.accent_color)],
+            foreground=[('active', self.bg_color)]
+        )
+        
+        style.configure("TFrame", background=self.bg_color)
+        style.configure("TLabelframe", background=self.bg_color, bordercolor=self.surface_color)
+        style.configure("TLabelframe.Label", background=self.bg_color, foreground=self.accent_color, font=('Segoe UI', 11, 'bold'))
+        style.configure("TLabel", background=self.bg_color, foreground=self.text_color)
+        style.configure("Link.TLabel", font=('Segoe UI', 10, 'underline'), foreground=self.accent_color, background=self.bg_color)
+        style.configure("TCheckbutton", background=self.bg_color, foreground=self.text_color)
+        style.map("TCheckbutton",
+            background=[('active', self.bg_color)],
+            foreground=[('active', self.accent_color)]
+        )
         
         # Set Application Icon
         try:
@@ -48,12 +65,11 @@ class JitenImporterGUI:
     def create_widgets(self):
         # Header
         header = tk.Label(self.root, text="Jiten Known-Word Importer", font=('Segoe UI', 16, 'bold'), 
-                         bg=self.bg_color, fg=self.text_color, pady=15)
+                         bg=self.bg_color, fg="#03dac6", pady=10) # Reduced pady 15 -> 10
         header.pack()
         
         # Instructions Frame
-        instructions_frame = tk.LabelFrame(self.root, text="Step 1: Get Your API Key", font=('Segoe UI', 11, 'bold'),
-                                          bg=self.bg_color, fg=self.accent_color, padx=20, pady=15)
+        instructions_frame = ttk.LabelFrame(self.root, text=" Step 1: Get Your API Key ", padding="15")
         instructions_frame.pack(fill="x", padx=30, pady=5)
         
         instructions_text = (
@@ -62,15 +78,27 @@ class JitenImporterGUI:
             "3. Paste it below"
         )
         
-        instructions_label = tk.Label(instructions_frame, 
+        link_url = "https://jiten.moe/settings/api"
+        instructions_label = ttk.Label(instructions_frame, 
                                      text=instructions_text, 
-                                     justify="left", bg=self.bg_color, fg=self.text_color, 
-                                     font=('Segoe UI', 10))
-        instructions_label.pack(anchor="w", pady=(0, 10))
+                                     justify="left")
+        instructions_label.pack(anchor="w", pady=(0, 5))
+        
+        link_lbl = ttk.Label(instructions_frame, text="jiten.moe/settings/api", style="Link.TLabel", cursor="hand2")
+        link_lbl.pack(anchor="w", pady=(0, 10))
+        
+        link_lbl.bind("<Button-1>", lambda e: webbrowser.open(link_url))
+        
+        # Credit Label at bottom
+        credit_frame = ttk.Frame(self.root)
+        credit_frame.pack(side="bottom", fill="x", pady=(5, 15), padx=30)
+        
+        credit_lbl = ttk.Label(credit_frame, text="Credit to mattias", style="Link.TLabel", cursor="hand2")
+        credit_lbl.pack(side="right")
+        credit_lbl.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/mattias"))
         
         # API Key Input Frame
-        api_frame = tk.LabelFrame(self.root, text="Step 2: Enter API Key", font=('Segoe UI', 11, 'bold'),
-                                 bg=self.bg_color, fg=self.accent_color, padx=20, pady=15)
+        api_frame = ttk.LabelFrame(self.root, text=" Step 2: Enter API Key ", padding="15")
         api_frame.pack(fill="x", padx=30, pady=10)
         
         # Label
@@ -80,7 +108,8 @@ class JitenImporterGUI:
         # Entry
         self.api_key_var = tk.StringVar()
         self.api_key_entry = tk.Entry(api_frame, textvariable=self.api_key_var, font=('Consolas', 10),
-                                      show="*", width=40)
+                                      show="*", width=40, bg=self.surface_color, fg=self.text_color, 
+                                      insertbackground=self.text_color, relief="flat")
         self.api_key_entry.pack(fill="x", pady=(0, 10))
         
         # Show/Hide toggle
@@ -104,8 +133,9 @@ class JitenImporterGUI:
                             font=('Segoe UI', 10, 'bold'))
         log_label.pack(anchor="w", pady=(0, 5))
         
-        self.log_text = tk.Text(log_frame, height=6, font=('Consolas', 9), bg="#1a252f", fg="#bdc3c7", 
-                                padx=10, pady=10, state="disabled")
+        self.log_text = tk.Text(log_frame, height=5, font=('Consolas', 9), bg="#121212", fg="#888", 
+                                 padx=10, pady=10, state="disabled", borderwidth=0,
+                                 highlightthickness=1, highlightbackground=self.surface_color)
         self.log_text.pack(fill="both", expand=True)
         
         self.log("Ready.")

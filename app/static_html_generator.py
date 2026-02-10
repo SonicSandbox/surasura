@@ -64,6 +64,15 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
         except Exception as e:
             print(f"Error loading stats JSON: {e}")
 
+    # Track overall order from statistics
+    all_files_order = []
+    if os.path.exists(STATS_JSON):
+        try:
+            with open(STATS_JSON, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+                all_files_order = [s["File"] for s in stats]
+        except: pass
+
     # Load Progressive
     if os.path.exists(PROGRESSIVE_CSV):
         try:
@@ -113,6 +122,8 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
             data["priority"] = df.to_dict(orient="records")
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
+
+    data["file_order"] = all_files_order
 
     # 2. Read Template
     if not os.path.exists(WEB_APP_FILE):

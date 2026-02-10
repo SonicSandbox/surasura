@@ -31,7 +31,7 @@ MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
 LOGIC = {
     "weights": {"high": 10, "low": 5, "goal": 2},
     "tiers": {"thresholds": [2500, 5000, 7500, 10000]},
-    "context": {"search_range": 20, "min_words": 4, "max_extra": 2},
+    "context": {"search_range": 20, "min_words": 4, "max_extra": 2, "preferred_max_chars": 50},
     "sentence_boundaries": {
         "ja": "。！？!?\n",
         "zh": "。！？!?\n；;……"
@@ -611,7 +611,7 @@ def main():
         "score": 0, "total_count": 0, "sources": set(), 
         "high_count": 0, "low_count": 0, "goal_count": 0,
         "first_context": "", 
-        "best_extra_contexts": [], # List of (is_too_short, unknown_count, sentence_text)
+        "best_extra_contexts": [], # List of (is_too_short, is_too_long, cost, sentence_text)
         "surface": "",
         "min_seq": float('inf') # Track first appearance sequence index
     })
@@ -763,6 +763,9 @@ def main():
             min_words = LOGIC.get("context", {}).get("min_words", 4)
             is_too_short = 1 if sentence_token_count < min_words else 0
             
+            preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
+            is_too_long = 1 if len(s_text) > preferred_max_chars else 0
+            
             for (lemma, reading) in unique_lrs:
                 entry = word_stats[(lemma, reading)]
                 if not entry["first_context"]:
@@ -770,11 +773,12 @@ def main():
                 else:
                     if s_text == entry["first_context"]: continue
                     
-                    # Maintain top 2 easiest sentences (lowest cost), prioritizing those with >= 4 words
+                    # Maintain top 2 easiest sentences (lowest cost)
+                    # Priority order: 1. Not too short, 2. Not too long, 3. Low cost
                     best = entry["best_extra_contexts"]
-                    best.append((is_too_short, cost, s_text))
-                    # Sort by: 1. Not too short (0 preferred over 1), 2. Low cost (unknown count)
-                    best.sort(key=lambda x: (x[0], x[1]))
+                    best.append((is_too_short, is_too_long, cost, s_text))
+                    # Sort by: 1. Not too short, 2. Not too long, 3. Low cost
+                    best.sort(key=lambda x: (x[0], x[1], x[2]))
                     max_extra = LOGIC.get("context", {}).get("max_extra", 2)
                     entry["best_extra_contexts"] = best[:max_extra]
         
@@ -804,8 +808,8 @@ def main():
             "Score": data["score"],
             "Occurrences": data["total_count"],
             "Context 1": data.get("first_context", "").strip(),
-            "Context 2": data["best_extra_contexts"][0][2].strip() if len(data["best_extra_contexts"]) > 0 else "",
-            "Context 3": data["best_extra_contexts"][1][2].strip() if len(data["best_extra_contexts"]) > 1 else "",
+            "Context 2": data["best_extra_contexts"][0][3].strip() if len(data["best_extra_contexts"]) > 0 else "",
+            "Context 3": data["best_extra_contexts"][1][3].strip() if len(data["best_extra_contexts"]) > 1 else "",
             "Count (High)": data["high_count"],
             "Count (Low)": data["low_count"],
             "Count (Goal)": data["goal_count"],
@@ -962,8 +966,8 @@ def main():
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
                 "Context 1": stats.get("first_context", "").strip(),
-                "Context 2": stats["best_extra_contexts"][0][2].strip() if len(stats["best_extra_contexts"]) > 0 else "",
-                "Context 3": stats["best_extra_contexts"][1][2].strip() if len(stats["best_extra_contexts"]) > 1 else "",
+                "Context 2": stats["best_extra_contexts"][0][3].strip() if len(stats["best_extra_contexts"]) > 0 else "",
+                "Context 3": stats["best_extra_contexts"][1][3].strip() if len(stats["best_extra_contexts"]) > 1 else "",
             })
             file_new_words.add((lemma, reading))
         

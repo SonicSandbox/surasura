@@ -132,9 +132,10 @@ class MasterDashboardApp:
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
-        self.var_split_length = tk.IntVar(value=1500)
+        self.var_split_length = tk.IntVar(value=3000)
         self.var_language = tk.StringVar(value="ja")
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
+        self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -149,6 +150,9 @@ class MasterDashboardApp:
         # Queue for thread-safe GUI updates
         self.gui_queue = queue.Queue()
         self.check_queue()
+
+        # Track active child processes
+        self.active_processes = []
 
         # Set Application Icon
         try:
@@ -189,6 +193,7 @@ class MasterDashboardApp:
         self.var_min_freq.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
+        self.var_inline_completed.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -199,6 +204,9 @@ class MasterDashboardApp:
         
         # Trace language changes
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
+
+        # Bind close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
     def check_queue(self):
         """Poll the queue for GUI updates"""
@@ -377,7 +385,7 @@ class MasterDashboardApp:
         lib_frame = ttk.LabelFrame(main_frame, text=" 📦 Library Content", padding="10")
         lib_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
 
-        btn_open_data = ttk.Button(lib_frame, text="Launch Content Importer", style="Action.TButton",
+        btn_open_data = ttk.Button(lib_frame, text="Import Content", style="Action.TButton",
                                     command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
         ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
@@ -427,7 +435,7 @@ class MasterDashboardApp:
         self.update_strategy_ui()
 
         # Run Analyzer Button
-        btn_analyze = ttk.Button(analyze_frame, text="Run Analysis", style="Action.TButton",
+        btn_analyze = ttk.Button(analyze_frame, text="Generate Journey", style="Action.TButton",
                                  command=self.run_analyzer)
         btn_analyze.pack(anchor=tk.W, fill=tk.X)
         ToolTip(btn_analyze, "Analyze text files and generate readability report. Auto-launches static page.")
@@ -531,6 +539,10 @@ class MasterDashboardApp:
         chk_single = ttk.Checkbutton(settings_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
+
+        chk_inline = ttk.Checkbutton(settings_frame, text="Show 'Target Met' content inline", variable=self.var_inline_completed)
+        chk_inline.pack(anchor=tk.W)
+        ToolTip(chk_inline, "If met, files stay in order in sidebar with 'Target met' label instead of moving to the bottom.")
 
         # Language Selection
         self.lang_frame = ttk.Frame(settings_frame)
@@ -637,18 +649,19 @@ class MasterDashboardApp:
                     
                     self.var_strategy.set(settings.get("strategy", "freq"))
                     self.var_target_coverage.set(settings.get("target_coverage", 90))
-                    self.var_split_length.set(settings.get("split_length", 1500))
+                    self.var_split_length.set(settings.get("split_length", 3000))
                     
                     lang = settings.get("target_language", "ja")
                     if not lang: lang = "ja" # Safeguard against empty string
                     self.var_language.set(lang)
-                    
+
                     self.var_reinforce.set(settings.get("reinforce_segmentation", False))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
 
                     # Load Logic Settings
                     self.logic_settings = settings.get("logic", {})
+                    self.var_inline_completed.set(self.logic_settings.get("inline_completed_files", False))
                     
                     self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -674,6 +687,8 @@ class MasterDashboardApp:
                 "onboarding_completed": self.onboarding_completed.get(),
                 "logic": self.logic_settings
             }
+            # Update nested logic settings
+            self.logic_settings["inline_completed_files"] = self.var_inline_completed.get()
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
         except Exception as e:
@@ -800,6 +815,9 @@ class MasterDashboardApp:
                     env=env
                 )
                 
+                # Register process for coordinated shutdown
+                self.active_processes.append(process)
+                
                 if capture_output and process.stdout:
                     for line in process.stdout:
                         # Log line safely
@@ -832,6 +850,18 @@ class MasterDashboardApp:
                 self.gui_queue.put(_stop_loading)
                     
         threading.Thread(target=task, daemon=True).start()
+
+    def on_closing(self):
+        """Coordinated shutdown: terminate all active sub-processes"""
+        if self.active_processes:
+            self.status_var.set("Closing sub-windows...")
+            for proc in self.active_processes:
+                try:
+                    if proc.poll() is None: # Still running
+                        proc.terminate()
+                except Exception:
+                    pass
+        self.root.destroy()
 
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py', '--language', self.var_language.get()], "Migaku Importer")

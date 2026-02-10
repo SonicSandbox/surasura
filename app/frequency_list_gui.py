@@ -96,7 +96,7 @@ class FrequencyListGUI:
         link_lbl.pack(side=tk.LEFT)
         link_lbl.bind("<Button-1>", lambda e: webbrowser.open(link_url))
 
-        ttk.Label(instr_frame, text="Then add it/them into the User Files-folder.\n\nMagic happens.").pack(anchor="w", pady=(5, 0))
+        ttk.Label(instr_frame, text="Then add it/them into the User Files-folder.\n\nMagic Happens :)").pack(anchor="w", pady=(5, 0))
 
         # File Management Frame
         file_frame = ttk.LabelFrame(main_frame, text=" Manage Frequency Lists ", padding="15")

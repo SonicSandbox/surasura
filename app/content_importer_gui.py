@@ -2,9 +2,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import shutil
 import os
-import subprocess
 import sys
 import json
+import subprocess
+
+# Ensure package root is in sys.path
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from app.path_utils import get_user_file, ensure_data_setup, get_icon_path, get_data_path
 
 # --- Constants & Theme ---
@@ -14,6 +19,7 @@ ACCENT_COLOR = "#bb86fc"
 TEXT_COLOR = "#ffffff"
 ERROR_COLOR = "#cf6679"
 SUCCESS_COLOR = "#03dac6"
+
 
 class ContentImporterApp:
     def __init__(self, root, language='ja'):
@@ -113,7 +119,9 @@ class ContentImporterApp:
         )
         self.style.map("TRadiobutton",
             foreground=[('active', ACCENT_COLOR)],
-            background=[('active', BG_COLOR)]
+            background=[('active', BG_COLOR)],
+            indicatorbackground=[('selected', ACCENT_COLOR), ('!selected', SURFACE_COLOR)],
+            indicatorforeground=[('selected', BG_COLOR)]
         )
 
     def setup_ui(self):
@@ -135,15 +143,32 @@ class ContentImporterApp:
 
         # Custom Labels map with full tab
         self.folder_map = {
-            "HighPriority": "High Priority\t(What will you see next week?)",
-            "LowPriority": "Low Priority\t(In the next month)",
-            "GoalContent": "Goal Content\t(Your ambitious Goal)"
+            "HighPriority": ("High Priority", "(What will you see in the next 2 weeks?)"),
+            "LowPriority": ("Low Priority", "(In the next 6 months?)"),
+            "GoalContent": ("Goal Content", "(6 months+)")
         }
 
         # Radio Buttons
-        for key, text in self.folder_map.items():
-            rb = ttk.Radiobutton(step1_frame, text=text, variable=self.target_folder_var, value=key)
-            rb.pack(anchor=tk.W, pady=5, padx=5)
+        for key, (label, sub) in self.folder_map.items():
+            f = ttk.Frame(step1_frame)
+            f.pack(anchor=tk.W, pady=2, padx=5)
+            
+            rb = ttk.Radiobutton(f, text=label, variable=self.target_folder_var, value=key)
+            rb.pack(side=tk.LEFT)
+            
+            sub_lbl = ttk.Label(f, text=f"  {sub}", font=("Segoe UI", 9, "italic"), foreground="#888")
+            sub_lbl.pack(side=tk.LEFT)
+            # Make clicking the subtext also select the radio button
+            sub_lbl.bind("<Button-1>", lambda e, k=key: self.target_folder_var.set(k))
+
+        # Help Icon
+        help_icon = tk.Label(step1_frame, text="?", font=("Segoe UI", 10, "bold"), 
+                            bg=SURFACE_COLOR, fg=ACCENT_COLOR, cursor="hand2",
+                            padx=6, pady=2, relief="flat")
+        help_icon.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
+        
+        tooltip_text = "Your vocab journey will prioritize words based on your immersion content, and how soon you'll see them"
+        self.create_tooltip(help_icon, tooltip_text)
 
         # --- SECTION 2: FILE MANAGEMENT ---
         step2_frame = ttk.LabelFrame(main_frame, text=" 2. Manage Files ", padding="15")
@@ -200,7 +225,7 @@ class ContentImporterApp:
         self.tree.bind("<ButtonRelease-1>", self.on_drag_stop)
         
         # Hint label
-        hint_label = ttk.Label(step2_frame, text="Drag and drop your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
+        hint_label = ttk.Label(step2_frame, text="Drag and move your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
         hint_label.pack(side=tk.LEFT, pady=(5,0))
 
         self.count_label = ttk.Label(step2_frame, text="0 files found", foreground="#888")
@@ -378,61 +403,54 @@ class ContentImporterApp:
         if not os.path.exists(initial_dir):
             initial_dir = self.data_root
 
-        folder_path = filedialog.askdirectory(title="Select Folder to Import", initialdir=initial_dir)
+        folder_path = filedialog.askdirectory(initialdir=initial_dir, title="Select Folder to Import")
         
-        if folder_path:
-            try:
-                # Handle cases where path ends with slash (e.g. "C:/" or "D:/")
-                folder_path = os.path.normpath(folder_path)
-                folder_name = os.path.basename(folder_path)
+        if not folder_path:
+            return
 
-                if not folder_name:
-                    messagebox.showerror("Error", "Cannot import a root drive or empty folder name.\nPlease select a subdirectory.")
+        try:
+            # Handle cases where path ends with slash (e.g. "C:/" or "D:/")
+            folder_path = os.path.normpath(folder_path)
+            folder_name = os.path.basename(folder_path)
+
+            if not folder_name:
+                messagebox.showerror("Error", "Invalid folder selected.")
+                return
+            
+            dest = os.path.join(target_dir, folder_name)
+
+            # Prevent importing into itself (recursive copy)
+            if os.path.commonpath([folder_path, target_dir]) == os.path.normpath(folder_path):
+                 messagebox.showerror("Error", f"Cannot import parent '{folder_name}' into its own child.")
+                 return
+
+            if os.path.exists(dest):
+                if not messagebox.askyesno("Confirm Overwrite", f"Folder '{folder_name}' already exists in '{self.target_folder_var.get()}'.\nOverwrite it?"):
                     return
-                
-                dest = os.path.join(target_dir, folder_name)
-
-                #Prevent importing into itself (recursive copy)
-                if os.path.commonpath([folder_path, target_dir]) == os.path.normpath(folder_path):
-                     messagebox.showerror("Error", "Cannot import a parent folder into its own child.")
-                     return
-
-                # Prevent overwriting the target directory itself (redundant but safe)
-                if os.path.abspath(dest) == os.path.abspath(target_dir):
-                     messagebox.showerror("Error", "Invalid destination. Cannot overwrite the target folder.")
-                     return
-                
-                if os.path.exists(dest):
-                    if not messagebox.askyesno("Confirm Overwrite", f"Folder '{folder_name}' already exists in '{self.target_folder_var.get()}'.\nOverwrite it?"):
-                        return
-                    # Safe removal: verify it's inside target_dir before deleting
-                    if os.path.dirname(os.path.abspath(dest)) == os.path.abspath(target_dir):
-                        if os.path.isdir(dest):
-                            shutil.rmtree(dest)
-                        else:
-                            os.remove(dest) # In case it was a file
-                
-                shutil.copytree(folder_path, dest)
-                
-                # Update order
-                data = self.load_order(target_dir)
-                order = data.get("order", [])
-                metadata = data.get("metadata", {})
-                if folder_name not in order:
-                    order.append(folder_name)
-                # Tag with current language
-                metadata[folder_name] = {"lang": self.language}
-                data["order"] = order
-                data["metadata"] = metadata
-                self.save_order(target_dir, data)
-                
-                self.refresh_file_list()
-                self.status_var.set(f"Added folder '{folder_name}'")
-                messagebox.showinfo("Success", f"Successfully added folder '{folder_name}'.")
-            except Exception as e:
-                # If copy failed, try to clean up if we created an empty folder?
-                # For now just show error.
-                messagebox.showerror("Error", f"Failed to copy folder:\n{e}")
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                else:
+                    os.remove(dest)
+            
+            shutil.copytree(folder_path, dest)
+            
+            # Update order
+            data = self.load_order(target_dir)
+            order = data.get("order", [])
+            metadata = data.get("metadata", {})
+            if folder_name not in order:
+                order.append(folder_name)
+            # Tag with current language
+            metadata[folder_name] = {"lang": self.language}
+            data["order"] = order
+            data["metadata"] = metadata
+            self.save_order(target_dir, data)
+            
+            self.refresh_file_list()
+            self.status_var.set(f"Successfully added folder: {folder_name}")
+            messagebox.showinfo("Success", f"Successfully added folder '{folder_name}'.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to copy folder '{folder_name}':\n{e}")
 
     def remove_files(self):
         selected_items = self.tree.selection()
@@ -649,6 +667,26 @@ class ContentImporterApp:
             subprocess.Popen(['open', path])
         else:
             subprocess.Popen(['xdg-open', path])
+
+    def create_tooltip(self, widget, text):
+        def show_tip(event):
+            tip = tk.Toplevel()
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{event.x_root+15}+{event.y_root+15}")
+            tip.configure(bg=SURFACE_COLOR)
+            label = tk.Label(tip, text=text, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
+                             font=("Segoe UI", 9), padx=8, pady=5, 
+                             relief="solid", borderwidth=1, highlightthickness=0,
+                             wraplength=250, justify=tk.LEFT)
+            label.pack()
+            widget.tip = tip
+
+        def hide_tip(event):
+            if hasattr(widget, "tip"):
+                widget.tip.destroy()
+
+        widget.bind("<Enter>", show_tip)
+        widget.bind("<Leave>", hide_tip)
 
 def main():
     import argparse

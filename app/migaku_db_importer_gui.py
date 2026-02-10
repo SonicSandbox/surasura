@@ -26,16 +26,25 @@ class MigakuImporterGUI:
         # Bind Escape key to close
         self.root.bind("<Escape>", lambda e: self.root.destroy())
         # Set colors and styles
-        self.bg_color = "#2c3e50"
-        self.text_color = "#ecf0f1"
-        self.accent_color = "#3498db"
+        self.bg_color = "#1e1e1e"
+        self.surface_color = "#2d2d2d"
+        self.text_color = "#e0e0e0"
+        self.accent_color = "#bb86fc"
         self.root.configure(bg=self.bg_color)
         
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure("TButton", padding=10, font=('Segoe UI', 10))
         
         # Use path_utils for resources
+        style.configure("TButton", background=self.surface_color, foreground=self.text_color, borderwidth=0, padding=8)
+        style.map("TButton",
+            background=[('active', self.accent_color)],
+            foreground=[('active', self.bg_color)]
+        )
+        
+        style.configure("TLabelframe", background=self.bg_color, bordercolor=self.surface_color)
+        style.configure("TLabelframe.Label", background=self.bg_color, foreground=self.accent_color, font=('Segoe UI', 11, 'bold'))
+
         self.script_path = Path(get_resource("scripts/extract-database-file.js"))
         self.converter_path = Path(get_resource("app/migaku_converter.py")) # It's in app/ now
         
@@ -54,7 +63,7 @@ class MigakuImporterGUI:
     def create_widgets(self):
         # Header
         header = tk.Label(self.root, text="Known-Word DB Importer", font=('Segoe UI', 16, 'bold'), 
-                         bg=self.bg_color, fg=self.text_color, pady=15)
+                         bg=self.bg_color, fg="#03dac6", pady=15)
         header.pack()
         
         # Step 1 Frame
@@ -83,7 +92,7 @@ class MigakuImporterGUI:
         # Entry requires special variable to be set for it to be copyable if state=readonly
         # But we can just use normal state and bind Control-A
         code_entry = tk.Entry(code_frame, textvariable=self.code_var, font=('Consolas', 10), 
-                            readonlybackground="#34495e", fg="#ecf0f1", bg="#34495e", relief="flat")
+                            readonlybackground=self.surface_color, fg=self.text_color, bg=self.surface_color, relief="flat")
         # Make it read-only but selectable
         code_entry.configure(state="readonly")
         code_entry.pack(side="left", fill="x", expand=True, ipady=4)
@@ -116,8 +125,8 @@ class MigakuImporterGUI:
         log_frame = tk.Frame(self.root, bg=self.bg_color)
         log_frame.pack(fill="both", expand=True, padx=30, pady=10)
         
-        self.log_text = tk.Text(log_frame, height=6, font=('Consolas', 9), bg="#1a252f", fg="#bdc3c7", 
-                                padx=10, pady=10, state="disabled")
+        self.log_text = tk.Text(log_frame, height=6, font=('Consolas', 9), bg="#121212", fg="#888", 
+                                 padx=10, pady=10, state="disabled", borderwidth=0)
         self.log_text.pack(fill="both", expand=True)
         
         self.log("Ready.")

@@ -406,8 +406,7 @@ class FileImporterApp:
                 self.status_var.set("Success!")
                 messagebox.showinfo("Success", 
                     f"Extraction complete!\nSaved {len(chunks)} files to:\n{save_dir}\n\n"
-                    "👉 PLEASE MOVE the desired files from this folder into the "
-                    "HighPriority, LowPriority, or GoalContent folders for analysis.")
+                    "👉 Manage your content in Content Importer")
                 self.root.destroy() 
 
         except Exception as e:

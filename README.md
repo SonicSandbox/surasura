@@ -39,6 +39,8 @@ Useful if you:
 
 Use Surasura to know every word you learn is immediately relevant to your content goals.
 
+### 🏆 Features
+
 - 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Anki Decks or Jiten.moe.
 
 - 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
@@ -47,19 +49,17 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
 
+- 🧘 **Zen Mode**: A distraction-free mode for focused learning.
+
 - 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
 
 - 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
 
-- 📈 **Progress Tracking**: Track your progress % before AND after watching/reading. Czlear visibility on "known" vs "to learn".
-
-- 🧘 **Zen Mode**: A distraction-free mode for focused learning.
+- 🇨🇳 **Multi-Language Support**: Now also supports Chinese (Simplified & Traditional) via Jieba segmentation.
 
 - 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
 
-- 🇨🇳 **Chinese Support**: Now supports Chinese (Simplified & Traditional) via Jieba segmentation.
-
-- **Custom Freq List**: Generate your own frequency list from your immersion content to use with Migaku / Yomitan, etc.
+- 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content to use with Migaku / Yomitan, etc.
 
 
 ### Current Limitations

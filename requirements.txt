@@ -8,3 +8,4 @@ requests
 tkinterdnd2; platform_system=='Windows'
 jieba
 pytest
+python-dotenv

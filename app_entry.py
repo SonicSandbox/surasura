@@ -101,6 +101,14 @@ def main():
 
         # Default: Run Main Dashboard
         log_error("Launching Dashboard")
+        
+        # Telemetry Initialization
+        try:
+            from app import telemetry
+            telemetry.init()
+        except Exception as e:
+            log_error(f"Telemetry init failed: {e}")
+
         from app import main as dashboard
         dashboard.main()
         

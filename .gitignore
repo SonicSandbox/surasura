@@ -1,57 +1,28 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
-.venv/
-env/
-venv/
-ENV/
-
-# OS
+*.so
+.env
 .DS_Store
 Thumbs.db
-Desktop.ini
 
-# Project Data (Private)
-data/HighPriority/*
-data/LowPriority/*
-data/GoalContent/*
-data/Processed/*
-results/*
-!results/.gitkeep
+# Virtual Environment
+venv/
+env/
+ENV/
 
-# User Config
-User Files/KnownWord.json
-User Files/ja/KnownWord.json
-User Files/IgnoreList.txt
-
-# Keep sample files
-!User Files/KnownWordsSample.json
-!User Files/IgnoreListSample.txt
-!User Files/Netflix_Frequency_Tier_1.txt
-!User Files/Netflix_Frequency_Tier_2.txt
-!User Files/Netflix_Frequency_Tier_3.txt
-
-# Local Env
-.env
-
-# Distribution & Build
-dist/
+# Distribution / packaging
 build/
+dist/
 *.spec
-!packaging/*.spec
 
-# Logs & Temp
+# User Files
+User Files/
+data/
+results/
 app_debug_log.txt
 build_log.txt
-build_log_retry.txt
-test_hello.py
+surasura_v*.zip
 
-# Materials
-tests/Chinese_2.epub
-tests/Test Resources/zh/Chinese_1.epub
-tests/Test Resources/zh/Chinese_2.epub
-
-data/*
-
-
+# Pytest
+.pytest_cache/

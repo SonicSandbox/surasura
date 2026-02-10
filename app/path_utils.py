@@ -29,6 +29,30 @@ def get_user_data_path():
     else:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def get_persistent_user_data_path():
+    """
+    Get the directory for PERSISTENT USER DATA (e.g. telemetry ID).
+    This path should survive application updates/reinstalls.
+    Windows: %APPDATA%/SonicSandbox/Surasura/
+    Linux/Mac: ~/.local/share/SonicSandbox/Surasura/
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        if not base:
+            base = os.path.expanduser("~")
+        path = os.path.join(base, "SonicSandbox", "Surasura")
+    else:
+        # XDG Base Directory Specification fallback
+        base = os.environ.get("XDG_DATA_HOME")
+        if not base:
+             base = os.path.join(os.path.expanduser("~"), ".local", "share")
+        path = os.path.join(base, "SonicSandbox", "Surasura")
+        
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+        
+    return path
+
 def get_resource(path):
     """Resolve a resource path relative to the bundle."""
     return os.path.join(get_base_path(), path)

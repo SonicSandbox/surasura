@@ -34,7 +34,8 @@ print(f"Building {BUILD_NAME}...")
 datas = [
     (os.path.join(project_root, 'templates'), 'templates'), 
     (os.path.join(project_root, 'scripts'), 'scripts'), 
-    (os.path.join(project_root, 'app', 'assets'), 'app/assets')
+    (os.path.join(project_root, 'app', 'assets'), 'app/assets'),
+    (os.path.join(project_root, '.env'), '.')
 ]
 binaries = []
 hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4']

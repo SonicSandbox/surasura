@@ -302,7 +302,9 @@ class MasterDashboardApp:
         else:
             if hasattr(self, 'btn_jiten'):
                 # Re-insert in correct position (after migaku)
-                self.btn_jiten.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_migaku)
+                self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5), after=self.btn_migaku)
+            if hasattr(self, 'btn_anki'):
+                self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
             if hasattr(self, 'chk_reinforce_widget'):
                 self.chk_reinforce_widget.pack_forget()
         
@@ -343,8 +345,13 @@ class MasterDashboardApp:
 
         self.btn_jiten = ttk.Button(vocab_row, text="Jiten", width=12,
                    command=self.run_jiten_importer)
-        self.btn_jiten.pack(side=tk.LEFT, padx=(0, 10))
+        self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(self.btn_jiten, "Import known words from Jiten API using your API key.")
+
+        self.btn_anki = ttk.Button(vocab_row, text="Anki", width=12,
+                   command=self.run_anki_importer)
+        self.btn_anki.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self.btn_anki, "Create a known-word list from an Anki deck field.")
         
         # This button expands to fill all remaining space
         btn_ignore = ttk.Button(vocab_row, text="Edit Ignore List", style="Action.TButton",
@@ -721,6 +728,7 @@ class MasterDashboardApp:
                 'content_importer_gui.py': 'content_importer',
                 'static_html_generator.py': 'static_generator',
                 'migaku_converter.py': 'convert_db',
+                'anki_db_importer_gui.py': 'anki_importer',
                 'frequency_list_gui.py': 'frequency_list_manager'
             }
             
@@ -804,6 +812,9 @@ class MasterDashboardApp:
 
     def run_jiten_importer(self):
         self.run_command_async(['jiten_db_importer_gui.py', '--language', self.var_language.get()], "Jiten Sync")
+
+    def run_anki_importer(self):
+        self.run_command_async(['anki_db_importer_gui.py', '--language', self.var_language.get()], "Anki Known Words")
 
     def run_content_importer(self):
         self.run_command_async(['content_importer_gui.py', '--language', self.var_language.get()], "Content Importer")

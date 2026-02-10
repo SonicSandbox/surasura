@@ -3,7 +3,7 @@
     "min_freq": 2,
     "zen_limit": 50,
     "open_app_mode": true,
-    "theme": "Dark Flow",
+    "theme": "Zen Focus",
     "strategy": "freq",
     "target_coverage": 96,
     "split_length": 3000,

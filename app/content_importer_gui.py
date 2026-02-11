@@ -208,7 +208,7 @@ class ContentImporterApp:
 
         graduate_btn = ttk.Button(btn_frame, text="🏆 Graduate", command=self.graduate_content)
         graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
-        self.create_tooltip(graduate_btn, "Graduate Content (Move up priority flow and learn words)")
+        self.create_tooltip(graduate_btn, "Graduate Content:\n- NOW: Graduate consumed content\n- Soon: Move to NOW\n- 6+ Months: Move to Soon")
 
         # Hint label (Order matters...)
         hint_frame = ttk.Frame(step2_frame)
@@ -238,15 +238,9 @@ class ContentImporterApp:
                                  show="tree", 
                                  selectmode="extended")
         
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(self.list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.config(yscrollcommand=scrollbar.set)
-        
         # Move Buttons
         move_btn_frame = ttk.Frame(self.list_frame)
-        move_btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 0))
+        move_btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 10))
         
         # Spacers to center buttons vertically with some spread
         ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
@@ -260,6 +254,12 @@ class ContentImporterApp:
         self.create_tooltip(self.down_btn, "Move selected items down")
         
         ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.config(yscrollcommand=scrollbar.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # DnD Events
         self.tree.bind("<Button-1>", self.on_drag_start)

@@ -938,6 +938,65 @@
             text-decoration: underline;
         }
 
+        /* Zen Mode Layout Override */
+        body.theme-zen-focus .progressive-container {
+            display: block !important;
+            /* Override grid */
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        body.theme-zen-focus .file-sidebar {
+            display: none !important;
+        }
+
+        /* Zen Mode: Hide Toggles & Ensure Visibility */
+        body.theme-zen-focus #btn-toggle-sentences,
+        body.theme-zen-focus .toggle-contexts-btn {
+            display: none !important;
+        }
+
+        body.theme-zen-focus .zen-file-title {
+            color: var(--primary);
+            opacity: 0.9;
+            text-align: left;
+            margin-top: 80px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 12px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.8rem;
+            letter-spacing: 1px;
+        }
+
+        body.theme-zen-focus .card {
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid #111;
+            padding: 30px 0;
+            margin-bottom: 0;
+        }
+
+        body.theme-zen-focus .word-main {
+            font-size: 2.2rem;
+            font-weight: bold;
+        }
+
+        body.theme-zen-focus .context-item-zen {
+            font-size: 1.2rem;
+            line-height: 1.8;
+            color: #ccc;
+            margin-bottom: 25px;
+        }
+
+        body.theme-zen-focus .context-item-zen em {
+            color: #fff;
+            font-style: normal;
+            font-weight: bold;
+            border-bottom: 2px solid #ff4b2b;
+            /* subtle highlight like the screenshot */
+        }
+
         /* --- Navigation Hint --- */
         #nav-hint {
             position: fixed;
@@ -1148,6 +1207,10 @@
             }
 
             // Un-hide Button
+            // ... (existing code for unhide button) ...
+
+            // Inject Toggle Sentences Button if not present
+
             let btnClear = document.getElementById('btn-clear-ignore');
             if (!btnClear) {
                 btnClear = document.createElement('button');
@@ -1172,55 +1235,128 @@
                 container.appendChild(btnCopy);
             }
 
+            // Inject Toggle Sentences Button (ALWAYS VISIBLE, Rightmost)
+            if (!document.getElementById('btn-toggle-sentences')) {
+                const toggleBtn = document.createElement('button');
+                toggleBtn.id = 'btn-toggle-sentences';
+                toggleBtn.innerHTML = "▼";
+                toggleBtn.title = "Expand All Sentences";
+                styleIgnoreButton(toggleBtn);
+                toggleBtn.style.marginLeft = "10px"; // Spacing from copy button
+                toggleBtn.style.minWidth = "30px";
+                toggleBtn.onclick = toggleAllSentences;
+
+                // Append to end
+                container.appendChild(toggleBtn);
+            } else {
+                // Ensure it is at the end if already exists (e.g. re-renders)
+                container.appendChild(document.getElementById('btn-toggle-sentences'));
+            }
+
             const hasIgnored = ignoredWords.size > 0;
-            container.style.display = hasIgnored ? 'flex' : 'none';
+            // Container always visible now because it holds the Toggle Button
+            container.style.display = 'flex';
+
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
+            const showIgnoreApps = hasIgnored && !isZen;
+
+            // Toggle visibility of ignore-specific buttons
+            if (btnClear) btnClear.style.display = showIgnoreApps ? 'inline-block' : 'none';
+            if (btnCopy) btnCopy.style.display = showIgnoreApps ? 'inline-block' : 'none';
+
+            // Fix variable name usage from previous block context if needed, or re-select
+            const bCopy = document.getElementById('btn-copy-ignore');
+            if (bCopy) bCopy.style.display = showIgnoreApps ? 'inline-block' : 'none';
 
             if (hasIgnored) {
                 btnClear.textContent = `Un-hide All (${ignoredWords.size})`;
+            }
+
+            // --- Enforce Zen Mode Layout for Dark Flow / Zen Focus ---
+            if (isZen) {
+                // 1. Center Title
+                const h1 = document.querySelector('header h1');
+                if (h1) {
+                    h1.style.textAlign = 'center';
+                    h1.style.flex = '1';
+                    h1.style.margin = '0';
+                    // If logo exists (injected by python), center the container
+                    if (h1.parentElement.tagName === 'DIV' && h1.parentElement.style.display === 'flex') {
+                        h1.parentElement.style.justifyContent = 'center';
+                        h1.parentElement.style.width = '100%';
+                    }
+                }
+
+                // 2. Hide Extra Buttons (Theme, Settings, Github)
+                // Assuming they are usually children of header or a container.
+                // We want to KEEP: Title, logo, and btn-toggle-sentences.
+                // We want to HIDE: everything else.
+
+                const header = document.querySelector('header');
+                if (header) {
+                    Array.from(header.children).forEach(child => {
+                        // Keep Title Container (div with logo+h1) or H1 itself
+                        const isTitle = child.tagName === 'H1' || (child.tagName === 'DIV' && child.querySelector('h1'));
+                        // Keep Toggle Button Container (ignore-controls)
+                        const isIgnoreControls = child.id === 'ignore-controls';
+
+                        if (!isTitle && !isIgnoreControls) {
+                            child.style.display = 'none';
+                        }
+                    });
+                }
             }
         }
 
         // --- Initialization ---
         window.addEventListener('load', async () => {
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+            try {
+                const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
 
-            if (typeof globalTheme !== 'undefined' && globalTheme) {
-                document.body.classList.add('theme-' + globalTheme);
-            } else {
-                document.body.classList.add('theme-default');
-            }
-
-            updateClearButtonVisibility();
-
-            // Injected tabs if NOT zen
-            if (!isZen) {
-                const header = document.querySelector('header');
-                const tabsDiv = document.createElement('div');
-                tabsDiv.className = 'main-tabs';
-                tabsDiv.innerHTML = `
-                    <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
-                    <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
-                `;
-                header.appendChild(tabsDiv);
-            }
-
-            // --- Filter Global Data with Local Ignore List ---
-            if (globalData && ignoredWords.size > 0) {
-                // Filter Progressive
-                if (globalData.progressive) {
-                    globalData.progressive.forEach(file => {
-                        if (file.words) {
-                            file.words = file.words.filter(w => !ignoredWords.has(w.Word));
-                        }
-                    });
+                if (typeof globalTheme !== 'undefined' && globalTheme) {
+                    // Sanitize theme name for class usage (remove spaces/parens)
+                    const themeClass = 'theme-' + globalTheme.replace(/[^a-zA-Z0-9-_]/g, '-');
+                    document.body.classList.add(themeClass);
+                } else {
+                    document.body.classList.add('theme-default');
                 }
-                // Filter Priority
-                if (globalData.priority) {
-                    globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));
-                }
-            }
 
-            await fetchData();
+                // Injected tabs if NOT zen
+                if (!isZen) {
+                    const header = document.querySelector('header');
+                    const tabsDiv = document.createElement('div');
+                    tabsDiv.className = 'main-tabs';
+                    tabsDiv.innerHTML = `
+                        <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
+                        <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
+                    `;
+                    header.appendChild(tabsDiv);
+                }
+
+                updateClearButtonVisibility();
+
+                // --- Filter Global Data with Local Ignore List ---
+                if (globalData && ignoredWords.size > 0) {
+                    // Filter Progressive
+                    if (globalData.progressive) {
+                        globalData.progressive.forEach(file => {
+                            if (file.words) {
+                                file.words = file.words.filter(w => !ignoredWords.has(w.Word));
+                            }
+                        });
+                    }
+                    // Filter Priority
+                    if (globalData.priority) {
+                        globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));
+                    }
+                }
+
+                await fetchData();
+            } catch (e) {
+                console.error("Initialization Error:", e);
+                const loader = document.getElementById('loading-screen');
+                if (loader) loader.innerHTML = `<p style='color:red; background:white; padding:20px;'>Initialization Error: ${e.message}</p>`;
+            }
         });
 
         async function fetchData() {
@@ -1231,7 +1367,7 @@
                 document.getElementById('loading-screen').style.display = 'none';
 
                 // Render Views
-                const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+                const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
                 await renderProgressiveView();
                 if (!isZen) {
                     await renderPriorityView();
@@ -1248,21 +1384,52 @@
             }
         }
 
-        // --- Tabs Logic ---
-        function switchMainTab(tabName) {
+        // --- Tabs Logic (With DOM Detachment) ---
+        async function switchMainTab(tabName) {
+            if (document.querySelector(`.main-tab-btn[onclick="switchMainTab('${tabName}')"]`).classList.contains('active')) return;
+
+            // 1. Update UI Tabs
             document.querySelectorAll('.main-tab-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelector(`.main-tab-btn[onclick="switchMainTab('${tabName}')"]`).classList.add('active');
 
-            document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+            // 2. Hide all views & Detach DOM (Save memory)
+            document.querySelectorAll('.view').forEach(view => {
+                view.classList.remove('active');
+                // Optional: Clear innerHTML to free memory?
+                // For now, let's just clear the *other* view's container if it's heavy?
+                // Actually, let's try a simple re-render approach.
+                // When leaving a tab, we empty it?
+            });
 
-            document.getElementById(`view-${tabName}`).classList.add('active');
+            // 3. Show active view
+            const activeView = document.getElementById(`view-${tabName}`);
+            activeView.classList.add('active');
+
+            // 4. Lazy Re-render (if empty)
+            if (tabName === 'progressive') {
+                // If container is empty, re-render
+                const container = document.getElementById('progressive-list');
+                if (!container.hasChildNodes()) {
+                    await renderProgressiveView();
+                }
+                // Detach Priority
+                document.getElementById('priority-list').innerHTML = "";
+            } else if (tabName === 'priority') {
+                const container = document.getElementById('priority-list');
+                if (!container.hasChildNodes()) {
+                    await renderPriorityView();
+                }
+                // Detach Progressive
+                document.getElementById('file-tabs').innerHTML = "";
+                document.getElementById('progressive-list').innerHTML = "";
+            }
         }
 
         // --- Progressive View Rendering ---
         async function renderProgressiveView() {
             const tabsContainer = document.getElementById('file-tabs');
             const listContainer = document.getElementById('progressive-list');
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
 
             tabsContainer.innerHTML = "";
             listContainer.innerHTML = "";
@@ -1273,30 +1440,14 @@
             }
 
             if (isZen) {
-                // Continuous Scroll for Zen
-                tabsContainer.style.display = 'none';
-                document.querySelector('.progressive-container').style.display = 'block'; // No grid
+                // Continuous Scroll for Zen (Infinite Scroll applied to Files!)
+                // CSS handles hiding sidebar and reshaping container
 
-                // Render active files
-                for (const fileData of globalData.progressive) {
-                    const fileSection = document.createElement('div');
-                    fileSection.className = 'zen-file-section';
-                    fileSection.innerHTML = `<h2 class="zen-file-title" style="margin-top:40px; border-bottom:1px solid #333; padding-bottom:5px;">${fileData.filename}</h2>`;
+                // Use infinite scroll for files themselves
 
-                    const stats = calculateFileStats(fileData.words);
-                    if (stats) {
-                        fileSection.appendChild(createComprehensionBar(stats));
-                    }
+                // Use infinite scroll for files themselves
+                setupInfiniteScroll(listContainer, globalData.progressive, createZenFileSection, 3); // Load 3 files at a time? 
 
-                    if (fileData.is_goal_content) {
-                        // Zen Mode Goal Content: Render simple sentences
-                        fileSection.appendChild(document.createElement('div')).innerHTML = "<div style='color:#666; font-style:italic; padding:10px;'>Goal Content: Optimized view (sentences only).</div>";
-                        await renderChunked(fileSection, fileData.words, createSimpleSentenceRow);
-                    } else {
-                        listContainer.appendChild(fileSection);
-                        await renderChunked(fileSection, fileData.words, createWordCard);
-                    }
-                }
                 // Render completed files (Zen Mode) - summary list at bottom
                 if (globalData.completed_files && globalData.completed_files.length > 0) {
                     const completedSection = document.createElement('div');
@@ -1318,97 +1469,122 @@
             } else {
                 const inlineCompleted = (typeof globalLogic !== 'undefined' && globalLogic.inline_completed_files);
 
+                // Prepare file list including completed if needed
+                let fileList = [];
+                const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
+
                 if (inlineCompleted && globalData.file_order && globalData.file_order.length > 0) {
-                    const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
                     const compFiles = new Map((globalData.completed_files || []).map(f => [f.filename, f]));
 
-                    globalData.file_order.forEach((filename, index) => {
-                        const isProg = progFiles.has(filename);
-                        const isComp = compFiles.has(filename);
-                        if (!isProg && !isComp) return;
-
-                        const tab = document.createElement('div');
-                        tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
-
-                        if (isProg) {
-                            const fileData = progFiles.get(filename);
-                            tab.innerHTML = `<span>${filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
-                            tab.onclick = async () => {
-                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                                tab.classList.add('active');
-                                await renderFileWords(fileData.words, fileData.is_goal_content);
-                            }
-                        } else {
-                            const fileData = compFiles.get(filename);
-                            tab.innerHTML = `<span>${filename}</span> <span class="target-met-inline">Target met ✓</span>`;
-                            tab.onclick = () => {
-                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                                tab.classList.add('active');
-                                renderCompletedFile(fileData);
-                            }
-                        }
-                        tabsContainer.appendChild(tab);
+                    globalData.file_order.forEach(fname => {
+                        if (progFiles.has(fname)) fileList.push({ type: 'prog', data: progFiles.get(fname) });
+                        else if (compFiles.has(fname)) fileList.push({ type: 'comp', data: compFiles.get(fname) });
                     });
-
-                    // Initial Content Load
-                    if (globalData.file_order.length > 0) {
-                        const first = globalData.file_order[0];
-                        if (progFiles.has(first)) {
-                            const fd = progFiles.get(first);
-                            await renderFileWords(fd.words, fd.is_goal_content);
-                        }
-                        else if (compFiles.has(first)) renderCompletedFile(compFiles.get(first));
-                    }
                 } else {
-                    // Standard Tabs
-                    // 1. Active Files
-                    globalData.progressive.forEach((fileData, index) => {
-                        const tab = document.createElement('div');
-                        tab.className = `file-tab ${index === 0 ? 'active' : ''}`;
-                        const newWordsCount = fileData.words.length;
-                        tab.innerHTML = `<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${newWordsCount})</span>`;
-                        tab.onclick = async () => {
-                            document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                            tab.classList.add('active');
-                            await renderFileWords(fileData.words, fileData.is_goal_content);
-                        }
-                        tabsContainer.appendChild(tab);
+                    // Standard Order
+                    globalData.progressive.forEach(f => fileList.push({ type: 'prog', data: f }));
+                }
+
+                if (fileList.length > 500) {
+                    setupInfiniteScroll(tabsContainer, fileList, createSidebarTab, 50);
+                } else {
+                    fileList.forEach((item, index) => {
+                        tabsContainer.appendChild(createSidebarTab(item));
                     });
 
-                    // 2. Completed Files
-                    if (globalData.completed_files && globalData.completed_files.length > 0) {
-                        // Divider
+                    // Render Completed divider manually if not inline?
+                    if (!inlineCompleted && globalData.completed_files && globalData.completed_files.length > 0) {
                         const divider = document.createElement('div');
                         divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
                         tabsContainer.appendChild(divider);
 
-                        globalData.completed_files.forEach((fileData) => {
-                            const tab = document.createElement('div');
-                            tab.className = `file-tab`;
-                            tab.style.opacity = "0.7";
-                            tab.textContent = fileData.filename;
-                            tab.onclick = () => {
-                                document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
-                                tab.classList.add('active');
-                                renderCompletedFile(fileData);
-                            }
-                            tabsContainer.appendChild(tab);
+                        globalData.completed_files.forEach(f => {
+                            tabsContainer.appendChild(createSidebarTab({ type: 'comp', data: f }));
                         });
                     }
+                }
 
-                    if (globalData.progressive.length > 0) {
-                        await renderFileWords(globalData.progressive[0].words, globalData.progressive[0].is_goal_content);
-                    } else if (globalData.completed_files && globalData.completed_files.length > 0) {
-                        // If no progressive words at all, show first completed file
-                        renderCompletedFile(globalData.completed_files[0]);
-                        // Set first tab active (logic above sets first progressive as active, need to fix if empty)
-                        setTimeout(() => {
-                            const firstTab = tabsContainer.querySelector('.file-tab');
-                            if (firstTab) firstTab.classList.add('active');
-                        }, 0);
-                    }
+                // Initial Load
+                if (fileList.length > 0) {
+                    // Activate first tab visually (if present)
+                    setTimeout(() => {
+                        const firstTab = tabsContainer.querySelector('.file-tab');
+                        if (firstTab) {
+                            firstTab.classList.add('active');
+                            firstTab.click(); // Trigger load
+                        }
+                    }, 50);
                 }
             }
+        }
+
+        function createZenFileSection(fileData) {
+            const fileSection = document.createElement('div');
+            fileSection.className = 'zen-file-section';
+
+            let titleHtml = fileData.filename;
+            if (fileData.is_goal_content) {
+                titleHtml += ` <span style="font-size:0.6em; color:#4caf50; vertical-align:middle; border:1px solid #4caf50; padding:2px 6px; border-radius:4px; margin-left:10px;">GOAL</span>`;
+            }
+
+            fileSection.innerHTML = `<h2 class="zen-file-title">${titleHtml}</h2>`;
+
+            const stats = calculateFileStats(fileData.words);
+            if (stats) {
+                fileSection.appendChild(createComprehensionBar(stats));
+            }
+
+            // Container for words
+            const wordsContainer = document.createElement('div');
+            fileSection.appendChild(wordsContainer);
+
+            // Trigger Infinite Scroll for words inside this file
+            // Delay slightly to let file rendering finish?
+            requestAnimationFrame(() => {
+                try {
+                    const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
+
+                    // Always use cards now, thanks to Infinite Scroll perf.
+                    setupInfiniteScroll(wordsContainer, fileData.words, createWordCard, chunkSize);
+                } catch (e) {
+                    console.error("Error setting up infinite scroll for file:", fileData.filename, e);
+                    wordsContainer.innerHTML = `<p style="color:red">Error loading words: ${e.message}</p>`;
+                }
+            });
+
+            return fileSection;
+        }
+
+        function createSidebarTab(item) {
+            const tab = document.createElement('div');
+            tab.className = `file-tab`;
+
+            if (item.type === 'prog') {
+                const fileData = item.data;
+
+                let goalIndicator = "";
+                if (fileData.is_goal_content) {
+                    // Make it more visible: a small text badge
+                    goalIndicator = `<span style="display:inline-block; background-color:rgba(76, 175, 80, 0.2); color:#4caf50; border:1px solid #4caf50; border-radius:3px; font-size:0.7em; padding:0 4px; margin-right:6px; font-weight:bold;" title="Goal Content">G</span>`;
+                }
+
+                tab.innerHTML = `${goalIndicator}<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
+                tab.onclick = async () => {
+                    document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    await renderFileWords(fileData.words, fileData.is_goal_content);
+                }
+            } else {
+                const fileData = item.data;
+                tab.style.opacity = "0.7";
+                tab.innerHTML = `<span>${fileData.filename}</span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.onclick = () => {
+                    document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    renderCompletedFile(fileData);
+                }
+            }
+            return tab;
         }
 
         async function renderCompletedFile(fileData) {
@@ -1446,41 +1622,100 @@
             listContainer.innerHTML = content;
         }
 
+        // --- Infinite Scroll Helper ---
+        function setupInfiniteScroll(container, items, createFn, chunkSize = 50) {
+            let index = 0;
+
+            // Create Sentinel
+            const sentinel = document.createElement('div');
+            sentinel.className = 'scroll-sentinel';
+            sentinel.style.height = "50px";
+            sentinel.style.textAlign = "center";
+            sentinel.style.color = "#666";
+            sentinel.style.padding = "20px";
+            sentinel.innerText = "Loading more...";
+            container.appendChild(sentinel);
+
+            const observer = new IntersectionObserver((entries) => {
+                if (entries[0].isIntersecting) {
+                    loadNextChunk();
+                }
+            }, { root: null, rootMargin: "200px" });
+
+            function loadNextChunk() {
+                if (index >= items.length) {
+                    sentinel.innerText = "End of list";
+                    sentinel.style.opacity = "0.5";
+                    observer.disconnect();
+                    return;
+                }
+
+                // Render Chunk
+                const end = Math.min(index + chunkSize, items.length);
+                const fragment = document.createDocumentFragment();
+
+                for (let i = index; i < end; i++) {
+                    fragment.appendChild(createFn(items[i]));
+                }
+
+                // Insert before sentinel
+                container.insertBefore(fragment, sentinel);
+                index = end;
+
+                // Stop if done
+                if (index >= items.length) {
+                    sentinel.innerText = "";
+                    sentinel.style.height = "0";
+                    sentinel.style.padding = "0";
+                    observer.disconnect();
+                }
+            }
+
+            observer.observe(sentinel);
+
+            // Initial load
+            loadNextChunk();
+        }
+
         async function renderFileWords(words, isGoalContent = false) {
             const listContainer = document.getElementById('progressive-list');
-            listContainer.innerHTML = "";
+            // Do NOT clear listContainer here if we want to keep previous files in Zen mode?
+            // Actually, for Progressive View (non-Zen), we clear it.
+            // For Zen, we append.
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
+
+            if (!isZen) {
+                listContainer.innerHTML = "";
+            }
 
             if (!words || words.length === 0) {
-                listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
+                if (!isZen) listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
                 return;
             }
 
             // Create Comprehension Bar
             const stats = calculateFileStats(words);
-            const statsBar = createComprehensionBar(stats);
-            listContainer.appendChild(statsBar);
-
-            if (isGoalContent) {
-                // Optimization: Render only sentences (contexts) for Goal Content
-                const note = document.createElement('div');
-                note.style.padding = "10px 20px";
-                note.style.color = "#888";
-                note.style.fontStyle = "italic";
-                note.innerHTML = "Goal Content: displaying context sentences only for performance.";
-                listContainer.appendChild(note);
-
-                // Dedup contexts to avoid repetition? 
-                // Actually, duplicate contexts might be needed if they target different words.
-                // But let's just render them.
-                await renderChunked(listContainer, words, createSimpleSentenceRow);
-            } else {
-                // Chunked render
-                await renderChunked(listContainer, words, createWordCard);
+            // In Zen mode, the bar is inside the file section, handled by caller
+            if (!isZen) {
+                const statsBar = createComprehensionBar(stats);
+                listContainer.appendChild(statsBar);
             }
+
+            const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
+
+            // Usage of isGoalContent now only for visual indication (e.g. sidebar badge), 
+            // no longer restricting the view to sentences-only since Infinite Scroll handles the perf.
+
+            // Just use standard rendering for everything
+            setupInfiniteScroll(listContainer, words, createWordCard, chunkSize);
         }
 
         function createSimpleSentenceRow(data) {
             const el = document.createElement('div');
+            el.style.contain = "content"; // CSS Optimization
+            el.style.contentVisibility = "auto";
+            el.style.containIntrinsicSize = "1px 60px";
+
             el.style.padding = "8px 15px";
             el.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
             el.style.color = "#ccc";
@@ -1514,7 +1749,7 @@
         }
 
         function createComprehensionBar(stats) {
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
             const el = document.createElement('div');
             el.className = 'comprehension-stats';
 
@@ -1539,34 +1774,56 @@
                 return;
             }
 
-            // Only show top 100 for performance initially? Or all?
-            // Let's modify to lazy load or just show top 500.
-            const limit = 500;
-            const dataToShow = globalData.priority.slice(0, limit);
+            // Infinite Scroll handles slicing, so no need to pre-slice
+            const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
+            // Cap at 25 for heavy cards unless user specified?
+            // Let's just use the setting directly.
+            setupInfiniteScroll(container, globalData.priority, createWordCard, chunkSize);
+        }
 
-            if (globalData.priority.length > limit) {
-                const note = document.createElement('div');
-                note.style.padding = "10px";
-                note.style.color = "#888";
+        // --- Global Sentence Toggle ---
+        let globalShowAllSentences = false;
 
-                note.textContent = `Showing top ${limit} of ${globalData.priority.length} words.`;
-                container.appendChild(note);
+        function toggleAllSentences() {
+            globalShowAllSentences = !globalShowAllSentences;
+            const btn = document.getElementById('btn-toggle-sentences');
+            if (btn) {
+                btn.innerHTML = globalShowAllSentences ? "▲" : "▼";
+                btn.title = globalShowAllSentences ? "Collapse All Sentences" : "Expand All Sentences";
+                btn.classList.toggle('active', globalShowAllSentences);
             }
 
-            await renderChunked(container, dataToShow, createWordCard);
+            // Update existing cards
+            // Update existing cards
+            document.querySelectorAll('.card').forEach(card => {
+                const toggleBtn = card.querySelector('.toggle-contexts-btn');
+                if (toggleBtn) {
+                    const extraDiv = card.querySelector('.extra-contexts');
+                    const isVisible = extraDiv.classList.contains('visible');
+
+                    // If Global ON and NOT visible -> Click to expand
+                    if (globalShowAllSentences && !isVisible) {
+                        toggleBtn.click();
+                    }
+                    // If Global OFF and IS visible -> Click to collapse
+                    else if (!globalShowAllSentences && isVisible) {
+                        toggleBtn.click();
+                    }
+                }
+            });
         }
 
         // --- Card Component ---
         // --- Word Card Component (Optimized) ---
         function createWordCard(data) {
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme === 'zen-focus';
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
             const el = document.createElement('div');
             el.className = 'card';
 
             const word = data.Word;
             const safeWord = escapeHtml(word);
 
-            const escapedWordForRegex = safeWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedWordForRegex = safeWord.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
             const regex = new RegExp(escapedWordForRegex, 'gi');
 
             function formatContext(ctx) {
@@ -1585,9 +1842,8 @@
                 const dC3 = formatContext(c3);
 
                 const freq = data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : null);
-                const displayFreq = (freq !== null) ? `<span class="freq-zen" style="margin-left:auto; opacity:0.4; font-size:1.1rem; font-family:monospace;">F:${freq}</span>` : '';
+                const displayFreq = (freq !== null) ? `<span class="freq-zen" style="margin-left:auto; opacity:0.6; font-size:1.0rem; font-family:monospace;">F:${freq}</span>` : '';
 
-                // Priority Logic
                 // Priority Logic from Settings
                 const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
 
@@ -1603,11 +1859,11 @@
                 }
 
                 el.innerHTML = `
-                    <div class="card-header" style="margin-bottom:8px; display:flex; align-items:baseline;">
+                    <div class="card-header" style="margin-bottom:15px; display:flex; align-items:baseline;">
                         <span class="word-main">${safeWord}</span>
-                        <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
+                        <span class="reading" style="margin-left: 15px; font-size: 1.3rem; opacity: 0.7;">${data.Reading || ''}</span>
                         ${displayFreq}
-                        ${markersHtml}
+                        <div style="margin-left:12px; display:flex; align-items:center;">${markersHtml}</div>
                     </div>
                     <div class="context-box">
                         <div class="context-item-zen">${displayC1}</div>
@@ -1682,24 +1938,47 @@
             const c2 = data["Context 2"] || "";
             const c3 = data["Context 3"] || "";
             if (c2 || c3) {
-                const btn = document.createElement('button');
-                btn.className = "toggle-contexts-btn";
-                btn.innerHTML = `<span class="arrow">▼</span>`;
                 const extraDiv = document.createElement('div');
                 extraDiv.className = "extra-contexts";
-                let loaded = false;
-                btn.onclick = () => {
-                    if (!loaded) {
-                        const dC2 = formatContext(c2);
-                        const dC3 = formatContext(c3);
-                        extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
-                        loaded = true;
+
+                // --- ZEN MODE LOGIC ---
+                if (isZen) {
+                    // Always show, no toggle, no lazy load
+                    const dC2 = formatContext(c2);
+                    const dC3 = formatContext(c3);
+                    extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
+                    extraDiv.classList.add('visible');
+                    el.appendChild(extraDiv);
+                } else {
+                    // --- STANDARD MODE LOGIC (Toggle + Lazy Load) ---
+                    const btn = document.createElement('button');
+                    btn.className = "toggle-contexts-btn";
+                    btn.innerHTML = `<span class="arrow">▼</span>`;
+
+                    let loaded = false;
+
+                    // Toggle Logic
+                    const toggleLogic = () => {
+                        if (!loaded) {
+                            const dC2 = formatContext(c2);
+                            const dC3 = formatContext(c3);
+                            extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
+                            loaded = true;
+                        }
+                        extraDiv.classList.toggle('visible');
+                        btn.classList.toggle('active');
+                    };
+
+                    btn.onclick = toggleLogic;
+
+                    el.appendChild(btn);
+                    el.appendChild(extraDiv);
+
+                    // Respect global state on init
+                    if (globalShowAllSentences) {
+                        toggleLogic(); // Immediately expand
                     }
-                    extraDiv.classList.toggle('visible');
-                    btn.classList.toggle('active');
-                };
-                el.appendChild(btn);
-                el.appendChild(extraDiv);
+                }
             }
 
             // Footer
@@ -1819,7 +2098,7 @@
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-            const isZen = document.body.classList.contains('theme-zen-focus');
+            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
 
             // Prevent default scrolling/caret movement for all navigation keys
             // Exception: Allow Up/Down in Zen mode if it's NOT a custom interaction

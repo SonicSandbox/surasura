@@ -504,6 +504,11 @@ class MasterDashboardApp:
         # UPDATED LINK to the new repo
         self.github_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/SonicSandbox/surasura"))
 
+        ttk.Label(credit_box, text=" | ", style="Footer.TLabel").pack(side=tk.LEFT)
+        self.tutorial_link = ttk.Label(credit_box, text="Tutorial", style="Link.TLabel", cursor="hand2")
+        self.tutorial_link.pack(side=tk.LEFT)
+        self.tutorial_link.bind("<Button-1>", lambda e: self.open_tutorial())
+
         # Language Flag
         self.lbl_flag = ttk.Label(credit_box, text="🇯🇵", font=("Segoe UI Emoji", 10))
         self.lbl_flag.pack(side=tk.LEFT, padx=(10, 0))
@@ -687,8 +692,6 @@ class MasterDashboardApp:
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
                 "target_coverage": self.var_target_coverage.get(),
-                "strategy": self.var_strategy.get(),
-                "target_coverage": self.var_target_coverage.get(),
                 "split_length": self.var_split_length.get(),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
@@ -747,6 +750,12 @@ class MasterDashboardApp:
                 subprocess.Popen(["xdg-open", ignore_path])
         except Exception as e:
             messagebox.showerror("Error", f"Could not open ignore list: {e}")
+
+    def open_tutorial(self):
+        try:
+            webbrowser.open("https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open tutorial: {e}")
             
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False):
         """Runs a command with optional output redirection to the terminal"""

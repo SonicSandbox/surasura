@@ -97,11 +97,21 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
                 # Determine if Goal Content
                 is_goal_content = False
                 try:
-                    # We need to resolve the full path to check if it's in GoalContent
-                    # This is heuristic since we only have basename. 
-                    # We check if the file exists in the GoalContent directory.
-                    from app.path_utils import get_data_path
-                    goal_dir = os.path.join(get_data_path(), "GoalContent")
+                    # Load Target Language from settings to find correct path
+                    target_lang = "ja" # Default
+                    try:
+                        settings_path = get_user_file("settings.json")
+                        if os.path.exists(settings_path):
+                            with open(settings_path, 'r', encoding='utf-8') as f:
+                                settings = json.load(f)
+                                target_lang = settings.get("target_language", "ja")
+                    except: pass
+
+                    from app.path_utils import get_user_files_path
+                    # GoalContent is in User Files/<lang>/GoalContent
+                    goal_dir = os.path.join(get_user_files_path(target_lang), "GoalContent")
+                    
+                    # Check if file exists in GoalContent
                     if os.path.exists(os.path.join(goal_dir, filename)):
                         is_goal_content = True
                 except: pass
@@ -153,6 +163,7 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     # Load Logic Settings for injection
     logic_settings = {}
     target_lang = "ja" # Default
+    applied_theme = theme
     try:
         settings_path = get_user_file("settings.json")
         if os.path.exists(settings_path):
@@ -160,6 +171,9 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
                 settings = json.load(f)
                 logic_settings = settings.get("logic", {})
                 target_lang = settings.get("target_language", "ja")
+                # If theme is 'default', try to load from settings
+                if applied_theme == "default":
+                    applied_theme = settings.get("theme", "default")
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")
 
@@ -167,7 +181,7 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     logic_json_str = json.dumps(logic_settings)
     html_content = html_content.replace(
         "let globalData = null;", 
-        f"let globalData = {json_str};\n        let globalTheme = '{theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';"
+        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';"
     )
 
     # Embed Icon as Favicon and Header Logo

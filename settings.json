@@ -3,7 +3,7 @@
     "min_freq": 2,
     "zen_limit": 50,
     "open_app_mode": true,
-    "theme": "Zen Focus",
+    "theme": "Default (Dark)",
     "strategy": "freq",
     "target_coverage": 96,
     "split_length": 3000,
@@ -52,6 +52,7 @@
         "importer": {
             "_comment": "split_overflow: max chars to search past target length for a clean boundary.",
             "split_overflow": 150
-        }
+        },
+        "chunk_size": 50
     }
 }

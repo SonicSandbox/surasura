@@ -143,9 +143,15 @@ class ContentImporterApp:
 
         # Custom Labels map with full tab
         self.folder_map = {
-            "HighPriority": ("High Priority", "(What will you see in the next 2 weeks?)"),
-            "LowPriority": ("Low Priority", "(In the next 6 months?)"),
-            "GoalContent": ("Goal Content", "(6 months+)")
+            "HighPriority": ("NOW content", "(High priority - you will see in the next 2 weeks)"),
+            "LowPriority": ("Soon", "(within the next 6 months)"),
+            "GoalContent": ("6+ months", "(Aspirations or \"someday\" books)")
+        }
+
+        self.order_hints = {
+            "HighPriority": "Order Matters a lot!",
+            "LowPriority": "Order Matters a little, but not much",
+            "GoalContent": "Order Doesn't matter"
         }
 
         # Radio Buttons
@@ -204,6 +210,14 @@ class ContentImporterApp:
         graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
         self.create_tooltip(graduate_btn, "Graduate Content (Move up priority flow and learn words)")
 
+        # Hint label (Order matters...)
+        hint_frame = ttk.Frame(step2_frame)
+        hint_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+
+        self.order_hint_label = ttk.Label(hint_frame, text=self.order_hints.get(self.target_folder_var.get(), ""), 
+                                          foreground=ACCENT_COLOR, font=("Segoe UI", 9, "bold italic"))
+        self.order_hint_label.pack(side=tk.LEFT)
+
         # Treeview with Scrollbar
         self.list_frame = ttk.Frame(step2_frame)
         self.list_frame.pack(fill=tk.BOTH, expand=True)
@@ -235,7 +249,7 @@ class ContentImporterApp:
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self.on_drag_stop)
         
-        # Hint label
+        # Move Hint
         hint_label = ttk.Label(step2_frame, text="Drag and move your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
         hint_label.pack(side=tk.LEFT, pady=(5,0))
 
@@ -251,7 +265,12 @@ class ContentImporterApp:
 
     def on_folder_change(self, *args):
         self.refresh_file_list()
-        self.status_var.set(f"Switched to {self.target_folder_var.get()}")
+        folder_key = self.target_folder_var.get()
+        self.status_var.set(f"Switched to {folder_key}")
+        
+        # Update order hint
+        if hasattr(self, 'order_hint_label'):
+            self.order_hint_label.config(text=self.order_hints.get(folder_key, ""))
 
     def get_order_file(self, target_dir):
         return os.path.join(target_dir, "_order.json")

@@ -91,11 +91,11 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 3. Place your text files in the corresponding folders:
 
-- data/HighPriority: Content you are consuming today.
+- data/HighPriority: **NOW content** (What you are consuming today).
 
-- data/LowPriority: Content for next week or next month.
+- data/LowPriority: **Soon** (Within the next 6 months).
 
-- data/GoalContent: Aspirations or "someday" books.
+- data/GoalContent: **6+ months** (Aspirations or "someday" books).
 
 4. Click **Run Analysis** to generate your reports.
 

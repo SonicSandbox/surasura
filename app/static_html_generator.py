@@ -80,11 +80,11 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
             # Group by Source File
             files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
-            # Zen Focus: Limit to first X words across all files
-            if theme == "zen-focus":
-                print(f"Zen Focus detected: Limiting to first {zen_limit} words across files.")
-                df = df.head(zen_limit)
-                files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
+            # Zen Focus: (Disabled for v1.4)
+            # if theme == "zen-focus":
+            #     print(f"Zen Focus detected: Limiting to first {zen_limit} words across files.")
+            #     df = df.head(zen_limit)
+            #     files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
                 
             grouped = df.groupby("Source File")
             for filename in files_order:

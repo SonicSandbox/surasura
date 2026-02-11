@@ -69,8 +69,6 @@ OUTPUT_PROGRESSIVE = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 
 # --- Classes & Functions ---
 
-# --- Classes & Functions ---
-
 class Tokenizer(abc.ABC):
     @abc.abstractmethod
     def tokenize(self, text):
@@ -560,8 +558,6 @@ def main():
 
     print(f"\nLoading resources...")
     
-    print(f"\nLoading resources...")
-    
     # Resolve Paths based on Language
     data_dir = get_data_path(language)
     user_files_dir = get_user_files_path(language)
@@ -596,7 +592,7 @@ def main():
     
     if not available_freq_lists:
         print("Warning: No frequency lists found in User Files/")
-        print("Expected format: jiten_freq_*.zip")
+        print("Expected format: frequency_list_{lang}_*.csv")
     
     freq_data = {}
     for list_name, filepath in sorted(available_freq_lists.items()):
@@ -753,7 +749,6 @@ def main():
                 entry["score"] += weight
                 entry["total_count"] += 1
                 entry["sources"].add(os.path.basename(file_path))
-                entry["surface"] = surface
                 entry["surface"] = surface
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1

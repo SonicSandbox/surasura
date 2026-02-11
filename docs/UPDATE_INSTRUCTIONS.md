@@ -17,8 +17,8 @@ Before updating, **always backup your `User Files` folder**. This folder contain
     *   Open the new Surasura folder.
     *   Navigate into `User Files`. You will see language folders like `ja` (Japanese) and `zh` (Chinese).
     *   **Open the language folder matching your previous usage** (likely `ja`).
-    *   **Delete** the default `KnownWord.json` and `IgnoreList.txt` inside that language folder.
-    *   **Copy** your backed-up `KnownWord.json` and `IgnoreList.txt` (from Step 1) into this language folder.
+    *   **Delete** the default `KnownWord.json`, `GraduatedList.txt` and `IgnoreList.txt` inside that language folder.
+    *   **Copy** your backed-up `KnownWord.json`, `GraduatedList.txt` and `IgnoreList.txt` (from Step 1) into this language folder.
     *   **Note**: If you had other files like frequency lists in your old `User Files`, check if they are already bundled in the new version. If not, copy them to the main `User Files` folder.
 
 4.  **Launch**:

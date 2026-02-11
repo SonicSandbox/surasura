@@ -2,8 +2,11 @@
 
 ## What are we doing?
 -> Importing your existing knowledge
+
 -> Adding your personal immersion library
+
 -> Creating your personal frequency list
+
 -> Learning your highest frequency words, episode by episode *(chapter by chapter)*
 
 > Surasura shows you the exact words worth your time. In the perfect order.

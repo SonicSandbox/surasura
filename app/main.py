@@ -454,7 +454,7 @@ class MasterDashboardApp:
         theme_app_frame = ttk.Frame(view_frame)
         theme_app_frame.pack(fill=tk.X, pady=(0, 8))
 
-        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light', 'Zen Focus']
+        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light']
         self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
         self.combo_theme.set('Dark Flow')
         self.combo_theme.pack(side=tk.LEFT)
@@ -466,7 +466,7 @@ class MasterDashboardApp:
         
         # Zen Limit Slider (Inline with Results)
         zen_frame = ttk.Frame(view_frame)
-        zen_frame.pack(fill=tk.X, pady=(0, 8))
+        # zen_frame.pack(fill=tk.X, pady=(0, 8)) # Hidden for now as per user request
         
         ttk.Label(zen_frame, text="Zen Word Limit:").pack(side=tk.LEFT)
         

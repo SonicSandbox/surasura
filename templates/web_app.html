@@ -220,6 +220,17 @@
             content: attr(data-reading);
         }
 
+        /* Generic Hidden Content for Extension Avoidance */
+        .hidden-content {
+            user-select: none;
+            pointer-events: none;
+            display: inline-block;
+        }
+
+        .hidden-content::after {
+            content: attr(data-content);
+        }
+
         /* --- Priority Markers --- */
         .priority-marker {
             display: inline-flex;
@@ -1522,7 +1533,8 @@
             const fileSection = document.createElement('div');
             fileSection.className = 'zen-file-section';
 
-            let titleHtml = fileData.filename;
+            const safeFilename = escapeHtml(fileData.filename);
+            let titleHtml = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span>`;
             if (fileData.is_goal_content) {
                 titleHtml += ` <span style="font-size:0.6em; color:#4caf50; vertical-align:middle; border:1px solid #4caf50; padding:2px 6px; border-radius:4px; margin-left:10px;">GOAL</span>`;
             }
@@ -1568,7 +1580,8 @@
                     goalIndicator = `<span style="display:inline-block; background-color:rgba(76, 175, 80, 0.2); color:#4caf50; border:1px solid #4caf50; border-radius:3px; font-size:0.7em; padding:0 4px; margin-right:6px; font-weight:bold;" title="Goal Content">G</span>`;
                 }
 
-                tab.innerHTML = `${goalIndicator}<span>${fileData.filename}</span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
+                const safeFilename = escapeHtml(fileData.filename);
+                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -1576,8 +1589,9 @@
                 }
             } else {
                 const fileData = item.data;
+                const safeFilename = escapeHtml(fileData.filename);
                 tab.style.opacity = "0.7";
-                tab.innerHTML = `<span>${fileData.filename}</span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.innerHTML = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
                 tab.onclick = () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -1853,9 +1867,9 @@
 
                 let markersHtml = '';
                 if (total > 0 && (high / total) >= pm.lopsided_threshold) {
-                    markersHtml += `<span class="priority-marker marker-lopsided" title="High Priority content contains ${(pm.lopsided_threshold * 100).toFixed(0)}%+ of occurrences (Lopsided)"></span>`;
+                    markersHtml += `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>`;
                 } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
-                    markersHtml += `<span class="priority-marker marker-priority" title="High/Low Priority content contains ${(pm.priority_threshold * 100).toFixed(0)}%+ of occurrences (Priority)"></span>`;
+                    markersHtml += `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>`;
                 }
 
                 el.innerHTML = `
@@ -1920,9 +1934,9 @@
                     const total = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
                     let html = '';
                     if (total > 0 && (high / total) >= pm.lopsided_threshold) {
-                        html += `<span class="priority-marker marker-lopsided" title="High Priority content contains ${(pm.lopsided_threshold * 100).toFixed(0)}%+ of occurrences (Lopsided)"></span>`;
+                        html += `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>`;
                     } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
-                        html += `<span class="priority-marker marker-priority" title="High/Low Priority content contains ${(pm.priority_threshold * 100).toFixed(0)}%+ of occurrences (Priority)"></span>`;
+                        html += `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>`;
                     }
                     return html;
                 })()}

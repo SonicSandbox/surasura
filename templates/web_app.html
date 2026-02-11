@@ -1066,6 +1066,119 @@
 
     <script>
         let globalData = null;
+        let ignoredWords = new Set();
+
+        // Determine storage key based on language
+        // Valid for new exports. For legacy files, it might default to 'ja' or undefined.
+        // We can check if globalLanguage exists.
+        const langSuffix = (typeof globalLanguage !== 'undefined') ? globalLanguage : 'ja';
+        const storageKey = `surasura_ignored_words_${langSuffix}`;
+
+        // --- Local Storage Ignore Logic ---
+        try {
+            const stored = localStorage.getItem(storageKey);
+            if (stored) {
+                ignoredWords = new Set(JSON.parse(stored));
+                console.log(`Loaded ${ignoredWords.size} ignored words from local storage (${storageKey}).`);
+            } else if (langSuffix !== 'ja') {
+                // Fallback migration: If specific lang key empty, check legacy key 'surasura_ignored_words'
+                // But only if we think we might be migrating. 
+                // Actually, safeguard: Let's NOT migrate automatically to avoid mixing langs.
+                // User starts fresh for new languages.
+            }
+        } catch (e) {
+            console.error("Failed to load ignored words", e);
+        }
+
+        function saveIgnoredWords() {
+            localStorage.setItem(storageKey, JSON.stringify([...ignoredWords]));
+        }
+
+        function clearIgnoredWords() {
+            if (confirm(`Are you sure you want to un-hide all ignored words for ${langSuffix}?`)) {
+                ignoredWords.clear();
+                localStorage.removeItem(storageKey);
+                location.reload();
+            }
+        }
+
+        function copyIgnoredWords() {
+            const text = [...ignoredWords].join('\n');
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = document.getElementById('btn-copy-ignore');
+                if (btn) {
+                    const original = btn.textContent;
+                    btn.textContent = "Copied!";
+                    setTimeout(() => btn.textContent = original, 2000);
+                }
+            }).catch(err => {
+                console.error("Copy failed", err);
+                alert("Copy failed. See console.");
+            });
+        }
+
+        function styleIgnoreButton(btn) {
+            btn.style.background = 'rgba(255,255,255,0.1)';
+            btn.style.border = '1px solid rgba(255,255,255,0.2)';
+            btn.style.color = '#ddd';
+            btn.style.padding = '5px 10px';
+            btn.style.borderRadius = '4px';
+            btn.style.cursor = 'pointer';
+            btn.style.fontSize = '0.8rem';
+            btn.style.transition = 'background 0.2s';
+            btn.onmouseover = () => btn.style.background = 'rgba(255,255,255,0.2)';
+            btn.onmouseout = () => btn.style.background = 'rgba(255,255,255,0.1)';
+        }
+
+        function updateClearButtonVisibility() {
+            const header = document.querySelector('header');
+            if (!header) return;
+
+            // Container for ignore buttons
+            let container = document.getElementById('ignore-controls');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'ignore-controls';
+                container.style.marginLeft = 'auto'; // Push to right
+                container.style.display = 'flex';
+                container.style.gap = '10px';
+                container.style.alignItems = 'center';
+                container.style.marginRight = '20px';
+                header.appendChild(container);
+            }
+
+            // Un-hide Button
+            let btnClear = document.getElementById('btn-clear-ignore');
+            if (!btnClear) {
+                btnClear = document.createElement('button');
+                btnClear.id = 'btn-clear-ignore';
+                btnClear.onclick = clearIgnoredWords;
+                styleIgnoreButton(btnClear);
+                // If it existed before (created by old code), appendChild moves it here
+            }
+            if (container.lastChild !== btnClear && container.firstChild !== btnClear) {
+                container.appendChild(btnClear);
+            }
+
+            // Copy Button
+            let btnCopy = document.getElementById('btn-copy-ignore');
+            if (!btnCopy) {
+                btnCopy = document.createElement('button');
+                btnCopy.id = 'btn-copy-ignore';
+                btnCopy.textContent = "Copy Ignored Words";
+                btnCopy.title = "Paste these into your ignored List";
+                btnCopy.onclick = copyIgnoredWords;
+                styleIgnoreButton(btnCopy);
+                container.appendChild(btnCopy);
+            }
+
+            const hasIgnored = ignoredWords.size > 0;
+            container.style.display = hasIgnored ? 'flex' : 'none';
+
+            if (hasIgnored) {
+                btnClear.textContent = `Un-hide All (${ignoredWords.size})`;
+            }
+        }
 
         // --- Initialization ---
         window.addEventListener('load', async () => {
@@ -1077,6 +1190,8 @@
                 document.body.classList.add('theme-default');
             }
 
+            updateClearButtonVisibility();
+
             // Injected tabs if NOT zen
             if (!isZen) {
                 const header = document.querySelector('header');
@@ -1087,6 +1202,22 @@
                     <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
                 `;
                 header.appendChild(tabsDiv);
+            }
+
+            // --- Filter Global Data with Local Ignore List ---
+            if (globalData && ignoredWords.size > 0) {
+                // Filter Progressive
+                if (globalData.progressive) {
+                    globalData.progressive.forEach(file => {
+                        if (file.words) {
+                            file.words = file.words.filter(w => !ignoredWords.has(w.Word));
+                        }
+                    });
+                }
+                // Filter Priority
+                if (globalData.priority) {
+                    globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));
+                }
             }
 
             await fetchData();
@@ -1157,8 +1288,14 @@
                         fileSection.appendChild(createComprehensionBar(stats));
                     }
 
-                    listContainer.appendChild(fileSection);
-                    await renderChunked(fileSection, fileData.words, createWordCard);
+                    if (fileData.is_goal_content) {
+                        // Zen Mode Goal Content: Render simple sentences
+                        fileSection.appendChild(document.createElement('div')).innerHTML = "<div style='color:#666; font-style:italic; padding:10px;'>Goal Content: Optimized view (sentences only).</div>";
+                        await renderChunked(fileSection, fileData.words, createSimpleSentenceRow);
+                    } else {
+                        listContainer.appendChild(fileSection);
+                        await renderChunked(fileSection, fileData.words, createWordCard);
+                    }
                 }
                 // Render completed files (Zen Mode) - summary list at bottom
                 if (globalData.completed_files && globalData.completed_files.length > 0) {
@@ -1199,7 +1336,7 @@
                             tab.onclick = async () => {
                                 document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                                 tab.classList.add('active');
-                                await renderFileWords(fileData.words);
+                                await renderFileWords(fileData.words, fileData.is_goal_content);
                             }
                         } else {
                             const fileData = compFiles.get(filename);
@@ -1216,7 +1353,10 @@
                     // Initial Content Load
                     if (globalData.file_order.length > 0) {
                         const first = globalData.file_order[0];
-                        if (progFiles.has(first)) await renderFileWords(progFiles.get(first).words);
+                        if (progFiles.has(first)) {
+                            const fd = progFiles.get(first);
+                            await renderFileWords(fd.words, fd.is_goal_content);
+                        }
                         else if (compFiles.has(first)) renderCompletedFile(compFiles.get(first));
                     }
                 } else {
@@ -1230,7 +1370,7 @@
                         tab.onclick = async () => {
                             document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                             tab.classList.add('active');
-                            await renderFileWords(fileData.words);
+                            await renderFileWords(fileData.words, fileData.is_goal_content);
                         }
                         tabsContainer.appendChild(tab);
                     });
@@ -1257,7 +1397,7 @@
                     }
 
                     if (globalData.progressive.length > 0) {
-                        await renderFileWords(globalData.progressive[0].words);
+                        await renderFileWords(globalData.progressive[0].words, globalData.progressive[0].is_goal_content);
                     } else if (globalData.completed_files && globalData.completed_files.length > 0) {
                         // If no progressive words at all, show first completed file
                         renderCompletedFile(globalData.completed_files[0]);
@@ -1306,7 +1446,7 @@
             listContainer.innerHTML = content;
         }
 
-        async function renderFileWords(words) {
+        async function renderFileWords(words, isGoalContent = false) {
             const listContainer = document.getElementById('progressive-list');
             listContainer.innerHTML = "";
 
@@ -1320,8 +1460,43 @@
             const statsBar = createComprehensionBar(stats);
             listContainer.appendChild(statsBar);
 
-            // Chunked render
-            await renderChunked(listContainer, words, createWordCard);
+            if (isGoalContent) {
+                // Optimization: Render only sentences (contexts) for Goal Content
+                const note = document.createElement('div');
+                note.style.padding = "10px 20px";
+                note.style.color = "#888";
+                note.style.fontStyle = "italic";
+                note.innerHTML = "Goal Content: displaying context sentences only for performance.";
+                listContainer.appendChild(note);
+
+                // Dedup contexts to avoid repetition? 
+                // Actually, duplicate contexts might be needed if they target different words.
+                // But let's just render them.
+                await renderChunked(listContainer, words, createSimpleSentenceRow);
+            } else {
+                // Chunked render
+                await renderChunked(listContainer, words, createWordCard);
+            }
+        }
+
+        function createSimpleSentenceRow(data) {
+            const el = document.createElement('div');
+            el.style.padding = "8px 15px";
+            el.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+            el.style.color = "#ccc";
+            el.style.fontSize = "0.95rem";
+
+            const word = escapeHtml(data.Word);
+            const context = data["Context 1"] || data.Context || "";
+
+            // Highlight word
+            const safeCtx = escapeHtml(context);
+            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escapedWord, 'gi');
+            const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${word}</strong>`);
+
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>`;
+            return el;
         }
 
         function calculateFileStats(words) {
@@ -1586,55 +1761,39 @@
 
         async function ignoreWord(word, btnElement) {
             try {
-                // Copy to clipboard in static mode
+                // 1. Add to Local Storage
+                if (!ignoredWords.has(word)) {
+                    ignoredWords.add(word);
+                    saveIgnoredWords();
+                    updateClearButtonVisibility();
+                }
+
+                // 2. Visual Feedback: Copy to clipboard (legacy behavior)
                 await navigator.clipboard.writeText(word);
+
+                // 3. Update Button State
                 const originalText = btnElement.textContent;
-                btnElement.textContent = "Copied!";
+                btnElement.textContent = "Ignored & Copied";
                 btnElement.classList.add('ignored');
                 btnElement.disabled = true;
 
-                // Show floating notification or just a temp change
-                setTimeout(() => {
-                    btnElement.textContent = originalText;
-                    btnElement.disabled = false;
-                    btnElement.classList.remove('ignored');
-                }
-
-                    , 1000);
-
-                // Option: also mark the whole card?
-                // const card = btnElement.closest('.card');
-                // card.classList.add('ignored');
-
-            }
-
-            catch (err) {
-                // Fallback for older browsers or restricted contexts
-                const textArea = document.createElement("textarea");
-                textArea.value = word;
-                document.body.appendChild(textArea);
-                textArea.select();
-
-                try {
-                    document.execCommand('copy');
-                    const originalText = btnElement.textContent;
-                    btnElement.textContent = "Copied!";
-                    btnElement.disabled = true;
-
+                // 4. Remove Card (Visual)
+                const card = btnElement.closest('.card');
+                if (card) {
+                    // Fade out and remove
+                    card.style.transition = 'all 0.5s ease';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.9)';
                     setTimeout(() => {
-                        btnElement.textContent = originalText;
-                        btnElement.disabled = false;
-                    }
-
-                        , 1000);
+                        card.remove();
+                        // Optional: trigger a stats update here if desired, 
+                        // but simple removal is usually sufficient for static view.
+                    }, 500);
                 }
 
-                catch (fallbackErr) {
-                    console.error('Fallback copy failed', fallbackErr);
-                    alert('Failed to copy: ' + word);
-                }
-
-                document.body.removeChild(textArea);
+            } catch (err) {
+                console.error('Ignore failed', err);
+                alert('Failed to ignore/copy: ' + word);
             }
         }
 

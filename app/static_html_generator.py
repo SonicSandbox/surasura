@@ -94,10 +94,23 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
                 # Get total words from stats if available
                 total_words = stats_map.get(filename, {}).get("Total Words", 0)
                 
+                # Determine if Goal Content
+                is_goal_content = False
+                try:
+                    # We need to resolve the full path to check if it's in GoalContent
+                    # This is heuristic since we only have basename. 
+                    # We check if the file exists in the GoalContent directory.
+                    from app.path_utils import get_data_path
+                    goal_dir = os.path.join(get_data_path(), "GoalContent")
+                    if os.path.exists(os.path.join(goal_dir, filename)):
+                        is_goal_content = True
+                except: pass
+
                 data["progressive"].append({
                     "filename": filename,
                     "words": words,
-                    "total_words": total_words
+                    "total_words": total_words,
+                    "is_goal_content": is_goal_content
                 })
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")
@@ -139,12 +152,14 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     
     # Load Logic Settings for injection
     logic_settings = {}
+    target_lang = "ja" # Default
     try:
         settings_path = get_user_file("settings.json")
         if os.path.exists(settings_path):
             with open(settings_path, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
                 logic_settings = settings.get("logic", {})
+                target_lang = settings.get("target_language", "ja")
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")
 
@@ -152,7 +167,7 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
     logic_json_str = json.dumps(logic_settings)
     html_content = html_content.replace(
         "let globalData = null;", 
-        f"let globalData = {json_str};\n        let globalTheme = '{theme}';\n        let globalLogic = {logic_json_str};"
+        f"let globalData = {json_str};\n        let globalTheme = '{theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';"
     )
 
     # Embed Icon as Favicon and Header Logo

@@ -26,6 +26,7 @@ WEIGHT_GOAL = 2
 # Filters
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
+SANITIZE_JA = False # Strip -suffixes for Japanese
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -108,6 +109,9 @@ class JapaneseTokenizer(Tokenizer):
             is_boundary = surface in boundaries
             
             lemma = word.feature.lemma if word.feature.lemma else word.surface
+            if SANITIZE_JA:
+                lemma = _sanitize_term(lemma)
+            
             reading = word.feature.kana if word.feature.kana else ""
             
             current_sentence_surface.append(surface)
@@ -206,12 +210,33 @@ class ChineseTokenizer(Tokenizer):
             if s_text:
                 yield s_text, current_sentence_tokens
 
+def _sanitize_term(term):
+    """
+    Strip all characters starting from the hyphen - or space in the Term field.
+    Example: \"アイリス-iris\" -> \"アイリス\"
+    """
+    if not isinstance(term, str):
+        return term
+    
+    # If sanitization is DISABLED and we aren't loading an external frequency list, 
+    # we should just strip whitespace. 
+    # Actually, let's keep _sanitize_term as a raw helper and have the CALLERS decide.
+    # No, wait. The user wants the toggle to affect analysis AND loading.
+    
+    # First strip leading/trailing whitespace
+    term = term.strip()
+    
+    # Match anything before the first hyphen or space
+    # re.split returns a list, we take the first element
+    parts = re.split(r'[-\s]', term)
+    return parts[0] if parts else term
+
 def load_simple_list(file_path):
     if not os.path.exists(file_path):
         return set()
     with open(file_path, 'r', encoding='utf-8') as f:
         # Ignore comments starting with # and empty lines
-        return set(line.strip() for line in f if line.strip() and not line.strip().startswith("#"))
+        return set((_sanitize_term(line.strip()) if SANITIZE_JA else line.strip()) for line in f if line.strip() and not line.strip().startswith("#"))
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -262,7 +287,8 @@ def load_yomitan_frequency_list(csv_path):
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    word = row['Word']
+                    # Frequency lists ALWAYS sanitize to ensure matching (Fix 1)
+                    word = _sanitize_term(row['Word'])
                     rank = int(row['Rank'])
                     word_to_rank[word] = rank
                 except (ValueError, KeyError):
@@ -321,6 +347,9 @@ def load_known_words(json_path, tokenizer):
         
         if is_known:
             term = entry.get("dictForm", "")
+            if SANITIZE_JA:
+                term = _sanitize_term(term)
+            
             if term:
                 # Normalize using the same tokenizer
                 try:
@@ -528,10 +557,17 @@ def main():
     parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode (25-125)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
+    parser.add_argument("--sanitize", action="store_true", help="Sanitize Japanese terms (strip hyphen/space suffixes)")
 
     args, unknown = parser.parse_known_args()
-
-    global SKIP_SINGLE_CHARS, MIN_FREQ
+    
+    global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA
+    
+    if args.sanitize:
+        SANITIZE_JA = True
+        print("Configuration: Japanese term sanitization ENABLED.")
+    else:
+        print("Configuration: Japanese term sanitization DISABLED.")
     
     # Logic: Default SKIP_SINGLE_CHARS is True. 
     # If --include-single-chars is present, set to False.

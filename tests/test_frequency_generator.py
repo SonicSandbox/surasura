@@ -6,6 +6,7 @@ import pandas as pd
 from unittest.mock import MagicMock, patch
 from app.main import MasterDashboardApp
 from app import analyzer
+from app.frequency_exporter import FrequencyExporter
 
 # --- Integration Test ---
 
@@ -83,8 +84,10 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     with open(save_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
+    # We expect sanitized words
+    expected_words = [FrequencyExporter._sanitize_term(w) for w in words_in_csv]
     assert isinstance(data, list)
-    assert data == words_in_csv
+    assert data == expected_words
     assert "successfully" in mock_info.call_args[0][1]
     
     # Verify dialog was closed

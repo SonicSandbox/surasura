@@ -244,6 +244,23 @@ class ContentImporterApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.config(yscrollcommand=scrollbar.set)
         
+        # Move Buttons
+        move_btn_frame = ttk.Frame(self.list_frame)
+        move_btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 0))
+        
+        # Spacers to center buttons vertically with some spread
+        ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
+        
+        self.up_btn = ttk.Button(move_btn_frame, text="▴", width=3, command=self.move_selected_up)
+        self.up_btn.pack(side=tk.TOP, pady=10)
+        self.create_tooltip(self.up_btn, "Move selected items up")
+        
+        self.down_btn = ttk.Button(move_btn_frame, text="▾", width=3, command=self.move_selected_down)
+        self.down_btn.pack(side=tk.TOP, pady=10)
+        self.create_tooltip(self.down_btn, "Move selected items down")
+        
+        ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
+        
         # DnD Events
         self.tree.bind("<Button-1>", self.on_drag_start)
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
@@ -801,13 +818,71 @@ class ContentImporterApp:
 
         # Save Order logic
         self._save_level_order(source_parent)
-        if hasattr(self, '_last_drop_target'):
-             new_parent = self.tree.parent(source_item)
-             if new_parent != source_parent:
-                 self._save_level_order(new_parent)
+        new_parent = self.tree.parent(source_item)
+        if new_parent != source_parent:
+            self._save_level_order(new_parent)
         
         self.refresh_file_list()
         self.status_var.set("Order updated.")
+
+    def move_selected_up(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        # Sort selected items by their current index to move them correctly
+        items_with_info = []
+        for item in selected:
+            parent = self.tree.parent(item)
+            index = self.tree.index(item)
+            items_with_info.append((parent, index, item))
+
+        # Sort by index (ascending) to process from top to bottom
+        items_with_info.sort(key=lambda x: x[1])
+
+        moved_parents = set()
+        for parent, index, item in items_with_info:
+            if index > 0:
+                self.tree.move(item, parent, index - 1)
+                moved_parents.add(parent)
+
+        # Persistence
+        for p in moved_parents:
+            self._save_level_order(p)
+        
+        # Ensure they stay in view
+        if selected:
+            self.tree.see(selected[0])
+
+    def move_selected_down(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        # Sort selected items by their current index
+        items_with_info = []
+        for item in selected:
+            parent = self.tree.parent(item)
+            index = self.tree.index(item)
+            items_with_info.append((parent, index, item))
+
+        # Sort by index (descending) to process from bottom to top
+        items_with_info.sort(key=lambda x: x[1], reverse=True)
+
+        moved_parents = set()
+        for parent, index, item in items_with_info:
+            num_children = len(self.tree.get_children(parent))
+            if index < num_children - 1:
+                # To move correctly 'down', we target index + 1
+                self.tree.move(item, parent, index + 1)
+                moved_parents.add(parent)
+
+        # Persistence
+        for p in moved_parents:
+            self._save_level_order(p)
+            
+        if selected:
+            self.tree.see(selected[-1])
 
     def _save_level_order(self, parent_node):
         """Saves the current visible order of a node's children to its directory's _order.json"""

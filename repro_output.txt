@@ -1,0 +1,48 @@
+Word: カセキ
+  Surface: カセキ
+  Lemma: 化石
+  POS1: 名詞
+  Kana: カセキ
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): True
+--------------------
+Word: マイク
+  Surface: マイク
+  Lemma: マイク-microphon
+  POS1: 名詞
+  Kana: マイク
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): False
+--------------------
+Word: タバコ
+  Surface: タバコ
+  Lemma: タバコ-tabaco
+  POS1: 名詞
+  Kana: タバコ
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): False
+--------------------
+Word: メガネ
+  Surface: メガネ
+  Lemma: 眼鏡
+  POS1: 名詞
+  Kana: メガネ
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): True
+--------------------
+Word: サクラ
+  Surface: サクラ
+  Lemma: 桜
+  POS1: 名詞
+  Kana: サクラ
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): True
+--------------------
+Word: スモモ
+  Surface: スモモ
+  Lemma: 李
+  POS1: 名詞
+  Kana: スモモ
+  IsPureKatakana(Surface): True
+  HasKanji(Lemma): True
+--------------------

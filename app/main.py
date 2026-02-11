@@ -137,6 +137,7 @@ class MasterDashboardApp:
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
+        self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -197,6 +198,7 @@ class MasterDashboardApp:
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
+        self.var_sanitize_ja.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -324,6 +326,8 @@ class MasterDashboardApp:
                 self.btn_jiten.pack_forget()
             if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'lang_frame'):
                  self.chk_reinforce_widget.pack(anchor=tk.W, after=self.lang_frame, padx=20)
+            if hasattr(self, 'chk_sanitize_ja'):
+                 self.chk_sanitize_ja.pack_forget()
         else:
             if hasattr(self, 'btn_jiten'):
                 # Re-insert in correct position (after migaku)
@@ -332,6 +336,8 @@ class MasterDashboardApp:
                 self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
             if hasattr(self, 'chk_reinforce_widget'):
                 self.chk_reinforce_widget.pack_forget()
+            if hasattr(self, 'chk_sanitize_ja') and hasattr(self, 'lang_frame'):
+                self.chk_sanitize_ja.pack(anchor=tk.W, after=self.lang_frame, padx=20)
         
         # Update Flag Icon
         if hasattr(self, 'lbl_flag'):
@@ -567,6 +573,10 @@ class MasterDashboardApp:
         self.chk_reinforce_widget = ttk.Checkbutton(settings_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
         ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
         
+        # Sanitize Japanese Terms (Japanese only)
+        self.chk_sanitize_ja = ttk.Checkbutton(settings_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
+        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
+
         # Initial visibility set by update_ui
         self.update_ui_for_language()
 
@@ -669,6 +679,7 @@ class MasterDashboardApp:
 
                     self.var_reinforce.set(settings.get("reinforce_segmentation", False))
                     self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
+                    self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
 
@@ -696,6 +707,7 @@ class MasterDashboardApp:
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
+                "sanitize_ja_terms": self.var_sanitize_ja.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "logic": self.logic_settings
             }
@@ -918,6 +930,10 @@ class MasterDashboardApp:
         
         # Add Language
         args.append(f'--language={self.var_language.get()}')
+        
+        # Add Sanitization Flag if applicable (only for Japanese)
+        if self.var_language.get() == 'ja' and self.var_sanitize_ja.get():
+            args.append('--sanitize')
         
         # Add Reinforce Flag if applicable
         if self.var_language.get() == 'zh' and self.var_reinforce.get():

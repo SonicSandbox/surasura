@@ -61,20 +61,28 @@ def test_export_yomitan_simple(mock_csv, tmp_path):
         assert term_data[0] == ["apple", "freq", 1]
         assert term_data[1] == ["banana", "freq", 2]
 
-def test_export_yomitan_strict(mock_csv, tmp_path):
+def test_export_yomitan_strict(tmp_path):
+    # Use actual Katakana words for this test to trigger reading object
+    csv_path = tmp_path / "ja_data.csv"
+    data = {
+        "Word": ["バナナ", "アップル"],
+        "Reading": ["バナナ", "アップル"]
+    }
+    pd.DataFrame(data).to_csv(csv_path, index=False)
+    
     save_path = tmp_path / "yomitan_strict.zip"
     # Use 'ja' with readings present -> Option B
-    FrequencyExporter.export_yomitan(str(mock_csv), str(save_path), language='ja')
+    FrequencyExporter.export_yomitan(str(csv_path), str(save_path), language='ja')
     
     assert save_path.exists()
     with zipfile.ZipFile(save_path, 'r') as zf:
         term_data = json.loads(zf.read("term_meta_bank_1.json"))
-        # Expected: ["apple", "freq", {"reading": "アップル", "frequency": 1}]
+        # Expected: ["バナナ", "freq", {"reading": "バナナ", "frequency": 1}]
         entry = term_data[0]
-        assert entry[0] == "apple"
+        assert entry[0] == "バナナ"
         assert entry[1] == "freq"
         assert isinstance(entry[2], dict)
-        assert entry[2]["reading"] == "アップル"
+        assert entry[2]["reading"] == "バナナ"
         assert entry[2]["frequency"] == 1
 
 def test_export_yomitan_missing_reading_fallback(tmp_path):

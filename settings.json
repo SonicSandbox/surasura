@@ -10,6 +10,7 @@
     "target_language": "ja",
     "reinforce_segmentation": false,
     "telemetry_enabled": true,
+    "sanitize_ja_terms": false,
     "onboarding_completed": true,
     "logic": {
         "inline_completed_files": false,

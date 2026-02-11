@@ -3,7 +3,7 @@ import sys
 import shutil
 
 # Ensure package root is in sys.path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.path_utils import get_user_file, get_data_path, get_user_files_path, ensure_data_setup
 

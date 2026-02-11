@@ -9,9 +9,12 @@ def is_frozen():
 def get_base_path():
     """
     Get the base directory for retrieving RESOURCES (templates, bundled scripts).
+    If SURASURA_TEST_ROOT env var is set, use it (for E2E tests).
     If frozen: return sys._MEIPASS (temp dir where resources are unpacked).
     If source: return the root of the project (one level up from app/).
     """
+    if os.environ.get("SURASURA_TEST_ROOT"):
+        return os.environ.get("SURASURA_TEST_ROOT")
     if is_frozen():
         return sys._MEIPASS
     else:
@@ -21,9 +24,12 @@ def get_base_path():
 def get_user_data_path():
     """
     Get the directory for USER DATA (inputs, outputs, settings).
+    If SURASURA_TEST_ROOT env var is set, use it (for E2E tests).
     If frozen: return the directory containing the executable.
     If source: return the root of the project.
     """
+    if os.environ.get("SURASURA_TEST_ROOT"):
+        return os.environ.get("SURASURA_TEST_ROOT")
     if is_frozen():
         return os.path.dirname(sys.executable)
     else:
@@ -100,7 +106,7 @@ def ensure_data_setup(language=None):
     
     samples_path = get_resource("samples")
     
-    subfolders = ["HighPriority", "LowPriority", "GoalContent", "Processed"]
+    subfolders = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed"]
     
     # 2. Ensure base data folder exists
     if not os.path.exists(data_path):
@@ -134,14 +140,16 @@ def ensure_data_setup(language=None):
     if not os.path.exists(user_files_dir):
         os.makedirs(user_files_dir, exist_ok=True)
         
-    # 5. Create Blacklist/IgnoreList if they don't exist
-    for list_name in ["Blacklist.txt", "IgnoreList.txt"]:
+    # 5. Create Blacklist/IgnoreList/GraduatedList if they don't exist
+    for list_name in ["Blacklist.txt", "IgnoreList.txt", "GraduatedList.txt"]:
         list_path = os.path.join(user_files_dir, list_name)
         if not os.path.exists(list_path):
             try:
                 with open(list_path, "w", encoding="utf-8") as f:
                     if list_name == "Blacklist.txt":
                         f.write("# Global Blacklist\n" if not language else f"# {language} Blacklist\n")
+                    elif list_name == "GraduatedList.txt":
+                         f.write("# Words from graduated content (automatically added)\n")
                     else:
                         f.write("# Add words to ignore here (one per line)\n")
             except Exception as e:

@@ -9,7 +9,10 @@ if app_root not in sys.path:
     sys.path.insert(0, app_root)
 
 def log_error(msg):
-    with open("app_debug_log.txt", "a", encoding="utf-8") as f:
+    # Ensure debug folder exists for logs
+    if not os.path.exists("debug"):
+        os.makedirs("debug", exist_ok=True)
+    with open(os.path.join("debug", "app_debug_log.txt"), "a", encoding="utf-8") as f:
         f.write(f"{msg}\n")
 
 # Windows Taskbar Icon Fix (Set AppUserModelID)

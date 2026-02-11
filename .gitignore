@@ -23,12 +23,13 @@ dist/
 User Files/
 data/
 results/
-app_debug_log.txt
-build_log.txt
+debug/app_debug_log.txt
+debug/build_log.txt
 surasura_v*.zip
 
 # Pytest
 .pytest_cache/
 
 
-docs/agent instructions/Pre-build_check.md
+docs/agent instructions
+docs/pre release notes

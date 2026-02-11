@@ -45,11 +45,15 @@ def build(zip_output=False):
     
     print(f"Running: {' '.join(cmd)}")
     
-    with open("build_log.txt", "w") as log_file:
+    # Ensure debug folder exists for logs
+    if not os.path.exists("debug"):
+        os.makedirs("debug", exist_ok=True)
+        
+    with open(os.path.join("debug", "build_log.txt"), "w") as log_file:
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
     
     if result.returncode != 0:
-        print("Build failed. Check build_log.txt for details.")
+        print("Build failed. Check debug/build_log.txt for details.")
         return
 
     # Post-Build: Create Distribution Folder

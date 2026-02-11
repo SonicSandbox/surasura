@@ -212,7 +212,8 @@ def load_simple_list(file_path):
     if not os.path.exists(file_path):
         return set()
     with open(file_path, 'r', encoding='utf-8') as f:
-        return set(line.strip() for line in f if line.strip())
+        # Ignore comments starting with # and empty lines
+        return set(line.strip() for line in f if line.strip() and not line.strip().startswith("#"))
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -580,10 +581,14 @@ def main():
     
     ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
     black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
+    graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
     
     ignore_list = load_simple_list(ignore_list_file)
     black_list = load_simple_list(black_list_file)
+    graduated_list = load_simple_list(graduated_list_file)
+    
     ignore_list.update(black_list) # Merge blacklist into ignore list
+    ignore_list.update(graduated_list) # Merge graduated list into ignore list
     
     # Discover and load all yomitan frequency lists from User Files
     print(f"Scanning for {language} frequency lists in {user_files_dir}...")
@@ -893,6 +898,22 @@ def main():
     with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
         json.dump(file_stats, f, indent=4, ensure_ascii=False)
     print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
+
+    # Output Raw Word Stats for GUI
+    OUTPUT_WORD_STATS = os.path.join(RESULTS_DIR, "word_stats.json")
+    # Convert word_stats to JSON-serializable format
+    # Keys are (lemma, reading) tuples -> Convert to string "lemma|reading"
+    # Values have sets -> Convert to lists
+    serializable_stats = {}
+    for (lemma, reading), data in word_stats.items():
+        key = f"{lemma}|{reading}"
+        serializable_data = data.copy()
+        serializable_data["sources"] = list(data["sources"])
+        serializable_stats[key] = serializable_data
+        
+    with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
+        json.dump(serializable_stats, f, indent=2, ensure_ascii=False)
+    print(f"Saved raw word stats to {OUTPUT_WORD_STATS}")
     
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")

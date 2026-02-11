@@ -10,7 +10,7 @@ import subprocess
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, ensure_data_setup, get_icon_path, get_data_path
+from app.path_utils import get_user_file, ensure_data_setup, get_icon_path, get_data_path, get_user_files_path
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -187,11 +187,22 @@ class ContentImporterApp:
         del_btn = ttk.Button(btn_frame, text="- Remove Selected", command=self.remove_files)
         del_btn.pack(side=tk.LEFT)
         
-        refresh_btn = ttk.Button(btn_frame, text="↻ Refresh", command=self.refresh_file_list)
-        refresh_btn.pack(side=tk.RIGHT)
+        # Right Side Action Buttons
+        refresh_btn = ttk.Button(btn_frame, text="↻", command=self.refresh_file_list, width=4)
+        refresh_btn.pack(side=tk.RIGHT, padx=(0, 0))
+        self.create_tooltip(refresh_btn, "Refresh file list")
+
+        explorer_btn = ttk.Button(btn_frame, text="📂", command=self.open_data_folder, width=4)
+        explorer_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        self.create_tooltip(explorer_btn, "Open current folder in Explorer")
         
-        explorer_btn = ttk.Button(btn_frame, text="📂 Open in Explorer", command=self.open_data_folder)
-        explorer_btn.pack(side=tk.RIGHT, padx=(0, 10))
+        list_btn = ttk.Button(btn_frame, text="🏆", command=self.open_graduated_list, width=4)
+        list_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        self.create_tooltip(list_btn, "Open Graduated Words List")
+
+        graduate_btn = ttk.Button(btn_frame, text="🏆 Graduate", command=self.graduate_content)
+        graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        self.create_tooltip(graduate_btn, "Graduate Content (Move up priority flow and learn words)")
 
         # Treeview with Scrollbar
         self.list_frame = ttk.Frame(step2_frame)
@@ -453,6 +464,143 @@ class ContentImporterApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy folder '{folder_name}':\n{e}")
 
+    def graduate_content(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("No Selection", "Please select items to graduate.")
+            return
+
+        current_folder = self.target_folder_var.get()
+        destination_map = {
+            "GoalContent": "LowPriority",
+            "LowPriority": "HighPriority",
+            "HighPriority": "Graduated"
+        }
+        
+        if current_folder not in destination_map:
+            messagebox.showinfo("Info", "Cannot graduate from this folder.")
+            return
+            
+        dest_folder_name = destination_map[current_folder]
+        dest_root = os.path.join(self.data_root, dest_folder_name)
+        
+        # Confirmation Logic
+        if current_folder == "HighPriority":
+            msg = (f"Graduate {len(selected_items)} items to '{dest_folder_name}'?\n\n"
+                   "CAUTION: This will mark words as KNOWN based on the MOST RECENT analysis.\n"
+                   "Words from these files found in the 'word_stats.json' report will be added to your GraduatedList.\n\n"
+                   f"The files will be moved to: data/{self.language}/{dest_folder_name}")
+        else:
+            msg = f"Move {len(selected_items)} items from {current_folder} to {dest_folder_name}?"
+            
+        if not messagebox.askyesno("Confirm Graduation", msg):
+            return
+
+        # Ensure destination exists
+        if not os.path.exists(dest_root):
+            os.makedirs(dest_root)
+            
+        count = 0
+        words_graduated = 0
+        
+        # Load Stats if High Priority
+        stats = {}
+        if current_folder == "HighPriority":
+            try:
+                # data_root is data/<lang>
+                project_root = os.path.dirname(os.path.dirname(self.data_root))
+                stats_path = os.path.join(project_root, "results", "word_stats.json")
+                if os.path.exists(stats_path):
+                    with open(stats_path, 'r', encoding='utf-8') as f:
+                        stats = json.load(f)
+                else:
+                    print(f"Warning: word_stats.json not found at {stats_path}. Only moving files.")
+            except Exception as e:
+                print(f"Error loading stats: {e}")
+                
+        # Load Order Data
+        source_order_data = self.load_order(self.get_current_dir())
+        dest_order_data = self.load_order(dest_root)
+        
+        for item_id in selected_items:
+            item_text = self.tree.item(item_id, "text")
+            item_values = self.tree.item(item_id, "values")
+            if not item_values: continue
+            
+            source_path = item_values[0]
+            if not os.path.exists(source_path): continue
+            
+            filename = os.path.basename(source_path)
+            dest_path = os.path.join(dest_root, filename)
+            
+            try:
+                # 1. Graduate Words Logic (High Priority only)
+                if current_folder == "HighPriority" and stats:
+                    # Find all filenames associated with this item (could be folder)
+                    filenames_to_match = set()
+                    if os.path.isfile(source_path):
+                        filenames_to_match.add(os.path.basename(source_path))
+                    else:
+                        for root, dirs, files in os.walk(source_path):
+                            for f in files:
+                                filenames_to_match.add(f)
+                    
+                    file_words = []
+                    for key, data in stats.items():
+                        sources = data.get("sources", [])
+                        # Match if any of our filenames are in the sources list
+                        if any(f in sources for f in filenames_to_match):
+                            parts = key.split("|")
+                            if len(parts) >= 1:
+                                file_words.append(parts[0]) # Add lemma
+                    
+                    if file_words:
+                        file_words = sorted(list(set(file_words)))
+                        
+                        # Correct path resolution for User Files
+                        project_root = os.path.dirname(os.path.dirname(self.data_root))
+                        user_files_dir = os.path.join(project_root, "User Files", self.language)
+                        if not os.path.exists(user_files_dir):
+                             os.makedirs(user_files_dir)
+                        grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
+                        
+                        with open(grad_list_path, 'a', encoding='utf-8') as f:
+                            f.write(f"\n# Source: {filename} ({len(file_words)} words graduated)\n")
+                            for w in file_words:
+                                f.write(f"{w}\n")
+                        words_graduated += len(file_words)
+
+                # 2. Move File
+                shutil.move(source_path, dest_path)
+                
+                # 3. Update Orders
+                # Remove from source
+                if item_text in source_order_data.get("order", []):
+                    source_order_data["order"].remove(item_text)
+                if item_text in source_order_data.get("metadata", {}):
+                    del source_order_data["metadata"][item_text]
+                    
+                # Add to dest
+                if item_text not in dest_order_data.get("order", []):
+                    dest_order_data["order"].append(item_text)
+                dest_order_data.setdefault("metadata", {})[item_text] = {"lang": self.language}
+                
+                count += 1
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to graduate {filename}:\n{e}")
+        
+        # Save Orders
+        self.save_order(self.get_current_dir(), source_order_data)
+        self.save_order(dest_root, dest_order_data)
+        
+        self.refresh_file_list()
+        status_msg = f"Moved {count} items to {dest_folder_name}."
+        if words_graduated > 0:
+            status_msg += f" Added {words_graduated} words to GraduatedList."
+        self.status_var.set(status_msg)
+        messagebox.showinfo("Success", status_msg)
+
     def remove_files(self):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -469,7 +617,9 @@ class ContentImporterApp:
             count = 0
             
             # We only remove root-level items from the order file
-            order = self.load_order(target_dir)
+            order_data = self.load_order(target_dir) # Load FULL object
+            order = order_data.get("order", [])
+            metadata = order_data.get("metadata", {})
             
             for item_id in selected_items:
                 item_text = self.tree.item(item_id, "text")
@@ -484,20 +634,18 @@ class ContentImporterApp:
                         shutil.rmtree(path)
                     
                     # If it was a root item, remove from order
-                    # If it was a root item, remove from order
-                    data = self.load_order(target_dir)
-                    order = data.get("order", [])
-                    metadata = data.get("metadata", {})
                     if item_text in order:
                         order.remove(item_text)
                     if item_text in metadata:
                         del metadata[item_text]
-                    data["order"] = order
-                    data["metadata"] = metadata
-                    self.save_order(target_dir, data)
+                        
                     count += 1
                 except Exception as e:
                     print(f"Error deleting {path}: {e}")
+            
+            order_data["order"] = order
+            order_data["metadata"] = metadata
+            self.save_order(target_dir, order_data)
             
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
@@ -662,6 +810,21 @@ class ContentImporterApp:
         if not os.path.exists(path):
             os.makedirs(path)
             
+        if sys.platform == 'win32':
+            os.startfile(path)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', path])
+        else:
+            subprocess.Popen(['xdg-open', path])
+
+    def open_graduated_list(self):
+        path = os.path.join(get_user_files_path(self.language), "GraduatedList.txt")
+        if not os.path.exists(path):
+            # Ensure folder exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# Graduated Words (added automatically when files graduate)\n")
+        
         if sys.platform == 'win32':
             os.startfile(path)
         elif sys.platform == 'darwin':

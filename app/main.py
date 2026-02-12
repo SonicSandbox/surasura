@@ -141,6 +141,8 @@ class MasterDashboardApp:
         self.var_show_words_per_day = tk.BooleanVar(value=True) # Show target days calculation
         self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
+        self.var_open_count = tk.IntVar(value=0)
+        self._lock_ui_updates = False
         
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
@@ -324,41 +326,48 @@ class MasterDashboardApp:
             
     def update_ui_for_language(self):
         """Updates UI elements based on selected language"""
-        lang = self.var_language.get()
-        
-        # 1. Update Flag Icon
-        if hasattr(self, 'lbl_flag'):
-             flag_icon = "🇨🇳" if lang == "zh" else "🇯🇵"
-             self.lbl_flag.config(text=flag_icon)
-
-        # 2. Update Tool/Button visibility
-        if lang == 'zh':
-            if hasattr(self, 'btn_jiten'):
-                self.btn_jiten.pack_forget()
-        else:
-            if hasattr(self, 'btn_jiten'):
-                # Re-insert in correct position (after migaku)
-                self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5), after=self.btn_migaku)
-            if hasattr(self, 'btn_anki'):
-                self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
-
-        # 3. Update Settings Toggles (if window created)
-        if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
-            # Hide both initially
-            self.chk_reinforce_widget.pack_forget()
-            self.chk_sanitize_ja.pack_forget()
+        if getattr(self, '_lock_ui_updates', False):
+            return
             
+        self._lock_ui_updates = True
+        try:
+            lang = self.var_language.get()
+            
+            # 1. Update Flag Icon
+            if hasattr(self, 'lbl_flag'):
+                 flag_icon = "🇨🇳" if lang == "zh" else "🇯🇵"
+                 self.lbl_flag.config(text=flag_icon)
+    
+            # 2. Update Tool/Button visibility
             if lang == 'zh':
-                # Show Reinforce for Chinese
-                self.chk_reinforce_widget.pack(anchor=tk.W)
-                self.chk_reinforce_widget.configure(state='normal')
+                if hasattr(self, 'btn_jiten'):
+                    self.btn_jiten.pack_forget()
             else:
-                # Show Sanitize for Japanese
-                self.chk_sanitize_ja.pack(anchor=tk.W)
-                self.chk_sanitize_ja.configure(state='normal')
-                self.var_reinforce.set(False)
-
-        self.save_settings()
+                if hasattr(self, 'btn_jiten'):
+                    # Re-insert in correct position (after migaku)
+                    self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5), after=self.btn_migaku)
+                if hasattr(self, 'btn_anki'):
+                    self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
+    
+            # 3. Update Settings Toggles (if window created)
+            if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
+                # Hide both initially
+                self.chk_reinforce_widget.pack_forget()
+                self.chk_sanitize_ja.pack_forget()
+                
+                if lang == 'zh':
+                    # Show Reinforce for Chinese
+                    self.chk_reinforce_widget.pack(anchor=tk.W)
+                    self.chk_reinforce_widget.configure(state='normal')
+                else:
+                    # Show Sanitize for Japanese
+                    self.chk_sanitize_ja.pack(anchor=tk.W)
+                    self.chk_sanitize_ja.configure(state='normal')
+                    self.var_reinforce.set(False)
+    
+            self.save_settings()
+        finally:
+            self._lock_ui_updates = False
         
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="15") # Reduced padding 25 -> 15
@@ -717,6 +726,7 @@ class MasterDashboardApp:
                     self.var_zen_limit.set(settings.get("zen_limit", 50))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
+                    self.var_open_count.set(settings.get("open_count", 0))
 
                     # Load Logic Settings
                     self.logic_settings = settings.get("logic", {})
@@ -730,7 +740,18 @@ class MasterDashboardApp:
         try:
             from app.path_utils import get_user_file
             settings_path = get_user_file("settings.json")
-            settings = {
+            
+            # Load existing settings to preserve fields not managed by GUI
+            settings = {}
+            if os.path.exists(settings_path):
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                except Exception:
+                    pass
+
+            # Update settings with current GUI values
+            settings.update({
                 "exclude_single": self.var_exclude_single.get(),
                 "min_freq": self.var_min_freq.get(),
                 "open_app_mode": self.var_open_app_mode.get(),
@@ -746,15 +767,20 @@ class MasterDashboardApp:
                 "show_words_per_day": self.var_show_words_per_day.get(),
                 "zen_limit": self.var_zen_limit.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
-                "logic": self.logic_settings
-            }
+                "open_count": self.var_open_count.get()
+            })
+
             # Update nested logic settings
-            self.logic_settings["inline_completed_files"] = self.var_inline_completed.get()
+            if "logic" not in settings:
+                settings["logic"] = {}
+            settings["logic"]["inline_completed_files"] = self.var_inline_completed.get()
+
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
             
             # Update UI state (enable/disable language specific options)
-            self.update_ui_for_language()
+            if not getattr(self, '_lock_ui_updates', False):
+                self.update_ui_for_language()
             
         except Exception as e:
             print(f"Warning: Could not save settings: {e}")

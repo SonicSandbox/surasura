@@ -3,6 +3,7 @@ from tkinter import ttk
 import os
 import json
 from app.path_utils import get_icon_path, get_user_file
+from app import telemetry
 
 # --- Constants & Theme (Matching main app) ---
 BG_COLOR = "#1e1e1e"
@@ -150,6 +151,13 @@ class OnboardingGuide:
 
         if self.on_complete_callback:
             self.on_complete_callback()
+        
+        # Send Telemetry
+        try:
+            telemetry.init(status='Onboard Complete')
+        except Exception:
+            pass
+
         self.window.destroy()
 
 if __name__ == "__main__":

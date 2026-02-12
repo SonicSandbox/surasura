@@ -28,6 +28,8 @@ except Exception:
 TELEMETRY_URL = os.getenv("TELEMETRY_URL")
 TELEMETRY_ENV = os.getenv("TELEMETRY_ENV", "production")
 
+_OPEN_COUNT_INCREMENTED = False
+
 def get_telemetry_id():
     """
     Retrieves or generates a persistent anonymous user ID.
@@ -76,10 +78,12 @@ def get_telemetry_id():
             
     return uid
 
-def _send_heartbeat_thread():
+def _send_heartbeat_thread(status):
     """
     Executes the network request in a background thread.
     """
+    global _OPEN_COUNT_INCREMENTED
+
     if not TELEMETRY_URL:
         return
         
@@ -87,15 +91,36 @@ def _send_heartbeat_thread():
         return
 
     language = "ja" # Default
-    # Check Opt-Out Setting
+    open_count = 0
+    
+    # Check Opt-Out Setting and handle open_count
     try:
         settings_path = path_utils.get_user_file("settings.json")
+        settings = {}
         if os.path.exists(settings_path):
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-                if not settings.get("telemetry_enabled", True):
-                    return
-                language = settings.get("target_language", "ja")
+        
+        if not settings.get("telemetry_enabled", True):
+            return
+            
+        language = settings.get("target_language", "ja")
+        try:
+            open_count = int(settings.get("open_count", 0))
+        except (ValueError, TypeError):
+            open_count = 0
+
+        # Increment open_count ONLY ONCE per app session
+        if not _OPEN_COUNT_INCREMENTED:
+            open_count += 1
+            settings["open_count"] = open_count
+            try:
+                with open(settings_path, "w", encoding="utf-8") as f:
+                    json.dump(settings, f, indent=4)
+                _OPEN_COUNT_INCREMENTED = True
+            except Exception:
+                pass # If we can't save the increment, we still proceed with sending
+                
     except Exception:
         pass # proceed if settings fail to load (default is enabled)
 
@@ -108,7 +133,9 @@ def _send_heartbeat_thread():
             "version": __version__,
             "platform": platform,
             "env": TELEMETRY_ENV,
-            "lang": language
+            "lang": language,
+            "status": status,
+            "open_count": open_count
         }
         
         requests.get(TELEMETRY_URL, params=params, timeout=2)
@@ -116,11 +143,11 @@ def _send_heartbeat_thread():
         # Fail silently
         pass
 
-def init():
+def init(status='Multilingual-beta'):
     """
     Initializes and sends the telemetry heartbeat.
     """
     # Only run if URL is configured
     if TELEMETRY_URL and TELEMETRY_ENV != "dev":
-        thread = threading.Thread(target=_send_heartbeat_thread, daemon=True)
+        thread = threading.Thread(target=_send_heartbeat_thread, args=(status,), daemon=True)
         thread.start()

@@ -196,7 +196,6 @@ class MasterDashboardApp:
         self.var_exclude_single.trace_add("write", self.save_settings)
         self.var_min_freq.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
-        self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.var_sanitize_ja.trace_add("write", self.save_settings)
@@ -324,29 +323,40 @@ class MasterDashboardApp:
             self.save_settings() # Save on switch
             
     def update_ui_for_language(self):
+        """Updates UI elements based on selected language"""
         lang = self.var_language.get()
+        
+        # 1. Update Flag Icon
+        if hasattr(self, 'lbl_flag'):
+             flag_icon = "🇨🇳" if lang == "zh" else "🇯🇵"
+             self.lbl_flag.config(text=flag_icon)
+
+        # 2. Update Tool/Button visibility
         if lang == 'zh':
             if hasattr(self, 'btn_jiten'):
                 self.btn_jiten.pack_forget()
-            if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'lang_frame'):
-                 self.chk_reinforce_widget.pack(anchor=tk.W, after=self.lang_frame, padx=20)
-            if hasattr(self, 'chk_sanitize_ja'):
-                 self.chk_sanitize_ja.pack_forget()
         else:
             if hasattr(self, 'btn_jiten'):
                 # Re-insert in correct position (after migaku)
                 self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5), after=self.btn_migaku)
             if hasattr(self, 'btn_anki'):
                 self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
-            if hasattr(self, 'chk_reinforce_widget'):
-                self.chk_reinforce_widget.pack_forget()
-            if hasattr(self, 'chk_sanitize_ja') and hasattr(self, 'lang_frame'):
-                self.chk_sanitize_ja.pack(anchor=tk.W, after=self.lang_frame, padx=20)
-        
-        # Update Flag Icon
-        if hasattr(self, 'lbl_flag'):
-            flag_icon = "🇨🇳" if lang == 'zh' else "🇯🇵"
-            self.lbl_flag.config(text=flag_icon)
+
+        # 3. Update Settings Toggles (if window created)
+        if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
+            # Hide both initially
+            self.chk_reinforce_widget.pack_forget()
+            self.chk_sanitize_ja.pack_forget()
+            
+            if lang == 'zh':
+                # Show Reinforce for Chinese
+                self.chk_reinforce_widget.pack(anchor=tk.W)
+                self.chk_reinforce_widget.configure(state='normal')
+            else:
+                # Show Sanitize for Japanese
+                self.chk_sanitize_ja.pack(anchor=tk.W)
+                self.chk_sanitize_ja.configure(state='normal')
+                self.var_reinforce.set(False)
 
         self.save_settings()
         
@@ -645,31 +655,6 @@ class MasterDashboardApp:
         else:
             self.settings_window.withdraw()
 
-    def update_ui_for_language(self):
-        """Updates UI elements based on selected language"""
-        lang = self.var_language.get()
-        
-        # 1. Update Flag Icon
-        if hasattr(self, 'lbl_flag'):
-             flag_icon = "🇨🇳" if lang == "zh" else "🇯🇵"
-             self.lbl_flag.config(text=flag_icon)
-
-        # 2. Update Settings Visibility
-        # 2. Update Settings Visibility
-        if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
-            # Hide both initially
-            self.chk_reinforce_widget.pack_forget()
-            self.chk_sanitize_ja.pack_forget()
-            
-            if lang == 'zh':
-                # Show Reinforce for Chinese
-                self.chk_reinforce_widget.pack(anchor=tk.W)
-                self.chk_reinforce_widget.configure(state='normal')
-            else:
-                # Show Sanitize for Japanese
-                self.chk_sanitize_ja.pack(anchor=tk.W)
-                self.chk_sanitize_ja.configure(state='normal')
-                self.var_reinforce.set(False)
 
 
     def check_updates_thread(self):

@@ -1,11 +1,11 @@
-# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - Readability Analyzer
+# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
 ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 
 *For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
 
 ![Results](docs/assets/images/img_readability_results.PNG)
 
-Map your Exact Path to 
+## Your map to seamless immersion
 
 > **The only frequency list that matters is the one based on YOUR watch / read list.**
 

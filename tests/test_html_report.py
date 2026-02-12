@@ -23,6 +23,7 @@ def test_html_generation(tmp_path):
     with patch("app.static_html_generator.RESULTS_DIR", str(results_dir)), \
          patch("app.static_html_generator.OUTPUT_FILE", str(output_html)), \
          patch("app.static_html_generator.WEB_APP_FILE", str(template_path)), \
+         patch("app.static_html_generator.get_user_file", return_value=str(tmp_path / "non_existent.json")), \
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
          
          # Run generator

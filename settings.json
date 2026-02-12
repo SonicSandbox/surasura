@@ -7,14 +7,14 @@
     "target_coverage": 90,
     "split_length": 3000,
     "target_language": "ja",
-    "reinforce_segmentation": true,
+    "reinforce_segmentation": false,
     "telemetry_enabled": true,
     "sanitize_ja_terms": false,
     "words_per_day": 5,
     "show_words_per_day": true,
     "zen_limit": 50,
     "onboarding_completed": false,
-    "open_count": 1,
+    "open_count": 0,
     "logic": {
         "inline_completed_files": false,
         "weights": {

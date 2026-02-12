@@ -1,4 +1,5 @@
 {
+    "hide_satoru": true,
     "exclude_single": true,
     "min_freq": 3,
     "open_app_mode": false,

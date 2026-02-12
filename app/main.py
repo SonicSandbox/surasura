@@ -142,6 +142,7 @@ class MasterDashboardApp:
         self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
         self.var_open_count = tk.IntVar(value=0)
+        self.var_hide_satoru = tk.BooleanVar(value=False)
         self._lock_ui_updates = False
         
         # Initialize status var early to satisfy linter
@@ -149,6 +150,7 @@ class MasterDashboardApp:
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
+        self.btn_satori: Optional[ttk.Button] = None
         
         # Logic Settings (Magic Numbers)
         self.logic_settings = {}
@@ -204,6 +206,7 @@ class MasterDashboardApp:
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
+        self.var_hide_satoru.trace_add("write", lambda n, i, m: self.update_satori_visibility())
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -545,6 +548,12 @@ class MasterDashboardApp:
         btn_settings.pack(side=tk.LEFT, padx=(10, 0))
         ToolTip(btn_settings, "Open Settings & Logs")
 
+        # Immersion Architect (Satori) Button
+        self.btn_satori = ttk.Button(credit_box, text="悟", command=self.open_immersion_architect, width=3)
+        if not self.var_hide_satoru.get():
+            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.btn_satori, "Immersion Architect Intelligence")
+
     def complete_onboarding(self):
         # Reload to get the settings written by the onboarding window
         self.load_settings()
@@ -664,7 +673,17 @@ class MasterDashboardApp:
         else:
             self.settings_window.withdraw()
 
-
+    def open_immersion_architect(self):
+        try:
+            from app.immersion_architect_gui import ImmersionArchitectGui
+            # Create if not exists or if destroyed
+            if not hasattr(self, 'satori_window') or self.satori_window is None or not self.satori_window.winfo_exists():
+                self.satori_window = ImmersionArchitectGui(self.root)
+            else:
+                self.satori_window.lift()
+        except Exception as e:
+            print(f"Error launching Immersion Architect: {e}")
+            messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
 
     def check_updates_thread(self):
         """Background thread to check for updates"""
@@ -695,6 +714,19 @@ class MasterDashboardApp:
                 self.terminal.see(tk.END)
                 self.terminal.config(state=tk.DISABLED)
         self.gui_queue.put(_update)
+
+    def update_satori_visibility(self):
+        """Hides or shows the Satori button based on settings"""
+        if not hasattr(self, 'btn_satori'):
+            return
+            
+        if self.var_hide_satoru.get():
+            self.btn_satori.pack_forget()
+        else:
+            # Re-pack in the credit box
+            # This is slightly tricky if other elements are added later, 
+            # but usually it's at the end.
+            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
 
     def load_settings(self):
         try:
@@ -727,6 +759,8 @@ class MasterDashboardApp:
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
                     self.var_open_count.set(settings.get("open_count", 0))
+                    self.var_hide_satoru.set(settings.get("hide_satoru", False))
+                    self.update_satori_visibility()
 
                     # Load Logic Settings
                     self.logic_settings = settings.get("logic", {})
@@ -767,7 +801,8 @@ class MasterDashboardApp:
                 "show_words_per_day": self.var_show_words_per_day.get(),
                 "zen_limit": self.var_zen_limit.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
-                "open_count": self.var_open_count.get()
+                "open_count": self.var_open_count.get(),
+                "hide_satoru": self.var_hide_satoru.get()
             })
 
             # Update nested logic settings

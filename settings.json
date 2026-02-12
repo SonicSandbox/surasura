@@ -11,6 +11,8 @@
     "reinforce_segmentation": false,
     "telemetry_enabled": true,
     "sanitize_ja_terms": false,
+    "words_per_day": 10,
+    "show_words_per_day": true,
     "onboarding_completed": true,
     "logic": {
         "inline_completed_files": false,

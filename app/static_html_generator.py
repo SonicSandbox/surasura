@@ -179,9 +179,12 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
 
     json_str = json.dumps(data)
     logic_json_str = json.dumps(logic_settings)
+    words_per_day = settings.get("words_per_day", 5) if 'settings' in locals() else 5
+    show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
+
     html_content = html_content.replace(
         "let globalData = null;", 
-        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';"
+        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};"
     )
 
     # Embed Icon as Favicon and Header Logo

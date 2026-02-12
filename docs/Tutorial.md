@@ -62,7 +62,7 @@ The analysis report provides specific metrics to guide your learning:
 
 
 ## 7. Graduating Content
-Once you have learned the vocabulary from a specific file or episode, you can **Graduate** it. 
+Once you have learned the vocabulary from a specific file or episode AND *consumed it*, you can **Graduate** it. 
 
 This transition ensures your analysis stays fresh and reflects your actual progress.
 

@@ -138,6 +138,8 @@ class MasterDashboardApp:
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
+        self.var_words_per_day = tk.IntVar(value=5) # Target words per day
+        self.var_show_words_per_day = tk.BooleanVar(value=True) # Show target days calculation
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -199,6 +201,8 @@ class MasterDashboardApp:
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.var_sanitize_ja.trace_add("write", self.save_settings)
+        self.var_words_per_day.trace_add("write", self.save_settings)
+        self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -575,7 +579,20 @@ class MasterDashboardApp:
         
         # Sanitize Japanese Terms (Japanese only)
         self.chk_sanitize_ja = ttk.Checkbutton(settings_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
+        self.chk_sanitize_ja.pack(anchor=tk.W)
         ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
+
+        # Words Per Day Settings
+        wpd_frame = ttk.Frame(settings_frame)
+        wpd_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        chk_show_wpd = ttk.Checkbutton(wpd_frame, text="Show 'Target Days' estimate", variable=self.var_show_words_per_day)
+        chk_show_wpd.pack(side=tk.LEFT)
+        ToolTip(chk_show_wpd, "Display how many days it will take to reach your target coverage based on your daily word limit.")
+
+        ttk.Label(wpd_frame, text="Words Per Day:").pack(side=tk.LEFT, padx=(20, 5))
+        ttk.Entry(wpd_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT)
+        ToolTip(wpd_frame, "Your daily learning target. Used to estimate completion time in the report.")
 
         # Initial visibility set by update_ui
         self.update_ui_for_language()
@@ -680,6 +697,8 @@ class MasterDashboardApp:
                     self.var_reinforce.set(settings.get("reinforce_segmentation", False))
                     self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
                     self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
+                    self.var_words_per_day.set(settings.get("words_per_day", 5))
+                    self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
 
@@ -708,6 +727,8 @@ class MasterDashboardApp:
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "sanitize_ja_terms": self.var_sanitize_ja.get(),
+                "words_per_day": self.var_words_per_day.get(),
+                "show_words_per_day": self.var_show_words_per_day.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "logic": self.logic_settings
             }

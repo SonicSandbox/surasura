@@ -1067,6 +1067,33 @@
             font-weight: bold;
             letter-spacing: 0.5px;
         }
+
+        /* --- Target Days Section --- */
+        .target-days-box {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px dashed rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 10px;
+            margin: 10px 0 20px 0;
+            text-align: center;
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            opacity: 0.5;
+            transition: opacity 0.3s, background 0.3s, border-color 0.3s, color 0.3s;
+            cursor: default;
+        }
+
+        .target-days-box:hover {
+            opacity: 1;
+            background: rgba(98, 0, 238, 0.08);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        body.theme-zen-focus .target-days-box {
+            background: transparent;
+            border: 1px solid #222;
+        }
     </style>
 </head>
 
@@ -1454,7 +1481,12 @@
                 // Continuous Scroll for Zen (Infinite Scroll applied to Files!)
                 // CSS handles hiding sidebar and reshaping container
 
-                // Use infinite scroll for files themselves
+                // Calculate cumulative word counts for Zen Mode
+                let currentCumulative = 0;
+                globalData.progressive.forEach(f => {
+                    currentCumulative += f.words.length;
+                    f.cumulativeWords = currentCumulative;
+                });
 
                 // Use infinite scroll for files themselves
                 setupInfiniteScroll(listContainer, globalData.progressive, createZenFileSection, 3); // Load 3 files at a time? 
@@ -1483,6 +1515,13 @@
                 // Prepare file list including completed if needed
                 let fileList = [];
                 const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
+
+                // Calculate cumulative word counts
+                let currentCumulative = 0;
+                globalData.progressive.forEach(f => {
+                    currentCumulative += f.words.length;
+                    f.cumulativeWords = currentCumulative;
+                });
 
                 if (inlineCompleted && globalData.file_order && globalData.file_order.length > 0) {
                     const compFiles = new Map((globalData.completed_files || []).map(f => [f.filename, f]));
@@ -1544,6 +1583,8 @@
             const stats = calculateFileStats(fileData.words);
             if (stats) {
                 fileSection.appendChild(createComprehensionBar(stats));
+                const targetDays = createTargetDaysBox(fileData.cumulativeWords || fileData.words.length);
+                if (targetDays) fileSection.appendChild(targetDays);
             }
 
             // Container for words
@@ -1585,7 +1626,7 @@
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
-                    await renderFileWords(fileData.words, fileData.is_goal_content);
+                    await renderFileWords(fileData.words, fileData.is_goal_content, fileData.cumulativeWords);
                 }
             } else {
                 const fileData = item.data;
@@ -1691,7 +1732,7 @@
             loadNextChunk();
         }
 
-        async function renderFileWords(words, isGoalContent = false) {
+        async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0) {
             const listContainer = document.getElementById('progressive-list');
             // Do NOT clear listContainer here if we want to keep previous files in Zen mode?
             // Actually, for Progressive View (non-Zen), we clear it.
@@ -1713,6 +1754,9 @@
             if (!isZen) {
                 const statsBar = createComprehensionBar(stats);
                 listContainer.appendChild(statsBar);
+
+                const targetDays = createTargetDaysBox(cumulativeWords || words.length);
+                if (targetDays) listContainer.appendChild(targetDays);
             }
 
             const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
@@ -1775,6 +1819,27 @@
             const countsHtml = isZen ? '' : `<span style="opacity: 0.5; margin-right: 12px; font-size: 0.85em;">(${stats.known} / ${stats.total})</span>`;
 
             el.innerHTML = ` <div class="stats-row"><span style="font-weight: bold; color: var(--secondary);">Learning Growth</span><span>${countsHtml}Target: <strong>${stats.target.toFixed(2)}%</strong></span></div><div class="progress-container"><div class="progress-segment segment-base" style="width: ${baseWidth}%" title="Baseline: ${stats.baseline}%"></div><div class="progress-segment segment-start" style="width: ${startWidth}%" title="Previous Progress: ${(stats.start - stats.baseline).toFixed(2)}%"></div><div class="progress-segment segment-target" style="width: ${targetWidth}%" title="Target Progress: ${(stats.target - stats.start).toFixed(2)}%"></div></div><div class="legend"><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.3;"></span>Baseline (${stats.baseline.toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.6;"></span>Carried Over (+${(stats.start - stats.baseline).toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50;"></span>This File (+${(stats.target - stats.start).toFixed(1)}%)</div></div>`;
+            return el;
+        }
+
+        function createTargetDaysBox(wordCount) {
+            const show = typeof globalShowWordsPerDay !== 'undefined' ? globalShowWordsPerDay : true;
+            if (!show) return null;
+
+            const wpd = (typeof globalWordsPerDay !== 'undefined' && globalWordsPerDay > 0) ? globalWordsPerDay : 5;
+            const days = Math.ceil(wordCount / wpd);
+
+            const el = document.createElement('div');
+            el.className = 'target-days-box';
+
+            // Extension-avoidance using pseudo-elements
+            el.innerHTML = `
+                <span class="hidden-content" data-content="At " migaku_ignore data-yomichan-ignore></span>
+                <span class="hidden-content" style="font-weight: bold" data-content="${wpd} words" migaku_ignore data-yomichan-ignore></span>
+                <span class="hidden-content" data-content=" a day, reach your target in " migaku_ignore data-yomichan-ignore></span>
+                <span class="hidden-content" style="font-weight: bold" data-content="${days} days" migaku_ignore data-yomichan-ignore></span>
+                <span class="hidden-content" data-content="!" migaku_ignore data-yomichan-ignore></span>
+            `;
             return el;
         }
 

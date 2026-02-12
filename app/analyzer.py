@@ -554,7 +554,6 @@ def main():
     parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
     parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
     parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
-    parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode (25-125)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize Japanese terms (strip hyphen/space suffixes)")
@@ -1083,7 +1082,7 @@ def main():
                 
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
-            static_html_generator.generate_static_html(theme=args.theme, zen_limit=args.zen_limit)
+            static_html_generator.generate_static_html(theme=args.theme)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
 

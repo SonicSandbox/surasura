@@ -26,7 +26,7 @@ def test_html_generation(tmp_path):
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
          
          # Run generator
-         generate_static_html(theme="modern-light")
+         generate_static_html(theme="default")
          
          assert output_html.exists()
          
@@ -35,6 +35,6 @@ def test_html_generation(tmp_path):
              
          # Verify injection
          assert "let globalData = {" in content
-         assert "let globalTheme = 'modern-light';" in content
+         assert "let globalTheme = 'default';" in content
          # Verify logo injection wasn't attempted if icon missing (mocked exists check? no, we didn't mock os.path.exists)
          # That's fine, we just want to ensure it runs without crashing.

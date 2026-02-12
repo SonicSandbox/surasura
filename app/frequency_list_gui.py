@@ -186,8 +186,20 @@ class FrequencyListGUI:
             try:
                 base_name = os.path.basename(src)
                 # Automatically add prefix if missing, so analyzer.py detects it
+                # Analyzer expects: frequency_list_{language}_{name}.csv
+                prefix = f"frequency_list_{self.language}_"
+                
                 if not base_name.startswith("frequency_list_"):
-                    dest_name = f"frequency_list_{base_name}"
+                    dest_name = f"{prefix}{base_name}"
+                elif base_name.startswith("frequency_list_") and not base_name.startswith(prefix):
+                    # Has generic prefix but not specific lang prefix? modify it?
+                    # E.g. frequency_list_Novel.csv -> frequency_list_zh_Novel.csv
+                    # Or just assume if it has the prefix it's fine? 
+                    # Analyzer is strict: startswith(f"frequency_list_{language}_")
+                    
+                    # Implementation: Replace generic prefix with specific one
+                    suffix = base_name.replace("frequency_list_", "")
+                    dest_name = f"{prefix}{suffix}"
                 else:
                     dest_name = base_name
                     

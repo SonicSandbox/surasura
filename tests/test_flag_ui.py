@@ -20,30 +20,37 @@ class TestFlagUI(unittest.TestCase):
 
     def test_flag_updates(self):
         # Initial state (should be ja -> 🇯🇵)
-        # Note: setup_ui sets initial state.
-        # But wait, MasterDashboardApp.__init__ calls setup_ui then update_ui_for_language.
+        # Note: MasterDashboardApp.__init__ calls update_ui_for_language.
+        
+        # We need to ensure settings window is created for widget tests
+        self.app.create_settings_window()
         
         # Check initial (default ja)
         self.assertEqual(self.app.var_language.get(), "ja")
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
         
+        # In 'ja', chk_sanitize_ja should be visible, chk_reinforce_widget should be hidden
+        # We check winfo_manager() - it returns 'pack' if managed by pack, '' if not.
+        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "pack")
+        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
+        
         # Switch to Chinese
         self.app.var_language.set("zh")
-        # update_ui_for_language is traced? 
-        # In __init__: self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
-        # So setting the var should trigger the update.
-        # However, trace callbacks might be async or require mainloop step in some environments, 
-        # but usually in simple scripts it happens immediately on set().
-        # Let's verify if we need to manually call it or if trace works.
-        # To be safe and test the logic specifically, we can also call it manually if trace fails in test env.
-        self.app.update_ui_for_language() 
+        # Trace handles update_ui_for_language()
         
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇨🇳")
+        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "pack")
+        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "")
+        
+        # Verify container nesting
+        self.assertEqual(self.app.chk_reinforce_widget.master, self.app.lang_options_frame)
+        self.assertEqual(self.app.lang_options_frame.master, self.app.chk_reinforce_widget.winfo_toplevel().children['!labelframe']) # ' Advanced Settings' frame
         
         # Switch back to Japanese
         self.app.var_language.set("ja")
-        self.app.update_ui_for_language()
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
+        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "pack")
+        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
 
 if __name__ == '__main__':
     unittest.main()

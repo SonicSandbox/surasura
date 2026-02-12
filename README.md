@@ -5,6 +5,8 @@
 
 ![Results](docs/assets/images/img_readability_results.PNG)
 
+Map your Exact Path to 
+
 > **The only frequency list that matters is the one based on YOUR watch / read list.**
 
 A tool that generates THAT list, and gives you the episode-by-episode (or chapter) *highest-leverage* order order based on:

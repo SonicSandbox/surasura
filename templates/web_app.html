@@ -30,6 +30,10 @@
             height: 100vh;
             display: flex;
             flex-direction: column;
+            cursor: default;
+            /* Default arrow cursor */
+            caret-color: transparent;
+            /* Hide blinking text caret */
         }
 
         /* --- Loading Screen --- */
@@ -253,12 +257,6 @@
             text-shadow: 0 0 3px rgba(3, 218, 198, 0.4);
         }
 
-        /* Zen Mode Specific Subtlety (Lowkey / Grayscale) */
-        body.theme-zen-focus .priority-marker {
-            filter: grayscale(100%) opacity(0.4);
-            font-size: 1.1rem;
-            margin-left: 18px;
-        }
 
         .tier-badge {
             background-color: #333;
@@ -500,161 +498,6 @@
             border-radius: 50%;
         }
 
-        /* --- THEME: Zen Focus --- */
-        body.theme-zen-focus {
-            --background: #000000;
-            --surface: #0a0a0a;
-            --card-border: #1a1a1a;
-            --primary: #ffffff;
-            --secondary: #aaaaaa;
-            --text-primary: #dddddd;
-            --text-secondary: #666666;
-            background-color: var(--background);
-            color: var(--text-primary);
-            font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
-            overflow-y: auto !important;
-            height: auto !important;
-            display: block !important;
-        }
-
-        body.theme-zen-focus #content-area,
-        body.theme-zen-focus .view,
-        body.theme-zen-focus .progressive-container,
-        body.theme-zen-focus .word-list-container {
-            overflow: visible !important;
-            height: auto !important;
-            flex: none !important;
-            display: block !important;
-        }
-
-        body.theme-zen-focus .word-list-container {
-            max-width: 700px;
-            margin: 0 auto;
-            padding: 40px 20px;
-        }
-
-        body.theme-zen-focus header {
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            background-color: rgba(0, 0, 0, 0.9);
-            border-bottom: 1px solid var(--card-border);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0 20px;
-        }
-
-        body.theme-zen-focus header h1 {
-            margin: 0;
-            padding: 10px 0;
-            font-size: 1.2rem;
-            opacity: 0.5;
-        }
-
-        body.theme-zen-focus * {
-            box-shadow: none !important;
-            transition: none !important;
-            animation: none !important;
-            backdrop-filter: none !important;
-        }
-
-
-
-        body.theme-zen-focus .card {
-            background-color: transparent;
-            border: 1px solid var(--card-border);
-            border-radius: 4px;
-            padding: 15px;
-            margin-bottom: 10px;
-        }
-
-        body.theme-zen-focus .word-main {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: var(--primary);
-        }
-
-        body.theme-zen-focus .reading {
-            color: var(--secondary);
-            font-size: 1.2rem;
-            margin-left: 12px;
-        }
-
-        body.theme-zen-focus .context-box {
-            background: transparent;
-            border: none;
-            border-left: 1px solid var(--text-secondary);
-            padding-left: 10px;
-            font-size: 1.2rem;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        body.theme-zen-focus .context-item-zen {
-            line-height: 1.5;
-        }
-
-
-
-        body.theme-zen-focus .context-box em {
-            color: var(--primary);
-            font-weight: bold;
-            text-decoration: underline;
-        }
-
-        body.theme-zen-focus .file-sidebar {
-            background-color: var(--background);
-            border-right: 1px solid var(--card-border);
-        }
-
-        body.theme-zen-focus .file-tab {
-            border: none;
-            padding: 8px 15px;
-            font-size: 0.85rem;
-        }
-
-        body.theme-zen-focus .file-tab.active {
-            background-color: var(--card-border);
-            color: var(--primary);
-        }
-
-        body.theme-zen-focus .comprehension-stats {
-            background-color: var(--background);
-            border: 1px solid var(--card-border);
-            padding: 10px;
-            font-size: 0.8rem;
-        }
-
-        body.theme-zen-focus .progress-container {
-            height: 4px;
-            background: #111;
-        }
-
-        body.theme-zen-focus .progress-segment.segment-base {
-            background: #333;
-        }
-
-        body.theme-zen-focus .progress-segment.segment-start {
-            background: #666;
-        }
-
-        body.theme-zen-focus .progress-segment.segment-target {
-            background: #999;
-        }
-
-        body.theme-zen-focus .btn-ignore {
-            background: transparent;
-            border: 1px solid var(--card-border);
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-        }
-
-        body.theme-zen-focus .btn-ignore:hover {
-            border-color: #ff0000;
-            color: #ff0000;
-        }
 
         /* --- THEME: Midnight (Vibrant) --- */
         body.theme-midnight-vibrant {
@@ -714,52 +557,46 @@
         }
 
         /* --- THEME: World Class (Flow) --- */
+        /* --- THEME: World Class (Flow) --- */
         body.theme-world-class {
-            --background: #0a0a0a;
-            --surface: #141414;
-            --card-border: #222;
-            --primary: #bb86fc;
-            --secondary: #03dac6;
-            --text-secondary: #888;
-            font-family: 'Inter', 'Segoe UI', sans-serif;
-            /* Cleaner font stack */
+            --background: #0a0a0a !important;
+            --surface: #141414 !important;
+            --card-border: #222 !important;
+            --primary: #bb86fc !important;
+            --secondary: #03dac6 !important;
+            --text-secondary: #888 !important;
+            font-family: 'Inter', 'Segoe UI', sans-serif !important;
+            background-color: var(--background) !important;
+            color: #fff !important;
         }
 
         body.theme-world-class header {
-            background-color: rgba(20, 20, 20, 0.8);
+            background-color: rgba(20, 20, 20, 0.9) !important;
             backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
             box-shadow: none;
         }
 
         body.theme-world-class .card {
-            background-color: transparent;
-            /* Simplicity */
-            border: none;
-            border-bottom: 1px solid var(--card-border);
-            border-radius: 0;
-            padding: 25px 0;
-            /* More breathing room */
-            margin-bottom: 0;
-            box-shadow: none;
-        }
-
-        body.theme-world-class .card-header {
-            margin-bottom: 12px;
+            background-color: transparent !important;
+            border: none !important;
+            border-bottom: 1px solid var(--card-border) !important;
+            border-radius: 0 !important;
+            padding: 25px 0 !important;
+            margin-bottom: 0 !important;
+            box-shadow: none !important;
         }
 
         body.theme-world-class .word-main {
-            font-size: 2rem;
-            /* Larger focus */
-            font-weight: 300;
-            /* Lighter weight for elegance */
-            color: #fff;
+            font-size: 2rem !important;
+            font-weight: 300 !important;
+            color: #fff !important;
             letter-spacing: 0.05em;
         }
 
         body.theme-world-class .reading {
             font-size: 1.1rem;
-            color: var(--primary);
+            color: var(--primary) !important;
             opacity: 0.8;
             font-weight: 400;
         }
@@ -1292,86 +1129,37 @@
             }
 
             const hasIgnored = ignoredWords.size > 0;
-            // Container always visible now because it holds the Toggle Button
-            container.style.display = 'flex';
-
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
-            const showIgnoreApps = hasIgnored && !isZen;
 
             // Toggle visibility of ignore-specific buttons
-            if (btnClear) btnClear.style.display = showIgnoreApps ? 'inline-block' : 'none';
-            if (btnCopy) btnCopy.style.display = showIgnoreApps ? 'inline-block' : 'none';
-
-            // Fix variable name usage from previous block context if needed, or re-select
-            const bCopy = document.getElementById('btn-copy-ignore');
-            if (bCopy) bCopy.style.display = showIgnoreApps ? 'inline-block' : 'none';
+            btnClear.style.display = hasIgnored ? 'inline-block' : 'none';
+            btnCopy.style.display = hasIgnored ? 'inline-block' : 'none';
 
             if (hasIgnored) {
                 btnClear.textContent = `Un-hide All (${ignoredWords.size})`;
             }
 
-            // --- Enforce Zen Mode Layout for Dark Flow / Zen Focus ---
-            if (isZen) {
-                // 1. Center Title
-                const h1 = document.querySelector('header h1');
-                if (h1) {
-                    h1.style.textAlign = 'center';
-                    h1.style.flex = '1';
-                    h1.style.margin = '0';
-                    // If logo exists (injected by python), center the container
-                    if (h1.parentElement.tagName === 'DIV' && h1.parentElement.style.display === 'flex') {
-                        h1.parentElement.style.justifyContent = 'center';
-                        h1.parentElement.style.width = '100%';
-                    }
-                }
-
-                // 2. Hide Extra Buttons (Theme, Settings, Github)
-                // Assuming they are usually children of header or a container.
-                // We want to KEEP: Title, logo, and btn-toggle-sentences.
-                // We want to HIDE: everything else.
-
-                const header = document.querySelector('header');
-                if (header) {
-                    Array.from(header.children).forEach(child => {
-                        // Keep Title Container (div with logo+h1) or H1 itself
-                        const isTitle = child.tagName === 'H1' || (child.tagName === 'DIV' && child.querySelector('h1'));
-                        // Keep Toggle Button Container (ignore-controls)
-                        const isIgnoreControls = child.id === 'ignore-controls';
-
-                        if (!isTitle && !isIgnoreControls) {
-                            child.style.display = 'none';
-                        }
-                    });
-                }
-            }
+            // Container always visible now because it holds the Toggle Button
+            container.style.display = 'flex';
         }
 
         // --- Initialization ---
         window.addEventListener('load', async () => {
             try {
-                const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
-
-                if (typeof globalTheme !== 'undefined' && globalTheme) {
-                    // Sanitize theme name for class usage (remove spaces/parens)
-                    const themeClass = 'theme-' + globalTheme.replace(/[^a-zA-Z0-9-_]/g, '-');
-                    document.body.classList.add(themeClass);
-                } else {
-                    document.body.classList.add('theme-default');
-                }
-
-                // Injected tabs if NOT zen
-                if (!isZen) {
-                    const header = document.querySelector('header');
-                    const tabsDiv = document.createElement('div');
-                    tabsDiv.className = 'main-tabs';
-                    tabsDiv.innerHTML = `
-                        <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
-                        <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
-                    `;
-                    header.appendChild(tabsDiv);
-                }
+                const header = document.querySelector('header');
+                const tabsDiv = document.createElement('div');
+                tabsDiv.className = 'main-tabs';
+                tabsDiv.innerHTML = `
+                    <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
+                    <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
+                `;
+                header.appendChild(tabsDiv);
 
                 updateClearButtonVisibility();
+
+                // --- Apply Theme ---
+                if (typeof globalTheme !== 'undefined' && globalTheme !== 'default') {
+                    document.body.classList.add(`theme-${globalTheme}`);
+                }
 
                 // --- Filter Global Data with Local Ignore List ---
                 if (globalData && ignoredWords.size > 0) {
@@ -1405,14 +1193,8 @@
                 document.getElementById('loading-screen').style.display = 'none';
 
                 // Render Views
-                const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
                 await renderProgressiveView();
-                if (!isZen) {
-                    await renderPriorityView();
-                } else {
-                    const priorityView = document.getElementById('view-priority');
-                    if (priorityView) priorityView.remove();
-                }
+                await renderPriorityView();
 
             }
 
@@ -1467,146 +1249,63 @@
         async function renderProgressiveView() {
             const tabsContainer = document.getElementById('file-tabs');
             const listContainer = document.getElementById('progressive-list');
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
+            const inlineCompleted = (typeof globalLogic !== 'undefined' && globalLogic.inline_completed_files);
 
-            tabsContainer.innerHTML = "";
-            listContainer.innerHTML = "";
+            // Prepare file list including completed if needed
+            let fileList = [];
+            const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
 
-            if (!globalData.progressive || globalData.progressive.length === 0) {
-                listContainer.innerHTML = "<p style='padding:20px'>No progressive data available.</p>";
-                return;
-            }
-
-            if (isZen) {
-                // Continuous Scroll for Zen (Infinite Scroll applied to Files!)
-                // CSS handles hiding sidebar and reshaping container
-
-                // Calculate cumulative word counts for Zen Mode
-                let currentCumulative = 0;
-                globalData.progressive.forEach(f => {
-                    currentCumulative += f.words.length;
-                    f.cumulativeWords = currentCumulative;
-                });
-
-                // Use infinite scroll for files themselves
-                setupInfiniteScroll(listContainer, globalData.progressive, createZenFileSection, 3); // Load 3 files at a time? 
-
-                // Render completed files (Zen Mode) - summary list at bottom
-                if (globalData.completed_files && globalData.completed_files.length > 0) {
-                    const completedSection = document.createElement('div');
-                    completedSection.className = 'zen-file-section';
-                    completedSection.innerHTML = `<h2 class="zen-file-title" style="margin-top:60px; border-bottom:1px solid #333; padding-bottom:5px; color:#4caf50;">Completed Files (${globalData.completed_files.length})</h2><p style="color:#888; font-style:italic;">These files require no new learning to meet your target coverage.</p>`;
-
-                    globalData.completed_files.forEach(file => {
-                        const fDiv = document.createElement('div');
-                        fDiv.style.padding = "10px 0";
-                        fDiv.style.borderBottom = "1px solid #222";
-                        fDiv.style.color = "#aaa";
-                        const stats = file.stats || {};
-                        fDiv.innerHTML = `<div style="display:flex; justify-content:space-between;"><span>${file.filename}</span><span>${stats["Coverage (%)"]}% Coverage</span></div>`;
-                        completedSection.appendChild(fDiv);
-                    });
-                    listContainer.appendChild(completedSection);
-                }
-
-            } else {
-                const inlineCompleted = (typeof globalLogic !== 'undefined' && globalLogic.inline_completed_files);
-
-                // Prepare file list including completed if needed
-                let fileList = [];
-                const progFiles = new Map((globalData.progressive || []).map(f => [f.filename, f]));
-
-                // Calculate cumulative word counts
-                let currentCumulative = 0;
-                globalData.progressive.forEach(f => {
-                    currentCumulative += f.words.length;
-                    f.cumulativeWords = currentCumulative;
-                });
-
-                if (inlineCompleted && globalData.file_order && globalData.file_order.length > 0) {
-                    const compFiles = new Map((globalData.completed_files || []).map(f => [f.filename, f]));
-
-                    globalData.file_order.forEach(fname => {
-                        if (progFiles.has(fname)) fileList.push({ type: 'prog', data: progFiles.get(fname) });
-                        else if (compFiles.has(fname)) fileList.push({ type: 'comp', data: compFiles.get(fname) });
-                    });
-                } else {
-                    // Standard Order
-                    globalData.progressive.forEach(f => fileList.push({ type: 'prog', data: f }));
-                }
-
-                if (fileList.length > 500) {
-                    setupInfiniteScroll(tabsContainer, fileList, createSidebarTab, 50);
-                } else {
-                    fileList.forEach((item, index) => {
-                        tabsContainer.appendChild(createSidebarTab(item));
-                    });
-
-                    // Render Completed divider manually if not inline?
-                    if (!inlineCompleted && globalData.completed_files && globalData.completed_files.length > 0) {
-                        const divider = document.createElement('div');
-                        divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
-                        tabsContainer.appendChild(divider);
-
-                        globalData.completed_files.forEach(f => {
-                            tabsContainer.appendChild(createSidebarTab({ type: 'comp', data: f }));
-                        });
-                    }
-                }
-
-                // Initial Load
-                if (fileList.length > 0) {
-                    // Activate first tab visually (if present)
-                    setTimeout(() => {
-                        const firstTab = tabsContainer.querySelector('.file-tab');
-                        if (firstTab) {
-                            firstTab.classList.add('active');
-                            firstTab.click(); // Trigger load
-                        }
-                    }, 50);
-                }
-            }
-        }
-
-        function createZenFileSection(fileData) {
-            const fileSection = document.createElement('div');
-            fileSection.className = 'zen-file-section';
-
-            const safeFilename = escapeHtml(fileData.filename);
-            let titleHtml = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span>`;
-            if (fileData.is_goal_content) {
-                titleHtml += ` <span style="font-size:0.6em; color:#4caf50; vertical-align:middle; border:1px solid #4caf50; padding:2px 6px; border-radius:4px; margin-left:10px;">GOAL</span>`;
-            }
-
-            fileSection.innerHTML = `<h2 class="zen-file-title">${titleHtml}</h2>`;
-
-            const stats = calculateFileStats(fileData.words);
-            if (stats) {
-                fileSection.appendChild(createComprehensionBar(stats));
-                const targetDays = createTargetDaysBox(fileData.cumulativeWords || fileData.words.length);
-                if (targetDays) fileSection.appendChild(targetDays);
-            }
-
-            // Container for words
-            const wordsContainer = document.createElement('div');
-            fileSection.appendChild(wordsContainer);
-
-            // Trigger Infinite Scroll for words inside this file
-            // Delay slightly to let file rendering finish?
-            requestAnimationFrame(() => {
-                try {
-                    const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
-
-                    // Always use cards now, thanks to Infinite Scroll perf.
-                    setupInfiniteScroll(wordsContainer, fileData.words, createWordCard, chunkSize);
-                } catch (e) {
-                    console.error("Error setting up infinite scroll for file:", fileData.filename, e);
-                    wordsContainer.innerHTML = `<p style="color:red">Error loading words: ${e.message}</p>`;
-                }
+            // Calculate cumulative word counts
+            let currentCumulative = 0;
+            globalData.progressive.forEach(f => {
+                currentCumulative += f.words.length;
+                f.cumulativeWords = currentCumulative;
             });
 
-            return fileSection;
+            if (inlineCompleted && globalData.file_order && globalData.file_order.length > 0) {
+                const compFiles = new Map((globalData.completed_files || []).map(f => [f.filename, f]));
+
+                globalData.file_order.forEach(fname => {
+                    if (progFiles.has(fname)) fileList.push({ type: 'prog', data: progFiles.get(fname) });
+                    else if (compFiles.has(fname)) fileList.push({ type: 'comp', data: compFiles.get(fname) });
+                });
+            } else {
+                // Standard Order
+                globalData.progressive.forEach(f => fileList.push({ type: 'prog', data: f }));
+            }
+
+            if (fileList.length > 500) {
+                setupInfiniteScroll(tabsContainer, fileList, createSidebarTab, 50);
+            } else {
+                fileList.forEach((item, index) => {
+                    tabsContainer.appendChild(createSidebarTab(item));
+                });
+
+                // Render Completed divider manually if not inline?
+                if (!inlineCompleted && globalData.completed_files && globalData.completed_files.length > 0) {
+                    const divider = document.createElement('div');
+                    divider.innerHTML = `<div style="padding: 15px 20px; color: #4caf50; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 10px;">Target Met</div>`;
+                    tabsContainer.appendChild(divider);
+
+                    globalData.completed_files.forEach(f => {
+                        tabsContainer.appendChild(createSidebarTab({ type: 'comp', data: f }));
+                    });
+                }
+            }
+
+            // Initial Load
+            if (fileList.length > 0) {
+                // Activate first tab visually (if present)
+                setTimeout(() => {
+                    const firstTab = tabsContainer.querySelector('.file-tab');
+                    if (firstTab) {
+                        firstTab.classList.add('active');
+                        firstTab.click(); // Trigger load
+                    }
+                }, 50);
+            }
         }
+
 
         function createSidebarTab(item) {
             const tab = document.createElement('div');
@@ -1734,24 +1433,16 @@
 
         async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0) {
             const listContainer = document.getElementById('progressive-list');
-            // Do NOT clear listContainer here if we want to keep previous files in Zen mode?
-            // Actually, for Progressive View (non-Zen), we clear it.
-            // For Zen, we append.
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
-
-            if (!isZen) {
-                listContainer.innerHTML = "";
-            }
+            listContainer.innerHTML = "";
 
             if (!words || words.length === 0) {
-                if (!isZen) listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
+                listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
                 return;
             }
 
             // Create Comprehension Bar
             const stats = calculateFileStats(words);
-            // In Zen mode, the bar is inside the file section, handled by caller
-            if (!isZen) {
+            if (stats) {
                 const statsBar = createComprehensionBar(stats);
                 listContainer.appendChild(statsBar);
 
@@ -1807,7 +1498,6 @@
         }
 
         function createComprehensionBar(stats) {
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
             const el = document.createElement('div');
             el.className = 'comprehension-stats';
 
@@ -1816,7 +1506,7 @@
             const targetWidth = stats.target - stats.start;
             const remainingWidth = 100 - stats.target;
 
-            const countsHtml = isZen ? '' : `<span style="opacity: 0.5; margin-right: 12px; font-size: 0.85em;">(${stats.known} / ${stats.total})</span>`;
+            const countsHtml = `<span style="opacity: 0.5; margin-right: 12px; font-size: 0.85em;">(${stats.known} / ${stats.total})</span>`;
 
             el.innerHTML = ` <div class="stats-row"><span style="font-weight: bold; color: var(--secondary);">Learning Growth</span><span>${countsHtml}Target: <strong>${stats.target.toFixed(2)}%</strong></span></div><div class="progress-container"><div class="progress-segment segment-base" style="width: ${baseWidth}%" title="Baseline: ${stats.baseline}%"></div><div class="progress-segment segment-start" style="width: ${startWidth}%" title="Previous Progress: ${(stats.start - stats.baseline).toFixed(2)}%"></div><div class="progress-segment segment-target" style="width: ${targetWidth}%" title="Target Progress: ${(stats.target - stats.start).toFixed(2)}%"></div></div><div class="legend"><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.3;"></span>Baseline (${stats.baseline.toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50; opacity: 0.6;"></span>Carried Over (+${(stats.start - stats.baseline).toFixed(1)}%)</div><div class="legend-item"><span class="dot" style="background: #4caf50;"></span>This File (+${(stats.target - stats.start).toFixed(1)}%)</div></div>`;
             return el;
@@ -1895,7 +1585,6 @@
         // --- Card Component ---
         // --- Word Card Component (Optimized) ---
         function createWordCard(data) {
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
             const el = document.createElement('div');
             el.className = 'card';
 
@@ -1914,44 +1603,6 @@
             const c1 = data["Context 1"] || data.Context || "";
             const displayC1 = formatContext(c1);
 
-            if (isZen) {
-                const c2 = data["Context 2"] || "";
-                const c3 = data["Context 3"] || "";
-                const dC2 = formatContext(c2);
-                const dC3 = formatContext(c3);
-
-                const freq = data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : null);
-                const displayFreq = (freq !== null) ? `<span class="freq-zen" style="margin-left:auto; opacity:0.6; font-size:1.0rem; font-family:monospace;">F:${freq}</span>` : '';
-
-                // Priority Logic from Settings
-                const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
-
-                const high = parseInt(data["Count (High)"]) || 0;
-                const low = parseInt(data["Count (Low)"]) || 0;
-                const total = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
-
-                let markersHtml = '';
-                if (total > 0 && (high / total) >= pm.lopsided_threshold) {
-                    markersHtml += `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>`;
-                } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
-                    markersHtml += `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>`;
-                }
-
-                el.innerHTML = `
-                    <div class="card-header" style="margin-bottom:15px; display:flex; align-items:baseline;">
-                        <span class="word-main">${safeWord}</span>
-                        <span class="reading" style="margin-left: 15px; font-size: 1.3rem; opacity: 0.7;">${data.Reading || ''}</span>
-                        ${displayFreq}
-                        <div style="margin-left:12px; display:flex; align-items:center;">${markersHtml}</div>
-                    </div>
-                    <div class="context-box">
-                        <div class="context-item-zen">${displayC1}</div>
-                        ${c2 ? `<div class="context-item-zen">${dC2}</div>` : ''}
-                        ${c3 ? `<div class="context-item-zen">${dC3}</div>` : ''}
-                    </div>
-                `;
-                return el;
-            }
 
             // Parse Tier data and create tier badges
             let tierBadgesHtml = '';
@@ -2020,43 +1671,33 @@
                 const extraDiv = document.createElement('div');
                 extraDiv.className = "extra-contexts";
 
-                // --- ZEN MODE LOGIC ---
-                if (isZen) {
-                    // Always show, no toggle, no lazy load
-                    const dC2 = formatContext(c2);
-                    const dC3 = formatContext(c3);
-                    extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
-                    extraDiv.classList.add('visible');
-                    el.appendChild(extraDiv);
-                } else {
-                    // --- STANDARD MODE LOGIC (Toggle + Lazy Load) ---
-                    const btn = document.createElement('button');
-                    btn.className = "toggle-contexts-btn";
-                    btn.innerHTML = `<span class="arrow">▼</span>`;
+                // --- STANDARD MODE LOGIC (Toggle + Lazy Load) ---
+                const btn = document.createElement('button');
+                btn.className = "toggle-contexts-btn";
+                btn.innerHTML = `<span class="arrow">▼</span>`;
 
-                    let loaded = false;
+                let loaded = false;
 
-                    // Toggle Logic
-                    const toggleLogic = () => {
-                        if (!loaded) {
-                            const dC2 = formatContext(c2);
-                            const dC3 = formatContext(c3);
-                            extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
-                            loaded = true;
-                        }
-                        extraDiv.classList.toggle('visible');
-                        btn.classList.toggle('active');
-                    };
-
-                    btn.onclick = toggleLogic;
-
-                    el.appendChild(btn);
-                    el.appendChild(extraDiv);
-
-                    // Respect global state on init
-                    if (globalShowAllSentences) {
-                        toggleLogic(); // Immediately expand
+                // Toggle Logic
+                const toggleLogic = () => {
+                    if (!loaded) {
+                        const dC2 = formatContext(c2);
+                        const dC3 = formatContext(c3);
+                        extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
+                        loaded = true;
                     }
+                    extraDiv.classList.toggle('visible');
+                    btn.classList.toggle('active');
+                };
+
+                btn.onclick = toggleLogic;
+
+                el.appendChild(btn);
+                el.appendChild(extraDiv);
+
+                // Respect global state on init
+                if (globalShowAllSentences) {
+                    toggleLogic(); // Immediately expand
                 }
             }
 
@@ -2177,23 +1818,22 @@
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-            const isZen = typeof globalTheme !== 'undefined' && globalTheme && globalTheme.toLowerCase() === 'zen focus';
 
             // Prevent default scrolling/caret movement for all navigation keys
             // Exception: Allow Up/Down in Zen mode if it's NOT a custom interaction
-            if (isNext || isPrev || (!isZen && (isUp || isDown))) {
+            if (isNext || isPrev || isUp || isDown) {
                 e.preventDefault();
             }
 
             // Selection: Standard themes have scrollable containers, Zen uses window
-            let scroller = isZen ? window : document.querySelector('.view.active .word-list-container');
-            if (!scroller && !isZen) return;
+            const scroller = document.querySelector('.view.active .word-list-container');
+            if (!scroller) return;
 
-            const activeCards = Array.from(document.querySelectorAll('.view.active .card, body.theme-zen-focus .card'));
+            const activeCards = Array.from(document.querySelectorAll('.view.active .card'));
             if (activeCards.length === 0) return;
 
-            const scrollerHeight = isZen ? window.innerHeight : scroller.clientHeight;
-            const scrollerTop = isZen ? 0 : scroller.getBoundingClientRect().top;
+            const scrollerHeight = scroller.clientHeight;
+            const scrollerTop = scroller.getBoundingClientRect().top;
             const centerLine = scrollerTop + (scrollerHeight / 2);
 
             let currentIndex = -1;
@@ -2213,7 +1853,7 @@
             if (currentIndex === -1) return;
 
             // Handle Context Toggle (Up/Down) - only in standard mode
-            if (!isZen && (isUp || isDown)) {
+            if (isUp || isDown) {
                 const centeredCard = activeCards[currentIndex];
                 const toggleBtn = centeredCard.querySelector('.toggle-contexts-btn');
                 if (toggleBtn) {
@@ -2241,22 +1881,14 @@
                     // Target: Card center at 35% from top of scroller viewport (15% above middle)
                     const offset = (scrollerHeight * 0.35) - (cardHeight / 2);
 
-                    if (isZen) {
-                        const cardTop = rect.top + window.pageYOffset;
-                        window.scrollTo({
-                            top: cardTop - offset,
-                            behavior: 'smooth'
-                        });
-                    } else {
-                        const containerRect = scroller.getBoundingClientRect();
-                        const currentScroll = scroller.scrollTop;
-                        const cardTopRelativeToContainer = rect.top - containerRect.top;
+                    const containerRect = scroller.getBoundingClientRect();
+                    const currentScroll = scroller.scrollTop;
+                    const cardTopRelativeToContainer = rect.top - containerRect.top;
 
-                        scroller.scrollTo({
-                            top: currentScroll + cardTopRelativeToContainer - offset,
-                            behavior: 'smooth'
-                        });
-                    }
+                    scroller.scrollTo({
+                        top: currentScroll + cardTopRelativeToContainer - offset,
+                        behavior: 'smooth'
+                    });
                 }
             }
         });

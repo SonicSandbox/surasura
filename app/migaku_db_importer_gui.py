@@ -266,8 +266,13 @@ class MigakuImporterGUI:
             messagebox.showerror("Error", f"Failed to run converter: {e}")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Migaku Importer")
+    parser.add_argument("--language", default="ja", help="Target language (ja, zh)")
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = MigakuImporterGUI(root)
+    app = MigakuImporterGUI(root, language=args.language)
     root.mainloop()
 
 if __name__ == "__main__":

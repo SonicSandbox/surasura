@@ -128,7 +128,6 @@ class MasterDashboardApp:
         # Initialize variables for Analyzer settings
         self.var_exclude_single = tk.BooleanVar(value=True) 
         self.var_min_freq = tk.IntVar(value=1) 
-        self.var_zen_limit = tk.IntVar(value=50) 
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
@@ -140,6 +139,7 @@ class MasterDashboardApp:
         self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
         self.var_words_per_day = tk.IntVar(value=5) # Target words per day
         self.var_show_words_per_day = tk.BooleanVar(value=True) # Show target days calculation
+        self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
         
         # Initialize status var early to satisfy linter
@@ -195,7 +195,6 @@ class MasterDashboardApp:
         # Add traces for auto-saving settings after initial load
         self.var_exclude_single.trace_add("write", self.save_settings)
         self.var_min_freq.trace_add("write", self.save_settings)
-        self.var_zen_limit.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
@@ -203,6 +202,7 @@ class MasterDashboardApp:
         self.var_sanitize_ja.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
+        self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -464,7 +464,7 @@ class MasterDashboardApp:
         theme_app_frame = ttk.Frame(view_frame)
         theme_app_frame.pack(fill=tk.X, pady=(0, 8))
 
-        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light']
+        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light', 'Zen Mode']
         self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
         self.combo_theme.set('Dark Flow')
         self.combo_theme.pack(side=tk.LEFT)
@@ -474,23 +474,20 @@ class MasterDashboardApp:
         chk_app_mode.pack(side=tk.LEFT, padx=(20, 0))
         ToolTip(chk_app_mode, "RECOMMENDS keeping it off until the migaku or lookupextension is turned on for that site.")
         
-        # Zen Limit Slider (Inline with Results)
-        zen_frame = ttk.Frame(view_frame)
-        # zen_frame.pack(fill=tk.X, pady=(0, 8)) # Hidden for now as per user request
+        # Zen Mode Limit Slider (Main GUI)
+        zen_limit_frame = ttk.Frame(view_frame)
+        zen_limit_frame.pack(fill=tk.X, pady=(0, 8))
         
-        ttk.Label(zen_frame, text="Zen Word Limit:").pack(side=tk.LEFT)
+        ttk.Label(zen_limit_frame, text="Zen Limit:").pack(side=tk.LEFT)
+        zen_slider_main = tk.Scale(zen_limit_frame, from_=25, to=125, orient=tk.HORIZONTAL, 
+                                   variable=self.var_zen_limit, showvalue=False,
+                                   bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
+                                   activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR, length=300)
+        zen_slider_main.pack(side=tk.LEFT, padx=(5, 10))
+        ToolTip(zen_slider_main, "Limit words for Zen Mode (25-125).")
         
-        zen_limit_slider = tk.Scale(zen_frame, from_=25, to=125, orient=tk.HORIZONTAL, 
-                                    variable=self.var_zen_limit, showvalue=False,
-                                    bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
-                                    activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
-        zen_limit_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
-        
-        zen_val_label = ttk.Label(zen_frame, textvariable=self.var_zen_limit, width=3)
-        zen_val_label.pack(side=tk.LEFT)
-        
-        ToolTip(zen_frame, "Only for Zen Focus mode: Number of words to include across all files.")
-
+        # Value Label on the right
+        ttk.Label(zen_limit_frame, textvariable=self.var_zen_limit, width=4).pack(side=tk.LEFT)
         btn_static = ttk.Button(view_frame, text="View Vocab Journey", style="Action.TButton", 
                    command=self.run_static_page)
         btn_static.pack(anchor=tk.W, fill=tk.X)
@@ -573,26 +570,33 @@ class MasterDashboardApp:
         ttk.Radiobutton(self.lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(self.lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
 
+
+
+        # Language Specific Options Container (Indented)
+        self.lang_options_frame = ttk.Frame(settings_frame)
+        self.lang_options_frame.pack(fill=tk.X, padx=(20, 0), pady=(0, 10))
+
         # Reinforce Segmentation (Chinese)
-        self.chk_reinforce_widget = ttk.Checkbutton(settings_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
+        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
         ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
         
         # Sanitize Japanese Terms (Japanese only)
-        self.chk_sanitize_ja = ttk.Checkbutton(settings_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
-        self.chk_sanitize_ja.pack(anchor=tk.W)
+        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
         ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
 
         # Words Per Day Settings
-        wpd_frame = ttk.Frame(settings_frame)
-        wpd_frame.pack(fill=tk.X, pady=(5, 0))
+        self.wpd_frame = ttk.Frame(settings_frame)
+        self.wpd_frame.pack(fill=tk.X, pady=(5, 0))
         
-        chk_show_wpd = ttk.Checkbutton(wpd_frame, text="Show 'Target Days' estimate", variable=self.var_show_words_per_day)
+        chk_show_wpd = ttk.Checkbutton(self.wpd_frame, text="Show 'Target Days' estimate", variable=self.var_show_words_per_day)
         chk_show_wpd.pack(side=tk.LEFT)
         ToolTip(chk_show_wpd, "Display how many days it will take to reach your target coverage based on your daily word limit.")
 
-        ttk.Label(wpd_frame, text="Words Per Day:").pack(side=tk.LEFT, padx=(20, 5))
-        ttk.Entry(wpd_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT)
-        ToolTip(wpd_frame, "Your daily learning target. Used to estimate completion time in the report.")
+        ttk.Label(self.wpd_frame, text="Words Per Day:").pack(side=tk.LEFT, padx=(20, 5))
+        ttk.Entry(self.wpd_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT)
+        ToolTip(self.wpd_frame, "Your daily learning target. Used to estimate completion time in the report.")
+
+
 
         # Initial visibility set by update_ui
         self.update_ui_for_language()
@@ -641,6 +645,33 @@ class MasterDashboardApp:
         else:
             self.settings_window.withdraw()
 
+    def update_ui_for_language(self):
+        """Updates UI elements based on selected language"""
+        lang = self.var_language.get()
+        
+        # 1. Update Flag Icon
+        if hasattr(self, 'lbl_flag'):
+             flag_icon = "🇨🇳" if lang == "zh" else "🇯🇵"
+             self.lbl_flag.config(text=flag_icon)
+
+        # 2. Update Settings Visibility
+        # 2. Update Settings Visibility
+        if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
+            # Hide both initially
+            self.chk_reinforce_widget.pack_forget()
+            self.chk_sanitize_ja.pack_forget()
+            
+            if lang == 'zh':
+                # Show Reinforce for Chinese
+                self.chk_reinforce_widget.pack(anchor=tk.W)
+                self.chk_reinforce_widget.configure(state='normal')
+            else:
+                # Show Sanitize for Japanese
+                self.chk_sanitize_ja.pack(anchor=tk.W)
+                self.chk_sanitize_ja.configure(state='normal')
+                self.var_reinforce.set(False)
+
+
     def check_updates_thread(self):
         """Background thread to check for updates"""
         try:
@@ -680,7 +711,6 @@ class MasterDashboardApp:
                     settings = json.load(f)
                     self.var_exclude_single.set(settings.get("exclude_single", True))
                     self.var_min_freq.set(settings.get("min_freq", 1))
-                    self.var_zen_limit.set(settings.get("zen_limit", 50))
                     self.var_open_app_mode.set(settings.get("open_app_mode", False))
                     theme = settings.get("theme", "Dark Flow")
                     if theme in self.combo_theme['values']:
@@ -699,6 +729,7 @@ class MasterDashboardApp:
                     self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
                     self.var_words_per_day.set(settings.get("words_per_day", 5))
                     self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
+                    self.var_zen_limit.set(settings.get("zen_limit", 50))
 
                     self.onboarding_completed.set(settings.get("onboarding_completed", False))
 
@@ -717,7 +748,6 @@ class MasterDashboardApp:
             settings = {
                 "exclude_single": self.var_exclude_single.get(),
                 "min_freq": self.var_min_freq.get(),
-                "zen_limit": self.var_zen_limit.get(),
                 "open_app_mode": self.var_open_app_mode.get(),
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
@@ -729,6 +759,7 @@ class MasterDashboardApp:
                 "sanitize_ja_terms": self.var_sanitize_ja.get(),
                 "words_per_day": self.var_words_per_day.get(),
                 "show_words_per_day": self.var_show_words_per_day.get(),
+                "zen_limit": self.var_zen_limit.get(),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "logic": self.logic_settings
             }
@@ -736,6 +767,10 @@ class MasterDashboardApp:
             self.logic_settings["inline_completed_files"] = self.var_inline_completed.get()
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
+            
+            # Update UI state (enable/disable language specific options)
+            self.update_ui_for_language()
+            
         except Exception as e:
             print(f"Warning: Could not save settings: {e}")
 
@@ -966,16 +1001,20 @@ class MasterDashboardApp:
             'Dark Flow': 'world-class',
             'Midnight (Vibrant)': 'midnight-vibrant',
             'Modern Light': 'modern-light',
-            'Zen Focus': 'zen-focus'
+            'Zen Mode': 'Zen Mode'
         }
         selected_theme = self.combo_theme.get()
         theme_arg = theme_map.get(selected_theme, 'default')
         args.append(f'--theme={theme_arg}')
-        args.append(f'--zen-limit={self.var_zen_limit.get()}')
         
         if self.var_open_app_mode.get():
             args.append('--app-mode')
             
+        # Zen Limit (passed to analyzer just in case, or for consistency)
+        zen_limit = self.var_zen_limit.get()
+        if zen_limit > 0:
+            args.append(f'--zen-limit={zen_limit}')
+
         self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True)
 
     def run_static_page(self):
@@ -986,15 +1025,19 @@ class MasterDashboardApp:
             'Dark Flow': 'world-class',
             'Midnight (Vibrant)': 'midnight-vibrant',
             'Modern Light': 'modern-light',
-            'Zen Focus': 'zen-focus'
+            'Zen Mode': 'Zen Mode'
         }
         selected_theme = self.combo_theme.get()
         theme_arg = theme_map.get(selected_theme, 'default')
         args.append(f'--theme={theme_arg}')
-        args.append(f'--zen-limit={self.var_zen_limit.get()}')
 
         if self.var_open_app_mode.get():
             args.append('--app-mode')
+
+        # Zen Limit
+        zen_limit = self.var_zen_limit.get()
+        if zen_limit > 0:
+            args.append(f'--zen-limit={zen_limit}')
 
         self.run_command_async(args, "Static Page", capture_output=True, show_spinner=True)
 

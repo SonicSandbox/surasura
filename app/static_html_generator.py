@@ -43,7 +43,7 @@ def open_as_app(file_path):
     # Fallback to standard browser behavior
     webbrowser.open(url)
 
-def generate_static_html(theme="default", zen_limit=50, app_mode=False):
+def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     print(f"Generating static HTML (Theme: {theme})...")
 
     # 1. Load Data
@@ -80,11 +80,6 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
             # Group by Source File
             files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
-            # Zen Focus: (Disabled for v1.4)
-            # if theme == "zen-focus":
-            #     print(f"Zen Focus detected: Limiting to first {zen_limit} words across files.")
-            #     df = df.head(zen_limit)
-            #     files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
                 
             grouped = df.groupby("Source File")
             for filename in files_order:
@@ -148,7 +143,35 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
 
     data["file_order"] = all_files_order
 
+    # Zen Mode Limit (Slicing)
+    if theme == "Zen Mode" and zen_limit > 0:
+        print(f"Applying Zen Mode Limit: {zen_limit} words")
+        count = 0
+        new_progressive = []
+        for item in data["progressive"]:
+            if count >= zen_limit:
+                break
+            
+            words = item["words"]
+            needed = zen_limit - count
+            
+            if len(words) > needed:
+                item["words"] = words[:needed]
+                new_progressive.append(item)
+                count += needed
+                break
+            else:
+                new_progressive.append(item)
+                count += len(words)
+        
+        data["progressive"] = new_progressive
+
     # 2. Read Template
+    if theme == "Zen Mode":
+        WEB_APP_FILE = get_resource(os.path.join("templates", "zen_app.html"))
+    else:
+        WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
+
     if not os.path.exists(WEB_APP_FILE):
         print(f"Error: Template file {WEB_APP_FILE} not found.")
         return
@@ -171,9 +194,18 @@ def generate_static_html(theme="default", zen_limit=50, app_mode=False):
                 settings = json.load(f)
                 logic_settings = settings.get("logic", {})
                 target_lang = settings.get("target_language", "ja")
-                # If theme is 'default', try to load from settings
+                target_lang = settings.get("target_language", "ja")
+                # If theme is 'default', try to load from settings and MAP it
                 if applied_theme == "default":
-                    applied_theme = settings.get("theme", "default")
+                    raw_theme = settings.get("theme", "default")
+                    theme_map = {
+                        'Default (Dark)': 'default',
+                        'Dark Flow': 'world-class',
+                        'Midnight (Vibrant)': 'midnight-vibrant',
+                        'Modern Light': 'modern-light',
+                        'Zen Mode': 'Zen Mode'
+                    }
+                    applied_theme = theme_map.get(raw_theme, 'default')
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")
 
@@ -220,10 +252,10 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--theme", default="default", help="Theme name")
-    parser.add_argument("--zen-limit", type=int, default=50, help="Word limit for Zen Focus mode")
     parser.add_argument("--app-mode", action="store_true", help="Launch in professional app mode")
+    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
     args = parser.parse_args()
-    generate_static_html(theme=args.theme, zen_limit=args.zen_limit, app_mode=args.app_mode)
+    generate_static_html(theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
 
 if __name__ == "__main__":
     main()

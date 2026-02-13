@@ -931,6 +931,15 @@
             background: transparent;
             border: 1px solid #222;
         }
+
+        .word-count-subtle {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            opacity: 0.7;
+            margin-bottom: 20px;
+            text-align: left;
+            font-weight: 500;
+        }
     </style>
 </head>
 
@@ -1001,6 +1010,7 @@
     <script>
         let globalData = null;
         let ignoredWords = new Set();
+        let originalPriorityCount = 0;
 
         // Determine storage key based on language
         // Valid for new exports. For legacy files, it might default to 'ja' or undefined.
@@ -1173,8 +1183,11 @@
                     }
                     // Filter Priority
                     if (globalData.priority) {
+                        originalPriorityCount = globalData.priority.length;
                         globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));
                     }
+                } else if (globalData && globalData.priority) {
+                    originalPriorityCount = globalData.priority.length;
                 }
 
                 await fetchData();
@@ -1543,11 +1556,20 @@
                 return;
             }
 
+            // Slice to first 500
+            const displayPriority = globalData.priority.slice(0, 500);
+
+            // Word count indicator
+            const countDiv = document.createElement('div');
+            countDiv.className = 'word-count-subtle';
+            countDiv.textContent = `Showing ${displayPriority.length} words of ${originalPriorityCount} words`;
+            container.appendChild(countDiv);
+
             // Infinite Scroll handles slicing, so no need to pre-slice
             const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
             // Cap at 25 for heavy cards unless user specified?
             // Let's just use the setting directly.
-            setupInfiniteScroll(container, globalData.priority, createWordCard, chunkSize);
+            setupInfiniteScroll(container, displayPriority, createWordCard, chunkSize);
         }
 
         // --- Global Sentence Toggle ---

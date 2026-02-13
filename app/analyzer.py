@@ -319,7 +319,10 @@ def get_tier_from_rank(rank):
     return str(len(thresholds) + 1)
 
 def load_known_words(json_path, tokenizer):
-    print(f"Loading known words from {json_path}...")
+    try:
+        print(f"Loading known words from {json_path}...")
+    except UnicodeEncodeError:
+        print("Loading known words (path contains non-ASCII characters)...")
     if not os.path.exists(json_path):
         print("Warning: Known words file not found.")
         return set(), set()
@@ -627,6 +630,7 @@ def main():
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize Japanese terms (strip hyphen/space suffixes)")
+    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
 
     args, unknown = parser.parse_known_args()
     
@@ -726,9 +730,13 @@ def main():
     
     # 3. Process Files (Aggregation Phase)
     # Check for legacy migration first
-    from modules.immersion_architect.immersion_architect import ImmersionArchitect
-    architect = ImmersionArchitect(language=language)
-    architect.migrate_legacy_order_if_needed()
+    try:
+        from modules.immersion_architect.immersion_architect import ImmersionArchitect
+        architect = ImmersionArchitect(language=language)
+        architect.migrate_legacy_order_if_needed()
+    except (ImportError, ModuleNotFoundError):
+        print("Note: Immersion Architect module not found. Skipping legacy migration check.")
+
 
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
@@ -739,7 +747,10 @@ def main():
     manifest_path = os.path.join(user_files_dir, "master_manifest.json")
     
     if os.path.exists(manifest_path):
-        print(f"Loading Sort Order from Manifest: {manifest_path}")
+        try:
+            print(f"Loading Sort Order from Manifest: {manifest_path}")
+        except UnicodeEncodeError:
+            print("Loading Sort Order from Manifest (path contains non-ASCII characters)")
         try:
             with open(manifest_path, 'r', encoding='utf-8') as f:
                 manifest = json.load(f)
@@ -1011,7 +1022,10 @@ def main():
             df_display = df.drop(columns=["_MinSeq"], errors='ignore')
 
         df_display.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
-        print(f"Saved priority list to {OUTPUT_CSV}")
+        try:
+            print(f"Saved priority list to {OUTPUT_CSV}")
+        except UnicodeEncodeError:
+            print("Saved priority list to CSV.")
     else:
         print("No unknown words found!")
 
@@ -1026,11 +1040,17 @@ def main():
             f.write(f"  Known Words: {stat['Known Count']}\n")
             f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
             f.write("\n")
-    print(f"Saved stats to {OUTPUT_STATS}")
+        try:
+            print(f"Saved stats to {OUTPUT_STATS}")
+        except UnicodeEncodeError:
+            print("Saved stats to file.")
     
     with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
         json.dump(file_stats, f, indent=4, ensure_ascii=False)
-    print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
+    try:
+        print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
+    except UnicodeEncodeError:
+        print("Saved JSON stats.")
 
     # Output Raw Word Stats for GUI
     OUTPUT_WORD_STATS = os.path.join(RESULTS_DIR, "word_stats.json")
@@ -1046,7 +1066,10 @@ def main():
         
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
         json.dump(serializable_stats, f, indent=2, ensure_ascii=False)
-    print(f"Saved raw word stats to {OUTPUT_WORD_STATS}")
+    try:
+        print(f"Saved raw word stats to {OUTPUT_WORD_STATS}")
+    except UnicodeEncodeError:
+        print("Saved raw word stats.")
     
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
@@ -1185,7 +1208,7 @@ def main():
                 
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
-            static_html_generator.generate_static_html(theme=args.theme)
+            static_html_generator.generate_static_html(theme=args.theme, zen_limit=args.zen_limit)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
 

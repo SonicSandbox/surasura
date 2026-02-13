@@ -209,6 +209,12 @@ def build(zip_output=False):
         print(f"Zip Archive: {os.path.abspath(archive_base + '.zip')}")
     print("---------------------------------------------------")
 
+    # Open the dist folder in File Explorer
+    try:
+        os.startfile(os.path.abspath("dist"))
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build and package Surasura.")
     parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")

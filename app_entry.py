@@ -28,6 +28,15 @@ if sys.platform == "win32":
 import multiprocessing
 
 def main():
+    # Force UTF-8 for stdout/stderr to avoid UnicodeEncodeError in frozen Windows builds
+    if sys.platform == "win32":
+        try:
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        except Exception:
+            pass
+
     multiprocessing.freeze_support()
     try:
         log_error(f"App starting. Args: {sys.argv}")

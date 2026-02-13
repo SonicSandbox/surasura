@@ -11,9 +11,7 @@ from app import settings_manager
 RESULTS_DIR = get_user_file("results")
 PROGRESSIVE_CSV = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 PRIORITY_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
-WEB_APP_FILE = get_resource("templates/web_app.html")
 OUTPUT_FILE = os.path.join(RESULTS_DIR, "reading_list_static.html")
-
 # Resources (Templates)
 WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
 
@@ -46,8 +44,14 @@ def open_as_app(file_path):
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     print(f"Generating static HTML (Theme: {theme})...")
-
-    # 1. Load Data
+    
+    # Pre-load settings
+    try:
+        settings = settings_manager.load_settings()
+        target_lang = settings.get("target_language", "ja")
+    except Exception:
+        settings = {}
+        target_lang = "ja"
     data = {
         "progressive": [],
         "priority": []
@@ -92,13 +96,6 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
                 
                 # Determine if Goal Content
                 is_goal_content = False
-                try:
-                    # Load settings via manager
-                    settings = settings_manager.load_settings()
-                    target_lang = settings.get("target_language", "ja")
-                except Exception:
-                    target_lang = "ja"
-
                 try:
                     from app.path_utils import get_user_files_path
                     # GoalContent is in User Files/<lang>/GoalContent

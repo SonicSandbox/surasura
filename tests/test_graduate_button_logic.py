@@ -19,11 +19,13 @@ class TestGraduateButtonLogic(unittest.TestCase):
         with patch.object(ContentImporterApp, 'load_manifest_ranks'), \
              patch.object(ContentImporterApp, 'refresh_file_list'), \
              patch.object(ContentImporterApp, 'setup_ui'), \
+             patch.object(ContentImporterApp, '_initial_load'), \
              patch.object(self.root, 'after'):
             self.app = ContentImporterApp(self.root)
+            self.app.data_root = "mock_data"
+            self.app.user_files_root = "mock_user_files"
             self.app.tree = MagicMock()
             self.app.graduate_btn = MagicMock()
-            self.app.data_root = "data/ja"
 
     def tearDown(self):
         self.root.destroy()

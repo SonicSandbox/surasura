@@ -75,14 +75,23 @@ class ContentImporterApp:
         self._last_drop_target = None
 
         self.setup_ui()
-        self._load_analyzed_filenames()
-        self.refresh_file_list()
+        
+        # Defer data loading slightly so the window appears instantly
+        self.root.after(100, self._initial_load)
 
         # Auto-refresh when window gains focus (to sync with Architect commits)
         # Check if we are already in a modal dialog to avoid loops? 
         # Actually, FocusIn triggers when a modal CLOSES too. 
         self.root.bind("<FocusIn>", self._on_focus_in)
         self._ignore_refresh = False
+
+    def _initial_load(self):
+        """Initial data load after UI is visible."""
+        self.status_var.set("Scanning library...")
+        self.root.update_idletasks()
+        self._load_analyzed_filenames()
+        self.refresh_file_list()
+        self.status_var.set("Ready")
 
     def _on_focus_in(self, event):
         if event.widget == self.root and not self._ignore_refresh:

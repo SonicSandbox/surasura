@@ -18,7 +18,8 @@ class TestGraduateButtonLogic(unittest.TestCase):
         # Avoid loading manifest and other IO in __init__
         with patch.object(ContentImporterApp, 'load_manifest_ranks'), \
              patch.object(ContentImporterApp, 'refresh_file_list'), \
-             patch.object(ContentImporterApp, 'setup_ui'):
+             patch.object(ContentImporterApp, 'setup_ui'), \
+             patch.object(self.root, 'after'):
             self.app = ContentImporterApp(self.root)
             self.app.tree = MagicMock()
             self.app.graduate_btn = MagicMock()

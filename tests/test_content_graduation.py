@@ -43,6 +43,10 @@ def app_instance(tmp_path):
         app.target_folder_var = MockStringVar("HighPriority")
         app.status_var = MockStringVar()
         app.tree = MagicMock()
+        app.graduate_btn = MagicMock()
+        app.analyzed_filenames = set()
+        app._last_stats_mtime = 0
+        app._last_stats_size = 0
         
         # Inject helper methods that depend on manifest
         # We need to make sure get_user_files_path and get_manifest_path work

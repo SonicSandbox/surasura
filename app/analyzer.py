@@ -17,6 +17,7 @@ from datetime import datetime
 import abc
 
 from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
+from app import settings_manager
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -45,16 +46,13 @@ LOGIC = {
 }
 
 try:
-    settings_path = get_user_file("settings.json")
-    if os.path.exists(settings_path):
-        with open(settings_path, 'r', encoding='utf-8') as f:
-            full_settings = json.load(f)
-            LOGIC.update(full_settings.get("logic", {}))
-            
-            # Update global weights for backward compatibility in the script
-            WEIGHT_HIGH = LOGIC["weights"].get("high", 10)
-            WEIGHT_LOW = LOGIC["weights"].get("low", 5)
-            WEIGHT_GOAL = LOGIC["weights"].get("goal", 2)
+    full_settings = settings_manager.load_settings()
+    LOGIC.update(full_settings.get("logic", {}))
+    
+    # Update global weights for backward compatibility in the script
+    WEIGHT_HIGH = LOGIC["weights"].get("high", 10)
+    WEIGHT_LOW = LOGIC["weights"].get("low", 5)
+    WEIGHT_GOAL = LOGIC["weights"].get("goal", 2)
 except Exception as e:
     print(f"Warning: Could not load logic settings: {e}")
 
@@ -393,6 +391,75 @@ def has_target_language(text, language='ja'):
         return bool(pattern.search(text))
     return False
 
+def clean_subtitle_text(text, language='ja'):
+    # first remove ASS tags like {\pos(10,20)}
+    text = re.sub(r'\{.*?\}', '', text)
+    
+    # Remove furigana in parens
+    text = re.sub(r'[\(（].*?[\)）]', '', text)
+    
+    if language == 'ja':
+        # Keep: Kanji, Hiragana, Katakana, and Japanese-style punctuation
+        # Strip: ASCII letters and numbers (modeling the "Saturation Point" and "Noise Removal")
+        text = re.sub(r'[a-zA-Z0-9]', '', text)
+        
+        # Strip common subtitle noise like - or > if they are alone at start
+        text = re.sub(r'^[ \->]+', '', text)
+        text = text.strip()
+    elif language == 'zh':
+        text = re.sub(r'[a-zA-Z0-9]', '', text)
+        text = text.strip()
+        
+    return text
+
+def parse_ass(file_path, language='ja'):
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading ASS/SSA {file_path}: {e}")
+        return ""
+
+    lines = content.splitlines()
+    events_section = False
+    format_line = None
+    text_index = 9 # Default for standard ASS
+    
+    output_parts = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line == '[Events]':
+            events_section = True
+            continue
+        
+        if events_section:
+            if line.startswith('Format:'):
+                format_line = line[7:].split(',')
+                format_line = [f.strip() for f in format_line]
+                try:
+                    text_index = format_line.index('Text')
+                except ValueError:
+                    pass
+                continue
+            
+            if line.startswith('Dialogue:'):
+                # Dialogue: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                # Split by comma but only up to text_index
+                comma_parts = line.split(',', text_index)
+                if len(comma_parts) > text_index:
+                    original_text = comma_parts[text_index]
+                    if has_target_language(original_text, language):
+                        cleaned = clean_subtitle_text(original_text, language)
+                        if cleaned:
+                            if not cleaned or cleaned[-1] not in '。！？!?':
+                                cleaned += "。"
+                            output_parts.append(cleaned)
+                            
+    return " ".join(output_parts)
+
 def extract_text(file_path, language='ja'):
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
@@ -407,9 +474,10 @@ def extract_text(file_path, language='ja'):
                 for l in lines:
                     if not has_target_language(l, language):
                         continue
-                    # Remove furigana in parens (Japanese specific, but harmless for Chinese usually)
-                    l = re.sub(r'[\(（].*?[\)）]', '', l)
-                    filtered_lines.append(l)
+                    
+                    cleaned = clean_subtitle_text(l, language)
+                    if cleaned:
+                        filtered_lines.append(cleaned)
 
                 if filtered_lines:
                     block_text = " ".join(filtered_lines)
@@ -419,6 +487,8 @@ def extract_text(file_path, language='ja'):
             text = "".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
+    elif ext in ['.ass', '.ssa']:
+        text = parse_ass(file_path, language)
     else:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -655,89 +725,122 @@ def main():
     file_stats = [] 
     
     # 3. Process Files (Aggregation Phase)
-    # To handle progressive reporting correctly, we need a consistent order of all files found.
-    # We want HighPriority files first, then Low, then Goal.
-    # Within each category, we must respect the user's custom order from _order.json.
+    # Check for legacy migration first
+    from modules.immersion_architect.immersion_architect import ImmersionArchitect
+    architect = ImmersionArchitect(language=language)
+    architect.migrate_legacy_order_if_needed()
 
-    def get_ordered_files(directory, language='ja'):
-        """
-        Recursively Get files from directory, respecting _order.json at each level.
-        Returns a list of absolute file paths.
-        """
-        if not os.path.exists(directory):
-            return []
-
-        results = []
-        
-        # 1. Get all actual items in this directory
-        try:
-            items = os.listdir(directory)
-        except Exception:
-            return []
-            
-        # 2. Load order file
-        order_file = os.path.join(directory, "_order.json")
-        order = []
-        metadata = {}
-        if os.path.exists(order_file):
-            try:
-                with open(order_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        order = data
-                    else:
-                        order = data.get("order", [])
-                        metadata = data.get("metadata", {})
-            except Exception:
-                pass
-        
-        # 3. Sort items: Ordered items first, then the rest alphabetically
-        # Create a map for rank to support fast lookup
-        rank_map = {name: i for i, name in enumerate(order)}
-        
-        def sort_key(name):
-            # Returns (is_unordered, rank_or_name)
-            # Ordered items: (0, rank)
-            # Unordered items: (1, name)
-            if name in rank_map:
-                return (0, rank_map[name])
-            return (1, name)
-            
-        items.sort(key=sort_key)
-        
-        # 4. Process items
-        for item in items:
-            if item == "_order.json": continue
-            
-            # Language Filter
-            # Items with no metadata tag are assumed to belong to the current language
-            item_lang = metadata.get(item, {}).get("lang", language)
-            if item_lang != language:
-                continue
-                
-            full_path = os.path.join(directory, item)
-            
-            if os.path.isdir(full_path):
-                # Recurse
-                results.extend(get_ordered_files(full_path, language))
-            elif os.path.isfile(full_path):
-                if full_path.lower().endswith(('.txt', '.srt', '.epub', '.md')): # Added more extensions to be safe
-                    results.append(full_path)
-                    
-        return results
-
+    # New Logic: Use master_manifest.json if available.
+    # Fallback: Alphabetical scan (Phase 0 behavior)
+    
     found_files = []
     
-    for label, folder, weight in scan_targets:
-        if not os.path.exists(folder):
-            continue
+    # Check for master_manifest.json
+    manifest_path = os.path.join(user_files_dir, "master_manifest.json")
+    
+    if os.path.exists(manifest_path):
+        print(f"Loading Sort Order from Manifest: {manifest_path}")
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+                
+            schedule = manifest.get("schedule", {})
+            phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"] # order matters
             
-        ordered_paths = get_ordered_files(folder, language)
+            seen_paths = set()
+            
+            for phase_key in phases:
+                items = schedule.get(phase_key, [])
+                for item in items:
+                    # Logic: We need the absolute path.
+                    # Manifest stores "physical_path" relative to data_dir usually? 
+                    # Immersion Architect stores: "./01_NOW/..." relative to data root
+                    # logic: os.path.join(data_dir, item["physical_path"])
+                    
+                    # Need to handle potential "../" or "./" in the stored path
+                    # "physical_path": "./01_NOW/HarryPotter/HP_01.txt"
+                    # data_dir is "User Data/data/ja"
+                    # We need to resolve this carefully.
+                    
+                    rel_path = item.get("physical_path", "")
+                    
+                    # Hack/Fix: Immersion Architect uses:
+                    # self.buckets = { "01_NOW": .../HighPriority, ... }
+                    # and indexes files there. 
+                    # But the manifest path stored might be raw path?
+                    # Let's check Immersion Architect implementation.
+                    # It stores: os.path.relpath(winner["file_path"], self.data_root)
+                    # So "./HighPriority/Book/File.txt" -> "HighPriority/Book/File.txt" roughly
+                    
+                    if rel_path.startswith("./"):
+                        rel_path = rel_path[2:]
+                        
+                    abs_path = os.path.join(data_dir, rel_path)
+                    
+                    if not os.path.exists(abs_path):
+                        # Try matching by title if path fails (moved files?)
+                        # For now, just skip or warn
+                        print(f"Warning: Manifest file not found: {abs_path}")
+                        continue
+                        
+                    if abs_path in seen_paths: continue
+                    seen_paths.add(abs_path)
+                    
+                    # Determine Weight based on Phase
+                    weight = WEIGHT_GOAL # Default
+                    if phase_key == "PHASE_1_NOW": weight = WEIGHT_HIGH
+                    elif phase_key == "PHASE_2_SOON": weight = WEIGHT_LOW
+                    
+                    # Label? "HighPriority" etc is used for stats. 
+                    # We can infer label from original path or just use phase?
+                    # Logic: origin_source in manifest: "01_NOW", "02_SOON", "03_LATER"
+                    # We should Probably map these back to "HighPriority", "LowPriority", "GoalContent"
+                    # for consistency in output reporting? 
+                    # Actually, the user might want to see "NOW" in the report.
+                    # But let's map for backward compat first.
+                    
+                    origin = item.get("origin_source", "03_LATER")
+                    label = "GoalContent"
+                    if origin == "01_NOW": label = "HighPriority"
+                    elif origin == "02_SOON": label = "LowPriority"
+                    
+                    found_files.append((abs_path, label, weight))
+                    
+            print(f"Manifest Loaded: {len(found_files)} files scheduled.")
+            
+        except Exception as e:
+            print(f"Error reading manifest: {e}. Falling back to default scan.")
+            found_files = [] # Trigger fallback
+            
+    if not found_files:
+        # Fallback to recursively scanning folders (No _order.json support anymore per user request)
+        print("Scaning folders recursively (Default Order)...")
         
-        for path in ordered_paths:
-            found_files.append((path, label, weight))
+        def get_files_recursive(directory):
+            results = []
+            if not os.path.exists(directory): return []
             
-    print(f"Found {len(found_files)} files to process.")
+            # Simple os.walk to get files
+            for root, dirs, files in os.walk(directory):
+                # Sort for deterministic behavior
+                files.sort()
+                dirs.sort()
+                
+                for file in files:
+                    # Filter extensions
+                    if file.lower().endswith(('.txt', '.srt', '.epub', '.ass', '.html')):
+                         full_path = os.path.join(root, file)
+                         results.append(full_path)
+            return results
+
+        for label, folder, weight in scan_targets:
+            if not os.path.exists(folder): continue
+            
+            paths = get_files_recursive(folder)
+            for path in paths:
+                found_files.append((path, label, weight))
+
+    print(f"Final Count: Found {len(found_files)} files to process.")
     
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):

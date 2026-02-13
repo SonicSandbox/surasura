@@ -12,9 +12,10 @@
     "sanitize_ja_terms": false,
     "words_per_day": 5,
     "show_words_per_day": true,
-    "zen_limit": 50,
-    "onboarding_completed": false,
+    "zen_limit": 55,
+    "onboarding_completed": true,
     "open_count": 0,
+    "hide_satoru": true,
     "logic": {
         "inline_completed_files": false,
         "weights": {

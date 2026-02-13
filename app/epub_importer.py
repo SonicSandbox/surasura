@@ -18,6 +18,7 @@ except ImportError:
 
 from app.path_utils import get_user_file, get_data_path
 from app.anki_utils import load_anki_data, extract_field_text, cleanup_temp_dir
+from app import settings_manager
 
 # --- Configuration ---
 # PROCESSED_DIR will be determined by the instance based on language
@@ -68,14 +69,9 @@ class FileImporterApp:
         self.file_path_var.trace_add("write", self.on_file_change)
 
         # Load Logic Settings
-        self.logic_settings = {}
         try:
-            settings_path = get_user_file("settings.json")
-            if os.path.exists(settings_path):
-                import json
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-                    self.logic_settings = settings.get("logic", {})
+            settings = settings_manager.load_settings()
+            self.logic_settings = settings.get("logic", {})
         except Exception:
             pass
 
@@ -176,12 +172,8 @@ class FileImporterApp:
         # Load default split length from settings
         default_split = 1500
         try:
-            import json
-            settings_path = get_user_file("settings.json")
-            if os.path.exists(settings_path):
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-                    default_split = settings.get("split_length", 1500)
+            settings = settings_manager.load_settings()
+            default_split = settings.get("split_length", 1500)
         except Exception:
             pass
             
@@ -345,11 +337,8 @@ class FileImporterApp:
             # If current value is NOT a number, reset to setting default
             if not self.split_value_var.get().isdigit():
                 try:
-                    import json
-                    settings_path = get_user_file("settings.json")
-                    with open(settings_path, 'r', encoding='utf-8') as f:
-                        settings = json.load(f)
-                        self.split_value_var.set(str(settings.get("split_length", 1500)))
+                    settings = settings_manager.load_settings()
+                    self.split_value_var.set(str(settings.get("split_length", 1500)))
                 except Exception:
                     self.split_value_var.set("1500")
 

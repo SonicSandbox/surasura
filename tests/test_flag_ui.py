@@ -7,10 +7,10 @@ from tkinter import ttk
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.main import MasterDashboardApp
 
 class TestFlagUI(unittest.TestCase):
     def setUp(self):
+        from app.main import MasterDashboardApp
         self.root = tk.Tk()
         self.root.withdraw() # Hide window
         self.app = MasterDashboardApp(self.root)

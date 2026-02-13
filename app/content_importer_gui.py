@@ -487,8 +487,6 @@ class ContentImporterApp:
         if changed:
             manifest["schedule"] = schedule
             self.save_manifest(manifest)
-
-            self.save_manifest(manifest)
             self.refresh_file_list()
 
     def _get_manifest_indices_for_items(self, schedule_list, items, base_dir=None):
@@ -1074,8 +1072,6 @@ class ContentImporterApp:
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to graduate {filename}:\n{e}")
-        
-        self.refresh_file_list()
         
         self.refresh_file_list()
         status_msg = f"Moved {count} items to {dest_folder_name}."

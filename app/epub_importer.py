@@ -346,11 +346,11 @@ class FileImporterApp:
         file_path = filedialog.askopenfilename(
             title="Select File",
             filetypes=[
-                ("Supported files", "*.epub *.txt *.md *.srt *.apkg"),
+                ("Supported files", "*.epub *.txt *.md *.srt *.ass *.ssa *.apkg"),
                 ("Anki Decks", "*.apkg"),
                 ("EPUB files", "*.epub"),
                 ("Text files", "*.txt *.md"),
-                ("Subtitle files", "*.srt"),
+                ("Subtitle files", "*.srt *.ass *.ssa"),
                 ("All files", "*.*")
             ]
         )
@@ -452,6 +452,8 @@ class FileImporterApp:
             return self.convert_epub_to_text(file_path)
         elif ext == ".srt":
             return self.extract_text_from_srt(file_path)
+        elif ext in [".ass", ".ssa"]:
+            return self.extract_text_from_ass(file_path)
         else:
             return self.extract_text_from_generic(file_path)
 
@@ -483,11 +485,59 @@ class FileImporterApp:
                 if not line or line.isdigit() or timestamp_re.match(line):
                     continue
                 if self.contains_cjk(line):
-                    cleaned_lines.append(line)
+                    cleaned_lines.append(self.clean_subtitle_text(line))
             
-            return "\n".join(cleaned_lines), None
+            return "\n".join([l for l in cleaned_lines if l]), None
         except Exception as e:
             return None, f"Failed to parse SRT: {e}"
+
+    def extract_text_from_ass(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            lines = content.splitlines()
+            events_section = False
+            text_index = 9 # Default for standard ASS
+            
+            output_parts = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                
+                if line == '[Events]':
+                    events_section = True
+                    continue
+                
+                if events_section:
+                    if line.startswith('Format:'):
+                        format_line = [f.strip() for f in line[7:].split(',')]
+                        try:
+                            text_index = format_line.index('Text')
+                        except ValueError:
+                            pass
+                        continue
+                    
+                    if line.startswith('Dialogue:'):
+                        comma_parts = line.split(',', text_index)
+                        if len(comma_parts) > text_index:
+                            original_text = comma_parts[text_index]
+                            if self.contains_cjk(original_text):
+                                cleaned = self.clean_subtitle_text(original_text)
+                                if cleaned:
+                                    output_parts.append(cleaned)
+                                    
+            return "\n".join(output_parts), None
+        except Exception as e:
+            return None, f"Failed to parse ASS: {e}"
+
+    def clean_subtitle_text(self, text):
+        # Remove ASS tags like {\pos(10,20)}
+        text = re.sub(r'\{.*?\}', '', text)
+        # Strip common subtitle noise
+        text = re.sub(r'^[ \->]+', '', text)
+        return text.strip()
 
     def convert_epub_to_text(self, epub_path):
         try:

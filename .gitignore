@@ -33,3 +33,7 @@ surasura_v*.zip
 
 docs/agent instructions
 docs/pre release notes
+
+# Modules
+modules/*
+launch_immersion_architect.py

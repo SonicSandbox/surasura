@@ -17,6 +17,7 @@ from datetime import datetime
 import abc
 
 from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
+from app import settings_manager
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -45,16 +46,13 @@ LOGIC = {
 }
 
 try:
-    settings_path = get_user_file("settings.json")
-    if os.path.exists(settings_path):
-        with open(settings_path, 'r', encoding='utf-8') as f:
-            full_settings = json.load(f)
-            LOGIC.update(full_settings.get("logic", {}))
-            
-            # Update global weights for backward compatibility in the script
-            WEIGHT_HIGH = LOGIC["weights"].get("high", 10)
-            WEIGHT_LOW = LOGIC["weights"].get("low", 5)
-            WEIGHT_GOAL = LOGIC["weights"].get("goal", 2)
+    full_settings = settings_manager.load_settings()
+    LOGIC.update(full_settings.get("logic", {}))
+    
+    # Update global weights for backward compatibility in the script
+    WEIGHT_HIGH = LOGIC["weights"].get("high", 10)
+    WEIGHT_LOW = LOGIC["weights"].get("low", 5)
+    WEIGHT_GOAL = LOGIC["weights"].get("goal", 2)
 except Exception as e:
     print(f"Warning: Could not load logic settings: {e}")
 
@@ -393,6 +391,75 @@ def has_target_language(text, language='ja'):
         return bool(pattern.search(text))
     return False
 
+def clean_subtitle_text(text, language='ja'):
+    # first remove ASS tags like {\pos(10,20)}
+    text = re.sub(r'\{.*?\}', '', text)
+    
+    # Remove furigana in parens
+    text = re.sub(r'[\(（].*?[\)）]', '', text)
+    
+    if language == 'ja':
+        # Keep: Kanji, Hiragana, Katakana, and Japanese-style punctuation
+        # Strip: ASCII letters and numbers (modeling the "Saturation Point" and "Noise Removal")
+        text = re.sub(r'[a-zA-Z0-9]', '', text)
+        
+        # Strip common subtitle noise like - or > if they are alone at start
+        text = re.sub(r'^[ \->]+', '', text)
+        text = text.strip()
+    elif language == 'zh':
+        text = re.sub(r'[a-zA-Z0-9]', '', text)
+        text = text.strip()
+        
+    return text
+
+def parse_ass(file_path, language='ja'):
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading ASS/SSA {file_path}: {e}")
+        return ""
+
+    lines = content.splitlines()
+    events_section = False
+    format_line = None
+    text_index = 9 # Default for standard ASS
+    
+    output_parts = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line == '[Events]':
+            events_section = True
+            continue
+        
+        if events_section:
+            if line.startswith('Format:'):
+                format_line = line[7:].split(',')
+                format_line = [f.strip() for f in format_line]
+                try:
+                    text_index = format_line.index('Text')
+                except ValueError:
+                    pass
+                continue
+            
+            if line.startswith('Dialogue:'):
+                # Dialogue: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                # Split by comma but only up to text_index
+                comma_parts = line.split(',', text_index)
+                if len(comma_parts) > text_index:
+                    original_text = comma_parts[text_index]
+                    if has_target_language(original_text, language):
+                        cleaned = clean_subtitle_text(original_text, language)
+                        if cleaned:
+                            if not cleaned or cleaned[-1] not in '。！？!?':
+                                cleaned += "。"
+                            output_parts.append(cleaned)
+                            
+    return " ".join(output_parts)
+
 def extract_text(file_path, language='ja'):
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
@@ -407,9 +474,10 @@ def extract_text(file_path, language='ja'):
                 for l in lines:
                     if not has_target_language(l, language):
                         continue
-                    # Remove furigana in parens (Japanese specific, but harmless for Chinese usually)
-                    l = re.sub(r'[\(（].*?[\)）]', '', l)
-                    filtered_lines.append(l)
+                    
+                    cleaned = clean_subtitle_text(l, language)
+                    if cleaned:
+                        filtered_lines.append(cleaned)
 
                 if filtered_lines:
                     block_text = " ".join(filtered_lines)
@@ -419,6 +487,8 @@ def extract_text(file_path, language='ja'):
             text = "".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
+    elif ext in ['.ass', '.ssa']:
+        text = parse_ass(file_path, language)
     else:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -656,7 +726,7 @@ def main():
     
     # 3. Process Files (Aggregation Phase)
     # Check for legacy migration first
-    from app.immersion_architect import ImmersionArchitect
+    from modules.immersion_architect.immersion_architect import ImmersionArchitect
     architect = ImmersionArchitect(language=language)
     architect.migrate_legacy_order_if_needed()
 

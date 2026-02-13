@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import argparse
+import json
 
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
@@ -173,7 +174,24 @@ def build(zip_output=False):
         else:
             print(f"Warning: Documentation file not found: {src}")
 
-    # 6. Create Zip Archive
+    # 6. Generate Clean Settings for Distribution
+    print("Generating Clean Settings for Distribution...")
+    try:
+        from app import settings_manager
+        # Get defaults
+        clean_settings = settings_manager.get_default_settings()
+        # Ensure 'hide_satoru' is GONE
+        if "hide_satoru" in clean_settings:
+            del clean_settings["hide_satoru"]
+            
+        settings_dst = os.path.join(final_dist, "settings.json")
+        with open(settings_dst, 'w', encoding='utf-8') as f:
+            json.dump(clean_settings, f, indent=4)
+        print(f"Clean settings.json created at {settings_dst}")
+    except Exception as e:
+        print(f"Warning: Could not generate clean settings: {e}")
+
+    # 7. Create Zip Archive
     if zip_output:
         print("Creating Zip Archive...")
         archive_base = os.path.join("dist", build_name) # Will create {build_name}.zip in dist/

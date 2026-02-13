@@ -4,6 +4,7 @@ import os
 import json
 from app.path_utils import get_icon_path, get_user_file
 from app import telemetry
+from app import settings_manager
 
 # --- Constants & Theme (Matching main app) ---
 BG_COLOR = "#1e1e1e"
@@ -136,16 +137,9 @@ class OnboardingGuide:
     def complete(self):
         # Save Language Code
         try:
-            settings_path = get_user_file("settings.json")
-            settings = {}
-            if os.path.exists(settings_path):
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-            
+            settings = settings_manager.load_settings()
             settings["target_language"] = self.language_var.get()
-            
-            with open(settings_path, 'w', encoding='utf-8') as f:
-                json.dump(settings, f, indent=4)
+            settings_manager.save_settings(settings)
         except Exception as e:
             print(f"Error saving settings: {e}")
 

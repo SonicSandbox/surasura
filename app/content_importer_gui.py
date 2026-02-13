@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import subprocess
+from datetime import datetime
 
 # Ensure package root is in sys.path
 if __name__ == "__main__" and __package__ is None:
@@ -47,13 +48,22 @@ class ContentImporterApp:
         # Data Setup
         ensure_data_setup(language)
         self.data_root = get_data_path(language)
+        self.user_files_root = get_user_files_path(language)
         
         # State
         self.target_folder_var = tk.StringVar(value="HighPriority")
         self.target_folder_var.trace("w", self.on_folder_change)
         
         self.status_var = tk.StringVar(value="Ready")
+        self.graduate_btn = None
+        self.analyzed_filenames = set()
+        self._last_stats_mtime = 0
+        self._last_stats_size = 0
         
+        # Manifest Order Cache
+        self.manifest_ranks = {} # rel_path -> index
+        self.load_manifest_ranks()
+
         # Drag and Drop State
         self.tree: ttk.Treeview = None
         self.list_frame: ttk.Frame = None
@@ -65,7 +75,19 @@ class ContentImporterApp:
         self._last_drop_target = None
 
         self.setup_ui()
+        self._load_analyzed_filenames()
         self.refresh_file_list()
+
+        # Auto-refresh when window gains focus (to sync with Architect commits)
+        # Check if we are already in a modal dialog to avoid loops? 
+        # Actually, FocusIn triggers when a modal CLOSES too. 
+        self.root.bind("<FocusIn>", self._on_focus_in)
+        self._ignore_refresh = False
+
+    def _on_focus_in(self, event):
+        if event.widget == self.root and not self._ignore_refresh:
+             # Use after() to avoid recursion issues if refresh triggers another FocusIn
+             self.root.after(100, self.refresh_file_list)
 
     def apply_dark_theme(self):
         self.style.theme_use('clam')
@@ -123,6 +145,10 @@ class ContentImporterApp:
             indicatorbackground=[('selected', ACCENT_COLOR), ('!selected', SURFACE_COLOR)],
             indicatorforeground=[('selected', BG_COLOR)]
         )
+
+    def is_content_file(self, file_path):
+        """Checks if a file is a supported content type."""
+        return file_path.lower().endswith(('.txt', '.html', '.htm', '.epub', '.srt', '.ass', '.vtt', '.pdf'))
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="25")
@@ -194,8 +220,12 @@ class ContentImporterApp:
         del_btn.pack(side=tk.LEFT)
         
         # Right Side Action Buttons
+        reset_btn = ttk.Button(btn_frame, text="🗑️", command=self.reset_to_folder_structure, width=4)
+        reset_btn.pack(side=tk.RIGHT, padx=(0, 0))
+        self.create_tooltip(reset_btn, "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)")
+
         refresh_btn = ttk.Button(btn_frame, text="↻", command=self.refresh_file_list, width=4)
-        refresh_btn.pack(side=tk.RIGHT, padx=(0, 0))
+        refresh_btn.pack(side=tk.RIGHT, padx=(5, 5))
         self.create_tooltip(refresh_btn, "Refresh file list")
 
         explorer_btn = ttk.Button(btn_frame, text="📂", command=self.open_data_folder, width=4)
@@ -206,9 +236,9 @@ class ContentImporterApp:
         list_btn.pack(side=tk.RIGHT, padx=(5, 5))
         self.create_tooltip(list_btn, "Open Graduated Words List")
 
-        graduate_btn = ttk.Button(btn_frame, text="🏆 Graduate", command=self.graduate_content)
-        graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
-        self.create_tooltip(graduate_btn, "Graduate Content:\n- NOW: Graduate consumed content\n- Soon: Move to NOW\n- 6+ Months: Move to Soon")
+        self.graduate_btn = ttk.Button(btn_frame, text="🏆 Graduate", command=self.graduate_content, state=tk.DISABLED)
+        self.graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        self.create_tooltip(self.graduate_btn, "Graduate Content:\n- NOW: Graduate consumed content (Requires Analysis)\n- Soon: Move to NOW\n- 6+ Months: Move to Soon")
 
         # Hint label (Order matters...)
         hint_frame = ttk.Frame(step2_frame)
@@ -265,6 +295,7 @@ class ContentImporterApp:
         self.tree.bind("<Button-1>", self.on_drag_start)
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self.on_drag_stop)
+        self.tree.bind("<<TreeviewSelect>>", self._update_graduate_button_state)
         
         # Move Hint
         hint_label = ttk.Label(step2_frame, text="Drag and move your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
@@ -282,6 +313,7 @@ class ContentImporterApp:
 
     def on_folder_change(self, *args):
         self.refresh_file_list()
+        self._update_graduate_button_state()
         folder_key = self.target_folder_var.get()
         self.status_var.set(f"Switched to {folder_key}")
         
@@ -289,103 +321,488 @@ class ContentImporterApp:
         if hasattr(self, 'order_hint_label'):
             self.order_hint_label.config(text=self.order_hints.get(folder_key, ""))
 
-    def get_order_file(self, target_dir):
-        return os.path.join(target_dir, "_order.json")
+    def get_manifest_path(self):
+        return os.path.join(self.user_files_root, "master_manifest.json")
 
-    def load_order(self, target_dir):
-        order_file = self.get_order_file(target_dir)
-        if os.path.exists(order_file):
+    def load_manifest(self):
+        path = self.get_manifest_path()
+        if os.path.exists(path):
             try:
-                with open(order_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return {"order": data, "metadata": {}}
-                    return data
-            except Exception:
-                return {"order": [], "metadata": {}}
-        return {"order": [], "metadata": {}}
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading manifest: {e}")
+        return {}
 
-    def save_order(self, target_dir, data):
-        order_file = self.get_order_file(target_dir)
+    def save_manifest(self, data):
+        path = self.get_manifest_path()
         try:
-            with open(order_file, 'w', encoding='utf-8') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"Error saving order: {e}")
+            print(f"Error saving manifest: {e}")
+            messagebox.showerror("Error", f"Failed to save manifest:\n{e}")
+
+    def load_manifest_ranks(self):
+        """Build a lookup map for file ranking based on the master manifest."""
+        self.manifest_ranks = {}
+        manifest_path = self.get_manifest_path()
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                rank = 0
+                schedule = data.get("schedule", {})
+                for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
+                    entries = schedule.get(phase, [])
+                    for entry in entries:
+                        path = entry.get("physical_path")
+                        if path and path not in self.manifest_ranks:
+                            self.manifest_ranks[path] = rank
+                            rank += 1
+            except Exception as e:
+                print(f"Error loading manifest ranks: {e}")
+
 
     def _get_ordered_items_in_dir(self, directory):
-        """Returns a list of items in the directory, respecting _order.json if it exists."""
+        """Returns a list of items in the directory, sorted by manifest rank, then alphabetically."""
         try:
             if not os.path.isdir(directory): return []
             disk_items = os.listdir(directory)
         except Exception:
             return []
         
-        disk_items = [f for f in disk_items if f != "_order.json"]
-        data = self.load_order(directory)
-        saved_order = data.get("order", [])
-        metadata = data.get("metadata", {})
+        # Filter disk_items (ignore system files)
+        filtered_items = [f for f in disk_items if f not in ["_order.json", "master_manifest.json", "desktop.ini"]]
+
+        def get_rank(item):
+            full_path = os.path.join(directory, item)
+            # Normalize path to forward slashes for manifest lookup
+            rel_path = os.path.relpath(full_path, self.data_root).replace("\\", "/")
+            
+            # 1. Exact Match
+            if rel_path in self.manifest_ranks:
+                return self.manifest_ranks[rel_path]
+            
+            # 2. Directory Partial Match (take best rank of children)
+            if os.path.isdir(full_path):
+                min_rank = 999999
+                pattern = rel_path + "/"
+                for path, rank in self.manifest_ranks.items():
+                    if path.startswith(pattern):
+                        if rank < min_rank:
+                            min_rank = rank
+                return min_rank
+            
+            return 999999
+
+        # Sort: Rank first, then Alphabetical
+        filtered_items.sort(key=lambda x: (get_rank(x), x.lower()))
+        return filtered_items
+
+    def _normalize_path(self, path):
+        return os.path.relpath(path, self.data_root).replace("\\", "/")
+
+    def add_to_manifest(self, item_path, target_folder_key):
+        """Adds file(s) to the manifest. If item_path is a directory, adds all files inside."""
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", {})
+        phase_map = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        phase_key = phase_map.get(target_folder_key)
+        if not phase_key: return
+
+        if phase_key not in schedule:
+            schedule[phase_key] = []
+
+        files_to_add = []
+        if os.path.isfile(item_path):
+            files_to_add.append(item_path)
+        else:
+            for root, _, files in os.walk(item_path):
+                for f in files:
+                    files_to_add.append(os.path.join(root, f))
+
+        changed = False
+        for fpath in files_to_add:
+            if not self.is_content_file(fpath): continue
+
+            # Calculate physical_path relative to data_root
+            rel = os.path.relpath(fpath, self.data_root).replace("\\", "/")
+            
+            # Check if already exists in target phase
+            if any(e.get("physical_path") == rel for e in schedule[phase_key]):
+                continue
+                
+            parts = rel.split("/")
+            # parent_folder is everything between bucket and file
+            hierarchy = parts[1:-1] if len(parts) > 2 else []
+            buckets = ["HighPriority", "LowPriority", "GoalContent"]
+            if hierarchy and hierarchy[0] in buckets:
+                hierarchy = hierarchy[1:]
+            parent_folder = "/".join(hierarchy)
+
+            entry = {
+                "title": os.path.basename(fpath),
+                "physical_path": rel,
+                "parent_folder": parent_folder,
+                "origin_source": "Manual Import",
+                "type": "File",
+                "status": "New"
+            }
+            schedule[phase_key].append(entry)
+            changed = True
+
+        if changed:
+            manifest["schedule"] = schedule
+            self.save_manifest(manifest)
+
+    def remove_from_manifest(self, item_path):
+        """Removes an item from all manifest phase lists."""
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", {})
+        rel_path = self._normalize_path(item_path)
         
-        # Filter disk_items by language
-        # Items with no metadata tag are assumed to belong to the CURRENT language
-        # (This fixed a bug where Chinese samples were hidden by default)
-        filtered_disk_items = []
-        for item in disk_items:
-            item_lang = metadata.get(item, {}).get("lang", self.language)
-            if item_lang == self.language:
-                filtered_disk_items.append(item)
+        changed = False
+        for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
+            if phase in schedule:
+                original_len = len(schedule[phase])
+                schedule[phase] = [e for e in schedule[phase] if e.get("physical_path") != rel_path]
+                if len(schedule[phase]) != original_len:
+                    changed = True
         
-        final_list = []
-        for item in saved_order:
-            if item in filtered_disk_items:
-                final_list.append(item)
-                filtered_disk_items.remove(item)
+        if changed:
+            manifest["schedule"] = schedule
+            self.save_manifest(manifest)
+
+            self.save_manifest(manifest)
+            self.refresh_file_list()
+
+    def _get_manifest_indices_for_items(self, schedule_list, items, base_dir=None):
+        """Returns a sorted list of manifest indices for given paths or GROUP: names."""
+        indices = set()
+        target_paths = set()
+        target_groups = set()
         
-        filtered_disk_items.sort() # Alphabetical for new/unsorted items
-        final_list.extend(filtered_disk_items)
+        for p in items:
+            if p.startswith("GROUP:"):
+                target_groups.add(p[6:]) # Strip "GROUP:"
+            else:
+                # item is absolute path
+                rel = os.path.relpath(p, self.data_root).replace("\\", "/")
+                target_paths.add(rel)
         
-        return final_list
+        # Scan schedule
+        for i, entry in enumerate(schedule_list):
+            p = entry.get("physical_path")
+            parent = entry.get("parent_folder", "")
+            
+            if p in target_paths or parent in target_groups:
+                indices.add(i)
+                    
+        return sorted(list(indices))
+
+    def move_manifest_items_relative(self, items, target_path, position="after"):
+        """Moves items to be immediately before or after the target_path in the manifest."""
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", {})
+        
+        target_folder = self.target_folder_var.get()
+        phase_map = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        phase_key = phase_map.get(target_folder)
+        if not phase_key or phase_key not in schedule: return
+
+        lst = schedule[phase_key]
+        
+        # Resolve indices
+        indices_to_move = self._get_manifest_indices_for_items(lst, items, self.get_current_dir())
+        if not indices_to_move: return
+        
+        # Resolve Target Index
+        target_rel = self._normalize_path(target_path)
+        target_indices = self._get_manifest_indices_for_items(lst, [target_path], self.get_current_dir())
+        
+        if not target_indices: return
+        # Target could be a folder (multiple indices).
+        # If "before", target the first index.
+        # If "after", target the last index.
+        
+        if position == "before":
+            eff_target_idx = target_indices[0]
+        else:
+            eff_target_idx = target_indices[-1]
+            
+        # Extract Items
+        moving_items = [lst[i] for i in indices_to_move]
+        
+        # Remove from list (reverse to keep indices valid)
+        # Note: Removing items might shift eff_target_idx!
+        # We must adjust eff_target_idx for every removed item that was *before* it.
+        
+        shift_adj = 0
+        for i in reversed(indices_to_move):
+            if i < eff_target_idx:
+                shift_adj += 1
+            del lst[i]
+            
+        eff_target_idx -= shift_adj
+        
+        # Insert
+        if position == "before":
+            insert_idx = eff_target_idx
+        else:
+            insert_idx = eff_target_idx + 1
+            
+        for item in reversed(moving_items):
+            lst.insert(insert_idx, item)
+
+        manifest["schedule"] = schedule
+        self.save_manifest(manifest)
+        self.refresh_file_list()
+
+    def move_items_in_manifest(self, items, direction):
+        """Moves selected items (files/folders) up or down relative to other visible items in the current folder."""
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", {})
+        
+        target_folder = self.target_folder_var.get()
+        phase_map = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        phase_key = phase_map.get(target_folder)
+        if not phase_key or phase_key not in schedule: return
+
+        lst = schedule[phase_key]
+        indices_to_move = self._get_manifest_indices_for_items(lst, items, self.get_current_dir())
+        # Identify "visible" indices (items in current bucket)
+        # current_folder is the bucket name (e.g., "HighPriority")
+        current_bucket = self.target_folder_var.get()
+        visible_indices = []
+        for i, entry in enumerate(lst):
+            p = entry.get("physical_path", "")
+            # Items are visible if they are in the current bucket
+            if p.startswith(current_bucket + "/"):
+                visible_indices.append(i)
+        visible_indices.sort()
+        
+        if direction == "up":
+            first_moving = indices_to_move[0]
+            # Find the closest visible index BEFORE our block
+            target_idx = -1
+            for idx in reversed(visible_indices):
+                if idx < first_moving:
+                    target_idx = idx
+                    break
+            
+            if target_idx != -1:
+                # Group-Awareness: Only jump to the boundary if moving BETWEEN groups.
+                # If moving WITHIN the same group, move by one item only.
+                target_parent = lst[target_idx].get("parent_folder", "")
+                moving_parent = lst[indices_to_move[0]].get("parent_folder", "")
+                
+                if target_parent and target_parent != moving_parent:
+                    # Find the START of that target group
+                    while target_idx > 0 and lst[target_idx-1].get("parent_folder") == target_parent:
+                        if target_idx - 1 not in visible_indices: break # Safety
+                        target_idx -= 1
+                
+                moving_items = [lst[i] for i in indices_to_move]
+                for i in reversed(indices_to_move): del lst[i]
+                for item in reversed(moving_items): lst.insert(target_idx, item)
+                    
+        elif direction == "down":
+            last_moving = indices_to_move[-1]
+            target_idx = -1
+            for idx in visible_indices:
+                if idx > last_moving:
+                    target_idx = idx
+                    break
+            
+            if target_idx != -1:
+                # Group-Awareness: Only jump to boundary if moving BETWEEN groups
+                target_parent = lst[target_idx].get("parent_folder", "")
+                moving_parent = lst[indices_to_move[-1]].get("parent_folder", "") # Use last for down
+                
+                if target_parent and target_parent != moving_parent:
+                    # Find the END of that target group
+                    while target_idx < len(lst) - 1 and lst[target_idx+1].get("parent_folder") == target_parent:
+                        if target_idx + 1 not in visible_indices: break
+                        target_idx += 1
+                
+                moving_items = [lst[i] for i in indices_to_move]
+                for i in reversed(indices_to_move): del lst[i]
+                
+                # new_insertion_point = target_idx - len(indices_to_move) + 1
+                # To be simpler: insert after old target_idx
+                # (which is now target_idx - len(moving) if target was after moving)
+                insert_pos = target_idx - len(moving_items) + 1
+                for item in reversed(moving_items):
+                    lst.insert(insert_pos, item)
+
+        manifest["schedule"] = schedule
+        self.save_manifest(manifest)
+        self.refresh_file_list()
 
     def refresh_file_list(self):
-        target_dir = self.get_current_dir()
+        """Populates the GUI Treeview using the manifest as the source of truth."""
+        # 1. Sync untracked disk files to manifest first (quick scan)
+        self._sync_disk_to_manifest()
         
-        # 1. Store Expansion State (by path for reliability)
-        expanded_paths = set()
+        # 1b. Load analysis results for Graduate button (Optimized Cache)
+        self._load_analyzed_filenames()
+        
+        # 2. Re-load ranks for sorting
+        self.load_manifest_ranks()
+        
+        # 3. Store Expansion State (by group name)
+        expanded_groups = set()
         def capture_expanded(parent):
+            if not self.tree: return
             for child in self.tree.get_children(parent):
                 if self.tree.item(child, "open"):
-                    vals = self.tree.item(child, "values")
-                    if vals: expanded_paths.add(vals[0])
+                    text = self.tree.item(child, "text")
+                    expanded_groups.add(text)
                 capture_expanded(child)
         if self.tree: capture_expanded("")
 
-        # Clear tree
+        # 4. Clear tree
         for item in self.tree.get_children():
             self.tree.delete(item)
             
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
-            
-        # 2. Populate Treeview Recursively
-        def populate_level(parent_node, directory):
-            items = self._get_ordered_items_in_dir(directory)
-            for item in items:
-                path = os.path.join(directory, item)
-                is_dir = os.path.isdir(path)
-                
-                # Check if this path was previously expanded
-                should_open = path in expanded_paths
-                
-                node = self.tree.insert(parent_node, tk.END, text=item, values=(path,), open=should_open)
-                if is_dir:
-                    populate_level(node, path)
+        # 5. Get manifest data for current phase
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", {})
+        
+        target_folder = self.target_folder_var.get()
+        phase_map = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        phase_key = phase_map.get(target_folder)
+        if not phase_key: return
 
-        populate_level("", target_dir)
+        entries = schedule.get(phase_key, [])
+        
+        current_group_node = None
+        current_group_name = None
+        
+        for i, entry in enumerate(entries):
+            rel_path = entry.get("physical_path")
+            if not rel_path: continue
             
+            abs_path = os.path.join(self.data_root, rel_path)
+            if not os.path.exists(abs_path):
+                continue
+
+            # Fractured Grouping Logic:
+            parent = entry.get("parent_folder", "")
+            prev_parent = entries[i-1].get("parent_folder", "") if i > 0 else None
+            next_parent = entries[i+1].get("parent_folder", "") if i < len(entries)-1 else None
+            
+            # neighbor-check: are we part of a cluster?
+            is_grouped = parent and (parent == prev_parent or parent == next_parent)
+            
+            if is_grouped:
+                # If group name changed from what we are currently building, or if we weren't in a group
+                if parent != current_group_name:
+                    current_group_name = parent
+                    should_open = parent in expanded_groups
+                    current_group_node = self.tree.insert("", tk.END, text=parent, values=("GROUP:" + parent,), open=should_open)
+                
+                # Insert file into current group
+                self.tree.insert(current_group_node, tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
+            else:
+                # Render as single file at root
+                self.tree.insert("", tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
+                current_group_name = None
+                current_group_node = None
+
         # Update total count
         total_items = self.get_tree_count("")
         if hasattr(self, 'count_label') and self.count_label:
             self.count_label.config(text=f"{total_items} items tracked")
+        
+        self._update_graduate_button_state()
+
+    def _sync_disk_to_manifest(self):
+        """Scans the 3 main data folders and ensures any untracked files are added to the manifest."""
+        manifest = self.load_manifest()
+        schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
+        
+        # Build lookup set of existing physical paths across all phases
+        existing_paths = set()
+        changed = False
+        for p_key in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
+            entries = schedule.get(p_key, [])
+            # Prune obsolete 'Folder' types while we are here
+            clean_entries = [e for e in entries if e.get("type") != "Folder"]
+            if len(clean_entries) != len(entries):
+                schedule[p_key] = clean_entries
+                changed = True
+                
+            for entry in clean_entries:
+                p = entry.get("physical_path")
+                if p: existing_paths.add(p)
+        phase_lookup = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        
+        for folder, p_key in phase_lookup.items():
+            abs_dir = os.path.join(self.data_root, folder)
+            if not os.path.exists(abs_dir): continue
+            
+            # Walk disk
+            for root, dirs, files in os.walk(abs_dir):
+                # Filter out manifest and meta files
+                for item in dirs + files:
+                    if item in ["master_manifest.json", "_order.json", "desktop.ini"]:
+                        continue
+                        
+                    fpath = os.path.join(root, item)
+                    rel = os.path.relpath(fpath, self.data_root).replace("\\", "/")
+                    
+                    if rel not in existing_paths:
+                        if os.path.isdir(fpath): continue
+                        if not self.is_content_file(item): continue
+
+                        # New file found! Add to current phase
+                        parts = rel.split("/")
+                        # parent_folder is the hierarchy between bucket and file
+                        hierarchy = parts[1:-1] if len(parts) > 2 else []
+                        buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                        if hierarchy and hierarchy[0] in buckets:
+                            hierarchy = hierarchy[1:]
+                        parent_folder = "/".join(hierarchy)
+                        
+                        entry = {
+                            "title": item,
+                            "physical_path": rel,
+                            "parent_folder": parent_folder,
+                            "origin_source": "Disk Sync",
+                            "type": "File",
+                            "status": "New"
+                        }
+                        if p_key not in schedule: schedule[p_key] = []
+                        schedule[p_key].append(entry)
+                        existing_paths.add(rel)
+                        changed = True
+        
+        if changed:
+            manifest["schedule"] = schedule
+            self.save_manifest(manifest)
 
     def get_tree_count(self, parent):
         count = 0
@@ -418,25 +835,22 @@ class ContentImporterApp:
         
         if filepaths:
             count = 0
-            data = self.load_order(target_dir)
-            order = data.get("order", [])
-            metadata = data.get("metadata", {})
+        if filepaths:
+            count = 0
+            target_folder_key = self.target_folder_var.get()
+            
             for path in filepaths:
                 try:
                     filename = os.path.basename(path)
                     dest = os.path.join(target_dir, filename)
                     shutil.copy2(path, dest)
-                    if filename not in order:
-                        order.append(filename)
-                    # Tag with current language
-                    metadata[filename] = {"lang": self.language}
+                    
+                    self.add_to_manifest(dest, target_folder_key)
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
             
-            data["order"] = order
-            data["metadata"] = metadata
-            self.save_order(target_dir, data)
+            self.refresh_file_list()
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
             messagebox.showinfo("Success", f"Successfully added {count} files.")
@@ -483,22 +897,34 @@ class ContentImporterApp:
             shutil.copytree(folder_path, dest)
             
             # Update order
-            data = self.load_order(target_dir)
-            order = data.get("order", [])
-            metadata = data.get("metadata", {})
-            if folder_name not in order:
-                order.append(folder_name)
-            # Tag with current language
-            metadata[folder_name] = {"lang": self.language}
-            data["order"] = order
-            data["metadata"] = metadata
-            self.save_order(target_dir, data)
+            shutil.copytree(folder_path, dest)
+            
+            # Update order
+            self.add_to_manifest(dest, self.target_folder_var.get())
+            
+            self.refresh_file_list()
             
             self.refresh_file_list()
             self.status_var.set(f"Successfully added folder: {folder_name}")
             messagebox.showinfo("Success", f"Successfully added folder '{folder_name}'.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy folder '{folder_name}':\n{e}")
+
+    def _resolve_items_to_paths(self, item_ids):
+        """Resolves a list of tree item IDs (files or groups) into a list of absolute file paths."""
+        paths = []
+        for item_id in item_ids:
+            vals = self.tree.item(item_id, "values")
+            if not vals: continue
+            
+            val = str(vals[0])
+            if val.startswith("GROUP:"):
+                for child in self.tree.get_children(item_id):
+                    child_vals = self.tree.item(child, "values")
+                    if child_vals: paths.append(child_vals[0])
+            else:
+                paths.append(val)
+        return list(set(paths)) # Unique paths
 
     def graduate_content(self):
         selected_items = self.tree.selection()
@@ -520,7 +946,12 @@ class ContentImporterApp:
         dest_folder_name = destination_map[current_folder]
         dest_root = os.path.join(self.data_root, dest_folder_name)
         
-        # Confirmation Logic
+        # Resolve Selection (handles files and groups)
+        items_to_process = self._resolve_items_to_paths(selected_items)
+        
+        if not items_to_process: return
+
+        # Confirmation Logic.
         if current_folder == "HighPriority":
             msg = (f"Graduate {len(selected_items)} items to '{dest_folder_name}'?\n\n"
                    "CAUTION: This will mark words as KNOWN based on the MOST RECENT analysis.\n"
@@ -529,7 +960,11 @@ class ContentImporterApp:
         else:
             msg = f"Move {len(selected_items)} items from {current_folder} to {dest_folder_name}?"
             
-        if not messagebox.askyesno("Confirm Graduation", msg):
+        self._ignore_refresh = True
+        confirm = messagebox.askyesno("Confirm Graduation", msg)
+        self._ignore_refresh = False
+        
+        if not confirm:
             return
 
         # Ensure destination exists
@@ -550,20 +985,12 @@ class ContentImporterApp:
                     with open(stats_path, 'r', encoding='utf-8') as f:
                         stats = json.load(f)
                 else:
-                    print(f"Warning: word_stats.json not found at {stats_path}. Only moving files.")
+                    print(f"Warning: word_stats.json not found at {stats_path}.")
             except Exception as e:
                 print(f"Error loading stats: {e}")
-                
-        # Load Order Data
-        source_order_data = self.load_order(self.get_current_dir())
-        dest_order_data = self.load_order(dest_root)
-        
-        for item_id in selected_items:
-            item_text = self.tree.item(item_id, "text")
-            item_values = self.tree.item(item_id, "values")
-            if not item_values: continue
-            
-            source_path = item_values[0]
+
+        # Process Items
+        for source_path in items_to_process:
             if not os.path.exists(source_path): continue
             
             filename = os.path.basename(source_path)
@@ -572,10 +999,10 @@ class ContentImporterApp:
             try:
                 # 1. Graduate Words Logic (High Priority only)
                 if current_folder == "HighPriority" and stats:
-                    # Find all filenames associated with this item (could be folder)
+                    # Find all filenames associated with this item
                     filenames_to_match = set()
                     if os.path.isfile(source_path):
-                        filenames_to_match.add(os.path.basename(source_path))
+                        filenames_to_match.add(filename)
                     else:
                         for root, dirs, files in os.walk(source_path):
                             for f in files:
@@ -584,51 +1011,62 @@ class ContentImporterApp:
                     file_words = []
                     for key, data in stats.items():
                         sources = data.get("sources", [])
-                        # Match if any of our filenames are in the sources list
                         if any(f in sources for f in filenames_to_match):
                             parts = key.split("|")
                             if len(parts) >= 1:
-                                file_words.append(parts[0]) # Add lemma
+                                file_words.append(parts[0])
                     
                     if file_words:
                         file_words = sorted(list(set(file_words)))
-                        
-                        # Correct path resolution for User Files
                         project_root = os.path.dirname(os.path.dirname(self.data_root))
                         user_files_dir = os.path.join(project_root, "User Files", self.language)
                         if not os.path.exists(user_files_dir):
                              os.makedirs(user_files_dir)
-                        grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
                         
+                        rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
+                        grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
                         with open(grad_list_path, 'a', encoding='utf-8') as f:
-                            f.write(f"\n# Source: {filename} ({len(file_words)} words graduated)\n")
+                            f.write(f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n")
                             for w in file_words:
                                 f.write(f"{w}\n")
                         words_graduated += len(file_words)
 
+                # Calculate relative path within source bucket to preserve hierarchy
+                source_bucket_root = os.path.join(self.data_root, current_folder)
+                rel_inner = os.path.relpath(source_path, source_bucket_root)
+                
+                # Sanity: prevent bucket leak in subfolders
+                parts_inner = rel_inner.replace("\\", "/").split("/")
+                buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                if parts_inner and parts_inner[0] in buckets:
+                    parts_inner = parts_inner[1:]
+                clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
+                dest_path = os.path.join(dest_root, clean_rel_inner)
+                
+                # Ensure destination directory exists
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
                 # 2. Move File
+                if os.path.exists(dest_path):
+                    # Simple conflict resolution: rename source
+                    base, ext = os.path.splitext(os.path.basename(dest_path))
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                    dest_path = os.path.join(os.path.dirname(dest_path), f"{base}_{timestamp}{ext}")
+
                 shutil.move(source_path, dest_path)
                 
-                # 3. Update Orders
-                # Remove from source
-                if item_text in source_order_data.get("order", []):
-                    source_order_data["order"].remove(item_text)
-                if item_text in source_order_data.get("metadata", {}):
-                    del source_order_data["metadata"][item_text]
-                    
-                # Add to dest
-                if item_text not in dest_order_data.get("order", []):
-                    dest_order_data["order"].append(item_text)
-                dest_order_data.setdefault("metadata", {})[item_text] = {"lang": self.language}
+                # 3. Update Manifest
+                self.remove_from_manifest(source_path)
+                
+                if dest_folder_name in ["HighPriority", "LowPriority", "GoalContent"]:
+                    self.add_to_manifest(dest_path, dest_folder_name)
                 
                 count += 1
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to graduate {filename}:\n{e}")
         
-        # Save Orders
-        self.save_order(self.get_current_dir(), source_order_data)
-        self.save_order(dest_root, dest_order_data)
+        self.refresh_file_list()
         
         self.refresh_file_list()
         status_msg = f"Moved {count} items to {dest_folder_name}."
@@ -653,10 +1091,6 @@ class ContentImporterApp:
             count = 0
             
             # We only remove root-level items from the order file
-            order_data = self.load_order(target_dir) # Load FULL object
-            order = order_data.get("order", [])
-            metadata = order_data.get("metadata", {})
-            
             for item_id in selected_items:
                 item_text = self.tree.item(item_id, "text")
                 item_values = self.tree.item(item_id, "values")
@@ -669,42 +1103,26 @@ class ContentImporterApp:
                     elif os.path.isdir(path):
                         shutil.rmtree(path)
                     
-                    # If it was a root item, remove from order
-                    if item_text in order:
-                        order.remove(item_text)
-                    if item_text in metadata:
-                        del metadata[item_text]
+                    self.remove_from_manifest(path)
                         
                     count += 1
                 except Exception as e:
                     print(f"Error deleting {path}: {e}")
             
-            order_data["order"] = order
-            order_data["metadata"] = metadata
-            self.save_order(target_dir, order_data)
+            self.refresh_file_list()
             
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
 
     def _get_drop_region(self, item, y):
-        """Determine if drop is above, below, or inside the target item."""
+        """Determine if drop is above or below the target item."""
         bbox = self.tree.bbox(item)
-        if not bbox: return "inside"
+        if not bbox: return "below"
         
         h = bbox[3]
         offset_y = y - bbox[1]
         
-        region = "inside"
-        if offset_y < h * 0.25: region = "above"
-        elif offset_y > h * 0.75: region = "below"
-        
-        # Files cannot accept 'inside' drops
-        path = self.tree.item(item, "values")[0]
-        if not os.path.isdir(path):
-            if region == "inside":
-                 region = "below" if offset_y > h / 2 else "above"
-        
-        return region
+        return "above" if offset_y < h / 2 else "below"
 
     def on_drag_start(self, event):
         item = self.tree.identify_row(event.y)
@@ -718,32 +1136,13 @@ class ContentImporterApp:
             return
 
         target_item = self.tree.identify_row(event.y)
-        self.tree.scan_dragto(event.x, event.y)
-        
-        # Clean up 'inside' highlight
-        if hasattr(self, '_drag_highlight') and self._drag_highlight:
-             try:
-                self.tree.item(self._drag_highlight, tags=())
-             except: pass
-             self._drag_highlight = None
-
         if not target_item:
             return
 
-        region = self._get_drop_region(target_item, event.y)
-        
-        # Prevent "inside" self
-        if target_item == self._drag_item and region == "inside":
-            region = "below"
-
-        self._last_drop_region = region
+        # Simplified to just set the state for on_drag_stop.
+        # _get_drop_region now only returns "above" or "below".
+        self._last_drop_region = self._get_drop_region(target_item, event.y)
         self._last_drop_target = target_item
-
-        # Visual Feedback: Only highlight folders for "inside" drops
-        if region == "inside":
-            self.tree.tag_configure('drop_target', background=ACCENT_COLOR, foreground=BG_COLOR)
-            self.tree.item(target_item, tags=('drop_target',))
-            self._drag_highlight = target_item
 
     def on_drag_stop(self, event):
         # Clean up visuals
@@ -752,152 +1151,171 @@ class ContentImporterApp:
             self._drag_highlight = None
             
         target_item = self.tree.identify_row(event.y)
-        source_item = getattr(self, "_drag_item", None)
+        if not target_item or not self._drag_item: return
         
-        if not source_item or not target_item:
-            return
-
-        source_parent = self.tree.parent(source_item)
+        # Resolve what we are moving (could be multiple selected items)
+        selected_ids = self.tree.selection()
+        if not selected_ids: return
         
-        # Determine region using helper
+        # Determine region (above/below)
         region = self._get_drop_region(target_item, event.y)
-            
-        if source_item == target_item: return
-
-        # ACTION: RE-PARENT (Move Into)
-        if region == "inside":
-             target_parent = target_item # The folder IS the parent
-             
-             # Move on disk
-             source_path = self.tree.item(source_item, "values")[0]
-             dest_dir = self.tree.item(target_item, "values")[0]
-             
-             if not os.path.isdir(dest_dir):
-                 return # Should highlight generic error, but UI logic prevents this path usually
-                 
-             filename = os.path.basename(source_path)
-             dest_path = os.path.join(dest_dir, filename)
-             
-             try:
-                 shutil.move(source_path, dest_path)
-                 self.tree.move(source_item, target_item, "end")
-             except Exception as e:
-                 messagebox.showerror("Error", f"Failed to move: {e}")
-                 
-        # ACTION: RE-ORDER (Insert Above/Below)
-        else:
-             target_parent = self.tree.parent(target_item)
-             
-             # We only support reordering if they share the same parent for now?
-             # Or we treat 'above/below' as 'move to same parent as target'.
-             # Let's support moving to target's parent.
-             
-             if source_parent != target_parent:
-                 # Move on disk first
-                 source_path = self.tree.item(source_item, "values")[0]
-                 if target_parent == "":
-                     dest_dir = self.get_current_dir()
-                 else:
-                     dest_dir = self.tree.item(target_parent, "values")[0]
-                     
-                 filename = os.path.basename(source_path)
-                 dest_path = os.path.join(dest_dir, filename)
-                 
-                 try:
-                     if os.path.abspath(source_path) != os.path.abspath(dest_path):
-                         shutil.move(source_path, dest_path)
-                 except Exception as e:
-                     messagebox.showerror("Error", f"Failed to move: {e}")
-                     return
-
-             # UI Move
-             index = self.tree.index(target_item)
-             if region == "below":
-                 index += 1
-             self.tree.move(source_item, target_parent, index)
-
-        # Save Order logic
-        self._save_level_order(source_parent)
-        new_parent = self.tree.parent(source_item)
-        if new_parent != source_parent:
-            self._save_level_order(new_parent)
+        if target_item in selected_ids: return # Don't drop on self
         
+        # Get target reference
+        target_path_val = self.tree.item(target_item, "values")[0]
+        
+        # Get everything to move
+        items_to_move = [self.tree.item(i, "values")[0] for i in selected_ids if self.tree.item(i, "values")]
+        
+        # Reorder manifest strictly
+        pos = "before" if region == "above" else "after"
+        self.move_manifest_items_relative(items_to_move, target_path_val, pos)
+
         self.refresh_file_list()
         self.status_var.set("Order updated.")
+        
+        # Restore selection
+        self._restore_selection(items_to_move)
 
     def move_selected_up(self):
         selected = self.tree.selection()
-        if not selected:
-            return
-
-        # Sort selected items by their current index to move them correctly
-        items_with_info = []
-        for item in selected:
-            parent = self.tree.parent(item)
-            index = self.tree.index(item)
-            items_with_info.append((parent, index, item))
-
-        # Sort by index (ascending) to process from top to bottom
-        items_with_info.sort(key=lambda x: x[1])
-
-        moved_parents = set()
-        for parent, index, item in items_with_info:
-            if index > 0:
-                self.tree.move(item, parent, index - 1)
-                moved_parents.add(parent)
-
-        # Persistence
-        for p in moved_parents:
-            self._save_level_order(p)
+        if not selected: return
+        # Restore based on original values (supports both GROUP: and paths)
+        to_restore = [self.tree.item(i, "values")[0] for i in selected if self.tree.item(i, "values")]
         
-        # Ensure they stay in view
-        if selected:
-            self.tree.see(selected[0])
+        # Resolve Selection (handles files and groups)
+        items = self._resolve_items_to_paths(selected)
+        if not items: return
+                
+        self.move_items_in_manifest(items, "up")
+        self._restore_selection(to_restore)
 
     def move_selected_down(self):
         selected = self.tree.selection()
-        if not selected:
-            return
+        if not selected: return
+        # Restore based on original values 
+        to_restore = [self.tree.item(i, "values")[0] for i in selected if self.tree.item(i, "values")]
 
-        # Sort selected items by their current index
-        items_with_info = []
-        for item in selected:
-            parent = self.tree.parent(item)
-            index = self.tree.index(item)
-            items_with_info.append((parent, index, item))
-
-        # Sort by index (descending) to process from bottom to top
-        items_with_info.sort(key=lambda x: x[1], reverse=True)
-
-        moved_parents = set()
-        for parent, index, item in items_with_info:
-            num_children = len(self.tree.get_children(parent))
-            if index < num_children - 1:
-                # To move correctly 'down', we target index + 1
-                self.tree.move(item, parent, index + 1)
-                moved_parents.add(parent)
-
-        # Persistence
-        for p in moved_parents:
-            self._save_level_order(p)
-            
-        if selected:
-            self.tree.see(selected[-1])
-
-    def _save_level_order(self, parent_node):
-        """Saves the current visible order of a node's children to its directory's _order.json"""
-        if parent_node == "":
-            directory = self.get_current_dir()
-        else:
-            directory = self.tree.item(parent_node, "values")[0]
-            
-        children = self.tree.get_children(parent_node)
-        new_order_list = [self.tree.item(c, "text") for c in children]
+        # Resolve Selection (handles files and groups)
+        items = self._resolve_items_to_paths(selected)
+        if not items: return
+                
+        self.move_items_in_manifest(items, "down")
+        self._restore_selection(to_restore)
+    
+    def _restore_selection(self, paths):
+        # Scan tree for these paths
+        to_select = []
+        for item in self.tree.get_children(""): # Only top level? No, recursive.
+            # Tree traversal needed
+            pass # Too complex to implement perfectly right now, user can reselect.
+        # Simple implementation:
+        def find_nodes(parent):
+            nodes = []
+            for child in self.tree.get_children(parent):
+                vals = self.tree.item(child, "values")
+                if vals and vals[0] in paths:
+                    nodes.append(child)
+                nodes.extend(find_nodes(child))
+            return nodes
         
-        data = self.load_order(directory)
-        data["order"] = new_order_list
-        # Metadata is preserved as we only update the order flat list
-        self.save_order(directory, data)
+        nodes = find_nodes("")
+        if nodes:
+            self.tree.selection_set(nodes)
+            self.tree.see(nodes[0])
+
+
+    def reset_to_folder_structure(self):
+        """Regenerates the master manifest based on the physical folder structure."""
+        msg = ("This will reset your library order to match the physical folders.\n\n"
+               "It will REGENERATE your manifest based on the files on disk.\n"
+               "This ensures all files are tracked and reordering works correctly.\n\n"
+               "Proceed?")
+        if not messagebox.askyesno("Confirm Reset", msg):
+            return
+            
+        try:
+            # 1. Clear existing manifest schedule but keep metadata
+            manifest = self.load_manifest()
+            manifest["schedule"] = {
+                "PHASE_1_NOW": [],
+                "PHASE_2_SOON": [],
+                "PHASE_3_LATER": []
+            }
+            
+            # 2. Re-scan all folders
+            phase_map = {
+                "HighPriority": "PHASE_1_NOW",
+                "LowPriority": "PHASE_2_SOON",
+                "GoalContent": "PHASE_3_LATER"
+            }
+            
+            for folder, p_key in phase_map.items():
+                abs_dir = os.path.join(self.data_root, folder)
+                if not os.path.exists(abs_dir): continue
+                
+                # Use a custom sorter to respect any lingering _order.json if possible, 
+                # or just natural alphabetical.
+                def get_ordered_level(directory):
+                    items = os.listdir(directory)
+                    # Filter
+                    items = [i for i in items if i not in ["_order.json", "master_manifest.json", "desktop.ini"]]
+                    
+                    # Check for _order.json
+                    order_file = os.path.join(directory, "_order.json")
+                    if os.path.exists(order_file):
+                        try:
+                            with open(order_file, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                                order = data if isinstance(data, list) else data.get("order", [])
+                                rank_map = {name: i for i, name in enumerate(order)}
+                                items.sort(key=lambda x: (rank_map.get(x, 9999), x.lower()))
+                        except:
+                            items.sort(key=lambda x: x.lower())
+                    else:
+                        items.sort(key=lambda x: x.lower())
+                    return items
+
+                def walk_and_add(directory):
+                    items = get_ordered_level(directory)
+                    for item in items:
+                        fpath = os.path.join(directory, item)
+                        rel = os.path.relpath(fpath, self.data_root).replace("\\", "/")
+                        
+                        if os.path.isdir(fpath):
+                            walk_and_add(fpath)
+                            continue
+                            
+                        if not self.is_content_file(item): continue
+                        
+                        parts = rel.split("/")
+                        # parent_folder is the hierarchy between bucket and file
+                        hierarchy = parts[1:-1] if len(parts) > 2 else []
+                        buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                        if hierarchy and hierarchy[0] in buckets:
+                            hierarchy = hierarchy[1:]
+                        parent_folder = "/".join(hierarchy)
+                        
+                        # Add to manifest
+                        entry = {
+                            "title": item,
+                            "physical_path": rel,
+                            "parent_folder": parent_folder,
+                            "origin_source": "Reset",
+                            "type": "File",
+                            "status": "New"
+                        }
+                        manifest["schedule"][p_key].append(entry)
+
+                walk_and_add(abs_dir)
+
+            # 3. Save and Refresh
+            self.save_manifest(manifest)
+            self.refresh_file_list()
+            messagebox.showinfo("Success", "Library manifest regenerated from disk.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reset library: {e}")
 
     def open_data_folder(self):
         path = self.get_current_dir()
@@ -925,6 +1343,87 @@ class ContentImporterApp:
             subprocess.Popen(['open', path])
         else:
             subprocess.Popen(['xdg-open', path])
+
+    def _load_analyzed_filenames(self):
+        """Loads the set of filenames that have been analyzed from word_stats.json (Smart Caching)."""
+        try:
+            # project_root is two levels up from data/<lang>
+            project_root = os.path.dirname(os.path.dirname(self.data_root))
+            stats_path = os.path.join(project_root, "results", "word_stats.json")
+            
+            if not os.path.exists(stats_path):
+                self.analyzed_filenames = set()
+                self._last_stats_mtime = 0
+                self._last_stats_size = 0
+                return
+
+            # Smart caching: check mtime and size before parsing
+            current_mtime = os.path.getmtime(stats_path)
+            current_size = os.path.getsize(stats_path)
+            
+            if current_mtime == self._last_stats_mtime and current_size == self._last_stats_size:
+                return # No changes, skip reload
+
+            with open(stats_path, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+            
+            new_analyzed = set()
+            for data in stats.values():
+                sources = data.get("sources", [])
+                for s in sources:
+                    new_analyzed.add(s)
+            
+            self.analyzed_filenames = new_analyzed
+            self._last_stats_mtime = current_mtime
+            self._last_stats_size = current_size
+            
+        except Exception as e:
+            print(f"Error loading analyzed filenames cache: {e}")
+
+    def _update_graduate_button_state(self, event=None):
+        """Enable the Graduate button only if selection is valid and analysis data exists for it."""
+        if not self.graduate_btn:
+            return
+            
+        selected_items = self.tree.selection()
+        if not selected_items:
+            self.graduate_btn.config(state=tk.DISABLED)
+            return
+
+        current_folder = self.target_folder_var.get()
+        
+        # Only HighPriority requires analysis results to Graduate (to KnownWords)
+        if current_folder != "HighPriority":
+            self.graduate_btn.config(state=tk.NORMAL)
+            return
+
+        # Requires analysis results for HighPriority
+        if self._has_analysis_for_selection(selected_items):
+            self.graduate_btn.config(state=tk.NORMAL)
+        else:
+            self.graduate_btn.config(state=tk.DISABLED)
+
+    def _has_analysis_for_selection(self, selected_items):
+        """Checks if there's any vocabulary data cached for the selected items (Optimized)."""
+        items_to_process = self._resolve_items_to_paths(selected_items)
+        if not items_to_process:
+            return False
+
+        if not self.analyzed_filenames:
+            return False
+
+        # Build a set of filenames to match
+        filenames_to_check = set()
+        for source_path in items_to_process:
+            if os.path.isfile(source_path):
+                filenames_to_check.add(os.path.basename(source_path))
+            else:
+                for root, _, files in os.walk(source_path):
+                    for f in files:
+                        filenames_to_check.add(f)
+
+        # Fast set intersection check
+        return not filenames_to_check.isdisjoint(self.analyzed_filenames)
 
     def create_tooltip(self, widget, text):
         def show_tip(event):

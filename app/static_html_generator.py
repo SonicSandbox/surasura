@@ -5,6 +5,7 @@ import pandas as pd
 import webbrowser
 
 from app.path_utils import get_user_file, get_resource
+from app import settings_manager
 
 # Configuration
 RESULTS_DIR = get_user_file("results")
@@ -92,16 +93,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
                 # Determine if Goal Content
                 is_goal_content = False
                 try:
-                    # Load Target Language from settings to find correct path
-                    target_lang = "ja" # Default
-                    try:
-                        settings_path = get_user_file("settings.json")
-                        if os.path.exists(settings_path):
-                            with open(settings_path, 'r', encoding='utf-8') as f:
-                                settings = json.load(f)
-                                target_lang = settings.get("target_language", "ja")
-                    except: pass
+                    # Load settings via manager
+                    settings = settings_manager.load_settings()
+                    target_lang = settings.get("target_language", "ja")
+                except Exception:
+                    target_lang = "ja"
 
+                try:
                     from app.path_utils import get_user_files_path
                     # GoalContent is in User Files/<lang>/GoalContent
                     goal_dir = os.path.join(get_user_files_path(target_lang), "GoalContent")
@@ -109,7 +107,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
                     # Check if file exists in GoalContent
                     if os.path.exists(os.path.join(goal_dir, filename)):
                         is_goal_content = True
-                except: pass
+                except Exception:
+                    pass
 
                 data["progressive"].append({
                     "filename": filename,
@@ -188,24 +187,21 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     target_lang = "ja" # Default
     applied_theme = theme
     try:
-        settings_path = get_user_file("settings.json")
-        if os.path.exists(settings_path):
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-                logic_settings = settings.get("logic", {})
-                target_lang = settings.get("target_language", "ja")
-                target_lang = settings.get("target_language", "ja")
-                # If theme is 'default', try to load from settings and MAP it
-                if applied_theme == "default":
-                    raw_theme = settings.get("theme", "default")
-                    theme_map = {
-                        'Default (Dark)': 'default',
-                        'Dark Flow': 'world-class',
-                        'Midnight (Vibrant)': 'midnight-vibrant',
-                        'Modern Light': 'modern-light',
-                        'Zen Mode': 'Zen Mode'
-                    }
-                    applied_theme = theme_map.get(raw_theme, 'default')
+        settings = settings_manager.load_settings()
+        logic_settings = settings.get("logic", {})
+        target_lang = settings.get("target_language", "ja")
+        
+        # If theme is 'default', try to load from settings and MAP it
+        if applied_theme == "default":
+            raw_theme = settings.get("theme", "default")
+            theme_map = {
+                'Default (Dark)': 'default',
+                'Dark Flow': 'world-class',
+                'Midnight (Vibrant)': 'midnight-vibrant',
+                'Modern Light': 'modern-light',
+                'Zen Mode': 'Zen Mode'
+            }
+            applied_theme = theme_map.get(raw_theme, 'default')
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")
 

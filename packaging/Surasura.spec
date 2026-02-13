@@ -12,6 +12,9 @@ project_root = os.path.abspath('.')
 # -----------------------------------------------------------------------------
 # DYNAMIC VERSION LOGIC
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# DYNAMIC VERSION LOGIC
+# -----------------------------------------------------------------------------
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
     init_path = os.path.join(project_root, 'app', '__init__.py')
@@ -26,6 +29,28 @@ APP_VERSION = get_version()
 BUILD_NAME = f'Surasura_v{APP_VERSION}'
 
 print(f"Building {BUILD_NAME}...")
+
+# -----------------------------------------------------------------------------
+# BUILD SETTINGS (Conditionality)
+# -----------------------------------------------------------------------------
+import json
+settings_path = os.path.join(project_root, 'settings.json')
+hide_satoru = False
+# Default excludes
+excluded_modules = ['pandas.tests']
+
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path, 'r', encoding='utf-8') as f:
+            settings = json.load(f)
+            hide_satoru = settings.get("hide_satoru", False)
+    except Exception as e:
+        print(f"Warning: Could not read settings.json for build configuration: {e}")
+
+if hide_satoru:
+    print("BUILD CONFIG: Excluding Immersion Architect module (hide_satoru=True)")
+    excluded_modules.append('modules.immersion_architect')
+
 
 # -----------------------------------------------------------------------------
 # PYINSTALLER CONFIG
@@ -52,10 +77,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas.tests'],
+    excludes=excluded_modules,
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

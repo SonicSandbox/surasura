@@ -41,6 +41,8 @@ class FrequencyExporter:
         Format: ["word1", "word2", ...]
         """
         df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError("The source data is empty. Cannot generate frequency list.")
         if 'Word' not in df.columns:
             raise ValueError("CSV is missing 'Word' column")
             
@@ -56,6 +58,8 @@ class FrequencyExporter:
         Export as a plain text list, one word per line.
         """
         df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError("The source data is empty. Cannot generate frequency list.")
         if 'Word' not in df.columns:
             raise ValueError("CSV is missing 'Word' column")
             
@@ -75,6 +79,8 @@ class FrequencyExporter:
           - term_meta_bank_1.json
         """
         df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError("The source data is empty. Cannot generate frequency list.")
         if 'Word' not in df.columns:
             raise ValueError("CSV is missing 'Word' column")
             

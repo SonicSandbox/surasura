@@ -8,6 +8,7 @@ import requests
 from dotenv import load_dotenv
 from app import path_utils
 from app import __version__
+from app import settings_manager
 
 # Load environment variables from .env file
 # If frozen, look in sys._MEIPASS (where PyInstaller unpacks resources).
@@ -95,11 +96,7 @@ def _send_heartbeat_thread(status):
     
     # Check Opt-Out Setting and handle open_count
     try:
-        settings_path = path_utils.get_user_file("settings.json")
-        settings = {}
-        if os.path.exists(settings_path):
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
+        settings = settings_manager.load_settings()
         
         if not settings.get("telemetry_enabled", True):
             return
@@ -109,14 +106,13 @@ def _send_heartbeat_thread(status):
             open_count = int(settings.get("open_count", 0))
         except (ValueError, TypeError):
             open_count = 0
-
+            
         # Increment open_count ONLY ONCE per app session
         if not _OPEN_COUNT_INCREMENTED:
             open_count += 1
             settings["open_count"] = open_count
             try:
-                with open(settings_path, "w", encoding="utf-8") as f:
-                    json.dump(settings, f, indent=4)
+                settings_manager.save_settings(settings)
                 _OPEN_COUNT_INCREMENTED = True
             except Exception:
                 pass # If we can't save the increment, we still proceed with sending

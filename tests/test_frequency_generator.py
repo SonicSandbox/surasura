@@ -4,9 +4,10 @@ import os
 import json
 import pandas as pd
 from unittest.mock import MagicMock, patch
-from app.main import MasterDashboardApp
+# from app.main import MasterDashboardApp - Removed global import
 from app import analyzer
 from app.frequency_exporter import FrequencyExporter
+
 
 # --- Integration Test ---
 
@@ -45,6 +46,7 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     2. Call the frequency list export wrapper (simulating button click) on that real CSV.
     3. Verify the final JSON format and content.
     """
+    from app.main import MasterDashboardApp
     results_dir = frequency_app_env["results"]
     
     # 1. Run actual analyzer main logic
@@ -99,6 +101,7 @@ def test_export_wrapper_migaku(tmp_path):
     """
     Test the wrapper logic specifically for Migaku path using mocked CSV.
     """
+    from app.main import MasterDashboardApp
     results_dir = tmp_path / "results"
     results_dir.mkdir()
     priority_csv = results_dir / "priority_learning_list.csv"
@@ -135,6 +138,9 @@ def test_generate_frequency_list_no_data(tmp_path):
     app_mock = MagicMock()
     
     # Mocking get_user_file to return our tmp path
+    # Move import inside to ensure we get a fresh version if previous tests messed with sys.modules
+    from app.main import MasterDashboardApp
+        
     with patch('app.path_utils.get_user_file', return_value=str(results_dir)), \
          patch('tkinter.messagebox.showwarning') as mock_warning:
         

@@ -939,6 +939,7 @@ class MasterDashboardApp:
                     stdout=subprocess.PIPE if capture_output else None,
                     stderr=subprocess.STDOUT if capture_output else None,
                     text=True,
+                    encoding='utf-8',
                     bufsize=1,
                     universal_newlines=True,
                     creationflags=creation_flags,

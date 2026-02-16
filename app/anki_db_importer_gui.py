@@ -191,17 +191,24 @@ class AnkiImporterApp:
                 cleanup_temp_dir(self.anki_temp_dir)
             
             self.anki_fields, self.anki_notes, self.anki_model_map, self.anki_temp_dir = load_anki_data(path)
-            if self.anki_field_combo:
+            if hasattr(self, 'anki_field_combo') and self.anki_field_combo:
                 self.anki_field_combo['values'] = self.anki_fields
             
             # Common field names to auto-select
-            for pref in ["Sentence", "Expression", "Word", "Front"]:
+            # Filtered list makes this more reliable
+            auto_selected = False
+            for pref in ["Sentence", "Expression", "Word", "Front", "Text"]:
                 if pref in self.anki_fields:
                     self.anki_field_var.set(pref)
+                    auto_selected = True
                     break
+            
+            if not auto_selected and self.anki_fields:
+                self.anki_field_var.set(self.anki_fields[0])
             
             self.update_anki_preview()
             self.status_var.set("Ready")
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load Anki data:\n{e}")
             self.status_var.set("Error")

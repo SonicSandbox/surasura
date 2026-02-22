@@ -1726,7 +1726,7 @@
             // Footer
             const footer = document.createElement('div');
             footer.className = "card-footer";
-            footer.innerHTML = `<div></div><div class="actions"><button class="btn btn-ignore" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
+            footer.innerHTML = `<div></div><div class="actions"><button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
             el.appendChild(footer);
 
             // Sources (DOM Pruned)
@@ -1830,10 +1830,11 @@
         document.addEventListener('keydown', (e) => {
             if (e.repeat) return;
 
-            const isNext = e.code === 'Space' || e.code === 'ArrowRight';
+            const isNext = e.code === 'Space' || e.code === 'ArrowRight' || e.key === 'z' || e.key === 'Z';
             const isPrev = e.code === 'ArrowLeft';
             const isUp = e.code === 'ArrowUp';
             const isDown = e.code === 'ArrowDown';
+            const isIgnore = e.key === 'z' || e.key === 'Z';
 
             if (!isNext && !isPrev && !isUp && !isDown) return;
 
@@ -1873,6 +1874,29 @@
             });
 
             if (currentIndex === -1) return;
+
+            // Handle Context Toggle (Up/Down) - only in standard mode
+            if (isUp || isDown) {
+                const centeredCard = activeCards[currentIndex];
+                const toggleBtn = centeredCard.querySelector('.toggle-contexts-btn');
+                if (toggleBtn) {
+                    const isShown = toggleBtn.classList.contains('active');
+                    if (isDown && !isShown) {
+                        toggleBtn.click();
+                    } else if (isUp && isShown) {
+                        toggleBtn.click();
+                    }
+                }
+                return; // Don't perform navigation
+            }
+
+            if (isIgnore) {
+                const centeredCard = activeCards[currentIndex];
+                const ignoreBtn = centeredCard.querySelector('.btn-ignore');
+                if (ignoreBtn && !ignoreBtn.disabled) {
+                    ignoreBtn.click();
+                }
+            }
 
             // Handle Context Toggle (Up/Down) - only in standard mode
             if (isUp || isDown) {

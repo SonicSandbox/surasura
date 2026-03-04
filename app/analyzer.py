@@ -944,11 +944,22 @@ def main():
                     
                 entry = word_stats[(lemma, reading)]
                 
-                # Check if this exact sentence is already in candidate_contexts
+                new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text)
+                
+                # Optimization 1: Insertion Caching - Fast exit if list is full and new sentence is worse
+                if len(entry["candidate_contexts"]) >= 30:
+                    worst_stored_ctx = entry["candidate_contexts"][-1]
+                    # Compare only the first three sorting tuples (is_too_short, is_too_long, cost)
+                    new_sorting_tuple = (new_ctx[0], new_ctx[1], new_ctx[2])
+                    worst_sorting_tuple = (worst_stored_ctx[0], worst_stored_ctx[1], worst_stored_ctx[2])
+                    
+                    if new_sorting_tuple >= worst_sorting_tuple:
+                        continue # No chance of beating the top 30, discard early!
+
+                # Check if this exact sentence is already in candidate_contexts (Moved AFTER fast-path)
                 if any(c[4] == s_text for c in entry["candidate_contexts"]):
                     continue
-                
-                new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text)
+
                 if not entry["first_context"]:
                     entry["first_context"] = new_ctx
                     
@@ -1028,6 +1039,14 @@ def main():
             
             evaluated_candidates.append((ctx[0], ctx[1], unknown_count, sentence_text))
             
+            # Optimization 2: Early Exit
+            # If we found enough "perfect" contexts (0 unknowns AND perfectly sized) we can stop evaluating
+            if unknown_count == 0 and ctx[0] == 0 and ctx[1] == 0:
+                perfect_count = sum(1 for c in evaluated_candidates if c[2] == 0 and c[0] == 0 and c[1] == 0)
+                if perfect_count >= 3:
+                     # Stop scanning constraints - we already have 3 perfect i+1s ready
+                     break
+            
         first_evaluated = None
         if first_ctx_data:
             first_text = first_ctx_data[4].strip()
@@ -1041,6 +1060,10 @@ def main():
         if ONLY_I_PLUS_ONE:
             if not i_plus_one_candidates:
                 continue # Skip this word entirely
+                
+            # Optimization 3: Explicit Length Sorting for Strict Mode
+            # Ensure we still prioritize the best length even if all are i+1s
+            i_plus_one_candidates.sort(key=lambda x: (x[0], x[1]))
             selected_contexts = i_plus_one_candidates[:3]
         else:
             # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long

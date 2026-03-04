@@ -601,10 +601,23 @@ class MasterDashboardApp:
         self.context_range_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.context_range_frame, text="Ideal sentence range:").pack(side=tk.LEFT)
         ttk.Entry(self.context_range_frame, textvariable=self.var_context_min_chars, width=4).pack(side=tk.LEFT, padx=(5, 2))
-        self.var_context_min_chars.trace_add("write", lambda *args: self.save_settings())
         ttk.Label(self.context_range_frame, text="to").pack(side=tk.LEFT)
         ttk.Entry(self.context_range_frame, textvariable=self.var_context_max_chars, width=4).pack(side=tk.LEFT, padx=(2, 0))
-        self.var_context_max_chars.trace_add("write", lambda *args: self.save_settings())
+        ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
+        
+        def _validate_context_range(*args):
+             try:
+                 min_val = self.var_context_min_chars.get()
+                 max_val = self.var_context_max_chars.get()
+             except tk.TclError:
+                 return # Still typing invalid char
+             if min_val > max_val:
+                 self.var_context_max_chars.set(min_val)
+             self.save_settings()
+             
+        self.var_context_min_chars.trace_add("write", _validate_context_range)
+        self.var_context_max_chars.trace_add("write", _validate_context_range)
         ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
 

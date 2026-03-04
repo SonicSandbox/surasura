@@ -743,6 +743,8 @@ def main():
         "min_seq": float('inf') # Track first appearance sequence index
     })
     
+    words_skipped_i_plus_one = 0 # Track skips explicitly for visibility
+
     file_stats = [] 
     
     # 3. Process Files (Aggregation Phase)
@@ -1036,7 +1038,15 @@ def main():
                 if lr == target_lr: continue
                 if lr not in rolling_known_tuples and lr[0] not in rolling_known_lemmas:
                     unknown_count += 1
+                    # Optimization 4: Fast-Fail Evaluation
+                    # If strict i+1 mode is ON, any sentence > 0 unknowns is guaranteed garbage
+                    if ONLY_I_PLUS_ONE and unknown_count > 0:
+                        break
             
+            # If we fast-failed, don't even bother appending the evaluated candidate
+            if ONLY_I_PLUS_ONE and unknown_count > 0:
+                continue
+
             evaluated_candidates.append((ctx[0], ctx[1], unknown_count, sentence_text))
             
             # Optimization 2: Early Exit
@@ -1059,6 +1069,7 @@ def main():
         
         if ONLY_I_PLUS_ONE:
             if not i_plus_one_candidates:
+                words_skipped_i_plus_one += 1
                 continue # Skip this word entirely
                 
             # Optimization 3: Explicit Length Sorting for Strict Mode
@@ -1149,11 +1160,13 @@ def main():
     else:
         print("No unknown words found!")
 
-    # Output Stats
     OUTPUT_STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
     with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
         f.write("--- File Statistics ---\n")
-        f.write(f"Configuration: Skip Single Chars = {SKIP_SINGLE_CHARS}\n\n")
+        f.write(f"Configuration: Skip Single Chars = {SKIP_SINGLE_CHARS}\n")
+        if ONLY_I_PLUS_ONE:
+             f.write(f"i+1 Constraint: {words_skipped_i_plus_one} Words Evaluated & Skipped\n")
+        f.write("\n")
         for stat in file_stats:
             f.write(f"File: {stat['File']}\n")
             f.write(f"  Total Words: {stat['Total Words']}\n")

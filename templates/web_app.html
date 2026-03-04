@@ -235,6 +235,36 @@
             content: attr(data-content);
         }
 
+        /* --- Audio Button --- */
+        .btn-audio {
+            background: transparent;
+            border: none;
+            padding: 4px;
+            margin-left: 5px;
+            cursor: pointer;
+            opacity: 0.5;
+            transition: opacity 0.2s, transform 0.1s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+
+        .btn-audio:hover {
+            opacity: 1;
+            transform: scale(1.1);
+        }
+
+        .btn-audio:active {
+            transform: scale(0.95);
+        }
+
+        .btn-audio svg {
+            width: 18px;
+            height: 18px;
+            fill: white;
+        }
+
         /* --- Priority Markers --- */
         .priority-marker {
             display: inline-flex;
@@ -951,8 +981,15 @@
 
     <div id="nav-hint">
         ⓘ
-        <div class="hint-tooltip">Tip: Use <b>Left/Right keys</b> or <b>Space</b> to quickly move between words. Use
-            <b>Up/Down keys</b> to show or hide sentences.
+        <div class="hint-tooltip">
+            <strong>Hotkeys Reference</strong><br>
+            <div style="text-align: left; margin-top: 8px;">
+                <b>Space / Right</b> : Next Word<br>
+                <b>Left</b> : Previous Word<br>
+                <b>Up / Down</b> : Toggle Sentences<br>
+                <b>v</b> : Play Context Audio<br>
+                <b>z</b> : Ignore Word
+            </div>
         </div>
     </div>
     <header>
@@ -1003,6 +1040,23 @@
                     requestAnimationFrame(next);
                 }
                 next();
+            });
+        }
+
+        // --- Data Decompression Helper ---
+        function decompressData(compressedObj) {
+            if (!compressedObj || !compressedObj.keys || !compressedObj.rows) {
+                return compressedObj; // Not in compressed format
+            }
+
+            return compressedObj.rows.map(rowArray => {
+                const rowObj = {};
+                compressedObj.keys.forEach((key, index) => {
+                    if (rowArray[index] !== null) {
+                        rowObj[key] = rowArray[index];
+                    }
+                });
+                return rowObj;
             });
         }
     </script>
@@ -1169,6 +1223,20 @@
                 // --- Apply Theme ---
                 if (typeof globalTheme !== 'undefined' && globalTheme !== 'default') {
                     document.body.classList.add(`theme-${globalTheme}`);
+                }
+
+                // --- Decompress Global Data First ---
+                if (globalData) {
+                    if (globalData.progressive) {
+                        globalData.progressive.forEach(file => {
+                            if (file.words && file.words.keys && file.words.rows) {
+                                file.words = decompressData(file.words);
+                            }
+                        });
+                    }
+                    if (globalData.priority && globalData.priority.keys && globalData.priority.rows) {
+                        globalData.priority = decompressData(globalData.priority);
+                    }
                 }
 
                 // --- Filter Global Data with Local Ignore List ---
@@ -1653,12 +1721,20 @@
                 }
             }
 
+            const audioText = (c1 || word).replace(/'/g, "\\'");
+            const hideAudio = (typeof globalLogic !== 'undefined' && globalLogic.hide_audio_button);
+
             // Standard Card: Base HTML
             el.innerHTML = `
                 <div class="card-header">
                     <div style="display:flex; align-items:center; gap: 10px;">
                         <span class="word-main">${safeWord}</span>
                         <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
+                        <button class="btn-audio" style="${hideAudio ? 'display:none' : ''}" onclick="playAudio('${audioText}', this)" title="Listen to Sentence (Hotkey: v)">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+                            </svg>
+                        </button>
                     </div>
                     <div style="display:flex; align-items:center; gap: 15px;">
                         <div class="stats" style="font-size: 0.9rem; color: var(--text-secondary);">
@@ -1836,6 +1912,30 @@
 
         }
 
+        // --- Audio Logic ---
+        function playAudio(text, btnElement) {
+            if (!text) return;
+            const lang = (typeof globalLanguage !== 'undefined') ?
+                (globalLanguage === 'zh' ? 'zh-CN' : 'ja-JP') : 'ja-JP';
+
+            // Visual feedback
+            if (btnElement) {
+                btnElement.style.opacity = '1';
+                btnElement.style.transform = 'scale(1.2)';
+                setTimeout(() => {
+                    btnElement.style.opacity = '0.5';
+                    btnElement.style.transform = 'scale(1)';
+                }, 200);
+            }
+
+            // Cancel any ongoing speech to prevent queuing/overlapping
+            window.speechSynthesis.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = lang;
+            window.speechSynthesis.speak(utterance);
+        }
+
         // --- Smart Navigation ---
         document.addEventListener('keydown', (e) => {
             if (e.repeat) return;
@@ -1845,8 +1945,9 @@
             const isUp = e.code === 'ArrowUp';
             const isDown = e.code === 'ArrowDown';
             const isIgnore = e.key === 'z' || e.key === 'Z';
+            const isAudio = e.key === 'v' || e.key === 'V';
 
-            if (!isNext && !isPrev && !isUp && !isDown) return;
+            if (!isNext && !isPrev && !isUp && !isDown && !isAudio) return;
 
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -1905,6 +2006,14 @@
                 const ignoreBtn = centeredCard.querySelector('.btn-ignore');
                 if (ignoreBtn && !ignoreBtn.disabled) {
                     ignoreBtn.click();
+                }
+            }
+
+            if (isAudio) {
+                const centeredCard = activeCards[currentIndex];
+                const audioBtn = centeredCard.querySelector('.btn-audio');
+                if (audioBtn) {
+                    audioBtn.click();
                 }
             }
 

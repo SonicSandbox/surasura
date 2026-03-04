@@ -147,6 +147,7 @@ class MasterDashboardApp:
         self.onboarding_completed = tk.BooleanVar(value=False)
         self.var_open_count = tk.IntVar(value=0)
         self.var_hide_satoru = tk.BooleanVar(value=False)
+        self.var_hide_audio = tk.BooleanVar(value=False)
         self._lock_ui_updates = False
         
         # Initialize status var early to satisfy linter
@@ -155,6 +156,13 @@ class MasterDashboardApp:
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
         self.btn_satori: Optional[ttk.Button] = None
+        self.lang_frame: Optional[ttk.Frame] = None
+        self.lang_options_frame: Optional[ttk.Frame] = None
+        self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
+        self.chk_sanitize_ja: Optional[ttk.Checkbutton] = None
+        self.max_contexts_frame: Optional[ttk.Frame] = None
+        self.context_range_frame: Optional[ttk.Frame] = None
+        self.wpd_frame: Optional[ttk.Frame] = None
         
         # Logic Settings (Magic Numbers)
         self.logic_settings = {}
@@ -211,6 +219,7 @@ class MasterDashboardApp:
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
+        self.var_hide_audio.trace_add("write", self.save_settings)
         self.var_hide_satoru.trace_add("write", lambda n, i, m: self.update_satori_visibility())
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
@@ -358,19 +367,22 @@ class MasterDashboardApp:
                     self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
     
             # 3. Update Settings Toggles (if window created)
-            if hasattr(self, 'chk_reinforce_widget') and hasattr(self, 'chk_sanitize_ja'):
-                # Hide both initially
-                self.chk_reinforce_widget.pack_forget()
-                self.chk_sanitize_ja.pack_forget()
+            if self.settings_window and self.settings_window.winfo_exists():
+                if self.chk_reinforce_widget:
+                    self.chk_reinforce_widget.pack_forget()
+                if self.chk_sanitize_ja:
+                    self.chk_sanitize_ja.pack_forget()
                 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
-                    self.chk_reinforce_widget.pack(anchor=tk.W)
-                    self.chk_reinforce_widget.configure(state='normal')
+                    if self.chk_reinforce_widget:
+                        self.chk_reinforce_widget.pack(anchor=tk.W)
+                        self.chk_reinforce_widget.configure(state='normal')
                 else:
                     # Show Sanitize for Japanese
-                    self.chk_sanitize_ja.pack(anchor=tk.W)
-                    self.chk_sanitize_ja.configure(state='normal')
+                    if self.chk_sanitize_ja:
+                        self.chk_sanitize_ja.pack(anchor=tk.W)
+                        self.chk_sanitize_ja.configure(state='normal')
                     self.var_reinforce.set(False)
     
             self.save_settings()
@@ -569,7 +581,7 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("600x400")
+        self.settings_window.geometry("600x480")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -583,6 +595,25 @@ class MasterDashboardApp:
         # Settings
         settings_frame = ttk.LabelFrame(self.settings_window, text=" Advanced Settings", padding="10")
         settings_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        # Language Selection
+        self.lang_frame = ttk.Frame(settings_frame)
+        self.lang_frame.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(self.lang_frame, text="Target Language:").pack(side=tk.LEFT)
+        ttk.Radiobutton(self.lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(self.lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
+
+        # Language Specific Options Container (Indented)
+        self.lang_options_frame = ttk.Frame(settings_frame)
+        self.lang_options_frame.pack(fill=tk.X, padx=(20, 0), pady=(0, 10))
+
+        # Reinforce Segmentation (Chinese)
+        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
+        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
+        
+        # Sanitize Japanese Terms (Japanese only)
+        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
+        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
         
         chk_single = ttk.Checkbutton(settings_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -595,6 +626,10 @@ class MasterDashboardApp:
         chk_telemetry = ttk.Checkbutton(settings_frame, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
         chk_telemetry.pack(anchor=tk.W)
         ToolTip(chk_telemetry, "Send anonymous daily usage statistics to help improve the app.")
+
+        chk_hide_audio = ttk.Checkbutton(settings_frame, text="Hide Native Audio Playback Button (Speaker Icon)", variable=self.var_hide_audio)
+        chk_hide_audio.pack(anchor=tk.W)
+        ToolTip(chk_hide_audio, "Hide the audio play button in the progressive word list report.")
 
         # Ideal Sentence Range
         self.context_range_frame = ttk.Frame(settings_frame)
@@ -625,7 +660,8 @@ class MasterDashboardApp:
         self.max_contexts_frame = ttk.Frame(settings_frame)
         self.max_contexts_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(self.max_contexts_frame, text="Max Example Sentences:").pack(side=tk.LEFT)
-        self.var_max_contexts = tk.IntVar(value=self.logic_settings.get("context", {}).get("max_contexts", 3))
+        if not hasattr(self, 'var_max_contexts') or not self.var_max_contexts:
+            self.var_max_contexts = tk.IntVar(value=self.logic_settings.get("context", {}).get("max_contexts", 3))
         spin_max_contexts = ttk.Spinbox(self.max_contexts_frame, from_=1, to=10, textvariable=self.var_max_contexts, width=4, command=self.save_settings)
         spin_max_contexts.pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.max_contexts_frame, "Maximum number of context sentences to export per word. (Recommended: 3)")
@@ -634,26 +670,7 @@ class MasterDashboardApp:
         chk_i_plus_one.pack(anchor=tk.W)
         ToolTip(chk_i_plus_one, "If checked, only words with at least one i+1 sentence will be included in the analysis list.")
 
-        # Language Selection
-        self.lang_frame = ttk.Frame(settings_frame)
-        self.lang_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(self.lang_frame, text="Target Language:").pack(side=tk.LEFT)
-        ttk.Radiobutton(self.lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
-        ttk.Radiobutton(self.lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
 
-
-
-        # Language Specific Options Container (Indented)
-        self.lang_options_frame = ttk.Frame(settings_frame)
-        self.lang_options_frame.pack(fill=tk.X, padx=(20, 0), pady=(0, 10))
-
-        # Reinforce Segmentation (Chinese)
-        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
-        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
-        
-        # Sanitize Japanese Terms (Japanese only)
-        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
-        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
 
         # Words Per Day Settings
         self.wpd_frame = ttk.Frame(settings_frame)
@@ -820,14 +837,16 @@ class MasterDashboardApp:
             # Load Logic Settings
             self.logic_settings = settings.get("logic", {})
             self.var_inline_completed.set(self.logic_settings.get("inline_completed_files", False))
+            self.var_hide_audio.set(self.logic_settings.get("hide_audio_button", False))
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
             
-            # Need to create the Intvar safely if load_settings occurs very early or re-triggers
-            if not hasattr(self, 'var_max_contexts'):
-                self.var_max_contexts = tk.IntVar()
-            self.var_max_contexts.set(context_settings.get("max_contexts", 3))
+            # Use the existing IntVar if it exists, otherwise it will be created in setup_ui or create_settings_window
+            if hasattr(self, 'var_max_contexts') and self.var_max_contexts:
+                self.var_max_contexts.set(context_settings.get("max_contexts", 3))
+            else:
+                self.var_max_contexts = tk.IntVar(value=context_settings.get("max_contexts", 3))
             
             self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -858,6 +877,7 @@ class MasterDashboardApp:
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),
+                    "hide_audio_button": self.var_hide_audio.get(),
                     "context": {
                         **self.logic_settings.get("context", {}),
                         "min_chars": self.var_context_min_chars.get(),
@@ -1114,7 +1134,7 @@ class MasterDashboardApp:
             'Dark Flow': 'world-class',
             'Midnight (Vibrant)': 'midnight-vibrant',
             'Modern Light': 'modern-light',
-            'Zen Mode': 'Zen Mode'
+            'Zen Mode': 'zen-focus'
         }
         selected_theme = self.combo_theme.get()
         theme_arg = theme_map.get(selected_theme, 'default')

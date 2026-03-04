@@ -62,6 +62,7 @@
             "_comment": "split_overflow: max chars to search past target length for a clean boundary.",
             "split_overflow": 150
         },
-        "chunk_size": 50
+        "chunk_size": 50,
+        "hide_audio_button": true
     }
 }

@@ -439,8 +439,37 @@
     </script>
     <script> // --- Core Logic ---
 
+        // --- Data Decompression Helper ---
+        function decompressData(compressedObj) {
+            if (!compressedObj || !compressedObj.keys || !compressedObj.rows) {
+                return compressedObj; // Not in compressed format
+            }
+
+            return compressedObj.rows.map(rowArray => {
+                const rowObj = {};
+                compressedObj.keys.forEach((key, index) => {
+                    if (rowArray[index] !== null) {
+                        rowObj[key] = rowArray[index];
+                    }
+                });
+                return rowObj;
+            });
+        }
+
         function init() {
             if (!globalData) return;
+
+            // --- Decompress Global Data First ---
+            if (globalData.progressive) {
+                globalData.progressive.forEach(file => {
+                    if (file.words && file.words.keys && file.words.rows) {
+                        file.words = decompressData(file.words);
+                    }
+                });
+            }
+            if (globalData.priority && globalData.priority.keys && globalData.priority.rows) {
+                globalData.priority = decompressData(globalData.priority);
+            }
 
             // Zen Mode flattens everything. 
             // We just take the first file in 'progressive' for now 

@@ -42,6 +42,33 @@ def open_as_app(file_path):
     # Fallback to standard browser behavior
     webbrowser.open(url)
 
+def compress_list_of_dicts(data_list):
+    """
+    Compresses a list of dictionaries into a compact format:
+    {"keys": ["key1", "key2", ...], "rows": [["val1", "val2", ...], ...]}
+    Reduces JSON payload size by removing repetitive keys.
+    """
+    if not data_list:
+        return {"keys": [], "rows": []}
+    
+    # Extract superset of all keys in case some dicts are missing keys
+    keys_set = set()
+    for item in data_list:
+        keys_set.update(item.keys())
+    
+    keys = list(keys_set)
+    # Important: sort keys to ensure consistent ordering though not strictly required
+    keys.sort() 
+    
+    rows = []
+    for item in data_list:
+        row = []
+        for key in keys:
+            row.append(item.get(key, None))
+        rows.append(row)
+        
+    return {"keys": keys, "rows": rows}
+
 def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     print(f"Generating static HTML (Theme: {theme})...")
     
@@ -90,6 +117,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
             for filename in files_order:
                 group = grouped.get_group(filename)
                 words = group.to_dict(orient="records")
+                compressed_words = compress_list_of_dicts(words)
                 
                 # Get total words from stats if available
                 total_words = stats_map.get(filename, {}).get("Total Words", 0)
@@ -109,7 +137,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
 
                 data["progressive"].append({
                     "filename": filename,
-                    "words": words,
+                    "words": compressed_words,
                     "total_words": total_words,
                     "is_goal_content": is_goal_content
                 })
@@ -133,14 +161,15 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     if os.path.exists(PRIORITY_CSV):
         try:
             df = pd.read_csv(PRIORITY_CSV)
-            data["priority"] = df.to_dict(orient="records")
+            raw_priority = df.to_dict(orient="records")
+            data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
 
     data["file_order"] = all_files_order
 
     # Zen Mode Limit (Slicing)
-    if theme == "Zen Mode" and zen_limit > 0:
+    if "zen" in theme.lower() and zen_limit > 0:
         print(f"Applying Zen Mode Limit: {zen_limit} words")
         count = 0
         new_progressive = []
@@ -148,11 +177,19 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
             if count >= zen_limit:
                 break
             
-            words = item["words"]
+            if 'rows' in item["words"]:
+                # Compressed dictionary
+                words = item["words"]["rows"]
+            else:
+                words = item["words"]
+                
             needed = zen_limit - count
             
             if len(words) > needed:
-                item["words"] = words[:needed]
+                if 'rows' in item["words"]:
+                    item["words"]["rows"] = words[:needed]
+                else:
+                    item["words"] = words[:needed]
                 new_progressive.append(item)
                 count += needed
                 break
@@ -182,7 +219,19 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     # Load Logic Settings for injection
     logic_settings = {}
     target_lang = "ja" # Default
-    applied_theme = theme
+    theme_map = {
+        'Default (Dark)': 'default',
+        'Dark Flow': 'world-class',
+        'Midnight (Vibrant)': 'midnight-vibrant',
+        'Modern Light': 'modern-light',
+        'Zen Mode': 'zen-focus',
+        'default': 'default',
+        'world-class': 'world-class',
+        'midnight-vibrant': 'midnight-vibrant',
+        'modern-light': 'modern-light'
+    }
+    applied_theme = theme_map.get(theme, theme)
+
     try:
         settings = settings_manager.load_settings()
         logic_settings = settings.get("logic", {})
@@ -191,13 +240,6 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
         # If theme is 'default', try to load from settings and MAP it
         if applied_theme == "default":
             raw_theme = settings.get("theme", "default")
-            theme_map = {
-                'Default (Dark)': 'default',
-                'Dark Flow': 'world-class',
-                'Midnight (Vibrant)': 'midnight-vibrant',
-                'Modern Light': 'modern-light',
-                'Zen Mode': 'Zen Mode'
-            }
             applied_theme = theme_map.get(raw_theme, 'default')
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")

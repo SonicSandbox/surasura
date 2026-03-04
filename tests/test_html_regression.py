@@ -23,7 +23,17 @@ class TestHTMLRegression(unittest.TestCase):
         generate_static_html(theme=theme, zen_limit=zen_limit)
         report_path = os.path.join(self.results_dir, "reading_list_static.html")
         with open(report_path, "r", encoding="utf-8") as f:
-            return BeautifulSoup(f.read(), "html.parser")
+            content = f.read()
+            
+            # Runtime validation: Ensure theme token injected into JS has no spaces (DOMTokenList requirement)
+            import re
+            match = re.search(r"let globalTheme\s*=\s*'([^']+)';", content)
+            if match:
+                injected_theme = match.group(1)
+                self.assertFalse(' ' in injected_theme, 
+                                 f"Theme token '{injected_theme}' contains spaces, which breaks classList.add in the browser.")
+            
+            return BeautifulSoup(content, "html.parser")
 
     def test_zen_mode_regression(self):
         """Verify Zen Mode specific requirements"""

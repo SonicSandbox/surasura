@@ -10,7 +10,7 @@
     "reinforce_segmentation": false,
     "telemetry_enabled": true,
     "sanitize_ja_terms": false,
-    "only_i_plus_one": true,
+    "only_i_plus_one": false,
     "words_per_day": 5,
     "show_words_per_day": true,
     "zen_limit": 55,
@@ -40,6 +40,7 @@
             "min_chars": 10,
             "max_extra": 2,
             "preferred_max_chars": 35,
+            "max_contexts": 3,
             "min_words": 4
         },
         "sentence_boundaries": {

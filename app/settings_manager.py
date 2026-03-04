@@ -41,7 +41,8 @@ DEFAULT_SETTINGS = {
             "search_range": 20,
             "min_chars": 10,
             "max_extra": 2,
-            "preferred_max_chars": 50
+            "preferred_max_chars": 50,
+            "max_contexts": 3
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",

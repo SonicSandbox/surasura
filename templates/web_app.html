@@ -1687,9 +1687,14 @@
             `;
 
             // Extra Contexts (DOM Pruning)
-            const c2 = data["Context 2"] || "";
-            const c3 = data["Context 3"] || "";
-            if (c2 || c3) {
+            // Dynamically load any context strings beyond Context 1
+            const extraKeys = Object.keys(data).filter(k => k.startsWith('Context ') && k !== 'Context 1').sort((a, b) => {
+                const numA = parseInt(a.replace('Context ', ''));
+                const numB = parseInt(b.replace('Context ', ''));
+                return numA - numB;
+            });
+
+            if (extraKeys.length > 0) {
                 const extraDiv = document.createElement('div');
                 extraDiv.className = "extra-contexts";
 
@@ -1703,9 +1708,14 @@
                 // Toggle Logic
                 const toggleLogic = () => {
                     if (!loaded) {
-                        const dC2 = formatContext(c2);
-                        const dC3 = formatContext(c3);
-                        extraDiv.innerHTML = `${c2 ? `<div class="context-item">${dC2}</div>` : ''}${c3 ? `<div class="context-item">${dC3}</div>` : ''}`;
+                        let innerHtmlString = "";
+                        extraKeys.forEach(k => {
+                            if (data[k]) {
+                                const formatted = formatContext(data[k]);
+                                innerHtmlString += `<div class="context-item">${formatted}</div>`;
+                            }
+                        });
+                        extraDiv.innerHTML = innerHtmlString;
                         loaded = true;
                     }
                     extraDiv.classList.toggle('visible');

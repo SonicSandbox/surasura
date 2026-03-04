@@ -548,9 +548,15 @@
             };
 
             const contexts = [];
-            if (data["Context 1"]) contexts.push(data["Context 1"]);
-            if (data["Context 2"]) contexts.push(data["Context 2"]);
-            if (data["Context 3"]) contexts.push(data["Context 3"]);
+            const contextKeys = Object.keys(data).filter(k => k.startsWith('Context ')).sort((a, b) => {
+                const numA = parseInt(a.replace('Context ', ''));
+                const numB = parseInt(b.replace('Context ', ''));
+                return numA - numB;
+            });
+
+            contextKeys.forEach(k => {
+                if (data[k]) contexts.push(data[k]);
+            });
 
             const contextHtml = contexts.map(c => `<span class="context-line">${formatContext(c)}</span>`).join("");
 

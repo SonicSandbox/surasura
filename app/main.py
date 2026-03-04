@@ -621,6 +621,15 @@ class MasterDashboardApp:
         ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
 
+        # Max Context Sentences
+        self.max_contexts_frame = ttk.Frame(settings_frame)
+        self.max_contexts_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(self.max_contexts_frame, text="Max Example Sentences:").pack(side=tk.LEFT)
+        self.var_max_contexts = tk.IntVar(value=self.logic_settings.get("context", {}).get("max_contexts", 3))
+        spin_max_contexts = ttk.Spinbox(self.max_contexts_frame, from_=1, to=10, textvariable=self.var_max_contexts, width=4, command=self.save_settings)
+        spin_max_contexts.pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.max_contexts_frame, "Maximum number of context sentences to export per word. (Recommended: 3)")
+
         chk_i_plus_one = ttk.Checkbutton(settings_frame, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
         chk_i_plus_one.pack(anchor=tk.W)
         ToolTip(chk_i_plus_one, "If checked, only words with at least one i+1 sentence will be included in the analysis list.")
@@ -815,6 +824,11 @@ class MasterDashboardApp:
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
             
+            # Need to create the Intvar safely if load_settings occurs very early or re-triggers
+            if not hasattr(self, 'var_max_contexts'):
+                self.var_max_contexts = tk.IntVar()
+            self.var_max_contexts.set(context_settings.get("max_contexts", 3))
+            
             self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
@@ -847,7 +861,8 @@ class MasterDashboardApp:
                     "context": {
                         **self.logic_settings.get("context", {}),
                         "min_chars": self.var_context_min_chars.get(),
-                        "preferred_max_chars": self.var_context_max_chars.get()
+                        "preferred_max_chars": self.var_context_max_chars.get(),
+                        "max_contexts": self.var_max_contexts.get()
                     }
                 }
             }
@@ -1088,6 +1103,10 @@ class MasterDashboardApp:
             
         args.append(f'--context-min={self.var_context_min_chars.get()}')
         args.append(f'--context-max={self.var_context_max_chars.get()}')
+        
+        max_c = self.var_max_contexts.get()
+        if max_c != 3:
+            args.append(f'--max-contexts={max_c}')
         
         # Add theme argument
         theme_map = {

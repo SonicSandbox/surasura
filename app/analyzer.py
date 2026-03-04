@@ -634,6 +634,7 @@ def main():
     parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
     parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
+    parser.add_argument("--max-contexts", type=int, default=3, help="Maximum number of example sentences exported per word")
 
     args, unknown = parser.parse_known_args()
     
@@ -1053,8 +1054,8 @@ def main():
             # If we found enough "perfect" contexts (0 unknowns AND perfectly sized) we can stop evaluating
             if unknown_count == 0 and ctx[0] == 0 and ctx[1] == 0:
                 perfect_count = sum(1 for c in evaluated_candidates if c[2] == 0 and c[0] == 0 and c[1] == 0)
-                if perfect_count >= 3:
-                     # Stop scanning constraints - we already have 3 perfect i+1s ready
+                if perfect_count >= args.max_contexts:
+                     # Stop scanning constraints - we already have max perfect i+1s ready
                      break
             
         first_evaluated = None
@@ -1075,7 +1076,7 @@ def main():
             # Optimization 3: Explicit Length Sorting for Strict Mode
             # Ensure we still prioritize the best length even if all are i+1s
             i_plus_one_candidates.sort(key=lambda x: (x[0], x[1]))
-            selected_contexts = i_plus_one_candidates[:3]
+            selected_contexts = i_plus_one_candidates[:args.max_contexts]
         else:
             # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long
             evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1]))
@@ -1087,20 +1088,18 @@ def main():
                     evaluated_candidates.remove(first_evaluated)
                     
             for c in evaluated_candidates:
-                if len(selected_contexts) >= 3:
+                if len(selected_contexts) >= args.max_contexts:
                     break
                 selected_contexts.append(c)
             
-        r["Context 1"] = selected_contexts[0][3].strip() if len(selected_contexts) > 0 else ""
-        r["Context 2"] = selected_contexts[1][3].strip() if len(selected_contexts) > 1 else ""
-        r["Context 3"] = selected_contexts[2][3].strip() if len(selected_contexts) > 2 else ""
-        
-        # Save back to data dictionary for progressive report and json dumping
-        data = word_stats[(r["Word"], r["Reading"])]
-        data["final_context_1"] = r["Context 1"]
-        data["final_context_2"] = r["Context 2"]
-        data["final_context_3"] = r["Context 3"]
-        
+        for i in range(args.max_contexts):
+            context_key = f"Context {i+1}"
+            context_val = selected_contexts[i][3].strip() if len(selected_contexts) > i else ""
+            r[context_key] = context_val
+            
+            # Save back to data dictionary for progressive report and json dumping
+            data = word_stats[(r["Word"], r["Reading"])]
+            data[f"final_context_{i+1}"] = context_val
         # Add to rolling known list and output
         rolling_known_tuples.add(target_lr)
         rolling_known_lemmas.add(target_lemma)
@@ -1292,10 +1291,15 @@ def main():
                 "Count (High)": stats.get("high_count", 0),
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
-                "Context 1": stats.get("final_context_1", ""),
-                "Context 2": stats.get("final_context_2", ""),
-                "Context 3": stats.get("final_context_3", ""),
             })
+            
+            # Dynamically attach all context strings currently tracked
+            for k, v in stats.items():
+                if k.startswith("final_context_"):
+                    # Map final_context_N -> Context N
+                    idx_str = k.replace("final_context_", "")
+                    file_rows_buffer[-1][f"Context {idx_str}"] = v
+                    
             file_new_words.add((lemma, reading))
         
         # 3. Sort by priority

@@ -68,13 +68,15 @@ def test_i_plus_one_fallback(i_plus_one_env):
     mock_known_words = set()
     mock_known_lemmas = {"私", "私-代名詞", "は", "だ", "です", "ます", "を"}
     
-    with patch("app.path_utils.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
-         patch("app.path_utils.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
-         patch("app.path_utils.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
+    with patch("app.analyzer.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
+         patch("app.analyzer.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
+         patch("app.analyzer.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(csv_path)), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results_dir / "progressive_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
          patch("app.analyzer.load_known_words", return_value=(mock_known_words, mock_known_lemmas)), \
+         patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
          patch("sys.argv", ["analyzer.py", "--language", "ja", "--include-single-chars"]):
             analyzer.main()
             
@@ -101,13 +103,15 @@ def test_only_i_plus_one_strict(i_plus_one_env):
     mock_known_words = set()
     mock_known_lemmas = {"私", "私-代名詞", "は", "だ", "です", "ます", "を"}
     
-    with patch("app.path_utils.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
-         patch("app.path_utils.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
-         patch("app.path_utils.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
+    with patch("app.analyzer.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
+         patch("app.analyzer.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
+         patch("app.analyzer.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(csv_path)), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results_dir / "progressive_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
          patch("app.analyzer.load_known_words", return_value=(mock_known_words, mock_known_lemmas)), \
+         patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
          patch("sys.argv", ["analyzer.py", "--language", "ja", "--only-i-plus-one", "--include-single-chars"]):
             analyzer.main()
             

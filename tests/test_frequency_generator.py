@@ -51,11 +51,14 @@ def test_frequency_integration_real_analysis(frequency_app_env):
     
     # 1. Run actual analyzer main logic
     # We patch path_utils and analyzer globals to point to our temp env
-    with patch("app.path_utils.get_user_file", side_effect=frequency_app_env["mock_get_user_file"]), \
-         patch("app.path_utils.get_data_path", return_value=str(frequency_app_env["data_ja"])), \
-         patch("app.path_utils.get_user_files_path", return_value=str(frequency_app_env["user_files_ja"])), \
+    with patch("app.analyzer.get_user_file", side_effect=frequency_app_env["mock_get_user_file"]), \
+         patch("app.analyzer.get_data_path", return_value=str(frequency_app_env["data_ja"])), \
+         patch("app.analyzer.get_user_files_path", return_value=str(frequency_app_env["user_files_ja"])), \
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(results_dir / "priority_learning_list.csv")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results_dir / "progressive_learning_list.csv")), \
+         patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
+         patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
          patch("sys.argv", ["analyzer.py", "--language", "ja"]):
         
         analyzer.main()

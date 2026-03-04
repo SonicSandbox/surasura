@@ -10,6 +10,7 @@
     "reinforce_segmentation": false,
     "telemetry_enabled": true,
     "sanitize_ja_terms": false,
+    "only_i_plus_one": true,
     "words_per_day": 5,
     "show_words_per_day": true,
     "zen_limit": 55,
@@ -36,8 +37,10 @@
         "context": {
             "_comment": "search_range: chars to look around a word if no sentence found. min_words: ideal sentence length.",
             "search_range": 20,
-            "min_words": 4,
-            "max_extra": 2
+            "min_chars": 10,
+            "max_extra": 2,
+            "preferred_max_chars": 35,
+            "min_words": 4
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",

@@ -138,6 +138,9 @@ class MasterDashboardApp:
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
+        self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
+        self.var_context_min_chars = tk.IntVar(value=10)
+        self.var_context_max_chars = tk.IntVar(value=50)
         self.var_words_per_day = tk.IntVar(value=5) # Target words per day
         self.var_show_words_per_day = tk.BooleanVar(value=True) # Show target days calculation
         self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
@@ -204,6 +207,7 @@ class MasterDashboardApp:
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.var_sanitize_ja.trace_add("write", self.save_settings)
+        self.var_only_i_plus_one.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
@@ -592,6 +596,22 @@ class MasterDashboardApp:
         chk_telemetry.pack(anchor=tk.W)
         ToolTip(chk_telemetry, "Send anonymous daily usage statistics to help improve the app.")
 
+        # Ideal Sentence Range
+        self.context_range_frame = ttk.Frame(settings_frame)
+        self.context_range_frame.pack(fill=tk.X, pady=(5, 5))
+        ttk.Label(self.context_range_frame, text="Ideal sentence range:").pack(side=tk.LEFT)
+        ttk.Entry(self.context_range_frame, textvariable=self.var_context_min_chars, width=4).pack(side=tk.LEFT, padx=(5, 2))
+        self.var_context_min_chars.trace_add("write", lambda *args: self.save_settings())
+        ttk.Label(self.context_range_frame, text="to").pack(side=tk.LEFT)
+        ttk.Entry(self.context_range_frame, textvariable=self.var_context_max_chars, width=4).pack(side=tk.LEFT, padx=(2, 0))
+        self.var_context_max_chars.trace_add("write", lambda *args: self.save_settings())
+        ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
+
+        chk_i_plus_one = ttk.Checkbutton(settings_frame, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
+        chk_i_plus_one.pack(anchor=tk.W)
+        ToolTip(chk_i_plus_one, "If checked, only words with at least one i+1 sentence will be included in the analysis list.")
+
         # Language Selection
         self.lang_frame = ttk.Frame(settings_frame)
         self.lang_frame.pack(fill=tk.X, pady=(0, 10))
@@ -765,6 +785,7 @@ class MasterDashboardApp:
             self.var_reinforce.set(settings.get("reinforce_segmentation", False))
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
+            self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
             self.var_words_per_day.set(settings.get("words_per_day", 5))
             self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
             self.var_zen_limit.set(settings.get("zen_limit", 50))
@@ -777,6 +798,9 @@ class MasterDashboardApp:
             # Load Logic Settings
             self.logic_settings = settings.get("logic", {})
             self.var_inline_completed.set(self.logic_settings.get("inline_completed_files", False))
+            context_settings = self.logic_settings.get("context", {})
+            self.var_context_min_chars.set(context_settings.get("min_chars", 10))
+            self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
             
             self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -797,6 +821,7 @@ class MasterDashboardApp:
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "sanitize_ja_terms": self.var_sanitize_ja.get(),
+                "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "words_per_day": self.var_words_per_day.get(),
                 "show_words_per_day": self.var_show_words_per_day.get(),
                 "zen_limit": self.var_zen_limit.get(),
@@ -805,7 +830,12 @@ class MasterDashboardApp:
                 "hide_satoru": self.var_hide_satoru.get(),
                 "logic": {
                     **self.logic_settings,
-                    "inline_completed_files": self.var_inline_completed.get()
+                    "inline_completed_files": self.var_inline_completed.get(),
+                    "context": {
+                        **self.logic_settings.get("context", {}),
+                        "min_chars": self.var_context_min_chars.get(),
+                        "preferred_max_chars": self.var_context_max_chars.get()
+                    }
                 }
             }
             
@@ -1039,6 +1069,12 @@ class MasterDashboardApp:
         # Add Reinforce Flag if applicable
         if self.var_language.get() == 'zh' and self.var_reinforce.get():
             args.append('--reinforce')
+            
+        if self.var_only_i_plus_one.get():
+            args.append('--only-i-plus-one')
+            
+        args.append(f'--context-min={self.var_context_min_chars.get()}')
+        args.append(f'--context-max={self.var_context_max_chars.get()}')
         
         # Add theme argument
         theme_map = {

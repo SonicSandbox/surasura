@@ -631,16 +631,33 @@ def main():
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize Japanese terms (strip hyphen/space suffixes)")
     parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
+    parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
+    parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
+    parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
 
     args, unknown = parser.parse_known_args()
     
-    global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA
+    global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE
+    ONLY_I_PLUS_ONE = args.only_i_plus_one
     
     if args.sanitize:
         SANITIZE_JA = True
         print("Configuration: Japanese term sanitization ENABLED.")
     else:
         print("Configuration: Japanese term sanitization DISABLED.")
+        
+    # Override logic settings if supplied
+    if args.context_min is not None:
+        if "context" not in LOGIC:
+            LOGIC["context"] = {}
+        LOGIC["context"]["min_chars"] = args.context_min
+        print(f"Configuration: Context Min Length = {args.context_min}")
+        
+    if args.context_max is not None:
+        if "context" not in LOGIC:
+            LOGIC["context"] = {}
+        LOGIC["context"]["preferred_max_chars"] = args.context_max
+        print(f"Configuration: Context Max Length = {args.context_max}")
     
     # Logic: Default SKIP_SINGLE_CHARS is True. 
     # If --include-single-chars is present, set to False.
@@ -720,8 +737,8 @@ def main():
     word_stats = defaultdict(lambda: {
         "score": 0, "total_count": 0, "sources": set(), 
         "high_count": 0, "low_count": 0, "goal_count": 0,
-        "first_context": "", 
-        "best_extra_contexts": [], # List of (is_too_short, is_too_long, cost, sentence_text)
+        "candidate_contexts": [], # List of (is_too_short, is_too_long, initial_cost, unique_lrs, s_text)
+        "first_context": None,
         "surface": "",
         "min_seq": float('inf') # Track first appearance sequence index
     })
@@ -878,15 +895,17 @@ def main():
                 if lemma in ignore_list:
                     file_known_words += 1
                     continue
-                if SKIP_SINGLE_CHARS and len(lemma) == 1:
-                    file_known_words += 1
-                    continue
+                
+                # Check if it's considered "Known" by dictionary
                 is_known = (lemma, reading) in known_words_initial or (lemma in known_lemmas_initial)
                 if is_known:
                     file_known_words += 1
                     continue
+                
+                # It's an unknown word!
+                # Even if we skip learning it (e.g. single chars), it makes the sentence harder, 
+                # so it must be part of `sentence_unknowns`.
                 sentence_unknowns.append((lemma, reading, surface))
-
 
             # Unique unknowns in this sentence for cost calculation
             unique_lrs = set((l, r) for l, r, s in sentence_unknowns)
@@ -894,6 +913,10 @@ def main():
 
             # 2. Update Stats for all unknown tokens in this sentence
             for lemma, reading, surface in sentence_unknowns:
+                # If we are skipping single characters for learning, do not add it to word_stats
+                if SKIP_SINGLE_CHARS and len(lemma) == 1:
+                    continue
+                    
                 entry = word_stats[(lemma, reading)]
                 entry["score"] += weight
                 entry["total_count"] += 1
@@ -908,28 +931,32 @@ def main():
                     entry["min_seq"] = seq_idx
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
-            sentence_token_count = len(s_tokens)
-            min_words = LOGIC.get("context", {}).get("min_words", 4)
-            is_too_short = 1 if sentence_token_count < min_words else 0
+            min_chars = LOGIC.get("context", {}).get("min_chars", 10)
+            is_too_short = 1 if len(s_text) < min_chars else 0
             
             preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
             is_too_long = 1 if len(s_text) > preferred_max_chars else 0
             
             for (lemma, reading) in unique_lrs:
-                entry = word_stats[(lemma, reading)]
-                if not entry["first_context"]:
-                    entry["first_context"] = s_text
-                else:
-                    if s_text == entry["first_context"]: continue
+                # If we skipped this word for learning, don't try to store candidate contexts for it
+                if SKIP_SINGLE_CHARS and len(lemma) == 1:
+                    continue
                     
-                    # Maintain top 2 easiest sentences (lowest cost)
-                    # Priority order: 1. Not too short, 2. Not too long, 3. Low cost
-                    best = entry["best_extra_contexts"]
-                    best.append((is_too_short, is_too_long, cost, s_text))
-                    # Sort by: 1. Not too short, 2. Not too long, 3. Low cost
-                    best.sort(key=lambda x: (x[0], x[1], x[2]))
-                    max_extra = LOGIC.get("context", {}).get("max_extra", 2)
-                    entry["best_extra_contexts"] = best[:max_extra]
+                entry = word_stats[(lemma, reading)]
+                
+                # Check if this exact sentence is already in candidate_contexts
+                if any(c[4] == s_text for c in entry["candidate_contexts"]):
+                    continue
+                
+                new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text)
+                if not entry["first_context"]:
+                    entry["first_context"] = new_ctx
+                    
+                entry["candidate_contexts"].append(new_ctx)
+                # Sort initially by: length validity, then initial cost
+                entry["candidate_contexts"].sort(key=lambda x: (x[0], x[1], x[2]))
+                # Keep up to 30 promising candidates
+                entry["candidate_contexts"] = entry["candidate_contexts"][:30]
         
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
@@ -940,7 +967,10 @@ def main():
         })
 
     # Output Priority CSV
-    output_rows = []
+    rolling_known_tuples = set(known_words_initial)
+    rolling_known_lemmas = set(known_lemmas_initial)
+    
+    preliminary_rows = []
     for (lemma, reading), data in word_stats.items():
         if MIN_FREQ > 0 and data["total_count"] < MIN_FREQ:
             continue
@@ -956,32 +986,98 @@ def main():
             "Tier": tier_str,
             "Score": data["score"],
             "Occurrences": data["total_count"],
-            "Context 1": data.get("first_context", "").strip(),
-            "Context 2": data["best_extra_contexts"][0][3].strip() if len(data["best_extra_contexts"]) > 0 else "",
-            "Context 3": data["best_extra_contexts"][1][3].strip() if len(data["best_extra_contexts"]) > 1 else "",
             "Count (High)": data["high_count"],
             "Count (Low)": data["low_count"],
             "Count (Goal)": data["goal_count"],
             "Sources": source_display, # Moved to end
-            "_MinSeq": data["min_seq"] # Helper for sorting
+            "_MinSeq": data["min_seq"], # Helper for sorting
+            "_CandidateContexts": data["candidate_contexts"],
+            "_FirstContext": data["first_context"]
         }
-        output_rows.append(row)
+        preliminary_rows.append(row)
+        
+    # Sort Logic: Primary = Score (Desc), Secondary = First Appearance (Asc)
+    preliminary_rows.sort(key=lambda x: (-x["Score"], x["_MinSeq"]))
+    
+    output_rows = []
+    for r in preliminary_rows:
+        target_lr = (r["Word"], r["Reading"])
+        target_lemma = r["Word"]
+        
+        # Evaluate candidate contexts against rolling knowns
+        evaluated_candidates = []
+        seen_sentences = set()
+        
+        ctx_list = r["_CandidateContexts"]
+        first_ctx_data = r.get("_FirstContext")
+        if first_ctx_data and first_ctx_data not in ctx_list:
+            ctx_list.insert(0, first_ctx_data)
+            
+        for ctx in ctx_list:
+            sentence_text = ctx[4].strip()
+            if not sentence_text or sentence_text in seen_sentences:
+                continue
+            seen_sentences.add(sentence_text)
+            
+            unique_lrs = ctx[3]
+            unknown_count = 0
+            for lr in unique_lrs:
+                if lr == target_lr: continue
+                if lr not in rolling_known_tuples and lr[0] not in rolling_known_lemmas:
+                    unknown_count += 1
+            
+            evaluated_candidates.append((ctx[0], ctx[1], unknown_count, sentence_text))
+            
+        first_evaluated = None
+        if first_ctx_data:
+            first_text = first_ctx_data[4].strip()
+            for c in evaluated_candidates:
+                if c[3] == first_text:
+                    first_evaluated = c
+                    break
+
+        i_plus_one_candidates = [c for c in evaluated_candidates if c[2] == 0]
+        
+        if ONLY_I_PLUS_ONE:
+            if not i_plus_one_candidates:
+                continue # Skip this word entirely
+            selected_contexts = i_plus_one_candidates[:3]
+        else:
+            # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long
+            evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1]))
+            
+            selected_contexts = []
+            if first_evaluated:
+                selected_contexts.append(first_evaluated)
+                if first_evaluated in evaluated_candidates:
+                    evaluated_candidates.remove(first_evaluated)
+                    
+            for c in evaluated_candidates:
+                if len(selected_contexts) >= 3:
+                    break
+                selected_contexts.append(c)
+            
+        r["Context 1"] = selected_contexts[0][3].strip() if len(selected_contexts) > 0 else ""
+        r["Context 2"] = selected_contexts[1][3].strip() if len(selected_contexts) > 1 else ""
+        r["Context 3"] = selected_contexts[2][3].strip() if len(selected_contexts) > 2 else ""
+        
+        # Save back to data dictionary for progressive report and json dumping
+        data = word_stats[(r["Word"], r["Reading"])]
+        data["final_context_1"] = r["Context 1"]
+        data["final_context_2"] = r["Context 2"]
+        data["final_context_3"] = r["Context 3"]
+        
+        # Add to rolling known list and output
+        rolling_known_tuples.add(target_lr)
+        rolling_known_lemmas.add(target_lemma)
+        
+        del r["_CandidateContexts"] # Cleanup
+        if "_FirstContext" in r:
+            del r["_FirstContext"]
+        output_rows.append(r)
         
     df = pd.DataFrame(output_rows)
     if not df.empty:
-        # Sort Logic: Primary = Score (Desc), Secondary = First Appearance (Asc)
-        # To do mixed sort in pandas:
-        # We can sort by ["Score", "MinSeq"], with ascending=[False, True]
-        # But we need "MinSeq" column first.
-        
-        # Add MinSeq to DF temporarily for sorting if not present (it isn't in output_rows)
-        # Actually, let's just make sure output_rows has it or sort before DF creation.
-        # It's easier to sort the list of dicts.
-        output_rows.sort(key=lambda x: (-x["Score"], x["_MinSeq"]))
-        
-        # Re-create DF from sorted list
-        df = pd.DataFrame(output_rows)
-        
         # Drop the helper key if we added it (we need to add it to row first)
         df_display = df.drop(columns=["_MinSeq"])
         
@@ -1020,7 +1116,8 @@ def main():
             
             # Use the filtered DF for output, but make sure to drop _MinSeq
             df_display = df.drop(columns=["_MinSeq"], errors='ignore')
-
+            
+        valid_lrs = set(zip(df_display['Word'], df_display['Reading']))
         df_display.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
         try:
             print(f"Saved priority list to {OUTPUT_CSV}")
@@ -1059,9 +1156,23 @@ def main():
     # Values have sets -> Convert to lists
     serializable_stats = {}
     for (lemma, reading), data in word_stats.items():
+        if 'valid_lrs' in locals() and (lemma, reading) not in valid_lrs:
+            continue
+            
         key = f"{lemma}|{reading}"
         serializable_data = data.copy()
         serializable_data["sources"] = list(data["sources"])
+        
+        # Convert unique_lrs sets to lists inside candidate_contexts
+        if "candidate_contexts" in serializable_data:
+            serializable_data["candidate_contexts"] = [
+                (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4]) for ctx in serializable_data["candidate_contexts"]
+            ]
+        
+        if "first_context" in serializable_data and serializable_data["first_context"]:
+            ctx = serializable_data["first_context"]
+            serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4])
+            
         serializable_stats[key] = serializable_data
         
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
@@ -1118,13 +1229,16 @@ def main():
         file_rows_buffer = []
         
         for (lemma, reading), count in file_unknown_token_counts.items():
+            if 'valid_lrs' in locals() and (lemma, reading) not in valid_lrs:
+                continue
+                
             # It's a new word for this progressive sequence
             tier_labels = get_tier_label(lemma, freq_data)
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
             stats = word_stats.get((lemma, reading), {
                 "score": 0, "total_count": 0, 
                 "high_count": 0, "low_count": 0, "goal_count": 0,
-                "first_context": "", "best_extra_contexts": []
+                "final_context_1": "", "final_context_2": "", "final_context_3": ""
             })
             
             if MIN_FREQ > 0 and stats["total_count"] < MIN_FREQ:
@@ -1142,9 +1256,9 @@ def main():
                 "Count (High)": stats.get("high_count", 0),
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
-                "Context 1": stats.get("first_context", "").strip(),
-                "Context 2": stats["best_extra_contexts"][0][3].strip() if len(stats["best_extra_contexts"]) > 0 else "",
-                "Context 3": stats["best_extra_contexts"][1][3].strip() if len(stats["best_extra_contexts"]) > 1 else "",
+                "Context 1": stats.get("final_context_1", ""),
+                "Context 2": stats.get("final_context_2", ""),
+                "Context 3": stats.get("final_context_3", ""),
             })
             file_new_words.add((lemma, reading))
         

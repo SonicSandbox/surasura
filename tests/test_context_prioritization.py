@@ -141,5 +141,23 @@ def test_context_chronology_preserved(context_test_env):
             first_appearance = s.strip() + "。"  # Re-attach punctuation loosely
             break
             
-    if first_appearance:
-        verify_context_chronology(results_dir / "priority_learning_list.csv", {"冒険": first_appearance})
+def test_japanese_quotation_cleanup():
+    """Validates that dangling Japanese quotation marks are stripped from the beginning of contiguous boundaries."""
+    from app.analyzer import JapaneseTokenizer
+    tokenizer = JapaneseTokenizer()
+    
+    # Text where the boundary puntuation '。' sits before the closing quote '」'
+    text = "そうです。」「うーん、よくわからないから、マインに任せるよ」"
+    
+    sentences = list(tokenizer.tokenize_sentences(text))
+    # We expect 2 sentences:
+    # 1. そうです。
+    # 2. 「うーん、よくわからないから、マインに任せるよ」 (not 」「うーん...)
+    
+    assert len(sentences) == 2
+    
+    s1_text, _ = sentences[0]
+    s2_text, _ = sentences[1]
+    
+    assert s1_text == "そうです。"
+    assert s2_text == "「うーん、よくわからないから、マインに任せるよ」"

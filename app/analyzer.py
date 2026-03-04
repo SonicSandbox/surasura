@@ -117,7 +117,7 @@ class JapaneseTokenizer(Tokenizer):
                 current_sentence_tokens.append((lemma, reading, word.surface))
             
             if is_boundary:
-                s_text = "".join(current_sentence_surface).strip()
+                s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
                 if s_text:
                     yield s_text, current_sentence_tokens
                 current_sentence_tokens = []
@@ -125,7 +125,7 @@ class JapaneseTokenizer(Tokenizer):
         
         # Flush remaining
         if current_sentence_surface:
-            s_text = "".join(current_sentence_surface).strip()
+            s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
             if s_text:
                 yield s_text, current_sentence_tokens
 

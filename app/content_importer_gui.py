@@ -900,16 +900,35 @@ class ContentImporterApp:
                     shutil.rmtree(dest)
                 else:
                     os.remove(dest)
-            
-            shutil.copytree(folder_path, dest)
-            
-            # Update order
-            shutil.copytree(folder_path, dest)
-            
-            # Update order
+
+            def ignore_unsupported_files(src, names):
+                ignored = []
+                for name in names:
+                    source_item = os.path.join(src, name)
+                    if os.path.isfile(source_item) and not self.is_content_file(source_item):
+                        ignored.append(name)
+                return ignored
+
+            shutil.copytree(folder_path, dest, ignore=ignore_unsupported_files)
+
+            has_supported_content = False
+            for root, _, files in os.walk(dest):
+                for file_name in files:
+                    if self.is_content_file(os.path.join(root, file_name)):
+                        has_supported_content = True
+                        break
+                if has_supported_content:
+                    break
+
+            if not has_supported_content:
+                shutil.rmtree(dest)
+                messagebox.showwarning(
+                    "No Supported Files",
+                    "No supported content files were found in the selected folder."
+                )
+                return
+
             self.add_to_manifest(dest, self.target_folder_var.get())
-            
-            self.refresh_file_list()
             
             self.refresh_file_list()
             self.status_var.set(f"Successfully added folder: {folder_name}")

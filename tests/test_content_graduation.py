@@ -44,6 +44,7 @@ def app_instance(tmp_path):
         app.status_var = MockStringVar()
         app.tree = MagicMock()
         app.graduate_btn = MagicMock()
+        app.undo_btn = MagicMock()
         app.analyzed_filenames = set()
         app._last_stats_mtime = 0
         app._last_stats_size = 0

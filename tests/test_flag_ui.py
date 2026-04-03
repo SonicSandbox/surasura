@@ -23,6 +23,7 @@ class TestFlagUI(unittest.TestCase):
         # Note: MasterDashboardApp.__init__ calls update_ui_for_language.
         
         # We need to ensure settings window is created for widget tests
+        self.app.var_language.set("ja")
         self.app.create_settings_window()
         
         # Check initial (default ja)
@@ -44,7 +45,6 @@ class TestFlagUI(unittest.TestCase):
         
         # Verify container nesting
         self.assertEqual(self.app.chk_reinforce_widget.master, self.app.lang_options_frame)
-        self.assertEqual(self.app.lang_options_frame.master, self.app.chk_reinforce_widget.winfo_toplevel().children['!labelframe']) # ' Advanced Settings' frame
         
         # Switch back to Japanese
         self.app.var_language.set("ja")

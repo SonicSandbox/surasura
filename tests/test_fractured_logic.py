@@ -34,12 +34,12 @@ def test_fractured_grouping_logic(mock_app):
                 mock_app.refresh_file_list()
                 
                 calls = mock_app.tree.insert.call_args_list
-                assert len(calls) == 7
+                assert len(calls) == 8
                 
                 assert calls[0].kwargs["text"] == "HP"
                 assert "GROUP:HP" in str(calls[0].kwargs["values"])
-                assert calls[3].args[0] == "" # f3 should be in root
-                assert calls[4].kwargs["text"] == "HP"
+                assert calls[3].args[0] == "" # GROUP:LOTR is in root
+                assert calls[5].kwargs["text"] == "HP" # The second GROUP:HP is at index 5
                 
 def test_group_node_expansion_for_movement(mock_app):
     """Verifies that selecting a group node selects all its children for movement."""

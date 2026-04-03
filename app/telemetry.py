@@ -31,60 +31,58 @@ TELEMETRY_ENV = os.getenv("TELEMETRY_ENV", "production")
 
 _OPEN_COUNT_INCREMENTED = False
 
-def get_telemetry_id():
+def get_telemetry_state():
     """
-    Retrieves or generates a persistent anonymous user ID.
+    Retrieves or generates a persistent anonymous user ID and tracks open count.
     Stored in a location that survives application updates.
     """
     try:
-        # persistent_dir = path_utils.get_persistent_user_data_path()
-        # For now, we'll implement a local version of this logic here if path_utils
-        # hasn't been updated yet, but the plan says to update path_utils first.
-        # Let's assume path_utils will have get_persistent_user_data_path.
-        # If not, we'll need to implement it in path_utils.
-        
-        # Checking if path_utils has the function. If not, we will need to add it.
-        # But since I am writing this file first, I should probably rely on path_utils
-        # to be updated soon.
         pass 
     except AttributeError:
-        # Fallback if path_utils isn't updated yet (during dev/testing)
         pass
 
     user_data_dir = path_utils.get_persistent_user_data_path()
     config_path = os.path.join(user_data_dir, "telemetry_id.json")
     
     uid = None
-    
-    # customized logic to migrate from old location if necessary?
-    # No, this is a new feature.
+    open_count = 0
     
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 uid = data.get("uid")
+                open_count = data.get("open_count", 0)
         except Exception:
             pass # corrupted file, generate new one
             
     if not uid:
         uid = str(uuid.uuid4())
+        
+    global _OPEN_COUNT_INCREMENTED
+    
+    should_save = False
+    
+    if not _OPEN_COUNT_INCREMENTED:
+        open_count += 1
+        _OPEN_COUNT_INCREMENTED = True
+        should_save = True
+        
+    if should_save or not os.path.exists(config_path):
         try:
             if not os.path.exists(user_data_dir):
                 os.makedirs(user_data_dir, exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({"uid": uid}, f)
+                json.dump({"uid": uid, "open_count": open_count}, f)
         except Exception:
-            pass # if we can't write, we simply won't persist.
+            pass # if we can't write, we proceed
             
-    return uid
+    return {"uid": uid, "open_count": open_count}
 
 def _send_heartbeat_thread(status):
     """
     Executes the network request in a background thread.
     """
-    global _OPEN_COUNT_INCREMENTED
-
     if not TELEMETRY_URL:
         return
         
@@ -92,9 +90,8 @@ def _send_heartbeat_thread(status):
         return
 
     language = "ja" # Default
-    open_count = 0
     
-    # Check Opt-Out Setting and handle open_count
+    # Check Opt-Out Setting
     try:
         settings = settings_manager.load_settings()
         
@@ -102,26 +99,14 @@ def _send_heartbeat_thread(status):
             return
             
         language = settings.get("target_language", "ja")
-        try:
-            open_count = int(settings.get("open_count", 0))
-        except (ValueError, TypeError):
-            open_count = 0
-            
-        # Increment open_count ONLY ONCE per app session
-        if not _OPEN_COUNT_INCREMENTED:
-            open_count += 1
-            settings["open_count"] = open_count
-            try:
-                settings_manager.save_settings(settings)
-                _OPEN_COUNT_INCREMENTED = True
-            except Exception:
-                pass # If we can't save the increment, we still proceed with sending
                 
     except Exception:
         pass # proceed if settings fail to load (default is enabled)
 
     try:
-        uid = get_telemetry_id()
+        state = get_telemetry_state()
+        uid = state["uid"]
+        open_count = state["open_count"]
         platform = sys.platform
         
         params = {

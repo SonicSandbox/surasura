@@ -130,3 +130,47 @@ class FrequencyExporter:
         with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('index.json', json.dumps(index_data, ensure_ascii=False, indent=2))
             zf.writestr('term_meta_bank_1.json', json.dumps(term_data, ensure_ascii=False))
+
+    @staticmethod
+    def export_anki_sentences(csv_path, save_path):
+        """
+        Export as a CSV suitable for Anki/SRS import.
+        Includes Word, Reading, Context 1 (main sentence), Context 2 (i+1/second sentence), Tier, and Sources.
+        """
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError("The source data is empty. Cannot generate Anki list.")
+        if 'Word' not in df.columns:
+            raise ValueError("CSV is missing 'Word' column")
+            
+        # Determine available columns
+        available_cols = df.columns.tolist()
+        
+        # Prepare output data
+        output_data = []
+        for idx, (_, row) in enumerate(df.iterrows(), 1):
+            word = FrequencyExporter._sanitize_term(row.get('Word', ''))
+            reading = row.get('Reading', '') if 'Reading' in available_cols else ''
+            
+            # Context Sentences
+            sentence_1 = row.get('Context 1', '') if 'Context 1' in available_cols else ''
+            sentence_2 = row.get('Context 2', '') if 'Context 2' in available_cols else ''
+            
+            # Extra fields
+            tier = row.get('Tier', '') if 'Tier' in available_cols else ''
+            sources = row.get('Sources', '') if 'Sources' in available_cols else ''
+            
+            output_data.append({
+                'Index': idx,
+                'Word': word,
+                'Reading': reading,
+                'Sentence 1': sentence_1,
+                'Sentence 2': sentence_2,
+                'Tier': tier,
+                'Sources': sources
+            })
+            
+        # Write properly formatted CSV using pandas to ensure delimiter safety
+        out_df = pd.DataFrame(output_data)
+        out_df.to_csv(save_path, index=False, encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
+

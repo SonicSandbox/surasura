@@ -583,7 +583,7 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("850x520")
+        self.settings_window.geometry("850x580")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -724,6 +724,10 @@ class MasterDashboardApp:
         chk_telemetry = ttk.Checkbutton(group_data, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
         chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
         ToolTip(chk_telemetry, "Send anonymous usage stats.")
+
+        btn_anki_sentences = ttk.Button(group_data, text="Generate Sentence List", command=self.generate_anki_sentence_warning, width=20)
+        btn_anki_sentences.pack(fill=tk.X, pady=(0, 5))
+        ToolTip(btn_anki_sentences, "Export an Anki-compatible CSV with sentences from your report.")
 
         # Frequency List Manager & Exporter
         btn_freq = ttk.Button(group_data, text="Add Frequency List", command=self.run_frequency_list_manager, width=20)
@@ -1249,6 +1253,54 @@ class MasterDashboardApp:
         btn_txt.pack(fill=tk.X, pady=5)
         ToolTip(btn_txt, "Export as a plain text file (one word per line).")
 
+    def generate_anki_sentence_warning(self):
+        from app.path_utils import get_user_file
+        results_dir = get_user_file("results")
+        priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
+
+        if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
+            messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
+            return
+
+        # Warning Dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Anki Export Warning")
+        dialog.geometry("450x420")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG_COLOR)
+        
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        wrapper = ttk.Frame(dialog, padding=20)
+        wrapper.pack(fill=tk.BOTH, expand=True)
+
+        warn_text = (
+            "WARNING: You will learn words faster with higher retention practice "
+            "if you mine directly from the スラスラ list. You can see multiple "
+            "examples and mine with Yomitan / Migaku.\n\n"
+            "FORMAT: This will generate a list to import into Anki / SRS software. "
+            "Columns included: Index, Word, Reading, Main Sentence, Second Sentence, Tier, Sources.\n\n"
+            "Are you sure you want to do this?"
+        )
+        
+        ttk.Label(wrapper, text=warn_text, foreground=ERROR_COLOR, background=BG_COLOR, font=('Segoe UI', 10), wraplength=400, justify=tk.LEFT).pack(pady=(0, 20))
+        
+        confirm_var = tk.BooleanVar(value=False)
+        chk_confirm = ttk.Checkbutton(wrapper, text="I understand", variable=confirm_var)
+        chk_confirm.pack(anchor=tk.W, pady=(0, 20))
+        
+        def on_generate():
+            if not confirm_var.get():
+                messagebox.showwarning("Confirm", "Please check the box to confirm you understand.")
+                return
+            self.export_wrapper(dialog, "anki", priority_csv)
+            
+        btn_gen = ttk.Button(wrapper, text="Generate Sentence List", command=on_generate, style="Action.TButton")
+        btn_gen.pack(fill=tk.X)
+
+
     def export_wrapper(self, dialog, format_type, csv_path):
         from tkinter import filedialog
         from app.frequency_exporter import FrequencyExporter
@@ -1268,6 +1320,10 @@ class MasterDashboardApp:
         elif format_type == "txt":
             file_types = [("Text Files", "*.txt")]
             def_ext = ".txt"
+        elif format_type == "anki":
+            file_types = [("CSV Files", "*.csv")]
+            def_ext = ".csv"
+            initial_name = "Anki_Sentence_List"
             
         save_path = filedialog.asksaveasfilename(
             defaultextension=def_ext,
@@ -1287,6 +1343,8 @@ class MasterDashboardApp:
                 FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
             elif format_type == "txt":
                 FrequencyExporter.export_word_list(csv_path, save_path)
+            elif format_type == "anki":
+                FrequencyExporter.export_anki_sentences(csv_path, save_path)
                 
             messagebox.showinfo("Success", f"List generated successfully!\n\nSaved to: {save_path}")
             

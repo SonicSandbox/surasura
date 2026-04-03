@@ -144,6 +144,11 @@ This will clean previous builds, run PyInstaller with the correct configurations
 - `User Files/`: Configuration and frequency lists.
 - `results/`: Generated CSVs and HTML reports.
 
+
+## ❓ Q&A / FAQ
+
+If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md).
+
 ## 🤝 Support & Issues
 
 Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/surasura/issues) page to see if it's already being worked on. If not, feel free to open a new issue.

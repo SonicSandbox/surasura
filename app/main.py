@@ -583,7 +583,7 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("600x480")
+        self.settings_window.geometry("850x520")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -594,54 +594,94 @@ class MasterDashboardApp:
         # Apply theme to settings window too (requires style sharing which ttk does automatically for same root)
         self.settings_window.configure(bg=BG_COLOR)
 
-        # Settings
-        settings_frame = ttk.LabelFrame(self.settings_window, text=" Advanced Settings", padding="10")
-        settings_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Main Container
+        main_container = ttk.Frame(self.settings_window, padding="15")
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Header (Follow Design Language but centered and smaller)
+        self.style.configure("SettingsHeader.TLabel", font=('Segoe UI', 14, 'bold'), foreground=SECONDARY_COLOR)
+        ttk.Label(main_container, text="Advanced Settings", style="SettingsHeader.TLabel").pack(pady=(0, 15))
+
+        # Settings Grid
+        grid_frame = ttk.Frame(main_container)
+        grid_frame.pack(fill=tk.X)
+        grid_frame.columnconfigure(0, weight=2, uniform="settings_col") # Strictly 2:1
+        grid_frame.columnconfigure(1, weight=1, uniform="settings_col")
+
+        # --- LEFT COLUMN (Col 0) ---
+        
+        # 1. 🌐 Language & Parsing
+        group_lang = ttk.LabelFrame(grid_frame, text=" 🌐 Language & Parsing", padding="10")
+        group_lang.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
 
         # Language Selection
-        self.lang_frame = ttk.Frame(settings_frame)
-        self.lang_frame.pack(fill=tk.X, pady=(0, 2))
+        self.lang_frame = ttk.Frame(group_lang)
+        self.lang_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(self.lang_frame, text="Target Language:").pack(side=tk.LEFT)
         ttk.Radiobutton(self.lang_frame, text="Japanese (日本語)", variable=self.var_language, value="ja", command=self.save_settings).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(self.lang_frame, text="Chinese (中文)", variable=self.var_language, value="zh", command=self.save_settings).pack(side=tk.LEFT)
 
         # Language Specific Options Container (Indented)
-        self.lang_options_frame = ttk.Frame(settings_frame)
-        self.lang_options_frame.pack(fill=tk.X, padx=(20, 0), pady=(0, 10))
+        self.lang_options_frame = ttk.Frame(group_lang)
+        self.lang_options_frame.pack(fill=tk.X, padx=(10, 0), pady=(0, 5))
 
         # Reinforce Segmentation (Chinese)
-        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Segmentation", variable=self.var_reinforce, command=self.save_settings)
-        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'. Useful for more granular word tracking.")
+        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Seg", variable=self.var_reinforce, command=self.save_settings)
+        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'.")
         
         # Sanitize Japanese Terms (Japanese only)
-        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese Terms (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
-        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words. Turn off if you need specific dictionary labels.")
-        
-        chk_single = ttk.Checkbutton(settings_frame, text="Exclude 1-character words", variable=self.var_exclude_single)
+        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
+        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words.")
+
+        chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
 
-        chk_inline = ttk.Checkbutton(settings_frame, text="Show 'Target Met' content inline", variable=self.var_inline_completed)
+        # Split Length Setting
+        split_frame = ttk.Frame(group_lang)
+        split_frame.pack(fill=tk.X, pady=(5, 0))
+        ttk.Label(split_frame, text="Split Length:").pack(side=tk.LEFT)
+        ttk.Entry(split_frame, textvariable=self.var_split_length, width=8).pack(side=tk.LEFT, padx=5)
+        self.var_split_length.trace_add("write", self.save_settings)
+        ToolTip(split_frame, "Default character limit for splitting files.")
+
+        # 2. 📊 Experience & UI
+        group_ui = ttk.LabelFrame(grid_frame, text=" 📊 Experience & UI", padding="10")
+        group_ui.grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=5)
+
+        chk_inline = ttk.Checkbutton(group_ui, text="Show 'Target Met' inline", variable=self.var_inline_completed)
         chk_inline.pack(anchor=tk.W)
-        ToolTip(chk_inline, "If met, files stay in order in sidebar with 'Target met' label instead of moving to the bottom.")
+        ToolTip(chk_inline, "Keep met files in order instead of moving them down.")
 
-        chk_telemetry = ttk.Checkbutton(settings_frame, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
-        chk_telemetry.pack(anchor=tk.W)
-        ToolTip(chk_telemetry, "Send anonymous daily usage statistics to help improve the app.")
-
-        chk_hide_audio = ttk.Checkbutton(settings_frame, text="Hide Native Audio Playback Button (Speaker Icon)", variable=self.var_hide_audio)
+        chk_hide_audio = ttk.Checkbutton(group_ui, text="Hide Audio Button (Speaker)", variable=self.var_hide_audio)
         chk_hide_audio.pack(anchor=tk.W)
-        ToolTip(chk_hide_audio, "Hide the audio play button in the progressive word list report.")
+        ToolTip(chk_hide_audio, "Hide speaker icon in the report.")
+
+        # Words Per Day Settings
+        self.wpd_frame = ttk.Frame(group_ui)
+        self.wpd_frame.pack(fill=tk.X, pady=(5, 0))
+        chk_show_wpd = ttk.Checkbutton(self.wpd_frame, text="Show 'Target Days'", variable=self.var_show_words_per_day)
+        chk_show_wpd.pack(anchor=tk.W)
+        
+        wpd_entry_frame = ttk.Frame(self.wpd_frame)
+        wpd_entry_frame.pack(fill=tk.X)
+        ttk.Label(wpd_entry_frame, text="Words Per Day:").pack(side=tk.LEFT)
+        ttk.Entry(wpd_entry_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
+
+        # 3. 🧠 Sentences & Logic
+        group_logic = ttk.LabelFrame(grid_frame, text=" 🧠 Sentences & Logic", padding="10")
+        group_logic.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=5)
 
         # Ideal Sentence Range
-        self.context_range_frame = ttk.Frame(settings_frame)
-        self.context_range_frame.pack(fill=tk.X, pady=(5, 5))
-        ttk.Label(self.context_range_frame, text="Ideal sentence range:").pack(side=tk.LEFT)
+        self.context_range_frame = ttk.Frame(group_logic)
+        self.context_range_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(self.context_range_frame, text="Sentence range:").pack(side=tk.LEFT)
         ttk.Entry(self.context_range_frame, textvariable=self.var_context_min_chars, width=4).pack(side=tk.LEFT, padx=(5, 2))
         ttk.Label(self.context_range_frame, text="to").pack(side=tk.LEFT)
         ttk.Entry(self.context_range_frame, textvariable=self.var_context_max_chars, width=4).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
-        ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
+        ToolTip(self.context_range_frame, "Preferred min/max length for context sentences.")
         
         def _validate_context_range(*args):
              try:
@@ -655,71 +695,50 @@ class MasterDashboardApp:
              
         self.var_context_min_chars.trace_add("write", _validate_context_range)
         self.var_context_max_chars.trace_add("write", _validate_context_range)
-        ttk.Label(self.context_range_frame, text="chars").pack(side=tk.LEFT, padx=(5, 0))
-        ToolTip(self.context_range_frame, "Preferred min/max length for context sentences. Sentences outside this range are penalized.")
 
         # Max Context Sentences
-        self.max_contexts_frame = ttk.Frame(settings_frame)
+        self.max_contexts_frame = ttk.Frame(group_logic)
         self.max_contexts_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(self.max_contexts_frame, text="Max Example Sentences:").pack(side=tk.LEFT)
+        ttk.Label(self.max_contexts_frame, text="Max Sentences:").pack(side=tk.LEFT)
         if not hasattr(self, 'var_max_contexts') or not self.var_max_contexts:
             self.var_max_contexts = tk.IntVar(value=self.logic_settings.get("context", {}).get("max_contexts", 3))
         spin_max_contexts = ttk.Spinbox(self.max_contexts_frame, from_=1, to=10, textvariable=self.var_max_contexts, width=4, command=self.save_settings)
         spin_max_contexts.pack(side=tk.LEFT, padx=(5, 0))
-        ToolTip(self.max_contexts_frame, "Maximum number of context sentences to export per word. (Recommended: 3)")
+        ToolTip(self.max_contexts_frame, "Maximum context sentences per word.")
 
-        chk_i_plus_one = ttk.Checkbutton(settings_frame, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
+        chk_i_plus_one = ttk.Checkbutton(group_logic, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
         chk_i_plus_one.pack(anchor=tk.W)
-        ToolTip(chk_i_plus_one, "If checked, only words with at least one i+1 sentence will be included in the analysis list.")
+        ToolTip(chk_i_plus_one, "Filter words that lack i+1 example sentences.")
 
-        chk_add_graduated = ttk.Checkbutton(settings_frame, text="Add Words to GraduatedList on 'Graduate'", variable=self.var_add_graduated)
+        chk_add_graduated = ttk.Checkbutton(group_logic, text="Add Words on 'Graduate'", variable=self.var_add_graduated)
         chk_add_graduated.pack(anchor=tk.W)
-        ToolTip(chk_add_graduated, "Uncheck to move files to Graduated folder without extracting/adding their vocabulary to your known words list.")
+        ToolTip(chk_add_graduated, "Uncheck to skip vocab extraction when graduating files.")
 
 
+        # --- RIGHT COLUMN (Col 1) ---
 
-        # Words Per Day Settings
-        self.wpd_frame = ttk.Frame(settings_frame)
-        self.wpd_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        chk_show_wpd = ttk.Checkbutton(self.wpd_frame, text="Show 'Target Days' estimate", variable=self.var_show_words_per_day)
-        chk_show_wpd.pack(side=tk.LEFT)
-        ToolTip(chk_show_wpd, "Display how many days it will take to reach your target coverage based on your daily word limit.")
+        # 4. 🧮 Data & System
+        group_data = ttk.LabelFrame(grid_frame, text=" 🧮 Data & System", padding="10")
+        group_data.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
 
-        ttk.Label(self.wpd_frame, text="Words Per Day:").pack(side=tk.LEFT, padx=(20, 5))
-        ttk.Entry(self.wpd_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT)
-        ToolTip(self.wpd_frame, "Your daily learning target. Used to estimate completion time in the report.")
-
-
-
-        # Initial visibility set by update_ui
-        self.update_ui_for_language()
-
-        # Split Length Setting
-        split_frame = ttk.Frame(settings_frame)
-        split_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Label(split_frame, text="Default Split Length (Chars):").pack(side=tk.LEFT)
-        ttk.Entry(split_frame, textvariable=self.var_split_length, width=8).pack(side=tk.LEFT, padx=5)
-        self.var_split_length.trace_add("write", self.save_settings)
-        ToolTip(split_frame, "Initial character limit used when splitting files in the File Importer.")
+        chk_telemetry = ttk.Checkbutton(group_data, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
+        chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
+        ToolTip(chk_telemetry, "Send anonymous usage stats.")
 
         # Frequency List Manager & Exporter
-        freq_btn_row = ttk.Frame(settings_frame)
-        freq_btn_row.pack(fill=tk.X, pady=(10, 0))
+        btn_freq = ttk.Button(group_data, text="Add Frequency List", command=self.run_frequency_list_manager, width=20)
+        btn_freq.pack(fill=tk.X, pady=(0, 5))
+        ToolTip(btn_freq, "Manage custom frequency lists.")
 
-        btn_freq = ttk.Button(freq_btn_row, text="Add Frequency List", command=self.run_frequency_list_manager)
-        btn_freq.pack(side=tk.LEFT)
-        ToolTip(btn_freq, "Manage custom frequency lists for word analysis.")
+        btn_export_freq = ttk.Button(group_data, text="Export Freq List", command=self.generate_frequency_list, width=20)
+        btn_export_freq.pack(fill=tk.X)
+        ToolTip(btn_export_freq, "Export internal frequency list for Migaku/Yomitan.")
 
-        btn_export_freq = ttk.Button(freq_btn_row, text="Generate your content Freq list", command=self.generate_frequency_list)
-        btn_export_freq.pack(side=tk.LEFT, padx=(10, 0))
-        ToolTip(btn_export_freq, "Export a frequency list of all words from your analyzed content. Format: JSON array of strings. You can add this to Migaku or Yomitan.")
+        # 5. 📜 Processing Log (Right Side)
+        log_frame = ttk.LabelFrame(grid_frame, text=" 📜 Processing Log", padding="10")
+        log_frame.grid(row=1, column=1, rowspan=2, sticky="nsew", padx=(5, 0), pady=5)
 
-        # Logs
-        log_frame = ttk.LabelFrame(self.settings_window, text=" Processing Log", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        self.terminal = tk.Text(log_frame, height=10, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
+        self.terminal = tk.Text(log_frame, height=3, width=1, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
                                 insertbackground=TEXT_COLOR, font=("Consolas", 9),
                                 relief=tk.FLAT, borderwidth=0, state=tk.DISABLED,
                                 wrap=tk.NONE)
@@ -728,6 +747,9 @@ class MasterDashboardApp:
         scrollbar = ttk.Scrollbar(log_frame, command=self.terminal.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.terminal.config(yscrollcommand=scrollbar.set)
+
+        # Initial visibility set by update_ui
+        self.update_ui_for_language()
         
     def toggle_settings_window(self):
         if self.settings_window is None or not self.settings_window.winfo_exists():

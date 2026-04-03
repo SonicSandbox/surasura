@@ -748,16 +748,11 @@ class ContentImporterApp:
             if not os.path.exists(abs_path):
                 continue
 
-            # Fractured Grouping Logic:
+            # Grouping Logic:
             parent = entry.get("parent_folder", "")
-            prev_parent = entries[i-1].get("parent_folder", "") if i > 0 else None
-            next_parent = entries[i+1].get("parent_folder", "") if i < len(entries)-1 else None
             
-            # neighbor-check: are we part of a cluster?
-            is_grouped = parent and (parent == prev_parent or parent == next_parent)
-            
-            if is_grouped:
-                # If group name changed from what we are currently building, or if we weren't in a group
+            if parent:
+                # If we are not currently in the correct group node, create/switch to it
                 if parent != current_group_name:
                     current_group_name = parent
                     should_open = parent in expanded_groups
@@ -766,6 +761,9 @@ class ContentImporterApp:
                 # Insert file into current group
                 self.tree.insert(current_group_node, tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
             else:
+                # Not in a group, break out of any current grouping
+                current_group_name = None
+                current_group_node = None
                 # Render as single file at root
                 self.tree.insert("", tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
                 current_group_name = None
@@ -1538,6 +1536,9 @@ class ContentImporterApp:
             return
             
         try:
+            # KEEP SNAPSHOT FOR UNDO
+            snapshot = self.load_manifest()
+            
             # 1. Clear existing manifest schedule but keep metadata
             manifest = self.load_manifest()
             manifest["schedule"] = {
@@ -1557,26 +1558,12 @@ class ContentImporterApp:
                 abs_dir = os.path.join(self.data_root, folder)
                 if not os.path.exists(abs_dir): continue
                 
-                # Use a custom sorter to respect any lingering _order.json if possible, 
-                # or just natural alphabetical.
+                # Alphabetical sort, relying purely on manifest for order
                 def get_ordered_level(directory):
                     items = os.listdir(directory)
-                    # Filter
+                    # Filter system/legacy files
                     items = [i for i in items if i not in ["_order.json", "master_manifest.json", "desktop.ini"]]
-                    
-                    # Check for _order.json
-                    order_file = os.path.join(directory, "_order.json")
-                    if os.path.exists(order_file):
-                        try:
-                            with open(order_file, 'r', encoding='utf-8') as f:
-                                data = json.load(f)
-                                order = data if isinstance(data, list) else data.get("order", [])
-                                rank_map = {name: i for i, name in enumerate(order)}
-                                items.sort(key=lambda x: (rank_map.get(x, 9999), x.lower()))
-                        except:
-                            items.sort(key=lambda x: x.lower())
-                    else:
-                        items.sort(key=lambda x: x.lower())
+                    items.sort(key=lambda x: x.lower())
                     return items
 
                 def walk_and_add(directory):
@@ -1612,8 +1599,10 @@ class ContentImporterApp:
 
                 walk_and_add(abs_dir)
 
-            # 3. Save and Refresh
+            # 3. Save, Set Undo, and Refresh
             self.save_manifest(manifest)
+            self._temp_manifest_snapshot = snapshot 
+            self.set_undo_action("reset", "Reset Library", {})
             self.refresh_file_list()
             messagebox.showinfo("Success", "Library manifest regenerated from disk.")
             

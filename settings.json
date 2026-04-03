@@ -11,6 +11,7 @@
     "telemetry_enabled": true,
     "sanitize_ja_terms": false,
     "only_i_plus_one": false,
+    "add_graduated_words": false,
     "words_per_day": 5,
     "show_words_per_day": true,
     "zen_limit": 55,

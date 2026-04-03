@@ -24,6 +24,7 @@ DEFAULT_SETTINGS = {
     "open_count": 0,
     "hide_satoru": True,  # This is the "internal" default
     "only_i_plus_one": False,
+    "add_graduated_words": True,
     "logic": {
         "inline_completed_files": False,
         "weights": {

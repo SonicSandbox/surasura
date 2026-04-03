@@ -139,6 +139,7 @@ class MasterDashboardApp:
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
+        self.var_add_graduated = tk.BooleanVar(value=True) # Add words on graduate
         self.var_context_min_chars = tk.IntVar(value=10)
         self.var_context_max_chars = tk.IntVar(value=50)
         self.var_words_per_day = tk.IntVar(value=5) # Target words per day
@@ -216,6 +217,7 @@ class MasterDashboardApp:
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.var_sanitize_ja.trace_add("write", self.save_settings)
         self.var_only_i_plus_one.trace_add("write", self.save_settings)
+        self.var_add_graduated.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
@@ -670,6 +672,10 @@ class MasterDashboardApp:
         chk_i_plus_one.pack(anchor=tk.W)
         ToolTip(chk_i_plus_one, "If checked, only words with at least one i+1 sentence will be included in the analysis list.")
 
+        chk_add_graduated = ttk.Checkbutton(settings_frame, text="Add Words to GraduatedList on 'Graduate'", variable=self.var_add_graduated)
+        chk_add_graduated.pack(anchor=tk.W)
+        ToolTip(chk_add_graduated, "Uncheck to move files to Graduated folder without extracting/adding their vocabulary to your known words list.")
+
 
 
         # Words Per Day Settings
@@ -825,6 +831,7 @@ class MasterDashboardApp:
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
+            self.var_add_graduated.set(settings.get("add_graduated_words", True))
             self.var_words_per_day.set(settings.get("words_per_day", 5))
             self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
             self.var_zen_limit.set(settings.get("zen_limit", 50))
@@ -868,6 +875,7 @@ class MasterDashboardApp:
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "sanitize_ja_terms": self.var_sanitize_ja.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
+                "add_graduated_words": self.var_add_graduated.get(),
                 "words_per_day": self.var_words_per_day.get(),
                 "show_words_per_day": self.var_show_words_per_day.get(),
                 "zen_limit": self.var_zen_limit.get(),

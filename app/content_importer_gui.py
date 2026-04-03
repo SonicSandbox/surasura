@@ -27,7 +27,7 @@ class ContentImporterApp:
         self.root = root
         self.language = language
         self.root.title(f"Surasura - Content Manager ({language})")
-        self.root.geometry("650x700")  # Expanded size
+        self.root.geometry("700x700")  # Expanded size
         self.root.minsize(600, 600)
         self.root.configure(bg=BG_COLOR)
         
@@ -35,6 +35,9 @@ class ContentImporterApp:
         self.root.bind("<Escape>", lambda e: self.root.destroy())
         self.style = ttk.Style()
         self.apply_dark_theme()
+        
+        # Custom button style for centered icons
+        self.style.configure("Centered.TButton", anchor="center")
         
         # Set Icon
         try:
@@ -63,6 +66,8 @@ class ContentImporterApp:
         # Manifest Order Cache
         self.manifest_ranks = {} # rel_path -> index
         self.load_manifest_ranks()
+        
+        self.last_action = {} # For undo functionality
 
         # Drag and Drop State
         self.tree: ttk.Treeview = None
@@ -84,6 +89,18 @@ class ContentImporterApp:
         # Actually, FocusIn triggers when a modal CLOSES too. 
         self.root.bind("<FocusIn>", self._on_focus_in)
         self._ignore_refresh = False
+        
+        # Start background polling
+        self.root.after(4000, self._poll_word_stats)
+
+    def _poll_word_stats(self):
+        """Silently checks for word_stats.json updates without full UI refresh."""
+        if not self.root.winfo_exists(): return
+        old_mtime = getattr(self, '_last_stats_mtime', 0)
+        self._load_analyzed_filenames()
+        if getattr(self, '_last_stats_mtime', 0) != old_mtime:
+            self._update_graduate_button_state()
+        self.root.after(4000, self._poll_word_stats)
 
     def _initial_load(self):
         """Initial data load after UI is visible."""
@@ -219,34 +236,53 @@ class ContentImporterApp:
         btn_frame = ttk.Frame(step2_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 10))
         
-        add_btn = ttk.Button(btn_frame, text="+ Add Files", command=self.add_files)
-        add_btn.pack(side=tk.LEFT, padx=(0, 10))
+        import_group = ttk.Frame(btn_frame)
+        import_group.pack(side=tk.LEFT, padx=(0, 10))
         
-        folder_btn = ttk.Button(btn_frame, text="+ Add Folder", command=self.add_folder)
-        folder_btn.pack(side=tk.LEFT, padx=(0, 10))
+        add_lbl = ttk.Label(import_group, text="+ Add: ", font=("Segoe UI", 9, "bold"), foreground=TEXT_COLOR)
+        add_lbl.pack(side=tk.LEFT, padx=(0, 2))
         
-        del_btn = ttk.Button(btn_frame, text="- Remove Selected", command=self.remove_files)
-        del_btn.pack(side=tk.LEFT)
+        add_btn = ttk.Button(import_group, text="Files", command=self.add_files, width=6)
+        add_btn.pack(side=tk.LEFT, padx=0)
         
-        # Right Side Action Buttons
-        reset_btn = ttk.Button(btn_frame, text="🗑️", command=self.reset_to_folder_structure, width=4)
-        reset_btn.pack(side=tk.RIGHT, padx=(0, 0))
+        folder_btn = ttk.Button(import_group, text="Folder", command=self.add_folder, width=7)
+        folder_btn.pack(side=tk.LEFT, padx=(2, 0))
+        
+        del_btn = ttk.Button(btn_frame, text="- Remove", command=self.remove_files, width=10)
+        del_btn.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Right Side Action Groups (Packed Right to Left)
+        reset_btn = ttk.Button(btn_frame, text="🗑️", command=self.reset_to_folder_structure, width=4, style="Centered.TButton")
+        reset_btn.pack(side=tk.RIGHT, padx=(5, 0))
         self.create_tooltip(reset_btn, "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)")
 
-        refresh_btn = ttk.Button(btn_frame, text="↻", command=self.refresh_file_list, width=4)
-        refresh_btn.pack(side=tk.RIGHT, padx=(5, 5))
-        self.create_tooltip(refresh_btn, "Refresh file list")
+        self.undo_btn = ttk.Button(btn_frame, text="⎌", command=self.undo_last_action, state=tk.DISABLED, width=4, style="Centered.TButton")
+        self.undo_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        self.undo_btn.tip_text = "Undo"
+        self.create_tooltip(self.undo_btn, lambda: self.undo_btn.tip_text)
 
-        explorer_btn = ttk.Button(btn_frame, text="📂", command=self.open_data_folder, width=4)
-        explorer_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        # View Group (Explorer + List)
+        view_group = ttk.Frame(btn_frame)
+        view_group.pack(side=tk.RIGHT, padx=(5, 0))
+
+        explorer_btn = ttk.Button(view_group, text="📂", command=self.open_data_folder, width=4, style="Centered.TButton")
+        explorer_btn.pack(side=tk.LEFT)
         self.create_tooltip(explorer_btn, "Open current folder in Explorer")
         
-        list_btn = ttk.Button(btn_frame, text="🏆", command=self.open_graduated_list, width=4)
-        list_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        list_btn = ttk.Button(view_group, text="🏆", command=self.open_graduated_list, width=4, style="Centered.TButton")
+        list_btn.pack(side=tk.LEFT, padx=(2, 0))
         self.create_tooltip(list_btn, "Open Graduated Words List")
 
-        self.graduate_btn = ttk.Button(btn_frame, text="🏆 Graduate", command=self.graduate_content, state=tk.DISABLED)
-        self.graduate_btn.pack(side=tk.RIGHT, padx=(5, 5))
+        # Graduation Group (Graduate + Demote)
+        grad_group = ttk.Frame(btn_frame)
+        grad_group.pack(side=tk.RIGHT, padx=(5, 0))
+
+        self.demote_btn = ttk.Button(grad_group, text="📉 Demote", command=self.demote_content, state=tk.DISABLED)
+        self.demote_btn.pack(side=tk.RIGHT, padx=(2, 0))
+        self.create_tooltip(self.demote_btn, "Demote Content:\n- NOW: Move to Soon\n- Soon: Move to 6+ Months\n- 6+ Months: Cannot be demoted")
+
+        self.graduate_btn = ttk.Button(grad_group, text="🏆 Graduate", command=self.graduate_content, state=tk.DISABLED)
+        self.graduate_btn.pack(side=tk.RIGHT, padx=0)
         self.create_tooltip(self.graduate_btn, "Graduate Content:\n- NOW: Graduate consumed content (Requires Analysis)\n- Soon: Move to NOW\n- 6+ Months: Move to Soon")
 
         # Hint label (Order matters...)
@@ -818,6 +854,106 @@ class ContentImporterApp:
             count += self.get_tree_count(child)
         return count
 
+    def set_undo_action(self, action_type, label, data):
+        if hasattr(self, "_temp_manifest_snapshot"):
+            data["previous_manifest"] = self._temp_manifest_snapshot
+            
+        self.last_action = {
+            "type": action_type,
+            "data": data
+        }
+        if self.undo_btn:
+            self.undo_btn.config(state=tk.NORMAL)
+            self.undo_btn.tip_text = f"Undo: {label}"
+
+    def undo_last_action(self):
+        if not self.last_action:
+            return
+            
+        action_type = self.last_action.get("type")
+        data = self.last_action.get("data", {})
+        count = 0
+        
+        try:
+            if action_type == "add":
+                for path in data.get("paths", []):
+                    if os.path.exists(path):
+                        if os.path.isdir(path): shutil.rmtree(path)
+                        else: os.remove(path)
+                    count += 1
+                    
+            elif action_type == "move":
+                for move_op in data.get("moves", []):
+                    src = move_op["source"]
+                    dst = move_op["dest"]
+                    if os.path.exists(dst):
+                        os.makedirs(os.path.dirname(src), exist_ok=True)
+                        shutil.move(dst, src)
+                    count += 1
+                    
+            elif action_type == "remove":
+                for rm_op in data.get("removals", []):
+                    orig = rm_op["original"]
+                    trash = rm_op["trash"]
+                    if os.path.exists(trash):
+                        os.makedirs(os.path.dirname(orig), exist_ok=True)
+                        shutil.move(trash, orig)
+                    count += 1
+                    
+            elif action_type == "graduate":
+                moves = data.get("moves", [])
+                words_added = data.get("words_added", 0)
+                sources = data.get("sources", [])
+                
+                for move_op in moves:
+                    src = move_op["source"]
+                    dst = move_op["dest"]
+                    if os.path.exists(dst):
+                        os.makedirs(os.path.dirname(src), exist_ok=True)
+                        shutil.move(dst, src)
+                    count += 1
+                
+                if words_added > 0 and sources:
+                    project_root = os.path.dirname(os.path.dirname(self.data_root))
+                    grad_list_path = os.path.join(project_root, "User Files", self.language, "GraduatedList.txt")
+                    if os.path.exists(grad_list_path):
+                        with open(grad_list_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            
+                        for source_rel in sources:
+                            target_header = f"# Source: {source_rel}"
+                            header_idx = -1
+                            for i in range(len(lines)-1, -1, -1):
+                                if target_header in lines[i]:
+                                    header_idx = i
+                                    break
+                                    
+                            if header_idx != -1:
+                                end_idx = header_idx + 1
+                                for i in range(header_idx + 1, len(lines)):
+                                    if lines[i].strip() == "" or lines[i].startswith("# Source:"):
+                                        if not lines[i].startswith("# Source:"): end_idx = i + 1
+                                        break
+                                    end_idx = i + 1
+                                del lines[header_idx:end_idx]
+                                
+                        with open(grad_list_path, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                            
+            if "previous_manifest" in data:
+                self.save_manifest(data["previous_manifest"])
+                
+        except Exception as e:
+            messagebox.showerror("Undo Error", f"Failed to undo action: {e}")
+            
+        self.last_action = {}
+        if self.undo_btn:
+            self.undo_btn.config(state=tk.DISABLED)
+            self.undo_btn.tip_text = "Undo"
+            
+        self.refresh_file_list()
+        self.status_var.set(f"Undid past action ({count} items restored)")
+
     def add_files(self):
         target_dir = self.get_current_dir()
         if not os.path.exists(target_dir):
@@ -841,10 +977,10 @@ class ContentImporterApp:
         )
         
         if filepaths:
-            count = 0
-        if filepaths:
+            self._temp_manifest_snapshot = self.load_manifest()
             count = 0
             target_folder_key = self.target_folder_var.get()
+            added_paths = []
             
             for path in filepaths:
                 try:
@@ -853,11 +989,14 @@ class ContentImporterApp:
                     shutil.copy2(path, dest)
                     
                     self.add_to_manifest(dest, target_folder_key)
+                    added_paths.append(dest)
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
             
-            self.refresh_file_list()
+            if added_paths:
+                self.set_undo_action("add", "Add Files", {"paths": added_paths})
+                
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
             messagebox.showinfo("Success", f"Successfully added {count} files.")
@@ -876,6 +1015,8 @@ class ContentImporterApp:
         
         if not folder_path:
             return
+            
+        self._temp_manifest_snapshot = self.load_manifest()
 
         try:
             # Handle cases where path ends with slash (e.g. "C:/" or "D:/")
@@ -929,6 +1070,7 @@ class ContentImporterApp:
                 return
 
             self.add_to_manifest(dest, self.target_folder_var.get())
+            self.set_undo_action("add", "Add Folder", {"paths": [dest]})
             
             self.refresh_file_list()
             self.status_var.set(f"Successfully added folder: {folder_name}")
@@ -951,6 +1093,101 @@ class ContentImporterApp:
             else:
                 paths.append(val)
         return list(set(paths)) # Unique paths
+
+    def demote_content(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("No Selection", "Please select items to demote.")
+            return
+
+        current_folder = self.target_folder_var.get()
+        destination_map = {
+            "GoalContent": None,
+            "LowPriority": "GoalContent",
+            "HighPriority": "LowPriority"
+        }
+        
+        dest_folder_name = destination_map.get(current_folder)
+        if not dest_folder_name:
+            messagebox.showinfo("Info", "Cannot demote from this folder.")
+            return
+            
+        dest_root = os.path.join(self.data_root, dest_folder_name)
+        items_to_process = self._resolve_items_to_paths(selected_items)
+        if not items_to_process: return
+
+        # Friendly mapping for dialogs
+        names_map = {
+            "HighPriority": "NOW",
+            "LowPriority": "Soon",
+            "GoalContent": "6+ months"
+        }
+        friendly_src = names_map.get(current_folder, current_folder)
+        friendly_dest = names_map.get(dest_folder_name, dest_folder_name)
+
+        msg = f"Demote {len(selected_items)} items from '{friendly_src}' to '{friendly_dest}'?"
+        self._ignore_refresh = True
+        confirm = messagebox.askyesno("Confirm Demotion", msg)
+        self._ignore_refresh = False
+        
+        if not confirm:
+            return
+
+        # Ensure destination exists
+        if not os.path.exists(dest_root):
+            os.makedirs(dest_root)
+            
+        count = 0
+        self._temp_manifest_snapshot = self.load_manifest()
+        moves_list = []
+        
+        try:
+            for filepath in items_to_process:
+                if not os.path.exists(filepath): continue
+                
+                # Calculate relative path within source bucket to preserve hierarchy
+                source_bucket_root = os.path.join(self.data_root, current_folder)
+                rel_inner = os.path.relpath(filepath, source_bucket_root)
+                
+                parts_inner = rel_inner.replace("\\", "/").split("/")
+                buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                if parts_inner and parts_inner[0] in buckets:
+                    parts_inner = parts_inner[1:]
+                clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
+                dest = os.path.join(dest_root, clean_rel_inner)
+                
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                
+                # Check target structure for dupes
+                base = os.path.basename(dest)
+                counter = 1
+                name, ext = os.path.splitext(base)
+                while os.path.exists(dest):
+                    dest = os.path.join(os.path.dirname(dest), f"{name}_{counter}{ext}")
+                    counter += 1
+                    
+                shutil.move(filepath, dest)
+                self.remove_from_manifest(filepath)
+                self.add_to_manifest(dest, dest_folder_name)
+                
+                moves_list.append({
+                    "source": filepath,
+                    "dest": dest
+                })
+                count += 1
+                
+            if moves_list:
+                self.set_undo_action("graduate", "Demote Content", {
+                    "moves": moves_list,
+                    "words_added": 0,
+                    "sources": []
+                })
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to demote files: {e}")
+            
+        self.refresh_file_list()
+        self.status_var.set(f"Demoted {count} items.")
 
     def graduate_content(self):
         selected_items = self.tree.selection()
@@ -977,14 +1214,24 @@ class ContentImporterApp:
         
         if not items_to_process: return
 
+        # Friendly mapping for dialogs
+        names_map = {
+            "HighPriority": "NOW",
+            "LowPriority": "Soon",
+            "GoalContent": "6+ months",
+            "Graduated": "Graduated"
+        }
+        friendly_src = names_map.get(current_folder, current_folder)
+        friendly_dest = names_map.get(dest_folder_name, dest_folder_name)
+
         # Confirmation Logic.
         if current_folder == "HighPriority":
-            msg = (f"Graduate {len(selected_items)} items to '{dest_folder_name}'?\n\n"
+            msg = (f"Graduate {len(selected_items)} items to '{friendly_dest}'?\n\n"
                    "CAUTION: This will mark words as KNOWN based on the MOST RECENT analysis.\n"
                    "Words from these files found in the 'word_stats.json' report will be added to your GraduatedList.\n\n"
-                   f"The files will be moved to: data/{self.language}/{dest_folder_name}")
+                   f"The files will be moved to your local '{friendly_dest}' archive.")
         else:
-            msg = f"Move {len(selected_items)} items from {current_folder} to {dest_folder_name}?"
+            msg = f"Move {len(selected_items)} items from '{friendly_src}' to '{friendly_dest}'?"
             
         self._ignore_refresh = True
         confirm = messagebox.askyesno("Confirm Graduation", msg)
@@ -1002,6 +1249,13 @@ class ContentImporterApp:
         
         # Load Stats if High Priority
         stats = {}
+        settings = {}
+        try:
+            from app.settings_manager import load_settings
+            settings = load_settings()
+        except Exception as e:
+            print(f"Could not load settings: {e}")
+            
         if current_folder == "HighPriority":
             try:
                 # data_root is data/<lang>
@@ -1014,8 +1268,14 @@ class ContentImporterApp:
                     print(f"Warning: word_stats.json not found at {stats_path}.")
             except Exception as e:
                 print(f"Error loading stats: {e}")
+                
+        self._temp_manifest_snapshot = self.load_manifest()
 
         # Process Items
+        moves_list = []
+        words_added_total = 0
+        sources_modified = []
+        
         for source_path in items_to_process:
             if not os.path.exists(source_path): continue
             
@@ -1024,7 +1284,7 @@ class ContentImporterApp:
             
             try:
                 # 1. Graduate Words Logic (High Priority only)
-                if current_folder == "HighPriority" and stats:
+                if current_folder == "HighPriority" and stats and settings.get("add_graduated_words", True):
                     # Find all filenames associated with this item
                     filenames_to_match = set()
                     if os.path.isfile(source_path):
@@ -1056,6 +1316,8 @@ class ContentImporterApp:
                             for w in file_words:
                                 f.write(f"{w}\n")
                         words_graduated += len(file_words)
+                        words_added_total += len(file_words)
+                        sources_modified.append(rel_path)
 
                 # Calculate relative path within source bucket to preserve hierarchy
                 source_bucket_root = os.path.join(self.data_root, current_folder)
@@ -1087,10 +1349,13 @@ class ContentImporterApp:
                 if dest_folder_name in ["HighPriority", "LowPriority", "GoalContent"]:
                     self.add_to_manifest(dest_path, dest_folder_name)
                 
+                moves_list.append({"source": source_path, "dest": dest_path})
                 count += 1
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to graduate {filename}:\n{e}")
+        
+        self.set_undo_action("graduate", "Graduate", {"moves": moves_list, "words_added": words_added_total, "sources": list(set(sources_modified))})
         
         self.refresh_file_list()
         status_msg = f"Moved {count} items to {dest_folder_name}."
@@ -1107,34 +1372,48 @@ class ContentImporterApp:
 
         confirm = messagebox.askyesno(
             "Confirm Deletion", 
-            f"Are you sure you want to delete {len(selected_items)} selected items and their contents?\nThis cannot be undone."
+            f"Are you sure you want to delete {len(selected_items)} selected items and their contents?\nThis can be undone."
         )
         
         if confirm:
+            self._temp_manifest_snapshot = self.load_manifest()
             target_dir = self.get_current_dir()
             count = 0
             
-            # We only remove root-level items from the order file
-            for item_id in selected_items:
-                item_text = self.tree.item(item_id, "text")
-                item_values = self.tree.item(item_id, "values")
-                if not item_values: continue
-                path = item_values[0]
-                
+            # Resolve to absolute paths robustly
+            paths_to_delete = self._resolve_items_to_paths(selected_items)
+            
+            trash_dir = os.path.join(self.data_root, ".trash")
+            os.makedirs(trash_dir, exist_ok=True)
+            removals_list = []
+            
+            for path in paths_to_delete:
                 try:
-                    if os.path.isfile(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path)
-                    
-                    self.remove_from_manifest(path)
+                    if os.path.exists(path):
+                        # Move to trash instead of deleting
+                        filename = os.path.basename(path)
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                        base, ext = os.path.splitext(filename)
+                        trash_path = os.path.join(trash_dir, f"{base}_{timestamp}{ext}")
                         
+                        shutil.move(path, trash_path)
+                        removals_list.append({"original": path, "trash": trash_path})
+                        
+                    self.remove_from_manifest(path)
                     count += 1
                 except Exception as e:
                     print(f"Error deleting {path}: {e}")
             
-            self.refresh_file_list()
+            # Ensure parents empty
+            for path in paths_to_delete:
+                 parent = os.path.dirname(path)
+                 if os.path.exists(parent) and not os.listdir(parent):
+                      try: os.rmdir(parent)
+                      except: pass
             
+            if removals_list:
+                self.set_undo_action("remove", "Remove Items", {"removals": removals_list})
+                
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
 
@@ -1405,23 +1684,26 @@ class ContentImporterApp:
             print(f"Error loading analyzed filenames cache: {e}")
 
     def _update_graduate_button_state(self, event=None):
-        """Enable the Graduate button only if selection is valid and analysis data exists for it."""
+        """Enable buttons only if selection is valid."""
+        selected_items = self.tree.selection()
+        
+        demote_active = bool(selected_items and self.target_folder_var.get() != "GoalContent")
+        
+        if hasattr(self, 'demote_btn') and self.demote_btn:
+            self.demote_btn.config(state=tk.NORMAL if demote_active else tk.DISABLED)
+            
         if not self.graduate_btn:
             return
             
-        selected_items = self.tree.selection()
         if not selected_items:
             self.graduate_btn.config(state=tk.DISABLED)
             return
 
         current_folder = self.target_folder_var.get()
-        
-        # Only HighPriority requires analysis results to Graduate (to KnownWords)
         if current_folder != "HighPriority":
             self.graduate_btn.config(state=tk.NORMAL)
             return
 
-        # Requires analysis results for HighPriority
         if self._has_analysis_for_selection(selected_items):
             self.graduate_btn.config(state=tk.NORMAL)
         else:
@@ -1449,13 +1731,16 @@ class ContentImporterApp:
         # Fast set intersection check
         return not filenames_to_check.isdisjoint(self.analyzed_filenames)
 
-    def create_tooltip(self, widget, text):
+    def create_tooltip(self, widget, text_or_callable):
         def show_tip(event):
             tip = tk.Toplevel()
             tip.wm_overrideredirect(True)
             tip.wm_geometry(f"+{event.x_root+15}+{event.y_root+15}")
             tip.configure(bg=SURFACE_COLOR)
-            label = tk.Label(tip, text=text, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
+            
+            display_text = text_or_callable() if callable(text_or_callable) else text_or_callable
+            
+            label = tk.Label(tip, text=display_text, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
                              font=("Segoe UI", 9), padx=8, pady=5, 
                              relief="solid", borderwidth=1, highlightthickness=0,
                              wraplength=250, justify=tk.LEFT)

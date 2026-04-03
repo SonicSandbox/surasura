@@ -1,6 +1,8 @@
 import os
 import sys
 import shutil
+import threading
+import time
 
 def is_frozen():
     """Check if the application is running in a frozen (packaged) environment."""
@@ -106,7 +108,7 @@ def ensure_data_setup(language=None):
     
     samples_path = get_resource("samples")
     
-    subfolders = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed"]
+    subfolders = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed", ".trash"]
     
     # 2. Ensure base data folder exists
     if not os.path.exists(data_path):
@@ -154,3 +156,34 @@ def ensure_data_setup(language=None):
                         f.write("# Add words to ignore here (one per line)\n")
             except Exception as e:
                 print(f"Warning: Could not create {list_name}: {e}")
+                
+    # 6. Async Trash Cleanup
+    trash_dir = os.path.join(data_path, ".trash")
+    cleanup_trash_async(trash_dir)
+
+def cleanup_trash_async(trash_path):
+    """Prunes files in the given trash directory that are older than 30 days asynchronously."""
+    def run_cleanup():
+        try:
+            if not os.path.exists(trash_path):
+                return
+            now = time.time()
+            cutoff = now - (30 * 24 * 60 * 60) # 30 days
+            for root, dirs, files in os.walk(trash_path, topdown=False):
+                for name in files:
+                    filepath = os.path.join(root, name)
+                    try:
+                        if os.path.getmtime(filepath) < cutoff:
+                            os.remove(filepath)
+                    except: pass
+                for name in dirs:
+                    dirpath = os.path.join(root, name)
+                    try:
+                        if not os.listdir(dirpath):
+                            os.rmdir(dirpath)
+                    except: pass
+        except Exception as e:
+            print(f"Trash cleanup error: {e}")
+            
+    threading.Thread(target=run_cleanup, daemon=True).start()
+

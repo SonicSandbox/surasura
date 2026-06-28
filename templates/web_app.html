@@ -970,6 +970,27 @@
             text-align: left;
             font-weight: 500;
         }
+
+        /* --- Manual "Completed" Marker (browser-side only) --- */
+        .file-tab .completed-check {
+            color: #4caf50;
+            font-weight: bold;
+            margin-left: 8px;
+            white-space: nowrap;
+        }
+
+        .target-days-box.completed {
+            color: #4caf50;
+            border-color: rgba(76, 175, 80, 0.4);
+            opacity: 1;
+            font-weight: 600;
+        }
+
+        .target-days-box.completed:hover {
+            background: rgba(76, 175, 80, 0.08);
+            border-color: #4caf50;
+            color: #4caf50;
+        }
     </style>
 </head>
 
@@ -1092,6 +1113,28 @@
             localStorage.setItem(storageKey, JSON.stringify([...ignoredWords]));
         }
 
+        // --- Manual "Completed Files" tracking (browser-side only) ---
+        // Mirrors the ignored-words localStorage pattern; keyed per language.
+        const completedStorageKey = `surasura_completed_files_${langSuffix}`;
+        let completedFiles = new Set();
+        let currentFileName = null;       // filename of the file currently shown in the progressive view
+        let currentFileWordCount = 0;     // new-word count of the current file (the sidebar (N) number)
+        let currentCumulativeWords = 0;   // running total used for the Target Days estimate
+
+        try {
+            const storedCompleted = localStorage.getItem(completedStorageKey);
+            if (storedCompleted) {
+                completedFiles = new Set(JSON.parse(storedCompleted));
+                console.log(`Loaded ${completedFiles.size} completed files from local storage (${completedStorageKey}).`);
+            }
+        } catch (e) {
+            console.error("Failed to load completed files", e);
+        }
+
+        function saveCompletedFiles() {
+            localStorage.setItem(completedStorageKey, JSON.stringify([...completedFiles]));
+        }
+
         function clearIgnoredWords() {
             if (confirm(`Are you sure you want to un-hide all ignored words for ${langSuffix}?`)) {
                 ignoredWords.clear();
@@ -1191,6 +1234,24 @@
                 // Ensure it is at the end if already exists (e.g. re-renders)
                 container.appendChild(document.getElementById('btn-toggle-sentences'));
             }
+
+            // Inject "Mark Complete" Button (immediately right of the show/hide-all toggle).
+            // Browser-side only: marks the current progressive file as done.
+            if (!document.getElementById('btn-mark-complete')) {
+                const completeBtn = document.createElement('button');
+                completeBtn.id = 'btn-mark-complete';
+                completeBtn.innerHTML = "✓";
+                completeBtn.title = "Mark this file complete - only affects UI";
+                styleIgnoreButton(completeBtn);
+                completeBtn.style.marginLeft = "10px";
+                completeBtn.style.minWidth = "30px";
+                completeBtn.onclick = toggleCurrentFileComplete;
+                container.appendChild(completeBtn);
+            } else {
+                // Keep it at the very end (right of the toggle) across re-renders
+                container.appendChild(document.getElementById('btn-mark-complete'));
+            }
+            updateMarkCompleteButton();
 
             const hasIgnored = ignoredWords.size > 0;
 
@@ -1306,6 +1367,10 @@
             const activeView = document.getElementById(`view-${tabName}`);
             activeView.classList.add('active');
 
+            // Show the "Mark Complete" button only on the Progressive tab
+            const markBtn = document.getElementById('btn-mark-complete');
+            if (markBtn) markBtn.style.display = (tabName === 'progressive') ? 'inline-block' : 'none';
+
             // 4. Lazy Re-render (if empty)
             if (tabName === 'progressive') {
                 // If container is empty, re-render
@@ -1402,11 +1467,13 @@
                 }
 
                 const safeFilename = escapeHtml(fileData.filename);
+                tab.dataset.filename = fileData.filename;
                 tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
+                applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
-                    await renderFileWords(fileData.words, fileData.is_goal_content, fileData.cumulativeWords);
+                    await renderFileWords(fileData.words, fileData.is_goal_content, fileData.cumulativeWords, fileData.filename);
                 }
             } else {
                 const fileData = item.data;
@@ -1512,9 +1579,15 @@
             loadNextChunk();
         }
 
-        async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0) {
+        async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null) {
             const listContainer = document.getElementById('progressive-list');
             listContainer.innerHTML = "";
+
+            // Track the active file so the "Mark Complete" button + Target Days box reflect it
+            currentFileName = filename;
+            currentFileWordCount = (words && words.length) ? words.length : 0;
+            currentCumulativeWords = cumulativeWords || currentFileWordCount;
+            updateMarkCompleteButton();
 
             if (!words || words.length === 0) {
                 listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
@@ -1527,7 +1600,7 @@
                 const statsBar = createComprehensionBar(stats);
                 listContainer.appendChild(statsBar);
 
-                const targetDays = createTargetDaysBox(cumulativeWords || words.length);
+                const targetDays = createTargetDaysBox(cumulativeWords || words.length, words.length, filename);
                 if (targetDays) listContainer.appendChild(targetDays);
             }
 
@@ -1593,7 +1666,21 @@
             return el;
         }
 
-        function createTargetDaysBox(wordCount) {
+        function createTargetDaysBox(wordCount, fileWordCount, filename) {
+            // If this file has been manually marked complete (browser-side), show a green
+            // "X words Completed" line in place of the Target Days estimate.
+            const isCompleted = filename && completedFiles.has(filename);
+            if (isCompleted) {
+                const count = (typeof fileWordCount === 'number') ? fileWordCount : wordCount;
+                const elDone = document.createElement('div');
+                elDone.className = 'target-days-box completed';
+                elDone.innerHTML = `
+                    <span class="hidden-content" style="font-weight: bold" data-content="${count} words" migaku_ignore data-yomichan-ignore></span>
+                    <span class="hidden-content" data-content=" Completed" migaku_ignore data-yomichan-ignore></span>
+                `;
+                return elDone;
+            }
+
             const show = typeof globalShowWordsPerDay !== 'undefined' ? globalShowWordsPerDay : true;
             if (!show) return null;
 
@@ -1612,6 +1699,97 @@
                 <span class="hidden-content" data-content="!" migaku_ignore data-yomichan-ignore></span>
             `;
             return el;
+        }
+
+        // --- Manual "Completed" Feature Helpers (browser-side only) ---
+
+        // Add/remove the green check on a sidebar tab without re-rendering the list.
+        function applyCompletedStyle(tabEl, isCompleted) {
+            if (!tabEl) return;
+            tabEl.classList.toggle('completed', isCompleted);
+            let check = tabEl.querySelector('.completed-check');
+            if (isCompleted && !check) {
+                check = document.createElement('span');
+                check.className = 'completed-check';
+                check.textContent = 'Complete ✓';
+                tabEl.appendChild(check);
+            } else if (!isCompleted && check) {
+                check.remove();
+            }
+        }
+
+        // Reflect the current file's completed state in the header button (gray vs green).
+        function updateMarkCompleteButton() {
+            const btn = document.getElementById('btn-mark-complete');
+            if (!btn) return;
+            const isCompleted = !!currentFileName && completedFiles.has(currentFileName);
+            if (isCompleted) {
+                // Green filled button with a dark checkmark to match the dark theme
+                btn.style.background = '#4caf50';
+                btn.style.color = '#1e1e1e';
+                btn.style.borderColor = '#4caf50';
+                btn.onmouseover = () => btn.style.background = '#5cb860';
+                btn.onmouseout = () => btn.style.background = '#4caf50';
+            } else {
+                // Default subtle look (same as the toggle button beside it)
+                btn.style.background = 'rgba(255, 255, 255, 0.1)';
+                btn.style.color = '#888';
+                btn.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                btn.onmouseover = () => btn.style.background = 'rgba(255, 255, 255, 0.2)';
+                btn.onmouseout = () => btn.style.background = 'rgba(255, 255, 255, 0.1)';
+            }
+            btn.style.opacity = currentFileName ? '1' : '0.4';
+            btn.disabled = !currentFileName;
+            btn.title = isCompleted
+                ? "Completed (browser-only) — click to unmark"
+                : "Mark this file complete (browser-only)";
+        }
+
+        // Swap the Target Days box for the green "X words Completed" line (or back) in place.
+        function updateTargetDaysForCurrent() {
+            const listContainer = document.getElementById('progressive-list');
+            if (!listContainer) return;
+            const existing = listContainer.querySelector('.target-days-box');
+            const fresh = createTargetDaysBox(currentCumulativeWords || currentFileWordCount, currentFileWordCount, currentFileName);
+            if (existing) {
+                if (fresh) existing.replaceWith(fresh);
+                else existing.remove();
+            } else if (fresh) {
+                const bar = listContainer.querySelector('.comprehension-stats');
+                if (bar) bar.after(fresh);
+                else listContainer.prepend(fresh);
+            }
+        }
+
+        // Advance to the next sidebar file that isn't completed yet (rendered tabs only).
+        function goToNextIncompleteFile() {
+            const tabs = Array.from(document.querySelectorAll('#file-tabs .file-tab[data-filename]'));
+            if (!tabs.length) return;
+            const activeIdx = tabs.findIndex(t => t.classList.contains('active'));
+            for (let i = activeIdx + 1; i < tabs.length; i++) {
+                if (!completedFiles.has(tabs[i].dataset.filename)) {
+                    tabs[i].click();
+                    return;
+                }
+            }
+            // No further incomplete files — stay on the current one.
+        }
+
+        // Toggle the current file's completed state, update visuals, and advance when marking done.
+        function toggleCurrentFileComplete() {
+            if (!currentFileName) return;
+            const wasCompleted = completedFiles.has(currentFileName);
+            if (wasCompleted) completedFiles.delete(currentFileName);
+            else completedFiles.add(currentFileName);
+            saveCompletedFiles();
+
+            const activeTab = document.querySelector('#file-tabs .file-tab.active');
+            applyCompletedStyle(activeTab, !wasCompleted);
+            updateTargetDaysForCurrent();
+            updateMarkCompleteButton();
+
+            // Only auto-advance when marking complete (not when un-marking).
+            if (!wasCompleted) goToNextIncompleteFile();
         }
 
         // --- Priority View Rendering ---

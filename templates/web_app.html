@@ -831,6 +831,7 @@
 
         /* Zen Mode: Hide Toggles & Ensure Visibility */
         body.theme-zen-focus #btn-toggle-sentences,
+        body.theme-zen-focus #btn-sort-filter,
         body.theme-zen-focus .toggle-contexts-btn {
             display: none !important;
         }
@@ -990,6 +991,69 @@
             background: rgba(76, 175, 80, 0.08);
             border-color: #4caf50;
             color: #4caf50;
+        }
+
+        /* --- Priority Filter ("Show" Menu) --- */
+        body.filter-priority .card:not(.is-priority) {
+            display: none;
+        }
+
+        body.filter-non-priority .card.is-priority {
+            display: none;
+        }
+
+        .sort-menu {
+            display: none;
+            position: fixed;
+            z-index: 1100;
+            min-width: 150px;
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+            padding: 6px;
+        }
+
+        .sort-menu-header {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 6px 10px 4px 13px;
+        }
+
+        .sort-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-left: 3px solid transparent;
+            color: var(--on-surface);
+            text-align: left;
+            padding: 8px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+
+        .sort-menu-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        /* Selected item: keep the theme's readable text color; signal selection with an
+           accent fill + bold + left bar so it never relies on hard-to-read purple text. */
+        .sort-menu-item.active {
+            background: rgba(187, 134, 252, 0.18);
+            color: var(--on-surface);
+            font-weight: 600;
+            border-left-color: var(--primary);
+        }
+
+        .sort-menu-item .priority-marker {
+            font-size: 1rem;
         }
     </style>
 </head>
@@ -1235,7 +1299,24 @@
                 container.appendChild(document.getElementById('btn-toggle-sentences'));
             }
 
-            // Inject "Mark Complete" Button (immediately right of the show/hide-all toggle).
+            // Inject "Sort / Filter" Button (between the show/hide-all toggle and Mark Complete).
+            if (!document.getElementById('btn-sort-filter')) {
+                const sortBtn = document.createElement('button');
+                sortBtn.id = 'btn-sort-filter';
+                sortBtn.innerHTML = "⇅";
+                sortBtn.title = "Filter words shown";
+                styleIgnoreButton(sortBtn);
+                sortBtn.style.marginLeft = "10px";
+                sortBtn.style.minWidth = "30px";
+                sortBtn.onclick = toggleSortMenu;
+                container.appendChild(sortBtn);
+                buildSortMenu();
+            } else {
+                container.appendChild(document.getElementById('btn-sort-filter'));
+            }
+            updateSortButtonState();
+
+            // Inject "Mark Complete" Button (rightmost; sits after the sort/filter button).
             // Browser-side only: marks the current progressive file as done.
             if (!document.getElementById('btn-mark-complete')) {
                 const completeBtn = document.createElement('button');
@@ -1821,6 +1902,99 @@
         // --- Global Sentence Toggle ---
         let globalShowAllSentences = false;
 
+        // --- Priority Filter ("Show" menu) state: 'all' | 'priority' | 'non-priority' ---
+        let globalPriorityFilter = 'all';
+
+        function applyPriorityFilter() {
+            document.body.classList.remove('filter-priority', 'filter-non-priority');
+            if (globalPriorityFilter === 'priority') document.body.classList.add('filter-priority');
+            else if (globalPriorityFilter === 'non-priority') document.body.classList.add('filter-non-priority');
+        }
+
+        function setPriorityFilter(value) {
+            globalPriorityFilter = value;
+            applyPriorityFilter();
+            updateSortMenuActive();
+            updateSortButtonState();
+        }
+
+        function updateSortButtonState() {
+            const btn = document.getElementById('btn-sort-filter');
+            if (!btn) return;
+            const active = globalPriorityFilter !== 'all';
+            btn.style.color = active ? 'var(--primary)' : '#ddd';
+            btn.style.borderColor = active ? 'rgba(187, 134, 252, 0.5)' : 'rgba(255, 255, 255, 0.2)';
+            btn.title = active
+                ? `Showing ${globalPriorityFilter === 'priority' ? 'priority (✦) words' : 'non-priority words'}`
+                : "Filter words shown";
+        }
+
+        function buildSortMenu() {
+            if (document.getElementById('sort-menu')) return;
+            const menu = document.createElement('div');
+            menu.id = 'sort-menu';
+            menu.className = 'sort-menu';
+            menu.innerHTML = `
+                <div class="sort-menu-header">Show:</div>
+                <button class="sort-menu-item" data-filter="all">All</button>
+                <button class="sort-menu-item" data-filter="priority"><span class="priority-marker marker-priority"></span></button>
+                <button class="sort-menu-item" data-filter="non-priority">No <span class="priority-marker marker-priority"></span></button>
+            `;
+            menu.querySelectorAll('.sort-menu-item').forEach(item => {
+                item.onclick = () => { setPriorityFilter(item.dataset.filter); closeSortMenu(); };
+            });
+            document.body.appendChild(menu);
+        }
+
+        function updateSortMenuActive() {
+            const menu = document.getElementById('sort-menu');
+            if (!menu) return;
+            menu.querySelectorAll('.sort-menu-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.filter === globalPriorityFilter);
+            });
+        }
+
+        function positionSortMenu() {
+            const btn = document.getElementById('btn-sort-filter');
+            const menu = document.getElementById('sort-menu');
+            if (!btn || !menu) return;
+            const rect = btn.getBoundingClientRect();
+            menu.style.top = (rect.bottom + 6) + 'px';
+            menu.style.right = Math.max(10, window.innerWidth - rect.right) + 'px';
+        }
+
+        function toggleSortMenu(e) {
+            if (e) e.stopPropagation();
+            buildSortMenu();
+            const menu = document.getElementById('sort-menu');
+            if (menu.style.display === 'block') { closeSortMenu(); return; }
+            updateSortMenuActive();
+            positionSortMenu();
+            menu.style.display = 'block';
+            // Defer so this same click doesn't immediately trigger the outside-close handler
+            setTimeout(() => {
+                document.addEventListener('click', outsideSortClose);
+                document.addEventListener('keydown', escSortClose);
+            }, 0);
+        }
+
+        function closeSortMenu() {
+            const menu = document.getElementById('sort-menu');
+            if (menu) menu.style.display = 'none';
+            document.removeEventListener('click', outsideSortClose);
+            document.removeEventListener('keydown', escSortClose);
+        }
+
+        function outsideSortClose(e) {
+            const menu = document.getElementById('sort-menu');
+            const btn = document.getElementById('btn-sort-filter');
+            if (menu && !menu.contains(e.target) && e.target !== btn) closeSortMenu();
+        }
+
+        function escSortClose(e) {
+            if (e.key === 'Escape') closeSortMenu();
+        }
+
         function toggleAllSentences() {
             globalShowAllSentences = !globalShowAllSentences;
             const btn = document.getElementById('btn-toggle-sentences');
@@ -1902,6 +2076,15 @@
             const audioText = (c1 || word).replace(/'/g, "\\'");
             const hideAudio = (typeof globalLogic !== 'undefined' && globalLogic.hide_audio_button);
 
+            // Priority classification (drives the ✦ marker AND the "Show" filter)
+            const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
+            const pHigh = parseInt(data["Count (High)"]) || 0;
+            const pLow = parseInt(data["Count (Low)"]) || 0;
+            const pTotal = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
+            const isLopsided = pTotal > 0 && (pHigh / pTotal) >= pm.lopsided_threshold;
+            const isPriority = !isLopsided && pTotal >= pm.priority_min && ((pHigh + pLow) / pTotal) >= pm.priority_threshold;
+            if (isPriority) el.classList.add('is-priority');
+
             // Standard Card: Base HTML
             el.innerHTML = `
                 <div class="card-header">
@@ -1919,19 +2102,7 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        ${(() => {
-                    const pm = (typeof globalLogic !== 'undefined' && globalLogic.priority_markers) ? globalLogic.priority_markers : { priority_threshold: 0.5, priority_min: 3, lopsided_threshold: 0.8 };
-                    const high = parseInt(data["Count (High)"]) || 0;
-                    const low = parseInt(data["Count (Low)"]) || 0;
-                    const total = parseInt(data["Occurrences (Global)"] !== undefined ? data["Occurrences (Global)"] : (data.Occurrences !== undefined ? data.Occurrences : 0)) || 0;
-                    let html = '';
-                    if (total > 0 && (high / total) >= pm.lopsided_threshold) {
-                        html += `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>`;
-                    } else if (total >= pm.priority_min && ((high + low) / total) >= pm.priority_threshold) {
-                        html += `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>`;
-                    }
-                    return html;
-                })()}
+                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>

@@ -1073,7 +1073,9 @@
                 <b>Left</b> : Previous Word<br>
                 <b>Up / Down</b> : Toggle Sentences<br>
                 <b>v</b> : Play Context Audio<br>
-                <b>z</b> : Ignore Word
+                <b>z</b> : Ignore Word<br>
+                <b>c</b> : Mark File Complete<br>
+                <b>s</b> : Cycle Show Filter
             </div>
         </div>
     </div>
@@ -1995,6 +1997,13 @@
             if (e.key === 'Escape') closeSortMenu();
         }
 
+        // Cycle the "Show" filter: All -> Priority -> Non-priority -> (loop) All
+        function cyclePriorityFilter() {
+            const order = ['all', 'priority', 'non-priority'];
+            const idx = order.indexOf(globalPriorityFilter);
+            setPriorityFilter(order[(idx + 1) % order.length]);
+        }
+
         function toggleAllSentences() {
             globalShowAllSentences = !globalShowAllSentences;
             const btn = document.getElementById('btn-toggle-sentences');
@@ -2295,11 +2304,27 @@
             const isDown = e.code === 'ArrowDown';
             const isIgnore = e.key === 'z' || e.key === 'Z';
             const isAudio = e.key === 'v' || e.key === 'V';
+            const isComplete = e.key === 'c' || e.key === 'C';
+            const isSort = e.key === 's' || e.key === 'S';
 
-            if (!isNext && !isPrev && !isUp && !isDown && !isAudio) return;
+            if (!isNext && !isPrev && !isUp && !isDown && !isAudio && !isComplete && !isSort) return;
 
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // File-level shortcuts — handled directly, no card scanning needed (O(1))
+            if (isComplete) {
+                e.preventDefault();
+                // Only meaningful on the Progressive view (where a file is open)
+                const progView = document.getElementById('view-progressive');
+                if (progView && progView.classList.contains('active')) toggleCurrentFileComplete();
+                return;
+            }
+            if (isSort) {
+                e.preventDefault();
+                cyclePriorityFilter();
+                return;
+            }
 
 
             // Prevent default scrolling/caret movement for all navigation keys

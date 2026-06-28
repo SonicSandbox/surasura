@@ -73,6 +73,13 @@ class TestSortFilterFeature(unittest.TestCase):
         self.assertIn("High Leverage", content, "Priority tooltip text missing")
         self.assertIn("Lopsided", content, "Lopsided tooltip text missing")
 
+    def test_sort_hotkey_wired(self):
+        """The 's' hotkey must cycle the filter (via the keydown handler) and appear in the hint."""
+        content, _ = self._generate_and_read(theme="default")
+        self.assertIn("isSort", content, "'s' hotkey flag missing from keydown handler")
+        self.assertIn("cyclePriorityFilter", content, "'s' hotkey cycle helper missing")
+        self.assertIn("Cycle Show Filter", content, "'s' hotkey missing from the on-page hint")
+
     def test_filter_present_across_themes(self):
         """The filter lives in the shared web_app template — present for non-Zen themes."""
         for theme in ("default", "world-class", "modern-light"):

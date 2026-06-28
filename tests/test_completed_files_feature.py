@@ -81,6 +81,13 @@ class TestCompletedFilesFeature(unittest.TestCase):
         self.assertIn("let globalLanguage =", content,
                       "globalLanguage injection missing — completed storage key would mis-key")
 
+    def test_complete_hotkey_wired(self):
+        """The 'c' hotkey must be wired into the keydown handler and listed in the on-page hint."""
+        content, _ = self._generate_and_read(theme="default")
+        self.assertIn("isComplete", content, "'c' hotkey flag missing from keydown handler")
+        self.assertIn("toggleCurrentFileComplete", content, "'c' hotkey action missing")
+        self.assertIn("Mark File Complete", content, "'c' hotkey missing from the on-page hint")
+
     def test_feature_present_across_themes(self):
         """The feature lives in the shared web_app template, so it must appear for non-Zen themes."""
         for theme in ("default", "world-class", "modern-light"):

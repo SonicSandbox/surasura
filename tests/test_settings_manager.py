@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import unittest
 import json
 import shutil
+import types
 from unittest.mock import patch, MagicMock
 from app import settings_manager
 
@@ -34,9 +35,26 @@ class TestSettingsManager(unittest.TestCase):
         self.assertNotEqual(defaults["target_language"], settings_manager.DEFAULT_SETTINGS["target_language"])
 
     def test_load_settings_missing_file(self):
-        # Should return defaults if file doesn't exist
+        # Should return defaults if file doesn't exist, plus any present optional-module defaults
         settings = settings_manager.load_settings()
-        self.assertEqual(settings, settings_manager.DEFAULT_SETTINGS)
+        expected = settings_manager.get_default_settings()
+        expected.update(settings_manager._optional_module_defaults())
+        self.assertEqual(settings, expected)
+
+    def test_optional_module_defaults_merges_declared_settings(self):
+        # Generic mechanism (module-agnostic): any importable module exposing SETTINGS_DEFAULTS
+        # contributes its keys. Uses a dummy module so the test doesn't depend on any real one.
+        fake = types.ModuleType("fake_optional_module")
+        fake.SETTINGS_DEFAULTS = {"fake_feature_enabled": True}
+        with patch.dict('sys.modules', {"fake_optional_module": fake}):
+            with patch.object(settings_manager, "_OPTIONAL_MODULE_NAMES", ["fake_optional_module"]):
+                merged = settings_manager._optional_module_defaults()
+        self.assertEqual(merged.get("fake_feature_enabled"), True)
+
+    def test_optional_module_defaults_ignores_absent_modules(self):
+        # A declared optional module that isn't importable contributes nothing (and never crashes).
+        with patch.object(settings_manager, "_OPTIONAL_MODULE_NAMES", ["modules.definitely_not_a_real_module"]):
+            self.assertEqual(settings_manager._optional_module_defaults(), {})
 
     def test_save_and_load_settings(self):
         custom_settings = settings_manager.get_default_settings()

@@ -1216,7 +1216,48 @@ def main():
         print(f"Saved raw word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
         print("Saved raw word stats.")
-    
+
+    # --- Additive (optional): full library frequency map for the YouTube Preview feature ---
+    # Gated behind the 'enable_youtube_preview' toggle so standard runs are completely
+    # unaffected (no extra file, no extra time). This reuses the SAME in-memory word_stats
+    # data — including the sub-threshold words the other outputs drop — written as a compact
+    # counts-only map. It is a separate file (library_frequency.json); it never modifies
+    # word_stats.json or any existing output, and is wrapped so a failure can't break a run.
+    try:
+        _preview_enabled = settings_manager.load_settings().get("enable_youtube_preview", False)
+    except Exception:
+        _preview_enabled = False
+    if _preview_enabled:
+        try:
+            OUTPUT_LIB_FREQ = os.path.join(RESULTS_DIR, "library_frequency.json")
+            _weights = LOGIC.get("weights", {})
+            _lib_words = {}
+            for (lemma, reading), data in word_stats.items():
+                _lib_words[f"{lemma}|{reading}"] = [
+                    data.get("total_count", 0), data.get("high_count", 0),
+                    data.get("low_count", 0), data.get("goal_count", 0),
+                ]
+            _lib_payload = {
+                "settings": {
+                    "min_freq": MIN_FREQ,
+                    "weights": {
+                        "high": _weights.get("high", 10),
+                        "low": _weights.get("low", 5),
+                        "goal": _weights.get("goal", 2),
+                    },
+                },
+                "words": _lib_words,
+            }
+            with open(OUTPUT_LIB_FREQ, 'w', encoding='utf-8') as f:
+                json.dump(_lib_payload, f, ensure_ascii=False)
+            try:
+                print(f"Saved library frequency map to {OUTPUT_LIB_FREQ} ({len(_lib_words)} words)")
+            except UnicodeEncodeError:
+                print("Saved library frequency map.")
+        except Exception as e:
+            # Never let the optional preview cache interfere with a normal run.
+            print(f"Warning: Could not write library frequency map: {e}")
+
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
     progressive_rows = []

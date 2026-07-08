@@ -149,6 +149,9 @@ class MasterDashboardApp:
         self.var_open_count = tk.IntVar(value=0)
         self.var_hide_satoru = tk.BooleanVar(value=False)
         self.var_hide_audio = tk.BooleanVar(value=False)
+        self.var_enable_youtube = tk.BooleanVar(value=False)
+        self.youtube_risk_acknowledged = False
+        self.var_enable_preview = tk.BooleanVar(value=False)
         self._lock_ui_updates = False
         
         # Initialize status var early to satisfy linter
@@ -157,6 +160,8 @@ class MasterDashboardApp:
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
         self.btn_satori: Optional[ttk.Button] = None
+        self.btn_youtube: Optional[ttk.Button] = None
+        self.btn_preview: Optional[ttk.Button] = None
         self.lang_frame: Optional[ttk.Frame] = None
         self.lang_options_frame: Optional[ttk.Frame] = None
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
@@ -223,6 +228,10 @@ class MasterDashboardApp:
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
         self.var_hide_audio.trace_add("write", self.save_settings)
         self.var_hide_satoru.trace_add("write", lambda n, i, m: self.update_satori_visibility())
+        self.var_enable_youtube.trace_add("write", self.save_settings)
+        self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
+        self.var_enable_preview.trace_add("write", self.save_settings)
+        self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
         
         # Start update check in background
@@ -332,6 +341,9 @@ class MasterDashboardApp:
         
         # Specific Button Styles
         self.style.configure("Action.TButton", width=24)
+        # YouTube button: small, red play glyph that stays red on hover/press
+        self.style.configure("Youtube.TButton", foreground="#ff0000")
+        self.style.map("Youtube.TButton", foreground=[('active', "#ff0000"), ('pressed', "#ff0000")])
 
     def update_strategy_ui(self):
         strategy = self.var_strategy.get()
@@ -449,6 +461,12 @@ class MasterDashboardApp:
         btn_epub.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
         ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
 
+        # YouTube Transcripts (optional module): small red play button, right of Extract / Splice.
+        # Packed/unpacked by update_youtube_visibility() based on the settings toggle + module presence.
+        self.btn_youtube = ttk.Button(lib_frame, text="▶", style="Youtube.TButton", width=3,
+                                      command=self.open_youtube_downloader)
+        ToolTip(self.btn_youtube, "YouTube Transcripts — download captions into your Processed folder.")
+
         # 3. Analyzer Tools
         analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="10")
         analyze_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
@@ -488,11 +506,17 @@ class MasterDashboardApp:
         # Initialize UI state
         self.update_strategy_ui()
 
-        # Run Analyzer Button
-        btn_analyze = ttk.Button(analyze_frame, text="Generate Journey", style="Action.TButton",
+        # Run Analyzer Button (+ optional small red YouTube Preview button to its right)
+        analyze_row = ttk.Frame(analyze_frame)
+        analyze_row.pack(fill=tk.X)
+        btn_analyze = ttk.Button(analyze_row, text="Generate Journey", style="Action.TButton",
                                  command=self.run_analyzer)
-        btn_analyze.pack(anchor=tk.W, fill=tk.X)
+        btn_analyze.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ToolTip(btn_analyze, "Analyze text files and generate readability report. Auto-launches static page.")
+
+        self.btn_preview = ttk.Button(analyze_row, text="▷", style="Youtube.TButton", width=3,
+                                      command=self.open_youtube_preview)
+        ToolTip(self.btn_preview, "Preview a YouTube video/playlist against your library (quick look, no full re-run).")
 
         # Spinner (Initially hidden)
         self.spinner = ttk.Progressbar(analyze_frame, mode='indeterminate', style="TProgressbar")
@@ -669,6 +693,21 @@ class MasterDashboardApp:
         ttk.Entry(wpd_entry_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
 
+        # YouTube Transcripts toggles — only shown when the optional module is present locally.
+        try:
+            import modules.youtube_downloader  # noqa: F401
+            _yt_module_available = True
+        except Exception:
+            _yt_module_available = False
+        if _yt_module_available:
+            chk_youtube = ttk.Checkbutton(group_ui, text="Enable YouTube Transcripts", variable=self.var_enable_youtube)
+            chk_youtube.pack(anchor=tk.W, pady=(10, 0))
+            ToolTip(chk_youtube, "Show a YouTube transcript downloader in Library Content. Also controls whether it is bundled when you build the app.")
+
+            chk_preview = ttk.Checkbutton(group_ui, text="Enable YouTube Preview", variable=self.var_enable_preview)
+            chk_preview.pack(anchor=tk.W, pady=(4, 0))
+            ToolTip(chk_preview, "Show a 'Preview against library' button next to Generate Journey, and cache a library frequency map on runs so the preview is fast.")
+
         # 3. 🧠 Sentences & Logic
         group_logic = ttk.LabelFrame(grid_frame, text=" 🧠 Sentences & Logic", padding="10")
         group_logic.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=5)
@@ -826,12 +865,65 @@ class MasterDashboardApp:
         
         if should_show:
             # Re-pack in the credit box
-            # This is slightly tricky if other elements are added later, 
+            # This is slightly tricky if other elements are added later,
             # but usually it's at the end.
             if not self.btn_satori.winfo_ismapped():
                 self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
         else:
             self.btn_satori.pack_forget()
+
+    def open_youtube_downloader(self):
+        # Orchestration lives in the module; the core only needs a thin, lazy entry point.
+        try:
+            from modules.youtube_downloader import open_downloader
+        except (ImportError, ModuleNotFoundError):
+            return
+        open_downloader(self)
+
+    def update_youtube_visibility(self):
+        """Shows the YouTube button only if enabled in settings AND the module is available."""
+        if not hasattr(self, 'btn_youtube') or self.btn_youtube is None:
+            return
+
+        should_show = False
+        if self.var_enable_youtube.get():
+            try:
+                import modules.youtube_downloader  # noqa: F401
+                should_show = True
+            except (ImportError, ModuleNotFoundError):
+                # Module absent (open-source build or excluded by the conditional build)
+                should_show = False
+
+        if should_show:
+            if not self.btn_youtube.winfo_ismapped():
+                self.btn_youtube.pack(side=tk.LEFT, padx=(0, 0))
+        else:
+            self.btn_youtube.pack_forget()
+
+    def open_youtube_preview(self):
+        # Orchestration (cache check, analysis run, polling, dialog) lives in the module.
+        try:
+            from modules.youtube_downloader import open_preview
+        except (ImportError, ModuleNotFoundError):
+            return
+        open_preview(self)
+
+    def update_preview_visibility(self):
+        """Shows the Preview button only if enabled in settings AND the module is available."""
+        if not hasattr(self, 'btn_preview') or self.btn_preview is None:
+            return
+        should_show = False
+        if self.var_enable_preview.get():
+            try:
+                import modules.youtube_downloader.preview  # noqa: F401
+                should_show = True
+            except (ImportError, ModuleNotFoundError):
+                should_show = False
+        if should_show:
+            if not self.btn_preview.winfo_ismapped():
+                self.btn_preview.pack(side=tk.LEFT, padx=(5, 0))
+        else:
+            self.btn_preview.pack_forget()
 
     def load_settings(self):
         try:
@@ -866,6 +958,13 @@ class MasterDashboardApp:
             self.var_open_count.set(settings.get("open_count", 0))
             self.var_hide_satoru.set(settings.get("hide_satoru", False))
             self.update_satori_visibility()
+
+            self.var_enable_youtube.set(settings.get("enable_youtube_transcripts", False))
+            self.youtube_risk_acknowledged = settings.get("youtube_risk_acknowledged", False)
+            self.update_youtube_visibility()
+
+            self.var_enable_preview.set(settings.get("enable_youtube_preview", False))
+            self.update_preview_visibility()
 
             # Load Logic Settings
             self.logic_settings = settings.get("logic", {})
@@ -920,7 +1019,17 @@ class MasterDashboardApp:
                     }
                 }
             }
-            
+
+            # Persist YouTube settings only when the optional module is present, so a build
+            # without it never writes those keys back into settings.json.
+            try:
+                import modules.youtube_downloader  # noqa: F401
+                settings["enable_youtube_transcripts"] = self.var_enable_youtube.get()
+                settings["enable_youtube_preview"] = self.var_enable_preview.get()
+                settings["youtube_risk_acknowledged"] = getattr(self, "youtube_risk_acknowledged", False)
+            except (ImportError, ModuleNotFoundError):
+                pass
+
             settings_manager.save_settings(settings)
             
             # Update UI state (enable/disable language specific options)

@@ -36,6 +36,7 @@ print(f"Building {BUILD_NAME}...")
 import json
 settings_path = os.path.join(project_root, 'settings.json')
 hide_satoru = False
+enable_youtube = False
 # Default excludes
 excluded_modules = ['pandas.tests']
 
@@ -44,12 +45,20 @@ if os.path.exists(settings_path):
         with open(settings_path, 'r', encoding='utf-8') as f:
             settings = json.load(f)
             hide_satoru = settings.get("hide_satoru", False)
+            enable_youtube = settings.get("enable_youtube_transcripts", False)
+            enable_preview = settings.get("enable_youtube_preview", False)
     except Exception as e:
         print(f"Warning: Could not read settings.json for build configuration: {e}")
 
 if hide_satoru:
     print("BUILD CONFIG: Excluding Immersion Architect module (hide_satoru=True)")
     excluded_modules.append('modules.immersion_architect')
+
+# YouTube Downloader is opt-in: bundled when EITHER the transcript downloader or the
+# preview feature is enabled at build time (both live in modules.youtube_downloader).
+if not (enable_youtube or enable_preview):
+    print("BUILD CONFIG: Excluding YouTube Downloader module (transcripts & preview both off)")
+    excluded_modules.append('modules.youtube_downloader')
 
 
 # -----------------------------------------------------------------------------

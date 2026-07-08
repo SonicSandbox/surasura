@@ -15,11 +15,64 @@ def get_version():
                 return line.split(delim)[1]
     return "0.0"
 
-def build(zip_output=False):
+# Optional modules and the settings that cause them to be bundled (mirrors packaging/Surasura.spec).
+# When a module will be included in the build, its own test suite must pass first.
+def _included_module_test_dirs(settings):
+    dirs = []
+    # Immersion Architect: bundled unless explicitly hidden.
+    if not settings.get("hide_satoru", False):
+        d = os.path.join("modules", "immersion_architect", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # YouTube Downloader: bundled when either feature is enabled.
+    if settings.get("enable_youtube_transcripts", False) or settings.get("enable_youtube_preview", False):
+        d = os.path.join("modules", "youtube_downloader", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    return dirs
+
+
+def run_pre_build_tests():
+    """Run the core suite plus the suite of every module that will be bundled.
+
+    Everything shipped must be testable before it builds. Returns True only if all pass.
+    """
+    settings = {}
+    try:
+        with open("settings.json", "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception as e:
+        print(f"Warning: could not read settings.json for test selection: {e}")
+
+    suites = ["tests"] + _included_module_test_dirs(settings)
+    print(f"Running pre-build tests for: {', '.join(suites)}")
+
+    failed = []
+    for suite in suites:
+        print(f"\n--- pytest {suite} ---")
+        result = subprocess.run([sys.executable, "-m", "pytest", suite, "-q"])
+        if result.returncode != 0:
+            failed.append(suite)
+
+    if failed:
+        print(f"\nPre-build tests FAILED in: {', '.join(failed)}")
+        return False
+    print("\nAll pre-build tests passed.")
+    return True
+
+
+def build(zip_output=False, skip_tests=False):
     version = get_version()
     build_name = f"Surasura_v{version}"
     print(f"Building Readability Analyzer {build_name}...")
-    
+
+    # Gate: everything being bundled must be testable first.
+    if skip_tests:
+        print("WARNING: --skip-tests set; skipping the pre-build test gate.")
+    elif not run_pre_build_tests():
+        print("Build aborted: fix failing tests first (or pass --skip-tests to override).")
+        return
+
     # Clean previous build
     if os.path.exists("dist"):
         try:
@@ -218,5 +271,6 @@ def build(zip_output=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build and package Surasura.")
     parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")
+    parser.add_argument("--skip-tests", action="store_true", help="Skip the pre-build test gate (not recommended).")
     args = parser.parse_known_args()[0]
-    build(zip_output=args.zip)
+    build(zip_output=args.zip, skip_tests=args.skip_tests)

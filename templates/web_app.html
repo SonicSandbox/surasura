@@ -172,6 +172,20 @@
             border-left-color: var(--primary);
         }
 
+        /* Default (Dark) theme only (no theme-* class on body): the active purple #6200ee is
+           too dark to read on the dark background, so lighten the selected text + accent in the
+           sidebar and the main tabs. Other themes override these rules with their own colors. */
+        body:not([class*="theme-"]) .file-tab.active {
+            color: #bb86fc;
+            border-left-color: #bb86fc;
+            background-color: rgba(187, 134, 252, 0.12);
+        }
+
+        body:not([class*="theme-"]) .main-tab-btn.active {
+            color: #bb86fc;
+            border-bottom-color: #bb86fc;
+        }
+
         .word-list-container {
             flex: 1;
             overflow-y: auto;
@@ -195,6 +209,15 @@
         .card.ignored {
             opacity: 0.5;
             filter: grayscale(100%);
+        }
+
+        /* Low-leverage words (Score < 10): recolor the sentence's EXISTING left line red,
+           instead of adding a card-level stripe near the word. We only change the border
+           color, so each theme keeps its own line width/spacing and it stays in-theme.
+           (Themes that don't draw a context-box line still show it on the extra contexts.) */
+        .card.low-score .context-box,
+        .card.low-score .context-item {
+            border-left-color: #e05252;
         }
 
         .card-header {
@@ -1074,7 +1097,7 @@
                 <b>Up / Down</b> : Toggle Sentences<br>
                 <b>v</b> : Play Context Audio<br>
                 <b>z</b> : Ignore Word<br>
-                <b>c</b> : Mark File Complete<br>
+                <b>w</b> : Mark File Complete<br>
                 <b>s</b> : Cycle Show Filter
             </div>
         </div>
@@ -2094,6 +2117,10 @@
             const isPriority = !isLopsided && pTotal >= pm.priority_min && ((pHigh + pLow) / pTotal) >= pm.priority_threshold;
             if (isPriority) el.classList.add('is-priority');
 
+            // Low-leverage words (Score < 10) get a subtle reddish tint (see .card.low-score).
+            const _scoreVal = parseFloat(data.Score);
+            if (!isNaN(_scoreVal) && _scoreVal < 10) el.classList.add('low-score');
+
             // Standard Card: Base HTML
             el.innerHTML = `
                 <div class="card-header">
@@ -2304,7 +2331,7 @@
             const isDown = e.code === 'ArrowDown';
             const isIgnore = e.key === 'z' || e.key === 'Z';
             const isAudio = e.key === 'v' || e.key === 'V';
-            const isComplete = e.key === 'c' || e.key === 'C';
+            const isComplete = e.key === 'w' || e.key === 'W';
             const isSort = e.key === 's' || e.key === 'S';
 
             if (!isNext && !isPrev && !isUp && !isDown && !isAudio && !isComplete && !isSort) return;

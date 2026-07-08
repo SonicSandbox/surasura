@@ -65,5 +65,8 @@
         },
         "chunk_size": 50,
         "hide_audio_button": true
-    }
+    },
+    "enable_youtube_transcripts": true,
+    "enable_youtube_preview": false,
+    "youtube_risk_acknowledged": false
 }

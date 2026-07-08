@@ -1,6 +1,7 @@
 import json
 import os
 import copy
+import importlib
 from typing import Any, Dict
 from app.path_utils import get_user_file
 
@@ -68,11 +69,34 @@ DEFAULT_SETTINGS = {
     }
 }
 
+# Optional modules may each expose a SETTINGS_DEFAULTS dict. Their keys are merged into the
+# active settings only when the module is importable, keeping optional features fully "tacked
+# on": the core defaults (and the shipped settings.json) stay free of their keys, and a build
+# without the module never sees or persists them.
+_OPTIONAL_MODULE_NAMES = ["modules.youtube_downloader"]
+
+
+def _optional_module_defaults() -> Dict[str, Any]:
+    """Collect SETTINGS_DEFAULTS from any present optional modules."""
+    merged: Dict[str, Any] = {}
+    for name in _OPTIONAL_MODULE_NAMES:
+        try:
+            module = importlib.import_module(name)
+            defaults = getattr(module, "SETTINGS_DEFAULTS", None)
+            if isinstance(defaults, dict):
+                merged.update(defaults)
+        except Exception:
+            pass
+    return merged
+
+
 def load_settings() -> Dict[str, Any]:
-    """Loads settings from disk and merges with defaults."""
+    """Loads settings from disk and merges with defaults (plus any present optional modules)."""
     settings_path = get_user_file("settings.json")
     settings = copy.deepcopy(DEFAULT_SETTINGS)
-    
+    # Optional modules contribute their own defaults, but only when importable.
+    settings.update(_optional_module_defaults())
+
     if os.path.exists(settings_path):
         try:
             with open(settings_path, 'r', encoding='utf-8') as f:
@@ -102,7 +126,7 @@ def load_settings() -> Dict[str, Any]:
 
 def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
     """
-    Saves settings to disk. 
+    Saves settings to disk.
     If clean_for_build is True, or if the module is missing, 'hide_satoru' is stripped.
     """
     settings_path = get_user_file("settings.json")
@@ -126,7 +150,7 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
     # 3. Strip internal/locked variables if necessary
     if clean_for_build or not module_exists:
         to_save.pop("hide_satoru", None)
-            
+
     # 4. Write to disk
     try:
         with open(settings_path, 'w', encoding='utf-8') as f:

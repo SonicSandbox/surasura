@@ -878,7 +878,11 @@ def main():
                 found_files.append((path, label, weight))
 
     print(f"Final Count: Found {len(found_files)} files to process.")
-    
+
+    # Per-file (lemma, reading) counts captured during aggregation and reused by the
+    # progressive pass, so the whole library is tokenized once instead of twice.
+    file_token_cache = {}
+
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
         try:
@@ -889,11 +893,17 @@ def main():
         
         file_total_words = 0
         file_known_words = 0
-        
+        # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
+        # exactly (built in first-appearance order) for the progressive pass to reuse.
+        file_counter = Counter()
+
         for s_text, s_tokens in tokenizer.tokenize_sentences(text):
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
+                # Cache EVERY token (before the target-language filter below) so the cached
+                # multiset matches what tokenizer.tokenize() yields for the progressive pass.
+                file_counter[(lemma, reading)] += 1
                 # Skip tokens that contain no Target characters (e.g. SSA/ASS tags like {\an8},
                 # timestamps, markup, or other ASCII-only tokens). These should not count
                 # toward totals or be considered unknown words.
@@ -978,6 +988,7 @@ def main():
                 # Keep up to 30 promising candidates
                 entry["candidate_contexts"] = entry["candidate_contexts"][:30]
         
+        file_token_cache[file_path] = file_counter
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
@@ -1277,34 +1288,38 @@ def main():
     
     for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
-        text = extract_text(file_path, language)
-        tokens = tokenizer.tokenize(text)
-        
+        # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
+        # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
+        # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
+        file_counter = file_token_cache.get(file_path)
+        if file_counter is None:
+            file_counter = Counter((l, r) for (l, r, s) in tokenizer.tokenize(extract_text(file_path, language)))
+
         # 1. Calculate File Baselines
         file_total_tokens = 0
         file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
         file_current_start_count = 0      # Baseline + Learned in previous files
-        
+
         file_unknown_token_counts = Counter() # Count of each (lemma, reading) in THIS file
-        
-        for lemma, reading, surface in tokens:
-            file_total_tokens += 1
+
+        for (lemma, reading), count in file_counter.items():
+            file_total_tokens += count
             is_ignored = lemma in ignore_list
             is_single = skip_singles and len(lemma) == 1
-            
+
             # Check strictly against initial known list
             is_baseline = is_ignored or is_single or ((lemma, reading) in known_words_initial) or (lemma in known_lemmas_initial)
-            
+
             # Check against cumulative session known (includes previous files)
             is_session_known = is_ignored or is_single or ((lemma, reading) in session_known) or (lemma in session_lemmas)
-            
+
             if is_baseline:
-                file_baseline_known_count += 1
-            
+                file_baseline_known_count += count
+
             if is_session_known:
-                file_current_start_count += 1
+                file_current_start_count += count
             else:
-                file_unknown_token_counts[(lemma, reading)] += 1
+                file_unknown_token_counts[(lemma, reading)] += count
         
         # 2. Identify and prepare unknown words
         file_new_words = set()

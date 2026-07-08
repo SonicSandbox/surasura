@@ -79,46 +79,57 @@ def get_telemetry_state():
             
     return {"uid": uid, "open_count": open_count}
 
-def _send_heartbeat_thread(status):
+def _send_heartbeat_thread(status, respect_optout=True):
     """
     Executes the network request in a background thread.
+
+    respect_optout=True (normal heartbeats): if the user disabled telemetry, send nothing.
+    respect_optout=False (forced events, e.g. an auto-update): the event is still sent, but
+    when telemetry is OFF it carries a throwaway gibberish id instead of the persistent one —
+    so the ping can't be tied back to the user and their stored id/open_count are untouched.
     """
     if not TELEMETRY_URL:
         return
-        
+
     if TELEMETRY_ENV == "dev":
         return
 
     language = "ja" # Default
-    
+    telemetry_on = True
+
     # Check Opt-Out Setting
     try:
         settings = settings_manager.load_settings()
-        
-        if not settings.get("telemetry_enabled", True):
-            return
-            
+        telemetry_on = settings.get("telemetry_enabled", True)
         language = settings.get("target_language", "ja")
-                
     except Exception:
         pass # proceed if settings fail to load (default is enabled)
 
+    # A normal heartbeat honors the opt-out completely. A forced event ignores it but is
+    # anonymized below.
+    if respect_optout and not telemetry_on:
+        return
+
     try:
-        state = get_telemetry_state()
-        uid = state["uid"]
-        open_count = state["open_count"]
-        platform = sys.platform
-        
+        if telemetry_on:
+            state = get_telemetry_state()
+            uid = state["uid"]
+            open_count = state["open_count"]
+        else:
+            # Opted out but this is a forced event: throwaway id, no persistent state touched.
+            uid = "anon-" + uuid.uuid4().hex
+            open_count = 0
+
         params = {
             "uid": uid,
             "version": __version__,
-            "platform": platform,
+            "platform": sys.platform,
             "env": TELEMETRY_ENV,
             "lang": language,
             "status": status,
             "open_count": open_count
         }
-        
+
         requests.get(TELEMETRY_URL, params=params, timeout=2)
     except Exception:
         # Fail silently
@@ -131,4 +142,20 @@ def init(status='Multilingual-beta'):
     # Only run if URL is configured
     if TELEMETRY_URL and TELEMETRY_ENV != "dev":
         thread = threading.Thread(target=_send_heartbeat_thread, args=(status,), daemon=True)
+        thread.start()
+
+
+def send_update_event(from_version):
+    """Record a successful in-place auto-update, from->to, in the heartbeat's status field.
+
+    Sent regardless of the telemetry opt-out (we always want to know an update landed), but
+    when the user has telemetry OFF it goes out anonymized — a throwaway id, no persistent
+    state — via respect_optout=False. Still honors the dev-env skip and fails silently. The
+    'to' version is the running __version__ (the code is already the new build when this fires).
+    """
+    if TELEMETRY_URL and TELEMETRY_ENV != "dev":
+        status = f"Updated {from_version} -> {__version__}"
+        thread = threading.Thread(
+            target=_send_heartbeat_thread, args=(status,),
+            kwargs={"respect_optout": False}, daemon=True)
         thread.start()

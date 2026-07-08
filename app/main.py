@@ -9,8 +9,9 @@ import webbrowser
 import json
 from typing import Optional
 from app import __version__
-from app.update_checker import check_for_updates
+from app.update_checker import get_update_info, classify_update
 from app import settings_manager
+from app import updater
 
 # Windows Taskbar Icon Fix (Set AppUserModelID)
 if sys.platform == "win32":
@@ -151,8 +152,15 @@ class MasterDashboardApp:
         self.var_enable_youtube = tk.BooleanVar(value=False)
         self.youtube_risk_acknowledged = False
         self.var_enable_preview = tk.BooleanVar(value=False)
+        self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self._lock_ui_updates = False
-        
+
+        # Update state (populated by the background check; consumed by the footer indicator)
+        self._update_info = None
+        self._update_class = "NONE"
+        self.skipped_version = ""
+        self.update_label: Optional[ttk.Label] = None
+
         # Initialize status var early to satisfy linter
         self.status_var = tk.StringVar(value="Ready")
         self.terminal: Optional[tk.Text] = None
@@ -229,8 +237,12 @@ class MasterDashboardApp:
         self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
         self.var_enable_preview.trace_add("write", self.save_settings)
         self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
+        self.var_auto_update.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
-        
+
+        # Reconcile the result of any update applied since we last ran (toast / manual-retry).
+        self.root.after(800, self.reconcile_update_result)
+
         # Start update check in background
         threading.Thread(target=self.check_updates_thread, daemon=True).start()
         
@@ -556,6 +568,11 @@ class MasterDashboardApp:
         # Status Bar
         status_bar = ttk.Label(footer_frame, textvariable=self.status_var, style="Footer.TLabel")
         status_bar.pack(side=tk.LEFT)
+
+        # Update indicator (bottom-left, hidden until the background check finds an update).
+        # Non-blocking: clicking it opens the update dialog; the app is never interrupted.
+        self.update_label = ttk.Label(footer_frame, text="", style="Link.TLabel", cursor="hand2")
+        self.update_label.bind("<Button-1>", lambda e: self.open_update_dialog())
         
         # Credit
         credit_box = ttk.Frame(footer_frame)
@@ -752,6 +769,10 @@ class MasterDashboardApp:
         chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
         ToolTip(chk_telemetry, "Send anonymous usage stats.")
 
+        chk_auto_update = ttk.Checkbutton(group_data, text="Automatic Updates", variable=self.var_auto_update)
+        chk_auto_update.pack(anchor=tk.W, pady=(0, 10))
+        ToolTip(chk_auto_update, "Offer one-click in-app updates for minor releases. Major updates always download manually.")
+
         btn_anki_sentences = ttk.Button(group_data, text="Generate Sentence List", command=self.generate_anki_sentence_warning, width=20)
         btn_anki_sentences.pack(fill=tk.X, pady=(0, 5))
         ToolTip(btn_anki_sentences, "Export an Anki-compatible CSV with sentences from your report.")
@@ -805,24 +826,194 @@ class MasterDashboardApp:
             messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
 
     def check_updates_thread(self):
-        """Background thread to check for updates"""
+        """Background thread: check GitHub, classify, and surface a non-blocking indicator.
+
+        The network is entirely optional here — any failure (offline, timeout, no release)
+        leaves the app running normally with no indicator. The decision to update is always
+        the user's; this only lights the footer.
+        """
         try:
-            update_info = check_for_updates(__version__)
-            if update_info:
-                new_tag, release_url = update_info
-                def _notify_update():
-                    self.github_link.config(
-                        text=f"Update Available! ({new_tag})",
-                        foreground=ACCENT_COLOR # Ensure it stands out if theme allows
-                    )
-                    # Tooltip update would be nice but requires ToolTip instance access
-                    # For now, just change text and link
-                    self.github_link.bind("<Button-1>", lambda e: webbrowser.open(release_url))
-                    self.status_var.set(f"Update Available: {new_tag}")
-                
-                self.gui_queue.put(_notify_update)
+            info = get_update_info()
+            cls = classify_update(__version__, info)
+            # Apply the kill-switch / anti-loop guard using saved settings (thread-safe: we
+            # read the plain dict, not tk vars). A disabled toggle, a missing updater.exe, or
+            # a version that already failed/was skipped downgrades an APP update to manual.
+            cur = getattr(self, "_current_settings", {}) or {}
+            cls = updater.effective_class(
+                cls, info,
+                skipped_version=cur.get("skipped_version", ""),
+                auto_enabled=cur.get("auto_update_enabled", True),
+                can_apply=updater.can_auto_apply(),
+            )
+            if cls == "NONE" or info is None:
+                return
+            self._update_info = info
+            self._update_class = cls
+            self.gui_queue.put(self._show_update_indicator)
         except Exception as e:
             print(f"Update check failed: {e}")
+
+    def _show_update_indicator(self):
+        """Light the bottom-left update indicator (and status bar). Never blocks."""
+        info = self._update_info
+        if not info:
+            return
+        self.update_label.config(text=f"⬆ Update available (v{info.version})", foreground=ACCENT_COLOR)
+        if not self.update_label.winfo_ismapped():
+            self.update_label.pack(side=tk.LEFT, padx=(12, 0))
+        self.status_var.set(f"Update available: v{info.version}")
+        # A critical release escalates once to an opened dialog; the user still chooses.
+        if getattr(info, "critical", False):
+            self.open_update_dialog()
+
+    def open_update_dialog(self):
+        """Small themed dialog offering the update. Buttons depend on the update class."""
+        info = self._update_info
+        if not info:
+            return
+        cls = self._update_class
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Update Available")
+        dialog.geometry("440x260")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG_COLOR)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        wrapper = ttk.Frame(dialog, padding=20)
+        wrapper.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(wrapper, text=f"Surasura v{info.version} is available",
+                  font=('Segoe UI', 13, 'bold'), foreground=SECONDARY_COLOR,
+                  background=BG_COLOR).pack(anchor=tk.W, pady=(0, 8))
+
+        if cls == "APP":
+            body = ("This is a quick in-app update — it refreshes only the program code and "
+                    "report templates (a few hundred KB). Your words, data, settings, and file "
+                    "order are never touched. Surasura will briefly close and reopen.")
+        else:
+            body = ("This is a larger update and should be downloaded manually (it changes more "
+                    "than the app code). Your personal data stays where it is.")
+        ttk.Label(wrapper, text=body, wraplength=400, justify=tk.LEFT,
+                  foreground=TEXT_COLOR, background=BG_COLOR, font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 16))
+
+        btn_row = ttk.Frame(wrapper)
+        btn_row.pack(fill=tk.X)
+
+        if cls == "APP":
+            btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
+                                 command=lambda: self._do_auto_update(dialog))
+            btn_now.pack(side=tk.LEFT)
+            ToolTip(btn_now, "Download and install this update, then reopen Surasura.")
+            btn_skip = ttk.Button(btn_row, text="Skip this version",
+                                  command=lambda: self._skip_update(dialog))
+            btn_skip.pack(side=tk.LEFT, padx=(8, 0))
+            ToolTip(btn_skip, "Don't offer this version again.")
+        else:
+            btn_dl = ttk.Button(btn_row, text="Download", style="Action.TButton",
+                                command=lambda: (webbrowser.open(info.notes_url), dialog.destroy()))
+            btn_dl.pack(side=tk.LEFT)
+            ToolTip(btn_dl, "Open the download page in your browser.")
+
+        ttk.Button(btn_row, text="Later", command=dialog.destroy).pack(side=tk.RIGHT)
+
+    def _skip_update(self, dialog):
+        """Remember this version so it is never auto-offered again, and hide the indicator."""
+        info = self._update_info
+        if info:
+            self.skipped_version = info.version
+            self.save_settings()
+        if self.update_label:
+            self.update_label.pack_forget()
+        self.status_var.set("Ready")
+        dialog.destroy()
+
+    def _do_auto_update(self, dialog):
+        """Download+verify the app package on a worker thread, then arm+restart on the UI thread."""
+        dialog.destroy()
+        info = self._update_info
+        if not info:
+            return
+        if not updater.can_auto_apply():
+            # No bundled updater.exe (e.g. running from source) — fall back to manual.
+            webbrowser.open(info.notes_url)
+            return
+
+        self.status_var.set("Downloading update…")
+
+        def worker():
+            try:
+                marker = updater.prepare_update(info)
+            except Exception as e:
+                self.gui_queue.put(lambda: messagebox.showerror(
+                    "Update",
+                    f"Couldn't download the update:\n{e}\n\n"
+                    "You can try again later, or update manually from the releases page."))
+                self.gui_queue.put(lambda: self.status_var.set("Ready"))
+                return
+            # Arming + closing the app must happen on the main (UI) thread.
+            self.gui_queue.put(lambda: self._apply_and_restart(marker))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_and_restart(self, marker):
+        """Launch the detached helper, then close the app so it can swap files."""
+        try:
+            updater.launch_helper(marker)
+        except Exception as e:
+            messagebox.showerror("Update", f"Couldn't start the updater:\n{e}")
+            self.status_var.set("Ready")
+            return
+        # Terminate child processes and wait briefly so their file handles are released before
+        # the helper swaps program files (the helper also waits on our PID, but children are
+        # separate processes it doesn't track).
+        if self.active_processes:
+            for proc in self.active_processes:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                except Exception:
+                    pass
+            for proc in self.active_processes:
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+        self.root.destroy()
+
+    def reconcile_update_result(self):
+        """On startup, surface the outcome of any update applied since last run."""
+        try:
+            res = updater.consume_result()
+        except Exception:
+            res = None
+        if not res:
+            return
+
+        if res.get("status") == "success":
+            self.status_var.set(f"Updated to v{__version__} ✓")
+            # Fire the from->to telemetry event (reuses the opt-out/env-aware heartbeat).
+            try:
+                from app import telemetry
+                telemetry.send_update_event(res.get("from") or res.get("to") or "")
+            except Exception:
+                pass
+        else:
+            # Failed / interrupted: remember the version so we never auto-retry it, and offer
+            # the manual path. This is the loop-breaker.
+            ver = res.get("to") or ""
+            if ver:
+                self.skipped_version = ver
+                self.save_settings()
+            reason = res.get("reason", "")
+            detail = f" ({reason})" if reason else ""
+            if messagebox.askyesno(
+                "Update",
+                f"The automatic update didn't finish{detail}.\n\n"
+                "Open the download page to update manually?"):
+                webbrowser.open("https://github.com/SonicSandbox/surasura/releases/latest")
 
     def log_to_terminal(self, message):
         """Appends text to the terminal widget safely via queue"""
@@ -954,6 +1145,9 @@ class MasterDashboardApp:
             self.var_enable_preview.set(settings.get("enable_youtube_preview", False))
             self.update_preview_visibility()
 
+            self.var_auto_update.set(settings.get("auto_update_enabled", True))
+            self.skipped_version = settings.get("skipped_version", "")
+
             # Load Logic Settings
             self.logic_settings = settings.get("logic", {})
             self.var_inline_completed.set(self.logic_settings.get("inline_completed_files", False))
@@ -1006,6 +1200,8 @@ class MasterDashboardApp:
                 "onboarding_completed": self.onboarding_completed.get(),
                 "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
                 "hide_satoru": self.var_hide_satoru.get(),
+                "auto_update_enabled": self.var_auto_update.get(),
+                "skipped_version": getattr(self, "skipped_version", ""),
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),

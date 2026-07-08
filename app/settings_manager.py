@@ -25,6 +25,8 @@ DEFAULT_SETTINGS = {
     "hide_satoru": True,  # This is the "internal" default
     "only_i_plus_one": False,
     "add_graduated_words": True,
+    "auto_update_enabled": True,   # one-click in-place updates for minor releases
+    "skipped_version": "",          # a version the user skipped or that failed to auto-apply
     "logic": {
         "inline_completed_files": False,
         "weights": {

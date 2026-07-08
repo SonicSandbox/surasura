@@ -30,6 +30,13 @@ surasura_v*.zip
 # Pytest
 .pytest_cache/
 
+# Auto-update runtime artifacts (created next to the exe at runtime)
+.update_staging/
+.update_backup/
+pending_update.json
+last_update_result.json
+updater.exe
+
 
 docs/agent instructions
 docs/pre release notes

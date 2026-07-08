@@ -110,5 +110,70 @@ class TestTelemetry(unittest.TestCase):
             self.assertEqual(params['status'], "Onboard Complete")
             self.assertGreaterEqual(params['open_count'], 5)
 
+    @patch('app.telemetry.requests.get')
+    @patch('app.telemetry.path_utils.get_user_file')
+    @patch('app.telemetry.get_telemetry_state')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
+    def test_normal_heartbeat_suppressed_when_opted_out(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
+        """A regular heartbeat must send NOTHING when the user disabled telemetry."""
+        mock_get_state.return_value = {"uid": "real-uid", "open_count": 5}
+        mock_get_user_file.return_value = "dummy_settings.json"
+        mock_exists.return_value = True
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False})
+
+        with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
+             patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):
+            telemetry._send_heartbeat_thread('Multilingual-beta')
+
+        mock_get.assert_not_called()
+
+    @patch('app.telemetry.requests.get')
+    @patch('app.telemetry.path_utils.get_user_file')
+    @patch('app.telemetry.get_telemetry_state')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
+    def test_forced_update_event_sends_anonymized_when_opted_out(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
+        """A forced event (update) is STILL sent when opted out, but with a throwaway id and
+        without touching the user's persistent telemetry state."""
+        mock_get_state.return_value = {"uid": "real-uid", "open_count": 5}
+        mock_get_user_file.return_value = "dummy_settings.json"
+        mock_exists.return_value = True
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False})
+
+        with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
+             patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):
+            telemetry._send_heartbeat_thread('Updated 2.0 -> 2.1', respect_optout=False)
+
+        mock_get.assert_called_once()
+        params = mock_get.call_args.kwargs.get('params', {})
+        self.assertTrue(params['uid'].startswith('anon-'))   # gibberish, not the real id
+        self.assertNotEqual(params['uid'], "real-uid")
+        self.assertEqual(params['open_count'], 0)
+        self.assertEqual(params['status'], "Updated 2.0 -> 2.1")
+        # The persistent identity was never read.
+        mock_get_state.assert_not_called()
+
+    @patch('app.telemetry.requests.get')
+    @patch('app.telemetry.path_utils.get_user_file')
+    @patch('app.telemetry.get_telemetry_state')
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
+    def test_forced_update_event_uses_real_id_when_opted_in(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
+        """When telemetry is ON, the update event carries the normal persistent id."""
+        mock_get_state.return_value = {"uid": "real-uid", "open_count": 7}
+        mock_get_user_file.return_value = "dummy_settings.json"
+        mock_exists.return_value = True
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": True})
+
+        with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
+             patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):
+            telemetry._send_heartbeat_thread('Updated 2.0 -> 2.1', respect_optout=False)
+
+        mock_get.assert_called_once()
+        params = mock_get.call_args.kwargs.get('params', {})
+        self.assertEqual(params['uid'], "real-uid")
+
+
 if __name__ == '__main__':
     unittest.main()

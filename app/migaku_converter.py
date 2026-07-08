@@ -40,10 +40,13 @@ def convert_db_to_json(db_path, output_json=None, language=None):
 
         words = []
         for row in rows:
+            # Tolerate schema drift between Migaku export versions: a plain dict lets a missing
+            # column default to None instead of raising IndexError on row['<missing>'].
+            rowd = {k: row[k] for k in row.keys()}
             # Map Migaku internal status to simple KNOWN/UNKNOWN/IGNORED/LEARNING
-            status = row['knownStatus']
+            status = rowd.get('knownStatus')
             final_status = "UNKNOWN"
-            
+
             if status == "KNOWN":
                 final_status = "KNOWN"
             elif status == "LEARNING":
@@ -52,16 +55,16 @@ def convert_db_to_json(db_path, output_json=None, language=None):
                 final_status = "IGNORED"
 
             words.append({
-                'dictForm': row['dictForm'],
-                'secondary': row['secondary'],
-                'partOfSpeech': row['partOfSpeech'],
-                'language': row['language'],
+                'dictForm': rowd.get('dictForm'),
+                'secondary': rowd.get('secondary'),
+                'partOfSpeech': rowd.get('partOfSpeech'),
+                'language': rowd.get('language'),
                 'knownStatus': final_status,
-                'hasCard': row['hasCard'],
-                'tracked': row['tracked'],
-                'created': row['created'],
-                'mod': row['mod'],
-                'isModern': row['isModern']
+                'hasCard': rowd.get('hasCard'),
+                'tracked': rowd.get('tracked'),
+                'created': rowd.get('created'),
+                'mod': rowd.get('mod'),
+                'isModern': rowd.get('isModern')
             })
 
         print(f"Found {len(words)} words")
@@ -95,6 +98,9 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             'words': words
         }
 
+        out_dir = os.path.dirname(output_json)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, indent=2, ensure_ascii=False)
 

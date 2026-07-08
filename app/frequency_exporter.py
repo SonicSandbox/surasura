@@ -25,6 +25,20 @@ class FrequencyExporter:
         return parts[0] if parts else term
 
     @staticmethod
+    def _clean_term(term):
+        """Sanitize a Word cell and validate it for export.
+
+        Returns the cleaned term, or None when the cell is NaN/blank or sanitizes down to
+        nothing (e.g. a leading '-'). Callers skip None so a stray empty/NaN row can never
+        emit an invalid JSON `NaN` token, a "nan"/blank line, or an empty vocabulary entry.
+        """
+        cleaned = FrequencyExporter._sanitize_term(term)
+        if not isinstance(cleaned, str):
+            return None
+        cleaned = cleaned.strip()
+        return cleaned or None
+
+    @staticmethod
     def _is_pure_katakana(text):
         """
         Check if the text consists only of Katakana characters.
@@ -46,9 +60,10 @@ class FrequencyExporter:
         if 'Word' not in df.columns:
             raise ValueError("CSV is missing 'Word' column")
             
-        # Sanitize words
-        word_list = [FrequencyExporter._sanitize_term(w) for w in df['Word'].tolist()]
-        
+        # Sanitize words, dropping NaN/blank rows so the JSON array can't contain a bare
+        # `NaN` token (invalid JSON) or empty strings.
+        word_list = [t for t in (FrequencyExporter._clean_term(w) for w in df['Word'].tolist()) if t]
+
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(word_list, f, ensure_ascii=False, indent=2)
             
@@ -63,9 +78,9 @@ class FrequencyExporter:
         if 'Word' not in df.columns:
             raise ValueError("CSV is missing 'Word' column")
             
-        # Sanitize words
-        word_list = [FrequencyExporter._sanitize_term(w) for w in df['Word'].tolist()]
-        
+        # Sanitize words, dropping NaN/blank rows so we never write a stray "nan" or blank line.
+        word_list = [t for t in (FrequencyExporter._clean_term(w) for w in df['Word'].tolist()) if t]
+
         with open(save_path, 'w', encoding='utf-8') as f:
             for word in word_list:
                 f.write(f"{word}\n")
@@ -101,9 +116,12 @@ class FrequencyExporter:
         
         for idx, row in df.iterrows():
             rank = idx + 1
-            # Sanitize the term (Fix 1)
-            term = FrequencyExporter._sanitize_term(row['Word'])
-            
+            # Sanitize + validate the term; skip NaN/blank rows so we never emit an invalid
+            # entry. Rank stays tied to the original frequency position (skipped ranks just gap).
+            term = FrequencyExporter._clean_term(row['Word'])
+            if not term:
+                continue
+
             # Rule B (Simpler/Safer): 
             # Keep Katakana readings ONLY for words that are actually Katakana.
             # Otherwise, use integer format.
@@ -148,8 +166,10 @@ class FrequencyExporter:
         
         # Prepare output data
         output_data = []
-        for idx, (_, row) in enumerate(df.iterrows(), 1):
-            word = FrequencyExporter._sanitize_term(row.get('Word', ''))
+        for _, row in df.iterrows():
+            word = FrequencyExporter._clean_term(row.get('Word', ''))
+            if not word:
+                continue  # skip NaN/blank rows so they don't become empty Anki cards
             reading = row.get('Reading', '') if 'Reading' in available_cols else ''
             
             # Context Sentences
@@ -161,7 +181,7 @@ class FrequencyExporter:
             sources = row.get('Sources', '') if 'Sources' in available_cols else ''
             
             output_data.append({
-                'Index': idx,
+                'Index': len(output_data) + 1,
                 'Word': word,
                 'Reading': reading,
                 'Sentence 1': sentence_1,

@@ -516,7 +516,7 @@ def extract_text(file_path, language='ja'):
         except UnicodeDecodeError:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
-                
+
     return text
 
 def find_context_sentence(full_text, target_surface):
@@ -769,14 +769,6 @@ def main():
     file_stats = [] 
     
     # 3. Process Files (Aggregation Phase)
-    # Check for legacy migration first
-    try:
-        from modules.immersion_architect.immersion_architect import ImmersionArchitect
-        architect = ImmersionArchitect(language=language)
-        architect.migrate_legacy_order_if_needed()
-    except (ImportError, ModuleNotFoundError):
-        print("Note: Immersion Architect module not found. Skipping legacy migration check.")
-
 
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
@@ -879,7 +871,10 @@ def main():
                 
                 for file in files:
                     # Filter extensions
-                    if file.lower().endswith(('.txt', '.md', '.srt', '.epub', '.ass', '.html')):
+                    # .epub/.html are intentionally excluded: ebooks and web pages must go through
+                    # the content importer (which converts + chunks them). The analyzer only reads
+                    # already-normalized text/subtitle files.
+                    if file.lower().endswith(('.txt', '.md', '.srt', '.ass')):
                          full_path = os.path.join(root, file)
                          results.append(full_path)
             return results

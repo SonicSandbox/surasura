@@ -117,9 +117,12 @@ def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
             'words': words
         }
         
+        out_dir = os.path.dirname(output_json)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, indent=2, ensure_ascii=False)
-        
+
         print(f"JSON exported: {output_json}")
         print("\nConversion complete!")
         return True

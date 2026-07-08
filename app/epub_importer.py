@@ -69,6 +69,7 @@ class FileImporterApp:
         self.file_path_var.trace_add("write", self.on_file_change)
 
         # Load Logic Settings
+        self.logic_settings = {}  # default first, so a failed load never leaves the attr unset
         try:
             settings = settings_manager.load_settings()
             self.logic_settings = settings.get("logic", {})

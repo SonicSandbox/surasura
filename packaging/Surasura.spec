@@ -37,6 +37,7 @@ import json
 settings_path = os.path.join(project_root, 'settings.json')
 hide_satoru = False
 enable_youtube = False
+enable_preview = False  # default so a missing/corrupt settings.json can't NameError below
 # Default excludes
 excluded_modules = ['pandas.tests']
 

@@ -627,6 +627,10 @@ class ContentImporterApp:
 
         lst = schedule[phase_key]
         indices_to_move = self._get_manifest_indices_for_items(lst, items, self.get_current_dir())
+        # Nothing selected (or nothing resolved to a manifest row) -> nothing to move.
+        # Without this, indices_to_move[0]/[-1] below would raise IndexError.
+        if not indices_to_move:
+            return
         # Identify "visible" indices (items in current bucket)
         # current_folder is the bucket name (e.g., "HighPriority")
         current_bucket = self.target_folder_var.get()

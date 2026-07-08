@@ -285,8 +285,10 @@ def load_yomitan_frequency_list(csv_path):
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    # Frequency lists ALWAYS sanitize to ensure matching (Fix 1)
-                    word = _sanitize_term(row['Word'])
+                    # Sanitize to match analysis lemmas ONLY when JA term sanitization is active.
+                    # _sanitize_term strips from the first hyphen/space (a Japanese-only cleanup);
+                    # Chinese (and JA with the toggle off) must keep the raw word.
+                    word = _sanitize_term(row['Word']) if SANITIZE_JA else (row['Word'] or '').strip()
                     rank = int(row['Rank'])
                     word_to_rank[word] = rank
                 except (ValueError, KeyError):
@@ -683,6 +685,10 @@ def main():
     language = args.language
     print(f"Configuration: Target Language = {language}")
 
+    # Single-char tokens are skippable noise in Japanese (particles), but in Chinese most
+    # high-frequency words ARE single characters — never skip them for zh.
+    skip_singles = SKIP_SINGLE_CHARS and language == 'ja'
+
     print(f"\nLoading resources...")
     
     # Resolve Paths based on Language
@@ -859,7 +865,7 @@ def main():
                 
                 for file in files:
                     # Filter extensions
-                    if file.lower().endswith(('.txt', '.srt', '.epub', '.ass', '.html')):
+                    if file.lower().endswith(('.txt', '.md', '.srt', '.epub', '.ass', '.html')):
                          full_path = os.path.join(root, file)
                          results.append(full_path)
             return results
@@ -917,7 +923,7 @@ def main():
             # 2. Update Stats for all unknown tokens in this sentence
             for lemma, reading, surface in sentence_unknowns:
                 # If we are skipping single characters for learning, do not add it to word_stats
-                if SKIP_SINGLE_CHARS and len(lemma) == 1:
+                if skip_singles and len(lemma) == 1:
                     continue
                     
                 entry = word_stats[(lemma, reading)]
@@ -942,7 +948,7 @@ def main():
             
             for (lemma, reading) in unique_lrs:
                 # If we skipped this word for learning, don't try to store candidate contexts for it
-                if SKIP_SINGLE_CHARS and len(lemma) == 1:
+                if skip_singles and len(lemma) == 1:
                     continue
                     
                 entry = word_stats[(lemma, reading)]
@@ -1162,7 +1168,7 @@ def main():
     OUTPUT_STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
     with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
         f.write("--- File Statistics ---\n")
-        f.write(f"Configuration: Skip Single Chars = {SKIP_SINGLE_CHARS}\n")
+        f.write(f"Configuration: Skip Single Chars = {skip_singles}\n")
         if ONLY_I_PLUS_ONE:
              f.write(f"i+1 Constraint: {words_skipped_i_plus_one} Words Evaluated & Skipped\n")
         f.write("\n")
@@ -1284,7 +1290,7 @@ def main():
         for lemma, reading, surface in tokens:
             file_total_tokens += 1
             is_ignored = lemma in ignore_list
-            is_single = SKIP_SINGLE_CHARS and len(lemma) == 1
+            is_single = skip_singles and len(lemma) == 1
             
             # Check strictly against initial known list
             is_baseline = is_ignored or is_single or ((lemma, reading) in known_words_initial) or (lemma in known_lemmas_initial)

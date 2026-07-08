@@ -546,11 +546,19 @@
             });
         }
 
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return "";
+            return String(text)
+                .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
         function createWordItem(data) {
             const el = document.createElement('div');
             el.className = 'word-item';
 
             const word = data.Word;
+            const safeWord = escapeHtml(word);
             const reading = data.Reading || "";
             // Parsing Block: Reverse reading and escape quotes for HTML attribute
             const reversedReading = reading.split('').reverse().join('').replace(/"/g, '&quot;');
@@ -571,9 +579,10 @@
             // Context Formatting
             const formatContext = (ctx) => {
                 if (!ctx) return "";
-                const safeWord = word.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
-                const regex = new RegExp(safeWord, 'gi');
-                return ctx.replace(regex, `<em>${word}</em>`);
+                const safeCtx = escapeHtml(ctx);
+                const wordForRegex = safeWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(wordForRegex, 'gi');
+                return safeCtx.replace(regex, `<em>${safeWord}</em>`);
             };
 
             const contexts = [];
@@ -591,7 +600,7 @@
 
             el.innerHTML = `
                     <div class="word-header">
-                        <span class="word-main no-select" migaku_ignore data-yomichan-ignore>${word}</span>
+                        <span class="word-main no-select" migaku_ignore data-yomichan-ignore>${safeWord}</span>
                         <span class="reading" migaku_ignore data-yomichan-ignore data-content="${reversedReading}"></span>
                         <div class="meta-info no-select" migaku_ignore data-yomichan-ignore>
                             ${prioIcon}

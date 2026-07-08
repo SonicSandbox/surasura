@@ -200,7 +200,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
         data["progressive"] = new_progressive
 
     # 2. Read Template
-    if theme == "Zen Mode":
+    # Accept the display name ("Zen Mode", from View Vocab Journey) and the theme id
+    # ("zen-focus", forwarded by the analyzer on Generate Journey) so both paths pick Zen.
+    if theme in ("Zen Mode", "zen-focus"):
         WEB_APP_FILE = get_resource(os.path.join("templates", "zen_app.html"))
     else:
         WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
@@ -244,8 +246,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     except Exception as e:
         print(f"Warning: Could not load logic settings for HTML injection: {e}")
 
-    json_str = json.dumps(data)
-    logic_json_str = json.dumps(logic_settings)
+    # Escape "</" so a literal "</script>" in user content (filenames / context sentences)
+    # cannot close the inline <script> block early and blank the whole report.
+    json_str = json.dumps(data).replace("</", "<\\/")
+    logic_json_str = json.dumps(logic_settings).replace("</", "<\\/")
     words_per_day = settings.get("words_per_day", 5) if 'settings' in locals() else 5
     show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
 

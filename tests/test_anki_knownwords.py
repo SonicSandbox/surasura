@@ -74,3 +74,20 @@ def test_anki_knownword_json_update(ja_resources_dir, tmp_path, monkeypatch):
         assert data['statistics']['knownWords'] == 2
 
     root.destroy()
+
+
+def test_extract_field_text_strips_furigana_reading():
+    """Anki cards commonly embed furigana as ruby markup. The kana reading inside <rt> must NOT
+    survive into the extracted text, or it fuses onto the word (漢字かんじ) and pollutes the
+    known-words list (finding anki-epub-04)."""
+    from app.anki_utils import extract_field_text
+
+    mid = 1
+    # A single 'Expression' field containing furigana ruby.
+    notes = [(mid, "<ruby>漢字<rt>かんじ</rt></ruby>を勉強する")]
+    model_field_map = {mid: ["Expression"]}
+
+    text = extract_field_text(notes, model_field_map, "Expression")
+
+    assert "かんじ" not in text, "furigana reading must be stripped"
+    assert "漢字" in text and "勉強" in text, "the actual word text must be preserved"

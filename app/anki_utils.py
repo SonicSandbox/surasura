@@ -135,6 +135,9 @@ def extract_field_text(notes, model_field_map, target_field):
     # Simplified regex for HTML cleaning
     tag_re = re.compile(r'<[^<]+?>')
     sound_re = re.compile(r'\[sound:[^\]]+?\]')
+    # Drop furigana ruby readings (<rt>/<rp> contents) BEFORE stripping tags, so the kana
+    # reading (e.g. かんじ in <ruby>漢字<rt>かんじ</rt></ruby>) doesn't fuse onto the word.
+    ruby_re = re.compile(r'<rp>.*?</rp>|<rt>.*?</rt>', re.IGNORECASE | re.DOTALL)
     
     target_field_lower = target_field.lower()
     
@@ -151,7 +154,8 @@ def extract_field_text(notes, model_field_map, target_field):
             values = flds.split('\x1f')
             if idx < len(values):
                 raw_text = values[idx]
-                # Clean text
+                # Clean text (strip furigana readings first, then remaining tags)
+                raw_text = ruby_re.sub('', raw_text)
                 text = tag_re.sub('', raw_text)
                 text = sound_re.sub('', text)
                 text = text.replace('&nbsp;', ' ').replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')

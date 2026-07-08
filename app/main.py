@@ -928,7 +928,8 @@ class MasterDashboardApp:
     def load_settings(self):
         try:
             settings = settings_manager.load_settings()
-            
+            self._current_settings = settings
+
             self.var_exclude_single.set(settings.get("exclude_single", True))
             self.var_min_freq.set(settings.get("min_freq", 1))
             self.var_open_app_mode.set(settings.get("open_app_mode", False))
@@ -984,28 +985,40 @@ class MasterDashboardApp:
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
 
+    @staticmethod
+    def _iv(var, fallback):
+        """Read an IntVar tolerantly. A numeric Entry/Spinbox is momentarily EMPTY while the
+        user edits it (e.g. deletes 3000 to type 500), and IntVar.get() then raises TclError.
+        Returning the last-saved value keeps a mid-edit keystroke from aborting the whole save."""
+        try:
+            return var.get()
+        except tk.TclError:
+            return fallback
+
     def save_settings(self, *args):
         try:
+            cur = getattr(self, "_current_settings", {}) or {}
+            cur_ctx = cur.get("logic", {}).get("context", {}) if isinstance(cur.get("logic"), dict) else {}
             # Build settings dict from GUI vars
             settings = {
                 "exclude_single": self.var_exclude_single.get(),
-                "min_freq": self.var_min_freq.get(),
+                "min_freq": self._iv(self.var_min_freq, cur.get("min_freq", 1)),
                 "open_app_mode": self.var_open_app_mode.get(),
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
-                "target_coverage": self.var_target_coverage.get(),
-                "split_length": self.var_split_length.get(),
+                "target_coverage": self._iv(self.var_target_coverage, cur.get("target_coverage", 90)),
+                "split_length": self._iv(self.var_split_length, cur.get("split_length", 3000)),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "sanitize_ja_terms": self.var_sanitize_ja.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "add_graduated_words": self.var_add_graduated.get(),
-                "words_per_day": self.var_words_per_day.get(),
+                "words_per_day": self._iv(self.var_words_per_day, cur.get("words_per_day", 5)),
                 "show_words_per_day": self.var_show_words_per_day.get(),
-                "zen_limit": self.var_zen_limit.get(),
+                "zen_limit": self._iv(self.var_zen_limit, cur.get("zen_limit", 50)),
                 "onboarding_completed": self.onboarding_completed.get(),
-                "open_count": self.var_open_count.get(),
+                "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
                 "hide_satoru": self.var_hide_satoru.get(),
                 "logic": {
                     **self.logic_settings,
@@ -1013,9 +1026,9 @@ class MasterDashboardApp:
                     "hide_audio_button": self.var_hide_audio.get(),
                     "context": {
                         **self.logic_settings.get("context", {}),
-                        "min_chars": self.var_context_min_chars.get(),
-                        "preferred_max_chars": self.var_context_max_chars.get(),
-                        "max_contexts": self.var_max_contexts.get()
+                        "min_chars": self._iv(self.var_context_min_chars, cur_ctx.get("min_chars", 10)),
+                        "preferred_max_chars": self._iv(self.var_context_max_chars, cur_ctx.get("preferred_max_chars", 50)),
+                        "max_contexts": self._iv(self.var_max_contexts, cur_ctx.get("max_contexts", 3))
                     }
                 }
             }
@@ -1031,7 +1044,8 @@ class MasterDashboardApp:
                 pass
 
             settings_manager.save_settings(settings)
-            
+            self._current_settings = settings
+
             # Update UI state (enable/disable language specific options)
             if not getattr(self, '_lock_ui_updates', False):
                 self.update_ui_for_language()

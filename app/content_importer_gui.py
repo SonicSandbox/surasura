@@ -174,7 +174,7 @@ class ContentImporterApp:
 
     def is_content_file(self, file_path):
         """Checks if a file is a supported content type."""
-        return file_path.lower().endswith(('.txt', '.html', '.htm', '.epub', '.srt', '.ass', '.vtt', '.pdf'))
+        return file_path.lower().endswith(('.txt', '.md', '.html', '.htm', '.epub', '.srt', '.ass', '.vtt', '.pdf'))
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="25")
@@ -999,6 +999,16 @@ class ContentImporterApp:
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
             messagebox.showinfo("Success", f"Successfully added {count} files.")
 
+    def _unique_path(self, path):
+        """Return a non-colliding path, appending ' (n)' before the extension if needed."""
+        if not os.path.exists(path):
+            return path
+        base, ext = os.path.splitext(path)
+        n = 2
+        while os.path.exists(f"{base} ({n}){ext}"):
+            n += 1
+        return f"{base} ({n}){ext}"
+
     def add_folder(self):
         target_dir = self.get_current_dir()
         if not os.path.exists(target_dir):
@@ -1032,47 +1042,68 @@ class ContentImporterApp:
                  messagebox.showerror("Error", f"Cannot import parent '{folder_name}' into its own child.")
                  return
 
-            if os.path.exists(dest):
-                if not messagebox.askyesno("Confirm Overwrite", f"Folder '{folder_name}' already exists in '{self.target_folder_var.get()}'.\nOverwrite it?"):
+            dest_existed = os.path.isdir(dest)
+            if os.path.isfile(dest):
+                messagebox.showerror("Error", f"A file named '{folder_name}' already exists here.")
+                return
+            if dest_existed:
+                if not messagebox.askyesno(
+                    "Merge Folder",
+                    f"Folder '{folder_name}' already exists in '{self.target_folder_var.get()}'.\n"
+                    "Merge new files into it? Existing files are kept — nothing is overwritten."
+                ):
                     return
-                if os.path.isdir(dest):
-                    shutil.rmtree(dest)
-                else:
-                    os.remove(dest)
 
-            def ignore_unsupported_files(src, names):
-                ignored = []
-                for name in names:
-                    source_item = os.path.join(src, name)
-                    if os.path.isfile(source_item) and not self.is_content_file(source_item):
-                        ignored.append(name)
-                return ignored
+            # Non-destructive merge: copy supported files into dest, preserving structure.
+            # Existing files are never overwritten — an identical file is skipped, and a
+            # same-named file with different content is added under a de-duped name.
+            import filecmp
+            added_paths = []
+            already = 0
+            renamed = 0
+            for root, _, files in os.walk(folder_path):
+                rel_root = os.path.relpath(root, folder_path)
+                target_root = dest if rel_root == "." else os.path.join(dest, rel_root)
+                for name in sorted(files):
+                    src_file = os.path.join(root, name)
+                    if not self.is_content_file(src_file):
+                        continue
+                    os.makedirs(target_root, exist_ok=True)
+                    target_file = os.path.join(target_root, name)
+                    if os.path.exists(target_file):
+                        if filecmp.cmp(src_file, target_file, shallow=False):
+                            already += 1
+                            continue  # identical file already present — skip
+                        target_file = self._unique_path(target_file)
+                        renamed += 1
+                    shutil.copy2(src_file, target_file)
+                    added_paths.append(target_file)
 
-            shutil.copytree(folder_path, dest, ignore=ignore_unsupported_files)
-
-            has_supported_content = False
-            for root, _, files in os.walk(dest):
-                for file_name in files:
-                    if self.is_content_file(os.path.join(root, file_name)):
-                        has_supported_content = True
-                        break
-                if has_supported_content:
-                    break
-
-            if not has_supported_content:
-                shutil.rmtree(dest)
+            if not added_paths:
+                if not dest_existed and os.path.isdir(dest) and not os.listdir(dest):
+                    os.rmdir(dest)  # remove the empty dir we may have just created
                 messagebox.showwarning(
-                    "No Supported Files",
+                    "No New Files",
+                    "No new supported content files were found in the selected folder."
+                    if already else
                     "No supported content files were found in the selected folder."
                 )
                 return
 
             self.add_to_manifest(dest, self.target_folder_var.get())
-            self.set_undo_action("add", "Add Folder", {"paths": [dest]})
+            # Undo removes exactly what we added: for a merge, only the new files (preserving
+            # pre-existing content); for a brand-new folder, the whole folder.
+            undo_paths = [dest] if not dest_existed else added_paths
+            self.set_undo_action("add", "Add Folder", {"paths": undo_paths})
             
             self.refresh_file_list()
-            self.status_var.set(f"Successfully added folder: {folder_name}")
-            messagebox.showinfo("Success", f"Successfully added folder '{folder_name}'.")
+            summary = f"Added {len(added_paths)} file(s) to '{folder_name}'."
+            if already:
+                summary += f" {already} already present."
+            if renamed:
+                summary += f" {renamed} kept as a copy (name clash)."
+            self.status_var.set(summary)
+            messagebox.showinfo("Success", summary)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy folder '{folder_name}':\n{e}")
 

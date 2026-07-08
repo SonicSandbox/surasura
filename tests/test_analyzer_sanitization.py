@@ -38,26 +38,30 @@ def test_load_simple_list_toggle():
     finally:
         os.remove(tmp_path)
 
-def test_load_yomitan_frequency_list_always_sanitizes():
-    # Frequency lists should always sanitize regardless of toggle (Fix 1)
+def test_load_yomitan_frequency_list_respects_sanitize_toggle():
+    # Frequency-list words are sanitized ONLY when JA term sanitization is active, so the loader
+    # stays consistent with the analysis lemmas. Chinese (and JA with the toggle off) keep the
+    # raw word instead of the Japanese -suffix stripper corrupting it (finding xc-lang-parity-01).
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as tmp:
         tmp.write("Word,Rank\n")
         tmp.write("アイリス-iris,1\n")
         tmp_path = tmp.name
-    
+
     try:
         analyzer.SANITIZE_JA = False
         freq_data = load_yomitan_frequency_list(tmp_path)
-        assert "アイリス" in freq_data
-        
+        assert "アイリス-iris" in freq_data
+        assert "アイリス" not in freq_data
+
         analyzer.SANITIZE_JA = True
         freq_data = load_yomitan_frequency_list(tmp_path)
         assert "アイリス" in freq_data
+        assert "アイリス-iris" not in freq_data
     finally:
         os.remove(tmp_path)
 
 if __name__ == "__main__":
     test_sanitize_term_analyzer()
     test_load_simple_list_toggle()
-    test_load_yomitan_frequency_list_always_sanitizes()
+    test_load_yomitan_frequency_list_respects_sanitize_toggle()
     print("Sanitization tests for analyzer.py PASSED.")

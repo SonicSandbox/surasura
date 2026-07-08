@@ -33,3 +33,36 @@ def mock_messagebox():
 @pytest.fixture
 def project_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_analyzer_module_state():
+    """Keep the analyzer's module-level state from leaking between tests.
+
+    Many analyzer tests reassign module attributes (get_data_path, RESULTS_DIR, OUTPUT_CSV, ...)
+    and analyzer.main() mutates config globals (LOGIC via --context-min/max, SANITIZE_JA,
+    SKIP_SINGLE_CHARS, MIN_FREQ, ONLY_I_PLUS_ONE) without restoring them. Snapshot and restore
+    all of that around every test so the suite is order-independent.
+    """
+    import copy
+    try:
+        from app import analyzer
+    except Exception:
+        yield
+        return
+
+    attrs = [
+        "get_data_path", "get_user_files_path", "get_user_file",
+        "RESULTS_DIR", "OUTPUT_CSV", "OUTPUT_STATS", "OUTPUT_PROGRESSIVE",
+        "SANITIZE_JA", "SKIP_SINGLE_CHARS", "MIN_FREQ", "ONLY_I_PLUS_ONE",
+    ]
+    saved = {a: getattr(analyzer, a) for a in attrs if hasattr(analyzer, a)}
+    saved_logic = copy.deepcopy(analyzer.LOGIC) if hasattr(analyzer, "LOGIC") else None
+    try:
+        yield
+    finally:
+        for a, v in saved.items():
+            setattr(analyzer, a, v)
+        if saved_logic is not None:
+            analyzer.LOGIC.clear()
+            analyzer.LOGIC.update(saved_logic)

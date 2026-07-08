@@ -12,6 +12,7 @@ import pandas as pd
 import fugashi
 import pysrt
 import jieba
+import bisect
 from collections import defaultdict, Counter
 from datetime import datetime
 import abc
@@ -90,44 +91,45 @@ class JapaneseTokenizer(Tokenizer):
         return all_tokens
 
     def tokenize_sentences(self, text):
-        """Yields (sentence_string, list_of_filtered_tokens)"""
-        current_sentence_tokens = []
-        current_sentence_surface = []
-        
-        # Unidic-lite pos1: 
-        # '補助記号' (punctuation)
-        # '空白' (spaces)
-        
-        for word in self.tagger(text):
-            surface = word.surface
-            pos = word.feature.pos1
-            
-            # Boundary check using logic settings
-            boundaries = LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n")
-            is_boundary = surface in boundaries
-            
-            lemma = word.feature.lemma if word.feature.lemma else word.surface
-            if SANITIZE_JA:
-                lemma = _sanitize_term(lemma)
-            
-            reading = word.feature.kana if word.feature.kana else ""
-            
-            current_sentence_surface.append(surface)
-            if pos not in ['记号', '補助記号', '空白']:
-                current_sentence_tokens.append((lemma, reading, word.surface))
-            
-            if is_boundary:
+        """Yields (sentence_string, list_of_filtered_tokens).
+
+        Fugashi consumes newlines, so '\\n' in the boundary set never fired and separate lines
+        (e.g. a transcript's title / URL / '----' header) merged into one giant sentence. We
+        therefore process the text line by line, treating each line break as a hard boundary.
+        """
+        # Unidic-lite pos1: '補助記号' (punctuation), '空白' (spaces)
+        boundaries = LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n")
+
+        for line in text.split("\n"):
+            current_sentence_tokens = []
+            current_sentence_surface = []
+
+            for word in self.tagger(line):
+                surface = word.surface
+                pos = word.feature.pos1
+                is_boundary = surface in boundaries
+
+                lemma = word.feature.lemma if word.feature.lemma else word.surface
+                if SANITIZE_JA:
+                    lemma = _sanitize_term(lemma)
+                reading = word.feature.kana if word.feature.kana else ""
+
+                current_sentence_surface.append(surface)
+                if pos not in ['记号', '補助記号', '空白']:
+                    current_sentence_tokens.append((lemma, reading, word.surface))
+
+                if is_boundary:
+                    s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
+                    if s_text:
+                        yield s_text, current_sentence_tokens
+                    current_sentence_tokens = []
+                    current_sentence_surface = []
+
+            # End of a line is itself a hard sentence boundary — flush any remainder.
+            if current_sentence_surface:
                 s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
                 if s_text:
                     yield s_text, current_sentence_tokens
-                current_sentence_tokens = []
-                current_sentence_surface = []
-        
-        # Flush remaining
-        if current_sentence_surface:
-            s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
-            if s_text:
-                yield s_text, current_sentence_tokens
 
 class ChineseTokenizer(Tokenizer):
     def __init__(self, reinforce_segmentation=False):
@@ -207,6 +209,19 @@ class ChineseTokenizer(Tokenizer):
             s_text = "".join(current_sentence_surface).strip()
             if s_text:
                 yield s_text, current_sentence_tokens
+
+
+def rolling_context_cost(target_freq, sorted_unknown_freqs):
+    """Approximate the i+1 cost of a candidate sentence for a target word.
+
+    A candidate's true i+1 quality depends on which of its OTHER unknown words are still
+    unknown once the learner reaches the target. More-common co-words are learned first
+    (higher priority), so they won't make the sentence harder — only RARER co-words remain.
+    Approximate that with running frequency: count the sentence's unknowns whose frequency is
+    strictly below the target's. `sorted_unknown_freqs` must be ascending. O(log n).
+    """
+    return bisect.bisect_left(sorted_unknown_freqs, target_freq)
+
 
 def _sanitize_term(term):
     """
@@ -925,9 +940,8 @@ def main():
                 # so it must be part of `sentence_unknowns`.
                 sentence_unknowns.append((lemma, reading, surface))
 
-            # Unique unknowns in this sentence for cost calculation
+            # Unique unknowns in this sentence.
             unique_lrs = set((l, r) for l, r, s in sentence_unknowns)
-            cost = len(unique_lrs)
 
             # 2. Update Stats for all unknown tokens in this sentence
             for lemma, reading, surface in sentence_unknowns:
@@ -954,14 +968,28 @@ def main():
             
             preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
             is_too_long = 1 if len(s_text) > preferred_max_chars else 0
-            
+            # Hard cap: sentences longer than this are excluded from the candidate pool (they
+            # make poor examples); a word's own/original sentence is still kept as a fallback.
+            is_over_hard_max = len(s_text) > LOGIC.get("context", {}).get("max_chars", 150)
+
+            # Running frequency of each of this sentence's unknowns (ascending) — used to score
+            # each candidate by its rarer-than-target co-words (see rolling_context_cost).
+            unk_freqs = sorted(
+                word_stats[lr]["total_count"] if lr in word_stats else 0
+                for lr in unique_lrs
+            )
+
             for (lemma, reading) in unique_lrs:
                 # If we skipped this word for learning, don't try to store candidate contexts for it
                 if skip_singles and len(lemma) == 1:
                     continue
                     
                 entry = word_stats[(lemma, reading)]
-                
+
+                # Rank this candidate by how many of the sentence's OTHER unknown words are
+                # rarer than this word — a proxy for how many stay unknown when the learner
+                # reaches it (common co-words are learned first). Same buffer / fast-exit.
+                cost = rolling_context_cost(entry["total_count"], unk_freqs)
                 new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text)
                 
                 # Optimization 1: Insertion Caching - Fast exit if list is full and new sentence is worse
@@ -980,7 +1008,12 @@ def main():
 
                 if not entry["first_context"]:
                     entry["first_context"] = new_ctx
-                    
+
+                # Very long sentences make poor secondary examples — keep them only as the
+                # word's own/original fallback (first_context above), not in the candidate pool.
+                if is_over_hard_max:
+                    continue
+
                 entry["candidate_contexts"].append(new_ctx)
                 # Sort initially by: length validity, then initial cost
                 entry["candidate_contexts"].sort(key=lambda x: (x[0], x[1], x[2]))

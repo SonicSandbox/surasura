@@ -735,7 +735,7 @@ class MasterDashboardApp:
 
         chk_i_plus_one = ttk.Checkbutton(group_logic, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
         chk_i_plus_one.pack(anchor=tk.W)
-        ToolTip(chk_i_plus_one, "Filter words that lack i+1 example sentences.")
+        ToolTip(chk_i_plus_one, "Swaps a word's media sentence for an i+1 example (only that word is new) when it isn't already i+1.")
 
         chk_add_graduated = ttk.Checkbutton(group_logic, text="Add Words on 'Graduate'", variable=self.var_add_graduated)
         chk_add_graduated.pack(anchor=tk.W)

@@ -38,12 +38,13 @@ DEFAULT_SETTINGS = {
             "thresholds": [2500, 5000, 7500, 10000]
         },
         "context": {
-            "_comment": "search_range: chars to look around a word if no sentence found. min_chars: ideal sentence length.",
+            "_comment": "min_chars/preferred_max_chars: ideal sentence length range. max_chars: hard cap — sentences longer than this are excluded from candidate examples (a word's own/original sentence is still kept as a fallback).",
             "search_range": 20,
             "min_chars": 10,
             "max_extra": 2,
             "preferred_max_chars": 50,
-            "max_contexts": 3
+            "max_contexts": 3,
+            "max_chars": 150
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",

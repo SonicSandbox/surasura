@@ -41,6 +41,7 @@
             "max_extra": 2,
             "preferred_max_chars": 35,
             "max_contexts": 3,
+            "max_chars": 150,
             "min_words": 4
         },
         "sentence_boundaries": {

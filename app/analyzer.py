@@ -631,7 +631,6 @@ def main():
     parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
-    parser.add_argument("--sanitize", action="store_true", help="Sanitize Japanese terms (strip hyphen/space suffixes)")
     parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
     parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
@@ -642,13 +641,7 @@ def main():
     
     global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE
     ONLY_I_PLUS_ONE = args.only_i_plus_one
-    
-    if args.sanitize:
-        SANITIZE_JA = True
-        print("Configuration: Japanese term sanitization ENABLED.")
-    else:
-        print("Configuration: Japanese term sanitization DISABLED.")
-        
+
     # Override logic settings if supplied
     if args.context_min is not None:
         if "context" not in LOGIC:
@@ -668,6 +661,7 @@ def main():
         SKIP_SINGLE_CHARS = False
         print("Configuration: Single character words INCLUDED.")
     else:
+        SKIP_SINGLE_CHARS = True
         print("Configuration: Single character words SKIPPED (Default).")
 
     # Min Frequency Logic
@@ -684,6 +678,11 @@ def main():
         
     language = args.language
     print(f"Configuration: Target Language = {language}")
+
+    # Japanese Unidic lemmas carry a gloss suffix (e.g. テスト-test); always strip it for JA so
+    # lemmas match the (clean) frequency lists and a word never splits into -suffix variants.
+    SANITIZE_JA = (language == 'ja')
+    print(f"Configuration: Japanese term sanitization = {SANITIZE_JA}")
 
     # Single-char tokens are skippable noise in Japanese (particles), but in Chinese most
     # high-frequency words ARE single characters — never skip them for zh.

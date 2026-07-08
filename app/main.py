@@ -137,7 +137,6 @@ class MasterDashboardApp:
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
-        self.var_sanitize_ja = tk.BooleanVar(value=True) # Strip -suffixes for JA
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
         self.var_add_graduated = tk.BooleanVar(value=True) # Add words on graduate
         self.var_context_min_chars = tk.IntVar(value=10)
@@ -165,7 +164,6 @@ class MasterDashboardApp:
         self.lang_frame: Optional[ttk.Frame] = None
         self.lang_options_frame: Optional[ttk.Frame] = None
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
-        self.chk_sanitize_ja: Optional[ttk.Checkbutton] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -220,7 +218,6 @@ class MasterDashboardApp:
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
-        self.var_sanitize_ja.trace_add("write", self.save_settings)
         self.var_only_i_plus_one.trace_add("write", self.save_settings)
         self.var_add_graduated.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
@@ -384,19 +381,13 @@ class MasterDashboardApp:
             if self.settings_window and self.settings_window.winfo_exists():
                 if self.chk_reinforce_widget:
                     self.chk_reinforce_widget.pack_forget()
-                if self.chk_sanitize_ja:
-                    self.chk_sanitize_ja.pack_forget()
-                
+
                 if lang == 'zh':
                     # Show Reinforce for Chinese
                     if self.chk_reinforce_widget:
                         self.chk_reinforce_widget.pack(anchor=tk.W)
                         self.chk_reinforce_widget.configure(state='normal')
                 else:
-                    # Show Sanitize for Japanese
-                    if self.chk_sanitize_ja:
-                        self.chk_sanitize_ja.pack(anchor=tk.W)
-                        self.chk_sanitize_ja.configure(state='normal')
                     self.var_reinforce.set(False)
     
             self.save_settings()
@@ -652,10 +643,6 @@ class MasterDashboardApp:
         # Reinforce Segmentation (Chinese)
         self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Seg", variable=self.var_reinforce, command=self.save_settings)
         ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'.")
-        
-        # Sanitize Japanese Terms (Japanese only)
-        self.chk_sanitize_ja = ttk.Checkbutton(self.lang_options_frame, text="Sanitize Japanese (strip -suffixes)", variable=self.var_sanitize_ja, command=self.save_settings)
-        ToolTip(self.chk_sanitize_ja, "Strip labels like '-iris' or '-suffix' from words.")
 
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -668,6 +655,22 @@ class MasterDashboardApp:
         ttk.Entry(split_frame, textvariable=self.var_split_length, width=8).pack(side=tk.LEFT, padx=5)
         self.var_split_length.trace_add("write", self.save_settings)
         ToolTip(split_frame, "Default character limit for splitting files.")
+
+        # YouTube toggles (optional module) — grouped with Language & Parsing.
+        # Only shown when the module is present locally.
+        try:
+            import modules.youtube_downloader  # noqa: F401
+            _yt_module_available = True
+        except Exception:
+            _yt_module_available = False
+        if _yt_module_available:
+            chk_youtube = ttk.Checkbutton(group_lang, text="Enable YouTube Transcripts", variable=self.var_enable_youtube)
+            chk_youtube.pack(anchor=tk.W, pady=(10, 0))
+            ToolTip(chk_youtube, "Show a YouTube transcript downloader in Library Content. Also controls whether it is bundled when you build the app.")
+
+            chk_preview = ttk.Checkbutton(group_lang, text="Enable YouTube Preview", variable=self.var_enable_preview)
+            chk_preview.pack(anchor=tk.W, pady=(4, 0))
+            ToolTip(chk_preview, "Show a 'Preview against library' button next to Generate Journey, and cache a library frequency map on runs so the preview is fast.")
 
         # 2. 📊 Experience & UI
         group_ui = ttk.LabelFrame(grid_frame, text=" 📊 Experience & UI", padding="10")
@@ -692,21 +695,6 @@ class MasterDashboardApp:
         ttk.Label(wpd_entry_frame, text="Words Per Day:").pack(side=tk.LEFT)
         ttk.Entry(wpd_entry_frame, textvariable=self.var_words_per_day, width=5).pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
-
-        # YouTube Transcripts toggles — only shown when the optional module is present locally.
-        try:
-            import modules.youtube_downloader  # noqa: F401
-            _yt_module_available = True
-        except Exception:
-            _yt_module_available = False
-        if _yt_module_available:
-            chk_youtube = ttk.Checkbutton(group_ui, text="Enable YouTube Transcripts", variable=self.var_enable_youtube)
-            chk_youtube.pack(anchor=tk.W, pady=(10, 0))
-            ToolTip(chk_youtube, "Show a YouTube transcript downloader in Library Content. Also controls whether it is bundled when you build the app.")
-
-            chk_preview = ttk.Checkbutton(group_ui, text="Enable YouTube Preview", variable=self.var_enable_preview)
-            chk_preview.pack(anchor=tk.W, pady=(4, 0))
-            ToolTip(chk_preview, "Show a 'Preview against library' button next to Generate Journey, and cache a library frequency map on runs so the preview is fast.")
 
         # 3. 🧠 Sentences & Logic
         group_logic = ttk.LabelFrame(grid_frame, text=" 🧠 Sentences & Logic", padding="10")
@@ -948,7 +936,6 @@ class MasterDashboardApp:
 
             self.var_reinforce.set(settings.get("reinforce_segmentation", False))
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
-            self.var_sanitize_ja.set(settings.get("sanitize_ja_terms", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
             self.var_add_graduated.set(settings.get("add_graduated_words", True))
             self.var_words_per_day.set(settings.get("words_per_day", 5))
@@ -1011,7 +998,6 @@ class MasterDashboardApp:
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
-                "sanitize_ja_terms": self.var_sanitize_ja.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "add_graduated_words": self.var_add_graduated.get(),
                 "words_per_day": self._iv(self.var_words_per_day, cur.get("words_per_day", 5)),
@@ -1266,10 +1252,6 @@ class MasterDashboardApp:
         
         # Add Language
         args.append(f'--language={self.var_language.get()}')
-        
-        # Add Sanitization Flag if applicable (only for Japanese)
-        if self.var_language.get() == 'ja' and self.var_sanitize_ja.get():
-            args.append('--sanitize')
         
         # Add Reinforce Flag if applicable
         if self.var_language.get() == 'zh' and self.var_reinforce.get():

@@ -30,9 +30,8 @@ class TestFlagUI(unittest.TestCase):
         self.assertEqual(self.app.var_language.get(), "ja")
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
         
-        # In 'ja', chk_sanitize_ja should be visible, chk_reinforce_widget should be hidden
-        # We check winfo_manager() - it returns 'pack' if managed by pack, '' if not.
-        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "pack")
+        # In 'ja', chk_reinforce_widget should be hidden (it is a Chinese-only option).
+        # winfo_manager() returns 'pack' if managed by pack, '' if not.
         self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
         
         # Switch to Chinese
@@ -41,15 +40,13 @@ class TestFlagUI(unittest.TestCase):
         
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇨🇳")
         self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "pack")
-        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "")
-        
+
         # Verify container nesting
         self.assertEqual(self.app.chk_reinforce_widget.master, self.app.lang_options_frame)
         
         # Switch back to Japanese
         self.app.var_language.set("ja")
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
-        self.assertEqual(self.app.chk_sanitize_ja.winfo_manager(), "pack")
         self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
 
 if __name__ == '__main__':

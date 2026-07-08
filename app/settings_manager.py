@@ -17,7 +17,6 @@ DEFAULT_SETTINGS = {
     "target_language": "ja",
     "reinforce_segmentation": False,
     "telemetry_enabled": True,
-    "sanitize_ja_terms": True,
     "words_per_day": 5,
     "show_words_per_day": True,
     "zen_limit": 50,

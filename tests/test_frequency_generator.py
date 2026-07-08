@@ -59,8 +59,8 @@ def test_frequency_integration_real_analysis(frequency_app_env):
          patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results_dir / "progressive_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
          patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
-         patch("sys.argv", ["analyzer.py", "--language", "ja"]):
-        
+         patch("sys.argv", ["analyzer.py", "--language", "ja", "--include-single-chars"]):
+
         analyzer.main()
 
     # 2. Confirm CSV was created and has words

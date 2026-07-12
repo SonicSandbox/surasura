@@ -19,6 +19,7 @@ import abc
 
 from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
 from app import settings_manager
+from app import word_selection
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -680,17 +681,26 @@ def main():
         print("Configuration: Single character words SKIPPED (Default).")
 
     # Min Frequency Logic
+    # NOTE: raw --min-freq is retired as the user-facing selector (replaced by density bands
+    # below); it is kept ONLY as an explicit raw-count OVERRIDE for the CLI / tests / power users.
+    # When passed (>0) it bypasses the bands entirely.
     if args.min_freq > 0:
         MIN_FREQ = args.min_freq
-        print(f"Configuration: Words with frequency < {MIN_FREQ} EXCLUDED.")
+        print(f"Configuration: Raw min-freq override — words with count < {MIN_FREQ} EXCLUDED.")
     elif args.exclude_freq_one:
         # Backward compatibility
         MIN_FREQ = 1
         print("Configuration: Frequency < 1 words EXCLUDED (via flag).")
     else:
         MIN_FREQ = 0
-        print("Configuration: All frequencies INCLUDED (Default).")
-        
+
+    # Density-band selection config (used unless a raw --min-freq override or coverage mode is
+    # active). Read from settings; the GUI band slider writes logic.selection.band.
+    _sel = LOGIC.get("selection", {})
+    SELECT_BAND = _sel.get("band", "occasional")
+    SELECT_BANDS_PPM = _sel.get("bands_ppm") or word_selection.DEFAULT_BANDS_PPM
+    SELECT_MIN_COUNT = _sel.get("min_count", word_selection.DEFAULT_MIN_COUNT)
+
     language = args.language
     print(f"Configuration: Target Language = {language}")
 
@@ -1024,13 +1034,30 @@ def main():
             "Coverage (%)": round(coverage, 2)
         })
 
+    # --- Resolve the word-selection floor (replaces the retired raw min_freq default) ---
+    # Now that aggregation is done we know the library's total token count, so a density-band
+    # ppm floor can be converted to a concrete occurrence count. Precedence:
+    #   1. explicit --min-freq override (raw count),
+    #   2. coverage mode (only drop one-offs; target_coverage handles the rest downstream),
+    #   3. density band (the default): max(min_count, band ppm -> count).
+    total_tokens = sum(s['Total Words'] for s in file_stats)
+    if MIN_FREQ > 0:
+        floor_count = MIN_FREQ
+    elif args.target_coverage > 0:
+        floor_count = SELECT_MIN_COUNT
+    else:
+        floor_count = word_selection.band_floor_count(
+            SELECT_BAND, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
+        print(f"Configuration: Selection band '{SELECT_BAND}' -> keep count >= {floor_count:.2f} "
+              f"(of {total_tokens} library tokens).")
+
     # Output Priority CSV
     rolling_known_tuples = set(known_words_initial)
     rolling_known_lemmas = set(known_lemmas_initial)
     
     preliminary_rows = []
     for (lemma, reading), data in word_stats.items():
-        if MIN_FREQ > 0 and data["total_count"] < MIN_FREQ:
+        if data["total_count"] < floor_count:
             continue
 
         tier_labels = get_tier_label(lemma, freq_data)
@@ -1283,7 +1310,12 @@ def main():
                 ]
             _lib_payload = {
                 "settings": {
+                    # The active selection's effective count floor (was 'min_freq'). The YouTube
+                    # preview keeps a word if library+in-video counts meet this. total_tokens lets
+                    # the preview reason in density terms. 'min_freq' kept for older-cache readers.
+                    "min_count": floor_count,
                     "min_freq": MIN_FREQ,
+                    "total_tokens": total_tokens,
                     "weights": {
                         "high": _weights.get("high", 10),
                         "low": _weights.get("low", 5),
@@ -1301,6 +1333,24 @@ def main():
         except Exception as e:
             # Never let the optional preview cache interfere with a normal run.
             print(f"Warning: Could not write library frequency map: {e}")
+
+    # --- Persist the token index (seed-for-free) so the word-selection preview is instant and
+    # always fresh without re-tokenizing. Built from the per-file counts already computed this
+    # run (target-language tokens only, matching coverage accounting). Best-effort; never fatal. ---
+    try:
+        from app import token_index
+        _per_file = {}
+        for _fp, _counter in file_token_cache.items():
+            _fc = {}
+            for (_lemma, _reading), _n in _counter.items():
+                if has_target_language(_lemma, language):
+                    _fc[token_index.make_key(_lemma, _reading)] = _n
+            _per_file[_fp] = _fc
+        _idx_path = os.path.join(RESULTS_DIR, f"token_index_{language}.json")
+        token_index.save_index(token_index.build_index(_per_file), _idx_path)
+        print(f"Saved token index ({len(_per_file)} files) to {_idx_path}")
+    except Exception as e:
+        print(f"Warning: Could not persist token index: {e}")
 
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
@@ -1365,7 +1415,7 @@ def main():
                 "final_context_1": "", "final_context_2": "", "final_context_3": ""
             })
             
-            if MIN_FREQ > 0 and stats["total_count"] < MIN_FREQ:
+            if stats["total_count"] < floor_count:
                 continue
 
             file_rows_buffer.append({

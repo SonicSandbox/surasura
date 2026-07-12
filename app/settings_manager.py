@@ -8,7 +8,6 @@ from app.path_utils import get_user_file
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
     "exclude_single": True,
-    "min_freq": 3,
     "open_app_mode": False,
     "theme": "Dark Flow",
     "strategy": "freq",
@@ -62,6 +61,13 @@ DEFAULT_SETTINGS = {
             "priority_threshold": 0.5,
             "priority_min": 3,
             "lopsided_threshold": 0.85
+        },
+        "selection": {
+            "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors — how common a word must be to be included; scale-stable across library sizes; 'native' is 0 (its floor is min_count). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. These are the single source of truth (no magic numbers in code).",
+            "band": "occasional",
+            "min_count": 2,
+            "minutes_per_file": 18,
+            "bands_ppm": {"core": 2000, "common": 160, "occasional": 25, "rare": 12, "very_rare": 5, "native": 0}
         },
         "importer": {
             "_comment": "split_overflow: max chars to search past target length for a clean boundary.",
@@ -123,7 +129,23 @@ def load_settings() -> Dict[str, Any]:
                         settings[key] = value
         except Exception as e:
             print(f"Warning: Could not load settings, using defaults: {e}")
-            
+
+    # Selection: bands_ppm / min_count / minutes_per_file are user-editable (like 'weights'), but
+    # fill any MISSING keys from defaults so a partial or older settings.json can't break the band
+    # structure (e.g. a file predating the 'very_rare' band). User-provided values still win.
+    try:
+        default_sel = DEFAULT_SETTINGS["logic"]["selection"]
+        sel = settings.setdefault("logic", {}).setdefault("selection", {})
+        ppm = copy.deepcopy(default_sel["bands_ppm"])
+        if isinstance(sel.get("bands_ppm"), dict):
+            ppm.update(sel["bands_ppm"])      # user floors override; missing bands stay default
+        sel["bands_ppm"] = ppm
+        sel.setdefault("band", default_sel["band"])
+        sel.setdefault("min_count", default_sel["min_count"])
+        sel.setdefault("minutes_per_file", default_sel["minutes_per_file"])
+    except Exception:
+        pass
+
     return settings
 
 def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):

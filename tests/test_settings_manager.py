@@ -82,6 +82,41 @@ class TestSettingsManager(unittest.TestCase):
         self.assertEqual(loaded["logic"]["weights"]["low"], 5)
         self.assertEqual(loaded["theme"], "Dark Flow")
 
+    def test_selection_defaults_present(self):
+        # The band-selection block ships with a default band, the one-off floor, and ppm floors.
+        # (The method switch is the existing top-level 'strategy': freq -> bands, coverage.)
+        sel = settings_manager.get_default_settings()["logic"]["selection"]
+        self.assertIn(sel["band"], ["core", "common", "occasional", "rare", "native"])
+        self.assertEqual(sel["bands_ppm"]["occasional"], 25)
+        self.assertEqual(sel["bands_ppm"]["rare"], 12)       # bridging band
+        self.assertEqual(sel["bands_ppm"]["very_rare"], 5)   # old 'rare' floor, renamed
+        self.assertEqual(sel["min_count"], 2)  # universal one-off floor (Native lands just under 100%)
+        self.assertEqual(sel["minutes_per_file"], 18)  # feeds the "meet each word every N hours" estimate
+
+    def test_selection_partial_override_deep_merges(self):
+        # A user overriding just the band keeps the shipped ppm floors (deep merge for logic.*).
+        partial = {"logic": {"selection": {"band": "common"}}}
+        with open(self.test_settings_path, 'w', encoding='utf-8') as f:
+            json.dump(partial, f)
+        loaded = settings_manager.load_settings()
+        self.assertEqual(loaded["logic"]["selection"]["band"], "common")
+        self.assertEqual(loaded["logic"]["selection"]["min_count"], 2)
+        self.assertEqual(loaded["logic"]["selection"]["bands_ppm"]["core"], 2000)
+
+    def test_bands_ppm_user_edits_respected_and_gaps_filled(self):
+        # bands_ppm is user-editable (like 'weights'): a floor the user set wins, and any band key
+        # they DIDN'T set is filled from defaults so a partial/older file can't break the structure.
+        partial = {"logic": {"selection": {"band": "rare", "bands_ppm": {"rare": 8}}}}
+        with open(self.test_settings_path, 'w', encoding='utf-8') as f:
+            json.dump(partial, f)
+        sel = settings_manager.load_settings()["logic"]["selection"]
+        self.assertEqual(sel["band"], "rare")               # preference kept
+        self.assertEqual(sel["bands_ppm"]["rare"], 8)        # user edit respected
+        self.assertEqual(sel["bands_ppm"]["core"], 2000)     # untouched band -> default
+        self.assertIn("very_rare", sel["bands_ppm"])         # missing band filled
+        self.assertEqual(sel["min_count"], 2)                # missing scalar filled
+        self.assertEqual(sel["minutes_per_file"], 18)
+
     def test_save_settings_validation(self):
         # Should handle non-dict input gracefully
         with patch('builtins.print') as mock_print:

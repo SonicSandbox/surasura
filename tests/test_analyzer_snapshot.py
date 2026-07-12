@@ -74,7 +74,7 @@ def test_analyzer_snapshot_ja(mock_env, ja_resources_dir):
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(results_dir / "priority_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
-         patch("sys.argv", ["analyzer.py", "--language", "ja"]):
+         patch("sys.argv", ["analyzer.py", "--language", "ja", "--min-freq", "1"]):
          
             print(f"\nRunning analysis in {mock_env['root']}...")
             analyzer.main()

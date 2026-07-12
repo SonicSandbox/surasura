@@ -77,7 +77,7 @@ def test_i_plus_one_fallback(i_plus_one_env):
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
          patch("app.analyzer.load_known_words", return_value=(mock_known_words, mock_known_lemmas)), \
          patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
-         patch("sys.argv", ["analyzer.py", "--language", "ja", "--include-single-chars"]):
+         patch("sys.argv", ["analyzer.py", "--language", "ja", "--include-single-chars", "--min-freq", "1"]):
             analyzer.main()
             
     df = read_results(csv_path)
@@ -112,7 +112,7 @@ def test_only_i_plus_one_strict(i_plus_one_env):
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
          patch("app.analyzer.load_known_words", return_value=(mock_known_words, mock_known_lemmas)), \
          patch.dict("sys.modules", {"modules.immersion_architect.immersion_architect": None}), \
-         patch("sys.argv", ["analyzer.py", "--language", "ja", "--only-i-plus-one", "--include-single-chars"]):
+         patch("sys.argv", ["analyzer.py", "--language", "ja", "--only-i-plus-one", "--include-single-chars", "--min-freq", "1"]):
             analyzer.main()
             
     df = read_results(csv_path)

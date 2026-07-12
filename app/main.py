@@ -12,6 +12,8 @@ from app import __version__
 from app.update_checker import get_update_info, classify_update
 from app import settings_manager
 from app import updater
+from app import word_selection
+from app import token_index
 
 # Windows Taskbar Icon Fix (Set AppUserModelID)
 if sys.platform == "win32":
@@ -31,9 +33,10 @@ SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
 
 class ToolTip:
-    def __init__(self, widget, text):
+    def __init__(self, widget, text, above=False):
         self.widget = widget
-        self.text = text
+        self.text = text          # str, or a zero-arg callable returning the current text
+        self.above = above        # show above the widget (e.g. so a slider's preview stays visible)
         self.tip_window: tk.Toplevel | None = None
         self.id = None
         self.widget.bind("<Enter>", self.schedule_tip)
@@ -63,25 +66,20 @@ class ToolTip:
             self.widget.after_cancel(id)
 
     def show_tip(self, event=None):
-        if self.tip_window or not self.text:
+        text = self.text() if callable(self.text) else self.text
+        if self.tip_window or not text:
             return
-            
-        # Optimization: Calculate position carefully to avoid "flashing" (cursor overlap)
-        # Position to the right of the widget by default, or below if it's too wide
-        bbox = self.widget.bbox("insert") 
-        # Simple usage of root coordinates
+
         root_x = self.widget.winfo_rootx()
         root_y = self.widget.winfo_rooty()
         widget_height = self.widget.winfo_height()
         widget_width = self.widget.winfo_width()
-        
-        # Position: Bottom-Right of the start of the widget, but ensuring it's not under cursor
-        # Moving it slightly down and right
+
+        # Default: just below-right of the widget.
         x = root_x + 20
         y = root_y + widget_height + 2
-        
-        # For very wide widgets (like checkboxes), maybe force it further right?
-        # The user requested: "Add the tooltip to the right so it's visible for the 2 exclude toggles"
+
+        # For very wide widgets (like checkboxes), push it to the right instead.
         if "Checkbutton" in self.widget.winfo_class():
              x = root_x + widget_width + 10
              y = root_y
@@ -89,22 +87,29 @@ class ToolTip:
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         # MacOS/Linux might need this to float on top
-        try: 
+        try:
             tw.wm_attributes("-topmost", True)
             tw.wm_attributes("-transparent", True) # Not supported on all, but harmless
         except:
              pass
-             
-        tw.wm_geometry(f"+{x}+{y}")
-        
-        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
+
+        # Wrap long tooltips onto multiple lines (per GUI guidelines); manual \n still break where
+        # intended. Short tips (<=50 chars) stay single-line.
+        wrap = 300 if len(text) > 50 else 0
+        label = tk.Label(tw, text=text, justify=tk.LEFT, wraplength=wrap,
                       background=SURFACE_COLOR, foreground=TEXT_COLOR,
                       relief=tk.FLAT, borderwidth=0,
                       padx=8, pady=4, font=("Segoe UI", 9))
         label.pack()
-        
         # XML-like border using frame or just background
         tw.configure(background=ACCENT_COLOR, padx=1, pady=1)
+
+        # Position above the widget (needs the rendered height) — keeps the slider's preview
+        # lines visible instead of covering them.
+        if self.above:
+            tw.update_idletasks()
+            y = root_y - tw.winfo_height() - 4
+        tw.wm_geometry(f"+{x}+{y}")
 
     def hide_tip(self, event=None):
         self.unschedule()
@@ -129,7 +134,12 @@ class MasterDashboardApp:
         
         # Initialize variables for Analyzer settings
         self.var_exclude_single = tk.BooleanVar(value=True) 
-        self.var_min_freq = tk.IntVar(value=1) 
+        # Density-band word selection (replaces the retired min-freq slider).
+        self.var_band = tk.StringVar(value="occasional")
+        self.var_band_name = tk.StringVar(value="Occasional")     # slider-side label
+        self.var_band_coverage = tk.StringVar(value="")           # "≈ 90% coverage · 801 words"
+        self._band_hours_text = ""   # immersion-hours line, shown as a tooltip on the coverage text
+        self._band_previews = None   # cached {band: preview} from the last analysis' token index
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
@@ -222,7 +232,7 @@ class MasterDashboardApp:
         
         # Add traces for auto-saving settings after initial load
         self.var_exclude_single.trace_add("write", self.save_settings)
-        self.var_min_freq.trace_add("write", self.save_settings)
+        self.var_band.trace_add("write", self.save_settings)
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
@@ -359,10 +369,101 @@ class MasterDashboardApp:
         if strategy == "freq":
             self.freq_frame.pack(side=tk.TOP, fill=tk.X)
             self.coverage_frame.pack_forget()
+            self._refresh_band_preview()
         else:
             self.freq_frame.pack_forget()
             self.coverage_frame.pack(side=tk.TOP, fill=tk.X)
             self.save_settings() # Save on switch
+
+    # --- Density-band selection: slider + live preview (reads the last run's token index) ------
+    def _on_band_slide(self, value):
+        """Slider moved: map its index to a band, update the side label, save, and refresh the
+        preview lines. Pure arithmetic over cached counts — instant, no tokenization."""
+        bands = word_selection.BANDS_ORDER
+        try:
+            idx = max(0, min(int(float(value)), len(bands) - 1))
+        except (TypeError, ValueError):
+            idx = 0
+        band = bands[idx]
+        self.var_band_name.set(word_selection.band_label(band))
+        if self.var_band.get() != band:
+            self.var_band.set(band)   # trace -> save_settings
+        self._update_band_preview_labels(band)
+
+    def _update_band_preview_labels(self, band):
+        previews = self._band_previews
+        if not previews or band not in previews:
+            self.var_band_coverage.set("Generate a journey once to see live estimates.")
+            self._band_hours_text = ""
+            return
+        p = previews[band]
+        self.var_band_coverage.set(f"≈ {p['coverage_percent']:.1f}% coverage   ·   {p['word_count']:,} words")
+        hrs = p.get("hours_between")
+        if hrs and hrs > 0:
+            self._band_hours_text = f"You'll meet each word at least once every {self._fmt_hours(hrs)} of immersion."
+        else:
+            self._band_hours_text = ""
+
+    @staticmethod
+    def _fmt_hours(hrs):
+        """Human-friendly immersion time: minutes under an hour, else hours."""
+        if hrs < 1:
+            return f"~{max(1, round(hrs * 60))} minutes"
+        if hrs < 10:
+            return f"~{hrs:.1f} hours"
+        return f"~{round(hrs)} hours"
+
+    def _refresh_band_preview(self):
+        """(Re)compute per-band preview numbers from the last analysis' persisted token index and
+        the current known words. Fugashi-free (reads cached counts), so it never blocks the GUI."""
+        try:
+            lang = self.var_language.get() or "ja"
+            index = token_index.load_index(token_index.index_path_for(lang))
+            if not index.get("total_tokens"):
+                self._band_previews = None
+            else:
+                known_lemmas, ignore_set = self._load_known_for_preview(lang)
+                freqs = token_index.unknown_frequencies(
+                    index, known_lemmas=known_lemmas, ignore_set=ignore_set,
+                    skip_singles=(lang == "ja"))
+                nfiles = len(index.get("files", {})) or 1
+                avg_file = index["total_tokens"] / nfiles
+                sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+                self._band_previews = word_selection.band_previews(
+                    freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
+                    avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
+        except Exception:
+            self._band_previews = None
+        self._update_band_preview_labels(self.var_band.get())
+
+    def _load_known_for_preview(self, lang):
+        """Known lemmas + ignore words WITHOUT the tokenizer (keeps the GUI light). Uses each
+        known entry's dictForm directly — an approximation good enough for a preview estimate."""
+        from app.path_utils import get_user_files_path
+        uf = get_user_files_path(lang)
+        known = set()
+        try:
+            with open(os.path.join(uf, "KnownWord.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            for e in entries:
+                if e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1:
+                    term = e.get("dictForm", "")
+                    if term:
+                        known.add(term)
+        except Exception:
+            pass
+        ignore = set()
+        for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
+            try:
+                with open(os.path.join(uf, name), encoding="utf-8") as f:
+                    for line in f:
+                        s = line.strip()
+                        if s and not s.startswith("#"):
+                            ignore.add(s)
+            except Exception:
+                pass
+        return known, ignore
             
     def update_ui_for_language(self):
         """Updates UI elements based on selected language"""
@@ -479,24 +580,56 @@ class MasterDashboardApp:
         strategy_frame.pack(fill=tk.X, pady=(0, 8))
         
         ttk.Label(strategy_frame, text="Generation Mode:").pack(side=tk.LEFT)
-        ttk.Radiobutton(strategy_frame, text="Min Frequency", variable=self.var_strategy, value="freq", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(strategy_frame, text="By Commonness", variable=self.var_strategy, value="freq", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
         ttk.Radiobutton(strategy_frame, text="Target % Coverage", variable=self.var_strategy, value="coverage", command=self.update_strategy_ui).pack(side=tk.LEFT, padx=(10, 0))
 
         # Dynamic Options Frame
         self.options_container = ttk.Frame(analyze_frame)
         self.options_container.pack(fill=tk.X, pady=(0, 8))
 
-        # 1. Frequency Slider (Default)
+        # 1. Density-band slider (Default) — Core .. Native, with a live preview.
         self.freq_frame = ttk.Frame(self.options_container)
-        
-        ttk.Label(self.freq_frame, text="Min Frequency:").pack(side=tk.LEFT)
-        freq_slider = tk.Scale(self.freq_frame, from_=1, to=10, orient=tk.HORIZONTAL, 
-                               variable=self.var_min_freq, showvalue=False,
-                               bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
-                               activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
-        freq_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
-        ttk.Label(self.freq_frame, textvariable=self.var_min_freq, width=2).pack(side=tk.LEFT)
-        ToolTip(self.freq_frame, "Show words with this frequency or higher. Default is 1 (shows all words).")
+
+        # Left label + a half-length slider + the current band name to its right.
+        band_row = ttk.Frame(self.freq_frame)
+        band_row.pack(fill=tk.X)
+        ttk.Label(band_row, text="Rarity:").pack(side=tk.LEFT, padx=(0, 8))
+        # Band name pinned to the right (fixed width so it doesn't jitter as the label changes),
+        # with a margin so it's never flush against the edge; the slider fills the space between.
+        ttk.Label(band_row, textvariable=self.var_band_name, width=11,
+                  foreground=ACCENT_COLOR, font=("Segoe UI", 11, "bold")).pack(side=tk.RIGHT, padx=(8, 14))
+        self.band_slider = tk.Scale(band_row, from_=0, to=len(word_selection.BANDS_ORDER) - 1,
+                                    orient=tk.HORIZONTAL, resolution=1, showvalue=False,
+                                    command=self._on_band_slide,
+                                    bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
+                                    activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
+        self.band_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        # Shown ABOVE so it doesn't cover the coverage line below.
+        ToolTip(self.band_slider,
+                "Which words to include, by how common they are in your library:\n\n"
+                "• Core: only the most common words (~50% coverage)\n"
+                "• Native: everything except one-off words (~99% coverage)\n\n"
+                "Slide right to learn rarer, less frequent words.",
+                above=True)
+
+        # Live preview line + an info (ppm) icon. Hovering the coverage text reveals the
+        # immersion-time estimate (kept as a tooltip so it doesn't take extra space).
+        preview_row = ttk.Frame(self.freq_frame)
+        preview_row.pack(fill=tk.X, pady=(4, 0))
+        cov_lbl = ttk.Label(preview_row, textvariable=self.var_band_coverage,
+                            foreground=SECONDARY_COLOR)
+        cov_lbl.pack(side=tk.LEFT)
+        ToolTip(cov_lbl, lambda: self._band_hours_text, above=True)
+        info_lbl = ttk.Label(preview_row, text="ⓘ", foreground="#8a8a8a")
+        info_lbl.pack(side=tk.RIGHT)
+        # No question-mark cursor; instead the icon brightens toward the coverage colour on hover.
+        info_lbl.bind("<Enter>", lambda e: info_lbl.config(foreground="#4db6ac"), add="+")
+        info_lbl.bind("<Leave>", lambda e: info_lbl.config(foreground="#8a8a8a"), add="+")
+        ToolTip(info_lbl,
+                "Measured in ppm (parts per million):\n"
+                "how many times a word appears\n"
+                "per million words in your library.\n"
+                "Lower ppm = rarer words.")
 
         # 2. Coverage Entry (Hidden initially)
         self.coverage_frame = ttk.Frame(self.options_container)
@@ -1110,7 +1243,6 @@ class MasterDashboardApp:
             self._current_settings = settings
 
             self.var_exclude_single.set(settings.get("exclude_single", True))
-            self.var_min_freq.set(settings.get("min_freq", 1))
             self.var_open_app_mode.set(settings.get("open_app_mode", False))
             
             theme = settings.get("theme", "Dark Flow")
@@ -1161,7 +1293,20 @@ class MasterDashboardApp:
                 self.var_max_contexts.set(context_settings.get("max_contexts", 3))
             else:
                 self.var_max_contexts = tk.IntVar(value=context_settings.get("max_contexts", 3))
-            
+
+            # Density-band selection: restore the chosen band and slider position.
+            sel = self.logic_settings.get("selection", {})
+            band = sel.get("band", "occasional")
+            if band not in word_selection.BANDS_ORDER:
+                band = "occasional"
+            self.var_band.set(band)
+            self.var_band_name.set(word_selection.band_label(band))
+            if hasattr(self, "band_slider"):
+                try:
+                    self.band_slider.set(word_selection.BANDS_ORDER.index(band))
+                except Exception:
+                    pass
+
             self.update_strategy_ui() # Apply state
         except Exception as e:
             print(f"Warning: Could not load settings: {e}")
@@ -1183,7 +1328,6 @@ class MasterDashboardApp:
             # Build settings dict from GUI vars
             settings = {
                 "exclude_single": self.var_exclude_single.get(),
-                "min_freq": self._iv(self.var_min_freq, cur.get("min_freq", 1)),
                 "open_app_mode": self.var_open_app_mode.get(),
                 "theme": self.combo_theme.get(),
                 "strategy": self.var_strategy.get(),
@@ -1206,6 +1350,12 @@ class MasterDashboardApp:
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),
                     "hide_audio_button": self.var_hide_audio.get(),
+                    # Persist the whole selection block (bands_ppm / min_count / minutes_per_file are
+                    # user-editable in settings.json, like 'weights'); the slider sets 'band'.
+                    "selection": {
+                        **self.logic_settings.get("selection", {}),
+                        "band": self.var_band.get(),
+                    },
                     "context": {
                         **self.logic_settings.get("context", {}),
                         "min_chars": self._iv(self.var_context_min_chars, cur_ctx.get("min_chars", 10)),
@@ -1286,8 +1436,11 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
             
-    def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False):
-        """Runs a command with optional output redirection to the terminal"""
+    def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None):
+        """Runs a command with optional output redirection to the terminal.
+
+        on_complete: optional zero-arg callable run on the GUI thread after the process exits
+        (e.g. refreshing the band preview once a new analysis has written its token index)."""
         
         # UI updates must be queued
         def _start_loading():
@@ -1378,7 +1531,9 @@ class MasterDashboardApp:
                      self.log_to_terminal(f"\n[ERROR] {desc} exited with code {process.returncode}")
                 
                 self.gui_queue.put(lambda: self.status_var.set("Ready"))
-                
+                if on_complete:
+                    self.gui_queue.put(on_complete)
+
             except Exception as e:
                 import traceback
                 print(traceback.format_exc())
@@ -1439,11 +1594,10 @@ class MasterDashboardApp:
         if self.var_strategy.get() == "coverage":
             coverage_target = self.var_target_coverage.get()
             args.append(f'--target-coverage={coverage_target}')
-        else:
-            min_freq = self.var_min_freq.get()
-            if min_freq > 0:
-                args.append(f'--min-freq={min_freq}')
-        
+        # else: density-band selection. The analyzer reads logic.selection (band + ppm floors)
+        # from settings, which are saved before this run. Raw --min-freq is retired from the UI
+        # (kept only as a CLI override); the band slider writes logic.selection.band.
+
         args.append('--static')
         
         # Add Language
@@ -1483,7 +1637,8 @@ class MasterDashboardApp:
         if zen_limit > 0:
             args.append(f'--zen-limit={zen_limit}')
 
-        self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True)
+        self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True,
+                               on_complete=self._refresh_band_preview)
 
     def run_static_page(self):
         # Add theme argument for static page generation only

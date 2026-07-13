@@ -161,6 +161,9 @@ class MasterDashboardApp:
         self.var_band_coverage = tk.StringVar(value="")           # "≈ 90% coverage · 801 words"
         self._band_hours_text = ""   # immersion-hours line, shown as a tooltip on the coverage text
         self._band_previews = None   # cached {band: preview} from the last analysis' token index
+        self._effective_bands = list(word_selection.BANDS_ORDER)  # bands shown on the slider; a
+        # trailing band identical to its neighbour (e.g. Native == Very Rare on this library) is hidden
+        self._preview_gen = 0        # generation counter: async preview refreshes ignore stale results
         self._indexer_busy = False   # a background token-indexer subprocess is running
         self._last_index_check = 0.0  # debounce the cheap "does the library need re-indexing?" check
         self.var_open_app_mode = tk.BooleanVar(value=False)
@@ -411,7 +414,7 @@ class MasterDashboardApp:
     def _on_band_slide(self, value):
         """Slider moved: map its index to a band, update the side label, save, and refresh the
         preview lines. Pure arithmetic over cached counts — instant, no tokenization."""
-        bands = word_selection.BANDS_ORDER
+        bands = self._effective_bands or word_selection.BANDS_ORDER
         try:
             idx = max(0, min(int(float(value)), len(bands) - 1))
         except (TypeError, ValueError):
@@ -429,12 +432,15 @@ class MasterDashboardApp:
             self._band_hours_text = ""
             return
         p = previews[band]
-        self.var_band_coverage.set(f"≈ {p['coverage_percent']:.1f}% coverage   ·   {p['word_count']:,} words")
+        parts = [f"≈ {p['coverage_percent']:.1f}% coverage", f"{p['word_count']:,} words"]
         hrs = p.get("hours_between")
         if hrs and hrs > 0:
+            # Compact, always-visible encounter rate; the full sentence stays in the tooltip.
+            parts.append(f"every {self._fmt_hours(hrs)}")
             self._band_hours_text = f"You'll meet each word at least once every {self._fmt_hours(hrs)} of immersion."
         else:
             self._band_hours_text = ""
+        self.var_band_coverage.set("   ·   ".join(parts))
 
     @staticmethod
     def _fmt_hours(hrs):
@@ -445,41 +451,99 @@ class MasterDashboardApp:
             return f"~{hrs:.1f} hours"
         return f"~{round(hrs)} hours"
 
+    def _compute_effective_bands(self):
+        """The bands the slider should actually offer. A trailing band that selects IDENTICALLY to
+        the one before it (same word count + coverage) is redundant — e.g. on a library where both
+        Native and Very Rare collapse to the min_count floor — so we drop it, leaving no dead stop.
+        Falls back to all bands when there's no preview yet."""
+        bands = list(word_selection.BANDS_ORDER)
+        p = self._band_previews
+        if not p:
+            return bands
+
+        def same(a, b):
+            pa, pb = p.get(a), p.get(b)
+            return (pa and pb and pa["word_count"] == pb["word_count"]
+                    and abs(pa["coverage_percent"] - pb["coverage_percent"]) < 1e-9)
+
+        while len(bands) > 1 and same(bands[-1], bands[-2]):
+            bands.pop()      # trim only from the rare end, where the collapse happens
+        return bands
+
+    def _apply_effective_bands(self):
+        """Resize the slider to the currently-meaningful bands and keep the selection valid. A now-
+        hidden band (e.g. Native) folds into the last visible one, which selects identically."""
+        if not hasattr(self, "band_slider"):
+            self._update_band_preview_labels(self.var_band.get())
+            return
+        bands = self._effective_bands or list(word_selection.BANDS_ORDER)
+        self.band_slider.config(to=max(0, len(bands) - 1))
+        band = self.var_band.get()
+        if band not in bands:
+            band = bands[-1]              # hidden band -> its identical, still-visible neighbour
+            self.var_band.set(band)       # trace -> save; harmless (same selection)
+        self.band_slider.set(bands.index(band))
+        self.var_band_name.set(word_selection.band_label(band))
+        self._update_band_preview_labels(band)
+
     def _refresh_band_preview(self):
-        """(Re)compute per-band preview numbers from the last analysis' persisted token index and
-        the current known words. Fugashi-free (reads cached counts), so it never blocks the GUI."""
+        """Refresh the band-preview numbers WITHOUT blocking the GUI. Opening the SQLite store and
+        reading the aggregate + the (multi-MB) known-words file can take a moment on a big library,
+        so we do it on a worker thread: a "Calculating…" placeholder shows instantly (e.g. the
+        moment you pick 'By Commonness'), and the real numbers land via the GUI queue when ready."""
+        import threading
+        lang = self.var_language.get() or "ja"
+        sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+        self._preview_gen = getattr(self, "_preview_gen", 0) + 1
+        gen = self._preview_gen
+        self.var_band_coverage.set("Calculating…")
+
+        def _work():
+            previews = self._compute_band_previews(lang, sel)
+            self.gui_queue.put(lambda: self._apply_preview_result(gen, previews))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _compute_band_previews(self, lang, sel):
+        """The heavy read (token store + known-words file). Runs on a WORKER thread — it must NOT
+        touch any tk widget; it only returns the {band: preview} dict (or None)."""
         try:
-            lang = self.var_language.get() or "ja"
             store = token_index.open_store(lang)
             try:
                 total = store.total_tokens()
                 if not total:
-                    self._band_previews = None
+                    return None
+                from app.path_utils import get_user_files_path
+                known_approx, ignore_set = self._load_known_for_preview(lang)
+                # Prefer the store's EXACT normalized known set when it's fresh (matches the current
+                # KnownWord.json); otherwise fall back to the dictForm approximation.
+                known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
+                cached = store.get_cached_known(token_index.known_signature(known_path))
+                if cached is not None:
+                    known_tuples, known_lemmas = cached
+                    freqs = store.unknown_frequencies(
+                        known_tuples=known_tuples, known_lemmas=known_lemmas,
+                        ignore_set=ignore_set, skip_singles=(lang == "ja"))
                 else:
-                    from app.path_utils import get_user_files_path
-                    known_approx, ignore_set = self._load_known_for_preview(lang)
-                    # Prefer the store's EXACT normalized known set when it's fresh (matches the
-                    # current KnownWord.json); otherwise fall back to the dictForm approximation.
-                    known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
-                    cached = store.get_cached_known(token_index.known_signature(known_path))
-                    if cached is not None:
-                        known_tuples, known_lemmas = cached
-                        freqs = store.unknown_frequencies(
-                            known_tuples=known_tuples, known_lemmas=known_lemmas,
-                            ignore_set=ignore_set, skip_singles=(lang == "ja"))
-                    else:
-                        freqs = store.unknown_frequencies(
-                            known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
-                    avg_file = total / (store.file_count() or 1)
-                    sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
-                    self._band_previews = word_selection.band_previews(
-                        freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
-                        avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
+                    freqs = store.unknown_frequencies(
+                        known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
+                avg_file = total / (store.file_count() or 1)
+                return word_selection.band_previews(
+                    freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
+                    avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
             finally:
                 store.close()
         except Exception:
-            self._band_previews = None
-        self._update_band_preview_labels(self.var_band.get())
+            return None
+
+    def _apply_preview_result(self, gen, previews):
+        """Runs on the GUI thread (via the queue). Ignores results from a superseded refresh, then
+        updates the cached previews, hides any redundant trailing band, and refreshes the labels."""
+        if gen != getattr(self, "_preview_gen", 0):
+            return
+        self._band_previews = previews
+        self._effective_bands = self._compute_effective_bands()
+        self._apply_effective_bands()
 
     def _load_known_for_preview(self, lang):
         """Known lemmas + ignore words WITHOUT the tokenizer (keeps the GUI light). Uses each
@@ -712,7 +776,9 @@ class MasterDashboardApp:
                             foreground=SECONDARY_COLOR)
         cov_lbl.pack(side=tk.LEFT)
         ToolTip(cov_lbl, lambda: self._band_hours_text, above=True)
-        info_lbl = ttk.Label(preview_row, text="ⓘ", foreground="#8a8a8a")
+        # Force a font that reliably carries the circled-i glyph (U+24D8). The default UI font on
+        # some Windows 10 builds lacks it, so the icon rendered invisible there (tooltip still worked).
+        info_lbl = ttk.Label(preview_row, text="ⓘ", foreground="#8a8a8a", font=("Segoe UI Symbol", 11))
         info_lbl.pack(side=tk.RIGHT)
         # No question-mark cursor; instead the icon brightens toward the coverage colour on hover.
         info_lbl.bind("<Enter>", lambda e: info_lbl.config(foreground="#4db6ac"), add="+")

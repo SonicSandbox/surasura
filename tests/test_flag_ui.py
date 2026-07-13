@@ -68,5 +68,55 @@ class TestFlagUI(unittest.TestCase):
         select("Modern Light")
         self.assertFalse(slider_shown(), "slider must hide again when leaving Zen Mode")
 
+    def test_native_band_hidden_when_identical_to_very_rare(self):
+        """The rarity slider drops a redundant trailing band: on a library where Native selects
+        identically to Very Rare, Native is hidden (no dead stop), and a Native selection folds
+        into Very Rare. When they differ, all six bands are shown."""
+        def mk(wc, cov):
+            return {"band": "", "word_count": wc, "coverage_percent": cov, "hours_between": 2.0}
+        # Native == Very Rare -> hidden.
+        self.app._band_previews = {"core": mk(100, 50), "common": mk(200, 75),
+                                   "occasional": mk(400, 90), "rare": mk(600, 94),
+                                   "very_rare": mk(800, 98.7), "native": mk(800, 98.7)}
+        self.app.var_band.set("native")
+        self.app._effective_bands = self.app._compute_effective_bands()
+        self.app._apply_effective_bands()
+        self.assertNotIn("native", self.app._effective_bands)
+        self.assertEqual(float(self.app.band_slider.cget("to")), 4.0)   # 5 stops, not 6
+        self.assertEqual(self.app.var_band.get(), "very_rare")          # Native folded in
+
+        # Distinct -> all six shown again.
+        self.app._band_previews["very_rare"] = mk(700, 96.7)
+        self.assertEqual(len(self.app._compute_effective_bands()), 6)
+
+    def test_preview_line_shows_coverage_words_and_encounter_rate(self):
+        """The visible preview line carries all three: coverage %, word count, and the compact
+        'every X' encounter rate — while the full sentence stays in the tooltip."""
+        self.app._band_previews = {"occasional": {"band": "", "word_count": 400,
+                                                  "coverage_percent": 90.0, "hours_between": 2.5}}
+        self.app._update_band_preview_labels("occasional")
+        line = self.app.var_band_coverage.get()
+        self.assertIn("90.0% coverage", line)
+        self.assertIn("400 words", line)
+        self.assertIn("every ~2.5 hours", line)
+        self.assertIn("every ~2.5 hours of immersion", self.app._band_hours_text)  # tooltip intact
+
+    def test_selecting_by_commonness_is_non_blocking(self):
+        """The heavy preview compute (store + known words) runs off-thread, so the toggle is
+        instant: _refresh_band_preview returns immediately with a 'Calculating…' placeholder; the
+        real numbers land later via the GUI queue."""
+        self.app.var_band_coverage.set("")
+        self.app._refresh_band_preview()
+        self.assertEqual(self.app.var_band_coverage.get(), "Calculating…")
+
+    def test_stale_async_preview_result_is_ignored(self):
+        """A superseded async refresh (older generation) must not clobber a newer one."""
+        self.app._band_previews = "SENTINEL"
+        self.app._preview_gen = 5
+        self.app._apply_preview_result(3, {"core": {}})     # stale gen 3 < 5 -> ignored
+        self.assertEqual(self.app._band_previews, "SENTINEL")
+        self.app._apply_preview_result(5, None)             # current gen -> applied
+        self.assertIsNone(self.app._band_previews)
+
 if __name__ == '__main__':
     unittest.main()

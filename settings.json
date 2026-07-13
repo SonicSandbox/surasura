@@ -1,7 +1,7 @@
 {
     "exclude_single": true,
     "open_app_mode": false,
-    "theme": "Dark Flow",
+    "theme": "Modern Light",
     "strategy": "freq",
     "target_coverage": 90,
     "split_length": 3000,
@@ -12,7 +12,7 @@
     "add_graduated_words": false,
     "words_per_day": 5,
     "show_words_per_day": true,
-    "zen_limit": 55,
+    "zen_limit": 84,
     "onboarding_completed": true,
     "open_count": 0,
     "hide_satoru": true,
@@ -62,7 +62,7 @@
         },
         "selection": {
             "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors \u2014 how common a word must be to be included; scale-stable across library sizes; 'native' is 0 (its floor is min_count). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. These are the single source of truth (no magic numbers in code).",
-            "band": "rare",
+            "band": "core",
             "min_count": 2,
             "minutes_per_file": 20,
             "bands_ppm": {

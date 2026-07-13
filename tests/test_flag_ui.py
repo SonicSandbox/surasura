@@ -49,5 +49,24 @@ class TestFlagUI(unittest.TestCase):
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
         self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
 
+    def test_zen_slider_shown_only_for_zen_theme(self):
+        """The Zen Limit slider appears only when the Zen Mode theme is selected. Real-root test so
+        it exercises the actual <<ComboboxSelected>> binding — guards the regression where the
+        theme-SAVE binding replaced the zen-visibility binding (a second bind() without add='+')."""
+        def slider_shown():
+            return self.app.zen_limit_frame.winfo_manager() == "pack"
+
+        def select(theme):
+            self.app.combo_theme.set(theme)
+            self.app.combo_theme.event_generate("<<ComboboxSelected>>")
+            self.root.update()
+
+        select("Dark Flow")
+        self.assertFalse(slider_shown(), "slider must be hidden for a non-Zen theme")
+        select("Zen Mode")
+        self.assertTrue(slider_shown(), "slider must appear when Zen Mode is selected")
+        select("Modern Light")
+        self.assertFalse(slider_shown(), "slider must hide again when leaving Zen Mode")
+
 if __name__ == '__main__':
     unittest.main()

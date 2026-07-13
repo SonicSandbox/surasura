@@ -111,6 +111,102 @@ def test_run_signature_reruns_on_settings_change(env):
     assert csv.stat().st_mtime != m1, "a settings.json edit must force a re-run"
 
 
+def test_presentation_settings_change_does_not_invalidate_run(env):
+    """A PRESENTATION setting written to settings.json (theme / Open-in-New-Window / zen limit) must
+    NOT force a re-analysis — the GUI rewrites settings.json when you toggle those, and hashing the
+    whole file used to trigger a full recompute. An ANALYSIS setting still re-runs."""
+    import time, json as _json
+    settings_file = env["root"] / "settings.json"
+    csv = env["results"] / "priority_learning_list.csv"
+
+    def write(open_new, theme, band):
+        settings_file.write_text(_json.dumps({
+            "open_app_mode": open_new, "theme": theme, "zen_limit": 55,
+            "logic": {"selection": {"band": band}},
+        }), encoding="utf-8")
+
+    write(open_new=False, theme="Dark Flow", band="occasional")
+    _run(env, ["--min-freq", "1"])
+    m1 = csv.stat().st_mtime
+    time.sleep(0.05)
+    # Toggle "Open in New Window" + change theme + zen limit -> presentation only -> must SKIP.
+    write(open_new=True, theme="Zen Mode", band="occasional")
+    _run(env, ["--min-freq", "1"], clear=False)
+    assert csv.stat().st_mtime == m1, "toggling theme / Open-in-New-Window must not re-analyze"
+    time.sleep(0.05)
+    # Change an ANALYSIS setting (the selection band) -> must re-run.
+    write(open_new=True, theme="Zen Mode", band="rare")
+    _run(env, ["--min-freq", "1"], clear=False)
+    assert csv.stat().st_mtime != m1, "changing the selection band must re-analyze"
+
+
+def test_presentation_args_do_not_invalidate_the_run(env):
+    """Merged 'Generate Journey': a THEME change (or Zen limit / window) must NOT trigger a
+    re-analysis. The run-signature excludes presentation args, so an unchanged library is skipped
+    even when the theme differs — while a real content change still re-runs."""
+    import time
+    csv = env["results"] / "priority_learning_list.csv"
+    _run(env, ["--min-freq", "1", "--theme=world-class"])                    # cold
+    m1 = csv.stat().st_mtime
+    time.sleep(0.05)
+    _run(env, ["--min-freq", "1", "--theme=modern-light"], clear=False)      # only the theme changed
+    assert csv.stat().st_mtime == m1, "a theme change must not trigger a re-analysis"
+    time.sleep(0.05)
+    (env["root"] / "data" / "ja" / "HighPriority" / "t.txt").write_text(
+        JA + "\n新しい冒険が始まる。", encoding="utf-8")                        # real change -> must re-run
+    _run(env, ["--min-freq", "1", "--theme=modern-light"], clear=False)
+    assert csv.stat().st_mtime != m1, "a content change must still re-run"
+
+
+def _fake_render_writing_html(env):
+    """A generate_static_html stand-in that actually creates the report file, so the analyzer's
+    'does the HTML exist?' fast-path check behaves realistically without opening a real browser."""
+    def _fake(theme="default", app_mode=False, zen_limit=0):
+        (env["results"] / "reading_list_static.html").write_text("<html></html>", encoding="utf-8")
+    return _fake
+
+
+def test_skip_rerenders_when_theme_changes(env):
+    """Analysis skipped but PRESENTATION changed (theme): the report must be RE-RENDERED with the
+    new theme (no re-analysis). This is what let the separate 'View' step be merged in."""
+    from unittest.mock import patch
+    import app.static_html_generator as shg
+    with patch.object(shg, "generate_static_html", side_effect=_fake_render_writing_html(env)) as mock_gen, \
+         patch.object(shg, "open_report") as mock_open:
+        _run(env, ["--min-freq", "1", "--static", "--theme=world-class"])                   # cold: render
+        _run(env, ["--min-freq", "1", "--static", "--theme=modern-light"], clear=False)     # skip + theme changed
+    assert mock_gen.call_count == 2, "a theme change on an unchanged library must re-render"
+    assert mock_gen.call_args_list[1].kwargs["theme"] == "modern-light"
+    assert mock_open.call_count == 0
+
+
+def test_skip_same_presentation_opens_without_rerender(env):
+    """The fast 'same setting' path: neither analysis NOR presentation changed, so the existing
+    report is OPENED without re-rendering (no template work, and pandas is never imported)."""
+    from unittest.mock import patch
+    import app.static_html_generator as shg
+    with patch.object(shg, "generate_static_html", side_effect=_fake_render_writing_html(env)) as mock_gen, \
+         patch.object(shg, "open_report") as mock_open:
+        _run(env, ["--min-freq", "1", "--static", "--theme=world-class"])                   # cold: render
+        _run(env, ["--min-freq", "1", "--static", "--theme=world-class"], clear=False)      # identical -> open only
+    assert mock_gen.call_count == 1, "an identical re-run must NOT re-render"
+    assert mock_open.call_count == 1, "an identical re-run must open the existing report"
+
+
+def test_toggling_open_in_new_window_does_not_rerender(env):
+    """'Open in New Window' (app_mode) changes only HOW the browser opens, not the report's bytes.
+    Toggling it must OPEN the existing report (in the new window mode), never re-render."""
+    from unittest.mock import patch
+    import app.static_html_generator as shg
+    with patch.object(shg, "generate_static_html", side_effect=_fake_render_writing_html(env)) as mock_gen, \
+         patch.object(shg, "open_report") as mock_open:
+        _run(env, ["--min-freq", "1", "--static", "--theme=world-class"])                              # cold render
+        _run(env, ["--min-freq", "1", "--static", "--theme=world-class", "--app-mode"], clear=False)   # only app_mode
+    assert mock_gen.call_count == 1, "toggling Open-in-New-Window must NOT re-render"
+    assert mock_open.call_count == 1, "it must open the existing report"
+    assert mock_open.call_args.kwargs.get("app_mode") is True, "opened in the chosen (new-window) mode"
+
+
 def test_run_persists_token_store(env):
     """A run seeds the SQLite token store so the preview needs no re-run."""
     import os

@@ -271,7 +271,10 @@ class MasterDashboardApp:
         self.var_enable_preview.trace_add("write", self.save_settings)
         self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
         self.var_auto_update.trace_add("write", self.save_settings)
-        self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
+        # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
+        # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
+        self.combo_theme.bind("<<ComboboxSelected>>",
+                              lambda e: (self.save_settings(), self._update_zen_visibility()))
 
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
@@ -731,17 +734,8 @@ class MasterDashboardApp:
         # Initialize UI state
         self.update_strategy_ui()
 
-        # Run Analyzer Button (+ optional small red YouTube Preview button to its right)
-        analyze_row = ttk.Frame(analyze_frame)
-        analyze_row.pack(fill=tk.X)
-        btn_analyze = ttk.Button(analyze_row, text="Generate Journey", style="Action.TButton",
-                                 command=self.run_analyzer)
-        btn_analyze.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ToolTip(btn_analyze, "Analyze text files and generate readability report. Auto-launches static page.")
-
-        self.btn_preview = ttk.Button(analyze_row, text="▷", style="Youtube.TButton", width=3,
-                                      command=self.open_youtube_preview)
-        ToolTip(self.btn_preview, "Preview a YouTube video/playlist against your library (quick look, no full re-run).")
+        # The single "Generate Journey" action lives in the Results Viewer below (it generates the
+        # analysis when needed AND opens the report — the old separate "View" step was merged in).
 
         # Spinner (Initially hidden)
         self.spinner = ttk.Progressbar(analyze_frame, mode='indeterminate', style="TProgressbar")
@@ -764,24 +758,39 @@ class MasterDashboardApp:
         chk_app_mode.pack(side=tk.LEFT, padx=(20, 0))
         ToolTip(chk_app_mode, "RECOMMENDS keeping it off until the migaku or lookupextension is turned on for that site.")
         
-        # Zen Mode Limit Slider (Main GUI)
-        zen_limit_frame = ttk.Frame(view_frame)
-        zen_limit_frame.pack(fill=tk.X, pady=(0, 8))
-        
-        ttk.Label(zen_limit_frame, text="Zen Limit:").pack(side=tk.LEFT)
-        zen_slider_main = tk.Scale(zen_limit_frame, from_=25, to=125, orient=tk.HORIZONTAL, 
+        # Zen Mode Limit Slider — only shown when the Zen Mode theme is selected (wired below).
+        self.zen_limit_frame = ttk.Frame(view_frame)
+        self.zen_limit_frame.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(self.zen_limit_frame, text="Zen Limit:").pack(side=tk.LEFT)
+        zen_slider_main = tk.Scale(self.zen_limit_frame, from_=25, to=125, orient=tk.HORIZONTAL,
                                    variable=self.var_zen_limit, showvalue=False,
                                    bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
                                    activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR, length=300)
         zen_slider_main.pack(side=tk.LEFT, padx=(5, 10))
         ToolTip(zen_slider_main, "Limit words for Zen Mode (25-125).")
-        
+
         # Value Label on the right
-        ttk.Label(zen_limit_frame, textvariable=self.var_zen_limit, width=4).pack(side=tk.LEFT)
-        btn_static = ttk.Button(view_frame, text="View Vocab Journey", style="Action.TButton", 
-                   command=self.run_static_page)
-        btn_static.pack(anchor=tk.W, fill=tk.X)
-        ToolTip(btn_static, "Refresh and open your personalized learning path in the web browser.")
+        ttk.Label(self.zen_limit_frame, textvariable=self.var_zen_limit, width=4).pack(side=tk.LEFT)
+        # The one main action: (re)generate the journey and open it. It reuses the last analysis
+        # when nothing relevant changed — so theme / Zen limit apply instantly without a recompute.
+        # The small red YouTube-preview button sits to its right (shown only when that feature is on).
+        self.journey_row = ttk.Frame(view_frame)
+        self.journey_row.pack(fill=tk.X)
+        btn_journey = ttk.Button(self.journey_row, text="Generate Journey", style="Action.TButton",
+                                 command=self.run_analyzer)
+        btn_journey.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(btn_journey, "Generate your learning path and open it in the browser. Reuses the last "
+                             "analysis if nothing changed, so theme / Zen limit apply instantly.")
+
+        self.btn_preview = ttk.Button(self.journey_row, text="▷", style="Youtube.TButton", width=3,
+                                      command=self.open_youtube_preview)
+        ToolTip(self.btn_preview, "Preview a YouTube video/playlist against your library (quick look, no full re-run).")
+
+        # The Zen Limit only affects the Zen Mode theme -> show that slider only when it's chosen.
+        # (The <<ComboboxSelected>> binding that drives this lives with the theme-save binding in
+        # __init__; here we just set the initial state.)
+        self._update_zen_visibility()
         
         # Footer
         footer_frame = ttk.Frame(self.root, padding=(10, 0)) # Zero vertical padding for footer
@@ -1326,6 +1335,17 @@ class MasterDashboardApp:
         else:
             self.btn_preview.pack_forget()
 
+    def _update_zen_visibility(self, event=None):
+        """Show the Zen Limit slider only when the Zen Mode theme is selected (it has no effect on
+        any other theme). Re-packed BEFORE the journey button so it keeps its position above it."""
+        if not hasattr(self, "zen_limit_frame"):
+            return
+        if self.combo_theme.get() == "Zen Mode":
+            if not self.zen_limit_frame.winfo_ismapped():
+                self.zen_limit_frame.pack(fill=tk.X, pady=(0, 8), before=self.journey_row)
+        else:
+            self.zen_limit_frame.pack_forget()
+
     def load_settings(self):
         try:
             settings = settings_manager.load_settings()
@@ -1337,7 +1357,8 @@ class MasterDashboardApp:
             theme = settings.get("theme", "Dark Flow")
             if theme in self.combo_theme['values']:
                 self.combo_theme.set(theme)
-            
+            self._update_zen_visibility()   # .set() fires no event -> sync the slider to the loaded theme
+
             self.var_strategy.set(settings.get("strategy", "freq"))
             self.var_target_coverage.set(settings.get("target_coverage", 90))
             self.var_split_length.set(settings.get("split_length", 3000))
@@ -1725,30 +1746,6 @@ class MasterDashboardApp:
 
         self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True,
                                on_complete=self._refresh_band_preview)
-
-    def run_static_page(self):
-        # Add theme argument for static page generation only
-        args = ['static_html_generator.py']
-        theme_map = {
-            'Default (Dark)': 'default',
-            'Dark Flow': 'world-class',
-            'Midnight (Vibrant)': 'midnight-vibrant',
-            'Modern Light': 'modern-light',
-            'Zen Mode': 'Zen Mode'
-        }
-        selected_theme = self.combo_theme.get()
-        theme_arg = theme_map.get(selected_theme, 'default')
-        args.append(f'--theme={theme_arg}')
-
-        if self.var_open_app_mode.get():
-            args.append('--app-mode')
-
-        # Zen Limit
-        zen_limit = self.var_zen_limit.get()
-        if zen_limit > 0:
-            args.append(f'--zen-limit={zen_limit}')
-
-        self.run_command_async(args, "Static Page", capture_output=True, show_spinner=True)
 
     def generate_frequency_list(self):
         """Show dialog to choose export format"""

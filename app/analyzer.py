@@ -9,10 +9,11 @@ import json
 import re
 import csv
 import hashlib
-import pandas as pd
-import fugashi
-import pysrt
-import jieba
+# Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
+# module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
+# `pysrt` only for .srt files. Consequences: a "nothing changed" skip builds no tokenizer and writes
+# no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
+# fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter
 from datetime import datetime
@@ -82,6 +83,7 @@ class Tokenizer(abc.ABC):
 
 class JapaneseTokenizer(Tokenizer):
     def __init__(self):
+        import fugashi   # lazy: only a Japanese run pays this import
         self.tagger = fugashi.Tagger()
 
     def tokenize(self, text):
@@ -138,6 +140,7 @@ class ChineseTokenizer(Tokenizer):
         # Force separation of common collocations that users prefer to see split
         # e.g. "就把" -> "就", "把" instead of "就把"
         if reinforce_segmentation:
+            import jieba   # lazy: only a Chinese run pays this ~0.17s import
             jieba.suggest_freq(('就', '把'), tune=True)
             jieba.suggest_freq(('您', '不'), tune=True)
             print("Configuration: Chinese segmentation reinforcement ENABLED.")
@@ -156,6 +159,7 @@ class ChineseTokenizer(Tokenizer):
 
     def tokenize_sentences(self, text):
         """Yields (sentence_string, list_of_filtered_tokens)"""
+        import jieba   # lazy (cached after first use): only a Chinese run loads jieba
         # jieba.cut returns a generator
         # We need to manually handle sentence splitting because jieba just streams tokens
         
@@ -487,6 +491,7 @@ def extract_text(file_path, language='ja'):
     text = ""
     if ext == '.srt':
         try:
+            import pysrt   # lazy: only reading a .srt subtitle file pays this import
             subs = pysrt.open(file_path)
             parts = []
             for sub in subs:
@@ -645,6 +650,7 @@ def main():
     parser.add_argument("--static-only", action="store_true", help="Generate static HTML")
     parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
     parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
+    parser.add_argument("--app-mode", action="store_true", help="Open the static report in a dedicated app window")
     parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
@@ -719,17 +725,12 @@ def main():
     # Resolve Paths based on Language
     data_dir = get_data_path(language)
     user_files_dir = get_user_files_path(language)
-    
-    # 1. Load Resources
-    if language == 'zh':
-        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
-        known_file = os.path.join(user_files_dir, "KnownWord.json")
-    else:
-        tokenizer = JapaneseTokenizer()
-        known_file = os.path.join(user_files_dir, "KnownWord.json")
+    known_file = os.path.join(user_files_dir, "KnownWord.json")
+    ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
+    black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
+    graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
 
-    # Open the persistent SQLite token store — used for the known-words cache (below), the delta
-    # tokenization reconcile before aggregation, and the run-signature skip. Best-effort.
+    # Open the persistent SQLite token store (known-words cache, delta reconcile, run-signature).
     from app import token_index as _token_index
     try:
         _store = _token_index.open_store(language)
@@ -737,47 +738,19 @@ def main():
         print(f"Warning: could not open token store: {e}")
         _store = None
 
-    # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
-    # KnownWord.json is unchanged; any edit / delete / newly-added file flips the signature and
-    # forces a fresh normalization (so a change to your known words is always reflected).
-    _known_sig = _token_index.known_signature(known_file)
-    _cached_known = _store.get_cached_known(_known_sig) if _store else None
-    if _cached_known is not None:
-        known_words_initial, known_lemmas_initial = _cached_known
-        print("Reused cached known-words normalization.")
-    else:
-        known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
-        if _store:
-            try:
-                _store.set_cached_known(_known_sig, known_words_initial, known_lemmas_initial)
-            except Exception:
-                pass
-    
-    ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
-    black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
-    graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
-    
-    ignore_list = load_simple_list(ignore_list_file)
-    black_list = load_simple_list(black_list_file)
-    graduated_list = load_simple_list(graduated_list_file)
-    
-    ignore_list.update(black_list) # Merge blacklist into ignore list
-    ignore_list.update(graduated_list) # Merge graduated list into ignore list
-    
-    # Discover and load all yomitan frequency lists from User Files
+    # --- SIGNATURE INPUTS ONLY (cheap: file stats + paths, NO file content) ---
+    # Everything the run-signature needs is a filesystem fingerprint, not file content. So the
+    # signature + skip decision below happen BEFORE loading any heavy content: the tokenizer, the
+    # known-words (a ~3 MB JSON), the ignore lists, or the frequency-list CSVs. A "nothing changed"
+    # skip needs none of those, and on a big library that content-loading is the bulk of a skip's
+    # wasted time. (They're loaded further down, only once we know a real run is happening.)
+    _known_sig = _token_index.known_signature(known_file)       # stat only (no tokenizer, no 3MB read)
     print(f"Scanning for {language} frequency lists in {user_files_dir}...")
-    available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)
-    
+    available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)   # paths only
     if not available_freq_lists:
         print("Warning: No frequency lists found in User Files/")
         print("Expected format: frequency_list_{lang}_*.csv")
-    
-    freq_data = {}
-    for list_name, filepath in sorted(available_freq_lists.items()):
-        freq_data[list_name] = load_yomitan_frequency_list(filepath)
-    
-    print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
-    
+
     # 2. Define Scanning targets
     # ORDER MATTERS: High -> Low -> Goal
     scan_targets = [
@@ -930,11 +903,24 @@ def main():
                 _st = os.stat(p); return [_st.st_mtime, _st.st_size]
             except OSError:
                 return None
-        _settings_content = ""
+        # Hash only the ANALYSIS-affecting settings. Presentation / lifecycle keys are STRIPPED:
+        # otherwise toggling "Open in New Window" or the theme rewrites settings.json (open_app_mode
+        # / theme) and would force a full RE-ANALYSIS instead of just reopening / re-rendering the
+        # report. Everything else — including the whole `logic` block (weights, tiers, context,
+        # selection bands, ...) — stays, so a real analysis-setting change still re-runs.
+        _NON_ANALYSIS_SETTINGS = {
+            "theme", "open_app_mode", "zen_limit",           # presentation (map to --theme/--app-mode/--zen-limit)
+            "words_per_day", "show_words_per_day",            # HTML "target days" display only
+            "open_count", "skipped_version",                 # app lifecycle (change on their own)
+        }
+        _settings_for_sig = ""
         try:
             with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
-                _settings_content = _sf.read()
-        except OSError:
+                _sj = json.load(_sf)
+            for _k in _NON_ANALYSIS_SETTINGS:
+                _sj.pop(_k, None)
+            _settings_for_sig = json.dumps(_sj, sort_keys=True, ensure_ascii=False)
+        except Exception:
             pass
         from app import __version__ as _app_version
         _sig_parts = {
@@ -947,8 +933,14 @@ def main():
             "known": _known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
             "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
-            "settings": _settings_content,
-            "argv": sys.argv[1:],
+            "settings": _settings_for_sig,
+            # ONLY the analysis-affecting args — NOT presentation (--theme / --zen-limit /
+            # --app-mode / --static). Changing a theme must NOT invalidate the analysis: the skip
+            # path still re-renders + reopens the report, so presentation is applied without paying
+            # for a recompute (this is what let the separate "View" button be merged away).
+            "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
+                     args.include_single_chars, args.exclude_freq_one, args.reinforce,
+                     args.context_min, args.context_max, args.max_contexts],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}",
         }
         _run_sig = hashlib.sha256(
@@ -957,15 +949,78 @@ def main():
     except Exception as e:
         print(f"Warning: could not compute run signature: {e}")
 
-    _outputs_present = os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
-    if "--static" in sys.argv:
-        _outputs_present = _outputs_present and os.path.exists(
-            os.path.join(RESULTS_DIR, "reading_list_static.html"))
-    if (_store is not None and _run_sig and _outputs_present
+    # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
+    _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
+                                 and os.path.exists(os.path.join(RESULTS_DIR, "word_stats.json")))
+    # Presentation fingerprint that decides whether the HTML must be RE-RENDERED. Only theme and Zen
+    # limit change the report's contents. app_mode ("Open in New Window") is deliberately EXCLUDED:
+    # it changes only HOW the browser is launched, not a single byte of the report — so toggling it
+    # reopens the existing report (in the chosen window mode) and never triggers a re-render.
+    _render_sig = json.dumps([args.theme, int(args.zen_limit or 0)])
+    if (_store is not None and _run_sig and _analysis_outputs_present
             and _store.get_meta("last_run_signature") == _run_sig):
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
+        if args.static:
+            try:
+                try:
+                    from app import static_html_generator
+                except ImportError:
+                    import static_html_generator
+                _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
+                # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
+                # report is already correct — just open it (no re-render, and pandas is never
+                # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
+                if os.path.exists(_html) and _store.get_meta("last_render_sig") == _render_sig:
+                    print("Report already up to date - opening it.")
+                    static_html_generator.open_report(app_mode=args.app_mode)
+                else:
+                    print("Re-rendering report from existing results (presentation changed)...")
+                    static_html_generator.generate_static_html(
+                        theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
+                    try:
+                        _store.set_meta("last_render_sig", _render_sig)
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Error: Could not generate static HTML: {e}")
         _store.close()
         return
+
+    # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
+    # "nothing changed" skip path above never pays its ~0.35s import cost.
+    import pandas as pd
+
+    # --- Past the skip: this is a real run, so NOW load the heavy content the skip check above
+    #     deliberately avoided (tokenizer, known-words normalization, ignore lists, frequency lists). ---
+    if language == 'zh':
+        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
+    else:
+        tokenizer = JapaneseTokenizer()
+
+    # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
+    # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
+    # above) and forces a fresh normalization, so a change to your known words is always reflected.
+    _cached_known = _store.get_cached_known(_known_sig) if _store else None
+    if _cached_known is not None:
+        known_words_initial, known_lemmas_initial = _cached_known
+        print("Reused cached known-words normalization.")
+    else:
+        known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
+        if _store:
+            try:
+                _store.set_cached_known(_known_sig, known_words_initial, known_lemmas_initial)
+            except Exception:
+                pass
+
+    ignore_list = load_simple_list(ignore_list_file)
+    ignore_list.update(load_simple_list(black_list_file))        # merge blacklist into ignore list
+    ignore_list.update(load_simple_list(graduated_list_file))    # merge graduated list into ignore list
+
+    # Load all yomitan frequency lists (discovered above; contents read here on a real run only).
+    freq_data = {}
+    for list_name, filepath in sorted(available_freq_lists.items()):
+        freq_data[list_name] = load_yomitan_frequency_list(filepath)
+    print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
 
     # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the
     # aggregation below reads those cached tokens, so unchanged files are never re-tokenized.
@@ -1579,25 +1634,29 @@ def main():
     # --- VISUALIZER REMOVED ---
             
     # --- STATIC GENERATION ---
-    if "--static" in sys.argv:
+    if args.static:
         try:
             try:
                 from app import static_html_generator
             except ImportError:
                 import static_html_generator
-                
+
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
-            static_html_generator.generate_static_html(theme=args.theme, zen_limit=args.zen_limit)
+            static_html_generator.generate_static_html(
+                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
-    # entirely next time, then close the store.
+    # entirely next time (and the presentation fingerprint so a same-setting re-run can open the
+    # report without re-rendering), then close the store.
     if _store is not None:
         try:
             if _run_sig:
                 _store.set_meta("last_run_signature", _run_sig)
+            if args.static:
+                _store.set_meta("last_render_sig", _render_sig)
         except Exception:
             pass
         _store.close()

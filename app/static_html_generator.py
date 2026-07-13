@@ -42,6 +42,20 @@ def open_as_app(file_path):
     # Fallback to standard browser behavior
     webbrowser.open(url)
 
+
+def open_report(app_mode=False):
+    """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
+    analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
+    no report on disk yet (caller should render instead)."""
+    if not os.path.exists(OUTPUT_FILE):
+        return False
+    if app_mode:
+        open_as_app(OUTPUT_FILE)
+    else:
+        webbrowser.open(f"file://{os.path.abspath(OUTPUT_FILE)}")
+    return True
+
+
 def compress_list_of_dicts(data_list):
     """
     Compresses a list of dictionaries into a compact format:

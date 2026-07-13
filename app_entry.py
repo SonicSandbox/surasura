@@ -114,6 +114,12 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 anki_db_importer_gui.main()
                 return
+
+            elif command == 'index':
+                from app import indexer
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                indexer.main()
+                return
             else:
                 log_error(f"Unknown command: {command}")
 

@@ -32,6 +32,27 @@ ACCENT_COLOR = "#bb86fc"
 SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
 
+
+def build_subprocess_env(frozen=None):
+    """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
+
+    Forces the child's stdio to UTF-8 so the parent's strict-UTF-8 stdout capture never chokes on
+    locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
+    Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
+    byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
+    """
+    from app.path_utils import is_frozen
+    if frozen is None:
+        frozen = is_frozen()
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    if not frozen:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = (project_root + os.pathsep + env["PYTHONPATH"]
+                             if "PYTHONPATH" in env else project_root)
+    return env
+
+
 class ToolTip:
     def __init__(self, widget, text, above=False):
         self.widget = widget
@@ -140,6 +161,8 @@ class MasterDashboardApp:
         self.var_band_coverage = tk.StringVar(value="")           # "≈ 90% coverage · 801 words"
         self._band_hours_text = ""   # immersion-hours line, shown as a tooltip on the coverage text
         self._band_previews = None   # cached {band: preview} from the last analysis' token index
+        self._indexer_busy = False   # a background token-indexer subprocess is running
+        self._last_index_check = 0.0  # debounce the cheap "does the library need re-indexing?" check
         self.var_open_app_mode = tk.BooleanVar(value=False)
         self.var_strategy = tk.StringVar(value="freq")
         self.var_target_coverage = tk.IntVar(value=90)
@@ -249,6 +272,12 @@ class MasterDashboardApp:
         self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
         self.var_auto_update.trace_add("write", self.save_settings)
         self.combo_theme.bind("<<ComboboxSelected>>", self.save_settings)
+
+        # Always-fresh preview: when the window regains focus (e.g. after editing content in
+        # Explorer or importing words), cheaply check for a delta and re-index in the background.
+        self.root.bind("<FocusIn>", lambda e: self._maybe_launch_indexer())
+        # And once shortly after startup, so the preview appears without a manual Generate.
+        self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
 
         # Reconcile the result of any update applied since we last ran (toast / manual-retry).
         self.root.after(800, self.reconcile_update_result)
@@ -418,20 +447,33 @@ class MasterDashboardApp:
         the current known words. Fugashi-free (reads cached counts), so it never blocks the GUI."""
         try:
             lang = self.var_language.get() or "ja"
-            index = token_index.load_index(token_index.index_path_for(lang))
-            if not index.get("total_tokens"):
-                self._band_previews = None
-            else:
-                known_lemmas, ignore_set = self._load_known_for_preview(lang)
-                freqs = token_index.unknown_frequencies(
-                    index, known_lemmas=known_lemmas, ignore_set=ignore_set,
-                    skip_singles=(lang == "ja"))
-                nfiles = len(index.get("files", {})) or 1
-                avg_file = index["total_tokens"] / nfiles
-                sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
-                self._band_previews = word_selection.band_previews(
-                    freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
-                    avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
+            store = token_index.open_store(lang)
+            try:
+                total = store.total_tokens()
+                if not total:
+                    self._band_previews = None
+                else:
+                    from app.path_utils import get_user_files_path
+                    known_approx, ignore_set = self._load_known_for_preview(lang)
+                    # Prefer the store's EXACT normalized known set when it's fresh (matches the
+                    # current KnownWord.json); otherwise fall back to the dictForm approximation.
+                    known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
+                    cached = store.get_cached_known(token_index.known_signature(known_path))
+                    if cached is not None:
+                        known_tuples, known_lemmas = cached
+                        freqs = store.unknown_frequencies(
+                            known_tuples=known_tuples, known_lemmas=known_lemmas,
+                            ignore_set=ignore_set, skip_singles=(lang == "ja"))
+                    else:
+                        freqs = store.unknown_frequencies(
+                            known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
+                    avg_file = total / (store.file_count() or 1)
+                    sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+                    self._band_previews = word_selection.band_previews(
+                        freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
+                        avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
+            finally:
+                store.close()
         except Exception:
             self._band_previews = None
         self._update_band_preview_labels(self.var_band.get())
@@ -464,7 +506,51 @@ class MasterDashboardApp:
             except Exception:
                 pass
         return known, ignore
-            
+
+    def _maybe_launch_indexer(self, force=False):
+        """Keep the token store (and thus the band preview) always-fresh: if the library or the
+        known-words file changed since the store was last built, launch a short background indexer
+        SUBPROCESS (so the tokenizer never enters the GUI) and refresh the preview when it finishes.
+        The pre-check is stat-only (no tokenizer); debounced; never overlaps itself."""
+        if os.environ.get("SURASURA_NO_AUTOINDEX") or self._indexer_busy:
+            return
+        import time
+        now = time.monotonic()
+        if not force and (now - self._last_index_check) < 2.0:
+            return
+        self._last_index_check = now
+        try:
+            lang = self.var_language.get() or "ja"
+            from app.path_utils import get_data_path, get_user_files_path
+            data_dir = get_data_path(lang)
+            files = []
+            for folder in ("HighPriority", "LowPriority", "GoalContent"):
+                base = os.path.join(data_dir, folder)
+                if os.path.isdir(base):
+                    for r, _d, names in os.walk(base):
+                        files += [os.path.join(r, n) for n in names
+                                  if n.lower().endswith((".txt", ".md", ".srt", ".ass"))]
+            store = token_index.open_store(lang)
+            try:
+                known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
+                need = (store.needs_reconcile(files)
+                        or store.get_cached_known(token_index.known_signature(known_file)) is None)
+            finally:
+                store.close()
+        except Exception:
+            return
+        if not need:
+            return
+
+        self._indexer_busy = True
+
+        def _done():
+            self._indexer_busy = False
+            self._refresh_band_preview()
+
+        self.run_command_async(['indexer.py', '--language', self.var_language.get()],
+                               "Indexing", on_complete=_done)
+
     def update_ui_for_language(self):
         """Updates UI elements based on selected language"""
         if getattr(self, '_lock_ui_updates', False):
@@ -506,7 +592,10 @@ class MasterDashboardApp:
             self.save_settings()
         finally:
             self._lock_ui_updates = False
-        
+
+        # A language switch points at a different store — re-index that language in the background.
+        self._maybe_launch_indexer(force=True)
+
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="15") # Reduced padding 25 -> 15
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -1470,7 +1559,8 @@ class MasterDashboardApp:
                 'static_html_generator.py': 'static_generator',
                 'migaku_converter.py': 'convert_db',
                 'anki_db_importer_gui.py': 'anki_importer',
-                'frequency_list_gui.py': 'frequency_list_manager'
+                'frequency_list_gui.py': 'frequency_list_manager',
+                'indexer.py': 'index'
             }
             
             try:
@@ -1488,15 +1578,9 @@ class MasterDashboardApp:
                     script_path = os.path.join(app_dir, cmd[0])
                     final_args = [sys.executable, script_path] + cmd[1:]
 
-                # SET ENVIRONMENT (Fix for No module named 'app')
-                env = os.environ.copy()
-                if not is_frozen():
-                    # In source mode, add the project root to PYTHONPATH
-                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    if "PYTHONPATH" in env:
-                        env["PYTHONPATH"] = project_root + os.pathsep + env["PYTHONPATH"]
-                    else:
-                        env["PYTHONPATH"] = project_root
+                # SET ENVIRONMENT: UTF-8 stdio (so the strict-UTF-8 stdout capture below never
+                # chokes on locale-encoded bytes) + project root on PYTHONPATH in source mode.
+                env = build_subprocess_env(is_frozen())
                 
                 # subprocess.CREATE_NO_WINDOW can cause issues for GUI apps
                 # but it's good for console tools like analyzer if we capture output.
@@ -1510,6 +1594,8 @@ class MasterDashboardApp:
                     stderr=subprocess.STDOUT if capture_output else None,
                     text=True,
                     encoding='utf-8',
+                    errors='replace',   # belt-and-suspenders: a stray non-UTF-8 byte in child output
+                                        # must never crash the capture loop (it only feeds the log)
                     bufsize=1,
                     universal_newlines=True,
                     creationflags=creation_flags,

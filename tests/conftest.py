@@ -36,6 +36,28 @@ def project_root():
 
 
 @pytest.fixture(autouse=True)
+def _no_gui_autoindex(monkeypatch):
+    """Stop the dashboard from spawning a real background-indexer subprocess during tests.
+
+    Constructing MasterDashboardApp runs update_ui_for_language(), which calls
+    _maybe_launch_indexer(); that guard-checks this env var and no-ops. The indexer's own logic
+    is covered directly by test_indexer.py (it calls indexer.main()), not via the GUI auto-launch."""
+    monkeypatch.setenv("SURASURA_NO_AUTOINDEX", "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_token_store(tmp_path_factory, monkeypatch):
+    """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to
+    the real %APPDATA% store (and tests never couple through a shared DB)."""
+    d = tmp_path_factory.mktemp("token_store")
+    monkeypatch.setattr(
+        "app.token_index.store_path_for",
+        lambda language: str(d / f"token_store_{language}.db"),
+        raising=False,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_analyzer_module_state():
     """Keep the analyzer's module-level state from leaking between tests.
 

@@ -22,8 +22,11 @@ JA_TEXT = (
 def freqs(tmp_path):
     f = tmp_path / "lib.txt"
     f.write_text(JA_TEXT, encoding="utf-8")
-    index = ti.reconcile([str(f)], ti.make_tokenizer("ja"))
-    return ti.unknown_frequencies(index, skip_singles=True)
+    store = ti.open_store("ja", path=str(tmp_path / "s.db"))
+    store.reconcile([str(f)], ti.make_tokenizer("ja"))
+    fr = store.unknown_frequencies(skip_singles=True)
+    store.close()
+    return fr
 
 
 # --- Pure math ------------------------------------------------------------------------------ #
@@ -111,6 +114,25 @@ def test_band_previews_returns_all_bands_ordered(freqs):
     counts = [previews[b]["word_count"] for b in ws.BANDS_ORDER]
     assert counts == sorted(counts)
     assert previews["native"]["coverage_percent"] >= previews["core"]["coverage_percent"]
+
+
+def test_low_bands_collapse_when_ppm_floor_dips_below_min_count():
+    """DESIGN NOTE (not a bug): a band whose ppm-equivalent floor lands BELOW the universal
+    min_count clamps up to min_count — so two low bands can select IDENTICALLY on a given library.
+
+    This is exactly why 'Very Rare' == 'Native' when very_rare's ppm is tuned too low for the
+    library size: at ~615k tokens, very_rare=3ppm -> 1.85 occurrences (< min_count 2) -> the SAME
+    floor as native. The SHIPPED defaults avoid this (very_rare=5 stays distinct), so this guards
+    the calibration while documenting the collapse as intended, size-dependent behaviour."""
+    total = 615_221                       # a real library size where very_rare=3ppm -> 1.85 < 2
+    tuned = {"very_rare": 3, "native": 1}
+    # User-tuned-too-low: both clamp to min_count -> identical selection (the reported symptom).
+    assert ws.band_floor_count("very_rare", total, tuned, min_count=2) == 2.0
+    assert ws.band_floor_count("native", total, tuned, min_count=2) == 2.0
+
+    # The SHIPPED defaults keep the two lowest bands DISTINCT at the same library size.
+    assert (ws.band_floor_count("very_rare", total, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT)
+            > ws.band_floor_count("native", total, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT))
 
 
 def test_custom_bands_ppm_override(freqs):

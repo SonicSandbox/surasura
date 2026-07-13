@@ -8,6 +8,7 @@ if __name__ == "__main__" and __package__ is None:
 import json
 import re
 import csv
+import hashlib
 import pandas as pd
 import fugashi
 import pysrt
@@ -686,7 +687,7 @@ def main():
     # When passed (>0) it bypasses the bands entirely.
     if args.min_freq > 0:
         MIN_FREQ = args.min_freq
-        print(f"Configuration: Raw min-freq override — words with count < {MIN_FREQ} EXCLUDED.")
+        print(f"Configuration: Raw min-freq override - words with count < {MIN_FREQ} EXCLUDED.")
     elif args.exclude_freq_one:
         # Backward compatibility
         MIN_FREQ = 1
@@ -722,15 +723,35 @@ def main():
     # 1. Load Resources
     if language == 'zh':
         tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
-        # For consistency, we might look for KnownWord.json in the zh folder too?
-        # Legacy: KnownWord_zh.json in User Files?
-        # New Plan: User Files/zh/KnownWord.json
         known_file = os.path.join(user_files_dir, "KnownWord.json")
     else:
         tokenizer = JapaneseTokenizer()
         known_file = os.path.join(user_files_dir, "KnownWord.json")
-        
-    known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
+
+    # Open the persistent SQLite token store — used for the known-words cache (below), the delta
+    # tokenization reconcile before aggregation, and the run-signature skip. Best-effort.
+    from app import token_index as _token_index
+    try:
+        _store = _token_index.open_store(language)
+    except Exception as e:
+        print(f"Warning: could not open token store: {e}")
+        _store = None
+
+    # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
+    # KnownWord.json is unchanged; any edit / delete / newly-added file flips the signature and
+    # forces a fresh normalization (so a change to your known words is always reflected).
+    _known_sig = _token_index.known_signature(known_file)
+    _cached_known = _store.get_cached_known(_known_sig) if _store else None
+    if _cached_known is not None:
+        known_words_initial, known_lemmas_initial = _cached_known
+        print("Reused cached known-words normalization.")
+    else:
+        known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
+        if _store:
+            try:
+                _store.set_cached_known(_known_sig, known_words_initial, known_lemmas_initial)
+            except Exception:
+                pass
     
     ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
     black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
@@ -898,6 +919,69 @@ def main():
 
     print(f"Final Count: Found {len(found_files)} files to process.")
 
+    # --- #2 Run-signature: skip the ENTIRE run if nothing affecting the analysis changed ---
+    # Signature = every content file's (mtime,size) + known/ignore/blacklist/graduated + frequency
+    # lists + the FULL settings.json content + the CLI args + engine version. The whole-settings
+    # hash means a GUI change AND a manual settings.json edit both force a re-run (never stale).
+    _run_sig = None
+    try:
+        def _fsig(p):
+            try:
+                _st = os.stat(p); return [_st.st_mtime, _st.st_size]
+            except OSError:
+                return None
+        _settings_content = ""
+        try:
+            with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
+                _settings_content = _sf.read()
+        except OSError:
+            pass
+        from app import __version__ as _app_version
+        _sig_parts = {
+            # ORDER-SENSITIVE, and includes each file's (label, weight): output depends on file
+            # order (min_seq, the progressive sequence, i+1 rolling-known evaluation) AND on the
+            # tier weight (Score, the High/Low/Goal columns). So a manifest REORDER or RE-PHASE
+            # (the Immersion Architect's whole job — same files, new schedule) must change the
+            # signature and force a re-run, never be skipped as "unchanged".
+            "files": [[fp, _fsig(fp), _l, _w] for (fp, _l, _w) in found_files],
+            "known": _known_sig,
+            "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
+            "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
+            "settings": _settings_content,
+            "argv": sys.argv[1:],
+            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}",
+        }
+        _run_sig = hashlib.sha256(
+            json.dumps(_sig_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()
+    except Exception as e:
+        print(f"Warning: could not compute run signature: {e}")
+
+    _outputs_present = os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
+    if "--static" in sys.argv:
+        _outputs_present = _outputs_present and os.path.exists(
+            os.path.join(RESULTS_DIR, "reading_list_static.html"))
+    if (_store is not None and _run_sig and _outputs_present
+            and _store.get_meta("last_run_signature") == _run_sig):
+        print("Nothing affecting the analysis changed since the last run - reusing existing results.")
+        _store.close()
+        return
+
+    # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the
+    # aggregation below reads those cached tokens, so unchanged files are never re-tokenized.
+    if _store is not None:
+        try:
+            _store.reconcile([_fp for (_fp, _l, _w) in found_files],
+                             _token_index.make_tokenizer(language, reinforce=args.reinforce),
+                             build_signature=_token_index.build_signature(language, args.reinforce))
+        except Exception as e:
+            print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
+            try:
+                _store.close()
+            except Exception:
+                pass
+            _store = None
+
     # Per-file (lemma, reading) counts captured during aggregation and reused by the
     # progressive pass, so the whole library is tokenized once instead of twice.
     file_token_cache = {}
@@ -908,15 +992,29 @@ def main():
             print(f"Processing {os.path.basename(file_path)}...")
         except UnicodeEncodeError:
             print(f"Processing file {found_files.index((file_path, label, weight)) + 1}...")
-        text = extract_text(file_path, language)
-        
+
+        # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
+        if _store is not None:
+            sentences = _store.file_tokens(file_path)
+            # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
+            # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
+            # Re-tokenize directly rather than silently drop the whole file's contribution.
+            if not sentences:
+                try:
+                    if os.path.getsize(file_path) > 0:
+                        sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+                except OSError:
+                    pass
+        else:
+            sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+
         file_total_words = 0
         file_known_words = 0
         # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
         # exactly (built in first-appearance order) for the progressive pass to reuse.
         file_counter = Counter()
 
-        for s_text, s_tokens in tokenizer.tokenize_sentences(text):
+        for s_text, s_tokens in sentences:
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             for lemma, reading, surface in s_tokens:
@@ -1033,6 +1131,8 @@ def main():
             "Known Count": file_known_words,
             "Coverage (%)": round(coverage, 2)
         })
+
+    # (The token store stays open until the end of the run so we can record the run-signature.)
 
     # --- Resolve the word-selection floor (replaces the retired raw min_freq default) ---
     # Now that aggregation is done we know the library's total token count, so a density-band
@@ -1337,20 +1437,7 @@ def main():
     # --- Persist the token index (seed-for-free) so the word-selection preview is instant and
     # always fresh without re-tokenizing. Built from the per-file counts already computed this
     # run (target-language tokens only, matching coverage accounting). Best-effort; never fatal. ---
-    try:
-        from app import token_index
-        _per_file = {}
-        for _fp, _counter in file_token_cache.items():
-            _fc = {}
-            for (_lemma, _reading), _n in _counter.items():
-                if has_target_language(_lemma, language):
-                    _fc[token_index.make_key(_lemma, _reading)] = _n
-            _per_file[_fp] = _fc
-        _idx_path = os.path.join(RESULTS_DIR, f"token_index_{language}.json")
-        token_index.save_index(token_index.build_index(_per_file), _idx_path)
-        print(f"Saved token index ({len(_per_file)} files) to {_idx_path}")
-    except Exception as e:
-        print(f"Warning: Could not persist token index: {e}")
+    # (The token store was already reconciled at the start of the run, before aggregation.)
 
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
@@ -1504,6 +1591,16 @@ def main():
             static_html_generator.generate_static_html(theme=args.theme, zen_limit=args.zen_limit)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
+
+    # All outputs are now written — record the run-signature so an identical re-run can skip
+    # entirely next time, then close the store.
+    if _store is not None:
+        try:
+            if _run_sig:
+                _store.set_meta("last_run_signature", _run_sig)
+        except Exception:
+            pass
+        _store.close()
 
     if "--visualize" not in sys.argv and "--static" not in sys.argv:
         print("\nAnalysis complete.")

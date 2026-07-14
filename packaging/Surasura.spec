@@ -67,9 +67,12 @@ if not (enable_youtube or enable_preview):
 # -----------------------------------------------------------------------------
 
 datas = [
-    (os.path.join(project_root, 'templates'), 'templates'), 
-    (os.path.join(project_root, 'scripts'), 'scripts'), 
+    (os.path.join(project_root, 'templates'), 'templates'),
+    (os.path.join(project_root, 'scripts'), 'scripts'),
     (os.path.join(project_root, 'app', 'assets'), 'app/assets'),
+    # Bundle sample content as a RESOURCE (get_resource('samples')) so 'Test with samples' can seed
+    # it on demand. The data/ tiers themselves ship EMPTY (see package_app.py) -> empty-state shows.
+    (os.path.join(project_root, 'samples'), 'samples'),
     (os.path.join(project_root, '.env'), '.')
 ]
 binaries = []

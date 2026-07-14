@@ -143,9 +143,9 @@ class MasterDashboardApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"Surasura - Immersion Architect Dashboard v{__version__}")
-        self.root.geometry("520x650") 
+        self.root.geometry("520x550")   # trimmed to fit content (~525px) after the Library Content collapse
         self.root.resizable(True, True)
-        self.root.minsize(520, 550)
+        self.root.minsize(520, 520)
         self.root.configure(bg=BG_COLOR)
         
 
@@ -248,6 +248,9 @@ class MasterDashboardApp:
         # Load saved settings
         self.load_settings()
 
+        # Generate stays disabled (with a short hint) until the library has content to analyze.
+        self._update_generate_state()
+
         # Show onboarding if not completed
         if not self.onboarding_completed.get():
             try:
@@ -281,7 +284,7 @@ class MasterDashboardApp:
 
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
-        self.root.bind("<FocusIn>", lambda e: self._maybe_launch_indexer())
+        self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state()))
         # And once shortly after startup, so the preview appears without a manual Generate.
         self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
 
@@ -399,6 +402,12 @@ class MasterDashboardApp:
         self.style.configure("Youtube.TButton", foreground="#ff0000")
         self.style.map("Youtube.TButton", foreground=[('active', "#ff0000"), ('pressed', "#ff0000")])
 
+        # Dark scrollbar (e.g. the Processing Log in Advanced Settings) — default renders it light.
+        self.style.configure("Vertical.TScrollbar",
+            background=SURFACE_COLOR, troughcolor=BG_COLOR, bordercolor=BG_COLOR,
+            arrowcolor=TEXT_COLOR, darkcolor=SURFACE_COLOR, lightcolor=SURFACE_COLOR)
+        self.style.map("Vertical.TScrollbar", background=[("active", ACCENT_COLOR), ("pressed", ACCENT_COLOR)])
+
     def update_strategy_ui(self):
         strategy = self.var_strategy.get()
         if strategy == "freq":
@@ -452,10 +461,10 @@ class MasterDashboardApp:
         return f"~{round(hrs)} hours"
 
     def _compute_effective_bands(self):
-        """The bands the slider should actually offer. A trailing band that selects IDENTICALLY to
-        the one before it (same word count + coverage) is redundant — e.g. on a library where both
-        Native and Very Rare collapse to the min_count floor — so we drop it, leaving no dead stop.
-        Falls back to all bands when there's no preview yet."""
+        """The bands the slider should actually offer. When the rare tail collapses (adjacent bands
+        select IDENTICALLY at the min_count floor — e.g. Very Rare and Native pick the same words),
+        the in-between band is redundant, so we drop it and KEEP the rarest one (Native) — the more
+        meaningful/complete label to show. Falls back to all bands when there's no preview yet."""
         bands = list(word_selection.BANDS_ORDER)
         p = self._band_previews
         if not p:
@@ -467,12 +476,13 @@ class MasterDashboardApp:
                     and abs(pa["coverage_percent"] - pb["coverage_percent"]) < 1e-9)
 
         while len(bands) > 1 and same(bands[-1], bands[-2]):
-            bands.pop()      # trim only from the rare end, where the collapse happens
+            bands.pop(-2)    # keep the rarest (Native); drop the redundant band just before it
         return bands
 
     def _apply_effective_bands(self):
         """Resize the slider to the currently-meaningful bands and keep the selection valid. A now-
-        hidden band (e.g. Native) folds into the last visible one, which selects identically."""
+        hidden band (e.g. Very Rare) folds into the last visible one (Native), which selects
+        identically."""
         if not hasattr(self, "band_slider"):
             self._update_band_preview_labels(self.var_band.get())
             return
@@ -662,6 +672,31 @@ class MasterDashboardApp:
 
         # A language switch points at a different store — re-index that language in the background.
         self._maybe_launch_indexer(force=True)
+        self._update_generate_state()   # different language -> different library -> re-check emptiness
+
+    def _library_has_content(self):
+        """True if the current language's library has at least one analyzable content file."""
+        from app.path_utils import get_data_path
+        base = get_data_path(self.var_language.get() or "ja")
+        for tier in ("HighPriority", "LowPriority", "GoalContent"):
+            d = os.path.join(base, tier)
+            if os.path.isdir(d):
+                for _r, _dirs, files in os.walk(d):
+                    if any(f.lower().endswith((".txt", ".md", ".srt", ".ass", ".vtt")) for f in files):
+                        return True
+        return False
+
+    def _update_generate_state(self):
+        """Disable 'Generate Journey' (with a short hint) while the library is empty — there's nothing
+        to analyze until content is added via Import Content. Re-checked on focus and language change."""
+        if not hasattr(self, "btn_journey"):
+            return
+        has = self._library_has_content()
+        self.btn_journey.config(state=tk.NORMAL if has else tk.DISABLED)
+        if has:
+            self.lbl_generate_hint.pack_forget()
+        else:
+            self.lbl_generate_hint.pack(fill=tk.X, pady=(2, 0))
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="15") # Reduced padding 25 -> 15
@@ -707,25 +742,17 @@ class MasterDashboardApp:
         btn_ignore.pack(side=tk.LEFT, expand=True, fill=tk.X)
         ToolTip(btn_ignore, "Open your IgnoreList.txt to manually edit excluded words.")
 
-        # 2. Library Tools
+        # 2. Library Tools — a single entry point. Extract/Splice and the YouTube downloader now live
+        # INSIDE the Content Manager (opened by this button); the ▷ Preview stays on the main page.
         lib_frame = ttk.LabelFrame(main_frame, text=" 📦 Library Content", padding="10")
-        lib_frame.pack(fill=tk.X, pady=(0, 5)) # Reduced pady 10 -> 5
+        lib_frame.pack(fill=tk.X, pady=(0, 5))
 
         btn_open_data = ttk.Button(lib_frame, text="Import Content", style="Action.TButton",
                                     command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
-        ToolTip(btn_open_data, "Launch the wizard to import content into priority folders.")
-
-        btn_epub = ttk.Button(lib_frame, text="Extract / Splice", style="Action.TButton", 
-                   command=self.run_file_importer)
-        btn_epub.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
-        ToolTip(btn_epub, "Import and split EPUB, TXT, MD, or SRT files for analysis.")
-
-        # YouTube Transcripts (optional module): small red play button, right of Extract / Splice.
-        # Packed/unpacked by update_youtube_visibility() based on the settings toggle + module presence.
-        self.btn_youtube = ttk.Button(lib_frame, text="▶", style="Youtube.TButton", width=3,
-                                      command=self.open_youtube_downloader)
-        ToolTip(self.btn_youtube, "YouTube Transcripts — download captions into your Processed folder.")
+        ToolTip(btn_open_data, "Add and manage your immersion content — files, EPUB / Anki, and YouTube.")
+        # self.btn_youtube stays None (declared in __init__): the downloader button moved into the
+        # Content Manager, so update_youtube_visibility() safely no-ops on the main GUI.
 
         # 3. Analyzer Tools
         analyze_frame = ttk.LabelFrame(main_frame, text=" 🔍 Analysis", padding="10")
@@ -843,15 +870,19 @@ class MasterDashboardApp:
         # The small red YouTube-preview button sits to its right (shown only when that feature is on).
         self.journey_row = ttk.Frame(view_frame)
         self.journey_row.pack(fill=tk.X)
-        btn_journey = ttk.Button(self.journey_row, text="Generate Journey", style="Action.TButton",
+        self.btn_journey = ttk.Button(self.journey_row, text="Generate Journey", style="Action.TButton",
                                  command=self.run_analyzer)
-        btn_journey.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ToolTip(btn_journey, "Generate your learning path and open it in the browser. Reuses the last "
+        self.btn_journey.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self.btn_journey, "Generate your learning path and open it in the browser. Reuses the last "
                              "analysis if nothing changed, so theme / Zen limit apply instantly.")
 
         self.btn_preview = ttk.Button(self.journey_row, text="▷", style="Youtube.TButton", width=3,
                                       command=self.open_youtube_preview)
         ToolTip(self.btn_preview, "Preview a YouTube video/playlist against your library (quick look, no full re-run).")
+
+        # Short hint shown ONLY while the library is empty; Generate is disabled until content is added.
+        self.lbl_generate_hint = ttk.Label(view_frame, text="Add content first — tap Import Content above.",
+                                            foreground="#aaaaaa", font=("Segoe UI", 8, "italic"))
 
         # The Zen Limit only affects the Zen Mode theme -> show that slider only when it's chosen.
         # (The <<ComboboxSelected>> binding that drives this lives with the theme-save binding in

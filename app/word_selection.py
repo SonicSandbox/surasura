@@ -1,7 +1,7 @@
 """Word-selection policy — turn the raw unknown-word distribution into the 'learn now' set.
 
 Two scale-stable methods replace the old raw `min_freq` count:
-  - 'bands'    : density bands (Core / Common / Occasional / Rare / Native) — a per-word ppm
+  - 'bands'    : density bands (Core / Common / Occasional / Uncommon / Rare / Very Rare / Native) — a per-word ppm
                  floor. Scale-invariant: the same band means the same 'how common' at any
                  library size, because the floor is a density, not a raw tally.
   - 'coverage' : reach a target coverage % (kept as the analyzer's existing target_coverage
@@ -32,7 +32,7 @@ BANDS_ORDER = list(DEFAULT_BANDS_PPM.keys())
 # Human display names (band key -> label). 'very_rare' must not naively .capitalize().
 BAND_LABELS = {
     "core": "Core", "common": "Common", "occasional": "Occasional",
-    "rare": "Rare", "very_rare": "Very Rare", "native": "Native",
+    "uncommon": "Uncommon", "rare": "Rare", "very_rare": "Very Rare", "native": "Native",
 }
 
 
@@ -42,13 +42,14 @@ def band_label(band):
 
 # min_count (above) is a universal floor applied to EVERY band: a word occurring only once in the
 # whole library is a one-off (a name / typo / OCR artifact), never worth a card — at any size. So
-# no band includes it. 'Native' is exactly this baseline, which is why it lands *just under* 100%,
-# and it keeps the slider ordered even on a tiny library where the ppm floors collapse below 1.
+# no band includes it. 'Native' is essentially this baseline (a tiny 1ppm floor that clamps up to
+# min_count on typical libraries), which is why it lands *just under* 100% and keeps the slider
+# ordered even on a tiny library where the ppm floors collapse below 1.
 
 
 def band_floor_ppm(band, bands_ppm=None):
-    """The configured density floor (parts-per-million) for a band. Native is 0; its effective
-    floor comes from min_count (applied in band_floor_count). Unknown bands default to 0."""
+    """The configured density floor (parts-per-million) for a band. Native carries only a tiny floor
+    (~= min_count on typical libraries, via band_floor_count). Unknown bands default to 0."""
     bands_ppm = bands_ppm or DEFAULT_BANDS_PPM
     return float(bands_ppm.get(band, 0.0))
 

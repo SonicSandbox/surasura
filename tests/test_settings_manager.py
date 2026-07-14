@@ -86,10 +86,11 @@ class TestSettingsManager(unittest.TestCase):
         # The band-selection block ships with a default band, the one-off floor, and ppm floors.
         # (The method switch is the existing top-level 'strategy': freq -> bands, coverage.)
         sel = settings_manager.get_default_settings()["logic"]["selection"]
-        self.assertIn(sel["band"], ["core", "common", "occasional", "rare", "native"])
+        self.assertIn(sel["band"], ["core", "common", "occasional", "uncommon", "rare", "very_rare", "native"])
         self.assertEqual(sel["bands_ppm"]["occasional"], 25)
-        self.assertEqual(sel["bands_ppm"]["rare"], 12)       # bridging band
-        self.assertEqual(sel["bands_ppm"]["very_rare"], 5)   # old 'rare' floor, renamed
+        self.assertEqual(sel["bands_ppm"]["uncommon"], 10)   # the added band
+        self.assertEqual(sel["bands_ppm"]["rare"], 4)        # tightened
+        self.assertEqual(sel["bands_ppm"]["very_rare"], 2.5)
         self.assertEqual(sel["min_count"], 2)  # universal one-off floor (Native lands just under 100%)
         self.assertEqual(sel["minutes_per_file"], 18)  # feeds the "meet each word every N hours" estimate
 

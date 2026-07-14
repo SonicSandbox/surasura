@@ -26,7 +26,7 @@ Otherwise you're wasting time learning words you'll just forget.
 
 Useful if you:
 
-- Hit 5000+ words
+- Hit 4500+ words
 
 - Have limited immersion time
 
@@ -36,7 +36,7 @@ Useful if you:
 
 - Enjoy seeing your progress %
 
-- Like using physical books
+- Like using physical books / YouTube
 
 
 Use Surasura to know every word you learn is immediately relevant to your content goals.
@@ -46,6 +46,8 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 - 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Anki Decks or Jiten.moe.
 
 - 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
+
+- 🎬 **YouTube Transcripts**: Pull clean, analysis-ready transcripts from YouTube videos and playlists straight into your library.
 
 - 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
 
@@ -63,11 +65,12 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content. Supports **Migaku** (JSON), **Yomitan** (Zip with readings), and plain text formats.
 
+- 🎚️ **Commonness Slider**: Dial in how deep to go — from only the most common words to everything but one-offs — with a live word-count and coverage preview.
+
 
 ### Current Limitations
 - Only executable for Windows (macOS/Linux can run from source)
 - Occasional Wacky Parsing
-- 'Ignore' only adds to clipboard
 
 ## 📥 Latest Release Zip
 
@@ -87,21 +90,27 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 ## 🚀 Get Started
 
-1. Run `Surasura.exe` to launch the application.
+1. Run `Surasura.exe` to launch the dashboard.
 
-2. Use the **Word Importer** to set up your known words.
+2. **Import Known Vocabulary** to sync your known words from Migaku, Anki, or Jiten.
 
-3. Place your text files in the corresponding folders:
+3. **Import Content** — open the Content Manager and add your files:
 
-- data/HighPriority: **NOW content** (What you are consuming today).
 
-- data/LowPriority: **Soon** (Within the next 6 months).
+- **Extract** an EPUB / Anki deck
+- Pull a **YouTube** transcript
 
-- data/GoalContent: **6+ months** (Aspirations or "someday" books).
+Drag them into your immersion order across the **NOW · Soon · 6+ months** tabs:
 
-4. Click **Run Analysis** to generate your reports.
+- **NOW**: what you're consuming today (next ~2 weeks).
 
-5. View results via **View Vocab Journey**.
+- **Soon**: your medium-term list (within 6 months).
+
+- **6+ months**: aspirations / "someday" content.
+
+   *(New library? Tap **Test with samples** to try it instantly.)*
+
+4. **Generate Journey** — build your personalized word list and open the interactive report.
 
 
 ## 🛠️ Running from Source
@@ -132,7 +141,11 @@ To create your own standalone executable:
    ```bash
    pip install pyinstaller
    ```
-This will clean previous builds, run PyInstaller with the correct configurations, and create a ready-to-use package in `dist/Surasura_v1.2`.
+2. Run the build script:
+   ```bash
+   python package_app.py
+   ```
+This cleans previous builds, runs PyInstaller with the correct configuration, and creates a ready-to-use package in `dist/Surasura_v<version>`.
 
 ## 📂 Project Structure
 - `app/`: Core application scripts and GUI modules.

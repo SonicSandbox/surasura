@@ -27,8 +27,8 @@ class ContentImporterApp:
         self.root = root
         self.language = language
         self.root.title(f"Surasura - Content Manager ({language})")
-        self.root.geometry("700x700")  # Expanded size
-        self.root.minsize(600, 600)
+        self.root.geometry("770x787")  # +10% width, -10% height vs the previous 700x875
+        self.root.minsize(660, 675)
         self.root.configure(bg=BG_COLOR)
         
         # Bind Escape key to close
@@ -172,6 +172,69 @@ class ContentImporterApp:
             indicatorforeground=[('selected', BG_COLOR)]
         )
 
+        # Segmented "tab" look for the tier selector (Radiobuttons styled as buttons): the active
+        # tier fills with the accent colour, like a selected tab.
+        self.style.configure("Tier.Toolbutton",
+            background=SURFACE_COLOR, foreground=TEXT_COLOR, borderwidth=0,
+            padding=(16, 7), font=("Segoe UI", 10, "bold")
+        )
+        self.style.map("Tier.Toolbutton",
+            background=[('selected', ACCENT_COLOR), ('active', "#3a3a3a")],
+            foreground=[('selected', BG_COLOR)]
+        )
+
+        # Prominent "big option" button — matches the main GUI's Action.TButton so the Add Content
+        # choices read as large, full-width options the user can confidently click.
+        # Taller so the Add Content options feel like big, central choices.
+        self.style.configure("Action.TButton", padding=(10, 14), font=("Segoe UI", 10, "bold"))
+        # Same HEIGHT and FONT as Action (identical vertical padding + size-10 bold, so the glyph and
+        # box line up with the Add-files button) — but as narrow as possible, for the appended icon.
+        self.style.configure("ActionIcon.TButton", padding=(1, 14), font=("Segoe UI", 10, "bold"), anchor="center")
+        # ▲▼ reorder arrows: keep the small icon (font 9) but a larger clickable button (padding).
+        self.style.configure("Move.TButton", padding=(8, 6), font=("Segoe UI", 9), anchor="center")
+
+        # Red ▶ YouTube button — same prominent size as the other Add Content options.
+        self.style.configure("Youtube.TButton", padding=(10, 14),
+            font=("Segoe UI", 10, "bold"), foreground=ERROR_COLOR)
+        self.style.map("Youtube.TButton",
+            background=[('active', ACCENT_COLOR), ('pressed', ACCENT_COLOR)],
+            foreground=[('active', BG_COLOR), ('pressed', BG_COLOR)])
+
+        # Tier tabs (ttk.Notebook): dark strip, readable text, accent fill on the active tab so ONLY
+        # the colour differentiates it. Compact padding so tabs stay small; the labels are padded to a
+        # common width (see setup_ui) so all three read as the same size. Fixed size in every state
+        # (expand=0 on select) so a tab never grows/jumps when picked.
+        # tabmargins left = 0 so the first tab sits flush with the library box's content edge.
+        self.style.configure("TNotebook", background=BG_COLOR, borderwidth=0, tabmargins=(0, 4, 2, 0))
+        self.style.configure("TNotebook.Tab",
+            background=SURFACE_COLOR, foreground=TEXT_COLOR,
+            padding=(6, 5), font=("Segoe UI", 10, "bold"), borderwidth=0)
+        self.style.map("TNotebook.Tab",
+            background=[("selected", ACCENT_COLOR), ("active", "#3a3a3a")],
+            foreground=[("selected", BG_COLOR), ("active", TEXT_COLOR)],
+            padding=[("selected", [6, 5])])
+        # Drop the dotted focus ring drawn on the selected tab's label (visually noisy). Redefining the
+        # tab layout WITHOUT the Notebook.focus element removes it while keeping padding + label.
+        self.style.layout("TNotebook.Tab", [
+            ("Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.label", {"side": "top", "sticky": ""})]})]})])   # clam grows the selected tab's padding ('6 4 6 2') — pin it
+
+        # File-list Treeview (kept here so a single apply_dark_theme() fully restores our look — the
+        # in-process YouTube window switches the global ttk theme and we re-assert on focus return).
+        self.style.configure("Treeview",
+            background=SURFACE_COLOR, foreground=TEXT_COLOR, fieldbackground=SURFACE_COLOR,
+            borderwidth=0, font=("Segoe UI", 10))
+        self.style.map("Treeview",
+            background=[('selected', ACCENT_COLOR)], foreground=[('selected', BG_COLOR)])
+
+        # File-list scrollbar: dark to match the theme (clam's default renders it light/white).
+        self.style.configure("Vertical.TScrollbar",
+            background=SURFACE_COLOR, troughcolor=BG_COLOR, bordercolor=BG_COLOR,
+            arrowcolor=TEXT_COLOR, darkcolor=SURFACE_COLOR, lightcolor=SURFACE_COLOR)
+        self.style.map("Vertical.TScrollbar",
+            background=[("active", ACCENT_COLOR), ("pressed", ACCENT_COLOR)])
+
     def is_content_file(self, file_path):
         """Checks if a file is a supported content type."""
         return file_path.lower().endswith(('.txt', '.md', '.html', '.htm', '.epub', '.srt', '.ass', '.vtt', '.pdf'))
@@ -189,165 +252,202 @@ class ContentImporterApp:
                          justify=tk.CENTER, foreground="#aaaaaa")
         desc.pack(pady=(0, 20))
 
-        # SECTION 1: PRIORITY SELECTION
-        step1_frame = ttk.LabelFrame(main_frame, text=" 1. Select Section ", padding="15")
-        step1_frame.pack(fill=tk.X, pady=(0, 20))
+        # --- ADD CONTENT (options row) ---
+        # The primary ways to get content in. These target the section selected below (Phase 3 will
+        # replace the radios with tabs and this row will sit above them). YouTube is added in Phase 5.
+        # Shorter box (~75% of before) — the "Also" line moved out (below), and the buttons are taller
+        # so they fill it and feel like big central choices.
+        options_frame = ttk.LabelFrame(main_frame, text=" Add Content ", padding=(12, 10))
+        options_frame.pack(fill=tk.X, pady=(0, 4))
 
-        # Custom Labels map with full tab
-        self.folder_map = {
-            "HighPriority": ("NOW content", "(High priority - you will see in the next 2 weeks)"),
-            "LowPriority": ("Soon", "(within the next 6 months)"),
-            "GoalContent": ("6+ months", "(Aspirations or \"someday\" books)")
-        }
+        add_row = ttk.Frame(options_frame)
+        add_row.pack(fill=tk.X)
 
-        self.order_hints = {
-            "HighPriority": "Order Matters a lot!",
-            "LowPriority": "Order Matters a little, but not much",
-            "GoalContent": "Order Doesn't matter"
-        }
+        # Three EQUAL-width option groups (like the main GUI): [Add files + 📂] · Extract · YouTube.
+        # The folder icon lives INSIDE the Add-files group as its small tail, so the pair matches the
+        # width of the Extract / YouTube buttons instead of overrunning them.
+        addfiles_group = ttk.Frame(add_row)
+        addfiles_group.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
+        add_files_btn = ttk.Button(addfiles_group, text="📁 Add files", command=self.add_files, style="Action.TButton")
+        add_files_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self.create_tooltip(add_files_btn,
+                            "Add ready text/subtitle files to the selected section.\n"
+                            "Formats: TXT, MD, SRT, ASS. (EPUB / Anki decks -> use Extract.)")
+        folder_icon_btn = ttk.Button(addfiles_group, text="📂", command=self.add_folder, style="ActionIcon.TButton")
+        folder_icon_btn.pack(side=tk.LEFT, padx=(2, 0))    # the tail end of the Add-files button
+        self.create_tooltip(folder_icon_btn, "Add a whole folder (non-destructive merge).")
 
-        # Radio Buttons
-        for key, (label, sub) in self.folder_map.items():
-            f = ttk.Frame(step1_frame)
-            f.pack(anchor=tk.W, pady=2, padx=5)
-            
-            rb = ttk.Radiobutton(f, text=label, variable=self.target_folder_var, value=key)
-            rb.pack(side=tk.LEFT)
-            
-            sub_lbl = ttk.Label(f, text=f"  {sub}", font=("Segoe UI", 9, "italic"), foreground="#888")
+        extract_btn = ttk.Button(add_row, text="📖 Extract (EPUB / Anki)", command=self.open_splicer, style="Action.TButton")
+        extract_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
+        self.create_tooltip(extract_btn, "Extract & split an EPUB or Anki deck into text (also added to the selected section).")
+
+        # ▶ YouTube — shown only when the transcript downloader is opted-in AND the optional module is
+        # present (mirrors main.py's update_youtube_visibility gate). Downloads land in Processed and
+        # get copied into the active section (see _on_youtube_downloaded).
+        self.btn_youtube = None
+        if self._youtube_enabled():
+            self.btn_youtube = ttk.Button(add_row, text="▶ YouTube", command=self.open_youtube, style="Youtube.TButton")
+            self.btn_youtube.pack(side=tk.LEFT, expand=True, fill=tk.X)
+            self.create_tooltip(self.btn_youtube, "Download YouTube transcripts into the selected section.")
+
+        # Below the box, right-justified: the muted quick-links, then a '?' help memo to their right.
+        helper_row = ttk.Frame(main_frame)
+        helper_row.pack(fill=tk.X, pady=(0, 12))
+        helper_inner = ttk.Frame(helper_row)
+        helper_inner.pack(side=tk.RIGHT)      # hug the right edge
+        ttk.Label(helper_inner, text="Also:", foreground="#888").pack(side=tk.LEFT)
+        paste_lbl = ttk.Label(helper_inner, text="Paste text", foreground=ACCENT_COLOR, cursor="hand2")
+        paste_lbl.pack(side=tk.LEFT, padx=(6, 0))
+        paste_lbl.bind("<Button-1>", lambda e: self.paste_text_dialog())
+        if self._subtitle_url():   # only shown when the active language has a known source (JA)
+            ttk.Label(helper_inner, text="·", foreground="#555").pack(side=tk.LEFT, padx=6)
+            sub_lbl = ttk.Label(helper_inner, text="Anime subtitles ↗", foreground=ACCENT_COLOR, cursor="hand2")
             sub_lbl.pack(side=tk.LEFT)
-            # Make clicking the subtext also select the radio button
-            sub_lbl.bind("<Button-1>", lambda e, k=key: self.target_folder_var.set(k))
+            sub_lbl.bind("<Button-1>", lambda e: self.open_subtitle_site())
+        help_icon = tk.Label(helper_inner, text="?", font=("Segoe UI", 10, "bold"),
+                             bg=SURFACE_COLOR, fg=ACCENT_COLOR, cursor="hand2", padx=6, pady=2, relief="flat")
+        help_icon.pack(side=tk.LEFT, padx=(10, 0))   # to the right of the links
+        self.create_tooltip(help_icon, "Your vocab journey will prioritize words based on your immersion "
+                                       "content, and how soon you'll see them")
 
-        # Help Icon
-        help_icon = tk.Label(step1_frame, text="?", font=("Segoe UI", 10, "bold"), 
-                            bg=SURFACE_COLOR, fg=ACCENT_COLOR, cursor="hand2",
-                            padx=6, pady=2, relief="flat")
-        help_icon.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
-        
-        tooltip_text = "Your vocab journey will prioritize words based on your immersion content, and how soon you'll see them"
-        self.create_tooltip(help_icon, tooltip_text)
+        # Refresh the library when focus returns after a launched tool (splicer) closes.
+        self._refresh_on_focus = False
+        self.root.bind("<FocusIn>", self._on_focus_in)
 
-        # --- SECTION 2: FILE MANAGEMENT ---
-        step2_frame = ttk.LabelFrame(main_frame, text=" 2. Manage Files ", padding="15")
+        # Tier metadata — (tab label, description) + the "order matters" hint. Used by the tabs below
+        # and the add/paste flows. The tier is still tracked by self.target_folder_var (now driven by
+        # the tabs instead of the old radio list).
+        self.folder_map = {
+            "HighPriority": ("NOW", "Content you're consuming right now (next ~2 weeks)."),
+            "LowPriority": ("Soon", "Within the next 6 months."),
+            "GoalContent": ("6+ months", "Aspirations or \"someday\" books.")
+        }
+        # (prefix, emphasis, suffix) — only the emphasis segment is underlined in the tab-strip hint.
+        self.order_hints = {
+            "HighPriority": ("Order matters ", "a lot", "!"),
+            "LowPriority": ("Order matters ", "a little", "."),
+            "GoalContent": ("Order ", "doesn't", " matter.")
+        }
+
+        # --- LIBRARY: toolbar above the tabs, then real connected tabs (one file-list per tier) ---
+        step2_frame = ttk.LabelFrame(main_frame, text=" Your Library ", padding="15")
         step2_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
 
-        # Toolbar
-        btn_frame = ttk.Frame(step2_frame)
-        btn_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        import_group = ttk.Frame(btn_frame)
-        import_group.pack(side=tk.LEFT, padx=(0, 10))
-        
-        add_lbl = ttk.Label(import_group, text="+ Add: ", font=("Segoe UI", 9, "bold"), foreground=TEXT_COLOR)
-        add_lbl.pack(side=tk.LEFT, padx=(0, 2))
-        
-        add_btn = ttk.Button(import_group, text="Files", command=self.add_files, width=6)
-        add_btn.pack(side=tk.LEFT, padx=0)
-        
-        folder_btn = ttk.Button(import_group, text="Folder", command=self.add_folder, width=7)
-        folder_btn.pack(side=tk.LEFT, padx=(2, 0))
-        
-        del_btn = ttk.Button(btn_frame, text="- Remove", command=self.remove_files, width=10)
-        del_btn.pack(side=tk.LEFT, padx=(5, 0))
-        
-        # Right Side Action Groups (Packed Right to Left)
-        reset_btn = ttk.Button(btn_frame, text="🗑️", command=self.reset_to_folder_structure, width=4, style="Centered.TButton")
-        reset_btn.pack(side=tk.RIGHT, padx=(5, 0))
-        self.create_tooltip(reset_btn, "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)")
+        # The whole manage area lives in library_body; when the library is empty we hide it and show
+        # the onboarding card instead (see _update_empty_state).
+        self.library_body = ttk.Frame(step2_frame)
+        self.library_body.pack(fill=tk.BOTH, expand=True)
+        self.empty_card = self._build_empty_card(step2_frame)
 
-        self.undo_btn = ttk.Button(btn_frame, text="⎌", command=self.undo_last_action, state=tk.DISABLED, width=4, style="Centered.TButton")
-        self.undo_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        # --- Manage toolbar (ABOVE the tabs), single line: the tier DESCRIPTION on the left, all the
+        #     action buttons clustered on the right. Remove is icon-only; Demote/Graduate keep a label
+        #     (less obvious); the utility actions stay icon-only. (Buttons packed right-to-left so they
+        #     read left→right as: Remove · Demote · Graduate  ·  📂 🎓 ⎌ 🗑.)
+        toolbar = ttk.Frame(self.library_body)
+        toolbar.pack(fill=tk.X, pady=(0, 8))
+
+        self.tier_desc_var = tk.StringVar()
+        self.tier_desc_lbl = ttk.Label(toolbar, textvariable=self.tier_desc_var, foreground=ACCENT_COLOR,
+                                       font=("Segoe UI", 9, "italic"))
+        self.tier_desc_lbl.pack(side=tk.LEFT)   # description, left-justified on the same line
+
+        reset_btn = ttk.Button(toolbar, text="\U0001f5d1️", command=self.reset_to_folder_structure, width=4, style="Centered.TButton")
+        reset_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(reset_btn, "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)")
+        self.undo_btn = ttk.Button(toolbar, text="⎌", command=self.undo_last_action, state=tk.DISABLED, width=4, style="Centered.TButton")
+        self.undo_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self.undo_btn.tip_text = "Undo"
         self.create_tooltip(self.undo_btn, lambda: self.undo_btn.tip_text)
-
-        # View Group (Explorer + List)
-        view_group = ttk.Frame(btn_frame)
-        view_group.pack(side=tk.RIGHT, padx=(5, 0))
-
-        explorer_btn = ttk.Button(view_group, text="📂", command=self.open_data_folder, width=4, style="Centered.TButton")
-        explorer_btn.pack(side=tk.LEFT)
+        gradlist_btn = ttk.Button(toolbar, text="\U0001f393", command=self.open_graduated_list, width=4, style="Centered.TButton")
+        gradlist_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(gradlist_btn, "Open Graduated Words List")
+        explorer_btn = ttk.Button(toolbar, text="\U0001f4c2", command=self.open_data_folder, width=4, style="Centered.TButton")
+        explorer_btn.pack(side=tk.RIGHT, padx=(10, 0))   # gap between the text actions and the icons
         self.create_tooltip(explorer_btn, "Open current folder in Explorer")
-        
-        list_btn = ttk.Button(view_group, text="🏆", command=self.open_graduated_list, width=4, style="Centered.TButton")
-        list_btn.pack(side=tk.LEFT, padx=(2, 0))
-        self.create_tooltip(list_btn, "Open Graduated Words List")
-
-        # Graduation Group (Graduate + Demote)
-        grad_group = ttk.Frame(btn_frame)
-        grad_group.pack(side=tk.RIGHT, padx=(5, 0))
-
-        self.demote_btn = ttk.Button(grad_group, text="📉 Demote", command=self.demote_content, state=tk.DISABLED)
-        self.demote_btn.pack(side=tk.RIGHT, padx=(2, 0))
-        self.create_tooltip(self.demote_btn, "Demote Content:\n- NOW: Move to Soon\n- Soon: Move to 6+ Months\n- 6+ Months: Cannot be demoted")
-
-        self.graduate_btn = ttk.Button(grad_group, text="🏆 Graduate", command=self.graduate_content, state=tk.DISABLED)
-        self.graduate_btn.pack(side=tk.RIGHT, padx=0)
+        self.graduate_btn = ttk.Button(toolbar, text="\U0001f3c6 Graduate", command=self.graduate_content, state=tk.DISABLED)
+        self.graduate_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self.create_tooltip(self.graduate_btn, "Graduate Content:\n- NOW: Graduate consumed content (Requires Analysis)\n- Soon: Move to NOW\n- 6+ Months: Move to Soon")
+        self.demote_btn = ttk.Button(toolbar, text="\U0001f4c9 Demote", command=self.demote_content, state=tk.DISABLED)
+        self.demote_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(self.demote_btn, "Demote Content:\n- NOW: Move to Soon\n- Soon: Move to 6+ Months\n- 6+ Months: Cannot be demoted")
+        del_btn = ttk.Button(toolbar, text="➖", command=self.remove_files, width=4, style="Centered.TButton")
+        del_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(del_btn, "Remove the selected items from this section.")
 
-        # Hint label (Order matters...)
-        hint_frame = ttk.Frame(step2_frame)
-        hint_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        # --- Tabs (one file-list per tier) with the ▲▼ reorder arrows on the RIGHT side of the list.
+        #     self.tree always points at the ACTIVE tab's tree, so every file/reorder handler (all
+        #     keyed on self.tree) is unchanged.
+        nb_row = ttk.Frame(self.library_body)
+        nb_row.pack(fill=tk.BOTH, expand=True)
 
-        self.order_hint_label = ttk.Label(hint_frame, text=self.order_hints.get(self.target_folder_var.get(), ""), 
-                                          foreground=ACCENT_COLOR, font=("Segoe UI", 9, "bold italic"))
-        self.order_hint_label.pack(side=tk.LEFT)
+        self.notebook = ttk.Notebook(nb_row)
+        self.notebook.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Treeview with Scrollbar
-        self.list_frame = ttk.Frame(step2_frame)
-        self.list_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Define style for Treeview
-        self.style.configure("Treeview", 
-                             background=SURFACE_COLOR, 
-                             foreground=TEXT_COLOR, 
-                             fieldbackground=SURFACE_COLOR,
-                             borderwidth=0,
-                             font=("Segoe UI", 10))
-        self.style.map("Treeview",
-                       background=[('selected', ACCENT_COLOR)],
-                       foreground=[('selected', BG_COLOR)])
+        # Pad tab labels to a common PIXEL width so all three tabs are the same size (only the accent
+        # colour marks the active one). ttk.Notebook has no per-tab width option, so we equalize by
+        # padding the shorter labels with spaces measured in the tab font.
+        import tkinter.font as tkfont
+        tab_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        _labels = [lbl for (lbl, _sub) in self.folder_map.values()]
+        _space_px = tab_font.measure(" ") or 4
+        _target_px = max(tab_font.measure(l) for l in _labels)  # tight: hug the longest label
+        def _tab_text(lbl):
+            spaces = max(0, round((_target_px - tab_font.measure(lbl)) / _space_px))
+            left = spaces // 2
+            return " " * left + lbl + " " * (spaces - left)
 
-        self.tree = ttk.Treeview(self.list_frame, 
-                                 columns=("full_path",), 
-                                 show="tree", 
-                                 selectmode="extended")
-        
-        # Move Buttons
-        move_btn_frame = ttk.Frame(self.list_frame)
-        move_btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 10))
-        
-        # Spacers to center buttons vertically with some spread
-        ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
-        
-        self.up_btn = ttk.Button(move_btn_frame, text="▴", width=3, command=self.move_selected_up)
-        self.up_btn.pack(side=tk.TOP, pady=10)
+        self.tier_trees = {}
+        self._tab_tiers = []          # tab index -> tier key
+        for key, (label, _sub) in self.folder_map.items():
+            tab = ttk.Frame(self.notebook)
+            self.tier_trees[key] = self._make_tier_tree(tab)
+            self.notebook.add(tab, text=_tab_text(label))
+            self._tab_tiers.append(key)
+        self.tree = self.tier_trees.get(self.target_folder_var.get()) or next(iter(self.tier_trees.values()))
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # The "order matters" hint sits inline just to the RIGHT of the tabs. Only the emphasis word
+        # ('a lot' / 'a little' / 'doesn't') is underlined, so it's built from 3 tk.Labels (a single
+        # label can't underline part of its text). The x is estimated from the tab font (ttk gives no
+        # tab geometry pre-render): equal-width tabs ≈ _target_px + padding each.
+        self.tier_meta_var = tk.StringVar()          # full text kept for logic/tests
+        meta_frame = tk.Frame(nb_row, bg=BG_COLOR)
+        _mf = ("Segoe UI", 9, "bold italic")
+        self._meta_pre = tk.Label(meta_frame, font=_mf, bg=BG_COLOR, fg=ACCENT_COLOR, bd=0, padx=0, pady=0)
+        self._meta_mid = tk.Label(meta_frame, font=("Segoe UI", 9, "bold italic underline"),
+                                  bg=BG_COLOR, fg=ACCENT_COLOR, bd=0, padx=0, pady=0)
+        self._meta_suf = tk.Label(meta_frame, font=_mf, bg=BG_COLOR, fg=ACCENT_COLOR, bd=0, padx=0, pady=0)
+        self._meta_pre.pack(side=tk.LEFT)
+        self._meta_mid.pack(side=tk.LEFT)
+        self._meta_suf.pack(side=tk.LEFT)
+        self.tier_meta_lbl = meta_frame              # keep the attribute name (placement / tests)
+        _tab_w = _target_px + 15                                   # padded label + ~12 padding + border
+        _after_tabs = int((len(self._tab_tiers) + 0.5) * _tab_w) + 4    # a touch left of before
+        meta_frame.place(in_=self.notebook, x=_after_tabs, y=15, anchor="w")
+
+        # ▲▼ reorder arrows: large and close together as a centred pair (equal space above/below via
+        # the expanding spacers, so they sit off the top/bottom edges).
+        move_col = ttk.Frame(nb_row)
+        # 15px to the list on the left; 0 here + the frame's 15px padding on the right => the arrow
+        # column sits an equal 15px from the file list and from the "Your Library" box edge.
+        move_col.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 0))
+        ttk.Frame(move_col).pack(expand=True)      # top spacer
+        self.up_btn = ttk.Button(move_col, text="▲", width=3, command=self.move_selected_up, style="Move.TButton")
+        self.up_btn.pack()
         self.create_tooltip(self.up_btn, "Move selected items up")
-        
-        self.down_btn = ttk.Button(move_btn_frame, text="▾", width=3, command=self.move_selected_down)
-        self.down_btn.pack(side=tk.TOP, pady=10)
+        self.down_btn = ttk.Button(move_col, text="▼", width=3, command=self.move_selected_down, style="Move.TButton")
+        self.down_btn.pack(pady=(46, 0))           # ~2 button-heights of separation
         self.create_tooltip(self.down_btn, "Move selected items down")
-        
-        ttk.Frame(move_btn_frame).pack(side=tk.TOP, expand=True)
+        ttk.Frame(move_col).pack(expand=True)      # bottom spacer
 
-        scrollbar = ttk.Scrollbar(self.list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.config(yscrollcommand=scrollbar.set)
-        
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # DnD Events
-        self.tree.bind("<Button-1>", self.on_drag_start)
-        self.tree.bind("<B1-Motion>", self.on_drag_motion)
-        self.tree.bind("<ButtonRelease-1>", self.on_drag_stop)
-        self.tree.bind("<<TreeviewSelect>>", self._update_graduate_button_state)
-        
-        # Move Hint
-        hint_label = ttk.Label(step2_frame, text="Drag and move your files in the order you will immerse", foreground="#aaa", font=("Segoe UI", 9, "italic"))
-        hint_label.pack(side=tk.LEFT, pady=(5,0))
-
-        self.count_label = ttk.Label(step2_frame, text="0 files found", foreground="#888")
-        self.count_label.pack(side=tk.RIGHT, pady=(5,0))
+        # --- Footer: drag hint (left) + file count (right).
+        footer = ttk.Frame(self.library_body)
+        footer.pack(fill=tk.X, pady=(5, 0))
+        ttk.Label(footer, text="Drag and move your files in the order you will immerse",
+                  foreground="#aaa", font=("Segoe UI", 9, "italic")).pack(side=tk.LEFT)
+        self.count_label = ttk.Label(footer, text="0 files found", foreground="#888")
+        self.count_label.pack(side=tk.RIGHT)
+        self._sync_tier_meta()
 
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, foreground="#888")
         status_bar.pack(side=tk.LEFT, pady=(15, 0))
@@ -360,11 +460,11 @@ class ContentImporterApp:
         self.refresh_file_list()
         self._update_graduate_button_state()
         folder_key = self.target_folder_var.get()
-        self.status_var.set(f"Switched to {folder_key}")
-        
-        # Update order hint
-        if hasattr(self, 'order_hint_label'):
-            self.order_hint_label.config(text=self.order_hints.get(folder_key, ""))
+        self.status_var.set(f"Switched to {self.folder_map.get(folder_key, (folder_key,))[0]}")
+
+        # Update the right-justified tier guidance (description + "order matters" hint).
+        if hasattr(self, 'tier_meta_var'):
+            self._sync_tier_meta()
 
     def get_manifest_path(self):
         return os.path.join(self.user_files_root, "master_manifest.json")
@@ -777,8 +877,9 @@ class ContentImporterApp:
         total_items = self.get_tree_count("")
         if hasattr(self, 'count_label') and self.count_label:
             self.count_label.config(text=f"{total_items} items tracked")
-        
+
         self._update_graduate_button_state()
+        self._update_empty_state()   # show the onboarding card iff the library has no content
 
     def _sync_disk_to_manifest(self):
         """Scans the 3 main data folders and ensures any untracked files are added to the manifest."""
@@ -955,6 +1056,242 @@ class ContentImporterApp:
             
         self.refresh_file_list()
         self.status_var.set(f"Undid past action ({count} items restored)")
+
+    # --- Tier tabs (ttk.Notebook) helpers -------------------------------------------------------- #
+    def _make_tier_tree(self, parent):
+        """Build a file-list Treeview (+ scrollbar + the drag/select bindings) inside a tab pane."""
+        holder = ttk.Frame(parent)
+        holder.pack(fill=tk.BOTH, expand=True)
+        tree = ttk.Treeview(holder, columns=("full_path",), show="tree", selectmode="extended")
+        sb = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=tree.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.config(yscrollcommand=sb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree.bind("<Button-1>", self.on_drag_start)
+        tree.bind("<B1-Motion>", self.on_drag_motion)
+        tree.bind("<ButtonRelease-1>", self.on_drag_stop)
+        tree.bind("<<TreeviewSelect>>", self._update_graduate_button_state)
+        return tree
+
+    def _on_tab_changed(self, event=None):
+        """A tab was selected: point self.tree at that tier's tree, then set the shared tier var
+        (its trace runs on_folder_change -> refresh_file_list + meta). Nothing else sets that var,
+        so there's no feedback loop."""
+        try:
+            idx = self.notebook.index(self.notebook.select())
+        except Exception:
+            return
+        tier = self._tab_tiers[idx] if 0 <= idx < len(self._tab_tiers) else "HighPriority"
+        self.tree = self.tier_trees[tier]
+        self.target_folder_var.set(tier)
+
+    def _sync_tier_meta(self):
+        """Split guidance for the active tier: the description shows above the toolbar; the 'order
+        matters' hint shows inline on the tab strip (only its emphasis word underlined)."""
+        key = self.target_folder_var.get()
+        self.tier_desc_var.set(self.folder_map.get(key, ("", ""))[1])
+        pre, mid, suf = self.order_hints.get(key, ("", "", ""))
+        self._meta_pre.config(text=pre)
+        self._meta_mid.config(text=mid)
+        self._meta_suf.config(text=suf)
+        self.tier_meta_var.set(f"{pre}{mid}{suf}")
+
+    # --- Empty-state onboarding ------------------------------------------------------------------ #
+    def _build_empty_card(self, parent):
+        """A centered onboarding card shown INSTEAD of the tabs when the library has no content."""
+        card = ttk.Frame(parent)
+        inner = ttk.Frame(card)
+        inner.place(relx=0.5, rely=0.45, anchor="center")
+        ttk.Label(inner, text="Your library is empty", font=("Segoe UI", 14, "bold")).pack(pady=(0, 6))
+        ttk.Label(inner, text="Add content using the options above.", foreground="#aaa").pack()
+        ttk.Label(inner, text="— or —", foreground="#666").pack(pady=8)
+        ttk.Button(inner, text="Test with samples", command=self._seed_samples_clicked,
+                   style="Action.TButton").pack()
+        ttk.Label(inner, text="(copies a few sample files so you can try a Journey right away)",
+                  foreground="#666", font=("Segoe UI", 8, "italic")).pack(pady=(6, 0))
+        return card
+
+    def _library_is_empty(self):
+        """True when NO content files exist across the three tiers (Processed/Graduated don't count)."""
+        for tier in ("HighPriority", "LowPriority", "GoalContent"):
+            d = os.path.join(self.data_root, tier)
+            if os.path.isdir(d):
+                for _root, _dirs, files in os.walk(d):
+                    if any(self.is_content_file(f) for f in files):
+                        return False
+        return True
+
+    def _update_empty_state(self):
+        """Show the onboarding card when the library is empty, the tabbed library otherwise."""
+        if not hasattr(self, "empty_card"):
+            return
+        if self._library_is_empty():
+            self.library_body.pack_forget()
+            if not self.empty_card.winfo_ismapped():
+                self.empty_card.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.empty_card.pack_forget()
+            if not self.library_body.winfo_ismapped():
+                self.library_body.pack(fill=tk.BOTH, expand=True)
+
+    def _seed_samples_clicked(self):
+        """'Test with samples': copy the bundled samples in, then switch to the library view."""
+        from app.path_utils import seed_samples
+        try:
+            n = seed_samples(self.language)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not add samples:\n{e}")
+            return
+        self.status_var.set(f"Added {n} sample files")
+        self.refresh_file_list()   # -> _update_empty_state reveals the tabbed library
+
+    # --- Add Content options row: helpers -------------------------------------------------------- #
+    def _subtitle_url(self):
+        """Language-aware 'where to get subtitles' link. None => the link is hidden (e.g. zh has no
+        known source)."""
+        return {
+            "ja": "https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F",
+        }.get(self.language)
+
+    def open_subtitle_site(self):
+        import webbrowser
+        url = self._subtitle_url()
+        if url:
+            webbrowser.open(url)
+
+    def open_splicer(self):
+        """Launch the Extract/Splice tool for the selected section. It writes to Processed AND copies
+        the output into that tier (--tier); the library refreshes when the tool window closes."""
+        tier = self.target_folder_var.get()
+        self._launch_tool("epub_importer.py", ["--language", self.language, "--tier", tier])
+
+    def _youtube_enabled(self):
+        """True when the YouTube transcript downloader is opted-in AND the optional module is present
+        (same gate as main.py's update_youtube_visibility). Fails closed if either is missing."""
+        try:
+            from app import settings_manager
+            if not settings_manager.load_settings().get("enable_youtube_transcripts", False):
+                return False
+            import modules.youtube_downloader  # noqa: F401 — presence check only
+            return True
+        except Exception:
+            return False
+
+    def open_youtube(self):
+        """Open the YouTube transcript downloader in-process (host-agnostic: passes the active
+        language + a callback that routes the new transcripts into the selected section)."""
+        try:
+            from modules.youtube_downloader import open_downloader
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not launch YouTube Downloader:\n{e}")
+            return
+        # Opens in-process as a Toplevel that inherits our theme (it no longer switches the global
+        # ttk theme — see app/ui_theme). New transcripts route into the active tier via on_complete.
+        open_downloader(self, language=self.language, on_complete=self._on_youtube_downloaded)
+
+    def _on_youtube_downloaded(self, created_paths):
+        """After a download (into Processed), copy the new transcripts into the active section so
+        they're part of the library — mirroring the splice 'Processed + tier' rule — then refresh
+        (which re-registers them in the manifest via _sync_disk_to_manifest)."""
+        import shutil
+        tier = self.target_folder_var.get()
+        tier_dir = os.path.join(self.data_root, tier)
+        os.makedirs(tier_dir, exist_ok=True)
+        for src in created_paths or []:
+            try:
+                base = os.path.basename(src.rstrip("/\\"))
+                if not base:
+                    continue
+                dst = os.path.join(tier_dir, base)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                elif os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+            except Exception:
+                pass
+        self.status_var.set(f"Added YouTube transcripts to {self.folder_map.get(tier, (tier,))[0]}")
+        self.refresh_file_list()
+
+    def _launch_tool(self, script_name, extra_args):
+        """Launch a sibling tool (the splicer) as a subprocess, frozen-vs-source aware. Flags a
+        library refresh for when focus returns after the tool window closes."""
+        from app.path_utils import is_frozen
+        script_map = {"epub_importer.py": "epub_importer"}
+        try:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            if is_frozen():
+                cmd = [sys.executable, script_map.get(script_name, script_name)] + list(extra_args)
+            else:
+                app_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.dirname(app_dir)
+                env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+                cmd = [sys.executable, os.path.join(app_dir, script_name)] + list(extra_args)
+            subprocess.Popen(cmd, env=env)
+            self._refresh_on_focus = True
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not launch {script_name}:\n{e}")
+
+    def _on_focus_in(self, event=None):
+        """Refresh the library once when focus returns after a launched tool (splicer) closes."""
+        if getattr(self, "_refresh_on_focus", False):
+            self._refresh_on_focus = False
+            try:
+                self.refresh_file_list()
+            except Exception:
+                pass
+
+    def paste_text_dialog(self):
+        """Paste a snippet of text and save it as a .txt into the selected section."""
+        tier = self.target_folder_var.get()
+        tier_label = self.folder_map.get(tier, (tier,))[0]
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Paste text")
+        dlg.configure(bg=BG_COLOR)
+        dlg.geometry("520x420")
+        dlg.transient(self.root)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        ttk.Label(dlg, text=f"Paste text to add to '{tier_label}':").pack(anchor=tk.W, padx=12, pady=(12, 6))
+        name_row = ttk.Frame(dlg)
+        name_row.pack(fill=tk.X, padx=12)
+        ttk.Label(name_row, text="Name:").pack(side=tk.LEFT)
+        name_var = tk.StringVar(value="Pasted text")
+        ttk.Entry(name_row, textvariable=name_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+
+        txt = tk.Text(dlg, height=15, wrap=tk.WORD, bg=SURFACE_COLOR, fg=TEXT_COLOR,
+                      insertbackground=TEXT_COLOR, relief="flat")
+        txt.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
+        txt.focus_set()
+
+        def _save():
+            content = txt.get("1.0", tk.END).strip()
+            if not content:
+                messagebox.showwarning("Empty", "Nothing to save.", parent=dlg)
+                return
+            self._save_pasted_text(name_var.get().strip() or "Pasted text", content, tier)
+            dlg.destroy()
+
+        ttk.Button(dlg, text="Save", command=_save, style="Action.TButton").pack(pady=(0, 12))
+
+    def _save_pasted_text(self, name, content, tier):
+        import re
+        safe = re.sub(r'[^\w\- ]+', '', name).strip().replace(" ", "_") or "Pasted_text"
+        tier_dir = os.path.join(self.data_root, tier)
+        os.makedirs(tier_dir, exist_ok=True)
+        path = os.path.join(tier_dir, f"{safe}.txt")
+        i = 1
+        while os.path.exists(path):
+            path = os.path.join(tier_dir, f"{safe}_{i}.txt")
+            i += 1
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save:\n{e}")
+            return
+        self.status_var.set(f"Added pasted text to {self.folder_map.get(tier, (tier,))[0]}")
+        self.refresh_file_list()
 
     def add_files(self):
         target_dir = self.get_current_dir()

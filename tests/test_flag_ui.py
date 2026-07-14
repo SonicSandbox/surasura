@@ -68,26 +68,29 @@ class TestFlagUI(unittest.TestCase):
         select("Modern Light")
         self.assertFalse(slider_shown(), "slider must hide again when leaving Zen Mode")
 
-    def test_native_band_hidden_when_identical_to_very_rare(self):
-        """The rarity slider drops a redundant trailing band: on a library where Native selects
-        identically to Very Rare, Native is hidden (no dead stop), and a Native selection folds
-        into Very Rare. When they differ, all six bands are shown."""
+    def test_very_rare_band_hidden_when_identical_to_native(self):
+        """The rarity slider drops a redundant band from the collapsed rare tail, keeping the RAREST
+        (Native) rather than Very Rare: on a library where Very Rare selects identically to Native,
+        Very Rare is hidden (no dead stop) and a Very Rare selection folds into Native. When they
+        differ, all six bands are shown."""
         def mk(wc, cov):
             return {"band": "", "word_count": wc, "coverage_percent": cov, "hours_between": 2.0}
-        # Native == Very Rare -> hidden.
+        # Very Rare == Native -> hide Very Rare, keep Native.
         self.app._band_previews = {"core": mk(100, 50), "common": mk(200, 75),
-                                   "occasional": mk(400, 90), "rare": mk(600, 94),
-                                   "very_rare": mk(800, 98.7), "native": mk(800, 98.7)}
-        self.app.var_band.set("native")
+                                   "occasional": mk(400, 90), "uncommon": mk(550, 93),
+                                   "rare": mk(650, 95), "very_rare": mk(800, 98.7),
+                                   "native": mk(800, 98.7)}
+        self.app.var_band.set("very_rare")
         self.app._effective_bands = self.app._compute_effective_bands()
         self.app._apply_effective_bands()
-        self.assertNotIn("native", self.app._effective_bands)
-        self.assertEqual(float(self.app.band_slider.cget("to")), 4.0)   # 5 stops, not 6
-        self.assertEqual(self.app.var_band.get(), "very_rare")          # Native folded in
+        self.assertNotIn("very_rare", self.app._effective_bands)
+        self.assertIn("native", self.app._effective_bands)              # Native stays visible
+        self.assertEqual(float(self.app.band_slider.cget("to")), 5.0)   # 6 stops (7 bands - hidden Very Rare)
+        self.assertEqual(self.app.var_band.get(), "native")            # Very Rare folded into Native
 
-        # Distinct -> all six shown again.
+        # Distinct -> all seven shown again.
         self.app._band_previews["very_rare"] = mk(700, 96.7)
-        self.assertEqual(len(self.app._compute_effective_bands()), 6)
+        self.assertEqual(len(self.app._compute_effective_bands()), 7)
 
     def test_preview_line_shows_coverage_words_and_encounter_rate(self):
         """The visible preview line carries all three: coverage %, word count, and the compact
@@ -117,6 +120,37 @@ class TestFlagUI(unittest.TestCase):
         self.assertEqual(self.app._band_previews, "SENTINEL")
         self.app._apply_preview_result(5, None)             # current gen -> applied
         self.assertIsNone(self.app._band_previews)
+
+    def test_generate_disabled_with_hint_when_library_empty(self):
+        """Generate Journey is disabled and shows a short 'add content first' hint when the library
+        has no content; enabled with the hint hidden once content exists."""
+        from unittest.mock import patch
+        with patch.object(self.app, "_library_has_content", return_value=False):
+            self.app._update_generate_state()
+        self.assertEqual(str(self.app.btn_journey.cget("state")), "disabled")
+        self.assertEqual(self.app.lbl_generate_hint.winfo_manager(), "pack", "empty -> hint shown")
+
+        with patch.object(self.app, "_library_has_content", return_value=True):
+            self.app._update_generate_state()
+        self.assertEqual(str(self.app.btn_journey.cget("state")), "normal")
+        self.assertEqual(self.app.lbl_generate_hint.winfo_manager(), "", "content -> hint hidden")
+
+    def test_library_content_collapses_to_one_button(self):
+        """Phase 1 of the Content Manager redesign: the main GUI's Library Content shows a single
+        'Import Content' button; the YouTube DOWNLOADER moved into the Content Manager
+        (btn_youtube is None) while the ▷ Preview button stays on the main page."""
+        def walk(widget, out):
+            for c in widget.winfo_children():
+                out.append(c); walk(c, out)
+        allw = []
+        walk(self.root, allw)
+        libframe = next((w for w in allw if isinstance(w, ttk.LabelFrame)
+                         and "Library Content" in w.cget("text")), None)
+        self.assertIsNotNone(libframe, "Library Content frame should exist")
+        buttons = [w.cget("text") for w in libframe.winfo_children() if isinstance(w, ttk.Button)]
+        self.assertEqual(buttons, ["Import Content"], "exactly one content button on the main GUI")
+        self.assertIsNone(self.app.btn_youtube, "the YouTube downloader button is no longer on main")
+        self.assertIsNotNone(self.app.btn_preview, "the Preview button stays on the main GUI")
 
 if __name__ == '__main__':
     unittest.main()

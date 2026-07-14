@@ -1,73 +1,110 @@
 # Setup and Usage Tutorial
 
 ## What are we doing?
--> Importing your existing knowledge
+-> Importing your **existing knowledge**
 
--> Adding your personal immersion library
+-> Adding your **personal immersion library**
 
--> Creating your personal frequency list
+-> Creating your **personal frequency list**
 
--> Learning your highest frequency words, episode by episode *(chapter by chapter)*
+-> Learning your highest-leverage words, episode by episode *(chapter by chapter)*
 
 > Surasura shows you the exact words worth your time. In the perfect order.
 
 ## 1. Import Known Vocabulary
-First, import your existing knowledge. The analyzer will use this to calculate your known % and skip words you already know.
+First, import your existing knowledge. The analyzer uses this to calculate your known % and skip words you already know.
+
+*   **Migaku / Jiten / Anki** — pull known words straight from your decks or exports.
+*   **Edit Ignore List** — hand-exclude words you never want suggested.
 
 ![Import Known Vocabulary Interface](assets/images/tutorial/import_vocab.png)
 
-## 2. Splitting Content & Graduation
-Before adding content to your library, you need to prepare it.
+## 2. Import Content
+Press **Import Content** to open the Content Manager — one place to add and organize everything.
 
-1.  **Find your EPUBs**, subtitles, Anki Immersion Decks, or text files.
-2.  **Split them** using the Splitting tool. 
+*   **📁 Add files & Folders** — drop in ready `.txt` / `.md` / `.srt` / `.ass`
+*   **📖 Extract (EPUB / Anki)** — turn an EPUB or Anki deck into clean, split text.
+*   **▶ YouTube** *(optional)* — pull transcripts straight from YouTube.
 
-![Splitting Interface - Graduation and File Splitting](assets/images/tutorial/splitting_interface.png)
 
-## 3. Organizing Your Folders
-Once your files are split, add them to the correct location in your content folders. Order matters!
+![Content Manager: Add Content and the tier tabs](assets/images/tutorial/content_manager.png)
 
-*   **NOW content**: What you are consuming *today* and in the next 2 weeks. (High priority)
-*   **Soon**: Your medium-term reading / watch list (within the next 6 months).
-*   **6+ months**: Content for *after* 6 months.
+## 3. Order Your Library
+Your library is split into three tabs. 
 
-![Folder Structure Example: NOW content to 6+ months](assets/images/tutorial/folder_structure.png)
+Added content lands in the tab you're on. **Order matters** — drag files (and use ▲▼) into the order you'll actually immerse.
 
-> **Note:** You can include as much content as you like! The analysis will handle it comfortably, as long as you understand the timeframes you've set for yourself.
+*   **NOW**: what you're consuming *today* and over the next ~2 weeks. *(Order matters a lot.)*
+*   **Soon**: your medium-term list (within 6 months). *(Order matters a little.)*
+*   **6+ months**: someday / aspirational content. *(Order doesn't matter.)*
 
-## 4. Importing & Managing Files
-You can easily import files and move them around. Drag and drop functionality is supported for prioritizing your content.
+> Include as much as you like — the analysis handles it comfortably, as long as the timeframes reflect your real plans.
 
-![Import Interface with Drag and Drop](assets/images/tutorial/import_drag_drop.png)
+![Library tabs with drag-to-reorder](assets/images/tutorial/library_tabs.png)
 
-## 5. Two Modes
-The application runs in two main modes:
-1.  **Frequency Mode**: (RECOMMENDED) Orders based on the Highest frequency from YOUR immersion content.
+## 4. Choose How to Generate
+Two modes drive the word list:
 
-2.  **% Coverage Mode**: Includes as many words to get you to 100% coverage of your immersion content. *(Still prioritizes based on frequency)*
+1.  **By Commonness** *(RECOMMENDED)* — a slider from **Core** (only the most common words) to **Native** (everything but one-offs). Slide to include rarer words; a live preview shows the word count and coverage % you'd reach.
 
-![Two Modes Visualization](assets/images/tutorial/two_modes.png)
+2.  **Target % Coverage** — include enough words to hit a coverage % of your content. *(Still ordered by leverage.)*
+
+![The By Commonness slider with live preview](assets/images/tutorial/commonness_slider.png)
+
+## 5. Generate Your Journey
+Press **Generate Journey** to build your list and open the report. It reuses the last analysis when nothing relevant changed, so theme and Zen-limit tweaks apply instantly.
+
+> Generate stays disabled until your library has content — add some first via **Import Content**.
+
+![Graduation Interface](assets/images/tutorial/generate_journey.png)
 
 ## 6. Understanding the Output
-The analysis report provides specific metrics to guide your learning:
+The report orders words by real payoff across *your* library:
 
-*   **Order to Learn**: Suggested learning order based on importance.
-*   **Frequency**: How often the word appears in your content.
+*   **Order to Learn** — suggested order, by importance.
+*   **Frequency** — how often the word appears in your content.
+*   **Star (Priority)** ✦ — high-leverage words you'll see throughout all of your content.
+*   **Lopsided** ⚖ — words you'll see a lot in the next 2 weeks, but rarely after.
+*   **Show filter** (⇅) — focus the list on **All**, **✦** only, or **No ✦**.
+*   **Mark Complete** (✓) — tick off a file you've finished; it advances you to the next.
+*   **Ignore Word / Other Freq Lists** — exclude words, or see tags from imported frequency lists.
 
-*   **Diamond (Priority)** 🔹: Words you will see throughout all of your content.
-*   **Lopsided** ⚖: Words you will see in the next 2 weeks, but rarely after.
-
-*   **Ignore Word**: Options to ignore specific words from future analysis.
-*   **Other Freq Lists**: Tagging from other Freq lists
-
+![The Vocab Journey report](assets/images/tutorial/report_output.png)
 
 ## 7. Graduating Content
-Once you have learned the vocabulary from a specific file or episode AND *consumed it*, you can **Graduate** it. 
+Once you've learned a file's vocabulary AND *consumed it*, **Graduate** it. This keeps your analysis fresh and honest about your progress.
 
-This transition ensures your analysis stays fresh and reflects your actual progress.
-
-*   **Move to Known**: Words in graduated content will be marked as "Known". They will no longer be suggested in your future journey lists, as you've already conquered them!
-
-*   **Progressive Graduation**: You can also graduate content by moving it into sooner timeframes (e.g., from "Soon" into "NOW content") as your goals shift and you get closer to consuming that content.
+*   **Move to Known** — words in graduated content become "Known" and drop out of future journeys. You've conquered them!
+*   **Progressive Graduation** — as goals shift, promote content into sooner tabs (e.g. **Soon → NOW**).
 
 ![Graduation Interface](assets/images/tutorial/graduation.png)
+
+## Additional Features
+
+### Splitting Content (Extract)
+Big EPUBs and Anki decks are best split into episode- / chapter-sized files. **📖 Extract (EPUB / Anki)** handles it:
+
+*   Set a split length (or split into N parts) — clean `.txt` chunks land in **Processed** *and* your active tab.
+*   For Anki decks, pick the field to pull text from.
+
+![The Extract / Splitting tool](assets/images/tutorial/splitting_interface.png)
+
+### YouTube Downloader *(optional)*
+Feed Surasura straight from YouTube. Press **▶ YouTube** in the Content Manager:
+
+*   Paste any links — single videos, pasted lists, or full playlists.
+*   Choose the caption language, and optionally **keep timestamps**.
+*   Clean `.txt` transcripts drop into **Processed** and your active tab, ready to analyze.
+
+> A one-time acknowledgment is required before your first download.
+
+![The YouTube transcript downloader](assets/images/tutorial/youtube_downloader.png)
+
+### YouTube Preview *(optional)*
+"Try before you watch." Press **▷** next to **Generate Journey**:
+
+*   Paste a video (or playlist) link to see its Vocab Journey scored against *your* library — how much you already know, and exactly what it would teach you — with no full re-run.
+*   For a playlist, each video is scored on its own so you can compare head-to-head.
+*   Like it? One checkbox adds the transcript to the front of **NOW** for future runs.
+
+![Preview a video against your library](assets/images/tutorial/youtube_preview.png)

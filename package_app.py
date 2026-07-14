@@ -327,23 +327,15 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
         if os.path.exists(src_freq):
             shutil.copy2(src_freq, os.path.join(dst_user_files_base, freq_file))
 
-    # 3. Create Data Directories and Copy Samples
-    print("Creating Data Directories and Copying Samples...")
+    # 3. Create EMPTY Data Directories.
+    # A fresh install ships with EMPTY tiers so the Content Manager's empty-state onboarding appears.
+    # Sample content is bundled as a resource (see Surasura.spec datas) and seeded ONLY on demand via
+    # the "Test with samples" action -> path_utils.seed_samples. Do NOT copy samples into data/ here.
+    print("Creating empty data directories...")
     data_dir_base = os.path.join(final_dist, "data")
-    
     for lang in supported_languages:
-        data_dir_lang = os.path.join(data_dir_base, lang)
-        os.makedirs(data_dir_lang, exist_ok=True)
-        
         for category in ["HighPriority", "LowPriority", "GoalContent", "Processed"]:
-            cat_dir = os.path.join(data_dir_lang, category)
-            os.makedirs(cat_dir, exist_ok=True)
-            
-            # Copy samples from samples/<lang>/<category>
-            sample_src = os.path.join("samples", lang, category)
-            if os.path.exists(sample_src):
-                print(f"Bundling samples for {lang}/{category}...")
-                shutil.copytree(sample_src, cat_dir, dirs_exist_ok=True)
+            os.makedirs(os.path.join(data_dir_base, lang, category), exist_ok=True)
 
     # 4. Create Results Directory
     os.makedirs(os.path.join(final_dist, "results"), exist_ok=True)

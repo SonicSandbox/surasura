@@ -97,46 +97,34 @@ def get_ico_path():
     """Returns the path to the application .ico file (Windows)."""
     return get_resource(os.path.join("app", "assets", "images", "app_icon.ico"))
 
+SAMPLE_SUBFOLDERS = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed"]
+
+
 def ensure_data_setup(language=None):
     """
-    Ensures that the data folders exist and copies samples into them if they are empty.
-    If language is provided, setup inside data/<language>/ and User Files/<language>/
+    Ensures the data folders exist. If language is provided, sets up data/<language>/ and
+    User Files/<language>/.
+
+    NOTE: this NO LONGER copies sample content. Samples are seeded ONLY on explicit user request
+    (the "Test with samples" action → `seed_samples`), so a new user starts with a genuinely empty
+    library and the empty-state onboarding can appear. (Previously this auto-copied samples into any
+    empty tier — and re-seeded a tier the user later emptied.)
     """
     # 1. Determine Paths
     data_path = get_data_path(language)
     user_files_dir = get_user_files_path(language)
-    
-    samples_path = get_resource("samples")
-    
-    subfolders = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed", ".trash"]
-    
+
+    subfolders = SAMPLE_SUBFOLDERS + [".trash"]
+
     # 2. Ensure base data folder exists
     if not os.path.exists(data_path):
         os.makedirs(data_path, exist_ok=True)
-        
-    # 3. Setup subfolders (Copy samples if destination is empty)
+
+    # 3. Create the subfolders (empty — no sample copy).
     for folder in subfolders:
         target_dir = os.path.join(data_path, folder)
-        
-        # Create folder if it doesn't exist
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
-            
-        # Determine source samples path
-        # Default to 'ja' if language is None or 'ja', otherwise try to use the language folder
-        sample_lang = language if language else 'ja'
-        source_dir = os.path.join(samples_path, sample_lang, folder)
-        
-        # If folder is empty and source exists, copy samples
-        if os.path.exists(target_dir) and not os.listdir(target_dir):
-            if os.path.exists(source_dir):
-                for item in os.listdir(source_dir):
-                    s = os.path.join(source_dir, item)
-                    d = os.path.join(target_dir, item)
-                    if os.path.isfile(s):
-                        shutil.copy2(s, d)
-                    elif os.path.isdir(s):
-                        shutil.copytree(s, d, dirs_exist_ok=True)
 
     # 4. Ensure User Files folder exists
     if not os.path.exists(user_files_dir):
@@ -160,6 +148,33 @@ def ensure_data_setup(language=None):
     # 6. Async Trash Cleanup
     trash_dir = os.path.join(data_path, ".trash")
     cleanup_trash_async(trash_dir)
+
+
+def seed_samples(language=None):
+    """Copy bundled sample immersion content into the (empty) tier folders for `language`.
+
+    Called ONLY on explicit user request (the Content Manager's "Test with samples" action) — samples
+    are NOT auto-seeded on setup, so a new user starts with a genuinely empty library. Copies into a
+    tier only when that tier is empty (so it never clobbers real content). Returns the number of
+    top-level items copied. Sample content ships under `samples/<lang>/{HighPriority,LowPriority}`.
+    """
+    data_path = get_data_path(language)
+    samples_path = get_resource("samples")
+    sample_lang = language if language else 'ja'
+    copied = 0
+    for folder in SAMPLE_SUBFOLDERS:
+        target_dir = os.path.join(data_path, folder)
+        os.makedirs(target_dir, exist_ok=True)
+        source_dir = os.path.join(samples_path, sample_lang, folder)
+        if os.path.isdir(source_dir) and not os.listdir(target_dir):
+            for item in os.listdir(source_dir):
+                s = os.path.join(source_dir, item)
+                d = os.path.join(target_dir, item)
+                if os.path.isfile(s):
+                    shutil.copy2(s, d); copied += 1
+                elif os.path.isdir(s):
+                    shutil.copytree(s, d, dirs_exist_ok=True); copied += 1
+    return copied
 
 def cleanup_trash_async(trash_path):
     """Prunes files in the given trash directory that are older than 30 days asynchronously."""

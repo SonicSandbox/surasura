@@ -33,9 +33,10 @@ def freqs(tmp_path):
 def test_band_floor_ppm_values():
     assert ws.band_floor_ppm("core") == 2000.0
     assert ws.band_floor_ppm("occasional") == 25.0
-    assert ws.band_floor_ppm("rare") == 12.0           # bridges Occasional -> Very Rare
-    assert ws.band_floor_ppm("very_rare") == 5.0       # the old 'rare' floor, renamed
-    assert ws.band_floor_ppm("native") == 0.0          # native has no ppm floor (min_count only)
+    assert ws.band_floor_ppm("uncommon") == 10.0
+    assert ws.band_floor_ppm("rare") == 4.0
+    assert ws.band_floor_ppm("very_rare") == 2.5
+    assert ws.band_floor_ppm("native") == 1.0          # tiny floor (~= min_count on typical libraries)
 
 
 def test_band_label_formats_multiword_keys():
@@ -48,27 +49,27 @@ def test_band_floor_count_is_scale_invariant():
     that's the whole point: a ppm means the same density regardless of size."""
     assert ws.band_floor_count("core", 1_000_000) == 2000.0
     assert ws.band_floor_count("core", 2_000_000) == 4000.0   # 2x tokens -> 2x count for same ppm
-    # Native has no ppm floor: its effective floor is the universal min_count (drop one-offs),
-    # which is an ABSOLUTE count and so identical at any library size.
-    assert ws.band_floor_count("native", 5_000_000) == ws.DEFAULT_MIN_COUNT
+    # 'native' carries a tiny 1ppm floor: on a big library it clears min_count (5M -> 5), but on a
+    # small library it clamps up to the universal min_count (so it still just drops one-offs).
+    assert ws.band_floor_count("native", 5_000_000) == 5.0
     assert ws.band_floor_count("native", 50) == ws.DEFAULT_MIN_COUNT
 
 
 def test_ladder_is_nested_and_native_drops_only_one_offs():
-    """On a real-sized library the five bands form a strict nested ladder, and Native keeps
-    everything EXCEPT true one-offs (count == 1). Uses a synthetic distribution so the ppm ladder
-    is actually exercised (a tiny real sample can't span the ppm range)."""
+    """On a real-sized library the bands form a strict nested ladder, and Native keeps everything
+    EXCEPT true one-offs (count == 1). Uses a synthetic distribution so the ppm ladder is actually
+    exercised (a tiny real sample can't span the ppm range)."""
     total = 1_000_000
-    # counts (== ppm at 1M tokens) chosen to straddle each floor: core 2000, common 160,
-    # occasional 25, rare 15, very_rare 5, native = min_count 2. Last word (count 1) is a one-off.
+    # counts (== ppm at 1M tokens) chosen to straddle each floor: core 2000, common 150,
+    # occasional 25, uncommon 10, rare 4, very_rare 2.5, native = min_count 2. Last word (1) is a one-off.
     unknown = [("w0|", 3000), ("w1|", 500), ("w2|", 100), ("w3|", 20),
-               ("w4|", 10), ("w5|", 3), ("w6|", 1)]
+               ("w4|", 6), ("w5|", 3), ("w6|", 2), ("w7|", 1)]
     sizes = {b: len(ws.select_band(unknown, total, b)) for b in ws.BANDS_ORDER}
-    assert sizes == {"core": 1, "common": 2, "occasional": 3, "rare": 4,
-                     "very_rare": 5, "native": 6}
+    assert sizes == {"core": 1, "common": 2, "occasional": 3, "uncommon": 4, "rare": 5,
+                     "very_rare": 6, "native": 7}
     # Native excludes the single-occurrence word, and nothing more.
     native = ws.select_band(unknown, total, "native")
-    assert ("w6|", 1) not in native and ("w5|", 3) in native
+    assert ("w7|", 1) not in native and ("w6|", 2) in native
     assert len(native) < len(unknown)
 
 
@@ -120,19 +121,20 @@ def test_low_bands_collapse_when_ppm_floor_dips_below_min_count():
     """DESIGN NOTE (not a bug): a band whose ppm-equivalent floor lands BELOW the universal
     min_count clamps up to min_count — so two low bands can select IDENTICALLY on a given library.
 
-    This is exactly why 'Very Rare' == 'Native' when very_rare's ppm is tuned too low for the
-    library size: at ~615k tokens, very_rare=3ppm -> 1.85 occurrences (< min_count 2) -> the SAME
-    floor as native. The SHIPPED defaults avoid this (very_rare=5 stays distinct), so this guards
-    the calibration while documenting the collapse as intended, size-dependent behaviour."""
-    total = 615_221                       # a real library size where very_rare=3ppm -> 1.85 < 2
-    tuned = {"very_rare": 3, "native": 1}
-    # User-tuned-too-low: both clamp to min_count -> identical selection (the reported symptom).
-    assert ws.band_floor_count("very_rare", total, tuned, min_count=2) == 2.0
-    assert ws.band_floor_count("native", total, tuned, min_count=2) == 2.0
+    With the tightened defaults (very_rare=2.5ppm), 'Very Rare' collapses into 'Native' on a SMALL
+    library (both clamp to min_count) — the slider then hides the redundant band. On a large-enough
+    library they stay distinct. This guards the calibration and documents the collapse as intended,
+    size-dependent behaviour."""
+    # Small library: very_rare's ppm-equivalent floor is below min_count, so it clamps to native's
+    # floor (the reported collapse). very_rare=2.5ppm at 615k -> 1.54 < min_count 2.
+    small = 615_221
+    assert (ws.band_floor_count("very_rare", small, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT)
+            == ws.band_floor_count("native", small, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT))
 
-    # The SHIPPED defaults keep the two lowest bands DISTINCT at the same library size.
-    assert (ws.band_floor_count("very_rare", total, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT)
-            > ws.band_floor_count("native", total, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT))
+    # Large library: the two lowest bands are DISTINCT (very_rare=2.5ppm clears min_count).
+    big = 2_000_000
+    assert (ws.band_floor_count("very_rare", big, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT)
+            > ws.band_floor_count("native", big, ws.DEFAULT_BANDS_PPM, ws.DEFAULT_MIN_COUNT))
 
 
 def test_custom_bands_ppm_override(freqs):

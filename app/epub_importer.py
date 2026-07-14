@@ -32,12 +32,15 @@ SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
 
 class FileImporterApp:
-    def __init__(self, root, language='ja'):
+    def __init__(self, root, language='ja', target_tier=None, initial_file=None):
         self.root = root
         self.language = language
+        # When launched from the Content Manager for a specific tier, the spliced output is ALSO
+        # copied into that tier (not just staged in Processed). None = Processed only (standalone use).
+        self.target_tier = target_tier
         self.processed_dir = os.path.join(get_data_path(language), "Processed")
-        self.root.title(f"Surasura - File Importer v1.0 ({language})")
-        self.root.geometry("600x650") # Expanded for Anki preview/warning
+        self.root.title(f"Surasura - File Importer ({language})")
+        self.root.geometry("600x560") # trimmed height — less empty space (still fits the Anki preview)
         self.root.resizable(True, True)
         self.root.minsize(500, 500)
         self.root.configure(bg=BG_COLOR)
@@ -76,6 +79,14 @@ class FileImporterApp:
         except Exception:
             pass
 
+        # Pre-select a file (e.g. when the Content Manager opens the splicer for a chosen EPUB/Anki):
+        # setting the var fires on_file_change, which populates the output name + the right options.
+        if initial_file:
+            try:
+                self.file_path_var.set(initial_file)
+            except Exception:
+                pass
+
     def __del__(self):
         if hasattr(self, 'anki_temp_dir') and self.anki_temp_dir:
             cleanup_temp_dir(self.anki_temp_dir)
@@ -110,11 +121,13 @@ class FileImporterApp:
             borderwidth=0
         )
         
-        self.style.configure("TButton", 
-            background=SURFACE_COLOR, 
-            foreground=TEXT_COLOR, 
+        self.style.configure("TButton",
+            background=SURFACE_COLOR,
+            foreground=TEXT_COLOR,
             borderwidth=0,
-            focuscolor=ACCENT_COLOR
+            focuscolor=ACCENT_COLOR,
+            padding=(14, 8),                     # horizontal breathing room around the label
+            font=('Segoe UI', 10, 'bold')        # match the Content Manager's button look
         )
         self.style.map("TButton",
             background=[('active', ACCENT_COLOR), ('pressed', ACCENT_COLOR), ('disabled', SURFACE_COLOR)],
@@ -432,11 +445,17 @@ class FileImporterApp:
                     return
                 save_msg = f"Saved {len(chunks)} files to:\n{save_dir}"
 
+            # Also drop the output into the chosen tier (in addition to Processed) when launched
+            # from the Content Manager for a specific tier.
+            tier_msg = ""
+            if self._copy_output_to_tier(output_name):
+                tier_msg = f"\n\nAdded to your '{self.target_tier}' library."
+
             self.status_var.set("Success!")
-            messagebox.showinfo("Success", 
-                f"Extraction complete!\n{save_msg}\n\n"
+            messagebox.showinfo("Success",
+                f"Extraction complete!\n{save_msg}{tier_msg}\n\n"
                 "👉 Manage your content in Content Importer")
-            self.root.destroy() 
+            self.root.destroy()
 
         except Exception as e:
             messagebox.showerror("Unexpected Error", str(e))
@@ -612,6 +631,25 @@ class FileImporterApp:
             pos = end_pos
         return [c for c in chunks if c]
 
+    def _copy_output_to_tier(self, base_name):
+        """Copy the freshly-spliced output folder (Processed/<base>) into the target tier so it's part
+        of the library, not just staged in Processed. Best-effort; the Processed copy always remains.
+        Returns True if it copied. No-op when no tier was requested (standalone use)."""
+        if not self.target_tier:
+            return False
+        import shutil
+        src = os.path.join(self.processed_dir, base_name)
+        if not os.path.isdir(src):
+            return False
+        dest = os.path.join(get_data_path(self.language), self.target_tier, base_name)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: could not copy spliced output into tier '{self.target_tier}': {e}")
+            return False
+
     def save_chunks(self, chunks, base_name):
         output_sub_dir = os.path.join(self.processed_dir, base_name)
         if not os.path.exists(output_sub_dir):
@@ -675,14 +713,17 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="File Importer")
     parser.add_argument("--language", default='ja', help="Target language (default: ja)")
+    parser.add_argument("--tier", default=None,
+                        help="Also copy output into this tier (HighPriority/LowPriority/GoalContent)")
+    parser.add_argument("--file", default=None, help="Pre-select this file to import")
     args = parser.parse_args()
 
     processed_dir = os.path.join(get_data_path(args.language), "Processed")
     if not os.path.exists(processed_dir):
         os.makedirs(processed_dir)
-        
+
     root = tk.Tk()
-    app = FileImporterApp(root, language=args.language)
+    app = FileImporterApp(root, language=args.language, target_tier=args.tier, initial_file=args.file)
     root.mainloop()
 
 if __name__ == "__main__":

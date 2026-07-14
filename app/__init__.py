@@ -1,2 +1,2 @@
 # Japanese Readability Analyzer Package
-__version__ = "1.9"
+__version__ = "2.0"

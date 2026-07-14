@@ -675,14 +675,17 @@ class MasterDashboardApp:
         self._update_generate_state()   # different language -> different library -> re-check emptiness
 
     def _library_has_content(self):
-        """True if the current language's library has at least one analyzable content file."""
+        """True if the current language's library has at least one analyzable content file. The
+        extensions MUST match what the analyzer actually reads (analyzer.get_files_recursive:
+        .txt/.md/.srt/.ass) — otherwise Generate could enable on files the analysis then ignores
+        (e.g. a tier of only .vtt), yielding an empty journey."""
         from app.path_utils import get_data_path
         base = get_data_path(self.var_language.get() or "ja")
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(base, tier)
             if os.path.isdir(d):
                 for _r, _dirs, files in os.walk(d):
-                    if any(f.lower().endswith((".txt", ".md", ".srt", ".ass", ".vtt")) for f in files):
+                    if any(f.lower().endswith((".txt", ".md", ".srt", ".ass")) for f in files):
                         return True
         return False
 

@@ -32,8 +32,10 @@
 ## 🎚️ Sharper Commonness Control
 - The **By Commonness** slider gains an **Uncommon** band (Core → Common → Occasional → Uncommon → Rare → Very Rare → Native) and a retuned density curve for finer control over how deep you go, with a live word-count and coverage preview.
 
-## ⚡ Faster Analysis
-- Large libraries analyze noticeably faster with **byte-for-byte identical results** — each file is now parsed once and reused for both scoring and the progressive report (roughly a third faster on ~1M-token libraries). Applies to both Japanese (Fugashi) and Chinese (Jieba).
+## ⚡ Faster & Snappier on Big Libraries
+- Large libraries analyze noticeably faster with **byte-for-byte identical results** — each file is now parsed once and reused for both scoring and the progressive report (roughly a third faster on ~1M-token libraries), plus further engine tuning. Applies to both Japanese (Fugashi) and Chinese (Jieba).
+- The **Content Manager** now opens and switches tabs instantly on large libraries (no more multi-second freeze), the **commonness slider** is smoother, and pressing **Generate Journey** when nothing changed reopens your report immediately instead of re-running the engine.
+- The internal results file is much smaller on disk, with **no change to your reports**.
 
 ## 🛠️ Reliability & Correctness Fixes
 - Chinese single-character words are no longer dropped; Japanese words display in clean dictionary form and match your frequency lists correctly.

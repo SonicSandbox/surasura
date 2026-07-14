@@ -129,6 +129,40 @@ def test_build_marker_targets_exe_and_templates(paths, tmp_path, monkeypatch):
     assert tpl_t["dest"] == os.path.join(paths["internal"], "templates")
 
 
+def test_build_marker_includes_release_notes_when_present(paths, tmp_path, monkeypatch):
+    """When the app package carries RELEASE_NOTES.md, build_marker adds it as a (non-critical) file
+    target next to the exe, so an app update refreshes the bundled notes in place."""
+    from app.update_checker import UpdateInfo
+    payload = str(tmp_path / "payload")
+    os.makedirs(payload, exist_ok=True)
+    with open(os.path.join(payload, "Surasura.exe"), "wb") as f:
+        f.write(EXE_BYTES)
+    with open(os.path.join(payload, "RELEASE_NOTES.md"), "w", encoding="utf-8") as f:
+        f.write("# Surasura v2.1 - Release Notes\n")
+    monkeypatch.setattr(updater.sys, "executable", os.path.join(paths["root"], "Surasura.exe"))
+
+    info = UpdateInfo(version="2.1", update_type="app", sha256="x", app_package_url="http://x")
+    marker = updater.build_marker(info, payload, 4321)
+    notes_t = {t["name"]: t for t in marker["targets"]}.get("RELEASE_NOTES.md")
+    assert notes_t is not None, "notes target added when the package carries it"
+    assert notes_t["kind"] == "file"
+    assert notes_t["dest"] == os.path.join(paths["root"], "RELEASE_NOTES.md")
+    assert not notes_t.get("sha256"), "notes are non-critical -> no per-file hash"
+
+
+def test_build_marker_omits_release_notes_when_absent(paths, tmp_path, monkeypatch):
+    """Backward compat: an older package without RELEASE_NOTES.md -> no notes target (only exe+templates)."""
+    from app.update_checker import UpdateInfo
+    payload = str(tmp_path / "payload")
+    os.makedirs(payload, exist_ok=True)
+    with open(os.path.join(payload, "Surasura.exe"), "wb") as f:
+        f.write(EXE_BYTES)
+    monkeypatch.setattr(updater.sys, "executable", os.path.join(paths["root"], "Surasura.exe"))
+    info = UpdateInfo(version="2.1", update_type="app", sha256="x", app_package_url="http://x")
+    marker = updater.build_marker(info, payload, 4321)
+    assert "RELEASE_NOTES.md" not in {t["name"] for t in marker["targets"]}
+
+
 def test_prepare_update_end_to_end_arms_marker(paths, tmp_path):
     from app.update_checker import UpdateInfo
     src = tmp_path / "Surasura_app_v2.1.zip"

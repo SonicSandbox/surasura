@@ -26,7 +26,9 @@ def get_version():
     return "0.0"
 
 APP_VERSION = get_version()
-BUILD_NAME = f'Surasura_v{APP_VERSION}'
+# Stable, version-agnostic install-folder name so it never goes stale after an in-place update
+# (the version lives in the app title bar + the release page). The DOWNLOAD zip stays versioned.
+BUILD_NAME = 'Surasura'
 
 print(f"Building {BUILD_NAME}...")
 

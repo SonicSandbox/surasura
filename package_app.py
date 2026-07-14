@@ -172,8 +172,11 @@ def _build_app_package(final_dist, version, full_update):
             print("ERROR: Surasura.exe or _internal/templates missing; cannot build app package.")
             return
         pkg_path = os.path.join("dist", f"Surasura_app_v{version}.zip")
+        notes_src = os.path.join(final_dist, "RELEASE_NOTES.md")
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(exe_src, "Surasura.exe")
+            if os.path.isfile(notes_src):
+                z.write(notes_src, "RELEASE_NOTES.md")   # refreshed in place on update (see build_marker)
             for root, dirs, files in os.walk(templates_dir):
                 dirs.sort()
                 files.sort()
@@ -195,8 +198,9 @@ def _build_app_package(final_dist, version, full_update):
 
 def build(zip_output=False, skip_tests=False, release=False, full_update=False):
     version = get_version()
-    build_name = f"Surasura_v{version}"
-    print(f"Building Readability Analyzer {build_name}...")
+    build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
+    zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
+    print(f"Building Readability Analyzer {zip_name}...")
 
     # A release always produces the full zip too; --full-update implies --release.
     if full_update:
@@ -348,7 +352,9 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
     docs_to_copy = [
         ("README.md", "README.md"),
         (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
-        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), f"RELEASE_v{version}.md")
+        # Packaged under a STABLE name so it isn't version-stamped (and so an app update can refresh
+        # it in place — see _build_app_package + updater.build_marker). Content keeps its version header.
+        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md")
     ]
 
     for src, dst_name in docs_to_copy:
@@ -381,9 +387,11 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
     # 7. Create Zip Archive
     if zip_output:
         print("Creating Zip Archive...")
-        archive_base = os.path.join("dist", build_name) # Will create {build_name}.zip in dist/
+        archive_base = os.path.join("dist", zip_name) # -> dist/Surasura_v<version>.zip
         try:
-            shutil.make_archive(archive_base, 'zip', final_dist)
+            # Nest under the stable 'Surasura/' folder (base_dir) so it extracts to Surasura/ instead
+            # of a version-stamped folder that would look stale after an in-place update.
+            shutil.make_archive(archive_base, 'zip', root_dir="dist", base_dir=build_name)
             print(f"Zip archive created: {archive_base}.zip")
         except Exception as e:
             print(f"Warning: Could not create zip archive: {e}")

@@ -156,6 +156,16 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
     base = _internal_dir()
     staged_exe = os.path.join(payload_dir, EXE_NAME)
     exe_sha = sha256_file(staged_exe) if os.path.isfile(staged_exe) else ""
+    targets = [
+        {"name": EXE_NAME, "kind": "file", "dest": sys.executable, "sha256": exe_sha},
+        {"name": "templates", "kind": "dir", "dest": os.path.join(base, "templates")},
+    ]
+    # Optional: refresh the bundled release notes next to the exe so RELEASE_NOTES.md isn't stale
+    # after an app update. Only added when the package actually carries it (older packages don't),
+    # so this stays backward-compatible; non-critical, so no sha256 (swapped, rolled back with the rest).
+    if os.path.isfile(os.path.join(payload_dir, "RELEASE_NOTES.md")):
+        targets.append({"name": "RELEASE_NOTES.md", "kind": "file",
+                        "dest": os.path.join(os.path.dirname(sys.executable), "RELEASE_NOTES.md")})
     return {
         "target_version": info.version,
         "from_version": __version__,
@@ -165,10 +175,7 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
         "payload_dir": payload_dir,
         "base_dir": base,
         "backup_dir": backup_dir(),
-        "targets": [
-            {"name": EXE_NAME, "kind": "file", "dest": sys.executable, "sha256": exe_sha},
-            {"name": "templates", "kind": "dir", "dest": os.path.join(base, "templates")},
-        ],
+        "targets": targets,
         "relaunch_exe": sys.executable,
         "result_path": result_path(),
         "wait_timeout": wait_timeout,

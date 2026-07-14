@@ -402,19 +402,19 @@ def load_known_words(json_path, tokenizer):
     print(f"Loaded {len(known_tuples)} known word variations and {len(known_lemmas)} unique lemmas.")
     return known_tuples, known_lemmas
 
+# Precompiled once at import \u2014 has_target_language runs per-token (millions of calls on a large
+# library), so compiling these inline made re.compile the single biggest hot spot in a full run.
+_JA_TARGET_RE = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')  # Hiragana + Katakana + Kanji
+_ZH_TARGET_RE = re.compile(r'[\u4E00-\u9FFF]')                            # any CJK ideograph
+
+
 def has_target_language(text, language='ja'):
     if language == 'ja':
-        # Ranges for Hiragana, Katakana, and Kanji (Common and Rare)
-        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')
-        return bool(pattern.search(text))
+        return bool(_JA_TARGET_RE.search(text))
     elif language == 'zh':
-        # Chinese: Mostly Kanji (Hanzi) \u4E00-\u9FFF
-        # We can also check for common Chinese punctuation if needed, but Hanzi is the main indicator.
-        # Japanese also uses Hanzi, but usually mixed with Kana. 
-        # Pure Chinese text will be almost all Hanzi + Punctuation.
+        # Japanese also uses Hanzi but usually mixed with Kana; pure Chinese is Hanzi + punctuation.
         # This check basically asks: "Is there any CJK character?"
-        pattern = re.compile(r'[\u4E00-\u9FFF]')
-        return bool(pattern.search(text))
+        return bool(_ZH_TARGET_RE.search(text))
     return False
 
 def clean_subtitle_text(text, language='ja'):
@@ -616,9 +616,239 @@ def get_tier_label(word, freq_data):
     
     return tiers_found
 
+
+# --- Content Manager sidecars (right-sized reads of word_stats.json) ----------------------------- #
+# word_stats.json is large (candidate_contexts dominate) but the Content Manager only needs two tiny
+# slices: which files were analyzed, and per-file its words. We derive those into small sidecars so a
+# big library never freezes the GUI. Writes are ATOMIC (temp + os.replace) so a concurrent reader in
+# the Content Manager process never sees a half-written file. word_stats.json is written BEFORE the
+# sidecars, so a sidecar is always at least as new as it — the readers use that mtime rule to ignore a
+# stale sidecar left by an interrupted run and fall back to word_stats.json.
+def _write_sidecars(results_dir, stats):
+    """Derive analyzed_files.json (list of basenames) + file_words.json ({basename: [lemmas]}) from a
+    word_stats-shaped dict and write them atomically. Best-effort: returns True on success."""
+    analyzed = set()
+    file_words = {}
+    for key, data in stats.items():
+        lemma = key.split("|")[0]
+        for src in (data.get("sources", []) if isinstance(data, dict) else []):
+            analyzed.add(src)
+            file_words.setdefault(src, []).append(lemma)
+
+    def _atomic_dump(name, obj):
+        final = os.path.join(results_dir, name)
+        tmp = final + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, final)   # atomic on the same volume
+
+    _atomic_dump("analyzed_files.json", sorted(analyzed))
+    _atomic_dump("file_words.json", file_words)
+    return len(analyzed)
+
+
+def _backfill_sidecars(results_dir):
+    """Skip-path safety net: if a completed run is being reused but the sidecars are missing or older
+    than word_stats.json (e.g. first launch after updating, or an interrupted prior write), rebuild
+    them from word_stats.json so the Content Manager gets the fast path without a fresh analysis.
+    One-time cost (a single word_stats.json read); no-op once the sidecars are present and current."""
+    ws = os.path.join(results_dir, "word_stats.json")
+    if not os.path.exists(ws):
+        return
+    af = os.path.join(results_dir, "analyzed_files.json")
+    fw = os.path.join(results_dir, "file_words.json")
+    ws_m = os.path.getmtime(ws)
+    fresh = (os.path.exists(af) and os.path.exists(fw)
+             and os.path.getmtime(af) >= ws_m and os.path.getmtime(fw) >= ws_m)
+    if fresh:
+        return
+    try:
+        with open(ws, 'r', encoding='utf-8') as f:
+            stats = json.load(f)
+        n = _write_sidecars(results_dir, stats)
+        print(f"Backfilled Content Manager sidecars ({n} files).")
+    except Exception as e:
+        print(f"Warning: could not backfill sidecars: {e}")
+
+
+def _build_analysis_parser():
+    import argparse
+    parser = argparse.ArgumentParser(description="Japanese Text Analyzer")
+    parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
+    parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
+    parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
+    parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
+    parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
+    parser.add_argument("--static-only", action="store_true", help="Generate static HTML")
+    parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
+    parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
+    parser.add_argument("--app-mode", action="store_true", help="Open the static report in a dedicated app window")
+    parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
+    parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
+    parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
+    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
+    parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
+    parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
+    parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
+    parser.add_argument("--max-contexts", type=int, default=3, help="Maximum number of example sentences exported per word")
+    return parser
+
+
+def parse_analysis_args(argv=None):
+    """Parse the analyzer CLI args (argv=None -> sys.argv). Shared so the dashboard can reconstruct
+    the EXACT args namespace the run-signature depends on, from the same argv it would pass to the
+    analyzer subprocess — no risk of the two drifting."""
+    args, _unknown = _build_analysis_parser().parse_known_args(argv)
+    return args
+
+
+def resolve_found_files(language, verbose=True):
+    """Resolve the ordered [(abs_path, label, weight), ...] content files for a run — from the
+    master_manifest (phase order) or a recursive fallback scan. Shared by main() and the dashboard's
+    no-change pre-flight, so both compute the run-signature over exactly the same file list."""
+    data_dir = get_data_path(language)
+    user_files_dir = get_user_files_path(language)
+    found_files = []
+    manifest_path = os.path.join(user_files_dir, "master_manifest.json")
+
+    if os.path.exists(manifest_path):
+        if verbose:
+            try:
+                print(f"Loading Sort Order from Manifest: {manifest_path}")
+            except UnicodeEncodeError:
+                print("Loading Sort Order from Manifest (path contains non-ASCII characters)")
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            schedule = manifest.get("schedule", {})
+            phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
+            seen_paths = set()
+            for phase_key in phases:
+                for item in schedule.get(phase_key, []):
+                    rel_path = item.get("physical_path", "")
+                    if rel_path.startswith("./"):
+                        rel_path = rel_path[2:]
+                    abs_path = os.path.join(data_dir, rel_path)
+                    if not os.path.exists(abs_path):
+                        if verbose:
+                            print(f"Warning: Manifest file not found: {abs_path}")
+                        continue
+                    if abs_path in seen_paths:
+                        continue
+                    seen_paths.add(abs_path)
+                    weight = WEIGHT_GOAL
+                    if phase_key == "PHASE_1_NOW":
+                        weight = WEIGHT_HIGH
+                    elif phase_key == "PHASE_2_SOON":
+                        weight = WEIGHT_LOW
+                    origin = item.get("origin_source", "03_LATER")
+                    label = "GoalContent"
+                    if origin == "01_NOW":
+                        label = "HighPriority"
+                    elif origin == "02_SOON":
+                        label = "LowPriority"
+                    found_files.append((abs_path, label, weight))
+            if verbose:
+                print(f"Manifest Loaded: {len(found_files)} files scheduled.")
+        except Exception as e:
+            if verbose:
+                print(f"Error reading manifest: {e}. Falling back to default scan.")
+            found_files = []  # Trigger fallback
+
+    if not found_files:
+        if verbose:
+            print("Scaning folders recursively (Default Order)...")
+        scan_targets = [
+            ("HighPriority", os.path.join(data_dir, "HighPriority"), WEIGHT_HIGH),
+            ("LowPriority", os.path.join(data_dir, "LowPriority"), WEIGHT_LOW),
+            ("GoalContent", os.path.join(data_dir, "GoalContent"), WEIGHT_GOAL),
+        ]
+
+        def get_files_recursive(directory):
+            results = []
+            if not os.path.exists(directory):
+                return []
+            for root, dirs, files in os.walk(directory):
+                files.sort()
+                dirs.sort()
+                for file in files:
+                    # .epub/.html are intentionally excluded (they must go through the content importer).
+                    if file.lower().endswith(('.txt', '.md', '.srt', '.ass')):
+                        results.append(os.path.join(root, file))
+            return results
+
+        for label, folder, weight in scan_targets:
+            if not os.path.exists(folder):
+                continue
+            for path in get_files_recursive(folder):
+                found_files.append((path, label, weight))
+
+    return found_files
+
+
+def compute_run_signature(language, found_files, args):
+    """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
+    (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
+    lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
+    Presentation (theme / app-mode / zen / words-per-day) is deliberately excluded. Returns the
+    sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
+    whether Generate can just reopen the existing report without spawning the analyzer)."""
+    try:
+        from app import token_index as _token_index
+        user_files_dir = get_user_files_path(language)
+        known_file = os.path.join(user_files_dir, "KnownWord.json")
+        ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
+        black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
+        graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
+        known_sig = _token_index.known_signature(known_file)                 # stat only
+        available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)  # paths only
+
+        def _fsig(p):
+            try:
+                _st = os.stat(p)
+                return [_st.st_mtime, _st.st_size]
+            except OSError:
+                return None
+
+        _NON_ANALYSIS_SETTINGS = {
+            "theme", "open_app_mode", "zen_limit",
+            "words_per_day", "show_words_per_day",
+            "open_count", "skipped_version",
+        }
+        _settings_for_sig = ""
+        try:
+            with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
+                _sj = json.load(_sf)
+            for _k in _NON_ANALYSIS_SETTINGS:
+                _sj.pop(_k, None)
+            _settings_for_sig = json.dumps(_sj, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            pass
+
+        from app import __version__ as _app_version
+        _sig_parts = {
+            "files": [[fp, _fsig(fp), _l, _w] for (fp, _l, _w) in found_files],
+            "known": known_sig,
+            "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
+            "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
+            "settings": _settings_for_sig,
+            "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
+                     args.include_single_chars, args.exclude_freq_one, args.reinforce,
+                     args.context_min, args.context_max, args.max_contexts],
+            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}",
+            "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
+        }
+        return hashlib.sha256(
+            json.dumps(_sig_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()
+    except Exception as e:
+        print(f"Warning: could not compute run signature: {e}")
+        return None
+
+
 def main():
     import sys
-    
+
     # --- VISUALIZER REMOVED ---
     # Legacy interactive visualizer logic removed.
 
@@ -634,34 +864,9 @@ def main():
             print("Error: static_html_generator.py not found.")
             return
 
-    # --- ARGUMENT PARSING ---
-    import argparse
-    parser = argparse.ArgumentParser(description="Japanese Text Analyzer")
-    
-    # Flags for standard run
-    parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
-    parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
+    # --- ARGUMENT PARSING (shared parser so the dashboard reconstructs the identical args) ---
+    args = parse_analysis_args()
 
-    parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
-    parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
-    
-    # These are handled manually above but good to have in help
-    parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
-    parser.add_argument("--static-only", action="store_true", help="Generate static HTML")
-    parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
-    parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
-    parser.add_argument("--app-mode", action="store_true", help="Open the static report in a dedicated app window")
-    parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
-    parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
-    parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
-    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
-    parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
-    parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
-    parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
-    parser.add_argument("--max-contexts", type=int, default=3, help="Maximum number of example sentences exported per word")
-
-    args, unknown = parser.parse_known_args()
-    
     global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE
     ONLY_I_PLUS_ONE = args.only_i_plus_one
 
@@ -751,14 +956,6 @@ def main():
         print("Warning: No frequency lists found in User Files/")
         print("Expected format: frequency_list_{lang}_*.csv")
 
-    # 2. Define Scanning targets
-    # ORDER MATTERS: High -> Low -> Goal
-    scan_targets = [
-        ("HighPriority", os.path.join(data_dir, "HighPriority"), WEIGHT_HIGH),
-        ("LowPriority", os.path.join(data_dir, "LowPriority"), WEIGHT_LOW),
-        ("GoalContent", os.path.join(data_dir, "GoalContent"), WEIGHT_GOAL)
-    ]
-    
     word_stats = defaultdict(lambda: {
         "score": 0, "total_count": 0, "sources": set(), 
         "high_count": 0, "low_count": 0, "goal_count": 0,
@@ -777,177 +974,13 @@ def main():
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
     
-    found_files = []
-    
-    # Check for master_manifest.json
-    manifest_path = os.path.join(user_files_dir, "master_manifest.json")
-    
-    if os.path.exists(manifest_path):
-        try:
-            print(f"Loading Sort Order from Manifest: {manifest_path}")
-        except UnicodeEncodeError:
-            print("Loading Sort Order from Manifest (path contains non-ASCII characters)")
-        try:
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                manifest = json.load(f)
-                
-            schedule = manifest.get("schedule", {})
-            phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"] # order matters
-            
-            seen_paths = set()
-            
-            for phase_key in phases:
-                items = schedule.get(phase_key, [])
-                for item in items:
-                    # Logic: We need the absolute path.
-                    # Manifest stores "physical_path" relative to data_dir usually? 
-                    # Immersion Architect stores: "./01_NOW/..." relative to data root
-                    # logic: os.path.join(data_dir, item["physical_path"])
-                    
-                    # Need to handle potential "../" or "./" in the stored path
-                    # "physical_path": "./01_NOW/HarryPotter/HP_01.txt"
-                    # data_dir is "User Data/data/ja"
-                    # We need to resolve this carefully.
-                    
-                    rel_path = item.get("physical_path", "")
-                    
-                    # Hack/Fix: Immersion Architect uses:
-                    # self.buckets = { "01_NOW": .../HighPriority, ... }
-                    # and indexes files there. 
-                    # But the manifest path stored might be raw path?
-                    # Let's check Immersion Architect implementation.
-                    # It stores: os.path.relpath(winner["file_path"], self.data_root)
-                    # So "./HighPriority/Book/File.txt" -> "HighPriority/Book/File.txt" roughly
-                    
-                    if rel_path.startswith("./"):
-                        rel_path = rel_path[2:]
-                        
-                    abs_path = os.path.join(data_dir, rel_path)
-                    
-                    if not os.path.exists(abs_path):
-                        # Try matching by title if path fails (moved files?)
-                        # For now, just skip or warn
-                        print(f"Warning: Manifest file not found: {abs_path}")
-                        continue
-                        
-                    if abs_path in seen_paths: continue
-                    seen_paths.add(abs_path)
-                    
-                    # Determine Weight based on Phase
-                    weight = WEIGHT_GOAL # Default
-                    if phase_key == "PHASE_1_NOW": weight = WEIGHT_HIGH
-                    elif phase_key == "PHASE_2_SOON": weight = WEIGHT_LOW
-                    
-                    # Label? "HighPriority" etc is used for stats. 
-                    # We can infer label from original path or just use phase?
-                    # Logic: origin_source in manifest: "01_NOW", "02_SOON", "03_LATER"
-                    # We should Probably map these back to "HighPriority", "LowPriority", "GoalContent"
-                    # for consistency in output reporting? 
-                    # Actually, the user might want to see "NOW" in the report.
-                    # But let's map for backward compat first.
-                    
-                    origin = item.get("origin_source", "03_LATER")
-                    label = "GoalContent"
-                    if origin == "01_NOW": label = "HighPriority"
-                    elif origin == "02_SOON": label = "LowPriority"
-                    
-                    found_files.append((abs_path, label, weight))
-                    
-            print(f"Manifest Loaded: {len(found_files)} files scheduled.")
-            
-        except Exception as e:
-            print(f"Error reading manifest: {e}. Falling back to default scan.")
-            found_files = [] # Trigger fallback
-            
-    if not found_files:
-        # Fallback to recursively scanning folders (No _order.json support anymore per user request)
-        print("Scaning folders recursively (Default Order)...")
-        
-        def get_files_recursive(directory):
-            results = []
-            if not os.path.exists(directory): return []
-            
-            # Simple os.walk to get files
-            for root, dirs, files in os.walk(directory):
-                # Sort for deterministic behavior
-                files.sort()
-                dirs.sort()
-                
-                for file in files:
-                    # Filter extensions
-                    # .epub/.html are intentionally excluded: ebooks and web pages must go through
-                    # the content importer (which converts + chunks them). The analyzer only reads
-                    # already-normalized text/subtitle files.
-                    if file.lower().endswith(('.txt', '.md', '.srt', '.ass')):
-                         full_path = os.path.join(root, file)
-                         results.append(full_path)
-            return results
-
-        for label, folder, weight in scan_targets:
-            if not os.path.exists(folder): continue
-            
-            paths = get_files_recursive(folder)
-            for path in paths:
-                found_files.append((path, label, weight))
-
+    found_files = resolve_found_files(language)   # manifest order or fallback scan (shared with the GUI)
     print(f"Final Count: Found {len(found_files)} files to process.")
 
     # --- #2 Run-signature: skip the ENTIRE run if nothing affecting the analysis changed ---
-    # Signature = every content file's (mtime,size) + known/ignore/blacklist/graduated + frequency
-    # lists + the FULL settings.json content + the CLI args + engine version. The whole-settings
-    # hash means a GUI change AND a manual settings.json edit both force a re-run (never stale).
-    _run_sig = None
-    try:
-        def _fsig(p):
-            try:
-                _st = os.stat(p); return [_st.st_mtime, _st.st_size]
-            except OSError:
-                return None
-        # Hash only the ANALYSIS-affecting settings. Presentation / lifecycle keys are STRIPPED:
-        # otherwise toggling "Open in New Window" or the theme rewrites settings.json (open_app_mode
-        # / theme) and would force a full RE-ANALYSIS instead of just reopening / re-rendering the
-        # report. Everything else — including the whole `logic` block (weights, tiers, context,
-        # selection bands, ...) — stays, so a real analysis-setting change still re-runs.
-        _NON_ANALYSIS_SETTINGS = {
-            "theme", "open_app_mode", "zen_limit",           # presentation (map to --theme/--app-mode/--zen-limit)
-            "words_per_day", "show_words_per_day",            # HTML "target days" display only
-            "open_count", "skipped_version",                 # app lifecycle (change on their own)
-        }
-        _settings_for_sig = ""
-        try:
-            with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
-                _sj = json.load(_sf)
-            for _k in _NON_ANALYSIS_SETTINGS:
-                _sj.pop(_k, None)
-            _settings_for_sig = json.dumps(_sj, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            pass
-        from app import __version__ as _app_version
-        _sig_parts = {
-            # ORDER-SENSITIVE, and includes each file's (label, weight): output depends on file
-            # order (min_seq, the progressive sequence, i+1 rolling-known evaluation) AND on the
-            # tier weight (Score, the High/Low/Goal columns). So a manifest REORDER or RE-PHASE
-            # (the Immersion Architect's whole job — same files, new schedule) must change the
-            # signature and force a re-run, never be skipped as "unchanged".
-            "files": [[fp, _fsig(fp), _l, _w] for (fp, _l, _w) in found_files],
-            "known": _known_sig,
-            "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
-            "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
-            "settings": _settings_for_sig,
-            # ONLY the analysis-affecting args — NOT presentation (--theme / --zen-limit /
-            # --app-mode / --static). Changing a theme must NOT invalidate the analysis: the skip
-            # path still re-renders + reopens the report, so presentation is applied without paying
-            # for a recompute (this is what let the separate "View" button be merged away).
-            "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
-                     args.include_single_chars, args.exclude_freq_one, args.reinforce,
-                     args.context_min, args.context_max, args.max_contexts],
-            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}",
-        }
-        _run_sig = hashlib.sha256(
-            json.dumps(_sig_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
-        ).hexdigest()
-    except Exception as e:
-        print(f"Warning: could not compute run signature: {e}")
+    # Computed by the shared compute_run_signature() (the dashboard calls the same function in-process
+    # to decide whether Generate can just reopen the existing report without spawning this analyzer).
+    _run_sig = compute_run_signature(language, found_files, args)
 
     # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
     _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
@@ -960,6 +993,9 @@ def main():
     if (_store is not None and _run_sig and _analysis_outputs_present
             and _store.get_meta("last_run_signature") == _run_sig):
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
+        # A completed run is being reused; make sure the Content Manager sidecars exist and are
+        # current (backfills them from word_stats.json on the first skip after an update). One-time.
+        _backfill_sidecars(RESULTS_DIR)
         if args.static:
             try:
                 try:
@@ -1068,6 +1104,7 @@ def main():
         # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
         # exactly (built in first-appearance order) for the progressive pass to reuse.
         file_counter = Counter()
+        file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
 
         for s_text, s_tokens in sentences:
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
@@ -1110,7 +1147,7 @@ def main():
                 entry = word_stats[(lemma, reading)]
                 entry["score"] += weight
                 entry["total_count"] += 1
-                entry["sources"].add(os.path.basename(file_path))
+                entry["sources"].add(file_basename)
                 entry["surface"] = surface
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1
@@ -1415,33 +1452,58 @@ def main():
     # Convert word_stats to JSON-serializable format
     # Keys are (lemma, reading) tuples -> Convert to string "lemma|reading"
     # Values have sets -> Convert to lists
+    # By default word_stats.json is LEAN: it drops the raw sentence-selection INPUTS — the up-to-30
+    # `candidate_contexts` pool and the word's own `first_context` — which are ~99% of the file's size
+    # on a large library and which NOTHING reads back (selection happens in-memory; the CHOSEN sentences
+    # live in the CSV and in final_context_N below). Set SURASURA_DEBUG_WORD_STATS=1 to include the full
+    # pool when debugging why a word got the example sentences it did. All stats + final_context_N are
+    # always kept, so the Content Manager fallback and any inspection of the chosen sentences still work.
+    _debug_word_stats = bool(os.environ.get("SURASURA_DEBUG_WORD_STATS"))
     serializable_stats = {}
     for (lemma, reading), data in word_stats.items():
         if 'valid_lrs' in locals() and (lemma, reading) not in valid_lrs:
             continue
-            
+
         key = f"{lemma}|{reading}"
         serializable_data = data.copy()
         serializable_data["sources"] = list(data["sources"])
-        
-        # Convert unique_lrs sets to lists inside candidate_contexts
-        if "candidate_contexts" in serializable_data:
-            serializable_data["candidate_contexts"] = [
-                (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4]) for ctx in serializable_data["candidate_contexts"]
-            ]
-        
-        if "first_context" in serializable_data and serializable_data["first_context"]:
-            ctx = serializable_data["first_context"]
-            serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4])
-            
+
+        if _debug_word_stats:
+            # Full dump: keep the raw selection inputs, converting their unique_lrs sets to lists.
+            if "candidate_contexts" in serializable_data:
+                serializable_data["candidate_contexts"] = [
+                    (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4]) for ctx in serializable_data["candidate_contexts"]
+                ]
+            if serializable_data.get("first_context"):
+                ctx = serializable_data["first_context"]
+                serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4])
+        else:
+            # Lean default: drop the heavy, unread selection inputs (from the COPY only — the in-memory
+            # word_stats keeps them for the progressive pass that runs after this).
+            serializable_data.pop("candidate_contexts", None)
+            serializable_data.pop("first_context", None)
+
         serializable_stats[key] = serializable_data
-        
+
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
         json.dump(serializable_stats, f, indent=2, ensure_ascii=False)
     try:
-        print(f"Saved raw word stats to {OUTPUT_WORD_STATS}")
+        print(f"Saved {'FULL' if _debug_word_stats else 'lean'} word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
-        print("Saved raw word stats.")
+        print("Saved word stats.")
+
+    # Content Manager sidecars: derived from the SAME serializable_stats we just wrote (identical
+    # semantics), written atomically AFTER word_stats.json. See _write_sidecars. Wrapped so a failure
+    # never breaks a run — the readers fall back to word_stats.json (and the mtime rule ignores any
+    # stale sidecar left behind).
+    try:
+        n = _write_sidecars(RESULTS_DIR, serializable_stats)
+        try:
+            print(f"Saved Content Manager sidecars ({n} files).")
+        except UnicodeEncodeError:
+            print("Saved Content Manager sidecars.")
+    except Exception as e:
+        print(f"Warning: could not write Content Manager sidecars: {e}")
 
     # --- Additive (optional): full library frequency map for the YouTube Preview feature ---
     # Gated behind the 'enable_youtube_preview' toggle so standard runs are completely

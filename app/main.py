@@ -161,6 +161,7 @@ class MasterDashboardApp:
         self.var_band_coverage = tk.StringVar(value="")           # "≈ 90% coverage · 801 words"
         self._band_hours_text = ""   # immersion-hours line, shown as a tooltip on the coverage text
         self._band_previews = None   # cached {band: preview} from the last analysis' token index
+        self._preview_sig = None      # fingerprint of the inputs that produced _band_previews (cache key)
         self._effective_bands = list(word_selection.BANDS_ORDER)  # bands shown on the slider; a
         # trailing band identical to its neighbour (e.g. Native == Very Rare on this library) is hidden
         self._preview_gen = 0        # generation counter: async preview refreshes ignore stale results
@@ -496,23 +497,56 @@ class MasterDashboardApp:
         self.var_band_name.set(word_selection.band_label(band))
         self._update_band_preview_labels(band)
 
-    def _refresh_band_preview(self):
+    def _refresh_band_preview(self, force=False):
         """Refresh the band-preview numbers WITHOUT blocking the GUI. Opening the SQLite store and
         reading the aggregate + the (multi-MB) known-words file can take a moment on a big library,
         so we do it on a worker thread: a "Calculating…" placeholder shows instantly (e.g. the
-        moment you pick 'By Commonness'), and the real numbers land via the GUI queue when ready."""
+        moment you pick 'By Commonness'), and the real numbers land via the GUI queue when ready.
+
+        Skips the worker entirely when nothing that affects the preview changed since the last
+        successful compute (store, known words, ignore lists, selection settings) — this is what
+        keeps repeated focus/strategy-switches from re-running the heavy read and stuttering the UI.
+        Pass force=True right after an analyzer/indexer run: the store just changed and (under WAL)
+        its .db mtime may not have moved yet, so we must recompute rather than trust the signature."""
         import threading
         lang = self.var_language.get() or "ja"
         sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+
+        # Cache hit: same inputs as the last good compute -> reuse the cached previews, no worker.
+        sig = self._preview_signature(lang, sel)
+        if (not force and sig is not None and sig == getattr(self, "_preview_sig", None)
+                and getattr(self, "_band_previews", None) is not None):
+            self._update_band_preview_labels(self.var_band.get())
+            return
+
         self._preview_gen = getattr(self, "_preview_gen", 0) + 1
         gen = self._preview_gen
         self.var_band_coverage.set("Calculating…")
 
         def _work():
             previews = self._compute_band_previews(lang, sel)
-            self.gui_queue.put(lambda: self._apply_preview_result(gen, previews))
+            self.gui_queue.put(lambda: self._apply_preview_result(gen, previews, sig))
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _preview_signature(self, lang, sel):
+        """Cheap stat-only fingerprint of everything the band preview depends on: the token store
+        (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
+        lists, and the selection settings. Returns None if it can't be computed (forces a refresh)."""
+        try:
+            from app.path_utils import get_user_files_path
+            uf = get_user_files_path(lang)
+            db = token_index.store_path_for(lang)
+            db_mtime = os.path.getmtime(db) if os.path.exists(db) else 0
+            known_path = os.path.join(uf, "KnownWord.json")
+            ksig = token_index.known_signature(known_path)
+            lists = tuple(
+                os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
+                for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
+            )
+            return (lang, db_mtime, ksig, lists, json.dumps(sel, sort_keys=True))
+        except Exception:
+            return None
 
     def _compute_band_previews(self, lang, sel):
         """The heavy read (token store + known-words file). Runs on a WORKER thread — it must NOT
@@ -524,9 +558,10 @@ class MasterDashboardApp:
                 if not total:
                     return None
                 from app.path_utils import get_user_files_path
-                known_approx, ignore_set = self._load_known_for_preview(lang)
+                ignore_set = self._load_ignore_for_preview(lang)
                 # Prefer the store's EXACT normalized known set when it's fresh (matches the current
-                # KnownWord.json); otherwise fall back to the dictForm approximation.
+                # KnownWord.json). Only when that cache is stale do we parse the multi-MB KnownWord.json
+                # for the dictForm approximation — so the common (fresh) path never touches it.
                 known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
                 cached = store.get_cached_known(token_index.known_signature(known_path))
                 if cached is not None:
@@ -535,6 +570,7 @@ class MasterDashboardApp:
                         known_tuples=known_tuples, known_lemmas=known_lemmas,
                         ignore_set=ignore_set, skip_singles=(lang == "ja"))
                 else:
+                    known_approx = self._load_known_approx(lang)
                     freqs = store.unknown_frequencies(
                         known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
                 avg_file = total / (store.file_count() or 1)
@@ -546,18 +582,39 @@ class MasterDashboardApp:
         except Exception:
             return None
 
-    def _apply_preview_result(self, gen, previews):
+    def _apply_preview_result(self, gen, previews, sig=None):
         """Runs on the GUI thread (via the queue). Ignores results from a superseded refresh, then
-        updates the cached previews, hides any redundant trailing band, and refreshes the labels."""
+        updates the cached previews, hides any redundant trailing band, and refreshes the labels.
+        Records the input signature so an unchanged refresh can reuse this result without recomputing."""
         if gen != getattr(self, "_preview_gen", 0):
             return
         self._band_previews = previews
+        # Cache the fingerprint only for a real result; a failed compute (None) leaves it unset so
+        # the next refresh retries instead of caching an empty preview.
+        self._preview_sig = sig if previews is not None else None
         self._effective_bands = self._compute_effective_bands()
         self._apply_effective_bands()
 
-    def _load_known_for_preview(self, lang):
-        """Known lemmas + ignore words WITHOUT the tokenizer (keeps the GUI light). Uses each
-        known entry's dictForm directly — an approximation good enough for a preview estimate."""
+    def _load_ignore_for_preview(self, lang):
+        """The ignore/blacklist/graduated words — cheap plain-text reads, loaded on every preview."""
+        from app.path_utils import get_user_files_path
+        uf = get_user_files_path(lang)
+        ignore = set()
+        for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
+            try:
+                with open(os.path.join(uf, name), encoding="utf-8") as f:
+                    for line in f:
+                        s = line.strip()
+                        if s and not s.startswith("#"):
+                            ignore.add(s)
+            except Exception:
+                pass
+        return ignore
+
+    def _load_known_approx(self, lang):
+        """Known lemmas WITHOUT the tokenizer (dictForm approximation). Only used when the store's
+        normalized known-cache is stale — parsing KnownWord.json is the expensive bit on a big
+        library, so it's kept off the common (fresh-cache) preview path."""
         from app.path_utils import get_user_files_path
         uf = get_user_files_path(lang)
         known = set()
@@ -572,17 +629,7 @@ class MasterDashboardApp:
                         known.add(term)
         except Exception:
             pass
-        ignore = set()
-        for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-            try:
-                with open(os.path.join(uf, name), encoding="utf-8") as f:
-                    for line in f:
-                        s = line.strip()
-                        if s and not s.startswith("#"):
-                            ignore.add(s)
-            except Exception:
-                pass
-        return known, ignore
+        return known
 
     def _maybe_launch_indexer(self, force=False):
         """Keep the token store (and thus the band preview) always-fresh: if the library or the
@@ -623,7 +670,7 @@ class MasterDashboardApp:
 
         def _done():
             self._indexer_busy = False
-            self._refresh_band_preview()
+            self._refresh_band_preview(force=True)   # store just changed -> recompute, don't trust cache
 
         self.run_command_async(['indexer.py', '--language', self.var_language.get()],
                                "Indexing", on_complete=_done)
@@ -1844,8 +1891,64 @@ class MasterDashboardApp:
         if zen_limit > 0:
             args.append(f'--zen-limit={zen_limit}')
 
+        # --- Fast no-change path: reopen the existing report WITHOUT spawning the analyzer ---
+        # If nothing analysis-affecting changed since the last run AND presentation is unchanged AND
+        # the report exists, just reopen it in-process. This skips the whole analyzer subprocess
+        # (a ~1-2s cold-start in a frozen build). It uses the analyzer's OWN signature functions, so
+        # the GUI's decision can never diverge from what the analyzer would decide. Any hiccup falls
+        # through to the normal subprocess run — the fast path is a pure optimization, never required.
+        if self._try_open_existing_report(args):
+            return
+
         self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True,
-                               on_complete=self._refresh_band_preview)
+                               on_complete=lambda: self._refresh_band_preview(force=True))
+
+    def _try_open_existing_report(self, args):
+        """Return True and reopen the existing report if a full analysis is provably unnecessary.
+
+        Mirrors the analyzer's own skip gate (compute_run_signature + outputs-present + render-sig),
+        computed in-process so we can avoid the subprocess entirely. Conservative: only the pure
+        'nothing changed, same presentation' case short-circuits; a changed theme/zen or any missing
+        piece falls through so the subprocess handles the re-render/analysis as before."""
+        try:
+            from app import analyzer as _analyzer
+            from app import token_index as _ti
+            from app.path_utils import get_user_file
+
+            lang = self.var_language.get()
+            a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
+            found = _analyzer.resolve_found_files(lang, verbose=False)
+            sig = _analyzer.compute_run_signature(lang, found, a)
+            if not sig:
+                return False
+
+            results_dir = get_user_file("results")
+            report = os.path.join(results_dir, "reading_list_static.html")
+            outputs_present = all(os.path.exists(os.path.join(results_dir, f)) for f in
+                                  ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"))
+            if not (outputs_present and os.path.exists(report)):
+                return False
+
+            render_sig = json.dumps([a.theme, int(a.zen_limit or 0)])
+            store = _ti.open_store(lang)
+            try:
+                stored_sig = store.get_meta("last_run_signature")
+                stored_render = store.get_meta("last_render_sig")
+            finally:
+                store.close()
+
+            # Analysis unchanged AND presentation unchanged -> reopen the existing report as-is.
+            if stored_sig == sig and stored_render == render_sig:
+                try:
+                    from app import static_html_generator
+                except ImportError:
+                    import static_html_generator
+                static_html_generator.open_report(app_mode=a.app_mode)
+                self._refresh_band_preview()   # inputs unchanged -> cache hit, no recompute
+                return True
+        except Exception:
+            pass  # fall through to the normal subprocess run
+        return False
 
     def generate_frequency_list(self):
         """Show dialog to choose export format"""

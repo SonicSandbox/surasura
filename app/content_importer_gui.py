@@ -62,10 +62,16 @@ class ContentImporterApp:
         self.analyzed_filenames = set()
         self._last_stats_mtime = 0
         self._last_stats_size = 0
-        
+        self._last_stats_source = None   # which file _load_analyzed_filenames last read (sidecar vs word_stats)
+
         # Manifest Order Cache
         self.manifest_ranks = {} # rel_path -> index
         self.load_manifest_ranks()
+
+        # Per-tier tree freshness: tier -> manifest mtime the tree was last built at. A tab switch
+        # rebuilds ~hundreds of Treeview rows, which is the visible lag on a big library; when the
+        # manifest hasn't changed since a tier's tree was built, we skip the rebuild entirely.
+        self._tier_built_sig = {}
         
         self.last_action = {} # For undo functionality
 
@@ -103,17 +109,31 @@ class ContentImporterApp:
         self.root.after(4000, self._poll_word_stats)
 
     def _initial_load(self):
-        """Initial data load after UI is visible."""
-        self.status_var.set("Scanning library...")
-        self.root.update_idletasks()
+        """Initial data load. Paint the static chrome (tabs, tier hints, empty tree) FIRST via
+        update_idletasks, then load the library data.
+
+        Note: on a large library this whole load is now <200 ms — the old multi-second freeze was
+        entirely the word_stats.json parse in _load_analyzed_filenames, now served by the tiny
+        analyzed_files.json sidecar (~9 ms). Measured: disk walk 25 ms, per-tier Treeview inserts
+        sub-100 ms. So the data load stays on the main thread (a worker + chunked inserts would add
+        risk for no measurable gain). See docs/Sidecar_Performance_Spec.md."""
+        # Populate the tier description + "order matters" hint and force a FULL render (window map +
+        # paint) BEFORE the data load, so that text appears with zero latency even while the file list
+        # is still populating. update_idletasks() alone doesn't paint the initial window map, so the
+        # chrome otherwise appeared together with the library; root.update() renders it immediately.
+        self._sync_tier_meta()
+        self.status_var.set("Loading library…")
+        self.root.update()
         self._load_analyzed_filenames()
         self.refresh_file_list()
         self.status_var.set("Ready")
 
     def _on_focus_in(self, event):
         if event.widget == self.root and not self._ignore_refresh:
-             # Use after() to avoid recursion issues if refresh triggers another FocusIn
-             self.root.after(100, self.refresh_file_list)
+             # Use after() to avoid recursion issues if refresh triggers another FocusIn. force=True:
+             # returning focus should re-scan disk for out-of-band changes (a delete/edit that doesn't
+             # move the manifest mtime), not take the tab-switch fast path.
+             self.root.after(100, lambda: self.refresh_file_list(force=True))
 
     def apply_dark_theme(self):
         self.style.theme_use('clam')
@@ -800,17 +820,50 @@ class ContentImporterApp:
         self.save_manifest(manifest)
         self.refresh_file_list()
 
-    def refresh_file_list(self):
-        """Populates the GUI Treeview using the manifest as the source of truth."""
-        # 1. Sync untracked disk files to manifest first (quick scan)
+    def refresh_file_list(self, force=False):
+        """Populates the GUI Treeview using the manifest as the source of truth.
+
+        On a big library the expensive part is inserting hundreds of rows. Each tier has its own
+        persistent tree, so when switching to a tier whose tree already reflects the current manifest
+        (unchanged mtime since it was built) we skip the rebuild and just refresh the light bits —
+        making tab switches instant. force=True (focus-in, external tools) always rebuilds so an
+        out-of-band change is picked up."""
+        if not hasattr(self, "_tier_built_sig"):
+            self._tier_built_sig = {}   # defensive: some tests construct the app without full __init__
+
+        # 1. Sync untracked disk files to manifest first (quick scan) — may bump the manifest mtime.
         self._sync_disk_to_manifest()
-        
+
         # 1b. Load analysis results for Graduate button (Optimized Cache)
         self._load_analyzed_filenames()
-        
+
+        target_folder = self.target_folder_var.get()
+        phase_map = {
+            "HighPriority": "PHASE_1_NOW",
+            "LowPriority": "PHASE_2_SOON",
+            "GoalContent": "PHASE_3_LATER"
+        }
+        phase_key = phase_map.get(target_folder)
+        if not phase_key: return
+
+        try:
+            msig = os.path.getmtime(self.get_manifest_path())
+        except OSError:
+            msig = None
+
+        # Fast path: this tier's tree is already current -> skip the row rebuild.
+        if (not force and msig is not None and self.tree is not None
+                and self._tier_built_sig.get(target_folder) == msig):
+            total_items = self.get_tree_count("")
+            if hasattr(self, 'count_label') and self.count_label:
+                self.count_label.config(text=f"{total_items} items tracked")
+            self._update_graduate_button_state()
+            self._update_empty_state()
+            return
+
         # 2. Re-load ranks for sorting
         self.load_manifest_ranks()
-        
+
         # 3. Store Expansion State (by group name)
         expanded_groups = set()
         def capture_expanded(parent):
@@ -825,19 +878,10 @@ class ContentImporterApp:
         # 4. Clear tree
         for item in self.tree.get_children():
             self.tree.delete(item)
-            
+
         # 5. Get manifest data for current phase
         manifest = self.load_manifest()
         schedule = manifest.get("schedule", {})
-        
-        target_folder = self.target_folder_var.get()
-        phase_map = {
-            "HighPriority": "PHASE_1_NOW",
-            "LowPriority": "PHASE_2_SOON",
-            "GoalContent": "PHASE_3_LATER"
-        }
-        phase_key = phase_map.get(target_folder)
-        if not phase_key: return
 
         entries = schedule.get(phase_key, [])
         
@@ -872,6 +916,9 @@ class ContentImporterApp:
                 self.tree.insert("", tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
                 current_group_name = None
                 current_group_node = None
+
+        # Stamp this tier's tree as built at the current manifest mtime (skip its rebuild next time).
+        self._tier_built_sig[target_folder] = msig
 
         # Update total count
         total_items = self.get_tree_count("")
@@ -1617,27 +1664,17 @@ class ContentImporterApp:
         count = 0
         words_graduated = 0
         
-        # Load Stats if High Priority
-        stats = {}
+        # Reverse index {basename: [lemmas]} used to graduate a file's words (High Priority only).
+        grad_index = {}
         settings = {}
         try:
             from app.settings_manager import load_settings
             settings = load_settings()
         except Exception as e:
             print(f"Could not load settings: {e}")
-            
+
         if current_folder == "HighPriority":
-            try:
-                # data_root is data/<lang>
-                project_root = os.path.dirname(os.path.dirname(self.data_root))
-                stats_path = os.path.join(project_root, "results", "word_stats.json")
-                if os.path.exists(stats_path):
-                    with open(stats_path, 'r', encoding='utf-8') as f:
-                        stats = json.load(f)
-                else:
-                    print(f"Warning: word_stats.json not found at {stats_path}.")
-            except Exception as e:
-                print(f"Error loading stats: {e}")
+            grad_index = self._load_graduate_index()
                 
         self._temp_manifest_snapshot = self.load_manifest()
 
@@ -1654,7 +1691,7 @@ class ContentImporterApp:
             
             try:
                 # 1. Graduate Words Logic (High Priority only)
-                if current_folder == "HighPriority" and stats and settings.get("add_graduated_words", True):
+                if current_folder == "HighPriority" and grad_index and settings.get("add_graduated_words", True):
                     # Find all filenames associated with this item
                     filenames_to_match = set()
                     if os.path.isfile(source_path):
@@ -1663,17 +1700,15 @@ class ContentImporterApp:
                         for root, dirs, files in os.walk(source_path):
                             for f in files:
                                 filenames_to_match.add(f)
-                    
-                    file_words = []
-                    for key, data in stats.items():
-                        sources = data.get("sources", [])
-                        if any(f in sources for f in filenames_to_match):
-                            parts = key.split("|")
-                            if len(parts) >= 1:
-                                file_words.append(parts[0])
-                    
+
+                    # Union of every matched file's words (same result as scanning word_stats'
+                    # per-word `sources`, just read from the pre-built reverse index).
+                    file_words = set()
+                    for f in filenames_to_match:
+                        file_words.update(grad_index.get(f, []))
+
                     if file_words:
-                        file_words = sorted(list(set(file_words)))
+                        file_words = sorted(file_words)
                         project_root = os.path.dirname(os.path.dirname(self.data_root))
                         user_files_dir = os.path.join(project_root, "User Files", self.language)
                         if not os.path.exists(user_files_dir):
@@ -2008,39 +2043,110 @@ class ContentImporterApp:
         else:
             subprocess.Popen(['xdg-open', path])
 
+    @staticmethod
+    def _fresher_source(sidecar, fallback):
+        """Pick which file to read: the sidecar, but only when it's at least as new as the fallback
+        (word_stats.json). This ignores a stale sidecar left by an interrupted run — word_stats.json
+        is always written before its sidecars, so a fresh full run makes word_stats.json newer.
+        Returns the fallback path when the sidecar is absent/stale (the caller checks existence)."""
+        if os.path.exists(sidecar):
+            if not os.path.exists(fallback):
+                return sidecar
+            if os.path.getmtime(sidecar) >= os.path.getmtime(fallback):
+                return sidecar
+        return fallback
+
+    def _load_graduate_index(self):
+        """Return {basename: [lemmas]} for graduating a file's words.
+
+        Prefers the `file_words.json` sidecar (~1.3 MB on the live library); falls back to building
+        the reverse map from `word_stats.json` (unchanged semantics) for pre-sidecar/stale result
+        folders. Returns {} when neither is available. Read on demand (only when Graduate is pressed
+        on NOW), so its size never affects the responsive paths."""
+        project_root = os.path.dirname(os.path.dirname(self.data_root))
+        results_dir = os.path.join(project_root, "results")
+        sidecar = os.path.join(results_dir, "file_words.json")
+        stats_path = os.path.join(results_dir, "word_stats.json")
+        source = self._fresher_source(sidecar, stats_path)
+        try:
+            if not os.path.exists(source):
+                print(f"Warning: no analysis results found in {results_dir}.")
+                return {}
+            with open(source, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            # Parse by SHAPE: the sidecar maps basename -> [lemmas] (values are lists); word_stats
+            # maps word -> {"sources": [...]} (values are dicts). Robust to which file we ended up on.
+            sample = next(iter(loaded.values()), None)
+            if isinstance(sample, list) or sample is None:
+                return loaded
+            index = {}
+            for key, data in loaded.items():
+                if not isinstance(data, dict):
+                    continue
+                lemma = key.split("|")[0]
+                for src in data.get("sources", []):
+                    index.setdefault(src, []).append(lemma)
+            return index
+        except Exception as e:
+            print(f"Error loading graduate index: {e}")
+        return {}
+
     def _load_analyzed_filenames(self):
-        """Loads the set of filenames that have been analyzed from word_stats.json (Smart Caching)."""
+        """Loads the set of filenames that have been analyzed (Smart Caching).
+
+        Prefers the tiny `analyzed_files.json` sidecar (~0.1 MB) the analyzer writes; on a big
+        library that is ~200x faster than parsing the multi-hundred-MB `word_stats.json`, which used
+        to freeze this window on open and on the 4s poll. Falls back to `word_stats.json` for result
+        folders produced before the sidecar existed."""
         try:
             # project_root is two levels up from data/<lang>
             project_root = os.path.dirname(os.path.dirname(self.data_root))
-            stats_path = os.path.join(project_root, "results", "word_stats.json")
-            
-            if not os.path.exists(stats_path):
+            results_dir = os.path.join(project_root, "results")
+            sidecar = os.path.join(results_dir, "analyzed_files.json")
+            stats_path = os.path.join(results_dir, "word_stats.json")
+
+            # Sidecar first (fast path), but only when it's at least as new as word_stats.json — a
+            # stale sidecar from an interrupted run is ignored in favour of the fresh full stats file.
+            source_path = self._fresher_source(sidecar, stats_path)
+
+            if not os.path.exists(source_path):
                 self.analyzed_filenames = set()
                 self._last_stats_mtime = 0
                 self._last_stats_size = 0
+                self._last_stats_source = None
                 return
 
-            # Smart caching: check mtime and size before parsing
-            current_mtime = os.path.getmtime(stats_path)
-            current_size = os.path.getsize(stats_path)
-            
-            if current_mtime == self._last_stats_mtime and current_size == self._last_stats_size:
-                return # No changes, skip reload
+            # Smart caching: check mtime and size before parsing. Also key on which file we read, so
+            # switching from the fallback to a freshly-written sidecar isn't masked by a stale mtime.
+            current_mtime = os.path.getmtime(source_path)
+            current_size = os.path.getsize(source_path)
 
-            with open(stats_path, 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-            
-            new_analyzed = set()
-            for data in stats.values():
-                sources = data.get("sources", [])
-                for s in sources:
-                    new_analyzed.add(s)
-            
+            if (current_mtime == self._last_stats_mtime and current_size == self._last_stats_size
+                    and getattr(self, "_last_stats_source", None) == source_path):
+                return  # No changes, skip reload
+
+            with open(source_path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+
+            # Parse by SHAPE, not filename: the sidecar is a list of basenames; word_stats.json is a
+            # dict of word -> {"sources": [...]}. Type detection keeps this correct even if a file is
+            # unexpected/legacy.
+            if isinstance(loaded, list):
+                new_analyzed = set(loaded)
+            elif isinstance(loaded, dict):
+                new_analyzed = set()
+                for data in loaded.values():
+                    if isinstance(data, dict):
+                        for s in data.get("sources", []):
+                            new_analyzed.add(s)
+            else:
+                new_analyzed = set()
+
             self.analyzed_filenames = new_analyzed
             self._last_stats_mtime = current_mtime
             self._last_stats_size = current_size
-            
+            self._last_stats_source = source_path
+
         except Exception as e:
             print(f"Error loading analyzed filenames cache: {e}")
 

@@ -262,7 +262,11 @@ class MasterDashboardApp:
         
         # Add traces for auto-saving settings after initial load
         self.var_exclude_single.trace_add("write", self.save_settings)
-        self.var_band.trace_add("write", self.save_settings)
+        # The band slider fires this rapidly during a drag; a full save_settings (deep-merge + disk
+        # write + UI relayout, ~5-10ms each) on every band boundary made the drag stutter. Debounce it
+        # so the (cheap, cached) preview stays instant and the save happens once, ~250ms after you
+        # settle (or immediately on mouse-release). See _save_band_debounced.
+        self.var_band.trace_add("write", self._save_band_debounced)
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
@@ -421,6 +425,28 @@ class MasterDashboardApp:
             self.save_settings() # Save on switch
 
     # --- Density-band selection: slider + live preview (reads the last run's token index) ------
+    def _save_band_debounced(self, *args):
+        """Coalesce the band slider's saves. Each rapid var_band change reschedules a single save
+        ~250ms out, so the drag itself does no disk work; a mouse-release flushes it immediately
+        (_flush_band_save) so the setting is always persisted before the user can press Generate.
+        skip_ui=True: a band change never affects the language-dependent UI, so we skip that relayout."""
+        if getattr(self, "_band_save_after", None):
+            try:
+                self.root.after_cancel(self._band_save_after)
+            except Exception:
+                pass
+        self._band_save_after = self.root.after(250, lambda: self.save_settings(skip_ui=True))
+
+    def _flush_band_save(self, event=None):
+        """Force any pending debounced band-save to happen now (bound to the slider's mouse-release)."""
+        if getattr(self, "_band_save_after", None):
+            try:
+                self.root.after_cancel(self._band_save_after)
+            except Exception:
+                pass
+            self._band_save_after = None
+            self.save_settings(skip_ui=True)
+
     def _on_band_slide(self, value):
         """Slider moved: map its index to a band, update the side label, save, and refresh the
         preview lines. Pure arithmetic over cached counts — instant, no tokenization."""
@@ -837,6 +863,8 @@ class MasterDashboardApp:
                                     bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
                                     activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR)
         self.band_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        # Persist the setting the instant the drag ends (the debounce timer is the fallback).
+        self.band_slider.bind("<ButtonRelease-1>", self._flush_band_save)
         # Shown ABOVE so it doesn't cover the coverage line below.
         ToolTip(self.band_slider,
                 "Which words to include, by how common they are in your library:\n\n"
@@ -1578,7 +1606,7 @@ class MasterDashboardApp:
         except tk.TclError:
             return fallback
 
-    def save_settings(self, *args):
+    def save_settings(self, *args, skip_ui=False):
         try:
             cur = getattr(self, "_current_settings", {}) or {}
             cur_ctx = cur.get("logic", {}).get("context", {}) if isinstance(cur.get("logic"), dict) else {}
@@ -1635,8 +1663,10 @@ class MasterDashboardApp:
             settings_manager.save_settings(settings)
             self._current_settings = settings
 
-            # Update UI state (enable/disable language specific options)
-            if not getattr(self, '_lock_ui_updates', False):
+            # Update UI state (enable/disable language specific options). Skipped for band-slider
+            # saves — a commonness-band change never affects the language-dependent UI, and the
+            # relayout was part of the drag stutter.
+            if not skip_ui and not getattr(self, '_lock_ui_updates', False):
                 self.update_ui_for_language()
                 
         except Exception as e:

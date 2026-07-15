@@ -52,9 +52,9 @@ Two modes drive the word list:
 ![The By Commonness slider with live preview](assets/images/tutorial/commonness_slider.png)
 
 ## 5. Generate Your Journey
-Press **Generate Journey** to build your list and open the report. It reuses the last analysis when nothing relevant changed, so theme and Zen-limit tweaks apply instantly.
+Press **Generate Journey** to build your list and see the report.
 
-> Generate stays disabled until your library has content — add some first via **Import Content**.
+If no changes, it reuses the last analysis, so theme tweaks are instant.
 
 ![Graduation Interface](assets/images/tutorial/generate_journey.png)
 

@@ -626,8 +626,14 @@ class ContentImporterApp:
             manifest["schedule"] = schedule
             self.save_manifest(manifest)
 
-    def remove_from_manifest(self, item_path):
-        """Removes an item from all manifest phase lists."""
+    def remove_from_manifest(self, item_path, refresh=True):
+        """Removes an item from all manifest phase lists.
+
+        `refresh=False` for bulk moves (Graduate / Demote): refreshing mid-loop runs
+        _sync_disk_to_manifest, which sees the file ALREADY moved to its destination, registers it
+        itself as a "Disk Sync" entry, and makes the following add_to_manifest a no-op — so the
+        destination order came from the disk walk instead of the intended one. Callers doing a batch
+        refresh once at the end."""
         manifest = self.load_manifest()
         schedule = manifest.get("schedule", {})
         rel_path = self._normalize_path(item_path)
@@ -643,7 +649,8 @@ class ContentImporterApp:
         if changed:
             manifest["schedule"] = schedule
             self.save_manifest(manifest)
-            self.refresh_file_list()
+            if refresh:
+                self.refresh_file_list()
 
     def _get_manifest_indices_for_items(self, schedule_list, items, base_dir=None):
         """Returns a sorted list of manifest indices for given paths or GROUP: names."""
@@ -1197,7 +1204,7 @@ class ContentImporterApp:
         """Language-aware 'where to get subtitles' link. None => the link is hidden (e.g. zh has no
         known source)."""
         return {
-            "ja": "https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F",
+            "ja": "https://jimaku.cc",
         }.get(self.language)
 
     def open_subtitle_site(self):
@@ -1495,21 +1502,53 @@ class ContentImporterApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy folder '{folder_name}':\n{e}")
 
+    def _tree_display_order(self, item_ids):
+        """Order tree item IDs the way they are drawn (top to bottom).
+
+        `tree.selection()` reports items in the order they were CLICKED, not the order they appear,
+        so a multi-select would otherwise be processed out of sequence. Unknown ids sort last.
+        Best-effort: any Tk hiccup falls back to the ids as given."""
+        try:
+            order = {}
+
+            def walk(parent):
+                for child in self.tree.get_children(parent):
+                    order[child] = len(order)
+                    walk(child)
+
+            walk("")
+            return sorted(item_ids, key=lambda i: order.get(i, len(order)))
+        except Exception:
+            return list(item_ids)
+
     def _resolve_items_to_paths(self, item_ids):
-        """Resolves a list of tree item IDs (files or groups) into a list of absolute file paths."""
+        """Resolves a list of tree item IDs (files or groups) into a list of absolute file paths.
+
+        ORDER-PRESERVING (deduped, first occurrence wins). Graduate/Demote walk this list and
+        re-append each file to the destination phase in exactly this order, so the order here IS
+        the resulting library order. A `set()` here silently reshuffled the inside of every group
+        that was promoted or demoted (set iteration order is hash-based, not insertion order)."""
         paths = []
-        for item_id in item_ids:
+        seen = set()
+
+        def add(p):
+            p = str(p)
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+
+        for item_id in self._tree_display_order(item_ids):
             vals = self.tree.item(item_id, "values")
             if not vals: continue
-            
+
             val = str(vals[0])
             if val.startswith("GROUP:"):
                 for child in self.tree.get_children(item_id):
                     child_vals = self.tree.item(child, "values")
-                    if child_vals: paths.append(child_vals[0])
+                    if child_vals: add(child_vals[0])
             else:
-                paths.append(val)
-        return list(set(paths)) # Unique paths
+                add(val)
+        return paths
 
     def demote_content(self):
         selected_items = self.tree.selection()
@@ -1584,7 +1623,8 @@ class ContentImporterApp:
                     counter += 1
                     
                 shutil.move(filepath, dest)
-                self.remove_from_manifest(filepath)
+                # refresh=False: batch — one refresh after the loop (see remove_from_manifest).
+                self.remove_from_manifest(filepath, refresh=False)
                 self.add_to_manifest(dest, dest_folder_name)
                 
                 moves_list.append({
@@ -1748,9 +1788,9 @@ class ContentImporterApp:
 
                 shutil.move(source_path, dest_path)
                 
-                # 3. Update Manifest
-                self.remove_from_manifest(source_path)
-                
+                # 3. Update Manifest (refresh=False: batched — one refresh after the loop)
+                self.remove_from_manifest(source_path, refresh=False)
+
                 if dest_folder_name in ["HighPriority", "LowPriority", "GoalContent"]:
                     self.add_to_manifest(dest_path, dest_folder_name)
                 

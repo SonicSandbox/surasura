@@ -70,7 +70,7 @@ class TestContentManagerOptionsRow(unittest.TestCase):
             self.assertTrue(hasattr(self.app, m), f"Content Manager missing method: {m}")
 
     def test_subtitle_link_shown_for_ja(self):
-        self.assertIsNotNone(self.app._subtitle_url(), "ja should have the kitsunekko subtitle link")
+        self.assertIsNotNone(self.app._subtitle_url(), "ja should have a subtitle-source link")
 
     def test_subtitle_link_hidden_for_zh(self):
         top = tk.Toplevel(self.root)

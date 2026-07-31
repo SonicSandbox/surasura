@@ -20,11 +20,18 @@ class TestSortFilterFeature(unittest.TestCase):
     the JS (the suite has no browser engine).
     """
 
+    _CACHE = {}
+
     def _generate_and_read(self, theme="default"):
+        """Cached per theme: these assertions are on template WIRING, which doesn't vary with the
+        data, and rendering a real-sized library costs seconds each time."""
+        if theme in self._CACHE:
+            return self._CACHE[theme], BeautifulSoup(self._CACHE[theme], "html.parser")
         generate_static_html(theme=theme)
         self.assertTrue(os.path.exists(OUTPUT_FILE), "Static report was not generated")
         with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
             content = f.read()
+        self._CACHE[theme] = content
         return content, BeautifulSoup(content, "html.parser")
 
     def test_filter_markers_present(self):

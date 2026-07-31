@@ -33,9 +33,13 @@ import zlib
 import sqlite3
 from collections import Counter
 
-# Bump when the on-disk SHAPE changes; a mismatched DB is dropped + rebuilt.
+# Bump when the on-disk SHAPE changes — or when the tokenizer would now produce DIFFERENT sentences
+# for the same file, since the cached blobs would otherwise keep serving the old split. A mismatched
+# DB is dropped + rebuilt.
 # v2 added the per-file token SEQUENCE blob (so Generate reuses unchanged files' tokens).
-SCHEMA_VERSION = 2
+# v3 fixed subtitle sentence splitting (halfwidth ｡, terminators glued to adjacent symbols, and
+#    continuation arrows joining cues), so every cached tokenization predates the fix.
+SCHEMA_VERSION = 3
 
 
 # --------------------------------------------------------------------------- #

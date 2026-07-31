@@ -88,6 +88,8 @@ def test_context_prioritization_ja(context_test_env):
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(results_dir / "priority_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE",
+               str(results_dir / "progressive_learning_list.csv")), \
          patch("sys.argv", ["analyzer.py", "--language", "ja"]):
             analyzer.main()
             
@@ -103,6 +105,8 @@ def test_context_prioritization_zh(context_test_env):
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(results_dir / "priority_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE",
+               str(results_dir / "progressive_learning_list.csv")), \
          patch("sys.argv", ["analyzer.py", "--language", "zh"]):
             analyzer.main()
             
@@ -118,6 +122,8 @@ def test_context_chronology_preserved(context_test_env):
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(results_dir / "priority_learning_list.csv")), \
          patch("app.analyzer.OUTPUT_STATS", str(results_dir / "file_statistics.txt")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE",
+               str(results_dir / "progressive_learning_list.csv")), \
          patch("sys.argv", ["analyzer.py", "--language", "ja"]):
             analyzer.main()
             

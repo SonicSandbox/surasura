@@ -12,7 +12,7 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
-                            get_user_files_path, SOURCE_MARKER)
+                            get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX)
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -1566,9 +1566,10 @@ class ContentImporterApp:
                 target_root = dest if rel_root == "." else os.path.join(dest, rel_root)
                 for name in sorted(files):
                     src_file = os.path.join(root, name)
-                    if name == SOURCE_MARKER:
-                        # Carry the producer's marker across so an imported Extract folder keeps
-                        # being recognised as a book. It isn't content, so it never joins added_paths.
+                    if name == SOURCE_MARKER or name.endswith(SIDECAR_SUFFIX):
+                        # Carry the producer's metadata across: the marker keeps an imported Extract
+                        # folder recognised as a book, and a cue sidecar keeps a YouTube transcript
+                        # linkable to its timestamps. Neither is content, so neither joins added_paths.
                         os.makedirs(target_root, exist_ok=True)
                         shutil.copy2(src_file, os.path.join(target_root, name))
                         continue

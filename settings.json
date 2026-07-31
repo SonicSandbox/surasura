@@ -49,8 +49,8 @@
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",
-            "ja": "\u3002\uff01\uff1f!?\n",
-            "zh": "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
+            "ja": "\u3002\uff01\uff1f!?\n\uff61",
+            "zh": "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026\uff61"
         },
         "gui": {
             "_comment": "tooltip_delay: ms before tooltip appears.",

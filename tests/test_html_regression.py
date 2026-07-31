@@ -18,22 +18,32 @@ class TestHTMLRegression(unittest.TestCase):
         if not os.path.exists(cls.results_dir):
             os.makedirs(cls.results_dir)
 
+    _CACHE = {}
+
     def _verify_html(self, theme, zen_limit=None):
-        """Helper to generate and parse HTML"""
-        generate_static_html(theme=theme, zen_limit=zen_limit)
+        """Helper to generate and parse HTML.
+
+        Cached per (theme, zen_limit): these are template-wiring assertions, and rendering a
+        real-sized library costs seconds each time."""
         report_path = os.path.join(self.results_dir, "reading_list_static.html")
-        with open(report_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            
-            # Runtime validation: Ensure theme token injected into JS has no spaces (DOMTokenList requirement)
-            import re
-            match = re.search(r"let globalTheme\s*=\s*'([^']+)';", content)
-            if match:
-                injected_theme = match.group(1)
-                self.assertFalse(' ' in injected_theme, 
-                                 f"Theme token '{injected_theme}' contains spaces, which breaks classList.add in the browser.")
-            
-            return BeautifulSoup(content, "html.parser")
+        key = (theme, zen_limit)
+        if key in self._CACHE:
+            content = self._CACHE[key]
+        else:
+            generate_static_html(theme=theme, zen_limit=zen_limit)
+            with open(report_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self._CACHE[key] = content
+
+        # Runtime validation: Ensure theme token injected into JS has no spaces (DOMTokenList requirement)
+        import re
+        match = re.search(r"let globalTheme\s*=\s*'([^']+)';", content)
+        if match:
+            injected_theme = match.group(1)
+            self.assertFalse(' ' in injected_theme,
+                             f"Theme token '{injected_theme}' contains spaces, which breaks classList.add in the browser.")
+
+        return BeautifulSoup(content, "html.parser")
 
     def test_zen_mode_regression(self):
         """Verify Zen Mode specific requirements"""

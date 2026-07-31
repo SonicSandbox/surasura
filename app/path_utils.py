@@ -119,15 +119,24 @@ def is_content_file(path):
 # to a timestamped video, an EPUB chapter to a book, everything else is plain text.
 SOURCE_TYPES = ("subtitle", "youtube", "epub", "text")
 
-# The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id is the
-# last thing in the stem. Anchored, because an unanchored 11-char bracket match would also hit
-# release-group tags in fansub filenames.
-_YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]$")
+# The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
+# stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more
+# than once, e.g. "... [k3GuCkTa3V4]_20260622001222_20260730163200". So allow only that kind of
+# trailing noise (separators and digits) after the bracket.
+#
+# Still anchored rather than a free search: an unanchored 11-char bracket match would also hit
+# release-group tags in fansub filenames — "[HorribleSub] ep01" is exactly 11 characters.
+_YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
 
 # A producer that KNOWS what it made (Extract, for instance) drops this beside its output. Needed
 # because an EPUB chapter and an ordinary note are both plain .txt — nothing in the filename tells
 # them apart, so somebody has to record it at creation time.
 SOURCE_MARKER = ".surasura_source.json"
+
+# Per-FILE sidecar carrying cue timings, written beside a transcript ('foo.txt' -> 'foo.surasura.json').
+# Defined here rather than in the optional YouTube module so the core can read one without importing
+# it — the app must run identically when that module is absent.
+SIDECAR_SUFFIX = ".surasura.json"
 
 
 def read_source_marker(directory):
@@ -158,19 +167,26 @@ def infer_source_type(path, declared=None, marker_type=None):
     """Classify a content file for the report's source badge.
 
     Precedence: `declared` (the manifest's `source_type`, stamped when the file was added) beats the
-    extension, which beats `marker_type` (the producer marker the CALLER read — passed in rather
-    than read here so a run can cache one lookup per directory), which beats the filename guess.
+    extension, which beats `marker_type` (the producer marker), which beats the filename guess.
 
-    Pure: no I/O. Unknown/absent everything falls back to "text", never an error.
+    `marker_type` may be a zero-arg CALLABLE, in which case it is only invoked when the answer
+    actually depends on it — reading a marker costs a filesystem probe per directory, and the
+    extension settles most files without one.
+
+    No I/O of its own. Unknown/absent everything falls back to "text", never an error.
     """
     if declared in SOURCE_TYPES:
         return declared
     if str(path).lower().endswith(('.srt', '.ass')):
         return "subtitle"
+    if callable(marker_type):
+        marker_type = marker_type()
     if marker_type in SOURCE_TYPES:
         return marker_type
-    stem = os.path.splitext(os.path.basename(str(path)))[0]
-    if _YOUTUBE_ID_RE.search(stem):
+    # The '[' test is a cheap gate: this runs once per file on every Generate (thousands of times
+    # on a real library) and almost no filename contains a bracket, so most skip the regex entirely.
+    name = str(path)
+    if "[" in name and _YOUTUBE_ID_RE.search(os.path.splitext(os.path.basename(name))[0]):
         return "youtube"
     return "text"
 

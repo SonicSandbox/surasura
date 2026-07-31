@@ -377,6 +377,10 @@
             white-space: nowrap;
         }
 
+        a.src-badge {
+            text-decoration: none;
+        }
+
         .src-badge:hover {
             opacity: 1;
         }
@@ -1875,7 +1879,7 @@
             const regex = new RegExp(escapedWord, 'gi');
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${word}</strong>`);
 
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"])}`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}`;
             return el;
         }
 
@@ -2287,7 +2291,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="context-box">${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"])}</div>
+                <div class="context-box">${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -2318,7 +2322,7 @@
                                 const formatted = formatContext(data[k]);
                                 // "Context 3" -> the matching "Src 3" / "Frag 3" for this sentence.
                                 const n = k.replace('Context ', '');
-                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n]);
+                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n]);
                                 innerHtmlString += `<div class="context-item">${formatted}${badge}</div>`;
                             }
                         });
@@ -2464,7 +2468,15 @@
             return url + '#:~:text=' + encodeURIComponent(String(frag)).replace(/-/g, '%2D');
         }
 
-        function sourceBadge(idx, frag) {
+        // Seconds -> '12:03' (or '1:02:03'). Used for the subtitle cue a sentence sits in.
+        function fmtCueTime(sec) {
+            const t = Math.max(0, Math.floor(Number(sec) || 0));
+            const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+            const pad = n => String(n).padStart(2, '0');
+            return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+        }
+
+        function sourceBadge(idx, frag, at) {
             const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
             if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
@@ -2474,11 +2486,33 @@
             const name = row[0] || '';
             const icon = SOURCE_ICONS[row[1]] || SOURCE_ICONS.text;
             const fullPath = row[2] || name;
-            const hover = row[3] || name;          // group/file, e.g. 'test_book/chapter_1.txt'
+            // group/file, e.g. 'test_book/chapter_1.txt' — plus the cue time for subtitles.
+            let hover = row[3] || name;
+            if (at !== null && at !== undefined && at !== "") hover += ' @ ' + fmtCueTime(at);
             let label;
             if (mode === 'icon') label = icon;
             else if (mode === 'filename') label = escapeHtml(name);
             else label = icon + ' ' + escapeHtml(name);
+
+            // A YouTube source is the one case where the FILE isn't the thing you want — the video
+            // is. Click opens it at this sentence's moment; shift-click copies that link. Rendered
+            // as a real anchor so middle-click, ctrl-click and "copy link address" all work.
+            const videoId = row[4] || '';
+            if (videoId) {
+                const secs = (at !== null && at !== undefined && at !== "")
+                    ? '?t=' + Math.max(0, Math.floor(Number(at) || 0)) : '';
+                const href = 'https://youtu.be/' + encodeURIComponent(videoId) + secs;
+                // Shift-click opens the TRANSCRIPT at this sentence instead — the same
+                // scroll-to-text link every other source uses.
+                const transcript = sourceDeepLink(fullPath, frag);
+                return `<a class="src-badge" href="${escapeHtml(href)}" target="_blank" rel="noopener" ` +
+                       `migaku_ignore data-yomichan-ignore data-src-path="${escapeHtml(href)}" ` +
+                       `data-src-url="${escapeHtml(href)}" ` +
+                       (transcript ? `data-src-transcript="${escapeHtml(transcript)}" ` : ``) +
+                       `title="${escapeHtml(hover)}\nClick to open the video here` +
+                       (transcript ? `\nShift-click to open the transcript at this sentence` : ``) +
+                       `" onclick="return youtubeBadgeClick(event, this)">${label}</a>`;
+            }
 
             // Paths live in data-attributes, not inline JS strings: a filename containing a
             // double-quote would otherwise close the onclick attribute early (the same bug the
@@ -2490,6 +2524,33 @@
                    `title="${escapeHtml(hover)}\nClick to copy the full path` +
                    (deepLink ? ` (shift-click: browser link that jumps to this sentence)` : ``) + `" ` +
                    `onclick="copySourcePath(event, this)">${label}</span>`;
+        }
+
+        // Activate a URL the way a real link click does. Preferred over window.open because a
+        // file:// navigation is far more likely to be allowed when it comes from an anchor.
+        function openInNewTab(url) {
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        // Plain click follows the anchor and opens the VIDEO at this sentence's moment.
+        // Shift-click opens the TRANSCRIPT at the same sentence — the browser would otherwise
+        // open a new window, so it has to be intercepted. With no verified anchor to jump to,
+        // fall back to copying the video link rather than doing nothing.
+        function youtubeBadgeClick(event, el) {
+            if (event && event.shiftKey) {
+                event.preventDefault();
+                const transcript = el.dataset.srcTranscript;
+                if (transcript) openInNewTab(transcript);
+                else copySourcePath(event, el);
+                return false;
+            }
+            return true;
         }
 
         function copySourcePath(event, el) {

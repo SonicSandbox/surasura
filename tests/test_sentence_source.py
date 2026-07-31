@@ -180,7 +180,61 @@ def test_source_attribution_does_not_change_the_analysis(env):
 
 # --- report rendering ----------------------------------------------------------------------------- #
 class TestSourceBadgeRendering(unittest.TestCase):
+    """Renders against a SMALL fixture library rather than whatever is in the developer's real
+    `results/` — that can be a 14 MB CSV rendering to a 28 MB report, which is both slow and
+    non-deterministic. Self-contained, per testing.md."""
+
     _CACHE = {}
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        import tempfile
+        cls._tmp = tempfile.mkdtemp(prefix="surasura_badge_render_")
+        results = os.path.join(cls._tmp, "results")
+        os.makedirs(results)
+        cls._results = results
+        cls._cleanup = lambda: shutil.rmtree(cls._tmp, ignore_errors=True)
+
+        # A subtitle and a book chapter, so both a timed and an untimed source are exercised.
+        srt = os.path.join(cls._tmp, "ep01.srt")
+        with open(srt, "w", encoding="utf-8") as f:
+            f.write(SRT)
+        book = os.path.join(cls._tmp, "本_01.txt")
+        with open(book, "w", encoding="utf-8") as f:
+            f.write(BOOK)
+
+        pd.DataFrame([
+            {"Word": "秘密", "Reading": "ヒミツ", "Tier": "Outside", "Score": 30, "Occurrences": 3,
+             "Count (High)": 3, "Count (Low)": 0, "Count (Goal)": 0, "Sources": "ep01.srt",
+             "Context 1": "この街には、まだ秘密が残っている。", "Src 1": "HighPriority/ep01.srt",
+             "Context 2": "秘密の部屋が待っていた。", "Src 2": "HighPriority/深夜特急/本_01.txt"},
+        ]).to_csv(os.path.join(results, "priority_learning_list.csv"), index=False,
+                  encoding="utf-8-sig")
+
+        with open(os.path.join(results, "sources.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "HighPriority/ep01.srt": {"name": "ep01.srt", "type": "subtitle", "abs": srt},
+                "HighPriority/深夜特急/本_01.txt": {"name": "本_01.txt", "type": "epub", "abs": book},
+            }, f, ensure_ascii=False)
+
+        cls._patches = [
+            patch("app.static_html_generator.RESULTS_DIR", results),
+            patch("app.static_html_generator.PRIORITY_CSV",
+                  os.path.join(results, "priority_learning_list.csv")),
+            patch("app.static_html_generator.PROGRESSIVE_CSV",
+                  os.path.join(results, "progressive_learning_list.csv")),
+            patch("app.static_html_generator.OUTPUT_FILE",
+                  os.path.join(results, "reading_list_static.html")),
+        ]
+        for p in cls._patches:
+            p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        cls._cleanup()
 
     def _generate(self, **kwargs):
         # (Browser launching is suppressed suite-wide by the no_browser_launch conftest fixture.)
@@ -190,9 +244,9 @@ class TestSourceBadgeRendering(unittest.TestCase):
             return f.read()
 
     def _template(self, theme="default"):
-        """Cached render. Most assertions below are on template WIRING, which doesn't vary with the
-        data — and rendering a real-sized library costs seconds each time. Tests that change
-        settings or remove files call _generate directly so they never see a stale document."""
+        """Cached render — the assertions below are on template WIRING, which doesn't vary with the
+        data. Tests that change settings or remove files call _generate directly so they never see
+        a stale document."""
         if theme not in self._CACHE:
             self._CACHE[theme] = self._generate(theme=theme)
         return self._CACHE[theme]
@@ -240,8 +294,8 @@ class TestSourceBadgeRendering(unittest.TestCase):
         content = self._template(theme="default")
         self.assertNotIn("float: right", content.split(".src-badge {")[1].split("}")[0],
                          "the badge must not be floated to the right edge")
-        self.assertIn('class="context-box">${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"])}',
-                      content, "the badge must come AFTER the sentence in the markup")
+        self.assertIn('class="context-box">${displayC1}${sourceBadge(', content,
+                      "the badge must come AFTER the sentence in the markup")
         self.assertIn('${formatted}${badge}', content,
                       "extra example sentences must place their badge after the sentence too")
 
@@ -255,7 +309,7 @@ class TestSourceBadgeRendering(unittest.TestCase):
         self.assertEqual(_group_label("stray.txt"), "stray.txt", "an unbucketed path is left alone")
 
         content = self._template(theme="default")
-        self.assertIn("const hover = row[3] || name;", content,
+        self.assertIn("hover = row[3] || name", content,
                       "the badge must hover the group label, not the absolute path")
         self.assertIn('title="${escapeHtml(hover)}', content)
 
@@ -283,14 +337,46 @@ class TestSourceBadgeRendering(unittest.TestCase):
         self.assertIn('data["Frag 1"]', content, "the badge must read the verified anchor")
         self.assertNotIn("directives.join", content, "the old guessing path must be gone")
 
+    def test_subtitle_cue_time_is_shown_on_hover(self):
+        """A subtitle sentence hovers as 'ep01.srt @ 12:03'. Prose has no cue, so nothing is added."""
+        for theme in ("default", "zen-focus"):
+            with self.subTest(theme=theme):
+                content = self._template(theme=theme)
+                self.assertIn("function fmtCueTime", content, "cue-time formatter missing")
+                self.assertIn("hover += ' @ ' + fmtCueTime(at)", content,
+                              "the cue time must be appended to the hover label")
+                self.assertIn("data['At ' + n]", content,
+                              "each extra sentence must get its own cue time")
+
+    def test_youtube_badge_is_a_link_that_opens_the_video(self):
+        """For a YouTube source the VIDEO is the thing, not the transcript file. Click opens it at
+        the sentence's moment; shift-click keeps the "copy a link" meaning it has everywhere else."""
+        for theme in ("default", "zen-focus"):
+            with self.subTest(theme=theme):
+                content = self._template(theme=theme)
+                self.assertIn("https://youtu.be/", content, "the video link is missing")
+                self.assertIn("'?t=' + Math.max(0, Math.floor(Number(at) || 0))", content,
+                              "the cue time must become the ?t= offset")
+                self.assertIn('target="_blank" rel="noopener"', content,
+                              "a real anchor gives middle-click and copy-link-address for free")
+                self.assertIn("function youtubeBadgeClick", content)
+                self.assertIn("event.preventDefault()", content,
+                              "shift-click must not fall through to the browser's new-window default")
+
+    def test_non_youtube_badge_is_not_a_link(self):
+        """Local files keep the copy behaviour — clicking through to a file:// path is unreliable."""
+        content = self._template(theme="default")
+        self.assertIn("const videoId = row[4] || '';", content,
+                      "the link path must be gated on there being a video id")
+
     def test_zen_report_also_shows_the_badge(self):
         """Zen renders example sentences too, so it gets the same attribution."""
         content = self._template(theme="zen-focus")
         self.assertIn("function sourceBadge", content, "Zen is missing the badge renderer")
         self.assertIn("copySourcePath", content, "Zen is missing the copy handler")
         self.assertIn("let globalSources =", content, "Zen is missing the source table injection")
-        self.assertIn("${formatContext(c.text)}${sourceBadge(c.src, c.frag)}", content,
-                      "Zen must pair each sentence with its own source and verified anchor")
+        self.assertIn("${formatContext(c.text)}${sourceBadge(c.src, c.frag, c.at)}", content,
+                      "Zen must pair each sentence with its own source, anchor and cue time")
         self.assertIn('class="src-badge" migaku_ignore data-yomichan-ignore', content)
 
     def test_report_generates_without_a_source_table(self):
@@ -312,7 +398,8 @@ class TestSourceBadgeRendering(unittest.TestCase):
             table = json.loads(payload)
             self.assertIsInstance(table, list, "a missing source table must not corrupt the payload")
             for row in table:
-                self.assertEqual(len(row), 4, "rows stay [name, type, fullPath, groupLabel]")
+                self.assertEqual(len(row), 5,
+                                 "rows stay [name, type, fullPath, groupLabel, videoId]")
                 self.assertEqual(row[1], "text", "unknown metadata falls back to the generic type")
         finally:
             if backup is not None:

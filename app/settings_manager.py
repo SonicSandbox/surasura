@@ -52,9 +52,9 @@ DEFAULT_SETTINGS = {
             "recency_files": 1
         },
         "sentence_boundaries": {
-            "_comment": "Characters that trigger a sentence split for each language.",
-            "ja": "\u3002\uff01\uff1f!?\n",
-            "zh": "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
+            "_comment": "Characters that trigger a sentence split for each language. Includes the HALFWIDTH ideographic full stop \uff61, which anime subtitles use throughout (alongside halfwidth katakana) \u2014 without it their sentences never end and run together into one huge block.",
+            "ja": "\u3002\uff61\uff01\uff1f!?\n",
+            "zh": "\u3002\uff61\uff01\uff1f!?\n\uff1b;\u2026\u2026"
         },
         "gui": {
             "_comment": "tooltip_delay: ms before tooltip appears.",
@@ -133,6 +133,22 @@ def load_settings() -> Dict[str, Any]:
                         settings[key] = value
         except Exception as e:
             print(f"Warning: Could not load settings, using defaults: {e}")
+
+    # Sentence boundaries are user-editable, but a few characters are STRUCTURAL — without them
+    # sentences simply never end. A saved settings.json overrides the defaults wholesale, so a user
+    # who has ever opened the app carries their old copy forever; that's how the halfwidth '｡'
+    # (which anime subtitles use throughout) stayed missing and let example sentences run through a
+    # dozen subtitle cues. Union the configured set with the required base: custom additions are
+    # kept, the essentials can't be lost.
+    try:
+        _boundaries = settings.setdefault("logic", {}).setdefault("sentence_boundaries", {})
+        for _lang, _required in DEFAULT_SETTINGS["logic"]["sentence_boundaries"].items():
+            if _lang.startswith("_"):
+                continue
+            _current = _boundaries.get(_lang) or ""
+            _boundaries[_lang] = _current + "".join(c for c in _required if c not in _current)
+    except Exception:
+        pass
 
     # Selection: bands_ppm / min_count / minutes_per_file are user-editable (like 'weights'), but
     # fill any MISSING keys from defaults so a partial or older settings.json can't break the band

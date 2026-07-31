@@ -41,7 +41,7 @@ SANITIZE_JA = False # Strip -suffixes for Japanese
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 2
+ENGINE_REVISION = 4
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -112,7 +112,10 @@ class JapaneseTokenizer(Tokenizer):
         therefore process the text line by line, treating each line break as a hard boundary.
         """
         # Unidic-lite pos1: '補助記号' (punctuation), '空白' (spaces)
-        boundaries = LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n")
+        # A frozenset + isdisjoint keeps the per-token boundary test in C. This runs millions of
+        # times on a full library, and an `any(ch in ... for ch in surface)` generator here measured
+        # ~11% slower across the whole tokenization pass.
+        boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n"))
 
         for line in text.split("\n"):
             current_sentence_tokens = []
@@ -121,7 +124,11 @@ class JapaneseTokenizer(Tokenizer):
             for word in self.tagger(line):
                 surface = word.surface
                 pos = word.feature.pos1
-                is_boundary = surface in boundaries
+                # CHARACTER-wise, not whole-token: the tokenizer glues a terminator to an adjacent
+                # symbol, so '➡。' and '｡。' arrive as single tokens. Testing the whole surface let
+                # every one of those slip past, and a "sentence" ran on through a dozen subtitle
+                # cues (measured: 409 characters on a real episode).
+                is_boundary = not boundaries.isdisjoint(surface)
 
                 lemma = word.feature.lemma if word.feature.lemma else word.surface
                 if SANITIZE_JA:
@@ -134,7 +141,9 @@ class JapaneseTokenizer(Tokenizer):
 
                 if is_boundary:
                     s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
-                    if s_text:
+                    # A fragment with no Japanese in it is punctuation debris — '!?' splits into
+                    # '!' and a lone '?', for instance. Never a usable example sentence.
+                    if s_text and has_target_language(s_text, 'ja'):
                         yield s_text, current_sentence_tokens
                     current_sentence_tokens = []
                     current_sentence_surface = []
@@ -142,7 +151,7 @@ class JapaneseTokenizer(Tokenizer):
             # End of a line is itself a hard sentence boundary — flush any remainder.
             if current_sentence_surface:
                 s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
-                if s_text:
+                if s_text and has_target_language(s_text, 'ja'):
                     yield s_text, current_sentence_tokens
 
 class ChineseTokenizer(Tokenizer):
@@ -190,7 +199,11 @@ class ChineseTokenizer(Tokenizer):
         
         for word in seg_list:
             surface = word
-            is_boundary = surface in punctuation or surface.strip() == '' and '\n' in surface # Handle newline
+            # Character-wise for the same reason as Japanese: a terminator can arrive glued to an
+            # adjacent symbol, and comparing the whole token would miss it. isdisjoint keeps the
+            # per-token test in C.
+            is_boundary = (not punctuation.isdisjoint(surface)
+                           or (surface.strip() == '' and '\n' in surface))
             
             # Strict filtering: Must contain at least one CJK character.
             # AND must NOT contain any Japanese Hiragana/Katakana (to avoid mixed JA text noise).
@@ -215,15 +228,16 @@ class ChineseTokenizer(Tokenizer):
             
             if is_boundary:
                 s_text = "".join(current_sentence_surface).strip()
-                if s_text:
+                # Punctuation-only debris is never a usable example sentence.
+                if s_text and has_target_language(s_text, 'zh'):
                     yield s_text, current_sentence_tokens
                 current_sentence_tokens = []
                 current_sentence_surface = []
-                
+
         # Flush
         if current_sentence_surface:
             s_text = "".join(current_sentence_surface).strip()
-            if s_text:
+            if s_text and has_target_language(s_text, 'zh'):
                 yield s_text, current_sentence_tokens
 
 
@@ -427,6 +441,32 @@ def has_target_language(text, language='ja'):
         return bool(_ZH_TARGET_RE.search(text))
     return False
 
+# Terminators a subtitle line may already end with. Includes the HALFWIDTH ｡ / ！ / ？, which anime
+# subs use throughout — treating those as "unterminated" appended a second, redundant '。' and left
+# the ugly '｡。' pairs that showed up in example sentences.
+_CUE_TERMINATORS = '。｡．！？!?！？'
+
+# Continuation markers. A cue ending in one of these is explicitly saying "this sentence runs into
+# the next cue", so the right move is to drop the arrow and let the two cues JOIN — rather than
+# terminating there (which strands a fragment like 'our final objective is…').
+_CUE_CONTINUATIONS = '➡→⇒➔►'
+
+
+def close_cue(block_text):
+    """Finish one subtitle cue's text for concatenation with the next.
+
+    Returns the text terminated with '。' when the cue really ends, or left open (arrow removed) when
+    it continues into the following cue."""
+    block_text = (block_text or '').strip()
+    if not block_text:
+        return ''
+    if block_text[-1] in _CUE_CONTINUATIONS:
+        return block_text.rstrip(_CUE_CONTINUATIONS).rstrip()
+    if block_text[-1] not in _CUE_TERMINATORS:
+        return block_text + '。'
+    return block_text
+
+
 def clean_subtitle_text(text, language='ja'):
     # first remove ASS tags like {\pos(10,20)}
     text = re.sub(r'\{.*?\}', '', text)
@@ -488,10 +528,8 @@ def parse_ass(file_path, language='ja'):
                 if len(comma_parts) > text_index:
                     original_text = comma_parts[text_index]
                     if has_target_language(original_text, language):
-                        cleaned = clean_subtitle_text(original_text, language)
+                        cleaned = close_cue(clean_subtitle_text(original_text, language))
                         if cleaned:
-                            if not cleaned or cleaned[-1] not in '。！？!?':
-                                cleaned += "。"
                             output_parts.append(cleaned)
                             
     return " ".join(output_parts)
@@ -517,10 +555,9 @@ def extract_text(file_path, language='ja'):
                         filtered_lines.append(cleaned)
 
                 if filtered_lines:
-                    block_text = " ".join(filtered_lines)
-                    if not block_text or block_text[-1] not in '。！？!?':
-                        block_text += "。"
-                    parts.append(block_text)
+                    block_text = close_cue(" ".join(filtered_lines))
+                    if block_text:
+                        parts.append(block_text)
             text = "".join(parts)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
@@ -729,9 +766,14 @@ def resolve_found_files(language, verbose=True):
 
     def _stype(path, declared=None):
         folder = os.path.dirname(path)
-        if folder not in _marker_cache:
-            _marker_cache[folder] = read_source_marker(folder).get("source_type")
-        return infer_source_type(path, declared=declared, marker_type=_marker_cache[folder])
+
+        def _marker():
+            # Lazy + cached: a probe per DIRECTORY, and only for files the extension didn't settle.
+            if folder not in _marker_cache:
+                _marker_cache[folder] = read_source_marker(folder).get("source_type")
+            return _marker_cache[folder]
+
+        return infer_source_type(path, declared=declared, marker_type=_marker)
 
     if os.path.exists(manifest_path):
         if verbose:
@@ -758,17 +800,22 @@ def resolve_found_files(language, verbose=True):
                     if abs_path in seen_paths:
                         continue
                     seen_paths.add(abs_path)
-                    weight = WEIGHT_GOAL
+                    # BOTH the weight (-> Score) and the label (-> Count High/Low/Goal, which drive
+                    # the report's ✦ / ⚖ markers) come from the SCHEDULE: the phase this entry is
+                    # filed under.
+                    #
+                    # The label used to be read from `origin_source` instead — a historical note
+                    # recording which FOLDER a file sat in when the Architect planned, not where it
+                    # was scheduled. After a Smart-Sort the two disagree by design (re-phasing is the
+                    # Architect's whole job), and the Content Manager doesn't write a tier there at
+                    # all ("Manual Import"), so anything added by hand fell through to GoalContent no
+                    # matter which tab it was dropped into. The markers ended up answering "which
+                    # folder did this word live in?" instead of "when will I actually meet it?".
+                    label, weight = "GoalContent", WEIGHT_GOAL
                     if phase_key == "PHASE_1_NOW":
-                        weight = WEIGHT_HIGH
+                        label, weight = "HighPriority", WEIGHT_HIGH
                     elif phase_key == "PHASE_2_SOON":
-                        weight = WEIGHT_LOW
-                    origin = item.get("origin_source", "03_LATER")
-                    label = "GoalContent"
-                    if origin == "01_NOW":
-                        label = "HighPriority"
-                    elif origin == "02_SOON":
-                        label = "LowPriority"
+                        label, weight = "LowPriority", WEIGHT_LOW
                     found_files.append((abs_path, label, weight, _stype(abs_path, item.get("source_type"))))
             if verbose:
                 print(f"Manifest Loaded: {len(found_files)} files scheduled.")

@@ -2,10 +2,11 @@ import os
 import re
 import sys
 import json
+import bisect
 import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX
 from app import settings_manager
 
 # Configuration
@@ -123,8 +124,25 @@ class AnchorFinder:
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
 
-    def __init__(self):
+    # Subtitle cue headers. SRT: '00:01:31,083 --> 00:01:33,118'.
+    # ASS/SSA: 'Dialogue: 0,0:01:31.08,0:01:33.11,Default,,...'.
+    _SRT_TIME = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->")
+    _ASS_TIME = re.compile(r"^Dialogue:[^,]*,\s*(\d{1,2}):(\d{2}):(\d{2})[.:](\d{1,2})", re.M)
+
+    def __init__(self, cache_path=None):
         self._cache = {}
+        self._cues = {}
+        self._sidecars = {}
+        # Where each anchor was found. anchor() already located it; cue_time() used to scan the
+        # whole file again to rediscover the same offset, which was the single biggest cost in the
+        # pass (0.82s of 1.66s on a 1,500-file library).
+        self._pos = {}
+        # Optional on-disk memo so a RE-render (theme change, Words Per Day) doesn't redo the work.
+        self._cache_path = cache_path
+        self._memo = self._load_memo()
+        self._memo_dirty = False
+        self._sigs = {}        # path -> (mtime, size), so the freshness check is one stat per file
+        self._entries = {}     # path -> its validated memo entry, so that check happens once too
 
     def _raw(self, path):
         if path not in self._cache:
@@ -135,11 +153,14 @@ class AnchorFinder:
                 self._cache[path] = ""
         return self._cache[path]
 
-    @staticmethod
-    def _unique(raw, needle):
-        """Present exactly once — anything else could scroll to the wrong line."""
+    def _unique(self, raw, needle, path=None):
+        """Present exactly once — anything else could scroll to the wrong line. Remembers where."""
         first = raw.find(needle)
-        return first != -1 and raw.find(needle, first + 1) == -1
+        if first == -1 or raw.find(needle, first + 1) != -1:
+            return False
+        if path is not None:
+            self._pos[(path, needle)] = first
+        return True
 
     @staticmethod
     def _loose(raw, needle):
@@ -152,6 +173,149 @@ class AnchorFinder:
                 return ""       # more than one place it could be
             found = match.group(0)
         return found or ""
+
+    # -- on-disk memo ------------------------------------------------------------------------- #
+    # A re-render (theme, Zen limit, Words Per Day) reruns this whole pass over unchanged files for
+    # unchanged sentences. Remembering the answers turns every render after the first into a lookup.
+    #
+    # Deliberately NOT stored as CSV columns from the analyzer: `source_display` is excluded from the
+    # run-signature on purpose, so turning the badge on would not re-run the analysis and the columns
+    # would never appear. A memo sidesteps that — no analysis change, no forced re-analysis.
+    def _load_memo(self):
+        if not self._cache_path:
+            return {}
+        try:
+            with open(self._cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}          # absent or corrupt: just recompute
+
+    def _file_sig(self, path):
+        """(mtime, size), cached — this is asked once per SENTENCE, and a stat each time was
+        measurably worse than the lookup it guards."""
+        if path not in self._sigs:
+            try:
+                st = os.stat(path)
+                self._sigs[path] = [st.st_mtime, st.st_size]
+            except OSError:
+                self._sigs[path] = None
+        return self._sigs[path]
+
+    def resolve(self, abs_path, sentence):
+        """(anchor, cue_seconds) for a sentence, memoised across renders.
+
+        A file's entries are dropped whenever its (mtime, size) changes, so an edited source can
+        never serve a stale anchor."""
+        entry = self._entries.get(abs_path)
+        if entry is None:
+            entry = self._memo.get(abs_path)
+            if entry is None or entry.get("sig") != self._file_sig(abs_path):
+                entry = {"sig": self._file_sig(abs_path), "a": {}}
+                self._memo[abs_path] = entry
+                self._memo_dirty = True
+            self._entries[abs_path] = entry
+
+        hit = entry["a"].get(sentence)
+        if hit is not None:
+            return hit[0], hit[1]
+
+        anchor = self.anchor(abs_path, sentence)
+        at = self.cue_time(abs_path, anchor) if anchor else None
+        entry["a"][sentence] = [anchor, at]
+        self._memo_dirty = True
+        return anchor, at
+
+    def save_memo(self):
+        """Persist the memo, keeping ONLY the files this render actually used.
+
+        Content leaves a library constantly — graduated, removed, renamed by a tier move — and
+        without this the file would accumulate their entries forever. Best-effort: losing the memo
+        only costs time on the next render."""
+        if not self._cache_path:
+            return
+        live = {path: entry for path, entry in self._memo.items() if path in self._entries}
+        # Write when something was computed OR when files dropped out — a render that only REMOVES
+        # entries leaves nothing "dirty", and skipping it would keep them forever.
+        if not self._memo_dirty and len(live) == len(self._memo):
+            return
+        try:
+            tmp = self._cache_path + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(live, f, ensure_ascii=False)
+            os.replace(tmp, self._cache_path)
+        except Exception as e:
+            print(f"Warning: could not save the anchor cache: {e}")
+
+    def sidecar(self, path):
+        """The cue sidecar beside a YouTube transcript ('foo.txt' -> 'foo.surasura.json'), or {}.
+
+        Written by the downloader. Absent for transcripts pulled before the feature existed — those
+        fall back to opening the video at 0:00 via the [videoID] in the filename."""
+        if path not in self._sidecars:
+            data = {}
+            try:
+                with open(os.path.splitext(path)[0] + SIDECAR_SUFFIX, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                pass
+            self._sidecars[path] = data
+        return self._sidecars[path]
+
+    def _cue_index(self, path):
+        """(offsets, seconds) for every cue in a timed file — parallel ascending lists.
+
+        Subtitles carry their timings inline; a YouTube transcript is plain prose whose timings live
+        in its sidecar, so the cue texts are located in the file to give them offsets. Anything with
+        neither returns empty, which is how prose opts out of timestamps."""
+        if path not in self._cues:
+            offsets, seconds = [], []
+            low = path.lower()
+            if low.endswith(('.srt', '.ass', '.ssa')):
+                raw = self._raw(path)
+                pattern = self._ASS_TIME if low.endswith(('.ass', '.ssa')) else self._SRT_TIME
+                for match in pattern.finditer(raw):
+                    hh, mm, ss, _frac = match.groups()
+                    offsets.append(match.end())
+                    seconds.append(int(hh) * 3600 + int(mm) * 60 + int(ss))
+            else:
+                cues = self.sidecar(path).get('cues') or []
+                if cues:
+                    raw, pos = self._raw(path), 0
+                    for entry in cues:
+                        try:
+                            text, sec = entry[0], int(entry[1])
+                        except (TypeError, ValueError, IndexError, KeyError):
+                            continue
+                        if not isinstance(text, str) or not text:
+                            continue      # a hand-edited or truncated sidecar must not crash a render
+                        at = raw.find(text, pos)
+                        if at == -1:
+                            continue      # cue text was cleaned differently — skip, don't guess
+                        offsets.append(at)
+                        seconds.append(sec)
+                        pos = at + len(text)
+            self._cues[path] = (offsets, seconds)
+        return self._cues[path]
+
+    def cue_time(self, abs_path, anchor):
+        """Start time in whole seconds of the subtitle cue containing `anchor`, or None.
+
+        The anchor is verbatim file text, so its offset places it inside exactly one cue — no
+        guesswork, and no change to how the file was tokenized."""
+        offsets, seconds = self._cue_index(abs_path)
+        if not offsets or not anchor:
+            return None
+        # anchor() already located this; only fall back to scanning when called standalone.
+        pos = self._pos.get((abs_path, anchor))
+        if pos is None:
+            pos = self._raw(abs_path).find(anchor)
+        if pos == -1:
+            return None
+        i = bisect.bisect_right(offsets, pos) - 1
+        return seconds[i] if i >= 0 else None
 
     def anchor(self, abs_path, sentence):
         """A snippet of `sentence` that occurs exactly once in the file, or "" if there is none."""
@@ -169,7 +333,7 @@ class AnchorFinder:
 
         # 1. Verbatim. Prose is stored exactly as written, so books and transcripts stop here.
         for chunk in chunks:
-            if self._unique(raw, chunk):
+            if self._unique(raw, chunk, abs_path):
                 return chunk
 
         # 2. Whitespace-tolerant. Anime subtitles space their phrases ('そうだ 女｡ お前に話がある｡')
@@ -181,7 +345,7 @@ class AnchorFinder:
             # Prefer a gap-free run of what we matched: a fragment with no whitespace in it is the
             # most reliable thing to hand a browser.
             for run in sorted(verbatim.split(), key=len, reverse=True):
-                if len(run) >= self.MIN_LEN and self._unique(raw, run):
+                if len(run) >= self.MIN_LEN and self._unique(raw, run, abs_path):
                     return run
             return " ".join(verbatim.split())
         return ""
@@ -189,6 +353,24 @@ class AnchorFinder:
 
 # Tier folders are plumbing, not something the learner thinks in — they think in books and series.
 _TIER_BUCKETS = ("HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed")
+
+
+# The 11-char video id ends the filename, allowing for the `_<timestamp>` suffixes Graduate/Demote
+# add on a name collision. Anchored so a fansub release tag can't be mistaken for one — same rule as
+# path_utils.infer_source_type, which decides whether a file is a YouTube source in the first place.
+_VIDEO_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
+
+
+def _video_id(rel_path, meta=None):
+    """The YouTube video id for a source, or "".
+
+    Prefers what the downloader recorded in the cue sidecar; falls back to the filename, which is
+    how transcripts pulled before sidecars existed can still open their video (at 0:00)."""
+    if meta and meta.get("video_id"):
+        return str(meta["video_id"])
+    stem = os.path.splitext(os.path.basename(str(rel_path)))[0]
+    match = _VIDEO_ID_RE.search(stem)
+    return match.group(1) if match else ""
 
 
 def _group_label(rel_path):
@@ -227,19 +409,30 @@ def _intern_sources(records, source_map, table, index, finder=None):
                 idx = len(table)
                 index[val] = idx
                 meta = source_map.get(val, {})
+                abs_path = meta.get("abs") or val
+                # A YouTube source gets its video id, which turns the badge into a link that opens
+                # the video (at the sentence's moment when the cue times are known).
+                vid = ""
+                if (meta.get("type") or "") == "youtube":
+                    side = finder.sidecar(abs_path) if finder is not None else None
+                    vid = _video_id(val, side)
                 table.append([meta.get("name") or os.path.basename(val),
                               meta.get("type") or "text",
-                              meta.get("abs") or val,
-                              _group_label(val)])
+                              abs_path,
+                              _group_label(val),
+                              vid])
             rec[key] = idx
 
             if finder is not None:
                 n = key[4:]                                  # "Src 2" -> "2"
                 sentence = rec.get(f"Context {n}")
                 if isinstance(sentence, str) and sentence:
-                    frag = finder.anchor(table[idx][2], sentence)
+                    frag, at = finder.resolve(table[idx][2], sentence)
                     if frag:
                         rec[f"Frag {n}"] = frag
+                        # Subtitles/transcripts: the cue this sentence sits in, shown on hover.
+                        if at is not None:
+                            rec[f"At {n}"] = at
 
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0):
@@ -263,7 +456,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     source_index = {}
     # Verifying scroll-to-text anchors means reading every source file, so only do it when the badge
     # is actually switched on — a run with it off pays nothing.
-    source_finder = AnchorFinder() if settings.get("source_display", "off") != "off" else None
+    source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"))
+                     if settings.get("source_display", "off") != "off" else None)
 
     # Load File Statistics
     STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
@@ -348,6 +542,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
             data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
+
+    # Every source is resolved by now — persist so the next render is a lookup, not a rescan.
+    if source_finder is not None:
+        source_finder.save_memo()
 
     data["file_order"] = all_files_order
 

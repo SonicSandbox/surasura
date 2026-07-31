@@ -10,6 +10,19 @@ import unittest
 import tkinter as tk
 from tkinter import ttk
 
+# The optional YouTube module may be absent — an open-source checkout, a build that excluded it, or
+# the SOP's delete-test (rename modules/youtube_downloader away; the app must still run and the
+# suite must still be green). Tests that assert module-PRESENT behaviour have to opt out, otherwise
+# they fail for the very reason the delete-test exists to disprove.
+try:
+    import modules.youtube_downloader  # noqa: F401
+    YOUTUBE_MODULE = True
+except Exception:
+    YOUTUBE_MODULE = False
+
+requires_youtube = unittest.skipUnless(
+    YOUTUBE_MODULE, "optional YouTube module not present")
+
 
 class TestContentManagerOptionsRow(unittest.TestCase):
     @classmethod
@@ -147,6 +160,7 @@ class TestContentManagerOptionsRow(unittest.TestCase):
         os.remove(os.path.join(d, "sample.txt"))
 
     # --- Phase 5: the YouTube downloader relocation --------------------------------------------- #
+    @requires_youtube
     def test_youtube_button_shown_by_default_hidden_when_disabled(self):
         """The transcript downloader is ON by default (module bundled), so the ▶ button shows in the
         default build. When the toggle is off (or the module absent), the button is hidden."""
@@ -157,6 +171,7 @@ class TestContentManagerOptionsRow(unittest.TestCase):
             off_app = self._Cls(top, language="ja")
         self.assertIsNone(off_app.btn_youtube, "downloader button hidden when disabled")
 
+    @requires_youtube
     def test_opening_youtube_downloader_inherits_host_theme(self):
         """The healthy architecture (app/ui_theme): a module opened in-process must INHERIT the
         host's ttk theme, never switch the global theme. The Content Manager runs on 'clam'; opening

@@ -23,12 +23,13 @@ Yes. It will find the best i+1 sentences in your content based on your settings.
 ### UI & Features
 
 **What is the exact purpose of the "Extract / Splice" tool?**
-To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools.
+To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools. It lives inside the **Content Manager**, under **📖 Extract (EPUB / Anki)**.
 
-**What is the difference between "Generate Journey" and "View Vocab Journey"?**
-"Generate" forces a fresh re-analysis of your content before displaying the results. 
+**There used to be two buttons — "Generate Journey" and "View Vocab Journey". Where did they go?**
+They're now a single **Generate Journey** button. If anything has changed since your last run it re-analyzes; if nothing has, it simply reopens your existing report instantly. Changing only the theme or Zen limit re-renders the report without re-analyzing.
 
-"View" simply opens your previously saved results without re-analyzing.
+**Can I see which file an example sentence came from?**
+Yes — turn on **Settings → Experience & UI → "Sentence source"**. Each example sentence then gets a small marker showing its source: hover for the file (and, for subtitles, the timestamp), click to copy the full path, and shift-click to open the file at that exact sentence. For a YouTube transcript, clicking opens the video at the moment the line is spoken.
 
 **Does graduating content mark *all* words in that media as "Known"?**
 No, it only marks the specific words listed in your analysis results.
@@ -62,8 +63,10 @@ If you mark a word as "Known", "Ignore" or graduate it in Surasura, it will be e
 
 Note: A single Surasura could guide you for months without needing to re-generate.
 
-**Is there a way to bulk-download YouTube subtitles to feed into Surasura?**
-Surasura does not download subtitles natively. We recommend using external bulk subtitle downloaders (like `yt-dlp`) to grab your files before importing them into your library.
+**Is there a way to bulk-download YouTube transcripts to feed into Surasura?**
+Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any number of links — single videos, pasted lists, or whole playlists. Clean `.txt` transcripts land in your **Processed** folder and in the tab you're on. (This is an optional feature; if you don't see the button, enable it under **Settings → Language & Parsing**.)
+
+For anime subtitles specifically, Surasura doesn't fetch those — grab them from a subtitle site (there's an **Anime subtitles ↗** link in the Content Manager) and add them like any other file.
 
 ---
 
@@ -73,7 +76,7 @@ Surasura does not download subtitles natively. We recommend using external bulk 
 Check your Advanced Settings. Ensure that "Chinese" is checked as your target language and that "Japanese" is completely unchecked.
 
 **What file formats does Surasura currently support?**
-Surasura supports standard text and subtitle formats (e.g., `.srt`, `.txt`, `.ass`). Convert EPUBs into standard text using Surasura's built-in "Extract / Splice" tool.
+Analysis reads `.txt`, `.md`, `.srt` and `.ass`. You can also drop in a **`.zip`** — Surasura unpacks the supported files inside it and adds them as one ordered group. EPUBs and Anki decks go through the built-in **📖 Extract (EPUB / Anki)** tool, which converts and splits them into text first.
 
 **I found a bug or have a feature idea. Where do I report it?**
 We'd love to hear it! Please open an issue directly on our [GitHub Issues page](https://github.com/SonicSandbox/surasura/issues).

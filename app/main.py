@@ -1221,8 +1221,12 @@ class MasterDashboardApp:
         ToolTip(btn_freq, "Manage custom frequency lists.")
 
         btn_export_freq = ttk.Button(group_data, text="Export Freq List", command=self.generate_frequency_list, width=20)
-        btn_export_freq.pack(fill=tk.X)
+        btn_export_freq.pack(fill=tk.X, pady=(0, 5))
         ToolTip(btn_export_freq, "Export internal frequency list for Migaku/Yomitan.")
+
+        btn_reading_words = ttk.Button(group_data, text="Export Reading Words", command=self.generate_reading_words, width=20)
+        btn_reading_words.pack(fill=tk.X)
+        ToolTip(btn_reading_words, "A Yomitan list of words you'll read but hardly ever hear. If a word shows up in it while mining, make it a reading card.")
 
         # 5. 📜 Processing Log (Right Side)
         log_frame = ttk.LabelFrame(grid_frame, text=" 📜 Processing Log", padding="10")
@@ -2015,6 +2019,28 @@ class MasterDashboardApp:
             pass  # fall through to the normal subprocess run
         return False
 
+    def generate_reading_words(self):
+        """Export the reading-only words as a Yomitan list.
+
+        No format dialog: there is exactly one sensible target for this (a dictionary you load
+        alongside your others while mining), so asking would be a click for nothing.
+        """
+        from app.path_utils import get_user_file
+
+        sidecar = os.path.join(get_user_file("results"), "reading_words.json")
+        if not os.path.exists(sidecar):
+            messagebox.showwarning(
+                "No Data",
+                "Generate your Vocab Journey first — the reading-words list is built during analysis.")
+            return
+
+        # export_wrapper destroys the dialog it's handed; there isn't one here.
+        class _NoDialog:
+            def destroy(self):
+                pass
+
+        self.export_wrapper(_NoDialog(), "reading", sidecar)
+
     def generate_frequency_list(self):
         """Show dialog to choose export format"""
         from app.path_utils import get_user_file
@@ -2124,6 +2150,10 @@ class MasterDashboardApp:
         elif format_type == "yomitan":
             file_types = [("Zip Files", "*.zip")]
             def_ext = ".zip"
+        elif format_type == "reading":
+            file_types = [("Zip Files", "*.zip")]
+            def_ext = ".zip"
+            initial_name = "Surasura Reading Words"
         elif format_type == "txt":
             file_types = [("Text Files", "*.txt")]
             def_ext = ".txt"
@@ -2150,6 +2180,9 @@ class MasterDashboardApp:
                 FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
             elif format_type == "txt":
                 FrequencyExporter.export_word_list(csv_path, save_path)
+            elif format_type == "reading":
+                # csv_path carries the reading-words sidecar here, not a learning list.
+                FrequencyExporter.export_reading_words(csv_path, save_path)
             elif format_type == "anki":
                 FrequencyExporter.export_anki_sentences(csv_path, save_path)
                 

@@ -310,6 +310,22 @@
             text-shadow: 0 0 3px rgba(3, 218, 198, 0.4);
         }
 
+        /* Reading word: you'll meet this in text but essentially never hear it. Unlike ✦ / ⚖
+           these are not mutually exclusive — a word can be both high-leverage AND read-only —
+           so it renders as its own span alongside them, never as another branch. */
+        .marker-reading::before {
+            content: "文";
+            color: #d0a5ff;
+            font-size: 0.85em;
+            text-shadow: 0 0 3px rgba(208, 165, 255, 0.4);
+        }
+
+        /* Pale purple disappears on the light theme; darken rather than drop the marker. */
+        .theme-modern-light .marker-reading::before {
+            color: #7c4dff;
+            text-shadow: none;
+        }
+
 
         .tier-badge {
             background-color: #333;
@@ -1065,6 +1081,14 @@
         }
 
         body.filter-non-priority .card.is-priority {
+            display: none;
+        }
+
+        body.filter-reading .card:not(.is-reading) {
+            display: none;
+        }
+
+        body.filter-non-reading .card.is-reading {
             display: none;
         }
 
@@ -2074,13 +2098,20 @@
         // --- Global Sentence Toggle ---
         let globalShowAllSentences = false;
 
-        // --- Priority Filter ("Show" menu) state: 'all' | 'priority' | 'non-priority' ---
+        // --- "Show" menu state: 'all' | 'priority' | 'non-priority' | 'reading' | 'non-reading' ---
         let globalPriorityFilter = 'all';
 
+        const FILTER_BODY_CLASSES = {
+            'priority': 'filter-priority',
+            'non-priority': 'filter-non-priority',
+            'reading': 'filter-reading',
+            'non-reading': 'filter-non-reading'
+        };
+
         function applyPriorityFilter() {
-            document.body.classList.remove('filter-priority', 'filter-non-priority');
-            if (globalPriorityFilter === 'priority') document.body.classList.add('filter-priority');
-            else if (globalPriorityFilter === 'non-priority') document.body.classList.add('filter-non-priority');
+            document.body.classList.remove(...Object.values(FILTER_BODY_CLASSES));
+            const cls = FILTER_BODY_CLASSES[globalPriorityFilter];
+            if (cls) document.body.classList.add(cls);
         }
 
         function setPriorityFilter(value) {
@@ -2096,8 +2127,14 @@
             const active = globalPriorityFilter !== 'all';
             btn.style.color = active ? 'var(--primary)' : '#ddd';
             btn.style.borderColor = active ? 'rgba(187, 134, 252, 0.5)' : 'rgba(255, 255, 255, 0.2)';
+            const FILTER_TITLES = {
+                'priority': 'priority (✦) words',
+                'non-priority': 'non-priority words',
+                'reading': 'reading (文) words',
+                'non-reading': 'non-reading words'
+            };
             btn.title = active
-                ? `Showing ${globalPriorityFilter === 'priority' ? 'priority (✦) words' : 'non-priority words'}`
+                ? `Showing ${FILTER_TITLES[globalPriorityFilter] || globalPriorityFilter}`
                 : "Filter words shown";
         }
 
@@ -2111,6 +2148,8 @@
                 <button class="sort-menu-item" data-filter="all">All</button>
                 <button class="sort-menu-item" data-filter="priority"><span class="priority-marker marker-priority"></span></button>
                 <button class="sort-menu-item" data-filter="non-priority">No <span class="priority-marker marker-priority"></span></button>
+                <button class="sort-menu-item" data-filter="reading"><span class="priority-marker marker-reading"></span></button>
+                <button class="sort-menu-item" data-filter="non-reading">No <span class="priority-marker marker-reading"></span></button>
             `;
             menu.querySelectorAll('.sort-menu-item').forEach(item => {
                 item.onclick = () => { setPriorityFilter(item.dataset.filter); closeSortMenu(); };
@@ -2167,9 +2206,9 @@
             if (e.key === 'Escape') closeSortMenu();
         }
 
-        // Cycle the "Show" filter: All -> Priority -> Non-priority -> (loop) All
+        // Cycle the "Show" filter: All -> ✦ -> No ✦ -> 文 -> No 文 -> (loop) All
         function cyclePriorityFilter() {
-            const order = ['all', 'priority', 'non-priority'];
+            const order = ['all', 'priority', 'non-priority', 'reading', 'non-reading'];
             const idx = order.indexOf(globalPriorityFilter);
             setPriorityFilter(order[(idx + 1) % order.length]);
         }
@@ -2272,6 +2311,12 @@
             const isPriority = !isLopsided && pTotal >= pm.priority_min && ((pHigh + pLow) / pTotal) >= pm.priority_threshold;
             if (isPriority) el.classList.add('is-priority');
 
+            // Reading word (文). Precomputed by the analyzer — unlike ✦ / ⚖ this can't be derived
+            // in the browser, since it needs the bundled spoken-frequency reference data. Blank
+            // means "hearable OR not enough evidence": deliberately not a claim either way.
+            const isReading = data.Modality === 'reading';
+            if (isReading) el.classList.add('is-reading');
+
             // Low-leverage words (Score < 10) get a subtle reddish tint (see .card.low-score).
             const _scoreVal = parseFloat(data.Score);
             if (!isNaN(_scoreVal) && _scoreVal < 10) el.classList.add('low-score');
@@ -2293,7 +2338,7 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}
+                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>

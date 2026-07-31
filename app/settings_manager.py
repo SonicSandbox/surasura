@@ -73,6 +73,13 @@ DEFAULT_SETTINGS = {
             "minutes_per_file": 18,
             "bands_ppm": {"core": 2000, "common": 150, "occasional": 25, "uncommon": 10, "rare": 4, "very_rare": 2.5, "native": 1}
         },
+        "modality": {
+            "_comment": "Reading-vs-listening card routing. target_hours: a word counts as 'you'll hear it' if fewer than this many hours of listening pass between encounters — estimated from bundled reference data (app/reference_data.py), then overridden by your OWN subtitle/YouTube files wherever you have enough material. Observation can only ever REMOVE a reading badge, never add one. min_series: distinct works a word must appear in before it counts as general vocabulary rather than one story's jargon; skipped entirely until the library holds min_library_series works, since on a small library that says more about the library than the word. min_lib_count: universal floor, as in selection.",
+            "target_hours": 32.5,
+            "min_series": 5,
+            "min_lib_count": 3,
+            "min_library_series": 10
+        },
         "importer": {
             "_comment": "split_overflow: max chars to search past target length for a clean boundary.",
             "split_overflow": 150

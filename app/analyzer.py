@@ -23,6 +23,7 @@ from app.path_utils import (get_user_file, get_resource, get_data_path, get_user
                             is_content_file, infer_source_type, read_source_marker)
 from app import settings_manager
 from app import word_selection
+from app import modality
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -41,7 +42,7 @@ SANITIZE_JA = False # Strip -suffixes for Japanese
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 4
+ENGINE_REVISION = 5
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -644,6 +645,54 @@ def group_sources(source_list):
             
     return ", ".join(result_parts)
 
+# Volume suffixes: "Honzuki v1" / "Honzuki_2" / "Honzuki - 3" are one work, not three. Same
+# grouping the Immersion Architect uses to build its reading queues, so a series means the same
+# thing in both places.
+_VOLUME_SUFFIX_RE = re.compile(r"[_Vv\s\-]*\d+$")
+
+
+def _series_name(file_path, data_dir):
+    """Which WORK a content file belongs to — the folder under its tier, volumes merged.
+
+    Used for dispersion: a word confined to one work is that story's vocabulary (a character, a
+    place, a piece of jargon), while genuine reading vocabulary turns up across many. Grouping by
+    file would not do — a light novel is hundreds of chapter files, so a character name looks
+    beautifully "dispersed" while appearing in exactly one book.
+
+    Loose files directly under a tier are each their own work, which is the honest reading: we
+    have no evidence they belong together.
+    """
+    try:
+        rel = os.path.relpath(file_path, data_dir).replace("\\", "/")
+    except ValueError:      # different drive on Windows
+        return os.path.basename(file_path)
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) < 2:
+        return rel                      # shouldn't happen; degrade to the path itself
+    if len(parts) == 2:
+        return parts[1]                 # loose file sitting directly in the tier folder
+    return _VOLUME_SUFFIX_RE.sub("", parts[1]) or parts[1]
+
+
+def _spelling_alias(word):
+    """The spelling a frequency list is likely to store for this lemma, or None.
+
+    Unidic gives us ORTHOGRAPHIC lemmas — 為る, 矢張り, 其れ, 呉れる — while every frequency list
+    stores the ordinary spelling (する, やっぱり, それ, くれる). Nothing bridged the two, so the most
+    common verb in the language reported as "Outside": 為る accounts for tens of thousands of tokens
+    in a real library and matched nothing. The bridge is precomputed at build time (it depends only
+    on unidic + the reference corpora, both fixed then), so this costs a dict lookup.
+
+    Degrades to None when the generated table is absent — the app still runs, tiers just revert to
+    the old behaviour.
+    """
+    try:
+        from app import reference_data
+        return reference_data.aliases().get(word)
+    except Exception:
+        return None
+
+
 def get_tier_label(word, freq_data):
     """
     Get tier labels for a word from all frequency lists.
@@ -652,15 +701,24 @@ def get_tier_label(word, freq_data):
     Empty list means word is not in any frequency list (Outside).
     """
     tiers_found = []
-    
+    alias = None   # resolved lazily: only words that MISS need the bridge
+
     # Check all frequency lists and collect all tiers
     for source_name in sorted(freq_data.keys()):
-        if word in freq_data[source_name]:
-            rank = freq_data[source_name][word]
+        rank = freq_data[source_name].get(word)
+        if rank is None:
+            # A direct hit always wins over the alias. 呉れる is present in some lists at its own
+            # (rare) rank, and its alias くれる is far more common — crediting the alias there would
+            # overstate how common the word we actually matched is.
+            if alias is None:
+                alias = _spelling_alias(word) or ""
+            if alias:
+                rank = freq_data[source_name].get(alias)
+        if rank is not None:
             tier = get_tier_from_rank(rank)
             if tier != "Outside":
                 tiers_found.append((source_name, tier))
-    
+
     return tiers_found
 
 
@@ -1052,17 +1110,27 @@ def main():
         print("Expected format: frequency_list_{lang}_*.csv")
 
     word_stats = defaultdict(lambda: {
-        "score": 0, "total_count": 0, "sources": set(), 
+        "score": 0, "total_count": 0, "sources": set(),
         "high_count": 0, "low_count": 0, "goal_count": 0,
         "candidate_contexts": [], # List of (is_too_short, is_too_long, initial_cost, unique_lrs, s_text)
         "first_context": None,
         "surface": "",
-        "min_seq": float('inf') # Track first appearance sequence index
+        "min_seq": float('inf'), # Track first appearance sequence index
+        # Reading-vs-listening inputs (see app/modality.py). spoken_count is how often the word
+        # was met in the user's OWN subtitle/YouTube files — evidence that beats the bundled
+        # estimate. series is the set of distinct works it appears in, which separates general
+        # vocabulary from one story's names and jargon.
+        "spoken_count": 0,
+        "series": set(),
     })
     
     words_skipped_i_plus_one = 0 # Track skips explicitly for visibility
 
-    file_stats = [] 
+    # Library-wide modality inputs, accumulated during aggregation (see app/modality.py).
+    library_series = set()      # every distinct work — the denominator for the dispersion check
+    spoken_file_count = 0       # subtitle/YouTube files, i.e. how much listening material there is
+
+    file_stats = []
     
     # 3. Process Files (Aggregation Phase)
 
@@ -1221,6 +1289,12 @@ def main():
         # exactly (built in first-appearance order) for the progressive pass to reuse.
         file_counter = Counter()
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
+        # Modality inputs, also constant per file (see app/modality.py).
+        file_is_spoken = source_type in ("subtitle", "youtube")
+        file_series = _series_name(file_path, data_dir)
+        library_series.add(file_series)
+        if file_is_spoken:
+            spoken_file_count += 1
 
         for s_text, s_tokens in sentences:
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
@@ -1268,6 +1342,8 @@ def main():
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1
                 elif label == "GoalContent": entry["goal_count"] += 1
+                if file_is_spoken: entry["spoken_count"] += 1
+                entry["series"].add(file_series)
                 
                 # Track first appearance sequence
                 if seq_idx < entry["min_seq"]:
@@ -1375,7 +1451,38 @@ def main():
     RECENCY_FILES = LOGIC.get("context", {}).get("recency_files", 1)
     _recency_on = RECENCY_FILES >= 0
     learned_at_file = {}       # (lemma, reading) -> the file index where the learner first meets it
-    
+
+    # --- Reading-vs-listening ------------------------------------------------------------------ #
+    # The spoken-rank table is precomputed at build time (it depends only on unidic + the reference
+    # corpora, both fixed then), so all that happens here is a dict lookup and a division per word.
+    # Loaded once, lazily: a library with no matching words still pays nothing beyond the decode.
+    _MODALITY_CFG = LOGIC.get("modality", {})
+    _minutes_per_file = LOGIC.get("selection", {}).get("minutes_per_file",
+                                                       word_selection.MINUTES_PER_FILE)
+    _listening_hours = modality.listening_hours(spoken_file_count, _minutes_per_file)
+    _library_series = len(library_series)
+    try:
+        from app import reference_data as _reference_data
+        _spoken_ranks = _reference_data.spoken_ranks()
+    except Exception as e:
+        # Missing/corrupt generated data must never break a run — the column just stays blank.
+        print(f"Warning: reading/listening reference data unavailable ({e}).")
+        _spoken_ranks = {}
+
+    def _modality_of(lemma, data):
+        """"reading" when a word is worth a reading-first card, else None. See app/modality.py."""
+        if not _spoken_ranks:
+            return None
+        return modality.classify(
+            _spoken_ranks.get(lemma),
+            data.get("total_count", 0),
+            spoken_count=data.get("spoken_count", 0),
+            series_count=len(data.get("series", ())),
+            library_series=_library_series,
+            listening_hours_total=_listening_hours,
+            config=_MODALITY_CFG,
+        )
+
     preliminary_rows = []
     for (lemma, reading), data in word_stats.items():
         if data["total_count"] < floor_count:
@@ -1395,6 +1502,11 @@ def main():
             "Count (High)": data["high_count"],
             "Count (Low)": data["low_count"],
             "Count (Goal)": data["goal_count"],
+            # "reading" = you'll meet this in text but essentially never hear it, so it wants a
+            # reading-first card. Blank means hearable OR not enough evidence — deliberately not
+            # a claim. NOT named "Context ..." : both report templates collect example sentences
+            # with startsWith('Context '), and such a column would render as a bogus example.
+            "Modality": _modality_of(lemma, data) or "",
             "Sources": source_display, # Moved to end
             "_MinSeq": data["min_seq"], # Helper for sorting
             "_CandidateContexts": data["candidate_contexts"],
@@ -1621,6 +1733,10 @@ def main():
         key = f"{lemma}|{reading}"
         serializable_data = data.copy()
         serializable_data["sources"] = list(data["sources"])
+        # `series` is a set like `sources`; JSON has no set type. Kept as a COUNT rather than the
+        # names — nothing reads the names back, and on a large library storing them would inflate
+        # word_stats.json for no purpose (the file was deliberately slimmed for exactly this reason).
+        serializable_data["series"] = len(data.get("series", ()))
 
         if _debug_word_stats:
             # Full dump: keep the raw selection inputs, converting their unique_lrs sets to lists.
@@ -1671,6 +1787,24 @@ def main():
             print("Saved Content Manager sidecars.")
     except Exception as e:
         print(f"Warning: could not write Content Manager sidecars: {e}")
+
+    # --- Reading-words sidecar (feeds the "Export Reading Words" Yomitan list) ------------------ #
+    # Written from word_stats rather than the CSV on purpose: the CSV is cut at the selection
+    # band's floor, and a word you meet five times is exactly the case where a mining decision
+    # benefits most from knowing "you'll never hear this". Keeping the verdict here also means the
+    # exporter never re-derives it — one implementation of the rule, in app/modality.py.
+    try:
+        _reading = sorted(
+            ((lemma, data["total_count"])
+             for (lemma, _reading_kana), data in word_stats.items()
+             if _modality_of(lemma, data) == "reading"),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        with open(os.path.join(RESULTS_DIR, "reading_words.json"), 'w', encoding='utf-8') as f:
+            json.dump(_reading, f, ensure_ascii=False)
+        print(f"Saved reading-words list ({len(_reading)} words).")
+    except Exception as e:
+        print(f"Warning: could not write reading-words list: {e}")
 
     # --- Additive (optional): full library frequency map for the YouTube Preview feature ---
     # Gated behind the 'enable_youtube_preview' toggle so standard runs are completely
@@ -1801,6 +1935,7 @@ def main():
                 "Count (High)": stats.get("high_count", 0),
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
+                "Modality": _modality_of(lemma, stats) or "",
             })
             
             # Dynamically attach all context strings currently tracked

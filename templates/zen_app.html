@@ -13,6 +13,7 @@
             --accent: #ffffff;
             --prio-high: #ffd700;
             --prio-lop: #03dac6;
+            --prio-reading: #d0a5ff;
         }
 
         body {
@@ -214,6 +215,11 @@
 
         .prio-lop {
             color: var(--prio-lop);
+        }
+
+        .prio-reading {
+            color: var(--prio-reading);
+            font-size: 0.85em;
         }
 
         /* Contexts */
@@ -801,6 +807,13 @@
                 prioIcon = `<span class="prio-icon prio-lop" title="Lopsided">⚖</span>`;
             } else if (freq >= pm.priority_min && ((high + low) / freq) >= pm.priority_threshold) {
                 prioIcon = `<span class="prio-icon prio-high" title="High Leverage">✦</span>`;
+            }
+
+            // Reading word (文). Precomputed by the analyzer — it needs the bundled spoken-frequency
+            // data, so unlike ✦ / ⚖ it can't be derived here. Appended rather than branched: a word
+            // can be both high-leverage and read-only.
+            if (data.Modality === 'reading') {
+                prioIcon += `<span class="prio-icon prio-reading" title="Reading word: you'll meet this in text but hardly ever hear it">文</span>`;
             }
 
             // Context Formatting

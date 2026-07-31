@@ -1871,7 +1871,9 @@
             el.style.fontSize = "0.95rem";
 
             const word = escapeHtml(data.Word);
-            const context = data["Context 1"] || data.Context || "";
+            const contextFull = data["Context 1"] || data.Context || "";
+            const trimmed = trimContext(contextFull, data.Word, contextCap());
+            const context = trimmed.text;
 
             // Highlight word
             const safeCtx = escapeHtml(context);
@@ -1879,7 +1881,8 @@
             const regex = new RegExp(escapedWord, 'gi');
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${word}</strong>`);
 
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}`;
+            const rowTip = trimmed.trimmed ? ` title="${escapeHtml(contextFull)}"` : '';
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}`;
             return el;
         }
 
@@ -2218,8 +2221,13 @@
                 return safeCtx.replace(regex, `<em>${safeWord}</em>`);
             }
 
-            const c1 = data["Context 1"] || data.Context || "";
+            const ctxCap = contextCap();
+            const c1Full = data["Context 1"] || data.Context || "";
+            const c1Trim = trimContext(c1Full, word, ctxCap);
+            const c1 = c1Trim.text;
             const displayC1 = formatContext(c1);
+            // Keep the untrimmed sentence reachable on hover when we windowed it.
+            const c1Title = c1Trim.trimmed ? ` title="${escapeHtml(c1Full)}"` : '';
 
 
             // Parse Tier data and create tier badges
@@ -2291,7 +2299,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="context-box">${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}</div>
+                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"])}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -2319,11 +2327,13 @@
                         let innerHtmlString = "";
                         extraKeys.forEach(k => {
                             if (data[k]) {
-                                const formatted = formatContext(data[k]);
+                                const t = trimContext(data[k], word, ctxCap);
+                                const formatted = formatContext(t.text);
+                                const tip = t.trimmed ? ` title="${escapeHtml(data[k])}"` : '';
                                 // "Context 3" -> the matching "Src 3" / "Frag 3" for this sentence.
                                 const n = k.replace('Context ', '');
                                 const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n]);
-                                innerHtmlString += `<div class="context-item">${formatted}${badge}</div>`;
+                                innerHtmlString += `<div class="context-item"${tip}>${formatted}${badge}</div>`;
                             }
                         });
                         extraDiv.innerHTML = innerHtmlString;
@@ -2495,8 +2505,9 @@
             else label = icon + ' ' + escapeHtml(name);
 
             // A YouTube source is the one case where the FILE isn't the thing you want — the video
-            // is. Click opens it at this sentence's moment; shift-click copies that link. Rendered
-            // as a real anchor so middle-click, ctrl-click and "copy link address" all work.
+            // is. Click opens it at this sentence's moment; shift-click opens the transcript there
+            // instead. Rendered as a real anchor so middle-click, ctrl-click and "copy link
+            // address" all work.
             const videoId = row[4] || '';
             if (videoId) {
                 const secs = (at !== null && at !== undefined && at !== "")
@@ -2522,7 +2533,7 @@
                    `data-src-path="${escapeHtml(fullPath)}" ` +
                    (deepLink ? `data-src-url="${escapeHtml(deepLink)}" ` : ``) +
                    `title="${escapeHtml(hover)}\nClick to copy the full path` +
-                   (deepLink ? ` (shift-click: browser link that jumps to this sentence)` : ``) + `" ` +
+                   (deepLink ? `\nShift-click to open it at this sentence` : ``) + `" ` +
                    `onclick="copySourcePath(event, this)">${label}</span>`;
         }
 
@@ -2555,14 +2566,19 @@
 
         function copySourcePath(event, el) {
             if (event) event.stopPropagation();
-            // Shift-click copies the scroll-to-text browser link; a plain click copies the bare
-            // path, because that's what pasting into Explorer requires.
-            const wantsLink = !!(event && event.shiftKey && el.dataset.srcUrl);
-            const path = wantsLink ? el.dataset.srcUrl : (el.dataset.srcPath || '');
+            // Shift-click OPENS the file at this sentence, exactly like a YouTube badge's
+            // shift-click opens its transcript — no round trip through the clipboard. A plain
+            // click still copies the bare path, because that's what pasting into Explorer needs.
+            // With no verified anchor there is nothing to jump to, so fall back to copying.
+            if (event && event.shiftKey && el.dataset.srcUrl) {
+                openInNewTab(el.dataset.srcUrl);
+                return;
+            }
+            const path = el.dataset.srcPath || '';
             if (!path) return;
             const previous = el.innerHTML;
             const confirm = () => {
-                el.textContent = wantsLink ? 'link copied ✓' : 'copied ✓';
+                el.textContent = 'copied ✓';
                 setTimeout(() => { el.innerHTML = previous; }, 1200);
             };
             // navigator.clipboard needs a secure context and the report is opened over file://,
@@ -2595,6 +2611,73 @@
             return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
 
+        }
+
+        // --- Context Trimming ---
+        // The word's OWN sentence (Context 1) is deliberately exempt from the analyzer's length cap
+        // so a word always has an example even when nothing shorter exists. A speech transcript can
+        // therefore land a 400-character run-on here. Window it around the target word for DISPLAY
+        // only — the CSV, the exports and the deep-link anchor all keep the full sentence.
+        function contextCap() {
+            const c = (typeof globalLogic !== 'undefined' && globalLogic.context) ? globalLogic.context : null;
+            return (c && c.max_chars) ? c.max_chars : 150;
+        }
+
+        function trimContext(text, word, cap) {
+            if (!text || text.length <= cap) return { text: text || "", trimmed: false };
+
+            // Locate the word the same way the highlighter does, so the visible window is always
+            // the part that actually gets the <em>. A lemma that never surfaces (見える vs 見えた)
+            // simply leaves us at the head of the sentence.
+            let at = 0, wordLen = 0;
+            if (word) {
+                const m = text.match(new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+                if (m) { at = m.index; wordLen = m[0].length; }
+            }
+
+            // Build the window out of WHOLE CLAUSES rather than slicing at a character offset.
+            // Japanese speech is comma-dense, and a raw slice cuts mid-phrase ("…の中には" out of
+            // "世の中") which reads worse than simply showing a little less.
+            const BREAKS = '、。！？!?,.　・ ';
+            const clauses = [];
+            let cur = "";
+            for (let i = 0; i < text.length; i++) {
+                cur += text[i];
+                if (BREAKS.indexOf(text[i]) !== -1) { clauses.push(cur); cur = ""; }
+            }
+            if (cur) clauses.push(cur);
+
+            let k = 0, pos = 0;
+            for (let i = 0; i < clauses.length; i++) {
+                if (pos + clauses[i].length > at) { k = i; break; }
+                pos += clauses[i].length;
+            }
+
+            // Grow outward from the word's own clause — right first, then left — while we fit.
+            let lo = k, hi = k, total = clauses[k].length;
+            for (;;) {
+                let grew = false;
+                if (hi + 1 < clauses.length && total + clauses[hi + 1].length <= cap) { total += clauses[++hi].length; grew = true; }
+                if (lo - 1 >= 0 && total + clauses[lo - 1].length <= cap) { total += clauses[--lo].length; grew = true; }
+                if (!grew) break;
+            }
+
+            let body = clauses.slice(lo, hi + 1).join("").trim();
+            let head = lo > 0, tail = hi < clauses.length - 1;
+
+            // Degenerate case: a transcript with no punctuation at all is ONE giant clause, so the
+            // clause walk can't shrink it. Fall back to a hard character window around the word so
+            // a card can never be flooded.
+            if (body.length > cap) {
+                let start = Math.max(0, at - Math.floor(Math.max(0, cap - wordLen) / 2));
+                let end = Math.min(text.length, Math.max(start + cap, at + wordLen));
+                start = Math.max(0, Math.min(start, end - cap));
+                body = text.slice(start, end).trim();
+                head = start > 0;
+                tail = end < text.length;
+            }
+
+            return { text: (head ? '…' : '') + body + (tail ? '…' : ''), trimmed: true };
         }
 
         // --- Audio Logic ---

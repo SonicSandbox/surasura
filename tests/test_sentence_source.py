@@ -294,7 +294,10 @@ class TestSourceBadgeRendering(unittest.TestCase):
         content = self._template(theme="default")
         self.assertNotIn("float: right", content.split(".src-badge {")[1].split("}")[0],
                          "the badge must not be floated to the right edge")
-        self.assertIn('class="context-box">${displayC1}${sourceBadge(', content,
+        # Asserted without pinning the tag's attributes — a trimmed sentence also carries a
+        # title with the untrimmed original (see test_context_display_trim.py).
+        self.assertIn('class="context-box"', content)
+        self.assertIn('>${displayC1}${sourceBadge(', content,
                       "the badge must come AFTER the sentence in the markup")
         self.assertIn('${formatted}${badge}', content,
                       "extra example sentences must place their badge after the sentence too")
@@ -313,9 +316,10 @@ class TestSourceBadgeRendering(unittest.TestCase):
                       "the badge must hover the group label, not the absolute path")
         self.assertIn('title="${escapeHtml(hover)}', content)
 
-    def test_shift_click_copies_a_scroll_to_text_link(self):
-        """Plain click keeps copying the bare path (Explorer needs that); shift-click copies a
-        file:// URL with a #:~:text= fragment so Chrome opens the file AND jumps to the sentence."""
+    def test_shift_click_opens_the_file_at_the_sentence(self):
+        """Shift-click OPENS the file in a browser tab, scrolled to the sentence — the same thing a
+        YouTube badge's shift-click does with its transcript, rather than making you paste a copied
+        link yourself. Plain click still copies the bare path, because Explorer needs that."""
         for theme in ("default", "zen-focus"):
             with self.subTest(theme=theme):
                 content = self._template(theme=theme)
@@ -323,12 +327,29 @@ class TestSourceBadgeRendering(unittest.TestCase):
                 self.assertIn("'#:~:text=' + encodeURIComponent(String(frag))", content,
                               "the anchor comes from the generator, verified against the real file")
                 self.assertIn("event.shiftKey && el.dataset.srcUrl", content,
-                              "the deep link must be behind shift, so a plain copy stays "
-                              "Explorer-friendly")
+                              "opening must be behind shift, so a plain click stays a plain copy")
+                self.assertIn("openInNewTab(el.dataset.srcUrl)", content,
+                              "shift-click must OPEN the deep link, not copy it to the clipboard")
+                self.assertNotIn("wantsLink", content,
+                                 "the old copy-the-link branch must be gone")
+                self.assertNotIn("'link copied", content,
+                                 "the copy-the-link confirmation is obsolete")
                 self.assertIn(".replace(/-/g, '%2D')", content,
                               "'-' is a text-fragment syntax char and must be percent-encoded")
                 self.assertIn(".replace(/#/g, '%23')", content,
                               "a '#' in a FILENAME would truncate the URL")
+
+    def test_shift_click_falls_back_to_copying_when_there_is_no_anchor(self):
+        """A sentence the generator could not verify against the file has no deep link, so there is
+        nothing to open — shift-click must still do something useful rather than silently fail."""
+        for theme in ("default", "zen-focus"):
+            with self.subTest(theme=theme):
+                content = self._template(theme=theme)
+                # The open branch is guarded on srcUrl existing; everything else falls through to
+                # the copy path below it.
+                self.assertIn("if (event && event.shiftKey && el.dataset.srcUrl) {", content)
+                self.assertIn("const path = el.dataset.srcPath || '';", content,
+                              "the fallback must copy the bare path")
 
     def test_anchor_is_never_guessed_in_the_browser(self):
         """The stored sentence is not the file's text, so any anchor derived from it in JS would
@@ -350,7 +371,8 @@ class TestSourceBadgeRendering(unittest.TestCase):
 
     def test_youtube_badge_is_a_link_that_opens_the_video(self):
         """For a YouTube source the VIDEO is the thing, not the transcript file. Click opens it at
-        the sentence's moment; shift-click keeps the "copy a link" meaning it has everywhere else."""
+        the sentence's moment; shift-click opens the transcript there instead — which is the same
+        "shift-click opens it at this sentence" meaning every other source now has."""
         for theme in ("default", "zen-focus"):
             with self.subTest(theme=theme):
                 content = self._template(theme=theme)
@@ -364,7 +386,9 @@ class TestSourceBadgeRendering(unittest.TestCase):
                               "shift-click must not fall through to the browser's new-window default")
 
     def test_non_youtube_badge_is_not_a_link(self):
-        """Local files keep the copy behaviour — clicking through to a file:// path is unreliable."""
+        """A local file's badge stays a <span>, not an <a>: a plain click copies rather than
+        navigates. Shift-click still opens it, but via openInNewTab, which synthesises the anchor
+        at click time — a bare file:// href on the badge itself is unreliable."""
         content = self._template(theme="default")
         self.assertIn("const videoId = row[4] || '';", content,
                       "the link path must be gated on there being a video id")
@@ -375,7 +399,8 @@ class TestSourceBadgeRendering(unittest.TestCase):
         self.assertIn("function sourceBadge", content, "Zen is missing the badge renderer")
         self.assertIn("copySourcePath", content, "Zen is missing the copy handler")
         self.assertIn("let globalSources =", content, "Zen is missing the source table injection")
-        self.assertIn("${formatContext(c.text)}${sourceBadge(c.src, c.frag, c.at)}", content,
+        # t.text is the display-trimmed sentence; the pairing with its own source is the point here.
+        self.assertIn("${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at)}", content,
                       "Zen must pair each sentence with its own source, anchor and cue time")
         self.assertIn('class="src-badge" migaku_ignore data-yomichan-ignore', content)
 

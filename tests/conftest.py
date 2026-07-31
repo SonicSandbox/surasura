@@ -30,6 +30,20 @@ def mock_messagebox():
          patch("tkinter.messagebox.askokcancel", return_value=True):
         yield
 
+
+@pytest.fixture(scope="session", autouse=True)
+def no_browser_launch():
+    """Never open a real browser during a test run.
+
+    generate_static_html() ends by opening the report — correct in the app, but several tests call it
+    just to inspect the generated HTML, so a full run used to spawn a browser tab per test. Same
+    rationale as mock_messagebox above: suppress the side effect, not the behaviour under test.
+    Tests that assert on OPENING patch static_html_generator.open_report, which is untouched here.
+    """
+    with patch("webbrowser.open"), \
+         patch("app.static_html_generator.open_as_app"):
+        yield
+
 @pytest.fixture
 def project_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

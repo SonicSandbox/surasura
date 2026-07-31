@@ -361,6 +361,26 @@
             color: #eee;
         }
 
+        /* Per-sentence source badge — "which file did this example come from?".
+           Sits inline right after the sentence (not right-justified), muted so it never competes
+           with the sentence itself, and marked migaku_ignore / data-yomichan-ignore so dictionary
+           extensions don't try to parse a filename as vocabulary.
+           Off by default (Settings -> Experience & UI). */
+        .src-badge {
+            margin-left: 0.6em;
+            font-size: 0.75rem;
+            font-weight: normal;
+            color: var(--text-secondary);
+            opacity: 0.5;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .src-badge:hover {
+            opacity: 1;
+        }
+
         .context-box em {
             color: var(--secondary);
             font-style: normal;
@@ -1003,6 +1023,25 @@
             white-space: nowrap;
         }
 
+        /* Manually-completed files collapse into their own section at the bottom of the sidebar, so
+           a long-running journey doesn't mean scrolling past every episode you've already finished.
+           They stay one click away rather than being hidden outright. */
+        .completed-section-header {
+            padding: 12px 20px;
+            cursor: pointer;
+            color: #4caf50;
+            font-size: 0.75rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid var(--card-border);
+            user-select: none;
+        }
+
+        .completed-section-header:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
         .target-days-box.completed {
             color: #4caf50;
             border-color: rgba(76, 175, 80, 0.4);
@@ -1222,6 +1261,18 @@
 
         function saveCompletedFiles() {
             localStorage.setItem(completedStorageKey, JSON.stringify([...completedFiles]));
+        }
+
+        // Collapsed/expanded state of the sidebar's "Completed" section — remembered per language
+        // like the marks themselves. Collapsed by default: the whole point is to get finished files
+        // out of the scroll path.
+        const completedCollapsedKey = `surasura_completed_collapsed_${langSuffix}`;
+        let completedCollapsed = true;
+        try {
+            const storedCollapsed = localStorage.getItem(completedCollapsedKey);
+            if (storedCollapsed !== null) completedCollapsed = (storedCollapsed === '1');
+        } catch (e) {
+            console.error("Failed to load completed-section state", e);
         }
 
         function clearIgnoredWords() {
@@ -1526,10 +1577,23 @@
                 globalData.progressive.forEach(f => fileList.push({ type: 'prog', data: f }));
             }
 
-            if (fileList.length > 500) {
-                setupInfiniteScroll(tabsContainer, fileList, createSidebarTab, 50);
+            // Remember each file's natural sidebar position so un-marking one can put it back.
+            fileList.forEach((item, i) => { item._order = i; });
+
+            // Split off the files YOU marked complete — they render into a collapsed section at the
+            // TOP instead of sitting in the middle of the list. (Distinct from the analysis-derived
+            // "Target Met" files below, which are a different thing entirely.)
+            const doneList = fileList.filter(isItemCompleted);
+            const activeList = fileList.filter(item => !isItemCompleted(item));
+
+            // Built FIRST so it lands above everything. The infinite-scroll sentinel is appended
+            // after it, so paged chunks still insert below the section, in order.
+            buildCompletedSection(tabsContainer, doneList);
+
+            if (activeList.length > 500) {
+                setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
             } else {
-                fileList.forEach((item, index) => {
+                activeList.forEach((item, index) => {
                     tabsContainer.appendChild(createSidebarTab(item));
                 });
 
@@ -1547,9 +1611,12 @@
 
             // Initial Load
             if (fileList.length > 0) {
-                // Activate first tab visually (if present)
+                // Open on the first file still to do. With the Completed section sitting at the top,
+                // a plain "first .file-tab" would open a finished file (and one inside a collapsed
+                // section at that). Falls back to the very first tab when everything is completed.
                 setTimeout(() => {
-                    const firstTab = tabsContainer.querySelector('.file-tab');
+                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
+                    const firstTab = tabs.find(t => !t.closest('#completed-section')) || tabs[0];
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -1558,10 +1625,79 @@
             }
         }
 
+        // --- Collapsible "Completed" section ---------------------------------------------------- #
+        function isItemCompleted(item) {
+            return !!(item && item.data && completedFiles.has(item.data.filename));
+        }
+
+        function buildCompletedSection(container, doneList) {
+            const wrap = document.createElement('div');
+            wrap.id = 'completed-section';
+
+            const header = document.createElement('div');
+            header.className = 'completed-section-header';
+            header.id = 'completed-section-header';
+            header.onclick = toggleCompletedSection;
+
+            const body = document.createElement('div');
+            body.id = 'completed-section-body';
+
+            wrap.appendChild(header);
+            wrap.appendChild(body);
+            container.appendChild(wrap);
+
+            (doneList || []).forEach(item => body.appendChild(createSidebarTab(item)));
+            applyCompletedSectionState();
+        }
+
+        // Header caption + body visibility. Also hides the whole section while it's empty, so a
+        // journey with nothing completed looks exactly as it did before.
+        function applyCompletedSectionState() {
+            const wrap = document.getElementById('completed-section');
+            const body = document.getElementById('completed-section-body');
+            const header = document.getElementById('completed-section-header');
+            if (!wrap || !body || !header) return;
+            const n = body.querySelectorAll('.file-tab').length;
+            wrap.style.display = n ? 'block' : 'none';
+            header.textContent = `${completedCollapsed ? '▸' : '▾'} Completed (${n})`;
+            body.style.display = completedCollapsed ? 'none' : 'block';
+        }
+
+        function toggleCompletedSection() {
+            completedCollapsed = !completedCollapsed;
+            try {
+                localStorage.setItem(completedCollapsedKey, completedCollapsed ? '1' : '0');
+            } catch (e) { /* private mode — the section still toggles, it just won't persist */ }
+            applyCompletedSectionState();
+        }
+
+        // Re-file a tab when its completed state flips. Un-marking returns it to its original
+        // position (data-order), not the top or bottom of the list.
+        function moveTabToCompletedSection(tab, isCompleted) {
+            const tabsContainer = document.getElementById('file-tabs');
+            const body = document.getElementById('completed-section-body');
+            if (!tab || !tabsContainer || !body) return;
+
+            if (isCompleted) {
+                body.appendChild(tab);
+            } else {
+                // Back into the active list at its original position. `:scope >` skips the tabs
+                // inside the Completed section; no later sibling means it belongs at the end (the
+                // section is the container's FIRST child, so appending is correct).
+                const order = parseInt(tab.dataset.order || '0', 10);
+                const siblings = Array.from(tabsContainer.querySelectorAll(':scope > .file-tab'));
+                const after = siblings.find(t => parseInt(t.dataset.order || '0', 10) > order);
+                tabsContainer.insertBefore(tab, after || null);
+            }
+            applyCompletedSectionState();
+        }
+
 
         function createSidebarTab(item) {
             const tab = document.createElement('div');
             tab.className = `file-tab`;
+            // Natural sidebar position, so un-marking a completed file restores it here.
+            if (item._order !== undefined) tab.dataset.order = item._order;
 
             if (item.type === 'prog') {
                 const fileData = item.data;
@@ -1739,7 +1875,7 @@
             const regex = new RegExp(escapedWord, 'gi');
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${word}</strong>`);
 
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;">${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"])}`;
             return el;
         }
 
@@ -1896,6 +2032,10 @@
 
             // Only auto-advance when marking complete (not when un-marking).
             if (!wasCompleted) goToNextIncompleteFile();
+
+            // Re-file the tab AFTER advancing — moving it first would put it last in document
+            // order, and goToNextIncompleteFile would then find no "next" tab.
+            moveTabToCompletedSection(activeTab, !wasCompleted);
         }
 
         // --- Priority View Rendering ---
@@ -2147,7 +2287,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="context-box">${displayC1}</div>
+                <div class="context-box">${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"])}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -2176,7 +2316,10 @@
                         extraKeys.forEach(k => {
                             if (data[k]) {
                                 const formatted = formatContext(data[k]);
-                                innerHtmlString += `<div class="context-item">${formatted}</div>`;
+                                // "Context 3" -> the matching "Src 3" / "Frag 3" for this sentence.
+                                const n = k.replace('Context ', '');
+                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n]);
+                                innerHtmlString += `<div class="context-item">${formatted}${badge}</div>`;
                             }
                         });
                         extraDiv.innerHTML = innerHtmlString;
@@ -2293,6 +2436,99 @@
         }
 
         // --- Utils ---
+        // --- Per-sentence source badge ---------------------------------------------------------- #
+        // globalSourceDisplay: 'off' | 'icon' | 'filename' | 'full'  (Settings -> Experience & UI)
+        // globalSources rows are [name, type, fullPath, groupLabel]; each sentence carries an index
+        // into that table (interned by the generator, so a big library doesn't ship the same path
+        // thousands of times). The badge SHOWS the short name, HOVERS group/file, and COPIES the
+        // absolute path — so the clipboard contents paste straight into Explorer.
+        const SOURCE_ICONS = { subtitle: '🎬', youtube: '▶', epub: '📖', text: '📄' };
+
+        // A Chrome/Edge "scroll to text" link: opens the file AND jumps to + highlights the
+        // sentence, like Ctrl+F. Shift-click copies this instead of the bare path (a bare path is
+        // what Explorer needs, and a URL fragment would break that).
+        //
+        // The anchor is NOT guessed here. The sentence in this report is not the sentence in the
+        // file — the tokenizer drops every space when it rebuilds a sentence, so a subtitle line
+        // written as 'そうだ 女｡ お前に話がある｡' is stored as 'そうだ女｡お前に話がある。'.
+        // Any anchor derived from the stored text spans gaps the file doesn't have. So the GENERATOR
+        // verifies a snippet against the real file (see AnchorFinder) and passes it in as `frag`;
+        // no frag means no link, rather than one that silently misses or hits the wrong line.
+        function sourceDeepLink(fullPath, frag) {
+            if (!fullPath || !frag) return '';
+            let p = String(fullPath).replace(/\\/g, '/');
+            if (!p.startsWith('/')) p = '/' + p;   // Windows 'C:/…' -> 'file:///C:/…'
+            // encodeURI leaves '#' and '?' alone; in a FILENAME they would truncate the URL.
+            const url = 'file://' + encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F');
+            // '-' and ',' are text-fragment syntax characters and must be percent-encoded.
+            return url + '#:~:text=' + encodeURIComponent(String(frag)).replace(/-/g, '%2D');
+        }
+
+        function sourceBadge(idx, frag) {
+            const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
+            if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
+            const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
+            const row = table ? table[idx] : null;
+            if (!row) return '';   // results generated before the source table existed
+
+            const name = row[0] || '';
+            const icon = SOURCE_ICONS[row[1]] || SOURCE_ICONS.text;
+            const fullPath = row[2] || name;
+            const hover = row[3] || name;          // group/file, e.g. 'test_book/chapter_1.txt'
+            let label;
+            if (mode === 'icon') label = icon;
+            else if (mode === 'filename') label = escapeHtml(name);
+            else label = icon + ' ' + escapeHtml(name);
+
+            // Paths live in data-attributes, not inline JS strings: a filename containing a
+            // double-quote would otherwise close the onclick attribute early (the same bug the
+            // Listen button hit).
+            const deepLink = sourceDeepLink(fullPath, frag);
+            return `<span class="src-badge" migaku_ignore data-yomichan-ignore ` +
+                   `data-src-path="${escapeHtml(fullPath)}" ` +
+                   (deepLink ? `data-src-url="${escapeHtml(deepLink)}" ` : ``) +
+                   `title="${escapeHtml(hover)}\nClick to copy the full path` +
+                   (deepLink ? ` (shift-click: browser link that jumps to this sentence)` : ``) + `" ` +
+                   `onclick="copySourcePath(event, this)">${label}</span>`;
+        }
+
+        function copySourcePath(event, el) {
+            if (event) event.stopPropagation();
+            // Shift-click copies the scroll-to-text browser link; a plain click copies the bare
+            // path, because that's what pasting into Explorer requires.
+            const wantsLink = !!(event && event.shiftKey && el.dataset.srcUrl);
+            const path = wantsLink ? el.dataset.srcUrl : (el.dataset.srcPath || '');
+            if (!path) return;
+            const previous = el.innerHTML;
+            const confirm = () => {
+                el.textContent = wantsLink ? 'link copied ✓' : 'copied ✓';
+                setTimeout(() => { el.innerHTML = previous; }, 1200);
+            };
+            // navigator.clipboard needs a secure context and the report is opened over file://,
+            // which some browsers don't treat as one — fall back to the legacy textarea trick.
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(path).then(confirm).catch(() => legacyCopy(path, confirm));
+            } else {
+                legacyCopy(path, confirm);
+            }
+        }
+
+        function legacyCopy(text, onDone) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                onDone();
+            } catch (e) {
+                // No clipboard access — the hover tooltip still shows the full path.
+            }
+        }
+
         function escapeHtml(text) {
             if (!text) return "";
             return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")

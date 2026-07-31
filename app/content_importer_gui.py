@@ -11,7 +11,8 @@ from datetime import datetime
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, ensure_data_setup, get_icon_path, get_data_path, get_user_files_path
+from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
+                            get_user_files_path, SOURCE_MARKER)
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -256,8 +257,13 @@ class ContentImporterApp:
             background=[("active", ACCENT_COLOR), ("pressed", ACCENT_COLOR)])
 
     def is_content_file(self, file_path):
-        """Checks if a file is a supported content type."""
-        return file_path.lower().endswith(('.txt', '.md', '.html', '.htm', '.epub', '.srt', '.ass', '.vtt', '.pdf'))
+        """Checks if a file is a supported content type (what the ANALYZER can read).
+
+        Deliberately narrower than the file picker: .epub/.html/.pdf are NOT content — they must go
+        through Extract, which converts them to .txt. Registering them here tracked files the
+        analyzer then silently skipped, leaving permanently-unanalyzable rows in the library."""
+        from app.path_utils import is_content_file as _is_content
+        return _is_content(file_path)
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="25")
@@ -569,9 +575,24 @@ class ContentImporterApp:
     def _normalize_path(self, path):
         return os.path.relpath(path, self.data_root).replace("\\", "/")
 
+    def _detect_source_type(self, fpath, marker_cache=None):
+        """Classify a file for the report's per-sentence source badge, recorded on the manifest entry
+        so the analyzer doesn't have to re-guess later. `marker_cache` keeps a bulk scan to one
+        producer-marker read per directory."""
+        from app.path_utils import infer_source_type, read_source_marker
+        folder = os.path.dirname(fpath)
+        if marker_cache is None:
+            marker_type = read_source_marker(folder).get("source_type")
+        else:
+            if folder not in marker_cache:
+                marker_cache[folder] = read_source_marker(folder).get("source_type")
+            marker_type = marker_cache[folder]
+        return infer_source_type(fpath, marker_type=marker_type)
+
     def add_to_manifest(self, item_path, target_folder_key):
         """Adds file(s) to the manifest. If item_path is a directory, adds all files inside."""
         manifest = self.load_manifest()
+        marker_cache = {}
         schedule = manifest.get("schedule", {})
         phase_map = {
             "HighPriority": "PHASE_1_NOW",
@@ -616,6 +637,7 @@ class ContentImporterApp:
                 "physical_path": rel,
                 "parent_folder": parent_folder,
                 "origin_source": "Manual Import",
+                "source_type": self._detect_source_type(fpath, marker_cache),
                 "type": "File",
                 "status": "New"
             }
@@ -938,6 +960,7 @@ class ContentImporterApp:
     def _sync_disk_to_manifest(self):
         """Scans the 3 main data folders and ensures any untracked files are added to the manifest."""
         manifest = self.load_manifest()
+        marker_cache = {}   # one producer-marker read per directory across the whole walk
         schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
         
         # Build lookup set of existing physical paths across all phases
@@ -992,6 +1015,7 @@ class ContentImporterApp:
                             "physical_path": rel,
                             "parent_folder": parent_folder,
                             "origin_source": "Disk Sync",
+                            "source_type": self._detect_source_type(fpath, marker_cache),
                             "type": "File",
                             "status": "New"
                         }
@@ -1124,6 +1148,7 @@ class ContentImporterApp:
         tree.bind("<Button-1>", self.on_drag_start)
         tree.bind("<B1-Motion>", self.on_drag_motion)
         tree.bind("<ButtonRelease-1>", self.on_drag_stop)
+        tree.bind("<Double-1>", self.on_item_double_click)
         tree.bind("<<TreeviewSelect>>", self._update_graduate_button_state)
         return tree
 
@@ -1361,38 +1386,118 @@ class ContentImporterApp:
             title="Select Content Files",
             initialdir=initial_dir,
             filetypes=[
-                ("All Supported", "*.txt *.md *.srt"),
+                ("All Supported", "*.txt *.md *.srt *.ass *.zip"),
                 ("Text Files", "*.txt"),
                 ("Markdown", "*.md"),
-                ("Subtitles", "*.srt"),
+                ("Subtitles", "*.srt *.ass"),
+                ("Zip Archives", "*.zip"),
                 ("All Files", "*.*")
             ]
         )
-        
+
         if filepaths:
             self._temp_manifest_snapshot = self.load_manifest()
             count = 0
             target_folder_key = self.target_folder_var.get()
             added_paths = []
-            
+            empty_zips = []
+
             for path in filepaths:
                 try:
                     filename = os.path.basename(path)
+                    # A zip is a CONTAINER, not content: unpack it into one group instead of copying
+                    # the archive itself (the analyzer would never read it).
+                    if filename.lower().endswith(".zip"):
+                        extracted, dest = self._import_zip(path, target_dir)
+                        if not extracted:
+                            empty_zips.append(filename)
+                            continue
+                        self.add_to_manifest(dest, target_folder_key)
+                        added_paths.append(dest)   # undo removes the whole unpacked folder
+                        count += len(extracted)
+                        continue
+
                     dest = os.path.join(target_dir, filename)
                     shutil.copy2(path, dest)
-                    
+
                     self.add_to_manifest(dest, target_folder_key)
                     added_paths.append(dest)
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
-            
+
             if added_paths:
                 self.set_undo_action("add", "Add Files", {"paths": added_paths})
-                
+
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
-            messagebox.showinfo("Success", f"Successfully added {count} files.")
+            summary = f"Successfully added {count} files."
+            if empty_zips:
+                summary += ("\n\nNo supported content found in: " + ", ".join(empty_zips) +
+                            "\n(Supported: .txt, .md, .srt, .ass — EPUBs go through Extract.)")
+            messagebox.showinfo("Success", summary)
+
+    @staticmethod
+    def _zip_member_name(info):
+        """Decode a zip entry's name.
+
+        Archives made on Japanese Windows store names in CP932 WITHOUT the UTF-8 flag, and zipfile
+        then hands them back decoded as CP437 (mojibake). Round-trip those bytes and try the
+        encodings that actually occur, so 第01話.srt survives instead of becoming garbage."""
+        if info.flag_bits & 0x800:
+            return info.filename                 # the archive flags it as UTF-8 — trust that
+        try:
+            raw = info.filename.encode("cp437")
+        except UnicodeEncodeError:
+            return info.filename
+        for enc in ("utf-8", "cp932"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return info.filename
+
+    def _import_zip(self, zip_path, target_dir):
+        """Unpack a .zip's supported content files into target_dir/<archive name>/, preserving the
+        archive's folder structure so the whole thing lands as ONE ordered group.
+
+        Returns (extracted_paths, dest_root). An archive with no supported content yields an empty
+        list and leaves NO folder behind — the caller reports that instead."""
+        import zipfile
+
+        stem = os.path.splitext(os.path.basename(zip_path))[0] or "archive"
+        dest_root = self._unique_path(os.path.join(target_dir, stem))
+        extracted = []
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    name = self._zip_member_name(info)
+                    # Skips unsupported types AND nested archives — a .zip is never content.
+                    if not self.is_content_file(name):
+                        continue
+                    # Zip-slip guard: a member named '../../evil.txt' (or an absolute path) must
+                    # never write outside dest_root.
+                    out = os.path.normpath(
+                        os.path.join(dest_root, os.path.normpath(name.replace("\\", "/"))))
+                    if out != dest_root and not out.startswith(dest_root + os.sep):
+                        continue
+                    os.makedirs(os.path.dirname(out), exist_ok=True)
+                    with zf.open(info) as src, open(out, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted.append(out)
+        except zipfile.BadZipFile:
+            messagebox.showerror("Error", f"'{os.path.basename(zip_path)}' is not a readable zip file.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read '{os.path.basename(zip_path)}':\n{e}")
+
+        if not extracted and os.path.isdir(dest_root) and not os.listdir(dest_root):
+            try:
+                os.rmdir(dest_root)
+            except OSError:
+                pass
+        return extracted, dest_root
 
     def _unique_path(self, path):
         """Return a non-colliding path, appending ' (n)' before the extension if needed."""
@@ -1461,6 +1566,12 @@ class ContentImporterApp:
                 target_root = dest if rel_root == "." else os.path.join(dest, rel_root)
                 for name in sorted(files):
                     src_file = os.path.join(root, name)
+                    if name == SOURCE_MARKER:
+                        # Carry the producer's marker across so an imported Extract folder keeps
+                        # being recognised as a book. It isn't content, so it never joins added_paths.
+                        os.makedirs(target_root, exist_ok=True)
+                        shutil.copy2(src_file, os.path.join(target_root, name))
+                        continue
                     if not self.is_content_file(src_file):
                         continue
                     os.makedirs(target_root, exist_ok=True)
@@ -1861,6 +1972,45 @@ class ContentImporterApp:
                 
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
+
+    def open_path_in_system(self, path):
+        """Open a file (or folder) with the OS default handler. Never fatal."""
+        try:
+            if sys.platform == 'win32':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open:\n{path}\n\n{e}")
+            return False
+
+    def on_item_double_click(self, event):
+        """Double-click a row to open it — a file in its default app, a group in the file manager.
+
+        Safe alongside the drag bindings: the second click re-selects the same row, and on_drag_stop
+        bails when the drop target is already in the selection, so no reorder can fire."""
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        vals = self.tree.item(item, "values")
+        if not vals:
+            return
+
+        val = str(vals[0])
+        if val.startswith("GROUP:"):
+            children = self._resolve_items_to_paths([item])
+            target = os.path.dirname(children[0]) if children else None
+        else:
+            target = val
+
+        if target and os.path.exists(target):
+            if self.open_path_in_system(target):
+                self.status_var.set(f"Opened {os.path.basename(target)}")
+        else:
+            self.status_var.set("That item is no longer on disk — refresh the library.")
 
     def _get_drop_region(self, item, y):
         """Determine if drop is above or below the target item."""

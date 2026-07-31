@@ -153,7 +153,12 @@ class FrequencyExporter:
     def export_anki_sentences(csv_path, save_path):
         """
         Export as a CSV suitable for Anki/SRS import.
-        Includes Word, Reading, Context 1 (main sentence), Context 2 (i+1/second sentence), Tier, and Sources.
+        Includes Word, Reading, Context 1 (main sentence), Context 2 (i+1/second sentence), Tier,
+        Sources, and the source FILE behind each sentence.
+
+        'Source 1'/'Source 2' are appended LAST so an existing Anki field mapping keeps working —
+        importers match by column order, so adding at the end can only leave the new fields unmapped,
+        never shift an existing one. They're empty for results generated before the badge existed.
         """
         df = pd.read_csv(csv_path)
         if df.empty:
@@ -179,7 +184,11 @@ class FrequencyExporter:
             # Extra fields
             tier = row.get('Tier', '') if 'Tier' in available_cols else ''
             sources = row.get('Sources', '') if 'Sources' in available_cols else ''
-            
+
+            # Which file each sentence came from (blank on pre-badge results).
+            src_1 = row.get('Src 1', '') if 'Src 1' in available_cols else ''
+            src_2 = row.get('Src 2', '') if 'Src 2' in available_cols else ''
+
             output_data.append({
                 'Index': len(output_data) + 1,
                 'Word': word,
@@ -187,7 +196,9 @@ class FrequencyExporter:
                 'Sentence 1': sentence_1,
                 'Sentence 2': sentence_2,
                 'Tier': tier,
-                'Sources': sources
+                'Sources': sources,
+                'Source 1': src_1,
+                'Source 2': src_2
             })
             
         # Write properly formatted CSV using pandas to ensure delimiter safety

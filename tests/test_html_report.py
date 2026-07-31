@@ -50,6 +50,46 @@ def test_html_generation(tmp_path):
          # That's fine, we just want to ensure it runs without crashing.
 
 
+def test_report_is_still_opened_after_generation(tmp_path):
+    """Opening the report is INTENDED behaviour, not an accident of the tests.
+
+    The suite-wide `no_browser_launch` fixture suppresses the real launch (several tests call
+    generate_static_html purely to inspect the HTML, and a run used to spawn a browser tab each
+    time). This test asserts the behaviour it suppresses still happens — and picks the right one
+    for the window mode — so the fixture can never quietly turn the feature off.
+    """
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    output_html = results_dir / "reading_list_static.html"
+    template_path = tmp_path / "web_app.html"
+    with open(template_path, "w", encoding="utf-8") as f:
+        f.write("<html><head></head><body><script>let globalData = null;</script></body></html>")
+
+    common = [
+        patch("app.static_html_generator.RESULTS_DIR", str(results_dir)),
+        patch("app.static_html_generator.OUTPUT_FILE", str(output_html)),
+        patch("app.static_html_generator.WEB_APP_FILE", str(template_path)),
+        patch("app.static_html_generator.settings_manager.load_settings", return_value={}),
+    ]
+
+    # Default: hand the report to the user's normal browser.
+    with common[0], common[1], common[2], common[3], \
+         patch("webbrowser.open") as mock_browser, \
+         patch("app.static_html_generator.open_as_app") as mock_app:
+        generate_static_html(theme="default")
+        assert mock_browser.called, "the finished report must still be opened"
+        assert not mock_app.called
+        assert str(output_html) in mock_browser.call_args[0][0]
+
+    # "Open in New Window": route through the app-mode launcher instead.
+    with common[0], common[1], common[2], common[3], \
+         patch("webbrowser.open") as mock_browser, \
+         patch("app.static_html_generator.open_as_app") as mock_app:
+        generate_static_html(theme="default", app_mode=True)
+        assert mock_app.called, "app-mode must use the dedicated window launcher"
+        assert not mock_browser.called
+
+
 def test_injected_data_escapes_script_close(tmp_path):
     """A literal </script> in user content (a context sentence pulled from subtitles/ebooks)
     must be escaped so it cannot close the inline <script> block and blank the whole report

@@ -1,5 +1,7 @@
 import os
+import re
 import sys
+import json
 import shutil
 import threading
 import time
@@ -98,6 +100,79 @@ def get_ico_path():
     return get_resource(os.path.join("app", "assets", "images", "app_icon.ico"))
 
 SAMPLE_SUBFOLDERS = ["HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed"]
+
+# The content file types the ANALYZER can actually read. Single source of truth for the importer,
+# the analyzer's scan, and the background indexer — these three MUST agree: anything the importer
+# registers but the analyzer skips becomes a dead row in the library (that's how raw .epub/.html
+# ended up tracked-but-never-analyzed). Ebooks and web pages go through the content importer, which
+# converts and splits them into .txt first.
+CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass")
+
+
+def is_content_file(path):
+    """True if `path` is a content file the analyzer will read (extension check only)."""
+    return str(path).lower().endswith(CONTENT_EXTENSIONS)
+
+
+# --- Where a sentence came from (the report's per-sentence source badge) ------------------------ #
+# Four kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line
+# to a timestamped video, an EPUB chapter to a book, everything else is plain text.
+SOURCE_TYPES = ("subtitle", "youtube", "epub", "text")
+
+# The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id is the
+# last thing in the stem. Anchored, because an unanchored 11-char bracket match would also hit
+# release-group tags in fansub filenames.
+_YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]$")
+
+# A producer that KNOWS what it made (Extract, for instance) drops this beside its output. Needed
+# because an EPUB chapter and an ordinary note are both plain .txt — nothing in the filename tells
+# them apart, so somebody has to record it at creation time.
+SOURCE_MARKER = ".surasura_source.json"
+
+
+def read_source_marker(directory):
+    """The producer's marker dict for a directory, or {} when there isn't one."""
+    try:
+        with open(os.path.join(directory, SOURCE_MARKER), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_source_marker(directory, source_type, origin=None):
+    """Record what produced the files in `directory`. Best-effort — never fatal."""
+    try:
+        os.makedirs(directory, exist_ok=True)
+        payload = {"source_type": source_type}
+        if origin:
+            payload["origin"] = origin
+        with open(os.path.join(directory, SOURCE_MARKER), 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def infer_source_type(path, declared=None, marker_type=None):
+    """Classify a content file for the report's source badge.
+
+    Precedence: `declared` (the manifest's `source_type`, stamped when the file was added) beats the
+    extension, which beats `marker_type` (the producer marker the CALLER read — passed in rather
+    than read here so a run can cache one lookup per directory), which beats the filename guess.
+
+    Pure: no I/O. Unknown/absent everything falls back to "text", never an error.
+    """
+    if declared in SOURCE_TYPES:
+        return declared
+    if str(path).lower().endswith(('.srt', '.ass')):
+        return "subtitle"
+    if marker_type in SOURCE_TYPES:
+        return marker_type
+    stem = os.path.splitext(os.path.basename(str(path)))[0]
+    if _YOUTUBE_ID_RE.search(stem):
+        return "youtube"
+    return "text"
 
 
 def ensure_data_setup(language=None):

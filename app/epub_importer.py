@@ -650,10 +650,23 @@ class FileImporterApp:
             print(f"Warning: could not copy spliced output into tier '{self.target_tier}': {e}")
             return False
 
+    def _mark_output_source(self, directory):
+        """Record that this output came from an EPUB, so the report's source badge can say 'book'.
+
+        The chunks we write are plain .txt — nothing in the filename distinguishes a book chapter
+        from an ordinary note, so only the producer can know. The marker travels with the folder
+        (copytree into the tier) and is read back by the analyzer."""
+        src = self.file_path_var.get() or ""
+        if not src.lower().endswith(".epub"):
+            return
+        from app.path_utils import write_source_marker
+        write_source_marker(directory, "epub", origin=os.path.basename(src))
+
     def save_chunks(self, chunks, base_name):
         output_sub_dir = os.path.join(self.processed_dir, base_name)
         if not os.path.exists(output_sub_dir):
             os.makedirs(output_sub_dir)
+        self._mark_output_source(output_sub_dir)
         try:
             for i, chunk in enumerate(chunks, 1):
                 filename = f"{base_name}_{i:02d}.txt" if len(chunks) > 1 else f"{base_name}.txt"
@@ -697,7 +710,8 @@ class FileImporterApp:
             
             if not os.path.exists(output_sub_dir):
                 os.makedirs(output_sub_dir)
-                
+            self._mark_output_source(output_sub_dir)
+
             for j, chunk in enumerate(part_chunks, 1):
                 # Filename: BaseName_1_01.txt
                 filename = f"{part_folder_name}_{j:02d}.txt"

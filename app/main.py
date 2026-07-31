@@ -140,6 +140,22 @@ class ToolTip:
             tw.destroy()
 
 class MasterDashboardApp:
+    # Per-sentence source badge in the report: stored key -> the label shown in Advanced Settings.
+    SOURCE_DISPLAY_LABELS = {
+        "off": "Off",
+        "icon": "Icon only",
+        "filename": "File name",
+        "full": "Icon + file name",
+    }
+
+    @classmethod
+    def _source_display_key(cls, label):
+        """Settings label -> stored key. Unknown labels fall back to 'off' (the default)."""
+        for key, text in cls.SOURCE_DISPLAY_LABELS.items():
+            if text == label:
+                return key
+        return "off"
+
     def __init__(self, root):
         self.root = root
         self.root.title(f"Surasura - Immersion Architect Dashboard v{__version__}")
@@ -190,6 +206,7 @@ class MasterDashboardApp:
         self.youtube_risk_acknowledged = False
         self.var_enable_preview = tk.BooleanVar(value=False)
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
+        self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self._lock_ui_updates = False
 
         # Update state (populated by the background check; consumed by the footer indicator)
@@ -1107,6 +1124,21 @@ class MasterDashboardApp:
         chk_hide_audio.pack(anchor=tk.W)
         ToolTip(chk_hide_audio, "Hide speaker icon in the report.")
 
+        # Per-sentence source badge. Presentation only — changing it re-renders the report but
+        # never re-analyzes (see analyzer.compute_render_signature).
+        src_frame = ttk.Frame(group_ui)
+        src_frame.pack(fill=tk.X, pady=(5, 0))
+        ttk.Label(src_frame, text="Sentence source:").pack(side=tk.LEFT)
+        combo_src = ttk.Combobox(src_frame, values=list(self.SOURCE_DISPLAY_LABELS.values()),
+                                 state="readonly", width=16)
+        combo_src.set(self.SOURCE_DISPLAY_LABELS.get(self.var_source_display.get(), "Off"))
+        combo_src.pack(side=tk.LEFT, padx=(5, 0))
+        combo_src.bind("<<ComboboxSelected>>",
+                       lambda e: (self.var_source_display.set(self._source_display_key(combo_src.get())),
+                                  self.save_settings()))
+        ToolTip(combo_src, "Show which file each example sentence came from, to the right of the "
+                           "sentence. Hover it for the full path; click to copy.")
+
         # Words Per Day Settings
         self.wpd_frame = ttk.Frame(group_ui)
         self.wpd_frame.pack(fill=tk.X, pady=(5, 0))
@@ -1543,6 +1575,8 @@ class MasterDashboardApp:
             self.var_language.set(lang)
 
             self.var_reinforce.set(settings.get("reinforce_segmentation", False))
+            src_mode = settings.get("source_display", "off")
+            self.var_source_display.set(src_mode if src_mode in self.SOURCE_DISPLAY_LABELS else "off")
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
             self.var_add_graduated.set(settings.get("add_graduated_words", True))
@@ -1620,6 +1654,7 @@ class MasterDashboardApp:
                 "split_length": self._iv(self.var_split_length, cur.get("split_length", 3000)),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
+                "source_display": self.var_source_display.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "add_graduated_words": self.var_add_graduated.get(),
@@ -1959,7 +1994,7 @@ class MasterDashboardApp:
             if not (outputs_present and os.path.exists(report)):
                 return False
 
-            render_sig = json.dumps([a.theme, int(a.zen_limit or 0)])
+            render_sig = _analyzer.compute_render_signature(a)   # shared: cannot drift from the engine
             store = _ti.open_store(lang)
             try:
                 stored_sig = store.get_meta("last_run_signature")

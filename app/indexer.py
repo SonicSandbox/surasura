@@ -14,13 +14,16 @@ import os
 
 
 def _content_files(data_dir):
+    # Must match the analyzer's scan exactly, or the store would index files a run never reads (or
+    # miss ones it does) — hence the shared CONTENT_EXTENSIONS.
+    from app.path_utils import is_content_file
     files = []
     for folder in ("HighPriority", "LowPriority", "GoalContent"):
         base = os.path.join(data_dir, folder)
         if os.path.isdir(base):
             for root, _dirs, names in os.walk(base):
                 for name in names:
-                    if name.lower().endswith((".txt", ".md", ".srt", ".ass")):
+                    if is_content_file(name):
                         files.append(os.path.join(root, name))
     return files
 

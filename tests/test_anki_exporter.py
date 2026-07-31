@@ -36,10 +36,13 @@ def test_anki_exporter_format(tmp_path):
     # Load exported CSV and check formatting
     out_df = pd.read_csv(out_csv)
     
-    # Assert expected columns
+    # Assert expected columns. The original seven must keep their exact positions — Anki maps
+    # fields by column ORDER, so shifting one would silently re-map a user's existing note type.
+    # 'Source 1'/'Source 2' (which file each sentence came from) are appended AFTER them.
     expected_cols = ["Index", "Word", "Reading", "Sentence 1", "Sentence 2", "Tier", "Sources"]
-    assert list(out_df.columns) == expected_cols
-    
+    assert list(out_df.columns)[:len(expected_cols)] == expected_cols
+    assert list(out_df.columns)[len(expected_cols):] == ["Source 1", "Source 2"]
+
     # Assert Index was added correctly (1-indexed)
     assert out_df.iloc[0]["Index"] == 1
     assert out_df.iloc[1]["Index"] == 2

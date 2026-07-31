@@ -19,7 +19,8 @@ from collections import defaultdict, Counter
 from datetime import datetime
 import abc
 
-from app.path_utils import get_user_file, get_resource, get_data_path, get_user_files_path
+from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
+                            is_content_file, infer_source_type, read_source_marker)
 from app import settings_manager
 from app import word_selection
 
@@ -32,6 +33,15 @@ WEIGHT_GOAL = 2
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
 SANITIZE_JA = False # Strip -suffixes for Japanese
+
+# BUMP THIS whenever a change alters what a run OUTPUTS for unchanged inputs — new/renamed CSV
+# columns, different sentence selection, different scoring. It feeds the run-signature, so a bump
+# invalidates every stored signature and forces a real re-run.
+#
+# Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
+# during development (and for any hotfix shipped without a version bump) identical inputs matched the
+# stored signature and the analyzer served the OLD report from before the change.
+ENGINE_REVISION = 2
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -703,13 +713,25 @@ def parse_analysis_args(argv=None):
 
 
 def resolve_found_files(language, verbose=True):
-    """Resolve the ordered [(abs_path, label, weight), ...] content files for a run — from the
-    master_manifest (phase order) or a recursive fallback scan. Shared by main() and the dashboard's
-    no-change pre-flight, so both compute the run-signature over exactly the same file list."""
+    """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
+    from the master_manifest (phase order) or a recursive fallback scan. Shared by main() and the
+    dashboard's no-change pre-flight, so both compute the run-signature over exactly the same list.
+
+    source_type drives the report's per-sentence source badge (subtitle / youtube / epub / text).
+    It prefers what the importer recorded on the manifest entry, then a producer's directory marker
+    (read ONCE per directory here), then the filename."""
     data_dir = get_data_path(language)
     user_files_dir = get_user_files_path(language)
     found_files = []
     manifest_path = os.path.join(user_files_dir, "master_manifest.json")
+
+    _marker_cache = {}
+
+    def _stype(path, declared=None):
+        folder = os.path.dirname(path)
+        if folder not in _marker_cache:
+            _marker_cache[folder] = read_source_marker(folder).get("source_type")
+        return infer_source_type(path, declared=declared, marker_type=_marker_cache[folder])
 
     if os.path.exists(manifest_path):
         if verbose:
@@ -747,7 +769,7 @@ def resolve_found_files(language, verbose=True):
                         label = "HighPriority"
                     elif origin == "02_SOON":
                         label = "LowPriority"
-                    found_files.append((abs_path, label, weight))
+                    found_files.append((abs_path, label, weight, _stype(abs_path, item.get("source_type"))))
             if verbose:
                 print(f"Manifest Loaded: {len(found_files)} files scheduled.")
         except Exception as e:
@@ -772,8 +794,9 @@ def resolve_found_files(language, verbose=True):
                 files.sort()
                 dirs.sort()
                 for file in files:
-                    # .epub/.html are intentionally excluded (they must go through the content importer).
-                    if file.lower().endswith(('.txt', '.md', '.srt', '.ass')):
+                    # .epub/.html are intentionally excluded (they must go through the content
+                    # importer). CONTENT_EXTENSIONS is shared with the importer + indexer.
+                    if is_content_file(file):
                         results.append(os.path.join(root, file))
             return results
 
@@ -781,7 +804,7 @@ def resolve_found_files(language, verbose=True):
             if not os.path.exists(folder):
                 continue
             for path in get_files_recursive(folder):
-                found_files.append((path, label, weight))
+                found_files.append((path, label, weight, _stype(path)))
 
     return found_files
 
@@ -814,6 +837,7 @@ def compute_run_signature(language, found_files, args):
             "theme", "open_app_mode", "zen_limit",
             "words_per_day", "show_words_per_day",
             "open_count", "skipped_version",
+            "source_display",   # badge rendering only — re-renders (see compute_render_signature)
         }
         _settings_for_sig = ""
         try:
@@ -827,7 +851,7 @@ def compute_run_signature(language, found_files, args):
 
         from app import __version__ as _app_version
         _sig_parts = {
-            "files": [[fp, _fsig(fp), _l, _w] for (fp, _l, _w) in found_files],
+            "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
             "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
@@ -835,7 +859,7 @@ def compute_run_signature(language, found_files, args):
             "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
                      args.include_single_chars, args.exclude_freq_one, args.reinforce,
                      args.context_min, args.context_max, args.max_contexts],
-            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}",
+            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
         return hashlib.sha256(
@@ -844,6 +868,30 @@ def compute_run_signature(language, found_files, args):
     except Exception as e:
         print(f"Warning: could not compute run signature: {e}")
         return None
+
+
+def compute_render_signature(args):
+    """Fingerprint of everything that changes the RENDERED report but NOT the analysis, so those
+    changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
+    never disagree about whether the existing report is still correct.
+
+    Anything static_html_generator INJECTS into the report belongs here. words_per_day /
+    show_words_per_day were injected but unlisted, so editing them left the report showing the old
+    "At N words a day..." estimate until something else forced a re-render.
+
+    `--app-mode` is deliberately excluded: it changes only HOW the browser opens the report, not a
+    byte of its contents, so toggling it reopens the existing file instead of re-rendering."""
+    try:
+        _s = settings_manager.load_settings()
+    except Exception:
+        _s = {}
+    return json.dumps([
+        args.theme,
+        int(args.zen_limit or 0),
+        _s.get("source_display", "off"),
+        _s.get("words_per_day", 5),
+        bool(_s.get("show_words_per_day", True)),
+    ])
 
 
 def main():
@@ -985,11 +1033,9 @@ def main():
     # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
     _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
                                  and os.path.exists(os.path.join(RESULTS_DIR, "word_stats.json")))
-    # Presentation fingerprint that decides whether the HTML must be RE-RENDERED. Only theme and Zen
-    # limit change the report's contents. app_mode ("Open in New Window") is deliberately EXCLUDED:
-    # it changes only HOW the browser is launched, not a single byte of the report — so toggling it
-    # reopens the existing report (in the chosen window mode) and never triggers a re-render.
-    _render_sig = json.dumps([args.theme, int(args.zen_limit or 0)])
+    # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
+    # compute_render_signature — shared with the dashboard so the two can't drift).
+    _render_sig = compute_render_signature(args)
     if (_store is not None and _run_sig and _analysis_outputs_present
             and _store.get_meta("last_run_signature") == _run_sig):
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
@@ -1062,7 +1108,7 @@ def main():
     # aggregation below reads those cached tokens, so unchanged files are never re-tokenized.
     if _store is not None:
         try:
-            _store.reconcile([_fp for (_fp, _l, _w) in found_files],
+            _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
                              _token_index.make_tokenizer(language, reinforce=args.reinforce),
                              build_signature=_token_index.build_signature(language, args.reinforce))
         except Exception as e:
@@ -1077,12 +1123,35 @@ def main():
     # progressive pass, so the whole library is tokenized once instead of twice.
     file_token_cache = {}
 
+    # --- Per-sentence provenance ("which file did this example come from?") --------------------- #
+    # Candidate sentences carry an INDEX into these tables rather than a path string: a large library
+    # holds hundreds of thousands of candidates, and interning keeps that to one int each.
+    source_list = []            # idx -> {"path": <rel>, "abs": <abs>, "name": <basename>, "type": ...}
+    source_index = {}           # abs_path -> idx
+
+    def _source_idx(path, stype):
+        idx = source_index.get(path)
+        if idx is None:
+            idx = len(source_list)
+            source_index[path] = idx
+            source_list.append({
+                "path": os.path.relpath(path, data_dir).replace("\\", "/"),
+                # Absolute path so the report's badge can put something on the clipboard that
+                # pastes straight into Explorer. The CSVs keep the RELATIVE path (portable, and
+                # what an exported Anki card should carry).
+                "abs": os.path.abspath(path),
+                "name": os.path.basename(path),
+                "type": stype,
+            })
+        return idx
+
     # --- AGGREGATION PASS ---
-    for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
+    for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         try:
             print(f"Processing {os.path.basename(file_path)}...")
         except UnicodeEncodeError:
-            print(f"Processing file {found_files.index((file_path, label, weight)) + 1}...")
+            print(f"Processing file {seq_idx}...")
+        src_idx = _source_idx(file_path, source_type)
 
         # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
         if _store is not None:
@@ -1185,7 +1254,7 @@ def main():
                 # rarer than this word — a proxy for how many stay unknown when the learner
                 # reaches it (common co-words are learned first). Same buffer / fast-exit.
                 cost = rolling_context_cost(entry["total_count"], unk_freqs)
-                new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text)
+                new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx)
                 
                 # Optimization 1: Insertion Caching - Fast exit if list is full and new sentence is worse
                 if len(entry["candidate_contexts"]) >= 30:
@@ -1246,6 +1315,19 @@ def main():
     # Output Priority CSV
     rolling_known_tuples = set(known_words_initial)
     rolling_known_lemmas = set(known_lemmas_initial)
+
+    # --- Recency reinforcement -------------------------------------------------------------- #
+    # All else equal (same i+1 cost, same length), prefer the example sentence whose OTHER words you
+    # met recently — the one that reinforces what you just studied instead of vocabulary from months
+    # ago. "Recently" is measured in FILES: a co-word counts when it was first met in this word's
+    # own file, or up to `recency_files` files earlier.
+    #
+    # Only words learned during THIS journey get an entry, so long-known vocabulary never counts as
+    # reinforcement. Strictly a tiebreaker — it is the LAST key in both sort orders below, so it can
+    # never promote a worse-i+1 or worse-length sentence.
+    RECENCY_FILES = LOGIC.get("context", {}).get("recency_files", 1)
+    _recency_on = RECENCY_FILES >= 0
+    learned_at_file = {}       # (lemma, reading) -> the file index where the learner first meets it
     
     preliminary_rows = []
     for (lemma, reading), data in word_stats.items():
@@ -1280,7 +1362,8 @@ def main():
     for r in preliminary_rows:
         target_lr = (r["Word"], r["Reading"])
         target_lemma = r["Word"]
-        
+        target_seq = r["_MinSeq"]       # the file where the learner first meets THIS word
+
         # Evaluate candidate contexts against rolling knowns
         evaluated_candidates = []
         seen_sentences = set()
@@ -1298,6 +1381,7 @@ def main():
             
             unique_lrs = ctx[3]
             unknown_count = 0
+            recent_hits = 0
             for lr in unique_lrs:
                 if lr == target_lr: continue
                 if lr not in rolling_known_tuples and lr[0] not in rolling_known_lemmas:
@@ -1306,21 +1390,30 @@ def main():
                     # If strict i+1 mode is ON, any sentence > 0 unknowns is guaranteed garbage
                     if ONLY_I_PLUS_ONE and unknown_count > 0:
                         break
-            
+                elif _recency_on:
+                    # A co-word the learner already knows: does it count as RECENTLY learned?
+                    seq = learned_at_file.get(lr)
+                    if seq is not None and 0 <= target_seq - seq <= RECENCY_FILES:
+                        recent_hits += 1
+
             # If we fast-failed, don't even bother appending the evaluated candidate
             if ONLY_I_PLUS_ONE and unknown_count > 0:
                 continue
 
-            evaluated_candidates.append((ctx[0], ctx[1], unknown_count, sentence_text))
-            
+            evaluated_candidates.append(
+                (ctx[0], ctx[1], unknown_count, sentence_text, recent_hits, ctx[5]))
+
             # Optimization 2: Early Exit
-            # If we found enough "perfect" contexts (0 unknowns AND perfectly sized) we can stop evaluating
+            # If we found enough "perfect" contexts (0 unknowns AND perfectly sized) we can stop evaluating.
+            # With recency on we look at twice as many before stopping: the tiebreaker can only choose
+            # among candidates we actually evaluated, so stopping at exactly max_contexts would leave
+            # it nothing to choose between. Still bounded (candidate_contexts caps at 30).
             if unknown_count == 0 and ctx[0] == 0 and ctx[1] == 0:
                 perfect_count = sum(1 for c in evaluated_candidates if c[2] == 0 and c[0] == 0 and c[1] == 0)
-                if perfect_count >= args.max_contexts:
+                if perfect_count >= (args.max_contexts * 2 if _recency_on else args.max_contexts):
                      # Stop scanning constraints - we already have max perfect i+1s ready
                      break
-            
+
         first_evaluated = None
         if first_ctx_data:
             first_text = first_ctx_data[4].strip()
@@ -1338,11 +1431,12 @@ def main():
                 
             # Optimization 3: Explicit Length Sorting for Strict Mode
             # Ensure we still prioritize the best length even if all are i+1s
-            i_plus_one_candidates.sort(key=lambda x: (x[0], x[1]))
+            # (-x[4]: recency reinforcement, last so it only breaks exact ties)
+            i_plus_one_candidates.sort(key=lambda x: (x[0], x[1], -x[4]))
             selected_contexts = i_plus_one_candidates[:args.max_contexts]
         else:
-            # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long
-            evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1]))
+            # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long, then recency
+            evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1], -x[4]))
             
             selected_contexts = []
             if first_evaluated:
@@ -1357,15 +1451,28 @@ def main():
             
         for i in range(args.max_contexts):
             context_key = f"Context {i+1}"
-            context_val = selected_contexts[i][3].strip() if len(selected_contexts) > i else ""
+            has_ctx = len(selected_contexts) > i
+            context_val = selected_contexts[i][3].strip() if has_ctx else ""
             r[context_key] = context_val
-            
+            # Where that sentence came from. Deliberately NOT named "Context Source N": both report
+            # templates collect extra examples with startsWith('Context '), so such a column would
+            # be rendered as another example sentence.
+            src_val = ""
+            if has_ctx:
+                _si = selected_contexts[i][5]
+                if _si is not None and _si < len(source_list):
+                    src_val = source_list[_si]["path"]
+            r[f"Src {i+1}"] = src_val
+
             # Save back to data dictionary for progressive report and json dumping
             data = word_stats[(r["Word"], r["Reading"])]
             data[f"final_context_{i+1}"] = context_val
+            data[f"final_src_{i+1}"] = src_val
         # Add to rolling known list and output
         rolling_known_tuples.add(target_lr)
         rolling_known_lemmas.add(target_lemma)
+        # Record WHERE it was learned, so later words can prefer sentences that reuse it.
+        learned_at_file[target_lr] = target_seq
         
         del r["_CandidateContexts"] # Cleanup
         if "_FirstContext" in r:
@@ -1472,11 +1579,12 @@ def main():
             # Full dump: keep the raw selection inputs, converting their unique_lrs sets to lists.
             if "candidate_contexts" in serializable_data:
                 serializable_data["candidate_contexts"] = [
-                    (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4]) for ctx in serializable_data["candidate_contexts"]
+                    (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4], ctx[5])
+                    for ctx in serializable_data["candidate_contexts"]
                 ]
             if serializable_data.get("first_context"):
                 ctx = serializable_data["first_context"]
-                serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4])
+                serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4], ctx[5])
         else:
             # Lean default: drop the heavy, unread selection inputs (from the COPY only — the in-memory
             # word_stats keeps them for the progressive pass that runs after this).
@@ -1491,6 +1599,18 @@ def main():
         print(f"Saved {'FULL' if _debug_word_stats else 'lean'} word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
         print("Saved word stats.")
+
+    # Source table for the report's per-sentence badge: relative path -> {name, type}. Kept OUT of
+    # the CSVs (which carry the readable path, so exports stay human-readable) and out of word_stats;
+    # the renderer joins on the path. Small — one row per content FILE, not per sentence.
+    try:
+        OUTPUT_SOURCES = os.path.join(RESULTS_DIR, "sources.json")
+        with open(OUTPUT_SOURCES, 'w', encoding='utf-8') as f:
+            json.dump({s["path"]: {"name": s["name"], "type": s["type"], "abs": s["abs"]}
+                       for s in source_list}, f, ensure_ascii=False)
+        print(f"Saved source table ({len(source_list)} files).")
+    except Exception as e:
+        print(f"Warning: could not write source table: {e}")
 
     # Content Manager sidecars: derived from the SAME serializable_stats we just wrote (identical
     # semantics), written atomically AFTER word_stats.json. See _write_sidecars. Wrapped so a failure
@@ -1567,7 +1687,7 @@ def main():
     session_known = set(known_words_initial)
     session_lemmas = set(known_lemmas_initial) 
     
-    for seq_idx, (file_path, label, weight) in enumerate(found_files, 1):
+    for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
         # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
         # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
@@ -1642,6 +1762,9 @@ def main():
                     # Map final_context_N -> Context N
                     idx_str = k.replace("final_context_", "")
                     file_rows_buffer[-1][f"Context {idx_str}"] = v
+                elif k.startswith("final_src_"):
+                    # Map final_src_N -> Src N (the source file behind that example sentence)
+                    file_rows_buffer[-1][f"Src {k.replace('final_src_', '')}"] = v
                     
             file_new_words.add((lemma, reading))
         

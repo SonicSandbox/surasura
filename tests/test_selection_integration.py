@@ -93,6 +93,49 @@ def test_run_signature_skips_unchanged_and_reruns_on_change(env):
     assert csv.stat().st_mtime != m1, "a content change must force a re-run"
 
 
+def test_engine_revision_bump_forces_rerun_of_unchanged_inputs(env):
+    """An engine change that alters OUTPUT (new columns, different sentence picking) must invalidate
+    the stored signature even though every input is byte-identical.
+
+    Before ENGINE_REVISION the only engine component was __version__, which moves once per RELEASE —
+    so during development an output-changing edit left the stored signature matching and the analyzer
+    happily served the report from BEFORE the change."""
+    import time
+    csv = env["results"] / "priority_learning_list.csv"
+    _run(env, [])
+    m1 = csv.stat().st_mtime
+    time.sleep(0.05)
+    _run(env, [], clear=False)
+    assert csv.stat().st_mtime == m1, "sanity: unchanged inputs are skipped"
+
+    time.sleep(0.05)
+    with patch("app.analyzer.ENGINE_REVISION", analyzer.ENGINE_REVISION + 1):
+        _run(env, [], clear=False)
+    assert csv.stat().st_mtime != m1, "an ENGINE_REVISION bump must force a real re-run"
+
+
+def test_render_signature_covers_everything_injected_into_the_report(env):
+    """Anything static_html_generator INJECTS must be in the render signature, or editing it leaves
+    the report stale. words_per_day / show_words_per_day were injected but unlisted, so the
+    'At N words a day...' estimate kept showing the old number."""
+    import types
+    args = types.SimpleNamespace(theme="Dark Flow", zen_limit=0)
+
+    def sig(**settings):
+        with patch("app.settings_manager.load_settings", return_value=settings):
+            return analyzer.compute_render_signature(args)
+
+    base = sig(words_per_day=5, show_words_per_day=True, source_display="off")
+    assert sig(words_per_day=20, show_words_per_day=True, source_display="off") != base, \
+        "changing Words Per Day must force a re-render"
+    assert sig(words_per_day=5, show_words_per_day=False, source_display="off") != base, \
+        "toggling 'Show Target Days' must force a re-render"
+    assert sig(words_per_day=5, show_words_per_day=True, source_display="icon") != base, \
+        "changing the source badge must force a re-render"
+    assert sig(words_per_day=5, show_words_per_day=True, source_display="off") == base, \
+        "identical presentation must NOT re-render"
+
+
 def test_run_signature_reruns_on_settings_change(env):
     """#2: a change to settings.json (GUI or manual edit) must force a re-run, not reuse."""
     import time, json as _json

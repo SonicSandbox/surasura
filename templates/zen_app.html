@@ -233,6 +233,21 @@
             /* Visible indicator */
         }
 
+        /* Per-sentence source badge — inline after the sentence, muted enough not to break Zen's
+           calm, and hidden from dictionary extensions. Off by default (Settings -> Experience & UI). */
+        .src-badge {
+            margin-left: 0.6em;
+            font-size: 0.7rem;
+            color: #777;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .src-badge:hover {
+            color: #aaa;
+        }
+
         .context-line em {
             color: #ffffff;
             /* Fully White */
@@ -546,6 +561,91 @@
             });
         }
 
+        // --- Per-sentence source badge (mirrors web_app.html) ------------------------------------ #
+        // globalSourceDisplay: 'off' | 'icon' | 'filename' | 'full'  (Settings -> Experience & UI)
+        // globalSources rows are [name, type, fullPath, groupLabel]; sentences carry an index into
+        // that table. Shows the short name, hovers group/file, copies the FULL path (Explorer).
+        const SOURCE_ICONS = { subtitle: '🎬', youtube: '▶', epub: '📖', text: '📄' };
+
+        // Chrome/Edge "scroll to text" link — opens the file and jumps to + highlights the sentence.
+        // Shift-click copies this instead of the bare path (a URL fragment would break Explorer).
+        //
+        // The anchor is NOT guessed here — the tokenizer drops every space when it rebuilds a
+        // sentence, so anything derived from the stored text spans gaps the file doesn't have. The
+        // GENERATOR verifies a snippet against the real file (AnchorFinder) and passes it in as
+        // `frag`; no frag means no link. Mirrors web_app.html.
+        function sourceDeepLink(fullPath, frag) {
+            if (!fullPath || !frag) return '';
+            let p = String(fullPath).replace(/\\/g, '/');
+            if (!p.startsWith('/')) p = '/' + p;
+            // encodeURI leaves '#' and '?' alone; in a FILENAME they would truncate the URL.
+            const url = 'file://' + encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F');
+            return url + '#:~:text=' + encodeURIComponent(String(frag)).replace(/-/g, '%2D');
+        }
+
+        function sourceBadge(idx, frag) {
+            const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
+            if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
+            const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
+            const row = table ? table[idx] : null;
+            if (!row) return '';   // results generated before the source table existed
+
+            const name = row[0] || '';
+            const icon = SOURCE_ICONS[row[1]] || SOURCE_ICONS.text;
+            const fullPath = row[2] || name;
+            const hover = row[3] || name;          // group/file, e.g. 'test_book/chapter_1.txt'
+            let label;
+            if (mode === 'icon') label = icon;
+            else if (mode === 'filename') label = escapeHtml(name);
+            else label = icon + ' ' + escapeHtml(name);
+
+            // Paths in data-attributes, not inline JS strings — a filename containing a
+            // double-quote would close the onclick attribute early.
+            const deepLink = sourceDeepLink(fullPath, frag);
+            return `<span class="src-badge" migaku_ignore data-yomichan-ignore ` +
+                   `data-src-path="${escapeHtml(fullPath)}" ` +
+                   (deepLink ? `data-src-url="${escapeHtml(deepLink)}" ` : ``) +
+                   `title="${escapeHtml(hover)}\nClick to copy the full path` +
+                   (deepLink ? ` (shift-click: browser link that jumps to this sentence)` : ``) + `" ` +
+                   `onclick="copySourcePath(event, this)">${label}</span>`;
+        }
+
+        function copySourcePath(event, el) {
+            if (event) event.stopPropagation();
+            // Shift-click copies the scroll-to-text browser link; plain click copies the bare path.
+            const wantsLink = !!(event && event.shiftKey && el.dataset.srcUrl);
+            const path = wantsLink ? el.dataset.srcUrl : (el.dataset.srcPath || '');
+            if (!path) return;
+            const previous = el.innerHTML;
+            const confirm = () => {
+                el.textContent = wantsLink ? 'link copied ✓' : 'copied ✓';
+                setTimeout(() => { el.innerHTML = previous; }, 1200);
+            };
+            // navigator.clipboard needs a secure context and the report is opened over file://,
+            // which some browsers don't treat as one — fall back to the legacy textarea trick.
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(path).then(confirm).catch(() => legacyCopy(path, confirm));
+            } else {
+                legacyCopy(path, confirm);
+            }
+        }
+
+        function legacyCopy(text, onDone) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                onDone();
+            } catch (e) {
+                // No clipboard access — the hover tooltip still shows the full path.
+            }
+        }
+
         function escapeHtml(text) {
             if (text === null || text === undefined) return "";
             return String(text)
@@ -593,10 +693,13 @@
             });
 
             contextKeys.forEach(k => {
-                if (data[k]) contexts.push(data[k]);
+                // Keep each sentence paired with its own source ("Context 3" -> "Src 3"/"Frag 3").
+                const n = k.replace('Context ', '');
+                if (data[k]) contexts.push({ text: data[k], src: data['Src ' + n], frag: data['Frag ' + n] });
             });
 
-            const contextHtml = contexts.map(c => `<span class="context-line">${formatContext(c)}</span>`).join("");
+            const contextHtml = contexts.map(c =>
+                `<span class="context-line">${formatContext(c.text)}${sourceBadge(c.src, c.frag)}</span>`).join("");
 
             el.innerHTML = `
                     <div class="word-header">

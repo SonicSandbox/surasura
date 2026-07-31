@@ -26,6 +26,9 @@ DEFAULT_SETTINGS = {
     "add_graduated_words": True,
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
     "skipped_version": "",          # a version the user skipped or that failed to auto-apply
+    # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
+    # Presentation only — it never changes the analysis, just how each example sentence is labelled.
+    "source_display": "off",
     "logic": {
         "inline_completed_files": False,
         "weights": {
@@ -39,13 +42,14 @@ DEFAULT_SETTINGS = {
             "thresholds": [2500, 5000, 7500, 10000]
         },
         "context": {
-            "_comment": "min_chars/preferred_max_chars: ideal sentence length range. max_chars: hard cap — sentences longer than this are excluded from candidate examples (a word's own/original sentence is still kept as a fallback).",
+            "_comment": "min_chars/preferred_max_chars: ideal sentence length range. max_chars: hard cap — sentences longer than this are excluded from candidate examples (a word's own/original sentence is still kept as a fallback). recency_files: tiebreaker only — among sentences that are otherwise equal (same i+1 cost, same length) prefer the one whose other words you met in this file or up to N files earlier; 0 = same file only, -1 = disable.",
             "search_range": 20,
             "min_chars": 10,
             "max_extra": 2,
             "preferred_max_chars": 50,
             "max_contexts": 3,
-            "max_chars": 150
+            "max_chars": 150,
+            "recency_files": 1
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",

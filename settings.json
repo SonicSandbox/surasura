@@ -7,6 +7,7 @@
     "split_length": 3000,
     "target_language": "ja",
     "reinforce_segmentation": false,
+    "source_display": "icon",
     "telemetry_enabled": true,
     "only_i_plus_one": false,
     "add_graduated_words": false,
@@ -43,6 +44,7 @@
             "preferred_max_chars": 35,
             "max_contexts": 3,
             "max_chars": 150,
+            "recency_files": 1,
             "min_words": 4
         },
         "sentence_boundaries": {

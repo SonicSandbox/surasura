@@ -78,7 +78,11 @@ datas = [
     (os.path.join(project_root, '.env'), '.')
 ]
 binaries = []
-hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4']
+# app.reference_data is imported only INSIDE functions (deliberately - it's a 1.3 MB table
+# decoded on demand), and the code degrades silently if it's missing: no reading badges, and
+# the frequency-list orthography bridge stops working. A silent loss is exactly what a
+# hiddenimport is for.
+hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data']
 tmp_ret = collect_all('unidic_lite')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

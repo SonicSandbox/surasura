@@ -1,13 +1,15 @@
 import os
+import shutil
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
+import pandas as pd
 from bs4 import BeautifulSoup
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from app.static_html_generator import generate_static_html, OUTPUT_FILE
 
 
 class TestSortFilterFeature(unittest.TestCase):
@@ -22,9 +24,48 @@ class TestSortFilterFeature(unittest.TestCase):
 
     _CACHE = {}
 
+    @classmethod
+    def setUpClass(cls):
+        """Render a one-word fixture library, not the developer's real one.
+
+        The generator's RESULTS_DIR/OUTPUT_FILE are module constants resolved at IMPORT time, so no
+        environment fixture reaches them — they have to be patched. Left alone, these assertions
+        rendered the real library and held every theme in _CACHE for the whole session."""
+        cls._tmp = tempfile.mkdtemp(prefix="surasura_sort_filter_")
+        results = os.path.join(cls._tmp, "results")
+        os.makedirs(results)
+
+        pd.DataFrame([
+            {"Word": "冒険", "Reading": "ボウケン", "Tier": "Outside", "Score": 30,
+             "Occurrences": 3, "Count (High)": 3, "Count (Low)": 0, "Count (Goal)": 0,
+             "Sources": "a_novel.txt", "Context 1": "彼は毎日冒険に出かけます。"},
+        ]).to_csv(os.path.join(results, "priority_learning_list.csv"),
+                  index=False, encoding="utf-8-sig")
+
+        cls._patches = [
+            patch("app.static_html_generator.RESULTS_DIR", results),
+            patch("app.static_html_generator.PRIORITY_CSV",
+                  os.path.join(results, "priority_learning_list.csv")),
+            patch("app.static_html_generator.PROGRESSIVE_CSV",
+                  os.path.join(results, "progressive_learning_list.csv")),
+            patch("app.static_html_generator.OUTPUT_FILE",
+                  os.path.join(results, "reading_list_static.html")),
+        ]
+        for p in cls._patches:
+            p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        cls._CACHE.clear()
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+
     def _generate_and_read(self, theme="default"):
         """Cached per theme: these assertions are on template WIRING, which doesn't vary with the
-        data, and rendering a real-sized library costs seconds each time."""
+        data."""
+        # Imported here so the patched module constants are picked up.
+        from app.static_html_generator import generate_static_html, OUTPUT_FILE
         if theme in self._CACHE:
             return self._CACHE[theme], BeautifulSoup(self._CACHE[theme], "html.parser")
         generate_static_html(theme=theme)

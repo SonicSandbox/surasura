@@ -6,6 +6,26 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 from app.static_html_generator import generate_static_html
 
+
+def _fixture_csvs(tmp_path):
+    """A one-word priority list for the generator to render.
+
+    Without patching PRIORITY_CSV the generator falls through to the developer's real
+    results/priority_learning_list.csv — 14 MB parsed by pandas and rendered in full. Two tests here
+    did exactly that, which made this the slowest file in the suite (7.8s for 3 tests, 21% of the
+    whole run) and quietly coupled them to whatever library the machine happened to hold.
+
+    The progressive path is left non-existent on purpose: the generator guards it with
+    os.path.exists, and none of these assertions need the per-file view."""
+    priority = tmp_path / "priority_learning_list.csv"
+    pd.DataFrame([
+        {"Word": "冒険", "Reading": "ボウケン", "Tier": "Outside", "Score": 30, "Occurrences": 3,
+         "Count (High)": 3, "Count (Low)": 0, "Count (Goal)": 0, "Sources": "a_novel.txt",
+         "Context 1": "彼は毎日冒険に出かけます。"},
+    ]).to_csv(priority, index=False, encoding="utf-8-sig")
+    return priority, tmp_path / "progressive_learning_list.csv"
+
+
 def test_html_generation(tmp_path):
     """
     Test that generate_static_html creates an output file and injects data.
@@ -28,12 +48,15 @@ def test_html_generation(tmp_path):
         "show_words_per_day": True,
         "logic": {"test": "data"}
     }
+    priority_csv, progressive_csv = _fixture_csvs(tmp_path)
     with patch("app.static_html_generator.RESULTS_DIR", str(results_dir)), \
          patch("app.static_html_generator.OUTPUT_FILE", str(output_html)), \
          patch("app.static_html_generator.WEB_APP_FILE", str(template_path)), \
+         patch("app.static_html_generator.PRIORITY_CSV", str(priority_csv)), \
+         patch("app.static_html_generator.PROGRESSIVE_CSV", str(progressive_csv)), \
          patch("app.static_html_generator.settings_manager.load_settings", return_value=mock_settings), \
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
-         
+
          # Run generator
          generate_static_html(theme="default")
          
@@ -65,15 +88,18 @@ def test_report_is_still_opened_after_generation(tmp_path):
     with open(template_path, "w", encoding="utf-8") as f:
         f.write("<html><head></head><body><script>let globalData = null;</script></body></html>")
 
+    priority_csv, progressive_csv = _fixture_csvs(tmp_path)
     common = [
         patch("app.static_html_generator.RESULTS_DIR", str(results_dir)),
         patch("app.static_html_generator.OUTPUT_FILE", str(output_html)),
         patch("app.static_html_generator.WEB_APP_FILE", str(template_path)),
+        patch("app.static_html_generator.PRIORITY_CSV", str(priority_csv)),
+        patch("app.static_html_generator.PROGRESSIVE_CSV", str(progressive_csv)),
         patch("app.static_html_generator.settings_manager.load_settings", return_value={}),
     ]
 
     # Default: hand the report to the user's normal browser.
-    with common[0], common[1], common[2], common[3], \
+    with common[0], common[1], common[2], common[3], common[4], common[5], \
          patch("webbrowser.open") as mock_browser, \
          patch("app.static_html_generator.open_as_app") as mock_app:
         generate_static_html(theme="default")
@@ -82,7 +108,7 @@ def test_report_is_still_opened_after_generation(tmp_path):
         assert str(output_html) in mock_browser.call_args[0][0]
 
     # "Open in New Window": route through the app-mode launcher instead.
-    with common[0], common[1], common[2], common[3], \
+    with common[0], common[1], common[2], common[3], common[4], common[5], \
          patch("webbrowser.open") as mock_browser, \
          patch("app.static_html_generator.open_as_app") as mock_app:
         generate_static_html(theme="default", app_mode=True)
@@ -116,6 +142,7 @@ def test_injected_data_escapes_script_close(tmp_path):
          patch("app.static_html_generator.OUTPUT_FILE", str(output_html)), \
          patch("app.static_html_generator.WEB_APP_FILE", str(template_path)), \
          patch("app.static_html_generator.PRIORITY_CSV", str(priority_csv)), \
+         patch("app.static_html_generator.PROGRESSIVE_CSV", str(tmp_path / "progressive_learning_list.csv")), \
          patch("app.static_html_generator.settings_manager.load_settings", return_value=mock_settings), \
          patch("app.path_utils.get_icon_path", return_value="dummy_icon.png"):
         generate_static_html(theme="default")

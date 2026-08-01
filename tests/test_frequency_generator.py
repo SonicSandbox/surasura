@@ -144,9 +144,15 @@ def test_generate_frequency_list_no_data(tmp_path):
     # Move import inside to ensure we get a fresh version if previous tests messed with sys.modules
     from app.main import MasterDashboardApp
         
+    # generate_frequency_list now delegates the "is there data?" check to _show_export_dialog,
+    # which both export buttons share. On a MagicMock `self` that call would be swallowed, so bind
+    # the real method — the test still enters through the public button handler, as intended.
+    app_mock._show_export_dialog = lambda *a, **kw: MasterDashboardApp._show_export_dialog(
+        app_mock, *a, **kw)
+
     with patch('app.path_utils.get_user_file', return_value=str(results_dir)), \
          patch('tkinter.messagebox.showwarning') as mock_warning:
-        
+
         MasterDashboardApp.generate_frequency_list(app_mock)
         mock_warning.assert_called_once()
         assert "run an analysis first" in mock_warning.call_args[0][1]

@@ -1,5 +1,5 @@
 ﻿Word,Reading,Tier,Score,Occurrences,Count (High),Count (Low),Count (Goal),Modality,Sources,Context 1,Src 1,Context 2,Src 2,Context 3,Src 3
-老婆,ロウバ,Outside,160,16,16,0,0,reading,H_priority_sample,オレの少し前に立つ老婆なんて、今にも転びそうなほどに足元がフラフラしていて危なっかしい。,HighPriority/H_priority_sample_1.txt,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,ＯＬは必死に涙を堪えながら、老婆へと小さな謝罪の言葉を口にする。,HighPriority/H_priority_sample_1.txt
+老婆,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,オレの少し前に立つ老婆なんて、今にも転びそうなほどに足元がフラフラしていて危なっかしい。,HighPriority/H_priority_sample_1.txt,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,ＯＬは必死に涙を堪えながら、老婆へと小さな謝罪の言葉を口にする。,HighPriority/H_priority_sample_1.txt
 うう,ウッ,Outside,130,13,13,0,0,,H_priority_sample,うっ！,HighPriority/H_priority_sample_2.srt,うっ…うわああっ！,HighPriority/H_priority_sample_2.srt,うっ…。,HighPriority/H_priority_sample_2.srt
 此奴,コイツ,Outside,80,8,8,0,0,,H_priority_sample,こいつらだって人の子。,HighPriority/H_priority_sample_2.srt,こいつ今ひどいこと言った。,HighPriority/H_priority_sample_2.srt,そういえばこいつ気にしないヤツだったな。,HighPriority/H_priority_sample_2.srt
 一人,ヒトリ,Outside,50,5,5,0,0,,H_priority_sample (2),少女の訴えから程なくして一人の社会人女性が立ち上がった。,HighPriority/H_priority_sample_1.txt,）１人で何やってるの？,HighPriority/H_priority_sample_2.srt,１人で待ってろ。,HighPriority/H_priority_sample_2.srt

@@ -10,6 +10,7 @@
     "source_display": "icon",
     "telemetry_enabled": true,
     "only_i_plus_one": false,
+    "ensure_audio_example": false,
     "add_graduated_words": false,
     "words_per_day": 5,
     "show_words_per_day": true,
@@ -79,7 +80,7 @@
         },
         "modality": {
             "_comment": "Reading-vs-listening card routing. target_hours: a word counts as 'you'll hear it' if fewer than this many hours of listening pass between encounters \u2014 estimated from bundled reference data (app/reference_data.py), then overridden by your OWN subtitle/YouTube files wherever you have enough material. Observation can only ever REMOVE a reading badge, never add one. min_series: distinct works a word must appear in before it counts as general vocabulary rather than one story's jargon; skipped entirely until the library holds min_library_series works, since on a small library that says more about the library than the word. min_lib_count: universal floor, as in selection.",
-            "target_hours": 32.5,
+            "target_hours": 60,
             "min_series": 5,
             "min_lib_count": 3,
             "min_library_series": 10

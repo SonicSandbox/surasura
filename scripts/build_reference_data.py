@@ -20,7 +20,9 @@ Two tables come out of it:
                below. app/modality.py turns the rank into "hours of listening between
                encounters" and compares that to the user's threshold.
 
-Inputs live in scripts/reference_lists/ (gitignored; see .gitignore). Output is committed.
+Inputs live in docs/assets/reference_lists/ — gitignored, and deliberately NOT under scripts/,
+which packaging/Surasura.spec bundles wholesale: left there they would add ~78 MB of dead
+corpora to every release. Output (app/reference_data.py) is committed and ships.
 
 Usage:  python scripts/build_reference_data.py
 """
@@ -35,7 +37,8 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-LISTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_lists")
+LISTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "docs", "assets", "reference_lists")
 OUTPUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "app", "reference_data.py")
 

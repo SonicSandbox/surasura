@@ -150,57 +150,6 @@ class FrequencyExporter:
             zf.writestr('term_meta_bank_1.json', json.dumps(term_data, ensure_ascii=False))
 
     @staticmethod
-    def export_reading_words(json_path, save_path, title="Surasura Reading Words"):
-        """Export the reading-only words as a Yomitan frequency list.
-
-        Loaded alongside your other dictionaries, the presence of a rank IS the signal: if the
-        popup shows this list, the word is one you'll meet in text but hardly ever hear, so it
-        wants a reading-first card. Absence means hearable — or simply not enough evidence.
-
-        Reads the sidecar the analyzer writes (results/reading_words.json), NOT a learning-list
-        CSV: those are cut at the selection band's floor, and a word met five times is exactly
-        where "you'll never hear this" is most worth knowing. The verdict itself lives in
-        app/modality.py and is never re-derived here.
-
-        Rank is position by library frequency among reading words, so the badge carries both
-        facts at once: that it's a reading word, and how often you'll actually meet it.
-        """
-        if not os.path.exists(json_path):
-            raise ValueError(
-                "No reading-words list found. Generate your Vocab Journey first — the list is "
-                "built during analysis."
-            )
-        with open(json_path, 'r', encoding='utf-8') as f:
-            entries = json.load(f)
-        if not entries:
-            raise ValueError(
-                "No reading-only words were found in your library yet. This usually means there "
-                "isn't enough content for the comparison to be confident."
-            )
-
-        index_data = {
-            "title": title,
-            "format": 3,
-            "revision": datetime.now().strftime("%Y%m%d"),
-            "sequenced": True,
-            "author": "SonicSandbox",
-            "description": "Words from your library that you'll read but rarely hear (Surasura)",
-        }
-
-        term_data = []
-        for entry in entries:
-            term = FrequencyExporter._clean_term(entry[0] if isinstance(entry, list) else entry)
-            if not term:
-                continue        # same NaN/blank guard as the other exports
-            # Rank stays tied to the original position; skipped entries just gap, exactly as
-            # export_yomitan does, so two exports of the same data agree.
-            term_data.append([term, "freq", len(term_data) + 1])
-
-        with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr('index.json', json.dumps(index_data, ensure_ascii=False, indent=2))
-            zf.writestr('term_meta_bank_1.json', json.dumps(term_data, ensure_ascii=False))
-
-    @staticmethod
     def export_anki_sentences(csv_path, save_path):
         """
         Export as a CSV suitable for Anki/SRS import.

@@ -38,8 +38,13 @@ def test_beyond_corpora_is_unhearable_not_merely_rare():
 
 # --- classification ------------------------------------------------------------------------- #
 
+# A FIXED threshold, deliberately not the shipped default: these tests check the rule, not the
+# current tuning. `target_hours` is a knob a user is expected to move, and a test that fails when
+# someone retunes it is testing the setting rather than the logic.
+TEST_CFG = {"target_hours": 32.5, "min_series": 5, "min_lib_count": 3, "min_library_series": 10}
+
 BASE = dict(lib_count=20, spoken_count=0, series_count=12,
-            library_series=38, listening_hours_total=115.0)
+            library_series=38, listening_hours_total=115.0, config=TEST_CFG)
 
 
 def test_rare_in_speech_is_a_reading_word():
@@ -137,3 +142,53 @@ def test_listening_hours_uses_the_shared_minutes_per_file():
     assert modality.listening_hours(345, 20) == 115.0
     assert modality.listening_hours(0, 20) == 0.0
     assert modality.listening_hours(345, 0) == 0.0
+
+
+# --- evidence must be rolled up per LEMMA, not per (lemma, reading) -------------------------- #
+
+def test_evidence_is_aggregated_across_readings():
+    """unidic gives some words several readings; the evidence must not be split between them.
+
+    Found in the wild: 差し伸べる arrives as both サシノベ and サシノベル, so word_stats holds two
+    entries. Judged separately each saw only a share of the times the word was actually heard, so a
+    word met once per 23 hours looked unheard twice over and was flagged twice — once per reading.
+    The reference rank is per-lemma, so the library evidence has to be too.
+    """
+    import inspect
+    from app import analyzer
+
+    source = inspect.getsource(analyzer.main)
+    assert "_lemma_evidence" in source, "modality evidence is no longer rolled up by lemma"
+    # ...and the roll-up must be what classify() is fed, not the per-entry dict.
+    assert 'spoken_count=ev["spoken"]' in source
+    assert 'series_count=len(ev["series"])' in source
+
+
+def test_split_readings_would_flip_the_verdict():
+    """Why the roll-up matters, in numbers.
+
+    8 encounters over 185 h is once per 23 h — under the 32.5 h target, so the word is heard and
+    earns no badge. Split 5/3 across two readings, each half looks like once per 37 h or 62 h and
+    both would be flagged.
+    """
+    combined = modality.observed_hours_between(8, 185.0)
+    half_a = modality.observed_hours_between(5, 185.0)
+    half_b = modality.observed_hours_between(3, 185.0)
+
+    assert combined < 32.5, "combined evidence should read as 'you hear this'"
+    assert half_a > 32.5 and half_b > 32.5, "each split half wrongly reads as 'you never hear this'"
+
+
+def test_shipped_default_threshold_is_sane():
+    """The tests above pin their own threshold, so something must still watch the real default.
+
+    Bounds rather than an exact value: the number is meant to be tuned, but far outside this range
+    it stops meaning "often enough for listening to teach you the word" — the whole basis for it.
+    """
+    from app.settings_manager import DEFAULT_SETTINGS
+
+    target = DEFAULT_SETTINGS["logic"]["modality"]["target_hours"]
+    assert 15 <= target <= 120, f"target_hours={target} is outside any defensible range"
+    # At 300 h of listening a year, that has to land somewhere near the handful-of-encounters
+    # mark that incidental acquisition needs.
+    assert 2 <= 300 / target <= 20

@@ -34,6 +34,10 @@ WEIGHT_GOAL = 2
 SKIP_SINGLE_CHARS = True
 MIN_FREQ = 0  # Hide words with frequency <= MIN_FREQ
 SANITIZE_JA = False # Strip -suffixes for Japanese
+ONLY_I_PLUS_ONE = False
+# Give the last example slot to a sentence you can hear, when none of the chosen ones came
+# with audio. Off by default; set from --ensure-audio-example.
+ENSURE_AUDIO_EXAMPLE = False
 
 # BUMP THIS whenever a change alters what a run OUTPUTS for unchanged inputs — new/renamed CSV
 # columns, different sentence selection, different scoring. It feeds the run-signature, so a bump
@@ -42,7 +46,7 @@ SANITIZE_JA = False # Strip -suffixes for Japanese
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 5
+ENGINE_REVISION = 6
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -793,6 +797,7 @@ def _build_analysis_parser():
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
     parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
     parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
+    parser.add_argument("--ensure-audio-example", action="store_true", help="Give the last example slot to a sentence that has audio, when none of the chosen ones do")
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
     parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
     parser.add_argument("--max-contexts", type=int, default=3, help="Maximum number of example sentences exported per word")
@@ -962,6 +967,7 @@ def compute_run_signature(language, found_files, args):
             "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
             "settings": _settings_for_sig,
             "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
+                     args.ensure_audio_example,
                      args.include_single_chars, args.exclude_freq_one, args.reinforce,
                      args.context_min, args.context_max, args.max_contexts],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
@@ -1020,8 +1026,9 @@ def main():
     # --- ARGUMENT PARSING (shared parser so the dashboard reconstructs the identical args) ---
     args = parse_analysis_args()
 
-    global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE
+    global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE, ENSURE_AUDIO_EXAMPLE
     ONLY_I_PLUS_ONE = args.only_i_plus_one
+    ENSURE_AUDIO_EXAMPLE = args.ensure_audio_example
 
     # Override logic settings if supplied
     if args.context_min is not None:
@@ -1122,6 +1129,9 @@ def main():
         # vocabulary from one story's names and jargon.
         "spoken_count": 0,
         "series": set(),
+        # Best few candidates that come with audio, for the "guarantee an audio example" option.
+        # Only populated when that option is on, so it costs nothing otherwise.
+        "audio_contexts": [],
     })
     
     words_skipped_i_plus_one = 0 # Track skips explicitly for visibility
@@ -1243,6 +1253,7 @@ def main():
     # holds hundreds of thousands of candidates, and interning keeps that to one int each.
     source_list = []            # idx -> {"path": <rel>, "abs": <abs>, "name": <basename>, "type": ...}
     source_index = {}           # abs_path -> idx
+    src_audio_rank = []         # idx -> 0 youtube | 1 other audio | 2 text (see _source_idx)
 
     def _source_idx(path, stype):
         idx = source_index.get(path)
@@ -1258,6 +1269,12 @@ def main():
                 "name": os.path.basename(path),
                 "type": stype,
             })
+            # Parallel list, not a dict lookup: this is read inside sort keys over hundreds of
+            # thousands of candidates, and a list index is the cheapest thing available.
+            # 0 = YouTube (badge opens the video at that second), 1 = other audio (names an
+            # episode you must then find), 2 = text.
+            src_audio_rank.append(0 if stype == "youtube" else
+                                  (1 if stype == "subtitle" else 2))
         return idx
 
     # --- AGGREGATION PASS ---
@@ -1378,7 +1395,29 @@ def main():
                 # reaches it (common co-words are learned first). Same buffer / fast-exit.
                 cost = rolling_context_cost(entry["total_count"], unk_freqs)
                 new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx)
-                
+
+                # The audio pool is filled FIRST, before any of the main pool's early-outs below.
+                # Those exist to keep the best 30 sentences overall, and every one of them —
+                # the full-pool fast exit especially — would also throw away the audio candidate
+                # this feature exists to find. That is the whole reason the pool is separate:
+                # gating it behind the main pool's decisions makes it silently useless for exactly
+                # the book-heavy words that need it.
+                if ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max:
+                    audio_pool = entry["audio_contexts"]
+                    if not any(c[4] == s_text for c in audio_pool):
+                        audio_pool.append(new_ctx)
+                        # YouTube first, then the usual length/cost ranking. A YouTube badge opens
+                        # the video at the second the line is spoken, so hearing the example costs
+                        # one click; a subtitle only names an episode you then have to find.
+                        audio_pool.sort(key=lambda x: (
+                            src_audio_rank[x[5]], x[0], x[1], x[2]))
+                        # Roomier than it needs to be on purpose. This ordering is only an
+                        # approximation — the real i+1 cost isn't known until selection, which
+                        # re-scores every entry — so the pool's job is to keep enough plausible
+                        # candidates for that choice to be a real one, not to make the choice.
+                        del audio_pool[12:]
+
+
                 # Optimization 1: Insertion Caching - Fast exit if list is full and new sentence is worse
                 if len(entry["candidate_contexts"]) >= 30:
                     worst_stored_ctx = entry["candidate_contexts"][-1]
@@ -1406,6 +1445,7 @@ def main():
                 entry["candidate_contexts"].sort(key=lambda x: (x[0], x[1], x[2]))
                 # Keep up to 30 promising candidates
                 entry["candidate_contexts"] = entry["candidate_contexts"][:30]
+
         
         file_token_cache[file_path] = file_counter
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
@@ -1469,15 +1509,30 @@ def main():
         print(f"Warning: reading/listening reference data unavailable ({e}).")
         _spoken_ranks = {}
 
-    def _modality_of(lemma, data):
+    # Roll the evidence up BY LEMMA before judging. word_stats is keyed by (lemma, reading), and
+    # unidic hands the same word more than one reading — 差し伸べる arrives as both サシノベ and
+    # サシノベル. Judged per entry, each sees only a share of the times you actually heard the word,
+    # so a word you meet every 23 hours can look unheard twice over and get flagged twice. The
+    # reference rank is per-lemma anyway, so the library evidence has to be too.
+    _lemma_evidence = defaultdict(lambda: {"total": 0, "spoken": 0, "series": set()})
+    for (_lemma, _rdg), _d in word_stats.items():
+        _e = _lemma_evidence[_lemma]
+        _e["total"] += _d.get("total_count", 0)
+        _e["spoken"] += _d.get("spoken_count", 0)
+        _e["series"].update(_d.get("series", ()))
+
+    def _modality_of(lemma, data=None):
         """"reading" when a word is worth a reading-first card, else None. See app/modality.py."""
         if not _spoken_ranks:
             return None
+        ev = _lemma_evidence.get(lemma)
+        if ev is None:
+            return None
         return modality.classify(
             _spoken_ranks.get(lemma),
-            data.get("total_count", 0),
-            spoken_count=data.get("spoken_count", 0),
-            series_count=len(data.get("series", ())),
+            ev["total"],
+            spoken_count=ev["spoken"],
+            series_count=len(ev["series"]),
             library_series=_library_series,
             listening_hours_total=_listening_hours,
             config=_MODALITY_CFG,
@@ -1591,11 +1646,24 @@ def main():
             # Optimization 3: Explicit Length Sorting for Strict Mode
             # Ensure we still prioritize the best length even if all are i+1s
             # (-x[4]: recency reinforcement, last so it only breaks exact ties)
-            i_plus_one_candidates.sort(key=lambda x: (x[0], x[1], -x[4]))
+            # With the audio option on, prefer a hearable sentence among candidates that are
+            # ALREADY equally good — never in place of quality. Every candidate here is i+1
+            # already, so audio rank leads; length still breaks its ties.
+            if ENSURE_AUDIO_EXAMPLE:
+                i_plus_one_candidates.sort(
+                    key=lambda x: (src_audio_rank[x[5]], x[0], x[1], -x[4]))
+            else:
+                i_plus_one_candidates.sort(key=lambda x: (x[0], x[1], -x[4]))
             selected_contexts = i_plus_one_candidates[:args.max_contexts]
         else:
             # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long, then recency
-            evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1], -x[4]))
+            # i+1 cost stays the first key with the option on, so quality is never traded for
+            # convenience; audio only decides between sentences of equal difficulty.
+            if ENSURE_AUDIO_EXAMPLE:
+                evaluated_candidates.sort(
+                    key=lambda x: (x[2], src_audio_rank[x[5]], x[0], x[1], -x[4]))
+            else:
+                evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1], -x[4]))
             
             selected_contexts = []
             if first_evaluated:
@@ -1607,7 +1675,54 @@ def main():
                 if len(selected_contexts) >= args.max_contexts:
                     break
                 selected_contexts.append(c)
-            
+
+        # --- Guarantee one example you can actually hear ---------------------------------------- #
+        # A word can easily end up with five perfect examples that all came from books, leaving no
+        # way to study it by ear. When the option is on, the LAST slot is given to the best audio
+        # candidate — replacing that slot rather than adding a sixth, so max_contexts and the CSV
+        # column count are unchanged.
+        #
+        # Three deliberate refusals: it does nothing when only one example is requested (the single
+        # best sentence is worth more than an audio one), nothing when a selected sentence is
+        # already audio, and nothing in strict i+1 mode unless the audio sentence is itself i+1 —
+        # honouring i+1 is the stronger promise, so the slot is left as it is.
+        if ENSURE_AUDIO_EXAMPLE and args.max_contexts >= 2 and selected_contexts:
+            def _is_audio(src_idx):
+                return (src_idx is not None and src_idx < len(source_list)
+                        and source_list[src_idx]["type"] in ("subtitle", "youtube"))
+
+            if not any(_is_audio(c[5]) for c in selected_contexts):
+                chosen = {c[3] for c in selected_contexts}
+                best = None
+                for ctx in word_stats[target_lr]["audio_contexts"]:
+                    s_text = ctx[4].strip()
+                    if not s_text or s_text in chosen:
+                        continue
+                    # The pool is ordered by an APPROXIMATION made during aggregation, before we
+                    # knew which words the learner would already have met by this point. So every
+                    # candidate is re-scored here against the rolling knowns and the best one wins
+                    # — taking the first in pool order would hand out a four-unknown sentence while
+                    # a perfect one sat behind it.
+                    unknowns = sum(1 for lr in ctx[3]
+                                   if lr != target_lr
+                                   and lr not in rolling_known_tuples
+                                   and lr[0] not in rolling_known_lemmas)
+                    if ONLY_I_PLUS_ONE and unknowns > 0:
+                        continue
+                    # i+1 first, because an example you can actually read is worth more than a
+                    # convenient one; then YouTube over other audio; then the usual lengths.
+                    rank = (unknowns, src_audio_rank[ctx[5]], ctx[0], ctx[1])
+                    if best is None or rank < best[0]:
+                        best = (rank, (ctx[0], ctx[1], unknowns, s_text, 0, ctx[5]))
+
+                if best is not None:
+                    # Only displace an existing example when the slots are actually full —
+                    # otherwise the audio one is free and nothing has to be given up for it.
+                    if len(selected_contexts) < args.max_contexts:
+                        selected_contexts.append(best[1])
+                    else:
+                        selected_contexts[-1] = best[1]
+
         for i in range(args.max_contexts):
             context_key = f"Context {i+1}"
             has_ctx = len(selected_contexts) > i
@@ -1748,11 +1863,19 @@ def main():
             if serializable_data.get("first_context"):
                 ctx = serializable_data["first_context"]
                 serializable_data["first_context"] = (ctx[0], ctx[1], ctx[2], list(ctx[3]), ctx[4], ctx[5])
+            # Same treatment for the audio pool — its entries carry the same unique_lrs SET, and
+            # json.dump would raise on it, taking the whole run down in debug mode.
+            if serializable_data.get("audio_contexts"):
+                serializable_data["audio_contexts"] = [
+                    (c[0], c[1], c[2], list(c[3]), c[4], c[5])
+                    for c in serializable_data["audio_contexts"]
+                ]
         else:
             # Lean default: drop the heavy, unread selection inputs (from the COPY only — the in-memory
             # word_stats keeps them for the progressive pass that runs after this).
             serializable_data.pop("candidate_contexts", None)
             serializable_data.pop("first_context", None)
+            serializable_data.pop("audio_contexts", None)
 
         serializable_stats[key] = serializable_data
 
@@ -1793,15 +1916,32 @@ def main():
     # band's floor, and a word you meet five times is exactly the case where a mining decision
     # benefits most from knowing "you'll never hear this". Keeping the verdict here also means the
     # exporter never re-derives it — one implementation of the rule, in app/modality.py.
+    # Written as a CSV with the SAME column names as the priority list, so every existing exporter
+    # (Migaku / Yomitan / plain text) reads it without a single format-specific branch — the export
+    # dialog just points at a different file.
     try:
-        _reading = sorted(
-            ((lemma, data["total_count"])
-             for (lemma, _reading_kana), data in word_stats.items()
-             if _modality_of(lemma, data) == "reading"),
-            key=lambda kv: (-kv[1], kv[0]),
-        )
-        with open(os.path.join(RESULTS_DIR, "reading_words.json"), 'w', encoding='utf-8') as f:
-            json.dump(_reading, f, ensure_ascii=False)
+        # One row per WORD, not per (word, reading): unidic gives some words several readings, and
+        # a dictionary listing 差し伸べる twice with two different ranks is just noise to whoever
+        # loads it. Occurrences are summed and the reading of the commonest variant is kept.
+        _best = {}
+        for (lemma, reading_kana), data in word_stats.items():
+            if _modality_of(lemma) != "reading":
+                continue
+            n = data["total_count"]
+            prev = _best.get(lemma)
+            if prev is None:
+                _best[lemma] = [reading_kana, n, n]          # reading, count-of-that-reading, total
+            else:
+                prev[2] += n
+                if n > prev[1]:
+                    prev[0], prev[1] = reading_kana, n
+        _reading = sorted(((w, v[0], v[2]) for w, v in _best.items()),
+                          key=lambda r: (-r[2], r[0]))
+        with open(os.path.join(RESULTS_DIR, "reading_words.csv"), 'w', encoding='utf-8-sig',
+                  newline='') as f:
+            _w = csv.writer(f)
+            _w.writerow(["Word", "Reading", "Occurrences"])
+            _w.writerows(_reading)
         print(f"Saved reading-words list ({len(_reading)} words).")
     except Exception as e:
         print(f"Warning: could not write reading-words list: {e}")

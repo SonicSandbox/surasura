@@ -87,18 +87,26 @@ class ContentImporterApp:
         self._last_drop_target = None
 
         self.setup_ui()
-        
-        # Defer data loading slightly so the window appears instantly
-        self.root.after(100, self._initial_load)
+
+        # Deferred/repeating timers are skipped under test (mirrors SURASURA_NO_AUTOINDEX for the
+        # dashboard's indexer). A test builds this window and destroys it in well under the 100 ms
+        # deferral, so the callbacks were still pending at destroy(); Tk deletes the Tcl command with
+        # the interpreter but the timer still fires, and every construction left an "invalid command
+        # name ..._initial_load" firing into a dead interpreter for the rest of the session. A guard
+        # INSIDE the callback can't help — it never gets invoked — so the fix is to not schedule.
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # Defer data loading slightly so the window appears instantly
+            self.root.after(100, self._initial_load)
 
         # Auto-refresh when window gains focus (to sync with Architect commits)
-        # Check if we are already in a modal dialog to avoid loops? 
-        # Actually, FocusIn triggers when a modal CLOSES too. 
+        # Check if we are already in a modal dialog to avoid loops?
+        # Actually, FocusIn triggers when a modal CLOSES too.
         self.root.bind("<FocusIn>", self._on_focus_in)
         self._ignore_refresh = False
-        
-        # Start background polling
-        self.root.after(4000, self._poll_word_stats)
+
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # Start background polling
+            self.root.after(4000, self._poll_word_stats)
 
     def _poll_word_stats(self):
         """Silently checks for word_stats.json updates without full UI refresh."""
@@ -849,6 +857,25 @@ class ContentImporterApp:
         self.save_manifest(manifest)
         self.refresh_file_list()
 
+    @staticmethod
+    def _unique_tree_iid(base, used):
+        """A Treeview id must be unique — inserting a duplicate raises TclError and would take the
+        window down. Physical paths are unique in practice, but the manifest is also written by the
+        Immersion Architect and is hand-editable, so a duplicated row must degrade, not crash.
+
+        Uniqueness is decided against `used` — the ids handed out during THIS rebuild — and never by
+        querying the tree. The tree is cleared before the rebuild, so the two are equivalent, and a
+        set cannot lie: `self.tree.exists()` returns a truthy MagicMock under a mocked tree, which
+        turned this into an infinite loop that allocated a fresh mock call record every iteration
+        until the process died of MemoryError."""
+        iid = base
+        n = 0
+        while iid in used:
+            n += 1
+            iid = f"{base}#{n}"
+        used.add(iid)
+        return iid
+
     def refresh_file_list(self, force=False):
         """Populates the GUI Treeview using the manifest as the source of truth.
 
@@ -893,14 +920,16 @@ class ContentImporterApp:
         # 2. Re-load ranks for sorting
         self.load_manifest_ranks()
 
-        # 3. Store Expansion State (by group name)
+        # 3. Store Expansion State — keyed by the node's own id, not its label. A folder whose files
+        # aren't contiguous in the manifest draws as SEVERAL nodes sharing one name (see the run
+        # logic below), so a name-keyed memory expanded all of them together; and the label now
+        # carries a "(2 of 7)" suffix, which a name key would no longer match at all.
         expanded_groups = set()
         def capture_expanded(parent):
             if not self.tree: return
             for child in self.tree.get_children(parent):
                 if self.tree.item(child, "open"):
-                    text = self.tree.item(child, "text")
-                    expanded_groups.add(text)
+                    expanded_groups.add(child)
                 capture_expanded(child)
         if self.tree: capture_expanded("")
 
@@ -913,28 +942,57 @@ class ContentImporterApp:
         schedule = manifest.get("schedule", {})
 
         entries = schedule.get(phase_key, [])
-        
-        current_group_node = None
-        current_group_name = None
-        
-        for i, entry in enumerate(entries):
+
+        # Resolve what will actually be drawn ONCE. The run counter below and the insert loop must
+        # agree exactly about which entries appear — a manifest row whose file is missing from disk
+        # is skipped, and that skip can itself split a run — and os.path.exists is not free to
+        # repeat over a thousand-file tier.
+        rendered = []
+        for entry in entries:
             rel_path = entry.get("physical_path")
             if not rel_path: continue
-            
             abs_path = os.path.join(self.data_root, rel_path)
             if not os.path.exists(abs_path):
                 continue
+            rendered.append((entry, rel_path, abs_path, entry.get("parent_folder", "")))
 
-            # Grouping Logic:
-            parent = entry.get("parent_folder", "")
-            
+        # A tree "group" is a CONTIGUOUS RUN of entries sharing a parent_folder, not a folder. The
+        # manifest orders content independently of the folders on disk — that separation is
+        # deliberate, it's what lets you order a library without moving files — and every path that
+        # adds or relocates content APPENDS to the end of a phase (Graduate, Demote, add_files and
+        # the disk sync all do). So one folder's files routinely end up in several runs. Count them
+        # up front so each node can say which run it is rather than pretending to be the whole folder.
+        run_totals = {}
+        _prev = None
+        for _, _, _, parent in rendered:
+            if parent and parent != _prev:
+                run_totals[parent] = run_totals.get(parent, 0) + 1
+            _prev = parent
+        run_seen = {}
+        used_iids = set()   # ids handed out during THIS rebuild (see _unique_tree_iid)
+
+        current_group_node = None
+        current_group_name = None
+
+        for entry, rel_path, abs_path, parent in rendered:
             if parent:
                 # If we are not currently in the correct group node, create/switch to it
                 if parent != current_group_name:
                     current_group_name = parent
-                    should_open = parent in expanded_groups
-                    current_group_node = self.tree.insert("", tk.END, text=parent, values=("GROUP:" + parent,), open=should_open)
-                
+                    run_no = run_seen.get(parent, 0) + 1
+                    run_seen[parent] = run_no
+                    total_runs = run_totals.get(parent, 1)
+                    # Stable id = this run's FIRST member. A reorder moves a run without changing
+                    # which files are in it, so the id survives the rebuild and the selection can be
+                    # restored to this run specifically (see _restore_selection).
+                    node_iid = self._unique_tree_iid("grp:" + rel_path, used_iids)
+                    label = parent if total_runs <= 1 else f"{parent}  ({run_no} of {total_runs})"
+                    should_open = node_iid in expanded_groups
+                    # values stays the bare "GROUP:<name>" — selection resolution, drag-drop and the
+                    # double-click handler all key off it; only the id and the label are new.
+                    current_group_node = self.tree.insert("", tk.END, iid=node_iid, text=label,
+                                                          values=("GROUP:" + parent,), open=should_open)
+
                 # Insert file into current group
                 self.tree.insert(current_group_node, tk.END, text=entry.get("title", os.path.basename(rel_path)), values=(abs_path,))
             else:
@@ -2060,65 +2118,107 @@ class ContentImporterApp:
         region = self._get_drop_region(target_item, event.y)
         if target_item in selected_ids: return # Don't drop on self
         
-        # Get target reference
-        target_path_val = self.tree.item(target_item, "values")[0]
-        
-        # Get everything to move
-        items_to_move = [self.tree.item(i, "values")[0] for i in selected_ids if self.tree.item(i, "values")]
-        
-        # Reorder manifest strictly
         pos = "before" if region == "above" else "after"
+
+        # Both ends of the drop are resolved to concrete FILE paths, never a "GROUP:<name>" value.
+        # A GROUP: value is matched against parent_folder, which selects every entry in that folder
+        # — so with a folder split across the order (the "(2 of 7)" case) dragging one block moved
+        # ALL of them, and dropping onto one block inserted next to the FIRST block instead. The
+        # arrow keys never had this because they already go through _resolve_items_to_paths, which
+        # walks the clicked node's children; the two paths must agree.
+        items_to_move = self._resolve_items_to_paths(selected_ids)
+        if not items_to_move: return
+
+        target_paths = self._resolve_items_to_paths([target_item])
+        if not target_paths: return
+        # Land against the near edge of the block actually dropped on.
+        target_path_val = target_paths[0] if pos == "before" else target_paths[-1]
+
+        # Selection is restored by NODE, captured before the manifest write rebuilds the tree and
+        # invalidates the ids (see _restore_selection).
+        sel_pairs = self._selection_pairs(selected_ids)
+
+        # Reorder manifest strictly
         self.move_manifest_items_relative(items_to_move, target_path_val, pos)
 
         self.refresh_file_list()
         self.status_var.set("Order updated.")
-        
+
         # Restore selection
-        self._restore_selection(items_to_move)
+        self._restore_selection(sel_pairs)
 
     def move_selected_up(self):
         selected = self.tree.selection()
         if not selected: return
-        # Restore based on original values (supports both GROUP: and paths)
-        to_restore = [self.tree.item(i, "values")[0] for i in selected if self.tree.item(i, "values")]
-        
+        # Remember WHICH nodes were selected, not just what they point at — several nodes can share
+        # one "GROUP:" value when a folder is split across the order (see _restore_selection).
+        to_restore = self._selection_pairs(selected)
+
         # Resolve Selection (handles files and groups)
         items = self._resolve_items_to_paths(selected)
         if not items: return
-                
+
         self.move_items_in_manifest(items, "up")
         self._restore_selection(to_restore)
 
     def move_selected_down(self):
         selected = self.tree.selection()
         if not selected: return
-        # Restore based on original values 
-        to_restore = [self.tree.item(i, "values")[0] for i in selected if self.tree.item(i, "values")]
+        to_restore = self._selection_pairs(selected)
 
         # Resolve Selection (handles files and groups)
         items = self._resolve_items_to_paths(selected)
         if not items: return
-                
+
         self.move_items_in_manifest(items, "down")
         self._restore_selection(to_restore)
+
+    def _selection_pairs(self, item_ids):
+        """[(node_id, value)] for the given rows — captured before a rebuild, consumed by
+        _restore_selection. Rows carrying no value are skipped; they can't be restored either way."""
+        pairs = []
+        for i in item_ids:
+            vals = self.tree.item(i, "values")
+            if vals:
+                pairs.append((i, vals[0]))
+        return pairs
     
-    def _restore_selection(self, paths):
-        # Scan tree for these paths
-        to_select = []
-        for item in self.tree.get_children(""): # Only top level? No, recursive.
-            # Tree traversal needed
-            pass # Too complex to implement perfectly right now, user can reselect.
-        # Simple implementation:
-        def find_nodes(parent):
-            nodes = []
-            for child in self.tree.get_children(parent):
-                vals = self.tree.item(child, "values")
-                if vals and vals[0] in paths:
-                    nodes.append(child)
-                nodes.extend(find_nodes(child))
-            return nodes
-        
-        nodes = find_nodes("")
+    def _restore_selection(self, pairs):
+        """Reselect after the tree has been rebuilt.
+
+        `pairs` is [(node_id, value), ...] captured BEFORE the rebuild.
+
+        The node id is tried first. A folder whose files aren't contiguous in the manifest draws as
+        several nodes that all carry the SAME "GROUP:<name>" value, so matching on value alone
+        selected every run of that folder when only one of them had been moved — and a second press
+        then really did move all of them. Group ids are stable across a rebuild (refresh_file_list
+        keys them on the run's first member), so the clicked run is restored exactly.
+
+        File rows keep Tk's generated ids, which do NOT survive a rebuild, so they fall back to
+        matching their value — safe, because a file's value is its unique absolute path."""
+        nodes = []
+        seen = set()
+        fallback_values = set()
+
+        for node_id, value in (pairs or []):
+            if node_id and self.tree.exists(node_id):
+                if node_id not in seen:
+                    seen.add(node_id)
+                    nodes.append(node_id)
+            elif value:
+                fallback_values.add(value)
+
+        if fallback_values:
+            def find_nodes(parent):
+                for child in self.tree.get_children(parent):
+                    if child not in seen:
+                        vals = self.tree.item(child, "values")
+                        if vals and vals[0] in fallback_values:
+                            seen.add(child)
+                            nodes.append(child)
+                    find_nodes(child)
+            find_nodes("")
+
         if nodes:
             self.tree.selection_set(nodes)
             self.tree.see(nodes[0])

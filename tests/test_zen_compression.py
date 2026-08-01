@@ -44,16 +44,28 @@ def test_zen_mode_static_html_compression(tmp_path):
     
     prog_csv = tmp_path / "progressive_report.csv"
     df_prog.to_csv(prog_csv, index=False)
-    
+
+    # PRIORITY_CSV must be patched too. It is a module constant resolved at IMPORT time, so no
+    # environment fixture reaches it — and with os.path.exists forced True below, leaving it alone
+    # made the generator read the developer's real priority_learning_list.csv (14 MB, parsed by
+    # pandas) and render the whole library just to check Zen truncation.
+    prio_csv = tmp_path / "priority_report.csv"
+    pd.DataFrame([
+        {"Word": "冒険", "Reading": "ボウケン", "Tier": "Outside", "Score": 30, "Occurrences": 3,
+         "Count (High)": 3, "Count (Low)": 0, "Count (Goal)": 0, "Sources": "book1.txt",
+         "Context 1": "彼は毎日冒険に出かけます。"},
+    ]).to_csv(prio_csv, index=False, encoding="utf-8-sig")
+
     mock_settings = {
         "theme": "zen",
         "logic": {}
     }
-    
+
     with patch("app.static_html_generator.RESULTS_DIR", str(results_dir)), \
          patch("app.static_html_generator.OUTPUT_FILE", str(output_html)), \
          patch("app.static_html_generator.WEB_APP_FILE", str(zen_template)), \
          patch("app.static_html_generator.PROGRESSIVE_CSV", str(prog_csv)), \
+         patch("app.static_html_generator.PRIORITY_CSV", str(prio_csv)), \
          patch("app.static_html_generator.settings_manager.load_settings", return_value=mock_settings), \
          patch("os.path.exists", return_value=True): # Pretend progressive CSV exists
          

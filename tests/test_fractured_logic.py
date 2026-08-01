@@ -36,10 +36,13 @@ def test_fractured_grouping_logic(mock_app):
                 calls = mock_app.tree.insert.call_args_list
                 assert len(calls) == 8
                 
-                assert calls[0].kwargs["text"] == "HP"
-                assert "GROUP:HP" in str(calls[0].kwargs["values"])
+                # HP is split into two runs by LOTR, and the label now names WHICH run — three
+                # nodes all reading "HP" gave no hint they were separate, and selecting one used to
+                # light up every node sharing the name (see tests/test_group_run_selection.py).
+                assert calls[0].kwargs["text"] == "HP  (1 of 2)"
+                assert "GROUP:HP" in str(calls[0].kwargs["values"])  # the VALUE stays undecorated
                 assert calls[3].args[0] == "" # GROUP:LOTR is in root
-                assert calls[5].kwargs["text"] == "HP" # The second GROUP:HP is at index 5
+                assert calls[5].kwargs["text"] == "HP  (2 of 2)" # The second GROUP:HP is at index 5
                 
 def test_group_node_expansion_for_movement(mock_app):
     """Verifies that selecting a group node selects all its children for movement."""

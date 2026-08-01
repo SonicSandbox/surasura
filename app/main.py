@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import subprocess
+import csv
 import os
 import sys
 import threading
@@ -51,6 +52,32 @@ def build_subprocess_env(frozen=None):
         env["PYTHONPATH"] = (project_root + os.pathsep + env["PYTHONPATH"]
                              if "PYTHONPATH" in env else project_root)
     return env
+
+
+def csv_has_data_rows(path):
+    """True if `path` is a CSV holding at least one row BELOW the header.
+
+    File size can't answer this. The analyzer writes the reading-words header unconditionally, so a
+    library with no read-only words leaves a small file that exists and is non-empty — a size check
+    passed it, the format picker opened, and the user only learned there was nothing to export when
+    the exporter failed with its own generic message. The explanation written for exactly that case
+    was unreachable.
+
+    Short-circuits on the first data row, so a multi-megabyte priority list costs one line.
+    A missing or unreadable file is reported as "no data" rather than raised: this only gates a
+    warning dialog, and the exporters validate their input again anyway.
+
+    Module-level rather than a method on purpose: the export dialog is exercised with a MagicMock
+    `self`, whose every attribute is a truthy Mock, so a `self.`-qualified check would be silently
+    faked and the guard would never fire (see docs/agent instructions/testing.md §5.3).
+    """
+    try:
+        with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.reader(f)
+            next(reader, None)                                   # header
+            return any(any(cell.strip() for cell in row) for row in reader)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return False
 
 
 class ToolTip:
@@ -192,6 +219,7 @@ class MasterDashboardApp:
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
+        self.var_ensure_audio = tk.BooleanVar(value=False)    # Guarantee one example you can hear
         self.var_add_graduated = tk.BooleanVar(value=True) # Add words on graduate
         self.var_context_min_chars = tk.IntVar(value=10)
         self.var_context_max_chars = tk.IntVar(value=50)
@@ -270,7 +298,7 @@ class MasterDashboardApp:
         self._update_generate_state()
 
         # Show onboarding if not completed
-        if not self.onboarding_completed.get():
+        if not self.onboarding_completed.get() and not os.environ.get("SURASURA_NO_UI_TIMERS"):
             try:
                 from app.onboarding_gui import OnboardingGuide
                 self.root.after(500, lambda: OnboardingGuide(self.root, self.complete_onboarding))
@@ -288,6 +316,7 @@ class MasterDashboardApp:
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
         self.var_only_i_plus_one.trace_add("write", self.save_settings)
+        self.var_ensure_audio.trace_add("write", self.save_settings)
         self.var_add_graduated.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
@@ -307,11 +336,16 @@ class MasterDashboardApp:
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state()))
-        # And once shortly after startup, so the preview appears without a manual Generate.
-        self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
+        # Deferred startup timers are skipped under test — a test destroys the window long before
+        # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
+        # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
+        # body is not enough; it is never invoked.
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # And once shortly after startup, so the preview appears without a manual Generate.
+            self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
 
-        # Reconcile the result of any update applied since we last ran (toast / manual-retry).
-        self.root.after(800, self.reconcile_update_result)
+            # Reconcile the result of any update applied since we last ran (toast / manual-retry).
+            self.root.after(800, self.reconcile_update_result)
 
         # Start update check in background
         threading.Thread(target=self.check_updates_thread, daemon=True).start()
@@ -1038,7 +1072,7 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("850x580")
+        self.settings_window.geometry("850x680")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -1191,6 +1225,10 @@ class MasterDashboardApp:
         chk_i_plus_one = ttk.Checkbutton(group_logic, text="Only include i+1 sentences", variable=self.var_only_i_plus_one)
         chk_i_plus_one.pack(anchor=tk.W)
         ToolTip(chk_i_plus_one, "Swaps a word's media sentence for an i+1 example (only that word is new) when it isn't already i+1.")
+
+        chk_ensure_audio = ttk.Checkbutton(group_logic, text="Always include a sentence with audio", variable=self.var_ensure_audio)
+        chk_ensure_audio.pack(anchor=tk.W)
+        ToolTip(chk_ensure_audio, "If none of a word's examples came from a video, give the last slot to one that did - so you can always study it by ear. Needs 2+ example sentences.")
 
         chk_add_graduated = ttk.Checkbutton(group_logic, text="Add Words on 'Graduate'", variable=self.var_add_graduated)
         chk_add_graduated.pack(anchor=tk.W)
@@ -1583,6 +1621,7 @@ class MasterDashboardApp:
             self.var_source_display.set(src_mode if src_mode in self.SOURCE_DISPLAY_LABELS else "off")
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
+            self.var_ensure_audio.set(settings.get("ensure_audio_example", False))
             self.var_add_graduated.set(settings.get("add_graduated_words", True))
             self.var_words_per_day.set(settings.get("words_per_day", 5))
             self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
@@ -1661,6 +1700,7 @@ class MasterDashboardApp:
                 "source_display": self.var_source_display.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
+                "ensure_audio_example": self.var_ensure_audio.get(),
                 "add_graduated_words": self.var_add_graduated.get(),
                 "words_per_day": self._iv(self.var_words_per_day, cur.get("words_per_day", 5)),
                 "show_words_per_day": self.var_show_words_per_day.get(),
@@ -1930,6 +1970,9 @@ class MasterDashboardApp:
         if self.var_language.get() == 'zh' and self.var_reinforce.get():
             args.append('--reinforce')
             
+        if self.var_ensure_audio.get():
+            args.append('--ensure-audio-example')
+
         if self.var_only_i_plus_one.get():
             args.append('--only-i-plus-one')
             
@@ -2022,34 +2065,38 @@ class MasterDashboardApp:
     def generate_reading_words(self):
         """Export the reading-only words as a Yomitan list.
 
-        No format dialog: there is exactly one sensible target for this (a dictionary you load
-        alongside your others while mining), so asking would be a click for nothing.
+        Same three formats as the ordinary frequency-list export — a Migaku user can't do anything
+        with a Yomitan ZIP, and two export buttons that behave differently is just confusing. The
+        list is a CSV with the same columns as the priority list, so every exporter reads it as-is.
         """
         from app.path_utils import get_user_file
 
-        sidecar = os.path.join(get_user_file("results"), "reading_words.json")
-        if not os.path.exists(sidecar):
-            messagebox.showwarning(
-                "No Data",
-                "Generate your Vocab Journey first — the reading-words list is built during analysis.")
-            return
-
-        # export_wrapper destroys the dialog it's handed; there isn't one here.
-        class _NoDialog:
-            def destroy(self):
-                pass
-
-        self.export_wrapper(_NoDialog(), "reading", sidecar)
+        self._show_export_dialog(
+            os.path.join(get_user_file("results"), "reading_words.csv"),
+            initial_name="Surasura Reading Words",
+            empty_message=("Generate your Vocab Journey first — the reading-words list is built "
+                           "during analysis.\n\nIf you have already run one, then no read-only "
+                           "words were found yet, which usually means there isn't enough content "
+                           "for the comparison to be confident."))
 
     def generate_frequency_list(self):
         """Show dialog to choose export format"""
         from app.path_utils import get_user_file
-        
-        results_dir = get_user_file("results")
-        priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
 
-        if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
-            messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
+        self._show_export_dialog(
+            os.path.join(get_user_file("results"), "priority_learning_list.csv"),
+            initial_name="MY Immersion FreqList",
+            empty_message="You need to run an analysis first to generate data.")
+
+    def _show_export_dialog(self, source_csv, initial_name, empty_message):
+        """Format picker shared by both word-list exports.
+
+        Only the source file and the suggested filename differ, so the dialog is written once —
+        adding a format later can't leave one button behind the other.
+        """
+        # Rows, not bytes — a header-only list is "no data" too (see csv_has_data_rows).
+        if not csv_has_data_rows(source_csv):
+            messagebox.showwarning("No Data", empty_message)
             return
             
         # Dialog
@@ -2074,15 +2121,15 @@ class MasterDashboardApp:
                  font=('Segoe UI', 11, 'bold'), foreground=TEXT_COLOR, background=BG_COLOR).pack(pady=(0, 20))
                  
         # Buttons
-        btn_migaku = ttk.Button(wrapper, text="Migaku", command=lambda: self.export_wrapper(dialog, "migaku", priority_csv))
+        btn_migaku = ttk.Button(wrapper, text="Migaku", command=lambda: self.export_wrapper(dialog, "migaku", source_csv, initial_name))
         btn_migaku.pack(fill=tk.X, pady=5)
         ToolTip(btn_migaku, "Export as a JSON array (Standard Migaku Format).")
         
-        btn_yomitan = ttk.Button(wrapper, text="Yomichan / Yomitan", command=lambda: self.export_wrapper(dialog, "yomitan", priority_csv))
+        btn_yomitan = ttk.Button(wrapper, text="Yomichan / Yomitan", command=lambda: self.export_wrapper(dialog, "yomitan", source_csv, initial_name))
         btn_yomitan.pack(fill=tk.X, pady=5)
         ToolTip(btn_yomitan, "Export as a frequency dict ZIP file (v3 format).")
         
-        btn_txt = ttk.Button(wrapper, text="Word List (Text)", command=lambda: self.export_wrapper(dialog, "txt", priority_csv))
+        btn_txt = ttk.Button(wrapper, text="Word List (Text)", command=lambda: self.export_wrapper(dialog, "txt", source_csv, initial_name))
         btn_txt.pack(fill=tk.X, pady=5)
         ToolTip(btn_txt, "Export as a plain text file (one word per line).")
 
@@ -2134,7 +2181,7 @@ class MasterDashboardApp:
         btn_gen.pack(fill=tk.X)
 
 
-    def export_wrapper(self, dialog, format_type, csv_path):
+    def export_wrapper(self, dialog, format_type, csv_path, initial_name="MY Immersion FreqList"):
         from tkinter import filedialog
         from app.frequency_exporter import FrequencyExporter
         
@@ -2142,7 +2189,6 @@ class MasterDashboardApp:
         
         file_types = []
         def_ext = ""
-        initial_name = "MY Immersion FreqList"
         
         if format_type == "migaku":
             file_types = [("JSON Files", "*.json")]
@@ -2150,10 +2196,6 @@ class MasterDashboardApp:
         elif format_type == "yomitan":
             file_types = [("Zip Files", "*.zip")]
             def_ext = ".zip"
-        elif format_type == "reading":
-            file_types = [("Zip Files", "*.zip")]
-            def_ext = ".zip"
-            initial_name = "Surasura Reading Words"
         elif format_type == "txt":
             file_types = [("Text Files", "*.txt")]
             def_ext = ".txt"
@@ -2180,9 +2222,6 @@ class MasterDashboardApp:
                 FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
             elif format_type == "txt":
                 FrequencyExporter.export_word_list(csv_path, save_path)
-            elif format_type == "reading":
-                # csv_path carries the reading-words sidecar here, not a learning list.
-                FrequencyExporter.export_reading_words(csv_path, save_path)
             elif format_type == "anki":
                 FrequencyExporter.export_anki_sentences(csv_path, save_path)
                 

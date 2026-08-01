@@ -23,6 +23,7 @@ DEFAULT_SETTINGS = {
     "open_count": 0,
     "hide_satoru": True,  # This is the "internal" default
     "only_i_plus_one": False,
+    "ensure_audio_example": False,
     "add_graduated_words": True,
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
     "skipped_version": "",          # a version the user skipped or that failed to auto-apply
@@ -75,7 +76,7 @@ DEFAULT_SETTINGS = {
         },
         "modality": {
             "_comment": "Reading-vs-listening card routing. target_hours: a word counts as 'you'll hear it' if fewer than this many hours of listening pass between encounters — estimated from bundled reference data (app/reference_data.py), then overridden by your OWN subtitle/YouTube files wherever you have enough material. Observation can only ever REMOVE a reading badge, never add one. min_series: distinct works a word must appear in before it counts as general vocabulary rather than one story's jargon; skipped entirely until the library holds min_library_series works, since on a small library that says more about the library than the word. min_lib_count: universal floor, as in selection.",
-            "target_hours": 32.5,
+            "target_hours": 60,
             "min_series": 5,
             "min_lib_count": 3,
             "min_library_series": 10

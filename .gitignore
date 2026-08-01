@@ -29,6 +29,10 @@ surasura_v*.zip
 
 # Pytest
 .pytest_cache/
+# Test-run artifacts (SURASURA_TEST_PROFILE output + captured run logs) live under debug/,
+# never in the repo root.
+debug/testlog.txt
+debug/testprofile*.csv
 
 # Auto-update runtime artifacts (created next to the exe at runtime)
 .update_staging/
@@ -52,4 +56,4 @@ docs/legacy_code_reviews/
 # Reference corpora — build inputs for scripts/build_reference_data.py only.
 # Large, third-party, and never shipped: the build script distils them into the
 # committed app/reference_data.py, which is what the app actually reads.
-scripts/reference_lists/
+docs/assets/reference_lists/

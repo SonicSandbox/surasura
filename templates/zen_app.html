@@ -258,6 +258,40 @@
             color: #aaa;
         }
 
+        /* Speech: audio-ready shown as DIM-vs-LIT, not as a colour. Most badge glyphs are emoji
+           from a COLOR font, which CSS `color` cannot tint — so the icon lights up instead.
+           Mirrors web_app.html. */
+        .src-badge.koe-speak {
+            filter: grayscale(1);
+            opacity: 0.45;
+        }
+
+        .src-badge.koe-speak.koe-ready {
+            filter: none;
+            opacity: 1;
+            color: #5fd39a;
+        }
+
+        .src-badge.koe-speak:hover {
+            filter: none;
+            opacity: 1;
+        }
+
+        /* Speech (optional): the badge becomes a small spinner while a sentence is being
+           generated, then returns to its icon. Mirrors web_app.html. */
+        .koe-spinner {
+            display: inline-block;
+            width: 0.8em;
+            height: 0.8em;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            vertical-align: -0.1em;
+            animation: koe-spin 0.7s linear infinite;
+        }
+
+        @keyframes koe-spin { to { transform: rotate(360deg); } }
+
         .context-line em {
             color: #ffffff;
             /* Fully White */
@@ -577,6 +611,83 @@
         // that table. Shows the short name, hovers group/file, copies the FULL path (Explorer).
         const SOURCE_ICONS = { subtitle: '🎬', youtube: '▶', epub: '📖', text: '📄' };
 
+        // --- Speech (optional Koe module; mirrors web_app.html) ---------------------------------- #
+        // globalKoe is {port, probe, token} when enabled, else null. No API key lives in this page:
+        // a file:// page can neither keep a secret nor write to the snippets folder, so it asks a
+        // loopback-only helper that owns both. With Surasura closed the badge just copies the path.
+        const KOE = (typeof globalKoe !== 'undefined' && globalKoe) ? globalKoe : null;
+        let koeOrigin = null;
+        let koeAudio = null;
+
+        function koeEnabled() { return !!(KOE && KOE.token); }
+
+        async function koeFindOrigin() {
+            if (koeOrigin) return koeOrigin;
+            const base = Number(KOE.port) || 8787;
+            const span = Math.max(1, Number(KOE.probe) || 1);
+            for (let p = base; p < base + span; p++) {
+                const origin = 'http://127.0.0.1:' + p;
+                try {
+                    const res = await fetch(origin + '/health', { cache: 'no-store' });
+                    if (res.ok) {
+                        const info = await res.json();
+                        if (info && info.service === 'koe') { koeOrigin = origin; return origin; }
+                    }
+                } catch (e) { /* nothing listening there — try the next */ }
+            }
+            return null;
+        }
+
+        async function koeSpeak(el) {
+            const text = el.dataset.koeText || '';
+            if (!text || el.dataset.koeBusy === '1') return;
+
+            const original = el.innerHTML;
+            const originalTitle = el.title;
+            el.dataset.koeBusy = '1';
+            el.innerHTML = '<span class="koe-spinner"></span>';
+
+            const restore = (message) => {
+                el.innerHTML = original;
+                el.dataset.koeBusy = '';
+                if (message) {
+                    el.title = message;
+                    setTimeout(() => { el.title = originalTitle; }, 5000);
+                }
+            };
+
+            try {
+                const origin = await koeFindOrigin();
+                if (!origin) { restore('Speech needs Surasura to be running.'); return; }
+
+                const url = origin + '/speak'
+                    + '?token=' + encodeURIComponent(KOE.token)
+                    + '&lang=' + encodeURIComponent((typeof globalLanguage !== 'undefined' ? globalLanguage : 'ja'))
+                    + '&text=' + encodeURIComponent(text);
+                const res = await fetch(url, { cache: 'no-store' });
+
+                if (!res.ok) {
+                    // A real reply, just an unhappy one — the helper is there, so keep the origin.
+                    let message = 'Could not generate audio.';
+                    try { const body = await res.json(); if (body && body.error) message = body.error; } catch (e) {}
+                    restore(message);
+                    return;
+                }
+
+                const blob = await res.blob();
+                if (koeAudio) { try { koeAudio.pause(); } catch (e) {} }
+                const objectUrl = URL.createObjectURL(blob);
+                koeAudio = new Audio(objectUrl);
+                koeAudio.addEventListener('ended', () => URL.revokeObjectURL(objectUrl), { once: true });
+                koeAudio.play().catch(() => {});
+                el.classList.add('koe-ready');   // on disk now — don't wait for a re-render
+                restore(null);
+            } catch (e) {
+                koeOrigin = null;   // helper vanished (app closed) — re-probe next time
+                restore('Speech needs Surasura to be running.');
+            }
+        }
+
         // Chrome/Edge "scroll to text" link — opens the file and jumps to + highlights the sentence.
         // Shift-click copies this instead of the bare path (a URL fragment would break Explorer).
         //
@@ -601,7 +712,7 @@
             return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
         }
 
-        function sourceBadge(idx, frag, at) {
+        function sourceBadge(idx, frag, at, text, hasAudio) {
             const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
             if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
@@ -640,11 +751,18 @@
 
             // Paths in data-attributes, not inline JS strings — a filename containing a
             // double-quote would close the onclick attribute early.
+            // With speech on, a plain click READS the sentence instead of copying the path.
             const deepLink = sourceDeepLink(fullPath, frag);
-            return `<span class="src-badge" migaku_ignore data-yomichan-ignore ` +
+            const speak = koeEnabled() && text;
+            const ready = speak && hasAudio;      // lit = plays instantly, see web_app.html
+            return `<span class="src-badge${speak ? ' koe-speak' : ''}${ready ? ' koe-ready' : ''}" migaku_ignore data-yomichan-ignore ` +
                    `data-src-path="${escapeHtml(fullPath)}" ` +
                    (deepLink ? `data-src-url="${escapeHtml(deepLink)}" ` : ``) +
-                   `title="${escapeHtml(hover)}\nClick to copy the full path` +
+                   (speak ? `data-koe-text="${escapeHtml(text)}" ` : ``) +
+                   `title="${escapeHtml(hover)}\n` +
+                   (speak ? (ready ? `Click to hear this sentence (ready)`
+                                   : `Click to hear this sentence`)
+                          : `Click to copy the full path`) +
                    (deepLink ? `\nShift-click to open it at this sentence` : ``) + `" ` +
                    `onclick="copySourcePath(event, this)">${label}</span>`;
         }
@@ -681,6 +799,12 @@
             // verified anchor there is nothing to jump to, so fall back to copying.
             if (event && event.shiftKey && el.dataset.srcUrl) {
                 openInNewTab(el.dataset.srcUrl);
+                return;
+            }
+            // Speech takes over the plain click when the module is on; falls through to copying
+            // whenever it's off or this badge carries no sentence.
+            if (koeEnabled() && el.dataset.koeText) {
+                koeSpeak(el);
                 return;
             }
             const path = el.dataset.srcPath || '';
@@ -836,7 +960,8 @@
                 // Keep each sentence paired with its own source ("Context 3" -> "Src 3"/"Frag 3").
                 const n = k.replace('Context ', '');
                 if (data[k]) contexts.push({ text: data[k], src: data['Src ' + n],
-                                             frag: data['Frag ' + n], at: data['At ' + n] });
+                                             frag: data['Frag ' + n], at: data['At ' + n],
+                                             aud: data['Aud ' + n] });
             });
 
             const zenCap = contextCap();
@@ -844,7 +969,7 @@
                 const t = trimContext(c.text, data.Word, zenCap);
                 // Keep the untrimmed sentence reachable on hover when we windowed it.
                 const tip = t.trimmed ? ` title="${escapeHtml(c.text)}"` : '';
-                return `<span class="context-line"${tip}>${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at)}</span>`;
+                return `<span class="context-line"${tip}>${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud)}</span>`;
             }).join("");
 
             el.innerHTML = `

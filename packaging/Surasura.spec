@@ -63,6 +63,16 @@ if not (enable_youtube or enable_preview):
     print("BUILD CONFIG: Excluding YouTube Downloader module (transcripts & preview both off)")
     excluded_modules.append('modules.youtube_downloader')
 
+# Speech (Koe) ships WITH the app rather than being toggled in at build time — it is hidden at
+# RUNTIME instead, appearing only for a user who adds "enable_koe" to their settings.json. So the
+# only question here is whether the folder exists at all (it is untracked, so an open-source
+# checkout simply doesn't have it).
+if os.path.isdir(os.path.join(project_root, 'modules', 'koe')):
+    print("BUILD CONFIG: Bundling Speech module (hidden unless enable_koe is added to settings.json)")
+else:
+    print("BUILD CONFIG: Speech module not present - excluding")
+    excluded_modules.append('modules.koe')
+
 
 # -----------------------------------------------------------------------------
 # PYINSTALLER CONFIG

@@ -233,6 +233,7 @@ class MasterDashboardApp:
         self.var_enable_youtube = tk.BooleanVar(value=False)
         self.youtube_risk_acknowledged = False
         self.var_enable_preview = tk.BooleanVar(value=False)
+        self.var_enable_koe = tk.BooleanVar(value=False)  # Gemini speech for report sentences
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self._lock_ui_updates = False
@@ -327,6 +328,8 @@ class MasterDashboardApp:
         self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
         self.var_enable_preview.trace_add("write", self.save_settings)
         self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
+        self.var_enable_koe.trace_add("write", self.save_settings)
+        self.var_enable_koe.trace_add("write", lambda n, i, m: self.apply_koe_state())
         self.var_auto_update.trace_add("write", self.save_settings)
         # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
         # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
@@ -1173,6 +1176,32 @@ class MasterDashboardApp:
         ToolTip(combo_src, "Show which file each example sentence came from, to the right of the "
                            "sentence. Hover it for the full path; click to copy.")
 
+        # Speech. Grouped here because its control in the report IS the source badge above: with
+        # speech on, clicking a badge reads the sentence aloud instead of copying the path.
+        #
+        # Shown only to someone who has deliberately added `"enable_koe"` to their settings.json.
+        # The module ships with the app, but for everyone who hasn't asked for it there is no
+        # toggle, no helper and no trace in their settings — the app is unchanged.
+        try:
+            import modules.koe as _koe_ui
+            _koe_module_available = _koe_ui.is_revealed()
+        except Exception:
+            _koe_module_available = False
+        if _koe_module_available:
+            koe_frame = ttk.Frame(group_ui)
+            koe_frame.pack(fill=tk.X, pady=(8, 0))
+            chk_koe = ttk.Checkbutton(koe_frame, text="Speak sentences (Gemini)",
+                                      variable=self.var_enable_koe)
+            chk_koe.pack(side=tk.LEFT)
+            ToolTip(chk_koe, "Click a sentence's source badge in the report to hear it read aloud. "
+                             "Needs a Gemini API key and sends that sentence to Google — the only "
+                             "part of Surasura that uses the internet. YouTube badges still open "
+                             "the video instead.")
+            btn_koe = ttk.Button(koe_frame, text="Speech settings…", width=17,
+                                 command=self.open_koe_settings)
+            btn_koe.pack(side=tk.LEFT, padx=(8, 0))
+            ToolTip(btn_koe, "Set the API key, voice and delivery for spoken sentences.")
+
         # Words Per Day Settings
         self.wpd_frame = ttk.Frame(group_ui)
         self.wpd_frame.pack(fill=tk.X, pady=(5, 0))
@@ -1584,6 +1613,43 @@ class MasterDashboardApp:
         else:
             self.btn_preview.pack_forget()
 
+    def open_koe_settings(self):
+        # Orchestration lives in the module; the core only needs a thin, lazy entry point.
+        try:
+            from modules.koe import open_koe_settings
+        except (ImportError, ModuleNotFoundError):
+            return
+        open_koe_settings(self)
+
+    def apply_koe_state(self):
+        """Start or stop the speech helper to match the toggle, and keep the badge reachable.
+
+        The report's speech control IS the per-sentence source badge, so with
+        `source_display = "off"` there would be no button to click. Turning speech on therefore
+        promotes the badge to at least "Icon only" — a display change, which re-renders the report
+        but never re-analyzes (see analyzer.compute_render_signature).
+        """
+        # `import modules.koe` rather than `from modules import koe`: the latter reads the ATTRIBUTE
+        # off the already-imported parent package, which survives even when the submodule is gone,
+        # so the guard would not fire. This is also the form update_youtube_visibility uses.
+        try:
+            import modules.koe as koe
+        except (ImportError, ModuleNotFoundError):
+            return
+
+        enabled = self.var_enable_koe.get()
+        if enabled and self.var_source_display.get() == "off":
+            self.var_source_display.set("icon")     # traced -> persisted by save_settings
+            self.save_settings()
+
+        try:
+            if enabled:
+                koe.start_server(self)
+            else:
+                koe.stop_server()
+        except Exception as e:
+            print(f"Warning: could not change the speech helper state: {e}")
+
     def _update_zen_visibility(self, event=None):
         """Show the Zen Limit slider only when the Zen Mode theme is selected (it has no effect on
         any other theme). Re-packed BEFORE the journey button so it keeps its position above it."""
@@ -1638,6 +1704,9 @@ class MasterDashboardApp:
 
             self.var_enable_preview.set(settings.get("enable_youtube_preview", False))
             self.update_preview_visibility()
+
+            self.var_enable_koe.set(settings.get("enable_koe", False))
+            self.apply_koe_state()
 
             self.var_auto_update.set(settings.get("auto_update_enabled", True))
             self.skipped_version = settings.get("skipped_version", "")
@@ -1736,6 +1805,21 @@ class MasterDashboardApp:
                 settings["enable_youtube_transcripts"] = self.var_enable_youtube.get()
                 settings["enable_youtube_preview"] = self.var_enable_preview.get()
                 settings["youtube_risk_acknowledged"] = getattr(self, "youtube_risk_acknowledged", False)
+            except (ImportError, ModuleNotFoundError):
+                pass
+
+            # The speech module ships inside the app but stays hidden until the user adds the
+            # `enable_koe` line to settings.json themselves. Nothing about it is written back
+            # unless that line is already there — otherwise the first save would scatter koe_*
+            # keys through every user's settings and the feature would announce itself.
+            try:
+                import modules.koe as _koe
+                if _koe.is_revealed():
+                    settings["enable_koe"] = self.var_enable_koe.get()
+                    for _koe_key in ("koe_voice", "koe_model", "koe_style",
+                                     "koe_temperature", "koe_port", "koe_daily_cap"):
+                        if _koe_key in cur:
+                            settings[_koe_key] = cur[_koe_key]
             except (ImportError, ModuleNotFoundError):
                 pass
 
@@ -1919,6 +2003,14 @@ class MasterDashboardApp:
 
     def on_closing(self):
         """Coordinated shutdown: terminate all active sub-processes"""
+        # The speech helper is a daemon thread, so it would die with the process anyway — but
+        # closing it here releases the port immediately, so relaunching the app doesn't have to
+        # fall through to the next one.
+        try:
+            import modules.koe as koe
+            koe.stop_server()
+        except Exception:
+            pass
         if self.active_processes:
             self.status_var.set("Closing sub-windows...")
             for proc in self.active_processes:

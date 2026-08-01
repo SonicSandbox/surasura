@@ -260,9 +260,15 @@ class TestSourceBadgeRendering(unittest.TestCase):
         self.assertIn("src-badge", content, "badge CSS class missing")
 
     def test_badge_is_hidden_from_dictionary_extensions(self):
-        """A filename must never be parsed as vocabulary by Migaku/Yomitan."""
+        """A filename must never be parsed as vocabulary by Migaku/Yomitan.
+
+        Matched on the ignore attributes following the class attribute rather than on one exact
+        literal: the class is built dynamically (the optional speech module appends a 'ready'
+        state), so pinning the whole string would fail on a purely cosmetic change while the
+        property that matters here — both ignore markers on the badge — still held.
+        """
         content = self._template(theme="default")
-        self.assertIn('class="src-badge" migaku_ignore data-yomichan-ignore', content)
+        self.assertRegex(content, r'class="src-badge[^"]*"\s+migaku_ignore\s+data-yomichan-ignore')
 
     def test_badge_path_is_a_data_attribute_not_an_inline_string(self):
         """A filename containing a double-quote would close an inline onclick early — the same bug
@@ -400,9 +406,13 @@ class TestSourceBadgeRendering(unittest.TestCase):
         self.assertIn("copySourcePath", content, "Zen is missing the copy handler")
         self.assertIn("let globalSources =", content, "Zen is missing the source table injection")
         # t.text is the display-trimmed sentence; the pairing with its own source is the point here.
-        self.assertIn("${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at)}", content,
+        # It is passed to the badge a second time as the 4th argument, which is what the optional
+        # speech module reads — the badge speaks exactly the sentence shown next to it.
+        self.assertIn("${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud)}",
+                      content,
                       "Zen must pair each sentence with its own source, anchor and cue time")
-        self.assertIn('class="src-badge" migaku_ignore data-yomichan-ignore', content)
+        # Class matched loosely — see test_badge_is_hidden_from_dictionary_extensions.
+        self.assertRegex(content, r'class="src-badge[^"]*"\s+migaku_ignore\s+data-yomichan-ignore')
 
     def test_report_generates_without_a_source_table(self):
         """Results produced before this feature have no sources.json. The report must still build:

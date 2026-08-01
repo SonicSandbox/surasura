@@ -93,7 +93,7 @@ DEFAULT_SETTINGS = {
 # active settings only when the module is importable, keeping optional features fully "tacked
 # on": the core defaults (and the shipped settings.json) stay free of their keys, and a build
 # without the module never sees or persists them.
-_OPTIONAL_MODULE_NAMES = ["modules.youtube_downloader"]
+_OPTIONAL_MODULE_NAMES = ["modules.youtube_downloader", "modules.koe"]
 
 
 def _optional_module_defaults() -> Dict[str, Any]:

@@ -53,6 +53,9 @@ CLAUDE.md
 # Legacy code reviews (local only)
 docs/legacy_code_reviews/
 
+# Third-party integration research (local only — contains account identifiers)
+docs/research/
+
 # Reference corpora — build inputs for scripts/build_reference_data.py only.
 # Large, third-party, and never shipped: the build script distils them into the
 # committed app/reference_data.py, which is what the app actually reads.

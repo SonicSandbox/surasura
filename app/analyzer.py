@@ -1002,6 +1002,12 @@ def compute_render_signature(args):
         _s.get("source_display", "off"),
         _s.get("words_per_day", 5),
         bool(_s.get("show_words_per_day", True)),
+        # Speech (optional module) is INJECTED into the report — the helper endpoint, and which
+        # sentences already have audio. Toggling it must therefore re-render. Without this, turning
+        # speech on while the badge was already visible changed nothing in the signature, so the
+        # existing report was reused and its badges stayed mute. Absent module -> False, so this
+        # costs nothing for anyone who doesn't have it.
+        bool(_s.get("enable_koe", False)),
     ])
 
 

@@ -29,6 +29,11 @@ def _included_module_test_dirs(settings):
         d = os.path.join("modules", "youtube_downloader", "tests")
         if os.path.isdir(d):
             dirs.append(d)
+    # Speech (Koe): always bundled when present (it is hidden at runtime, not at build time), so
+    # its suite runs whenever the folder is there.
+    d = os.path.join("modules", "koe", "tests")
+    if os.path.isdir(d):
+        dirs.append(d)
     return dirs
 
 

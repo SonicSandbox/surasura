@@ -382,7 +382,7 @@ def _group_label(rel_path):
     return "/".join(parts) if parts else str(rel_path)
 
 
-def _intern_sources(records, source_map, table, index, finder=None):
+def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None):
     """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
 
     The CSVs carry the readable relative path so exports stay human-readable, but a big library
@@ -423,9 +423,10 @@ def _intern_sources(records, source_map, table, index, finder=None):
                               vid])
             rec[key] = idx
 
+            n = key[4:]                                      # "Src 2" -> "2"
+            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None) else None
+
             if finder is not None:
-                n = key[4:]                                  # "Src 2" -> "2"
-                sentence = rec.get(f"Context {n}")
                 if isinstance(sentence, str) and sentence:
                     frag, at = finder.resolve(table[idx][2], sentence)
                     if frag:
@@ -433,6 +434,14 @@ def _intern_sources(records, source_map, table, index, finder=None):
                         # Subtitles/transcripts: the cue this sentence sits in, shown on hover.
                         if at is not None:
                             rec[f"At {n}"] = at
+
+            # Optional speech module: mark sentences whose audio is already on disk, so the badge
+            # can show that clicking will play instantly instead of pausing to generate. Named
+            # "Aud N", NOT "Context …" — both templates collect example sentences with
+            # startsWith('Context ') and would render such a column as another example.
+            if audio_probe is not None and isinstance(sentence, str) and sentence:
+                if audio_probe(sentence):
+                    rec[f"Aud {n}"] = 1
 
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0):
@@ -458,6 +467,16 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     # is actually switched on — a run with it off pays nothing.
     source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"))
                      if settings.get("source_display", "off") != "off" else None)
+
+    # Optional speech module: which sentences already have generated audio. Gated on the badge
+    # being visible, since the badge is the only thing that would show it.
+    audio_probe = None
+    if settings.get("source_display", "off") != "off":
+        try:
+            import modules.koe as _koe_probe
+            audio_probe = _koe_probe.cached_probe(target_lang)
+        except Exception:
+            audio_probe = None
 
     # Load File Statistics
     STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
@@ -492,7 +511,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
             for filename in files_order:
                 group = grouped.get_group(filename)
                 words = group.to_dict(orient="records")
-                _intern_sources(words, source_map, source_table, source_index, source_finder)
+                _intern_sources(words, source_map, source_table, source_index, source_finder,
+                                audio_probe)
                 compressed_words = compress_list_of_dicts(words)
                 
                 # Get total words from stats if available
@@ -538,7 +558,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
         try:
             df = pd.read_csv(PRIORITY_CSV)
             raw_priority = df.to_dict(orient="records")
-            _intern_sources(raw_priority, source_map, source_table, source_index, source_finder)
+            _intern_sources(raw_priority, source_map, source_table, source_index, source_finder,
+                            audio_probe)
             data["priority"] = compress_list_of_dicts(raw_priority)
         except Exception as e:
             print(f"Error loading priority CSV: {e}")
@@ -639,9 +660,21 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     if source_display not in ("off", "icon", "filename", "full"):
         source_display = "off"
 
+    # Optional speech module: how the report reaches the local helper that speaks a sentence.
+    # Only ever the loopback port and a token — never the API key, which stays in the user's data
+    # folder so it can't be copied into every report ever generated. Absent module (or feature off)
+    # leaves this null and the badge behaves exactly as it always has.
+    koe_config = None
+    try:
+        import modules.koe as _koe        # not `from modules import koe` — see main.apply_koe_state
+        koe_config = _koe.report_config()
+    except Exception:
+        koe_config = None
+    koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
+
     html_content = html_content.replace(
         "let globalData = null;",
-        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';"
+        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalKoe = {koe_json_str};"
     )
 
     # Embed Icon as Favicon and Header Logo

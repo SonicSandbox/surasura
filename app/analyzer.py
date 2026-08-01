@@ -1521,8 +1521,12 @@ def main():
         _e["spoken"] += _d.get("spoken_count", 0)
         _e["series"].update(_d.get("series", ()))
 
-    def _modality_of(lemma, data=None):
-        """"reading" when a word is worth a reading-first card, else None. See app/modality.py."""
+    def _modality_of(lemma):
+        """"reading" when a word is worth a reading-first card, else None. See app/modality.py.
+
+        Takes the LEMMA only — every input now comes from the per-lemma roll-up above, so there is
+        no per-(lemma, reading) entry left for a caller to pass in. Judging one entry's share of
+        the evidence is the bug this replaced."""
         if not _spoken_ranks:
             return None
         ev = _lemma_evidence.get(lemma)
@@ -1561,7 +1565,7 @@ def main():
             # reading-first card. Blank means hearable OR not enough evidence — deliberately not
             # a claim. NOT named "Context ..." : both report templates collect example sentences
             # with startsWith('Context '), and such a column would render as a bogus example.
-            "Modality": _modality_of(lemma, data) or "",
+            "Modality": _modality_of(lemma) or "",
             "Sources": source_display, # Moved to end
             "_MinSeq": data["min_seq"], # Helper for sorting
             "_CandidateContexts": data["candidate_contexts"],
@@ -2075,7 +2079,7 @@ def main():
                 "Count (High)": stats.get("high_count", 0),
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
-                "Modality": _modality_of(lemma, stats) or "",
+                "Modality": _modality_of(lemma) or "",
             })
             
             # Dynamically attach all context strings currently tracked

@@ -145,24 +145,12 @@ def test_listening_hours_uses_the_shared_minutes_per_file():
 
 
 # --- evidence must be rolled up per LEMMA, not per (lemma, reading) -------------------------- #
-
-def test_evidence_is_aggregated_across_readings():
-    """unidic gives some words several readings; the evidence must not be split between them.
-
-    Found in the wild: 差し伸べる arrives as both サシノベ and サシノベル, so word_stats holds two
-    entries. Judged separately each saw only a share of the times the word was actually heard, so a
-    word met once per 23 hours looked unheard twice over and was flagged twice — once per reading.
-    The reference rank is per-lemma, so the library evidence has to be too.
-    """
-    import inspect
-    from app import analyzer
-
-    source = inspect.getsource(analyzer.main)
-    assert "_lemma_evidence" in source, "modality evidence is no longer rolled up by lemma"
-    # ...and the roll-up must be what classify() is fed, not the per-entry dict.
-    assert 'spoken_count=ev["spoken"]' in source
-    assert 'series_count=len(ev["series"])' in source
-
+#
+# unidic files one word under several readings, so word_stats holds an entry per (lemma, reading)
+# and each sees only a share of the evidence. The arithmetic consequence is pinned below; that the
+# ANALYZER actually rolls the evidence up before judging is covered end-to-end by
+# tests/test_reading_words_export.py::test_the_lemma_is_the_unit_of_judgement_not_the_reading,
+# which runs a real analysis over a word unidic splits three ways.
 
 def test_split_readings_would_flip_the_verdict():
     """Why the roll-up matters, in numbers.

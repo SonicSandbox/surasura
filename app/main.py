@@ -2063,7 +2063,7 @@ class MasterDashboardApp:
         return False
 
     def generate_reading_words(self):
-        """Export the reading-only words as a Yomitan list.
+        """Export the reading-only words as a word list.
 
         Same three formats as the ordinary frequency-list export — a Migaku user can't do anything
         with a Yomitan ZIP, and two export buttons that behave differently is just confusing. The

@@ -52,7 +52,12 @@ def test_yomitan_export_ranks_by_library_frequency(sidecar, tmp_path):
     index, terms = _read_zip(str(out))
     assert index["format"] == 3
     assert [t[0] for t in terms] == [w for w, _r, _n in READING_WORDS]
-    assert [t[2] for t in terms if isinstance(t[2], int)] or terms[0][2] == 1
+    # Rank is ROW POSITION — the exporter preserves the order it is given and never sorts. The
+    # frequency meaning comes from the analyzer, which writes the sidecar sorted by descending
+    # occurrences; break that sort and these ranks stop meaning anything, without any error.
+    # Every fixture word contains kanji, so each entry takes the plain-integer form (the reading
+    # object is reserved for pure-katakana words — see _is_pure_katakana).
+    assert [t[2] for t in terms] == list(range(1, len(READING_WORDS) + 1))
 
 
 def test_migaku_export_works_on_the_same_file(sidecar, tmp_path):
@@ -95,35 +100,108 @@ def test_blank_and_malformed_entries_are_skipped(tmp_path):
     assert out.read_text(encoding="utf-8").splitlines() == ["覗き込む", "吐息"]
 
 
-def test_analyzer_writes_the_sidecar_as_a_csv_with_the_shared_columns():
-    """The exporters require a `Word` column; the analyzer must actually produce one.
+# --- end-to-end: what the analyzer actually writes -------------------------------------------- #
 
-    Guards the contract that lets both export buttons share one dialog.
+# 囁く is the discriminating fixture. Unidic hands it THREE readings across ordinary conjugations
+# (ササヤク / ササヤイ / ササヤキ), and the spoken corpora rank it ~37,000 — about one encounter per
+# 168 hours of listening, comfortably a reading word. That combination is the whole point: split
+# three ways, no single reading reaches logic.modality.min_lib_count (3), so judged per
+# (word, reading) the word earns no badge at all. Rolled up per LEMMA it is correctly flagged, once.
+# 吐息 is the single-reading control that must behave identically either way.
+NARRATION = """彼は静かに囁く。
+彼女は小さな声で囁いた。
+老人が窓の外を見ながら囁いている。
+少女は囁きながらゆっくりと歩いた。
+男はもう一度だけ囁きます。
+彼は深い吐息をついた。
+彼女もまた深い吐息をついた。
+老人は静かに深い吐息をついた。
+"""
+
+
+def _analyze(root):
+    """Run a real analysis against `root`, and only against `root`. Returns the results dir.
+
+    Patch `app.analyzer.*`, never `app.path_utils.*`: the analyzer does
+    `from app.path_utils import get_data_path`, so it holds its own reference and patching
+    path_utils leaves it walking the developer's real library (testing.md §5.2).
+
+    `--min-freq 1` pins the selection floor to a raw count, bypassing the density bands — otherwise
+    the fixture's verdict would depend on whichever band the developer's settings.json happens to
+    hold.
     """
-    import inspect
+    from unittest.mock import patch
     from app import analyzer
 
-    source = inspect.getsource(analyzer.main)
-    assert "reading_words.csv" in source
-    assert '["Word", "Reading", "Occurrences"]' in source
-    # Built from word_stats, NOT the floor-filtered rows — a word met five times is exactly
-    # where knowing "you'll never hear this" matters most.
-    assert '_modality_of(lemma)' in source
+    high = root / "data" / "ja" / "HighPriority"
+    high.mkdir(parents=True)
+    (root / "User Files" / "ja").mkdir(parents=True)
+    results = root / "results"
+    results.mkdir()
+    (high / "narration.txt").write_text(NARRATION, encoding="utf-8")
+
+    with patch("app.analyzer.get_user_file", side_effect=lambda p: str(root / p)), \
+         patch("app.analyzer.get_data_path",
+               side_effect=lambda l=None: str(root / "data" / l) if l else str(root / "data")), \
+         patch("app.analyzer.get_user_files_path",
+               side_effect=lambda l=None: str(root / "User Files" / l) if l else str(root / "User Files")), \
+         patch("app.analyzer.RESULTS_DIR", str(results)), \
+         patch("app.analyzer.OUTPUT_CSV", str(results / "priority_learning_list.csv")), \
+         patch("app.analyzer.OUTPUT_STATS", str(results / "file_statistics.txt")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results / "progressive_learning_list.csv")), \
+         patch("sys.argv", ["analyzer.py", "--language", "ja", "--min-freq", "1"]):
+        analyzer.main()
+    return results
 
 
-def test_export_lists_each_word_once():
-    """One row per word, not per (word, reading).
+def _sidecar_rows(results):
+    with open(results / "reading_words.csv", encoding="utf-8-sig", newline="") as f:
+        return list(csv.DictReader(f))
 
-    unidic gives some words several readings — 差し伸べる arrives as both サシノベ and サシノベル —
-    and a dictionary that lists the same term twice with two different ranks is just noise to
-    whoever loads it. Occurrences are summed onto a single row.
+
+def test_the_analyzer_writes_a_sidecar_the_ordinary_exporters_can_read(tmp_path):
+    """The contract that lets both export buttons share one format picker.
+
+    The exporters key off a `Word` column and nothing else, so the sidecar has to be a CSV shaped
+    exactly like the priority list. Checked against a real run rather than the source text: the
+    columns are what an exporter consumes, and a rename that kept the header would be harmless
+    while one that changed it would not.
     """
-    import inspect
-    from app import analyzer
+    results = _analyze(tmp_path)
 
-    source = inspect.getsource(analyzer.main)
-    assert "_best" in source, "the sidecar no longer de-duplicates by word"
-    assert "_best.get(lemma)" in source
+    with open(results / "reading_words.csv", encoding="utf-8-sig", newline="") as f:
+        header = next(csv.reader(f))
+    assert header == ["Word", "Reading", "Occurrences"]
+
+    # ...and the real exporters must actually consume the real file.
+    out = tmp_path / "reading.txt"
+    FrequencyExporter.export_word_list(str(results / "reading_words.csv"), str(out))
+    assert out.read_text(encoding="utf-8").splitlines() == [r["Word"] for r in _sidecar_rows(results)]
+
+
+def test_the_lemma_is_the_unit_of_judgement_not_the_reading(tmp_path):
+    """One verdict and one entry per WORD, however many readings unidic files it under.
+
+    Both halves of the same fix. 囁く arrives as three readings; judged separately each sees only a
+    share of the evidence and falls under min_lib_count, so the word was missed entirely — and any
+    word that did clear the floor twice was listed twice at two different ranks, which is just
+    noise to whatever dictionary loads it.
+    """
+    results = _analyze(tmp_path)
+
+    words = [r["Word"] for r in _sidecar_rows(results)]
+    assert "囁く" in words, (
+        "a rare-in-speech word was missed — evidence is being split across its readings again")
+    assert words.count("囁く") == 1, f"listed more than once: {words}"
+    assert len(words) == len(set(words)), f"duplicate entries: {words}"
+
+    # The same roll-up drives the report's 文 badge, so every row for a word must agree.
+    with open(results / "priority_learning_list.csv", encoding="utf-8-sig", newline="") as f:
+        rows = [r for r in csv.DictReader(f) if r["Word"] == "囁く"]
+    assert len(rows) > 1, "fixture no longer produces a multi-reading lemma; pick another word"
+    assert {r["Modality"] for r in rows} == {"reading"}, (
+        "the verdict differs between two readings of one word: "
+        f"{[(r['Reading'], r['Modality']) for r in rows]}")
 
 
 def test_emptiness_is_decided_by_rows_not_bytes(tmp_path):

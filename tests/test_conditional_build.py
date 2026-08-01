@@ -75,8 +75,14 @@ class TestConditionalSatori(unittest.TestCase):
     def test_satori_shown_if_module_present(self):
         """Test that button is shown if setting is False and module imports"""
         self.app.var_hide_satoru.get.return_value = False
-        
-        with patch.dict(sys.modules, {'modules.immersion_architect': MagicMock()}):
+
+        # The PARENT package has to be faked too. `import modules.immersion_architect` binds the
+        # top-level name, so __import__ looks up sys.modules['modules'] as well — faking only the
+        # submodule raised ModuleNotFoundError whenever modules/ was genuinely absent, which is
+        # exactly the configuration this file exists to prove works (an open-source checkout, or
+        # the SOP's delete-test). Faking both keeps the coverage instead of skipping it.
+        with patch.dict(sys.modules, {'modules': MagicMock(),
+                                      'modules.immersion_architect': MagicMock()}):
             self.MasterDashboardApp.update_satori_visibility(self.app)
             self.app.btn_satori.pack.assert_called()
 

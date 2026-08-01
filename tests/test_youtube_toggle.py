@@ -68,7 +68,12 @@ class TestYoutubeVisibility(unittest.TestCase):
 
     def test_shown_when_on_and_module_present(self):
         self.app.var_enable_youtube.get.return_value = True
-        with patch.dict(sys.modules, {'modules.youtube_downloader': MagicMock()}):
+        # Fake the PARENT package as well — `import modules.youtube_downloader` binds the top-level
+        # name, so sys.modules['modules'] is consulted too, and faking only the submodule raised
+        # ModuleNotFoundError whenever modules/ was genuinely absent. That is the very case this
+        # file's docstring promises to cover ("must pass with or without it present").
+        with patch.dict(sys.modules, {'modules': MagicMock(),
+                                      'modules.youtube_downloader': MagicMock()}):
             self.MasterDashboardApp.update_youtube_visibility(self.app)
             self.app.btn_youtube.pack.assert_called()
 

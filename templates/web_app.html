@@ -490,6 +490,40 @@
             color: var(--error);
         }
 
+        /* Word lookup — an icon-only button sitting just left of Ignore. Mirrors .btn-audio (this
+           file's established "quiet icon button" idiom): no border, half opacity until hovered, so
+           it stays out of the way of the sentence. `currentColor` over var(--text-secondary) is
+           what makes it track every theme — including the light one — with no per-theme override,
+           and in Zen Focus it inherits the whole footer's fade-until-hover. */
+        .btn-search {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 4px 6px;
+            margin-right: 4px;
+            cursor: pointer;
+            opacity: 0.5;
+            transition: opacity 0.2s, transform 0.1s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+
+        .btn-search:hover {
+            opacity: 1;
+        }
+
+        .btn-search:active {
+            transform: scale(0.95);
+        }
+
+        .btn-search svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
         /* --- Sources Toggle --- */
         .sources-section {
             margin-top: 10px;
@@ -1210,6 +1244,7 @@
                 <b>z</b> : Ignore Word<br>
                 <b>w</b> : Mark File Complete<br>
                 <b>s</b> : Cycle Show Filter
+                <span id="hint-search"><br><b>\</b> : Search Word Online</span>
             </div>
         </div>
     </div>
@@ -1513,6 +1548,13 @@
                 // --- Apply Theme ---
                 if (typeof globalTheme !== 'undefined' && globalTheme !== 'default') {
                     document.body.classList.add(`theme-${globalTheme}`);
+                }
+
+                // With the lookup button turned off there is nothing for `\` to click, so don't
+                // advertise a key that does nothing.
+                if (!wordSearchEnabled()) {
+                    const hintSearch = document.getElementById('hint-search');
+                    if (hintSearch) hintSearch.remove();
                 }
 
                 // --- Decompress Global Data First ---
@@ -2448,7 +2490,16 @@
             // Footer
             const footer = document.createElement('div');
             footer.className = "card-footer";
-            footer.innerHTML = `<div></div><div class="actions"><button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
+            // The word travels in a data-attribute rather than an inline JS string (same rule as
+            // data-audio above) — a word interpolated into onclick breaks on any quote it contains.
+            // Turned off in Advanced Settings -> the button is never built, so the `\` hotkey (which
+            // clicks it) correctly does nothing rather than needing its own check.
+            const searchBtnHtml = !wordSearchEnabled() ? '' :
+                `<button class="btn-search" data-word="${safeWord}" onclick="searchWord(this.dataset.word)" title="Search this word online (Hotkey: \\)">` +
+                `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>` +
+                `</button>`;
+            footer.innerHTML = `<div></div><div class="actions">` + searchBtnHtml +
+                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
             el.appendChild(footer);
 
             // Sources (DOM Pruned)
@@ -2738,6 +2789,34 @@
             a.remove();
         }
 
+        // --- Word Lookup ---
+        // Opens the card's word on an external example-sentence site in a new tab. One function and
+        // one constant so the ⌕ button and the `\` hotkey can never drift, and so adding
+        // alternative lookup targets later is a change in a single place.
+        // Nothing is requested until the user clicks: the report itself stays offline.
+        const WORD_SEARCH_URL = 'https://nadeshiko.co/en/search/';
+
+        // Defaults matter: a report rendered before this option existed carries no globalWordSearch,
+        // and must keep behaving exactly as it did — button shown, no category filter.
+        function wordSearchConfig() {
+            return (typeof globalWordSearch !== 'undefined' && globalWordSearch) ? globalWordSearch : {};
+        }
+
+        function wordSearchEnabled() {
+            return wordSearchConfig().enabled !== false;
+        }
+
+        function searchWord(word) {
+            if (!word) return;
+            const category = wordSearchConfig().category || 'all';
+            // 'all' is the absence of a filter, so it appends nothing — that keeps the plain URL
+            // clean and is what Nadeshiko expects.
+            const query = category !== 'all' ? '?category=' + encodeURIComponent(category) : '';
+            // encodeURIComponent, not the raw word: a lemma can carry a space or a slash, either of
+            // which would truncate or re-path the URL. Japanese and Chinese survive it unchanged.
+            openInNewTab(WORD_SEARCH_URL + encodeURIComponent(word) + query);
+        }
+
         // Plain click follows the anchor and opens the VIDEO at this sentence's moment.
         // Shift-click opens the TRANSCRIPT at the same sentence — the browser would otherwise
         // open a new window, so it has to be intercepted. With no verified anchor to jump to,
@@ -2912,8 +2991,9 @@
             const isAudio = e.key === 'v' || e.key === 'V';
             const isComplete = e.key === 'w' || e.key === 'W';
             const isSort = e.key === 's' || e.key === 'S';
+            const isSearch = e.key === '\\';
 
-            if (!isNext && !isPrev && !isUp && !isDown && !isAudio && !isComplete && !isSort) return;
+            if (!isNext && !isPrev && !isUp && !isDown && !isAudio && !isComplete && !isSort && !isSearch) return;
 
             // Don't navigate if user is typing in an input/textarea
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -2994,6 +3074,16 @@
                 const audioBtn = centeredCard.querySelector('.btn-audio');
                 if (audioBtn) {
                     audioBtn.click();
+                }
+            }
+
+            // `\` looks the centered word up online. Deliberately NOT part of isNext — unlike `z`,
+            // you stay on the word you just opened so you can come back to it.
+            if (isSearch) {
+                const centeredCard = activeCards[currentIndex];
+                const searchBtn = centeredCard.querySelector('.btn-search');
+                if (searchBtn) {
+                    searchBtn.click();
                 }
             }
 

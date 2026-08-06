@@ -30,6 +30,10 @@ DEFAULT_SETTINGS = {
     # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
     # Presentation only — it never changes the analysis, just how each example sentence is labelled.
     "source_display": "off",
+    # Word lookup button (⌕) on each report card. Presentation only — both re-render, neither
+    # re-analyzes (see analyzer.compute_render_signature).
+    "word_search_enabled": True,
+    "word_search_category": "all",   # all | anime | liveaction | youtube
     "logic": {
         "inline_completed_files": False,
         "weights": {

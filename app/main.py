@@ -175,6 +175,15 @@ class MasterDashboardApp:
         "full": "Icon + file name",
     }
 
+    # Word lookup button (⌕): stored key -> the label shown in Advanced Settings. The key is sent
+    # to Nadeshiko verbatim as ?category=, so 'all' means "no category filter" (no query at all).
+    WORD_SEARCH_LABELS = {
+        "all": "All",
+        "anime": "Anime",
+        "liveaction": "Live action",
+        "youtube": "YouTube",
+    }
+
     @classmethod
     def _source_display_key(cls, label):
         """Settings label -> stored key. Unknown labels fall back to 'off' (the default)."""
@@ -182,6 +191,14 @@ class MasterDashboardApp:
             if text == label:
                 return key
         return "off"
+
+    @classmethod
+    def _word_search_key(cls, label):
+        """Settings label -> stored key. Unknown labels fall back to 'all' (the default)."""
+        for key, text in cls.WORD_SEARCH_LABELS.items():
+            if text == label:
+                return key
+        return "all"
 
     def __init__(self, root):
         self.root = root
@@ -236,6 +253,8 @@ class MasterDashboardApp:
         self.var_enable_koe = tk.BooleanVar(value=False)  # Gemini speech for report sentences
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
+        self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
+        self.var_word_search_category = tk.StringVar(value="all")
         self._lock_ui_updates = False
 
         # Update state (populated by the background check; consumed by the footer indicator)
@@ -1176,6 +1195,28 @@ class MasterDashboardApp:
         ToolTip(combo_src, "Show which file each example sentence came from, to the right of the "
                            "sentence. Hover it for the full path; click to copy.")
 
+        # Word lookup (⌕) button on each card. Presentation only, like the badge above: both the
+        # toggle and the category re-render the report but never re-analyze.
+        chk_word_search = ttk.Checkbutton(group_ui, text="Show word lookup button (⌕)",
+                                          variable=self.var_word_search,
+                                          command=self.save_settings)
+        chk_word_search.pack(anchor=tk.W, pady=(8, 0))
+        ToolTip(chk_word_search, "Show a search icon beside Ignore on every word, opening that word "
+                                 "on Nadeshiko in a new tab. Hotkey: \\")
+
+        ws_frame = ttk.Frame(group_ui)
+        ws_frame.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(ws_frame, text="Lookup examples from:").pack(side=tk.LEFT)
+        combo_ws = ttk.Combobox(ws_frame, values=list(self.WORD_SEARCH_LABELS.values()),
+                                state="readonly", width=13)
+        combo_ws.set(self.WORD_SEARCH_LABELS.get(self.var_word_search_category.get(), "All"))
+        combo_ws.pack(side=tk.LEFT, padx=(5, 0))
+        combo_ws.bind("<<ComboboxSelected>>",
+                      lambda e: (self.var_word_search_category.set(self._word_search_key(combo_ws.get())),
+                                 self.save_settings()))
+        ToolTip(combo_ws, "Which kind of example sentences the lookup opens. 'All' searches "
+                          "everything; the others filter to anime, live action or YouTube.")
+
         # Speech. Grouped here because its control in the report IS the source badge above: with
         # speech on, clicking a badge reads the sentence aloud instead of copying the path.
         #
@@ -1685,6 +1726,9 @@ class MasterDashboardApp:
             self.var_reinforce.set(settings.get("reinforce_segmentation", False))
             src_mode = settings.get("source_display", "off")
             self.var_source_display.set(src_mode if src_mode in self.SOURCE_DISPLAY_LABELS else "off")
+            self.var_word_search.set(settings.get("word_search_enabled", True))
+            ws_cat = settings.get("word_search_category", "all")
+            self.var_word_search_category.set(ws_cat if ws_cat in self.WORD_SEARCH_LABELS else "all")
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
             self.var_ensure_audio.set(settings.get("ensure_audio_example", False))
@@ -1767,6 +1811,8 @@ class MasterDashboardApp:
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
                 "source_display": self.var_source_display.get(),
+                "word_search_enabled": self.var_word_search.get(),
+                "word_search_category": self.var_word_search_category.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "ensure_audio_example": self.var_ensure_audio.get(),

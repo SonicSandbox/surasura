@@ -656,6 +656,16 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
     # Per-sentence source badge: the interned table + the display mode chosen in Advanced Settings.
     sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
+    # Word lookup button (⌕). Validated here rather than trusted, exactly like source_display: a
+    # hand-edited settings.json must not be able to put arbitrary text into the report's URL.
+    _ws = settings if 'settings' in locals() else {}
+    word_search_category = _ws.get("word_search_category", "all")
+    if word_search_category not in ("all", "anime", "liveaction", "youtube"):
+        word_search_category = "all"
+    word_search_json_str = json.dumps({
+        "enabled": bool(_ws.get("word_search_enabled", True)),
+        "category": word_search_category,
+    }, ensure_ascii=False).replace("</", "<\\/")
     source_display = settings.get("source_display", "off") if 'settings' in locals() else "off"
     if source_display not in ("off", "icon", "filename", "full"):
         source_display = "off"
@@ -674,7 +684,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
 
     html_content = html_content.replace(
         "let globalData = null;",
-        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalKoe = {koe_json_str};"
+        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};"
     )
 
     # Embed Icon as Favicon and Header Logo

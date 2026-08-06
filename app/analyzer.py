@@ -948,6 +948,7 @@ def compute_run_signature(language, found_files, args):
             "words_per_day", "show_words_per_day",
             "open_count", "skipped_version",
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
+            "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
         }
         _settings_for_sig = ""
         try:
@@ -1000,6 +1001,11 @@ def compute_render_signature(args):
         args.theme,
         int(args.zen_limit or 0),
         _s.get("source_display", "off"),
+        # Word lookup button: whether it renders at all, and which Nadeshiko category the link
+        # carries. Both are INJECTED into the report, so both must re-render — the same rule that
+        # words_per_day was missing above.
+        bool(_s.get("word_search_enabled", True)),
+        _s.get("word_search_category", "all"),
         _s.get("words_per_day", 5),
         bool(_s.get("show_words_per_day", True)),
         # Speech (optional module) is INJECTED into the report — the helper endpoint, and which

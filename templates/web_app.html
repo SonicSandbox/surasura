@@ -1153,6 +1153,149 @@
             color: #4caf50;
         }
 
+        /* --- Report Search (🔍 tab) ---
+           Colours come only from the theme variables, so every theme (including the light one)
+           paints it correctly. body{caret-color:transparent} would otherwise hide the caret. */
+        .rs-tab svg {
+            vertical-align: middle;
+        }
+
+        .rs-bar {
+            flex: none;
+            padding: 16px 20px 4px;
+        }
+
+        .rs-field {
+            position: relative;
+            display: flex;
+            align-items: center;
+            max-width: 760px;
+        }
+
+        .rs-field .rs-glass {
+            position: absolute;
+            left: 14px;
+            color: var(--text-secondary);
+            pointer-events: none;
+        }
+
+        #rs-input {
+            width: 100%;
+            box-sizing: border-box;
+            height: 44px;
+            padding: 0 44px;
+            font-family: inherit;
+            font-size: 1.1rem;
+            color: var(--on-surface);
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            outline: none;
+            caret-color: var(--primary);
+            cursor: text;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        #rs-input::placeholder {
+            color: var(--text-secondary);
+            opacity: 1;
+        }
+
+        #rs-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
+        }
+
+        #rs-input::-webkit-search-cancel-button {
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .rs-clear {
+            position: absolute;
+            right: 8px;
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 50%;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        .rs-clear:hover {
+            color: var(--primary);
+        }
+
+        .rs-summary {
+            flex: none;
+            min-height: 1.2em;
+            padding: 6px 20px 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .rs-group-title {
+            margin: 22px 0 12px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+        }
+
+        .rs-empty {
+            margin-top: 12vh;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+
+        .card.rs-hit {
+            contain-intrinsic-size: 1px 120px;
+        }
+
+        /* Compact heading for result rows. !important only because world-class sets its
+           .word-main size with !important; the #view-search specificity then wins. */
+        #view-search .rs-hit .word-main {
+            font-size: 1.25rem !important;
+        }
+
+        .rs-hit-word {
+            cursor: pointer;
+        }
+
+        .rs-hit-word:hover {
+            text-decoration: underline;
+        }
+
+        .rs-rank {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .rs-sent {
+            margin-top: 6px;
+            padding: 6px 0 6px 12px;
+            border-left: 2px solid var(--card-border);
+            line-height: 1.6;
+        }
+
+        .rs-mark {
+            background: transparent;
+            color: var(--primary);
+            font-weight: 700;
+            border-bottom: 2px solid var(--primary);
+        }
+
+        /* A search is an explicit request for that word: the "Show" filter never hides a result. */
+        body[class*="filter-"] #view-search .card {
+            display: block !important;
+        }
+
         /* --- Priority Filter ("Show" Menu) --- */
         body.filter-priority .card:not(.is-priority) {
             display: none;
@@ -1243,7 +1386,8 @@
                 <b>v</b> : Play Context Audio<br>
                 <b>z</b> : Ignore Word<br>
                 <b>w</b> : Mark File Complete<br>
-                <b>s</b> : Cycle Show Filter
+                <b>s</b> : Cycle Show Filter<br>
+                <b>/</b> : Search This Report
                 <span id="hint-search"><br><b>\</b> : Search Word Online</span>
             </div>
         </div>
@@ -1268,6 +1412,18 @@
             <div class="word-list-container" id="priority-list">
                 <!-- Cards injected here -->
             </div>
+        </div>
+        <!-- Search View (🔍 tab) -->
+        <div id="view-search" class="view">
+            <div class="rs-bar">
+                <div class="rs-field">
+                    <svg class="rs-glass" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
+                    <input id="rs-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search a word or phrase…" aria-label="Search this report">
+                    <button class="rs-clear" id="rs-clear" title="Clear (Esc)" hidden>✕</button>
+                </div>
+            </div>
+            <div class="rs-summary" id="rs-summary"></div>
+            <div class="word-list-container" id="rs-results"></div>
         </div>
     </div>
 
@@ -1540,6 +1696,7 @@
                 tabsDiv.innerHTML = `
                     <button class="main-tab-btn active" onclick="switchMainTab('progressive')">Progressive Learning</button>
                     <button class="main-tab-btn" onclick="switchMainTab('priority')">Priority List</button>
+                    <button class="main-tab-btn rs-tab" onclick="switchMainTab('search')" title="Search this report (/)" aria-label="Search"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg></button>
                 `;
                 header.appendChild(tabsDiv);
 
@@ -1591,6 +1748,7 @@
                 }
 
                 await fetchData();
+                rsFromHash();
             } catch (e) {
                 console.error("Initialization Error:", e);
                 const loader = document.getElementById('loading-screen');
@@ -1659,6 +1817,9 @@
                 // Detach Progressive
                 document.getElementById('file-tabs').innerHTML = "";
                 document.getElementById('progressive-list').innerHTML = "";
+            } else if (tabName === 'search') {
+                // The other views are left intact: search is read-only over globalData.
+                rsOnShow();
             }
         }
 
@@ -2992,9 +3153,247 @@
             window.speechSynthesis.speak(utterance);
         }
 
+        // --- Report Search (🔍 tab) ---
+        // Searches what this report already holds: every listed word and its chosen example
+        // sentences. Primary = the word EXACTLY as typed (Word, Orth, Reading or one of its real
+        // Forms). Secondary = other words whose sentences contain the text, then other words whose
+        // sentences contain another real form of the searched word. Read-only over globalData.
+        // Identifiers are rs-prefixed: searchWord / isSearch / .btn-search belong to the online lookup.
+        let rsIndex = null;
+        let rsTimer = null;
+        const RS_GROUP_CAP = 300;
+
+        // NFKC (full-width -> half-width, half-width kana -> full), katakana -> hiragana, lower-case.
+        // Mirrored in tests/test_report_search.py — keep the two in step.
+        function rsNorm(s) {
+            if (typeof s !== 'string') return '';
+            return s.normalize('NFKC').trim()
+                .replace(/[\u30A1-\u30F6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60))
+                .toLowerCase();
+        }
+
+        // A variant form is worth matching as a substring only if it can't match everywhere: kana
+        // stems like し / さ / で (forms of する / だ) would hit nearly every sentence.
+        function rsKeepNeedle(s) {
+            return /[\u3400-\u4DBF\u4E00-\u9FFF々]/.test(s) || s.length >= 3;
+        }
+
+        function rsBuildIndex() {
+            const entries = [];
+            const seen = new Set();
+            const add = (row, rank) => {
+                // NaN survives decompression, so every field is checked for being a real string.
+                if (!row || typeof row.Word !== 'string') return;
+                const id = row.Word + '|' + (typeof row.Reading === 'string' ? row.Reading : '');
+                if (seen.has(id)) return;
+                seen.add(id);
+                const forms = (typeof row.Forms === 'string' && row.Forms) ? row.Forms.split('|') : [];
+                const keys = new Set([row.Word, row.Orth, row.Reading, ...forms]
+                    .filter(k => typeof k === 'string' && k).map(rsNorm));
+                const sents = Object.keys(row)
+                    .filter(k => /^Context \d+$/.test(k) && typeof row[k] === 'string' && row[k])
+                    .map(k => ({ n: k.slice(8), text: row[k] }))
+                    .sort((a, b) => parseInt(a.n) - parseInt(b.n));
+                entries.push({ row, rank, forms, keys, sents });
+            };
+            if (globalData && Array.isArray(globalData.priority)) {
+                globalData.priority.forEach((r, i) => add(r, i + 1));
+            }
+            if (globalData && Array.isArray(globalData.progressive)) {
+                globalData.progressive.forEach(f => (Array.isArray(f.words) ? f.words : []).forEach(r => add(r, null)));
+            }
+            return entries;
+        }
+
+        function rsMark(text, needle) {
+            const safe = escapeHtml(text);
+            if (!needle) return safe;
+            const re = new RegExp(escapeHtml(needle).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+            return safe.replace(re, m => `<mark class="rs-mark">${m}</mark>`);
+        }
+
+        function rsCreateHitRow(hit) {
+            const e = hit.e, row = e.row;
+            const el = document.createElement('div');
+            el.className = 'card rs-hit';
+            const word = displayWord(row);
+            const reading = (typeof row.Reading === 'string') ? row.Reading : '';
+            const cap = contextCap();
+            const sents = hit.sents.map(s => {
+                const t = trimContext(s.text, s.needle, cap);
+                const title = t.trimmed ? ` title="${escapeHtml(s.text)}"` : '';
+                return `<div class="rs-sent"${title}>${rsMark(t.text, s.needle)}${sourceBadge(row['Src ' + s.n], row['Frag ' + s.n], row['At ' + s.n], t.text, row['Aud ' + s.n])}</div>`;
+            }).join('');
+            el.innerHTML = `
+                <div class="card-header">
+                    <div style="display:flex; align-items:center; gap: 10px;">
+                        <span class="word-main rs-hit-word" title="Search for this word">${escapeHtml(word)}</span>
+                        <span class="reading" data-reading="${escapeHtml(reading)}" migaku_ignore data-yomichan-ignore></span>
+                    </div>
+                    ${e.rank ? `<span class="rs-rank" title="Position in your Priority List">#${e.rank}</span>` : ''}
+                </div>${sents}`;
+            el.querySelector('.rs-hit-word').addEventListener('click', () => rsSearchFor(word));
+            return el;
+        }
+
+        function rsGroupTitle(text) {
+            const el = document.createElement('div');
+            el.className = 'rs-group-title';
+            el.textContent = text;
+            return el;
+        }
+
+        function rsRun(raw) {
+            const q = (raw || '').trim();
+            const results = document.getElementById('rs-results');
+            const summary = document.getElementById('rs-summary');
+            document.getElementById('rs-clear').hidden = !raw;
+            results.innerHTML = '';
+            results.scrollTop = 0;
+            summary.textContent = '';
+            if (!q) {
+                results.innerHTML = `<div class="rs-empty">Type a word to find it and every example sentence that uses it.</div>`;
+                return;
+            }
+            if (!rsIndex) rsIndex = rsBuildIndex();
+
+            // Words ignored during this session are still in globalData; skip them here.
+            const live = rsIndex.filter(e => !ignoredWords.has(e.row.Word));
+            const byRank = (a, b) => (a.rank || Infinity) - (b.rank || Infinity);
+            const nq = rsNorm(q);
+
+            const primary = live.filter(e => e.keys.has(nq)).sort(byRank);
+            const shown = new Set(primary);
+
+            const hitsA = [];
+            for (const e of live) {
+                if (shown.has(e)) continue;
+                const s = e.sents.filter(x => x.text.includes(q)).map(x => ({ ...x, needle: q }));
+                if (s.length) hitsA.push({ e, sents: s });
+            }
+            hitsA.sort((a, b) => byRank(a.e, b.e));
+            hitsA.forEach(h => shown.add(h.e));
+
+            const variants = new Set();
+            primary.forEach(e => [e.row.Word, e.row.Orth, ...e.forms].forEach(v => {
+                if (typeof v === 'string' && v && v !== q && rsKeepNeedle(v)) variants.add(v);
+            }));
+            const hitsB = [];
+            if (variants.size) {
+                for (const e of live) {
+                    if (shown.has(e)) continue;
+                    const s = [];
+                    for (const x of e.sents) {
+                        for (const v of variants) {
+                            if (x.text.includes(v)) { s.push({ ...x, needle: v }); break; }
+                        }
+                    }
+                    if (s.length) hitsB.push({ e, sents: s });
+                }
+                hitsB.sort((a, b) => byRank(a.e, b.e));
+            }
+
+            if (!primary.length && !hitsA.length && !hitsB.length) {
+                results.innerHTML = `<div class="rs-empty">Nothing in this report contains 「${escapeHtml(q)}」.<br>It may already be known, ignored, or below your commonness setting.</div>`;
+                return;
+            }
+
+            const count = hits => hits.reduce((n, h) => n + h.sents.length, 0);
+            const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+            const parts = [];
+            if (primary.length) parts.push(plural(primary.length, 'card'));
+            if (hitsA.length) parts.push(`${plural(count(hitsA), 'sentence')} in ${plural(hitsA.length, 'other word')}`);
+            if (hitsB.length) {
+                const used = [...new Set(hitsB.flatMap(h => h.sents.map(s => s.needle)))].slice(0, 4);
+                parts.push(`+${hitsB.length} via ${used.join(', ')}`);
+            }
+            summary.textContent = `${q} — ${parts.join(' · ')}`;
+
+            const items = [];
+            primary.forEach(e => items.push({ card: e.row }));
+            if (hitsA.length) {
+                items.push({ title: `Sentences containing 「${q}」 (${hitsA.length})` });
+                hitsA.slice(0, RS_GROUP_CAP).forEach(h => items.push({ hit: h }));
+            }
+            if (hitsB.length) {
+                const label = primary.length ? displayWord(primary[0].row) : q;
+                items.push({ title: `Other forms of ${label} (${hitsB.length})` });
+                hitsB.slice(0, RS_GROUP_CAP).forEach(h => items.push({ hit: h }));
+            }
+            const chunk = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
+            setupInfiniteScroll(results, items, it => it.title ? rsGroupTitle(it.title)
+                : (it.card ? createWordCard(it.card) : rsCreateHitRow(it.hit)), chunk);
+        }
+
+        function rsSearchFor(text) {
+            const inp = document.getElementById('rs-input');
+            inp.value = text;
+            clearTimeout(rsTimer);
+            rsRun(text);
+        }
+
+        function rsOnShow() {
+            const inp = document.getElementById('rs-input');
+            if (!document.getElementById('rs-results').hasChildNodes()) rsRun(inp.value);
+            inp.focus();
+        }
+
+        async function rsOpen() {
+            await switchMainTab('search');
+            const inp = document.getElementById('rs-input');
+            inp.focus();
+            inp.select();
+        }
+
+        // `#search=<query>` opens the report straight into a search (also how it's screenshot-tested).
+        async function rsFromHash() {
+            if (!location.hash.startsWith('#search=')) return;
+            let q = '';
+            try { q = decodeURIComponent(location.hash.slice(8)); } catch (e) { return; }
+            await rsOpen();
+            rsSearchFor(q);
+        }
+
+        (function rsWire() {
+            const inp = document.getElementById('rs-input');
+            if (!inp) return;
+            inp.addEventListener('input', () => {
+                clearTimeout(rsTimer);
+                rsTimer = setTimeout(() => rsRun(inp.value), 120);
+            });
+            inp.addEventListener('keydown', (e) => {
+                // Enter/Escape while a Japanese IME is composing belong to the IME, not to us.
+                if (e.isComposing || e.keyCode === 229) return;
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    if (inp.value) { inp.value = ''; rsRun(''); } else inp.blur();
+                } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    clearTimeout(rsTimer);
+                    rsRun(inp.value);
+                    inp.blur();   // so Space / arrows step through the results straight away
+                    const first = document.querySelector('#rs-results .card');
+                    if (first) first.scrollIntoView({ block: 'center' });
+                }
+            });
+            document.getElementById('rs-clear').addEventListener('click', () => {
+                inp.value = '';
+                rsRun('');
+                inp.focus();
+            });
+        })();
+
         // --- Smart Navigation ---
         document.addEventListener('keydown', (e) => {
             if (e.repeat) return;
+
+            // `/` opens the search tab from anywhere (never while typing in a field).
+            if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey
+                && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                rsOpen();
+                return;
+            }
 
             const isNext = e.code === 'Space' || e.code === 'ArrowRight' || e.key === 'z' || e.key === 'Z';
             const isPrev = e.code === 'ArrowLeft';

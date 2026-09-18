@@ -34,6 +34,15 @@ DEFAULT_SETTINGS = {
     # re-analyzes (see analyzer.compute_render_signature).
     "word_search_enabled": True,
     "word_search_category": "all",   # all | anime | liveaction | youtube
+    # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
+    # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
+    # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run
+    # signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "anki_connect_url": "http://127.0.0.1:8765",
+    "anki_sync_auto": False,
+    "anki_sync_decks": {},
+    "anki_sync_fields": {},
+    "anki_sync_include_suspended": False,
     "logic": {
         "inline_completed_files": False,
         "weights": {

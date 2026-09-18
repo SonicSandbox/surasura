@@ -46,7 +46,7 @@ ENSURE_AUDIO_EXAMPLE = False
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 8
+ENGINE_REVISION = 9
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -310,6 +310,24 @@ def _display_orth(lemma, orths):
         if orth and (n > best_n):
             best, best_n = orth, n
     return best or lemma
+
+# How many inflected forms the `Forms` column keeps per row. The report's Search tab matches them
+# as plain substrings, so a handful of the commonest is all it needs — the long tail is noise.
+FORMS_LIMIT = 8
+
+def _display_forms(lemma, orths, surfaces):
+    """The other spellings a word was actually met in, commonest first, joined with `|`.
+
+    Feeds the report's Search tab: typing 食べた finds the 食べる card only because 食べた really
+    occurred in the user's content, never because of a guessed de-inflection. The lemma and the
+    displayed orth are left out — they are already searchable as `Word` and `Orth`. NOT named
+    "Context ...": both report templates collect example sentences with startsWith('Context ').
+    """
+    if not surfaces:
+        return ""
+    shown = {lemma, _display_orth(lemma, orths)}
+    forms = [s for s, _ in sorted(surfaces.items(), key=lambda kv: -kv[1]) if s and s not in shown]
+    return "|".join(forms[:FORMS_LIMIT])
 
 def load_simple_list(file_path):
     if not os.path.exists(file_path):
@@ -1022,6 +1040,10 @@ def compute_run_signature(language, found_files, args):
             "open_count", "skipped_version",
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
+            # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
+            # and field picks themselves must not force a re-analysis on every click.
+            "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
+            "anki_sync_include_suspended",
         }
         _settings_for_sig = ""
         try:
@@ -1087,7 +1109,23 @@ def compute_render_signature(args):
         # existing report was reused and its badges stayed mute. Absent module -> False, so this
         # costs nothing for anyone who doesn't have it.
         bool(_s.get("enable_koe", False)),
+        # The templates themselves. Without this a template-only change (a new report tab, a CSS
+        # fix) was invisible to both fast paths: they reopened the old HTML until something else
+        # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
+        _template_fingerprint(),
     ])
+
+
+def _template_fingerprint():
+    """Short hash of both report templates; a constant if they can't be read (never raises)."""
+    h = hashlib.sha1()
+    try:
+        for name in ("web_app.html", "zen_app.html"):
+            with open(get_resource(os.path.join("templates", name)), "rb") as f:
+                h.update(f.read())
+    except Exception:
+        return "templates-unreadable"
+    return h.hexdigest()[:12]
 
 
 def main():
@@ -1212,6 +1250,9 @@ def main():
         # it is the wrong string to put on a card or in the report. Counting rather than last-wins
         # because one stray spelling shouldn't rename the word.
         "orths": Counter(),
+        # Every surface (inflected) form met, counted — becomes the report's `Forms` column so the
+        # Search tab can find 食べた under 食べる. `surface` above keeps only the last one seen.
+        "surfaces": Counter(),
         "min_seq": float('inf'), # Track first appearance sequence index
         # Reading-vs-listening inputs (see app/modality.py). spoken_count is how often the word
         # was met in the user's OWN subtitle/YouTube files — evidence that beats the bundled
@@ -1447,6 +1488,7 @@ def main():
                 entry["sources"].add(file_basename)
                 entry["surface"] = surface
                 entry["orths"][orth] += 1
+                entry["surfaces"][surface] += 1
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1
                 elif label == "GoalContent": entry["goal_count"] += 1
@@ -1646,6 +1688,7 @@ def main():
         row = {
             "Word": lemma,
             "Orth": _display_orth(lemma, data["orths"]),
+            "Forms": _display_forms(lemma, data["orths"], data["surfaces"]),
             "Reading": reading,
             "Tier": tier_str,
             "Score": data["score"],
@@ -1972,6 +2015,8 @@ def main():
             serializable_data.pop("candidate_contexts", None)
             serializable_data.pop("first_context", None)
             serializable_data.pop("audio_contexts", None)
+            # Emitted as the CSVs' `Forms` column; nothing reads it back from here.
+            serializable_data.pop("surfaces", None)
 
         serializable_stats[key] = serializable_data
 
@@ -2173,6 +2218,7 @@ def main():
                 # ordering), and a word named 須藤 in one and スドウ in the other would match in one
                 # place and not the other.
                 "Orth": _display_orth(lemma, stats["orths"]),
+                "Forms": _display_forms(lemma, stats["orths"], stats.get("surfaces")),
                 "Reading": reading,
                 "Tier": tier_str,
                 "Score": stats["score"],

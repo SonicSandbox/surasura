@@ -253,6 +253,13 @@ class MasterDashboardApp:
         self.var_enable_koe = tk.BooleanVar(value=False)  # Gemini speech for report sentences
         self.var_enable_reels = tk.BooleanVar(value=False)  # local video -> one mineable reel
         self.var_enable_junban = tk.BooleanVar(value=False)  # reorder Anki's new-card queue
+        self.var_anki_sync_auto = tk.BooleanVar(value=False)  # pull known words from a running Anki
+        self.anki_sync_window = None
+        # The Anki window's syncs and the background auto-sync append to the same file; one lock
+        # so two appends can never interleave (each re-reads before writing, but not atomically).
+        self._anki_sync_lock = threading.Lock()
+        self._last_anki_sync = 0.0
+        self._anki_spin_job = None
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
@@ -358,6 +365,7 @@ class MasterDashboardApp:
         self.var_enable_junban.trace_add("write", self.save_settings)
         self.var_enable_junban.trace_add("write", lambda n, i, m: self.update_junban_visibility())
         self.var_auto_update.trace_add("write", self.save_settings)
+        self.var_anki_sync_auto.trace_add("write", self.save_settings)
         # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
         # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
         self.combo_theme.bind("<<ComboboxSelected>>",
@@ -365,7 +373,8 @@ class MasterDashboardApp:
 
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
-        self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state()))
+        self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
+                                               self._maybe_anki_sync()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -377,6 +386,9 @@ class MasterDashboardApp:
             # Reconcile the result of any update applied since we last ran (toast / manual-retry).
             self.root.after(800, self.reconcile_update_result)
 
+            # Pick up words studied in Anki since last time (only if the user turned it on).
+            self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
+
         # Start update check in background
         threading.Thread(target=self.check_updates_thread, daemon=True).start()
         
@@ -385,6 +397,8 @@ class MasterDashboardApp:
         
         # Trace language changes
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
+        # Known words are per language, and so are the chosen decks.
+        self.var_language.trace_add("write", lambda *args: self._maybe_anki_sync(force=True))
 
         # Bind close event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -892,9 +906,10 @@ class MasterDashboardApp:
         ToolTip(self.btn_jiten, "Import known words from Jiten API using your API key.")
 
         self.btn_anki = ttk.Button(vocab_row, text="Anki", width=12,
-                   command=self.run_anki_importer)
+                   command=self.open_anki_sync)
         self.btn_anki.pack(side=tk.LEFT, padx=(0, 10))
-        ToolTip(self.btn_anki, "Create a known-word list from an Anki deck field.")
+        ToolTip(self.btn_anki, "Add known words from the cards you've studied in Anki (Anki must be "
+                               "running), or import an .apkg file.")
         
         # This button expands to fill all remaining space
         btn_ignore = ttk.Button(vocab_row, text="Edit Ignore List", style="Action.TButton",
@@ -1081,18 +1096,19 @@ class MasterDashboardApp:
 
         # Language Flag
         self.lbl_flag = ttk.Label(credit_box, text="🇯🇵", font=("Segoe UI Emoji", 10))
-        self.lbl_flag.pack(side=tk.LEFT, padx=(10, 0))
+        self.lbl_flag.pack(side=tk.LEFT, padx=(10, 5))
 
-        # Settings Button (Icon only, Bottom Right)
-        # Use a simple gear unicode or similar if no image
-        btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
-        btn_settings.pack(side=tk.LEFT, padx=(10, 0))
-        ToolTip(btn_settings, "Open Settings & Logs")
+        # Settings Button (Icon only). ALWAYS the right-most button: the optional module buttons are
+        # packed before it (see _module_slot), so the footer reads [flag] 悟 🎬 順 ⚙ however many
+        # modules are on and in whatever order they were switched on.
+        self.btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
+        self.btn_settings.pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.btn_settings, "Open Settings & Logs")
 
         # Immersion Architect (Satori) Button
         self.btn_satori = ttk.Button(credit_box, text="悟", command=self.open_immersion_architect, width=3)
         if not self.var_hide_satoru.get():
-            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
+            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
         ToolTip(self.btn_satori, "Immersion Architect Intelligence")
 
         # Reels Button (optional module). Created unpacked; load_settings decides whether it shows.
@@ -1137,15 +1153,26 @@ class MasterDashboardApp:
 
         # Settings Grid
         grid_frame = ttk.Frame(main_container)
-        grid_frame.pack(fill=tk.X)
+        grid_frame.pack(fill=tk.BOTH, expand=True)
         grid_frame.columnconfigure(0, weight=2, uniform="settings_col") # Strictly 2:1
         grid_frame.columnconfigure(1, weight=1, uniform="settings_col")
+        grid_frame.rowconfigure(0, weight=1)
+
+        # Two INDEPENDENT columns, each a simple stack. With shared grid rows, the tallest group in
+        # a row set that row's height for both sides (Data & System stretched Language & Parsing to
+        # match), and with the optional-module toggles present the third row fell off the bottom of
+        # a 720px screen. Stacked, each column is only as tall as its own groups; the log takes
+        # whatever is left.
+        left_col = ttk.Frame(grid_frame)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        right_col = ttk.Frame(grid_frame)
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
 
         # --- LEFT COLUMN (Col 0) ---
         
         # 1. 🌐 Language & Parsing
-        group_lang = ttk.LabelFrame(grid_frame, text=" 🌐 Language & Parsing", padding="10")
-        group_lang.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
+        group_lang = ttk.LabelFrame(left_col, text=" 🌐 Language & Parsing", padding="10")
+        group_lang.pack(fill=tk.X, pady=5)
 
         # Language Selection
         self.lang_frame = ttk.Frame(group_lang)
@@ -1200,7 +1227,7 @@ class MasterDashboardApp:
             _reels_module_available = False
         if _reels_module_available:
             chk_reels = ttk.Checkbutton(group_lang, text="Enable Reels", variable=self.var_enable_reels)
-            chk_reels.pack(anchor=tk.W, pady=(10, 0))
+            chk_reels.pack(anchor=tk.W, pady=(4, 0))
             ToolTip(chk_reels, "Show the 🎬 Reels button, which turns a series you own into one video "
                                "containing every word you need. Japanese only. Also controls whether "
                                "it is bundled when you build the app.")
@@ -1214,14 +1241,14 @@ class MasterDashboardApp:
             _junban_module_available = False
         if _junban_module_available:
             chk_junban = ttk.Checkbutton(group_lang, text="Enable Anki reordering", variable=self.var_enable_junban)
-            chk_junban.pack(anchor=tk.W, pady=(10, 0))
+            chk_junban.pack(anchor=tk.W, pady=(4, 0))
             ToolTip(chk_junban, "Show the 順 button, which reorders the new cards already in your Anki "
                                 "backlog to follow this learn order. Needs Anki open with AnkiConnect. "
                                 "Also controls whether it is bundled when you build the app.")
 
         # 2. 📊 Experience & UI
-        group_ui = ttk.LabelFrame(grid_frame, text=" 📊 Experience & UI", padding="10")
-        group_ui.grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=5)
+        group_ui = ttk.LabelFrame(left_col, text=" 📊 Experience & UI", padding="10")
+        group_ui.pack(fill=tk.X, pady=5)
 
         chk_inline = ttk.Checkbutton(group_ui, text="Show 'Target Met' inline", variable=self.var_inline_completed)
         chk_inline.pack(anchor=tk.W)
@@ -1307,8 +1334,8 @@ class MasterDashboardApp:
         ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
 
         # 3. 🧠 Sentences & Logic
-        group_logic = ttk.LabelFrame(grid_frame, text=" 🧠 Sentences & Logic", padding="10")
-        group_logic.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=5)
+        group_logic = ttk.LabelFrame(right_col, text=" 🧠 Sentences & Logic", padding="10")
+        group_logic.pack(fill=tk.X, pady=5)
 
         # Ideal Sentence Range
         self.context_range_frame = ttk.Frame(group_logic)
@@ -1359,8 +1386,8 @@ class MasterDashboardApp:
         # --- RIGHT COLUMN (Col 1) ---
 
         # 4. 🧮 Data & System
-        group_data = ttk.LabelFrame(grid_frame, text=" 🧮 Data & System", padding="10")
-        group_data.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
+        group_data = ttk.LabelFrame(right_col, text=" 🧮 Data & System", padding="10")
+        group_data.pack(fill=tk.X, pady=5, before=group_logic)   # Data first, then Sentences
 
         chk_telemetry = ttk.Checkbutton(group_data, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
         chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
@@ -1369,6 +1396,12 @@ class MasterDashboardApp:
         chk_auto_update = ttk.Checkbutton(group_data, text="Automatic Updates", variable=self.var_auto_update)
         chk_auto_update.pack(anchor=tk.W, pady=(0, 10))
         ToolTip(chk_auto_update, "Offer one-click in-app updates for minor releases. Major updates always download manually.")
+
+        chk_anki_sync = ttk.Checkbutton(group_data, text="Sync known words from Anki", variable=self.var_anki_sync_auto)
+        chk_anki_sync.pack(anchor=tk.W, pady=(0, 10))
+        ToolTip(chk_anki_sync, "When Anki is running, add words from cards you've studied to your known "
+                               "words — on startup and when you come back to Surasura. Choose the decks "
+                               "with the Anki button.")
 
         btn_anki_sentences = ttk.Button(group_data, text="Generate Sentence List", command=self.generate_anki_sentence_warning, width=20)
         btn_anki_sentences.pack(fill=tk.X, pady=(0, 5))
@@ -1388,8 +1421,8 @@ class MasterDashboardApp:
         ToolTip(btn_reading_words, "A Yomitan list of words you'll read but hardly ever hear. If a word shows up in it while mining, make it a reading card.")
 
         # 5. 📜 Processing Log (Right Side)
-        log_frame = ttk.LabelFrame(grid_frame, text=" 📜 Processing Log", padding="10")
-        log_frame.grid(row=1, column=1, rowspan=2, sticky="nsew", padx=(5, 0), pady=5)
+        log_frame = ttk.LabelFrame(right_col, text=" 📜 Processing Log", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
         self.terminal = tk.Text(log_frame, height=3, width=1, bg=SURFACE_COLOR, fg=TEXT_COLOR, 
                                 insertbackground=TEXT_COLOR, font=("Consolas", 9),
@@ -1626,6 +1659,23 @@ class MasterDashboardApp:
                 self.terminal.config(state=tk.DISABLED)
         self.gui_queue.put(_update)
 
+    # Footer order of the optional module buttons, left to right. Settings (⚙) always follows them.
+    _MODULE_BUTTONS = ("btn_satori", "btn_reels", "btn_junban")
+
+    def _module_slot(self, btn):
+        """The footer widget a module button must be packed BEFORE, so the buttons keep one fixed
+        order and ⚙ stays right-most: the next module button that is currently shown, else ⚙."""
+        names = self._MODULE_BUTTONS
+        buttons = [getattr(self, n, None) for n in names]
+        start = buttons.index(btn) + 1 if btn in buttons else len(buttons)
+        for later in buttons[start:]:
+            try:
+                if later is not None and later.winfo_manager():   # packed (mapped or not yet drawn)
+                    return later
+            except tk.TclError:
+                pass
+        return self.btn_settings
+
     def update_satori_visibility(self):
         """Hides or shows the Satori button based on settings and module availability"""
         if not hasattr(self, 'btn_satori'):
@@ -1648,7 +1698,7 @@ class MasterDashboardApp:
             # This is slightly tricky if other elements are added later,
             # but usually it's at the end.
             if not self.btn_satori.winfo_ismapped():
-                self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
+                self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
         else:
             self.btn_satori.pack_forget()
 
@@ -1773,7 +1823,7 @@ class MasterDashboardApp:
 
         if should_show:
             if not self.btn_reels.winfo_ismapped():
-                self.btn_reels.pack(side=tk.LEFT, padx=(5, 0))
+                self.btn_reels.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_reels))
         else:
             self.btn_reels.pack_forget()
 
@@ -1810,7 +1860,7 @@ class MasterDashboardApp:
 
         if should_show:
             if not self.btn_junban.winfo_ismapped():
-                self.btn_junban.pack(side=tk.LEFT, padx=(5, 0))
+                self.btn_junban.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_junban))
         else:
             self.btn_junban.pack_forget()
 
@@ -1882,6 +1932,7 @@ class MasterDashboardApp:
             self.update_junban_visibility()
 
             self.var_auto_update.set(settings.get("auto_update_enabled", True))
+            self.var_anki_sync_auto.set(bool(settings.get("anki_sync_auto", False)))
             self.skipped_version = settings.get("skipped_version", "")
 
             # Load Logic Settings
@@ -1928,6 +1979,14 @@ class MasterDashboardApp:
     def save_settings(self, *args, skip_ui=False):
         try:
             cur = getattr(self, "_current_settings", {}) or {}
+            # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
+            # decks and fields) are carried through from DISK, not from `cur`: `cur` is this
+            # dashboard's snapshot from its own last load/save, so carrying from it silently
+            # reverted — or dropped — whatever a panel had saved since.
+            try:
+                panel = settings_manager.load_settings() or cur
+            except Exception:
+                panel = cur
             cur_ctx = cur.get("logic", {}).get("context", {}) if isinstance(cur.get("logic"), dict) else {}
             # Build settings dict from GUI vars
             settings = {
@@ -1953,6 +2012,7 @@ class MasterDashboardApp:
                 "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
                 "hide_satoru": self.var_hide_satoru.get(),
                 "auto_update_enabled": self.var_auto_update.get(),
+                "anki_sync_auto": self.var_anki_sync_auto.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
                 "logic": {
                     **self.logic_settings,
@@ -1993,8 +2053,8 @@ class MasterDashboardApp:
                     settings["enable_koe"] = self.var_enable_koe.get()
                     for _koe_key in ("koe_voice", "koe_model", "koe_style",
                                      "koe_temperature", "koe_port", "koe_daily_cap"):
-                        if _koe_key in cur:
-                            settings[_koe_key] = cur[_koe_key]
+                        if _koe_key in panel:
+                            settings[_koe_key] = panel[_koe_key]
             except (ImportError, ModuleNotFoundError):
                 pass
 
@@ -2005,8 +2065,8 @@ class MasterDashboardApp:
                 import modules.reels as _reels
                 settings["enable_reels"] = self.var_enable_reels.get()
                 for _reels_key in _reels.SETTINGS_DEFAULTS:
-                    if _reels_key != "enable_reels" and _reels_key in cur:
-                        settings[_reels_key] = cur[_reels_key]
+                    if _reels_key != "enable_reels" and _reels_key in panel:
+                        settings[_reels_key] = panel[_reels_key]
             except (ImportError, ModuleNotFoundError):
                 pass
 
@@ -2018,10 +2078,16 @@ class MasterDashboardApp:
                 import modules.junban as _junban
                 settings["enable_junban"] = self.var_enable_junban.get()
                 for _junban_key in _junban.SETTINGS_DEFAULTS:
-                    if _junban_key != "enable_junban" and _junban_key in cur:
-                        settings[_junban_key] = cur[_junban_key]
+                    if _junban_key != "enable_junban" and _junban_key in panel:
+                        settings[_junban_key] = panel[_junban_key]
             except (ImportError, ModuleNotFoundError):
                 pass
+
+            # The Anki window owns these (core keys, so always written).
+            for _anki_key in ("anki_connect_url", "anki_sync_decks", "anki_sync_fields",
+                              "anki_sync_include_suspended"):
+                if _anki_key in panel:
+                    settings[_anki_key] = panel[_anki_key]
 
             settings_manager.save_settings(settings)
             self._current_settings = settings
@@ -2228,7 +2294,103 @@ class MasterDashboardApp:
         self.run_command_async(['jiten_db_importer_gui.py', '--language', self.var_language.get()], "Jiten Sync")
 
     def run_anki_importer(self):
+        """The offline .apkg importer (a subprocess — it loads the tokenizer)."""
         self.run_command_async(['anki_db_importer_gui.py', '--language', self.var_language.get()], "Anki Known Words")
+
+    def open_anki_sync(self):
+        """The Anki Known Words window — in-process, since syncing needs no tokenizer."""
+        try:
+            from app.anki_sync_gui import open_anki_sync
+        except Exception as e:
+            print(f"Error loading Anki Known Words: {e}")
+            self.run_anki_importer()
+            return
+        open_anki_sync(self)
+
+    def _maybe_anki_sync(self, force=False):
+        """Background known-words sync from a running Anki. Silent when Anki is closed.
+
+        Throttled to once per 5 minutes: FocusIn fires for every child widget, so a debounce of a
+        couple of seconds (the indexer's) would still sync on nearly every click. Runs on a daemon
+        thread — a closed localhost port can take ~2 s to refuse on Windows.
+        """
+        if not self.var_anki_sync_auto.get() or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return
+        import time
+        now = time.monotonic()
+        if not force and now - self._last_anki_sync < 300:
+            return
+        lang = self.var_language.get()
+        s = getattr(self, "_current_settings", {}) or {}
+        try:
+            s = settings_manager.load_settings() or s
+        except Exception:
+            pass
+        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
+        if not decks:
+            return
+        if not self._anki_sync_lock.acquire(blocking=False):
+            return                      # a sync is already running (here or in the Anki window)
+        self._last_anki_sync = now
+        fields = list((s.get("anki_sync_fields") or {}).get(lang) or [])
+        suspended = bool(s.get("anki_sync_include_suspended", False))
+
+        def work():
+            result = None
+            try:
+                from app import anki_connect, anki_sync
+                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                if anki_connect.probe(url).get("ok"):
+                    result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
+            except Exception as e:
+                print(f"Anki sync skipped: {e}")
+            finally:
+                self._anki_sync_lock.release()
+                self.gui_queue.put(lambda: self._anki_spinner(False))
+                if result is not None:
+                    self.gui_queue.put(lambda: self._on_anki_sync_result(result, auto=True))
+
+        self._anki_spinner(True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _anki_spinner(self, on):
+        """A small braille spinner on the Anki button while a background sync runs."""
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        if self._anki_spin_job is not None:
+            try:
+                self.root.after_cancel(self._anki_spin_job)
+            except Exception:
+                pass
+            self._anki_spin_job = None
+        if not on:
+            self.btn_anki.config(text="Anki")
+            return
+
+        def tick(i=0):
+            self.btn_anki.config(text=f"Anki {frames[i % len(frames)]}")
+            self._anki_spin_job = self.root.after(100, tick, i + 1)
+        tick()
+
+    def _on_anki_sync_result(self, result, auto=False):
+        """After any sync: say so briefly, and refresh the commonness preview straight away (it
+        would otherwise wait for the next FocusIn to notice the known words changed)."""
+        if result.error:
+            if auto:
+                print(f"Anki sync: {result.error}")
+            return
+        if result.added > 0 or result.mode in ("replace", "restore"):
+            if auto:
+                message = f"✓ Anki: +{result.added:,} known word{'s' if result.added != 1 else ''}"
+                self.status_var.set(message)
+                self.root.after(6000, lambda: self.status_var.get() == message and self.status_var.set("Ready"))
+            self._maybe_launch_indexer(force=True)
+        win = getattr(self, "anki_sync_window", None)
+        if auto and win is not None:
+            try:
+                if win.winfo_exists():
+                    win.refresh_known()
+            except Exception:
+                pass
 
     def run_content_importer(self):
         self.run_command_async(['content_importer_gui.py', '--language', self.var_language.get()], "Content Importer")

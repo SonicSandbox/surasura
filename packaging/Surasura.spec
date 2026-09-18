@@ -110,7 +110,8 @@ binaries = []
 # decoded on demand), and the code degrades silently if it's missing: no reading badges, and
 # the frequency-list orthography bridge stops working. A silent loss is exactly what a
 # hiddenimport is for.
-hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data']
+hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data',
+                 'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui']
 
 # --- Optional-module payloads: only when that module is actually being bundled ---------------
 # Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is

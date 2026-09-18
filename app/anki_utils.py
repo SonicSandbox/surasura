@@ -4,6 +4,7 @@ import tempfile
 import os
 import json
 import re
+import html
 import shutil
 try:
     import zstandard
@@ -127,18 +128,42 @@ def load_anki_data(apkg_path):
             shutil.rmtree(temp_dir)
         raise e
 
+# Field-cleaning patterns (see clean_field_html).
+# Line-ending markup becomes a newline BEFORE tags are stripped, or "<div>食べる</div><div>飲む</div>"
+# fuses into one word.
+_BREAK_RE = re.compile(r'<br\s*/?>|</div\s*>|</p\s*>', re.IGNORECASE)
+# Drop furigana ruby readings (<rt>/<rp> contents) BEFORE stripping tags, so the kana
+# reading (e.g. かんじ in <ruby>漢字<rt>かんじ</rt></ruby>) doesn't fuse onto the word.
+_RUBY_RE = re.compile(r'<rp>.*?</rp>|<rt>.*?</rt>', re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r'<[^<]+?>')
+_SOUND_RE = re.compile(r'\[sound:[^\]]+?\]')
+# Anki's bracket furigana: " 漢字[かんじ]" -> "漢字". The reading must follow a kanji/々 directly and
+# be kana only, so other bracketed text survives; the single ASCII space {{furigana:}} puts before
+# the kanji group goes with it.
+_BRACKET_FURIGANA_RE = re.compile(r' ?([㐀-䶿一-鿿豈-﫿々]+)\[[ぁ-ヿー]+\]')
+
+
+def clean_field_html(raw):
+    """
+    Turns one raw Anki field value (HTML, ruby, bracket furigana, [sound:] tags, entities)
+    into plain text. Lines are kept on separate lines; whitespace runs within a line collapse.
+    """
+    text = _BREAK_RE.sub('\n', str(raw or ''))
+    text = _RUBY_RE.sub('', text)
+    text = _TAG_RE.sub('', text)
+    text = _SOUND_RE.sub('', text)
+    text = _BRACKET_FURIGANA_RE.sub(r'\1', text)
+    text = html.unescape(text)
+    lines = (' '.join(line.split()) for line in text.split('\n'))
+    return '\n'.join(line for line in lines if line)
+
+
 def extract_field_text(notes, model_field_map, target_field):
     """
     Extracts cleaned text from target_field across all notes.
     """
     extracted_lines = []
-    # Simplified regex for HTML cleaning
-    tag_re = re.compile(r'<[^<]+?>')
-    sound_re = re.compile(r'\[sound:[^\]]+?\]')
-    # Drop furigana ruby readings (<rt>/<rp> contents) BEFORE stripping tags, so the kana
-    # reading (e.g. かんじ in <ruby>漢字<rt>かんじ</rt></ruby>) doesn't fuse onto the word.
-    ruby_re = re.compile(r'<rp>.*?</rp>|<rt>.*?</rt>', re.IGNORECASE | re.DOTALL)
-    
+
     target_field_lower = target_field.lower()
     
     for mid, flds in notes:
@@ -153,14 +178,9 @@ def extract_field_text(notes, model_field_map, target_field):
         if idx != -1:
             values = flds.split('\x1f')
             if idx < len(values):
-                raw_text = values[idx]
-                # Clean text (strip furigana readings first, then remaining tags)
-                raw_text = ruby_re.sub('', raw_text)
-                text = tag_re.sub('', raw_text)
-                text = sound_re.sub('', text)
-                text = text.replace('&nbsp;', ' ').replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
-                if text.strip():
-                    extracted_lines.append(text.strip())
+                text = clean_field_html(values[idx])
+                if text:
+                    extracted_lines.append(text)
 
 
 

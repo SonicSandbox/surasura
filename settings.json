@@ -21,6 +21,7 @@
     "open_count": 0,
     "hide_satoru": true,
     "auto_update_enabled": true,
+    "anki_sync_auto": false,
     "skipped_version": "",
     "logic": {
         "inline_completed_files": false,
@@ -98,9 +99,9 @@
     "enable_youtube_preview": true,
     "youtube_risk_acknowledged": false,
     "enable_koe": false,
-    "koe_voice": "Orus",
+    "koe_voice": "Sadaltager",
     "koe_model": "gemini-3.1-flash-tts-preview",
-    "koe_style": "\u65e5\u672c\u9280\u306e\u7537\u304c\u6a19\u6e96\u7684\u306a\u65e5\u672c\u8a9e\u3067\u3001\u81ea\u7136\u306a\u901f\u3055\u3067\u306f\u3063\u304d\u308a\u3068\u8aad\u3093\u3067\u304f\u3060\u3055\u3044\u3002\u611f\u60c5\u306f\u63a7\u3048\u3081\u306b\u3002",
+    "koe_style": "\u6a19\u6e96\u7684\u306a\u65e5\u672c\u8a9e\u3067\u3001\u81ea\u7136\u306a\u901f\u3055\u3067\u306f\u3063\u304d\u308a\u3068\u8aad\u3093\u3067\u304f\u3060\u3055\u3044\u3002\u611f\u60c5\u306f\u63a7\u3048\u3081\u306b\u3002",
     "koe_temperature": 1.15,
     "koe_port": 8787,
     "koe_daily_cap": 300,
@@ -118,7 +119,7 @@
     "reels_ffmpeg_dir": "",
     "enable_junban": true,
     "junban_scope": "deck",
-    "junban_deck": "TheBank",
+    "junban_deck": "",
     "junban_url": "http://127.0.0.1:8765",
     "junban_word_fields": {},
     "junban_chunk_size": 150,
@@ -131,5 +132,9 @@
     "junban_frequency_field": "Frequency",
     "junban_write_freqsort": false,
     "junban_sentence_field": "",
-    "junban_sentence_mode": "if_empty"
+    "junban_sentence_mode": "if_empty",
+    "anki_connect_url": "http://127.0.0.1:8765",
+    "anki_sync_decks": {},
+    "anki_sync_fields": {},
+    "anki_sync_include_suspended": false
 }

@@ -63,6 +63,9 @@ If you mark a word as "Known", "Ignore" or graduate it in Surasura, it will be e
 
 Note: A single Surasura could guide you for months without needing to re-generate.
 
+**Can Surasura pick up the words I've learned in Anki by itself?**
+Yes. Press **Anki**, choose your decks and press **Sync now** — then tick **Sync automatically when Anki is running**. Whenever Anki is open, Surasura adds the words from cards you've studied since last time. New (unstudied) cards are never counted as known, and nothing is ever removed. It needs the AnkiConnect add-on.
+
 **Is there a way to bulk-download YouTube transcripts to feed into Surasura?**
 Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any number of links — single videos, pasted lists, or whole playlists. Clean `.txt` transcripts land in your **Processed** folder and in the tab you're on. (This is an optional feature; if you don't see the button, enable it under **Settings → Language & Parsing**.)
 

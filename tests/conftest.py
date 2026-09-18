@@ -64,6 +64,13 @@ def _no_gui_autoindex(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_gui_anki_sync(monkeypatch):
+    """Stop the dashboard's background Anki known-words sync from reaching a live Anki (and the
+    developer's real collection) during tests. The sync itself is covered by test_anki_sync.py."""
+    monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_ui_timers(monkeypatch):
     """Stop GUI windows from leaving Tk `after` timers behind when a test destroys them.
 

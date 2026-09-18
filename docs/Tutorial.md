@@ -15,6 +15,7 @@
 First, import your existing knowledge. The analyzer uses this to calculate your known % and skip words you already know.
 
 *   **Migaku / Jiten / Anki** — pull known words straight from your decks or exports.
+*   **Anki, live** — with Anki open (and the AnkiConnect add-on), press **Anki → Sync now**. Only cards you've studied count, and it can keep itself up to date automatically.
 *   **Edit Ignore List** — hand-exclude words you never want suggested.
 
 ![Import Known Vocabulary Interface](assets/images/tutorial/import_vocab.png)

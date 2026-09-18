@@ -3,6 +3,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import json
+import tempfile
 from datetime import datetime
 
 # Ensure package root is in sys.path
@@ -16,10 +17,57 @@ from app.analyzer import JapaneseTokenizer, ChineseTokenizer
 # Colors for Dark Mode (Matching Content Importer)
 BG_COLOR = "#1e1e1e"
 SURFACE_COLOR = "#2d2d2d"
-TEXT_COLOR = "#ffffff"
+TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#bb86fc"
 SUCCESS_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
+MUTED_COLOR = "#9a9a9a"
+
+
+class ToolTip:
+    """Hover tooltip, mirroring app/main.py's pattern (wraps text over 50 characters). Kept local:
+    importing app.main from this subprocess would build the whole dashboard module."""
+
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.id = None
+        self.widget.bind("<Enter>", self.schedule_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+        self.widget.bind("<ButtonPress>", self.hide_tip)
+
+    def schedule_tip(self, event=None):
+        self.unschedule()
+        self.id = self.widget.after(500, self.show_tip)
+
+    def unschedule(self):
+        id = self.id
+        self.id = None
+        if id:
+            self.widget.after_cancel(id)
+
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        wrap = 300 if len(self.text) > 50 else 0
+        tk.Label(tw, text=self.text, justify=tk.LEFT, wraplength=wrap,
+                 background=SURFACE_COLOR, foreground=TEXT_COLOR,
+                 relief=tk.FLAT, borderwidth=0, padx=8, pady=4, font=("Segoe UI", 9)).pack()
+        tw.configure(background=ACCENT_COLOR, padx=1, pady=1)
+        tw.wm_geometry(f"+{x}+{y}")
+
+    def hide_tip(self, event=None):
+        self.unschedule()
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
+
 
 class AnkiImporterApp:
     def __init__(self, root, language='ja'):
@@ -53,6 +101,7 @@ class AnkiImporterApp:
         self.anki_field_combo = None
         self.anki_preview_text = None
         self.extract_btn = None
+        self.browse_btn = None
         self.icon_photo = None
         
         # Set Application Icon
@@ -133,7 +182,9 @@ class AnkiImporterApp:
         file_sel_container.pack(fill=tk.X)
         
         ttk.Entry(file_sel_container, textvariable=self.file_path_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(file_sel_container, text="Browse...", command=self.browse_file).pack(side=tk.LEFT, padx=(5, 0))
+        self.browse_btn = ttk.Button(file_sel_container, text="Browse...", command=self.browse_file)
+        self.browse_btn.pack(side=tk.LEFT, padx=(5, 0))
+        ToolTip(self.browse_btn, "Choose an exported Anki deck (.apkg) to read.")
 
         # Field Selection (Initially hidden)
         self.anki_options_frame = ttk.LabelFrame(main_frame, text=" 2. Extraction Options ", padding="15")
@@ -153,9 +204,13 @@ class AnkiImporterApp:
         # Bottom UI
         ttk.Label(main_frame, text="Note: All words in the field will be marked as KNOWN", 
                   foreground=ACCENT_COLOR, font=("Segoe UI", 10, "bold"), justify=tk.CENTER).pack(pady=(0, 10))
+        ttk.Label(main_frame, text="Imports every note in the file. To import only studied cards, use Sync from Anki.",
+                  foreground=MUTED_COLOR, font=("Segoe UI", 9), justify=tk.CENTER, wraplength=500).pack(pady=(0, 5))
 
         self.extract_btn = ttk.Button(main_frame, text="Generate Known Words List", command=self.process_extraction, state=tk.DISABLED)
         self.extract_btn.pack(pady=(10, 0))
+        ToolTip(self.extract_btn, "Add every word in the chosen field to your known words. Existing entries are kept, "
+                                  "and words you have ignored stay ignored.")
 
         ttk.Label(main_frame, textvariable=self.status_var, foreground="#555").pack(pady=(10, 0))
 
@@ -281,32 +336,38 @@ class AnkiImporterApp:
         
         existing_data = {"words": [], "statistics": {}}
         if os.path.exists(output_json):
+            # A file we cannot parse must never be replaced by an Anki-only list: raise, write nothing
+            # (process_extraction shows the error).
             try:
                 with open(output_json, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                raise ValueError(f"Your existing KnownWord.json could not be read, so nothing was changed.\n{e}")
 
         # Handle both list and dict formats for backward compat
         if isinstance(existing_data, list):
             existing_words = existing_data
             existing_data = {"words": existing_words, "statistics": {}}
-        else:
+        elif isinstance(existing_data, dict) and isinstance(existing_data.get("words", []), list):
             existing_words = existing_data.get("words", [])
+        else:
+            raise ValueError("Your existing KnownWord.json is not in a recognised format, so nothing was changed.")
 
-        # Create a map for quick lookup and to preserve metadata of existing words
+        # Map for quick lookup; the existing list itself is kept whole and in order (first entry per key wins)
         word_map = {}
         for w in existing_words:
-            key = (w.get('dictForm'), w.get('secondary', ''))
-            word_map[key] = w
+            if isinstance(w, dict):
+                word_map.setdefault((w.get('dictForm'), w.get('secondary', '')), w)
+        updated_words = list(existing_words)
 
         # Add or update new words
         now_str = datetime.now().isoformat()
         for lemma, reading in new_known_tuples:
             key = (lemma, reading)
             if key in word_map:
-                # Keep existing but ensure it's marked KNOWN
-                word_map[key]['knownStatus'] = "KNOWN"
+                # Only upgrade words still being learned; an IGNORED word stays ignored
+                if word_map[key].get('knownStatus') in ("LEARNING", "UNKNOWN"):
+                    word_map[key]['knownStatus'] = "KNOWN"
             else:
                 word_map[key] = {
                     'dictForm': lemma,
@@ -320,9 +381,7 @@ class AnkiImporterApp:
                     'mod': now_str,
                     'isModern': 1
                 }
-
-        # Rebuild list
-        updated_words = list(word_map.values())
+                updated_words.append(word_map[key])
         
         # Update Stats
         stats = {
@@ -334,15 +393,24 @@ class AnkiImporterApp:
             'languages': sorted(list(set(w.get('language', self.language) for w in updated_words)))
         }
 
-        json_data = {
-            'exportDate': now_str,
-            'source': 'Anki Extraction',
-            'statistics': stats,
-            'words': updated_words
-        }
+        # Keep every other top-level key (e.g. Migaku's databaseFile) instead of rewriting the header
+        json_data = dict(existing_data)
+        json_data['exportDate'] = now_str
+        json_data.setdefault('source', 'Anki Extraction')
+        json_data['statistics'] = stats
+        json_data['words'] = updated_words
 
-        with open(output_json, 'w', encoding='utf-8') as f:
-            json.dump(json_data, f, indent=2, ensure_ascii=False)
+        # Atomic write: readers (analyzer, indexer) may open the file at any moment
+        os.makedirs(user_files_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix="KnownWord.", suffix=".tmp", dir=user_files_dir)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, output_json)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
 def main():
     import argparse

@@ -34,6 +34,16 @@ def _included_module_test_dirs(settings):
     d = os.path.join("modules", "koe", "tests")
     if os.path.isdir(d):
         dirs.append(d)
+    # Reels: bundled when enabled, so its suite runs before a build that ships it.
+    if settings.get("enable_reels", False):
+        d = os.path.join("modules", "reels", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # Junban: bundled when enabled, so its suite runs before a build that ships it.
+    if settings.get("enable_junban", False):
+        d = os.path.join("modules", "junban", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
     return dirs
 
 

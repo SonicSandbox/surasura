@@ -256,7 +256,7 @@ class AnkiImporterApp:
             
             # Unique known words
             unique_words = set()
-            for lemma, reading, surface in tokens:
+            for lemma, reading, surface, _orth in tokens:
                 # Basic filtering similar to analyzer
                 if not lemma.strip(): continue
                 # We save as (lemma, reading)

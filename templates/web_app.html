@@ -1980,19 +1980,20 @@
             el.style.color = "#ccc";
             el.style.fontSize = "0.95rem";
 
-            const word = escapeHtml(data.Word);
+            const word = displayWord(data);
+            const safeWord = escapeHtml(word);
             const contextFull = data["Context 1"] || data.Context || "";
-            const trimmed = trimContext(contextFull, data.Word, contextCap());
+            const trimmed = trimContext(contextFull, word, contextCap());
             const context = trimmed.text;
 
             // Highlight word
             const safeCtx = escapeHtml(context);
-            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedWord = safeWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const regex = new RegExp(escapedWord, 'gi');
-            const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${word}</strong>`);
+            const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${safeWord}</strong>`);
 
             const rowTip = trimmed.trimmed ? ` title="${escapeHtml(contextFull)}"` : '';
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${word}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"])}`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"])}`;
             return el;
         }
 
@@ -2328,14 +2329,26 @@
             });
         }
 
+        // The spelling to SHOW for a row. `Word` is UniDic's canonical lemma — an identity key, and
+        // frequently a spelling nobody writes (スドウ for 須藤, 有る for ある). `Orth` is how your own
+        // content actually spells it, so that is the name on the card. Everything that KEYS a word
+        // (the ignore list and its localStorage entry) stays on `Word`: swapping them would orphan
+        // every ignore ever saved. Absent — or NaN — on results generated before the column existed.
+        function displayWord(data) {
+            const orth = data.Orth;
+            return (typeof orth === 'string' && orth.trim()) ? orth : data.Word;
+        }
+
         // --- Card Component ---
         // --- Word Card Component (Optimized) ---
         function createWordCard(data) {
             const el = document.createElement('div');
             el.className = 'card';
 
-            const word = data.Word;
+            const word = displayWord(data);
             const safeWord = escapeHtml(word);
+            // Keyed, never shown: the ignore list is stored under the lemma.
+            const safeLemma = escapeHtml(data.Word);
 
             const escapedWordForRegex = safeWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const regex = new RegExp(escapedWordForRegex, 'gi');
@@ -2499,7 +2512,7 @@
                 `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>` +
                 `</button>`;
             footer.innerHTML = `<div></div><div class="actions">` + searchBtnHtml +
-                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeWord}', this)">Ignore</button></div>`;
+                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Ignore</button></div>`;
             el.appendChild(footer);
 
             // Sources (DOM Pruned)

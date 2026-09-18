@@ -171,12 +171,18 @@ def test_the_analyzer_writes_a_sidecar_the_ordinary_exporters_can_read(tmp_path)
 
     with open(results / "reading_words.csv", encoding="utf-8-sig", newline="") as f:
         header = next(csv.reader(f))
-    assert header == ["Word", "Reading", "Occurrences"]
+    # `Orth` rides along in the same position it occupies on the priority list, because the whole
+    # point of this file is to be shaped like it. Without it these exports name the card with
+    # UniDic's canonical lemma — スドウ for 須藤 — while every other export names it properly.
+    assert header == ["Word", "Orth", "Reading", "Occurrences"]
 
-    # ...and the real exporters must actually consume the real file.
+    # ...and the real exporters must actually consume the real file. They front the spelling the
+    # content uses and fall back to the lemma, so that is what the output has to be.
     out = tmp_path / "reading.txt"
     FrequencyExporter.export_word_list(str(results / "reading_words.csv"), str(out))
-    assert out.read_text(encoding="utf-8").splitlines() == [r["Word"] for r in _sidecar_rows(results)]
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        (r.get("Orth") or r["Word"]) for r in _sidecar_rows(results)
+    ]
 
 
 def test_the_lemma_is_the_unit_of_judgement_not_the_reading(tmp_path):
@@ -298,3 +304,25 @@ def test_both_export_buttons_share_one_dialog():
     dialog = inspect.getsource(MasterDashboardApp._show_export_dialog)
     for fmt in ("migaku", "yomitan", "txt"):
         assert f'"{fmt}"' in dialog
+
+
+def test_the_sidecar_names_words_by_the_spelling_the_content_uses(tmp_path):
+    """D4 in this file's path. The reading-words export had only Word/Reading/Occurrences, so it
+    kept naming cards with UniDic's canonical lemma while every other export had been fixed —
+    スドウ where the text writes 須藤, 引き摺る where it writes 引きずる.
+
+    Checked against a real analyzer run rather than a hand-built CSV: the spelling has to survive
+    the per-lemma roll-up (which pools several readings of one word), not just exist in word_stats.
+    """
+    results = _analyze(tmp_path)
+    rows = _sidecar_rows(results)
+    assert rows, "the sample library should yield reading-only words"
+
+    for r in rows:
+        assert r["Orth"].strip(), f"{r['Word']} has no spelling — it would export as a blank card"
+
+    # The roll-up must not lose the column or mis-align it: every row still has its own reading and
+    # a positive count, and Orth is never the literal string 'nan' that a NaN cell would produce.
+    assert all(r["Reading"].strip() for r in rows)
+    assert all(int(r["Occurrences"]) > 0 for r in rows)
+    assert not any(r["Orth"].lower() == "nan" for r in rows)

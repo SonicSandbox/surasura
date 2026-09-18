@@ -112,14 +112,14 @@ def test_web_app_trims_at_every_render_site():
     # Context 1 on the full card, the lazily-loaded extra contexts, and the compact sentence row.
     assert "trimContext(c1Full, word, ctxCap)" in html, "Context 1 must be trimmed"
     assert "trimContext(data[k], word, ctxCap)" in html, "extra contexts must be trimmed"
-    assert "trimContext(contextFull, data.Word, contextCap())" in html, "compact rows must be trimmed"
+    assert "trimContext(contextFull, word, contextCap())" in html, "compact rows must be trimmed"
     # The old untrimmed forms must not come back.
     assert "const displayC1 = formatContext(c1Full)" not in html
 
 
 def test_zen_mode_trims_its_contexts():
     html = _read(ZEN_APP)
-    assert "trimContext(c.text, data.Word, zenCap)" in html
+    assert "trimContext(c.text, word, zenCap)" in html
 
 
 def test_audio_reads_what_is_displayed_not_the_runaway_original():

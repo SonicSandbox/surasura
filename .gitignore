@@ -18,6 +18,8 @@ docs/agent instructions/Pre-build_check.md
 build/
 dist/
 *.spec
+# ...except the build's own specs: package_app.py --release needs both
+!packaging/*.spec
 
 # User Files
 User Files/
@@ -33,6 +35,10 @@ surasura_v*.zip
 # never in the repo root.
 debug/testlog.txt
 debug/testprofile*.csv
+# Anki collection snapshots and run settings taken while developing the junban module
+# (dev artifacts; they hold the developer's own deck and note contents)
+debug/anki_*.json
+debug/wpk_*.json
 
 # Auto-update runtime artifacts (created next to the exe at runtime)
 .update_staging/

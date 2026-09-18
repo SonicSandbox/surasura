@@ -251,6 +251,8 @@ class MasterDashboardApp:
         self.youtube_risk_acknowledged = False
         self.var_enable_preview = tk.BooleanVar(value=False)
         self.var_enable_koe = tk.BooleanVar(value=False)  # Gemini speech for report sentences
+        self.var_enable_reels = tk.BooleanVar(value=False)  # local video -> one mineable reel
+        self.var_enable_junban = tk.BooleanVar(value=False)  # reorder Anki's new-card queue
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
@@ -271,6 +273,8 @@ class MasterDashboardApp:
         self.btn_satori: Optional[ttk.Button] = None
         self.btn_youtube: Optional[ttk.Button] = None
         self.btn_preview: Optional[ttk.Button] = None
+        self.btn_reels: Optional[ttk.Button] = None
+        self.btn_junban: Optional[ttk.Button] = None
         self.lang_frame: Optional[ttk.Frame] = None
         self.lang_options_frame: Optional[ttk.Frame] = None
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
@@ -349,6 +353,10 @@ class MasterDashboardApp:
         self.var_enable_preview.trace_add("write", lambda n, i, m: self.update_preview_visibility())
         self.var_enable_koe.trace_add("write", self.save_settings)
         self.var_enable_koe.trace_add("write", lambda n, i, m: self.apply_koe_state())
+        self.var_enable_reels.trace_add("write", self.save_settings)
+        self.var_enable_reels.trace_add("write", lambda n, i, m: self.update_reels_visibility())
+        self.var_enable_junban.trace_add("write", self.save_settings)
+        self.var_enable_junban.trace_add("write", lambda n, i, m: self.update_junban_visibility())
         self.var_auto_update.trace_add("write", self.save_settings)
         # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
         # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
@@ -798,7 +806,10 @@ class MasterDashboardApp:
                     self.btn_jiten.pack(side=tk.LEFT, padx=(0, 5), after=self.btn_migaku)
                 if hasattr(self, 'btn_anki'):
                     self.btn_anki.pack(side=tk.LEFT, padx=(0, 10), after=self.btn_jiten)
-    
+
+            # Reels serves only some languages, so switching library changes whether it can appear.
+            self.update_reels_visibility()
+
             # 3. Update Settings Toggles (if window created)
             if self.settings_window and self.settings_window.winfo_exists():
                 if self.chk_reinforce_widget:
@@ -1084,6 +1095,17 @@ class MasterDashboardApp:
             self.btn_satori.pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.btn_satori, "Immersion Architect Intelligence")
 
+        # Reels Button (optional module). Created unpacked; load_settings decides whether it shows.
+        self.btn_reels = ttk.Button(credit_box, text="🎬", command=self.open_reels, width=3)
+        ToolTip(self.btn_reels, "Reels: turn a series you own into one video containing every word "
+                                "you need, to mine in bulk after you watch.")
+
+        # Junban Button (optional module). Created unpacked; load_settings decides whether it shows.
+        self.btn_junban = ttk.Button(credit_box, text="順", command=self.open_junban, width=3)
+        ToolTip(self.btn_junban, "順番 (Junban): reorder the new cards already waiting in your "
+                                 "Anki backlog so they come up in this learn order. It only moves "
+                                 "cards — it never adds, edits or deletes any.")
+
     def complete_onboarding(self):
         # Reload to get the settings written by the onboarding window
         self.load_settings()
@@ -1167,6 +1189,35 @@ class MasterDashboardApp:
             chk_preview = ttk.Checkbutton(group_lang, text="Enable YouTube Preview", variable=self.var_enable_preview)
             chk_preview.pack(anchor=tk.W, pady=(4, 0))
             ToolTip(chk_preview, "Show a 'Preview against library' button next to Generate Journey, and cache a library frequency map on runs so the preview is fast.")
+
+        # Reels toggle (optional module) — grouped here because it is about content and parsing.
+        # Shown only when the module is present locally; the button it controls additionally
+        # requires a language the module supports (the module owns that rule, not this file).
+        try:
+            import modules.reels  # noqa: F401
+            _reels_module_available = True
+        except Exception:
+            _reels_module_available = False
+        if _reels_module_available:
+            chk_reels = ttk.Checkbutton(group_lang, text="Enable Reels", variable=self.var_enable_reels)
+            chk_reels.pack(anchor=tk.W, pady=(10, 0))
+            ToolTip(chk_reels, "Show the 🎬 Reels button, which turns a series you own into one video "
+                               "containing every word you need. Japanese only. Also controls whether "
+                               "it is bundled when you build the app.")
+
+        # Junban toggle (optional module). Shown only when the module is present locally. Unlike
+        # Reels there is no language condition — reordering an Anki backlog works for ja and zh alike.
+        try:
+            import modules.junban  # noqa: F401
+            _junban_module_available = True
+        except Exception:
+            _junban_module_available = False
+        if _junban_module_available:
+            chk_junban = ttk.Checkbutton(group_lang, text="Enable Anki reordering", variable=self.var_enable_junban)
+            chk_junban.pack(anchor=tk.W, pady=(10, 0))
+            ToolTip(chk_junban, "Show the 順 button, which reorders the new cards already in your Anki "
+                                "backlog to follow this learn order. Needs Anki open with AnkiConnect. "
+                                "Also controls whether it is bundled when you build the app.")
 
         # 2. 📊 Experience & UI
         group_ui = ttk.LabelFrame(grid_frame, text=" 📊 Experience & UI", padding="10")
@@ -1691,6 +1742,78 @@ class MasterDashboardApp:
         except Exception as e:
             print(f"Warning: could not change the speech helper state: {e}")
 
+    def open_reels(self):
+        # Orchestration (linking, pairing, syncing, merging, cutting) lives in the module; the core
+        # only needs a thin, lazy entry point.
+        try:
+            from modules.reels import open_reels
+        except (ImportError, ModuleNotFoundError):
+            return
+        open_reels(self)
+
+    def update_reels_visibility(self):
+        """Shows the Reels button only if enabled in settings, the module is available, AND the
+        active language is one it can serve.
+
+        The language question is asked of the module rather than answered here: its cue merger reads
+        UniDic inflection features that Jieba has no equivalent for, and that is the module's
+        business to know. A feature that cannot work is hidden rather than shown failing.
+        """
+        if not hasattr(self, 'btn_reels') or self.btn_reels is None:
+            return
+
+        should_show = False
+        if self.var_enable_reels.get():
+            try:
+                import modules.reels as reels
+                should_show = reels.supports_language(self.var_language.get())
+            except (ImportError, ModuleNotFoundError):
+                # Module absent (open-source build or excluded by the conditional build)
+                should_show = False
+
+        if should_show:
+            if not self.btn_reels.winfo_ismapped():
+                self.btn_reels.pack(side=tk.LEFT, padx=(5, 0))
+        else:
+            self.btn_reels.pack_forget()
+
+    def open_junban(self):
+        # Everything — AnkiConnect, the match index, the planner, the undo snapshot and the panel
+        # — lives in the module; the core only needs a thin, lazy entry point.
+        try:
+            from modules.junban import open_junban
+        except (ImportError, ModuleNotFoundError):
+            return
+        open_junban(self)
+
+    def update_junban_visibility(self):
+        """Shows the 順 button only if enabled in settings AND the module is available.
+
+        No language condition, unlike Reels: reordering an Anki backlog by rank is language-agnostic,
+        and the one Japanese-specific part (the orthBase match key) has no Chinese equivalent to
+        miss — zh simply degrades to the lemma key.
+        """
+        if not hasattr(self, 'btn_junban') or self.btn_junban is None:
+            return
+
+        should_show = False
+        if self.var_enable_junban.get():
+            try:
+                # `import modules.junban` rather than `from modules import junban`: the latter reads
+                # the ATTRIBUTE off the already-imported parent package, which survives even when the
+                # submodule is gone, so the guard would not fire (see apply_koe_state).
+                import modules.junban  # noqa: F401
+                should_show = True
+            except (ImportError, ModuleNotFoundError):
+                # Module absent (open-source build or excluded by the conditional build)
+                should_show = False
+
+        if should_show:
+            if not self.btn_junban.winfo_ismapped():
+                self.btn_junban.pack(side=tk.LEFT, padx=(5, 0))
+        else:
+            self.btn_junban.pack_forget()
+
     def _update_zen_visibility(self, event=None):
         """Show the Zen Limit slider only when the Zen Mode theme is selected (it has no effect on
         any other theme). Re-packed BEFORE the journey button so it keeps its position above it."""
@@ -1751,6 +1874,12 @@ class MasterDashboardApp:
 
             self.var_enable_koe.set(settings.get("enable_koe", False))
             self.apply_koe_state()
+
+            self.var_enable_reels.set(settings.get("enable_reels", False))
+            self.update_reels_visibility()
+
+            self.var_enable_junban.set(settings.get("enable_junban", False))
+            self.update_junban_visibility()
 
             self.var_auto_update.set(settings.get("auto_update_enabled", True))
             self.skipped_version = settings.get("skipped_version", "")
@@ -1866,6 +1995,31 @@ class MasterDashboardApp:
                                      "koe_temperature", "koe_port", "koe_daily_cap"):
                         if _koe_key in cur:
                             settings[_koe_key] = cur[_koe_key]
+            except (ImportError, ModuleNotFoundError):
+                pass
+
+            # Reels: the toggle plus whichever of its own tunables the user already has. Written
+            # only when the module imports, so a build without it never gains those keys — and the
+            # module's own defaults are carried through rather than reset on every save.
+            try:
+                import modules.reels as _reels
+                settings["enable_reels"] = self.var_enable_reels.get()
+                for _reels_key in _reels.SETTINGS_DEFAULTS:
+                    if _reels_key != "enable_reels" and _reels_key in cur:
+                        settings[_reels_key] = cur[_reels_key]
+            except (ImportError, ModuleNotFoundError):
+                pass
+
+            # Junban: the same shape as Reels — the toggle plus whichever of the module's own
+            # tunables the user already has, written only when the module imports so a build
+            # without it never gains those keys. The carry-through matters because the panel writes
+            # junban_deck / junban_scope itself and this dict is rebuilt from scratch on every save.
+            try:
+                import modules.junban as _junban
+                settings["enable_junban"] = self.var_enable_junban.get()
+                for _junban_key in _junban.SETTINGS_DEFAULTS:
+                    if _junban_key != "enable_junban" and _junban_key in cur:
+                        settings[_junban_key] = cur[_junban_key]
             except (ImportError, ModuleNotFoundError):
                 pass
 

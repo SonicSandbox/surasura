@@ -910,11 +910,21 @@
             return { text: (head ? '…' : '') + body + (tail ? '…' : ''), trimmed: true };
         }
 
+        // The spelling to SHOW for a row. `Word` is UniDic's canonical lemma — an identity key, and
+        // frequently a spelling nobody writes (スドウ for 須藤, 有る for ある). `Orth` is how your own
+        // content actually spells it, so that is the name on the card. Everything that KEYS a word
+        // (the ignore list and its localStorage entry) stays on `Word`: swapping them would orphan
+        // every ignore ever saved. Absent — or NaN — on results generated before the column existed.
+        function displayWord(data) {
+            const orth = data.Orth;
+            return (typeof orth === 'string' && orth.trim()) ? orth : data.Word;
+        }
+
         function createWordItem(data) {
             const el = document.createElement('div');
             el.className = 'word-item';
 
-            const word = data.Word;
+            const word = displayWord(data);
             const safeWord = escapeHtml(word);
             const reading = data.Reading || "";
             // Parsing Block: Reverse reading and escape quotes for HTML attribute
@@ -966,7 +976,7 @@
 
             const zenCap = contextCap();
             const contextHtml = contexts.map(c => {
-                const t = trimContext(c.text, data.Word, zenCap);
+                const t = trimContext(c.text, word, zenCap);
                 // Keep the untrimmed sentence reachable on hover when we windowed it.
                 const tip = t.trimmed ? ` title="${escapeHtml(c.text)}"` : '';
                 return `<span class="context-line"${tip}>${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud)}</span>`;

@@ -40,6 +40,8 @@ settings_path = os.path.join(project_root, 'settings.json')
 hide_satoru = False
 enable_youtube = False
 enable_preview = False  # default so a missing/corrupt settings.json can't NameError below
+enable_reels = False
+enable_junban = False
 # Default excludes
 excluded_modules = ['pandas.tests']
 
@@ -50,6 +52,8 @@ if os.path.exists(settings_path):
             hide_satoru = settings.get("hide_satoru", False)
             enable_youtube = settings.get("enable_youtube_transcripts", False)
             enable_preview = settings.get("enable_youtube_preview", False)
+            enable_reels = settings.get("enable_reels", False)
+            enable_junban = settings.get("enable_junban", False)
     except Exception as e:
         print(f"Warning: Could not read settings.json for build configuration: {e}")
 
@@ -73,6 +77,20 @@ else:
     print("BUILD CONFIG: Speech module not present - excluding")
     excluded_modules.append('modules.koe')
 
+# Reels is opt-in and gated the same way YouTube is: the toggle that shows the button also decides
+# whether the module is bundled. It carries a vendored copy of SubsMatcher, so excluding it keeps
+# that out of a build nobody asked it into.
+if not enable_reels:
+    print("BUILD CONFIG: Excluding Reels module (enable_reels=False)")
+    excluded_modules.append('modules.reels')
+
+# Junban (Anki reordering) is opt-in the same way: the toggle that shows the 順 button also decides
+# whether the module is bundled. It talks to AnkiConnect over localhost and needs no hiddenimports —
+# everything it uses is reached through ordinary imports from modules.junban.
+if not enable_junban:
+    print("BUILD CONFIG: Excluding Junban module (enable_junban=False)")
+    excluded_modules.append('modules.junban')
+
 
 # -----------------------------------------------------------------------------
 # PYINSTALLER CONFIG
@@ -93,6 +111,28 @@ binaries = []
 # the frequency-list orthography bridge stops working. A silent loss is exactly what a
 # hiddenimport is for.
 hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data']
+
+# --- Optional-module payloads: only when that module is actually being bundled ---------------
+# Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is
+# also in `excludes` is a contradiction PyInstaller resolves by warning and dropping it, which
+# would be a silent no-op rather than the guarantee this is here to give.
+
+# Immersion Architect reads (and writes) architect_settings.json through get_resource(), so the
+# file has to exist under the bundle root at the same relative path it has in the repo. Without
+# it every read falls back to hardcoded defaults and the budget slider silently discards changes.
+if not hide_satoru:
+    _architect_settings = os.path.join(project_root, 'modules', 'immersion_architect',
+                                       'architect_settings.json')
+    if os.path.isfile(_architect_settings):
+        datas.append((_architect_settings, 'modules/immersion_architect'))
+
+# The vendored SubsMatcher is only ever RUN, never imported by module code, so nothing in the
+# import graph points at it and PyInstaller would leave it out. Frozen, it is reached through
+# app_entry's `subsync` command, which imports it — but state that here too so the dependency
+# survives a refactor of the dispatcher.
+if enable_reels:
+    hiddenimports.append('modules.reels.vendor.subsync')
+
 tmp_ret = collect_all('unidic_lite')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

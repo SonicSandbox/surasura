@@ -46,7 +46,7 @@ ENSURE_AUDIO_EXAMPLE = False
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 6
+ENGINE_REVISION = 8
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -102,7 +102,7 @@ class JapaneseTokenizer(Tokenizer):
         self.tagger = fugashi.Tagger()
 
     def tokenize(self, text):
-        """Returns a list of (lemma, parsing_reading, original_surface) tuples."""
+        """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples."""
         # Simple wrapper around sentences
         all_tokens = []
         for _, tokens in self.tokenize_sentences(text):
@@ -139,10 +139,19 @@ class JapaneseTokenizer(Tokenizer):
                 if SANITIZE_JA:
                     lemma = _sanitize_term(lemma)
                 reading = word.feature.kana if word.feature.kana else ""
+                # orthBase is the dictionary form in the spelling THIS text used, where `lemma` is
+                # UniDic's canonical headword for the lexeme. They differ for ~38% of content
+                # tokens: 引きずって -> lemma 引き摺る but orthBase 引きずる; 須藤 -> lemma スドウ
+                # (proper nouns get a katakana lemma) but orthBase 須藤. The lemma stays the
+                # identity — it is what merges いう/言う/言える into one word for counting — and the
+                # orth rides along purely as the name to SHOW. Never key anything on it.
+                orth = word.feature.orthBase if word.feature.orthBase else word.surface
+                if SANITIZE_JA:
+                    orth = _sanitize_term(orth)
 
                 current_sentence_surface.append(surface)
                 if pos not in ['记号', '補助記号', '空白']:
-                    current_sentence_tokens.append((lemma, reading, word.surface))
+                    current_sentence_tokens.append((lemma, reading, word.surface, orth))
 
                 if is_boundary:
                     s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
@@ -175,7 +184,7 @@ class ChineseTokenizer(Tokenizer):
             pass
 
     def tokenize(self, text):
-        """Returns a list of (lemma, pinyin_placeholder, original_surface) tuples."""
+        """Returns a list of (lemma, pinyin_placeholder, original_surface, orth) tuples."""
         all_tokens = []
         for _, tokens in self.tokenize_sentences(text):
             all_tokens.extend(tokens)
@@ -229,7 +238,9 @@ class ChineseTokenizer(Tokenizer):
             current_sentence_surface.append(surface)
             
             if not is_skippable:
-                current_sentence_tokens.append((surface, "", surface))
+                # Jieba has no lemma/orth distinction — the surface IS the dictionary form — so the
+                # orth slot simply repeats it, keeping the tuple shape identical across languages.
+                current_sentence_tokens.append((surface, "", surface, surface))
             
             if is_boundary:
                 s_text = "".join(current_sentence_surface).strip()
@@ -278,6 +289,27 @@ def _sanitize_term(term):
     # re.split returns a list, we take the first element
     parts = re.split(r'[-\s]', term)
     return parts[0] if parts else term
+
+def _display_orth(lemma, orths):
+    """The spelling to SHOW for a word: the commonest orthBase seen for it, else the lemma.
+
+    UniDic's lemma is a lexeme id, not a name. It deliberately merges every spelling of a word into
+    one headword — which is exactly what you want for counting (いう + 言う + 言える are one verb,
+    4,067 occurrences, not three words) and exactly what you do NOT want on a card, because the
+    headword is frequently a form nobody writes: 有る for ある, 呉れる for くれる, and — because
+    UniDic gives proper nouns a katakana lemma — スドウ for 須藤 and トットリ for 鳥取.
+
+    Measured on the live library: 23.7% of listed words that appear in the user's own content were
+    being named with a spelling that content never uses. So `Word` stays the identity and this is
+    the label. Ties fall back to the lemma rather than picking arbitrarily.
+    """
+    if not orths:
+        return lemma
+    best, best_n = None, 0
+    for orth, n in orths.items():
+        if orth and (n > best_n):
+            best, best_n = orth, n
+    return best or lemma
 
 def load_simple_list(file_path):
     if not os.path.exists(file_path):
@@ -412,7 +444,7 @@ def load_known_words(json_path, tokenizer):
                     known_lemmas.add(term) 
 
                     # 1. Add individual tokens
-                    for lemma, reading, _ in tokens:
+                    for lemma, reading, _, _ in tokens:
                         known_tuples.add((lemma, reading))
                         known_lemmas.add(lemma)
                         
@@ -454,7 +486,12 @@ _CUE_TERMINATORS = '。｡．！？!?！？'
 # Continuation markers. A cue ending in one of these is explicitly saying "this sentence runs into
 # the next cue", so the right move is to drop the arrow and let the two cues JOIN — rather than
 # terminating there (which strands a fragment like 'our final objective is…').
-_CUE_CONTINUATIONS = '➡→⇒➔►'
+#
+# ― (U+2015 HORIZONTAL BAR) and — (U+2014 EM DASH) are Netflix's continuation markers, where the
+# fansub convention is an arrow. Measured on 4,200 real Netflix cues: 3.4% end in a dash, and every
+# one of them was being terminated mid-clause into a fragment. They are only ever consulted at the
+# END of a cue, so a leading speech dash (—そうだね) is untouched.
+_CUE_CONTINUATIONS = '➡→⇒➔►―—'
 
 
 def close_cue(block_text):
@@ -472,13 +509,49 @@ def close_cue(block_text):
     return block_text
 
 
+_OPEN_BRACKETS = '(（'
+_CLOSE_BRACKETS = ')）'
+
+
+def _strip_bracketed(text):
+    """Remove balanced parenthesised groups — ASCII or fullwidth, however deeply nested.
+
+    Replaces a non-greedy `[\\(（].*?[\\)）]`, which cannot count and so mis-handles the single most
+    common shape in Netflix subtitles: a speaker label whose name carries furigana,
+    `（石崎(いしざき)）`. The lazy match stops at the INNER `)`, removes `（石崎(いしざき)` and leaves
+    an orphan `）` at the head of the line — which then reached the learner in example sentences and
+    in every export.
+
+    Two deliberate asymmetries:
+
+    * An unmatched CLOSER is dropped. It is precisely the residue this function exists to prevent,
+      and a lone `）` is never content.
+    * An unmatched OPENER keeps the text after it. Deleting to end-of-line would silently swallow
+      real dialogue whenever a cue contains a stray `（`; the old regex left such text alone, and
+      losing subtitle text is a far worse failure than keeping one stray bracket.
+    """
+    out = []
+    starts = []                       # output offsets where each still-open group began
+    for ch in text:
+        if ch in _OPEN_BRACKETS:
+            starts.append(len(out))
+            out.append(ch)            # provisional — removed if this group turns out to close
+        elif ch in _CLOSE_BRACKETS:
+            if starts:
+                del out[starts.pop():]    # drop the whole balanced group, innermost first
+            # else: orphan closer, drop it
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
 def clean_subtitle_text(text, language='ja'):
     # first remove ASS tags like {\pos(10,20)}
     text = re.sub(r'\{.*?\}', '', text)
-    
-    # Remove furigana in parens
-    text = re.sub(r'[\(（].*?[\)）]', '', text)
-    
+
+    # Remove speaker labels and furigana in parens (nested-aware — see _strip_bracketed)
+    text = _strip_bracketed(text)
+
     if language == 'ja':
         # Keep: Kanji, Hiragana, Katakana, and Japanese-style punctuation
         # Strip: ASCII letters and numbers (modeling the "Saturation Point" and "Noise Removal")
@@ -1134,6 +1207,11 @@ def main():
         "candidate_contexts": [], # List of (is_too_short, is_too_long, initial_cost, unique_lrs, s_text)
         "first_context": None,
         "surface": "",
+        # How this word is actually SPELLED in the library, counted so the commonest wins. UniDic's
+        # lemma is a canonical headword that often nobody writes (有る for ある, スドウ for 須藤), and
+        # it is the wrong string to put on a card or in the report. Counting rather than last-wins
+        # because one stray spelling shouldn't rename the word.
+        "orths": Counter(),
         "min_seq": float('inf'), # Track first appearance sequence index
         # Reading-vs-listening inputs (see app/modality.py). spoken_count is how often the word
         # was met in the user's OWN subtitle/YouTube files — evidence that beats the bundled
@@ -1328,7 +1406,7 @@ def main():
         for s_text, s_tokens in sentences:
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
-            for lemma, reading, surface in s_tokens:
+            for lemma, reading, surface, orth in s_tokens:
                 # Cache EVERY token (before the target-language filter below) so the cached
                 # multiset matches what tokenizer.tokenize() yields for the progressive pass.
                 file_counter[(lemma, reading)] += 1
@@ -1352,13 +1430,13 @@ def main():
                 # It's an unknown word!
                 # Even if we skip learning it (e.g. single chars), it makes the sentence harder, 
                 # so it must be part of `sentence_unknowns`.
-                sentence_unknowns.append((lemma, reading, surface))
+                sentence_unknowns.append((lemma, reading, surface, orth))
 
             # Unique unknowns in this sentence.
-            unique_lrs = set((l, r) for l, r, s in sentence_unknowns)
+            unique_lrs = set((l, r) for l, r, s, o in sentence_unknowns)
 
             # 2. Update Stats for all unknown tokens in this sentence
-            for lemma, reading, surface in sentence_unknowns:
+            for lemma, reading, surface, orth in sentence_unknowns:
                 # If we are skipping single characters for learning, do not add it to word_stats
                 if skip_singles and len(lemma) == 1:
                     continue
@@ -1368,6 +1446,7 @@ def main():
                 entry["total_count"] += 1
                 entry["sources"].add(file_basename)
                 entry["surface"] = surface
+                entry["orths"][orth] += 1
                 if label == "HighPriority": entry["high_count"] += 1
                 elif label == "LowPriority": entry["low_count"] += 1
                 elif label == "GoalContent": entry["goal_count"] += 1
@@ -1566,6 +1645,7 @@ def main():
 
         row = {
             "Word": lemma,
+            "Orth": _display_orth(lemma, data["orths"]),
             "Reading": reading,
             "Tier": tier_str,
             "Score": data["score"],
@@ -1946,17 +2026,22 @@ def main():
             n = data["total_count"]
             prev = _best.get(lemma)
             if prev is None:
-                _best[lemma] = [reading_kana, n, n]          # reading, count-of-that-reading, total
+                # reading, count-of-that-reading, total, spellings-seen
+                _best[lemma] = [reading_kana, n, n, Counter(data["orths"])]
             else:
                 prev[2] += n
+                # Spellings are pooled across every reading of the word, for the same reason the
+                # counts are: they are all one word, and splitting the evidence per reading would
+                # let a rare variant win the name.
+                prev[3].update(data["orths"])
                 if n > prev[1]:
                     prev[0], prev[1] = reading_kana, n
-        _reading = sorted(((w, v[0], v[2]) for w, v in _best.items()),
-                          key=lambda r: (-r[2], r[0]))
+        _reading = sorted(((w, _display_orth(w, v[3]), v[0], v[2]) for w, v in _best.items()),
+                          key=lambda r: (-r[3], r[0]))
         with open(os.path.join(RESULTS_DIR, "reading_words.csv"), 'w', encoding='utf-8-sig',
                   newline='') as f:
             _w = csv.writer(f)
-            _w.writerow(["Word", "Reading", "Occurrences"])
+            _w.writerow(["Word", "Orth", "Reading", "Occurrences"])
             _w.writerows(_reading)
         print(f"Saved reading-words list ({len(_reading)} words).")
     except Exception as e:
@@ -2031,7 +2116,7 @@ def main():
         # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
         file_counter = file_token_cache.get(file_path)
         if file_counter is None:
-            file_counter = Counter((l, r) for (l, r, s) in tokenizer.tokenize(extract_text(file_path, language)))
+            file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
 
         # 1. Calculate File Baselines
         file_total_tokens = 0
@@ -2083,6 +2168,11 @@ def main():
                 "Sequence": seq_idx,
                 "Source File": filename,
                 "Word": lemma,
+                # Same spelling the priority list shows, in the same position relative to Word.
+                # Both files are read by the same consumers (the exporters, and junban's content
+                # ordering), and a word named 須藤 in one and スドウ in the other would match in one
+                # place and not the other.
+                "Orth": _display_orth(lemma, stats["orths"]),
                 "Reading": reading,
                 "Tier": tier_str,
                 "Score": stats["score"],

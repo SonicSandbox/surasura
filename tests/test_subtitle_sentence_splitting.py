@@ -84,6 +84,48 @@ def test_a_continuation_arrow_joins_the_next_cue():
     assert analyzer.close_cue("残された わずかな時間で ➡") == "残された わずかな時間で"
 
 
+def test_a_netflix_dash_joins_the_next_cue():
+    """Netflix's continuation marker is a dash, not an arrow. Measured on 4,200 real cues: 3.4% end
+    in one, and every one of them was being closed with '。' mid-clause — cementing exactly the
+    fragment the arrow handling exists to prevent. Both bars are in use: ― U+2015 and — U+2014."""
+    assert analyzer.close_cue("あんたみたいな男を招き入れるなんて―") == "あんたみたいな男を招き入れるなんて"
+    assert analyzer.close_cue("水の分量は—") == "水の分量は"
+    assert analyzer.close_cue("入れてくれたら ―") == "入れてくれたら", "trailing space before the dash"
+
+
+def test_the_dash_fragment_that_used_to_be_cemented():
+    """The exact old output: '―' wasn't a terminator either, so a '。' was appended AFTER it."""
+    assert analyzer.close_cue("招き入れるなんて―") != "招き入れるなんて―。"
+    assert "―" not in analyzer.close_cue("招き入れるなんて―")
+
+
+def test_repeated_trailing_dashes_are_all_stripped():
+    """Netflix repeats a line across a shot change; both copies can carry the marker."""
+    assert analyzer.close_cue("もらったのに――") == "もらったのに"
+    assert analyzer.close_cue("もらったのに―➡") == "もらったのに", "mixed markers"
+
+
+def test_a_cue_that_is_only_a_dash_produces_nothing():
+    """Stripping the marker can empty the cue; an empty cue must be dropped, not become '。'."""
+    assert analyzer.close_cue("―") == ""
+    assert analyzer.close_cue(" — ") == ""
+
+
+def test_a_leading_dash_is_not_a_continuation():
+    """Only the END of a cue is consulted. A leading speech dash (—そうだね) is ordinary text, and
+    the cue is closed normally — behaviour here is unchanged."""
+    assert analyzer.close_cue("―そうだね") == "―そうだね。"
+    assert analyzer.close_cue("そう―だね") == "そう―だね。", "a mid-line dash is untouched"
+
+
+def test_a_nested_label_and_a_dash_on_the_same_cue():
+    """The two fixes meet on one real line from the sample: `（一花(いちか)）えっと―`. The label must
+    go whole and the dash must open the cue for joining."""
+    cleaned = analyzer.clean_subtitle_text("（一花(いちか)）えっと―", "ja")
+    assert cleaned == "えっと―"
+    assert analyzer.close_cue(cleaned) == "えっと"
+
+
 def test_close_cue_handles_empty_input():
     for junk in ("", "   ", None):
         assert analyzer.close_cue(junk) == ""
@@ -147,6 +189,31 @@ def test_ass_subtitles_get_the_same_treatment(tmp_path):
     out = _sentences(analyzer.extract_text(str(path), "ja"))
     assert not any("➡" in s for s in out), out
     assert max(len(s) for s in out) < 60, out
+
+
+def test_a_netflix_shaped_subtitle_joins_across_dashes(tmp_path):
+    """The Netflix dialect end to end: fullwidth speaker labels with furigana, and dashes carrying
+    a clause across cue boundaries. Both halves must land as one sentence with no residue."""
+    path = tmp_path / "netflix.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\n"
+        "（二乃(にの)）あんたみたいなえたいの知れない男を―\n\n"
+        "2\n00:00:03,000 --> 00:00:05,000\n"
+        "招き入れるなんてどうかしてるわ。\n\n"
+        "3\n00:00:05,000 --> 00:00:07,000\n"
+        "（四葉(よつば)）水の分量は―\n\n"
+        "4\n00:00:07,000 --> 00:00:09,000\n"
+        "フィーリング！\n",
+        encoding="utf-8")
+    out = _sentences(analyzer.extract_text(str(path), "ja"))
+
+    assert not any("―" in s for s in out), f"continuation dashes must not reach the learner: {out}"
+    assert not any("）" in s or "（" in s for s in out), f"no label residue: {out}"
+
+    joined = [s for s in out if "招き入れる" in s]
+    assert joined and "えたいの知れない男" in joined[0], \
+        f"the dashed cue must join the one after it: {out}"
+    assert any("水の分量" in s and "フィーリング" in s for s in out), out
 
 
 def test_plain_prose_is_unaffected(tmp_path):

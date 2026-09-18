@@ -47,7 +47,7 @@ def _assert_invariants(results, src_path, tokenizer, filename):
 
     tokens = tokenizer.tokenize(analyzer.extract_text(str(src_path), tokenizer_lang(tokenizer)))
     expected_total = len(tokens)
-    expected_counts = Counter((lemma, reading) for (lemma, reading, _surface) in tokens)
+    expected_counts = Counter((lemma, reading) for (lemma, reading, _surface, _orth) in tokens)
 
     # Invariant 1: the coverage denominator counts the full token stream (non-target included).
     assert int(rows.iloc[0]["Total Count"]) == expected_total

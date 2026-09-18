@@ -39,7 +39,9 @@ from collections import Counter
 # v2 added the per-file token SEQUENCE blob (so Generate reuses unchanged files' tokens).
 # v3 fixed subtitle sentence splitting (halfwidth ｡, terminators glued to adjacent symbols, and
 #    continuation arrows joining cues), so every cached tokenization predates the fix.
-SCHEMA_VERSION = 3
+# v4 widened the token tuple to (lemma, reading, surface, orth). A v3 blob unpacks three values
+#    into a four-value loop and raises, so the old cache cannot be read — it has to be rebuilt.
+SCHEMA_VERSION = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -117,20 +119,24 @@ def _decode_tokens(blob):
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
+# IF NOT EXISTS on every object, deliberately. Two processes can both read a stale `user_version`
+# (the background indexer and a Generate run race routinely), both decide the schema is missing, and
+# both execute this script; without the guard the loser dies on "table files already exists". The
+# work is idempotent either way — the winner's tables are the ones everybody ends up using.
 _SCHEMA = """
-CREATE TABLE files (
+CREATE TABLE IF NOT EXISTS files (
     path   TEXT PRIMARY KEY,   -- normcase abspath
     mtime  REAL, size INTEGER, -- reconcile signature (filesystem truth)
     total  INTEGER,            -- token count for this file
     counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
     tokens BLOB                -- zlib(json sentences) — cached tokenization for Generate reuse
 );
-CREATE TABLE aggregate (       -- maintained rollup; the preview reads this
+CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
     PRIMARY KEY (lemma, reading)
 );
-CREATE INDEX idx_aggregate_count ON aggregate(count DESC);
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE INDEX IF NOT EXISTS idx_aggregate_count ON aggregate(count DESC);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -417,7 +423,7 @@ def make_tokenizer(language, reinforce=False):
         sentences = list(tok.tokenize_sentences(extract(path, language)))
         counts = Counter()
         for _s_text, s_tokens in sentences:
-            for lemma, reading, surface in s_tokens:
+            for lemma, reading, surface, _orth in s_tokens:
                 if has_lang(lemma, language) or has_lang(surface, language):
                     counts[make_key(lemma, reading)] += 1
         return {"sentences": sentences, "counts": counts}

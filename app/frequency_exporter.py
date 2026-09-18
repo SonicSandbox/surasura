@@ -38,6 +38,24 @@ class FrequencyExporter:
         return cleaned or None
 
     @staticmethod
+    def _display_term(orth, word):
+        """The spelling a row is EXPORTED under — its card front.
+
+        `Word` is UniDic's canonical lemma: an identity key, and frequently a spelling nobody
+        writes (`スドウ` for 須藤, `有る` for ある). `Orth` is how the user's own content actually
+        spells it, so that is what an export should carry. Results generated before the column
+        existed have no `Orth` at all, hence the fallback — `_clean_term` already turns a NaN or
+        blank cell into None, so a missing column and a blank cell behave the same.
+        """
+        return FrequencyExporter._clean_term(orth) or FrequencyExporter._clean_term(word)
+
+    @staticmethod
+    def _orth_column(df):
+        """`Orth` as a plain list aligned with the rows, or a list of Nones when the column is
+        absent — so the list-based exports stay a single pass rather than iterrows()."""
+        return df['Orth'].tolist() if 'Orth' in df.columns else [None] * len(df)
+
+    @staticmethod
     def _is_pure_katakana(text):
         """
         Check if the text consists only of Katakana characters.
@@ -61,7 +79,9 @@ class FrequencyExporter:
             
         # Sanitize words, dropping NaN/blank rows so the JSON array can't contain a bare
         # `NaN` token (invalid JSON) or empty strings.
-        word_list = [t for t in (FrequencyExporter._clean_term(w) for w in df['Word'].tolist()) if t]
+        word_list = [t for t in (FrequencyExporter._display_term(o, w)
+                                 for o, w in zip(FrequencyExporter._orth_column(df),
+                                                 df['Word'].tolist())) if t]
 
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(word_list, f, ensure_ascii=False, indent=2)
@@ -78,7 +98,9 @@ class FrequencyExporter:
             raise ValueError("CSV is missing 'Word' column")
             
         # Sanitize words, dropping NaN/blank rows so we never write a stray "nan" or blank line.
-        word_list = [t for t in (FrequencyExporter._clean_term(w) for w in df['Word'].tolist()) if t]
+        word_list = [t for t in (FrequencyExporter._display_term(o, w)
+                                 for o, w in zip(FrequencyExporter._orth_column(df),
+                                                 df['Word'].tolist())) if t]
 
         with open(save_path, 'w', encoding='utf-8') as f:
             for word in word_list:
@@ -117,7 +139,7 @@ class FrequencyExporter:
             rank = idx + 1
             # Sanitize + validate the term; skip NaN/blank rows so we never emit an invalid
             # entry. Rank stays tied to the original frequency position (skipped ranks just gap).
-            term = FrequencyExporter._clean_term(row['Word'])
+            term = FrequencyExporter._display_term(row.get('Orth'), row['Word'])
             if not term:
                 continue
 
@@ -171,7 +193,7 @@ class FrequencyExporter:
         # Prepare output data
         output_data = []
         for _, row in df.iterrows():
-            word = FrequencyExporter._clean_term(row.get('Word', ''))
+            word = FrequencyExporter._display_term(row.get('Orth'), row.get('Word', ''))
             if not word:
                 continue  # skip NaN/blank rows so they don't become empty Anki cards
             reading = row.get('Reading', '') if 'Reading' in available_cols else ''

@@ -139,6 +139,24 @@ ANALYZER_MUTABLE_GLOBALS = (
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _real_analyzer_imported_first():
+    """Import the REAL analyzer once, before any test class can mock `app.path_utils`.
+
+    The dashboard-wiring tests patch `sys.modules['app.path_utils']` with a MagicMock for a whole
+    class. If `_isolate_analyzer_module_state` below then imported the analyzer for the FIRST time
+    under that mock, the analyzer's module-level `os.makedirs(get_user_file("results"))` ran on a
+    MagicMock and created a real "MagicMock/" folder in the repo root. Invisible in a full run (the
+    analyzer is already cached), it happened whenever such a file was run on its own. A session
+    fixture runs before every class-level setUp, so the analyzer is always cached first.
+    """
+    try:
+        import app.analyzer  # noqa: F401
+    except Exception:
+        pass
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _isolate_analyzer_module_state():
     """Keep the analyzer's module-level state from leaking between tests.

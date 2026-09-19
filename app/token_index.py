@@ -380,29 +380,41 @@ class Store:
                 "unknown": unknown, "all_counts": all_counts}
 
 
-def known_signature(known_path):
+def known_signature(known_path, script="asis"):
     """A tokenizer-free fingerprint of the known-words file: (exists, mtime, size). A deleted or
-    edited or newly-added KnownWord.json all yield a DIFFERENT signature, so the cache invalidates."""
+    edited or newly-added KnownWord.json all yield a DIFFERENT signature, so the cache invalidates.
+
+    `script` is the EFFECTIVE Chinese script (zh_script.effective). The cached set is normalized in
+    that script, so switching script must miss even though the file is untouched. Folded in only when
+    converting, so as-is signatures stay byte-identical and nobody re-normalizes on upgrade (I2)."""
     try:
         st = os.stat(known_path)
-        return json.dumps([True, st.st_mtime, st.st_size])
+        sig = [True, st.st_mtime, st.st_size]
     except OSError:
-        return json.dumps([False, None, None])   # missing / deleted
+        sig = [False, None, None]   # missing / deleted
+    if script in ("s", "t"):
+        sig.append(f"script={script}")
+    return json.dumps(sig)
 
 
 # --------------------------------------------------------------------------- #
 # Tokenizer factory (default; injectable for tests)
 # --------------------------------------------------------------------------- #
-def build_signature(language, reinforce=False):
+def build_signature(language, reinforce=False, script="asis"):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
-    config change invalidates stale tokens. Only Chinese `reinforce` segmentation varies at runtime
-    (ja tokenization is fixed; language is already isolated per DB; a tokenizer-LIBRARY change is
-    handled by bumping SCHEMA_VERSION, which rebuilds). Normalized so ja ignores a stray reinforce."""
+    config change invalidates stale tokens. Only Chinese `reinforce` segmentation and `script`
+    conversion vary at runtime (ja tokenization is fixed; language is already isolated per DB; a
+    tokenizer-LIBRARY change is handled by bumping SCHEMA_VERSION, which rebuilds). Normalized so ja
+    ignores a stray reinforce or script. The script suffix appears ONLY when converting: an as-is
+    store keeps its exact old signature, so upgrading never rebuilds anyone's index (spec I2)."""
+    from app.zh_script import effective
     eff_reinforce = bool(reinforce) and language == "zh"
-    return f"{language}|reinforce={eff_reinforce}"
+    sig = f"{language}|reinforce={eff_reinforce}"
+    eff_script = effective(language, script)
+    return sig if eff_script == "asis" else f"{sig}|script={eff_script}"
 
 
-def make_tokenizer(language, reinforce=False):
+def make_tokenizer(language, reinforce=False, script="asis"):
     """Build the default `tokenize_file(path) -> {"sentences", "counts"}`, reusing the analyzer's
     real tokenizer + text extraction so the store matches what a run would produce.
 
@@ -415,8 +427,8 @@ def make_tokenizer(language, reinforce=False):
 
     # ja lemmas carry a gloss suffix the analyzer strips; match it so store lemmas == run lemmas.
     analyzer.SANITIZE_JA = (language == "ja")
-    tok = analyzer.ChineseTokenizer(reinforce_segmentation=reinforce) if language == "zh" \
-        else analyzer.JapaneseTokenizer()
+    tok = analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script) \
+        if language == "zh" else analyzer.JapaneseTokenizer()
     has_lang, extract = analyzer.has_target_language, analyzer.extract_text
 
     def tokenize_file(path):
@@ -431,12 +443,12 @@ def make_tokenizer(language, reinforce=False):
     return tokenize_file
 
 
-def reconcile_language(language, files, path=None, reinforce=False):
+def reconcile_language(language, files, path=None, reinforce=False, script="asis"):
     """Convenience: open the store and reconcile it with the default tokenizer."""
     store = open_store(language, path)
     try:
-        store.reconcile(files, make_tokenizer(language, reinforce),
-                        build_signature=build_signature(language, reinforce))
+        store.reconcile(files, make_tokenizer(language, reinforce, script),
+                        build_signature=build_signature(language, reinforce, script))
     finally:
         store.close()
     return store

@@ -24,6 +24,7 @@ from app.path_utils import (get_user_file, get_resource, get_data_path, get_user
 from app import settings_manager
 from app import word_selection
 from app import modality
+from app import zh_script   # cheap: its tables decode only on the first conversion
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -169,7 +170,12 @@ class JapaneseTokenizer(Tokenizer):
                     yield s_text, current_sentence_tokens
 
 class ChineseTokenizer(Tokenizer):
-    def __init__(self, reinforce_segmentation=False):
+    def __init__(self, reinforce_segmentation=False, script="asis"):
+        # Which script every token and sentence comes out in (the `zh_script` setting): "asis" is
+        # the text as written, "s" Simplified, "t" Traditional. See app/zh_script.py.
+        self.script = script if script in ("s", "t") else "asis"
+        if self.script != "asis":
+            print(f"Configuration: Chinese read as {'Simplified' if self.script == 's' else 'Traditional'}.")
         # Force separation of common collocations that users prefer to see split
         # e.g. "就把" -> "就", "把" instead of "就把"
         if reinforce_segmentation:
@@ -200,8 +206,23 @@ class ChineseTokenizer(Tokenizer):
         # but jieba is fast. However, we need to reconstruct sentences for context.
         
         # Simple approach: Tokenize everything, then buffer into sentences based on punctuation tokens
-        
-        seg_list = jieba.cut(text, cut_all=False)
+
+        if self.script == "asis":
+            seg_list = jieba.cut(text, cut_all=False)
+        else:
+            # Segment in SIMPLIFIED whichever script is wanted: jieba's dictionary is Simplified
+            # only (學習/這個 aren't in it, 学习/这个 are), so this is also what makes Traditional
+            # text segment well. Every conversion is length-preserving (zh_script, I3), so each
+            # jieba token's offsets in `simp` are its offsets in the output text too — slice there.
+            simp = zh_script.to_simplified(text)
+            out = simp if self.script == "s" else zh_script.to_traditional(simp)
+
+            def _aligned(words, pos=0):
+                for w in words:
+                    yield out[pos:pos + len(w)]
+                    pos += len(w)
+
+            seg_list = _aligned(jieba.cut(simp, cut_all=False))
         
         current_sentence_tokens = []
         current_sentence_surface = []
@@ -329,12 +350,14 @@ def _display_forms(lemma, orths, surfaces):
     forms = [s for s, _ in sorted(surfaces.items(), key=lambda kv: -kv[1]) if s and s not in shown]
     return "|".join(forms[:FORMS_LIMIT])
 
-def load_simple_list(file_path):
+def load_simple_list(file_path, script="asis"):
     if not os.path.exists(file_path):
         return set()
     with open(file_path, 'r', encoding='utf-8') as f:
-        # Ignore comments starting with # and empty lines
-        return set((_sanitize_term(line.strip()) if SANITIZE_JA else line.strip()) for line in f if line.strip() and not line.strip().startswith("#"))
+        # Ignore comments starting with # and empty lines. Chinese entries are read in the library's
+        # script (`zh_script`) so they still match converted tokens; the file itself is never touched.
+        return set(zh_script.convert(_sanitize_term(line.strip()) if SANITIZE_JA else line.strip(), script)
+                   for line in f if line.strip() and not line.strip().startswith("#"))
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -359,20 +382,23 @@ def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     
     return freq_lists
 
-def load_yomitan_frequency_list(csv_path):
+def load_yomitan_frequency_list(csv_path, script="asis"):
     """
     Load a frequency list from a CSV file.
     Returns a dictionary mapping word -> rank (int).
-    
+
     CSV format: Two columns: Word, Rank
     Example:
     Word,Rank
     の,1
     は,2
     ...
-    
+
     Note: Multiple words can have the same rank value.
     Uses csv module for fast loading of large files.
+
+    `script` ("s"/"t", Chinese only) reads the words in the library's script. Two spellings can then
+    become one word (乾 and 幹 are both 干 in Simplified); it keeps the commoner rank.
     """
     word_to_rank = {}
     
@@ -390,6 +416,10 @@ def load_yomitan_frequency_list(csv_path):
                     # Chinese (and JA with the toggle off) must keep the raw word.
                     word = _sanitize_term(row['Word']) if SANITIZE_JA else (row['Word'] or '').strip()
                     rank = int(row['Rank'])
+                    if script != "asis":
+                        word = zh_script.convert(word, script)
+                        if word_to_rank.get(word, rank) < rank:
+                            continue
                     word_to_rank[word] = rank
                 except (ValueError, KeyError):
                     continue  # Skip malformed rows
@@ -434,6 +464,10 @@ def load_known_words(json_path, tokenizer):
         
     known_tuples = set()
     known_lemmas = set()
+    # A Chinese tokenizer reading in one script (`zh_script`) converts every term it tokenizes; the
+    # raw term trusted below must be read in that same script or it can never match. Converted
+    # separately from the ORIGINAL term, exactly as the tokenizer converts it, so the two can't drift.
+    script = getattr(tokenizer, "script", "asis")
     # Handle both Dict (list in 'words') and List formats
     if isinstance(data, dict):
          word_list = data.get("words", [])
@@ -457,9 +491,10 @@ def load_known_words(json_path, tokenizer):
                 # Normalize using the same tokenizer
                 try:
                     tokens = tokenizer.tokenize(term)
-                    
+                    term = zh_script.convert(term, script)
+
                     # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
-                    known_lemmas.add(term) 
+                    known_lemmas.add(term)
 
                     # 1. Add individual tokens
                     for lemma, reading, _, _ in tokens:
@@ -878,6 +913,7 @@ def _build_analysis_parser():
     parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
     parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
     parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
+    parser.add_argument("--zh-script", choices=zh_script.SCRIPTS, default="asis", help="Read all Chinese as Simplified (s) or Traditional (t); asis = as written")
     parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
     parser.add_argument("--static-only", action="store_true", help="Generate static HTML")
     parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
@@ -908,7 +944,8 @@ def resolve_found_files(language, verbose=True):
     from the master_manifest (phase order) or a recursive fallback scan. Shared by main() and the
     dashboard's no-change pre-flight, so both compute the run-signature over exactly the same list.
 
-    source_type drives the report's per-sentence source badge (subtitle / youtube / epub / text).
+    source_type drives the report's per-sentence source badge (subtitle / youtube / bilibili / epub
+    / text).
     It prefers what the importer recorded on the manifest entry, then a producer's directory marker
     (read ONCE per directory here), then the filename."""
     data_dir = get_data_path(language)
@@ -1024,7 +1061,10 @@ def compute_run_signature(language, found_files, args):
         ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
         black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
         graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
-        known_sig = _token_index.known_signature(known_file)                 # stat only
+        # getattr: an args namespace built by hand (a test, an older caller) predates --zh-script,
+        # and an AttributeError here would silently return None and disable the skip.
+        script = zh_script.effective(language, getattr(args, "zh_script", "asis"))
+        known_sig = _token_index.known_signature(known_file, script)       # stat only
         available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)  # paths only
 
         def _fsig(p):
@@ -1065,7 +1105,7 @@ def compute_run_signature(language, found_files, args):
             "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
                      args.ensure_audio_example,
                      args.include_single_chars, args.exclude_freq_one, args.reinforce,
-                     args.context_min, args.context_max, args.max_contexts],
+                     args.context_min, args.context_max, args.max_contexts, script],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
@@ -1204,6 +1244,10 @@ def main():
     SANITIZE_JA = (language == 'ja')
     print(f"Configuration: Japanese term sanitization = {SANITIZE_JA}")
 
+    # Chinese script (`zh_script`): content, known words, lists and frequency lists are all read in
+    # this ONE script. "asis" for Japanese and for anyone who never set it — today's exact behaviour.
+    script = zh_script.effective(language, args.zh_script)
+
     # Single-char tokens are skippable noise in Japanese (particles), but in Chinese most
     # high-frequency words ARE single characters — never skip them for zh.
     skip_singles = SKIP_SINGLE_CHARS and language == 'ja'
@@ -1232,7 +1276,7 @@ def main():
     # known-words (a ~3 MB JSON), the ignore lists, or the frequency-list CSVs. A "nothing changed"
     # skip needs none of those, and on a big library that content-loading is the bulk of a skip's
     # wasted time. (They're loaded further down, only once we know a real run is happening.)
-    _known_sig = _token_index.known_signature(known_file)       # stat only (no tokenizer, no 3MB read)
+    _known_sig = _token_index.known_signature(known_file, script)   # stat only (no tokenizer, no 3MB read)
     print(f"Scanning for {language} frequency lists in {user_files_dir}...")
     available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)   # paths only
     if not available_freq_lists:
@@ -1331,7 +1375,7 @@ def main():
     # --- Past the skip: this is a real run, so NOW load the heavy content the skip check above
     #     deliberately avoided (tokenizer, known-words normalization, ignore lists, frequency lists). ---
     if language == 'zh':
-        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce)
+        tokenizer = ChineseTokenizer(reinforce_segmentation=args.reinforce, script=script)
     else:
         tokenizer = JapaneseTokenizer()
 
@@ -1350,14 +1394,14 @@ def main():
             except Exception:
                 pass
 
-    ignore_list = load_simple_list(ignore_list_file)
-    ignore_list.update(load_simple_list(black_list_file))        # merge blacklist into ignore list
-    ignore_list.update(load_simple_list(graduated_list_file))    # merge graduated list into ignore list
+    ignore_list = load_simple_list(ignore_list_file, script)
+    ignore_list.update(load_simple_list(black_list_file, script))        # merge blacklist into ignore list
+    ignore_list.update(load_simple_list(graduated_list_file, script))    # merge graduated list into ignore list
 
     # Load all yomitan frequency lists (discovered above; contents read here on a real run only).
     freq_data = {}
     for list_name, filepath in sorted(available_freq_lists.items()):
-        freq_data[list_name] = load_yomitan_frequency_list(filepath)
+        freq_data[list_name] = load_yomitan_frequency_list(filepath, script)
     print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
 
     # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the
@@ -1365,8 +1409,8 @@ def main():
     if _store is not None:
         try:
             _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
-                             _token_index.make_tokenizer(language, reinforce=args.reinforce),
-                             build_signature=_token_index.build_signature(language, args.reinforce))
+                             _token_index.make_tokenizer(language, reinforce=args.reinforce, script=script),
+                             build_signature=_token_index.build_signature(language, args.reinforce, script))
         except Exception as e:
             print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
             try:
@@ -1403,9 +1447,10 @@ def main():
             # Parallel list, not a dict lookup: this is read inside sort keys over hundreds of
             # thousands of candidates, and a list index is the cheapest thing available.
             # 0 = YouTube (badge opens the video at that second), 1 = other audio (names an
-            # episode you must then find), 2 = text.
+            # episode you must then find — bilibili.tv too: its badge opens the episode, but there
+            # is no verified way to start it at the moment), 2 = text.
             src_audio_rank.append(0 if stype == "youtube" else
-                                  (1 if stype == "subtitle" else 2))
+                                  (1 if stype in ("subtitle", "bilibili") else 2))
         return idx
 
     # --- AGGREGATION PASS ---
@@ -1438,7 +1483,7 @@ def main():
         file_counter = Counter()
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
-        file_is_spoken = source_type in ("subtitle", "youtube")
+        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
         file_series = _series_name(file_path, data_dir)
         library_series.add(file_series)
         if file_is_spoken:
@@ -1828,7 +1873,7 @@ def main():
         if ENSURE_AUDIO_EXAMPLE and args.max_contexts >= 2 and selected_contexts:
             def _is_audio(src_idx):
                 return (src_idx is not None and src_idx < len(source_list)
-                        and source_list[src_idx]["type"] in ("subtitle", "youtube"))
+                        and source_list[src_idx]["type"] in ("subtitle", "youtube", "bilibili"))
 
             if not any(_is_audio(c[5]) for c in selected_contexts):
                 chosen = {c[3] for c in selected_contexts}

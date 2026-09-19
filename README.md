@@ -59,7 +59,7 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 - 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
 
-- 🇨🇳 **Multi-Language Support**: Now also supports Chinese (Simplified & Traditional) via Jieba segmentation.
+- 🇨🇳 **Multi-Language Support**: Now also supports Chinese via Jieba segmentation — Simplified, Traditional, or a mix of both read as one script of your choice.
 
 - 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
 

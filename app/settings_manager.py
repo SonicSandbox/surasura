@@ -15,6 +15,9 @@ DEFAULT_SETTINGS = {
     "split_length": 3000,
     "target_language": "ja",
     "reinforce_segmentation": False,
+    # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
+    # every file's script as written. Files are never converted on disk (app/zh_script.py).
+    "zh_script": "asis",
     "telemetry_enabled": True,
     "words_per_day": 5,
     "show_words_per_day": True,

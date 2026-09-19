@@ -609,7 +609,7 @@
         // globalSourceDisplay: 'off' | 'icon' | 'filename' | 'full'  (Settings -> Experience & UI)
         // globalSources rows are [name, type, fullPath, groupLabel]; sentences carry an index into
         // that table. Shows the short name, hovers group/file, copies the FULL path (Explorer).
-        const SOURCE_ICONS = { subtitle: '🎬', youtube: '▶', epub: '📖', text: '📄' };
+        const SOURCE_ICONS = { subtitle: '🎬', youtube: '▶', bilibili: '📺', epub: '📖', text: '📄' };
 
         // --- Speech (optional Koe module; mirrors web_app.html) ---------------------------------- #
         // globalKoe is {port, probe, token} when enabled, else null. No API key lives in this page:
@@ -732,19 +732,21 @@
 
             // For a YouTube source the VIDEO is the thing, not the transcript file: click opens it
             // at this sentence's moment, shift-click opens the transcript there instead.
-            // (Mirrors web_app.html.)
+            // (Mirrors web_app.html.) row[4] is a YouTube id, or a bilibili.tv episode page URL,
+            // which opens the episode — no verified start-time parameter; the hover names the moment.
             const videoId = row[4] || '';
             if (videoId) {
-                const secs = (at !== null && at !== undefined && at !== "")
+                const pageUrl = videoId.startsWith('https://') || videoId.startsWith('http://');
+                const secs = (!pageUrl && at !== null && at !== undefined && at !== "")
                     ? '?t=' + Math.max(0, Math.floor(Number(at) || 0)) : '';
-                const href = 'https://youtu.be/' + encodeURIComponent(videoId) + secs;
+                const href = pageUrl ? videoId : 'https://youtu.be/' + encodeURIComponent(videoId) + secs;
                 // Shift-click opens the TRANSCRIPT at this sentence instead.
                 const transcript = sourceDeepLink(fullPath, frag);
                 return `<a class="src-badge" href="${escapeHtml(href)}" target="_blank" rel="noopener" ` +
                        `migaku_ignore data-yomichan-ignore data-src-path="${escapeHtml(href)}" ` +
                        `data-src-url="${escapeHtml(href)}" ` +
                        (transcript ? `data-src-transcript="${escapeHtml(transcript)}" ` : ``) +
-                       `title="${escapeHtml(hover)}\nClick to open the video here` +
+                       `title="${escapeHtml(hover)}\nClick to open the video${pageUrl ? '' : ' here'}` +
                        (transcript ? `\nShift-click to open the transcript at this sentence` : ``) +
                        `" onclick="return youtubeBadgeClick(event, this)">${label}</a>`;
             }

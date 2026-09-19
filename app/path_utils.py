@@ -115,9 +115,10 @@ def is_content_file(path):
 
 
 # --- Where a sentence came from (the report's per-sentence source badge) ------------------------ #
-# Four kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line
-# to a timestamped video, an EPUB chapter to a book, everything else is plain text.
-SOURCE_TYPES = ("subtitle", "youtube", "epub", "text")
+# Kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line to a
+# timestamped video, a bilibili.tv line to an episode page, an EPUB chapter to a book, everything
+# else is plain text.
+SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text")
 
 # The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
 # stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more
@@ -127,6 +128,11 @@ SOURCE_TYPES = ("subtitle", "youtube", "epub", "text")
 # Still anchored rather than a free search: an unanchored 11-char bracket match would also hit
 # release-group tags in fansub filenames — "[HorribleSub] ep01" is exactly 11 characters.
 _YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
+
+# bilibili.tv transcripts end "[bilibili-<episode id>]", same trailing-noise allowance. The ids are
+# bare digits, and a bare bracketed number is far too common to trust ("[20240101]", fansub CRCs),
+# hence the explicit prefix the downloader writes.
+_BILIBILI_ID_RE = re.compile(r"\[bilibili-(\d+)\][\s_()\-.\d]*$")
 
 # A producer that KNOWS what it made (Extract, for instance) drops this beside its output. Needed
 # because an EPUB chapter and an ordinary note are both plain .txt — nothing in the filename tells
@@ -186,8 +192,12 @@ def infer_source_type(path, declared=None, marker_type=None):
     # The '[' test is a cheap gate: this runs once per file on every Generate (thousands of times
     # on a real library) and almost no filename contains a bracket, so most skip the regex entirely.
     name = str(path)
-    if "[" in name and _YOUTUBE_ID_RE.search(os.path.splitext(os.path.basename(name))[0]):
-        return "youtube"
+    if "[" in name:
+        stem = os.path.splitext(os.path.basename(name))[0]
+        if _BILIBILI_ID_RE.search(stem):
+            return "bilibili"
+        if _YOUTUBE_ID_RE.search(stem):
+            return "youtube"
     return "text"
 
 

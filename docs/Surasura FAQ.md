@@ -71,12 +71,18 @@ Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any numb
 
 For anime subtitles specifically, Surasura doesn't fetch those — grab them from a subtitle site (there's an **Anime subtitles ↗** link in the Content Manager) and add them like any other file.
 
+**Can I use Bilibili?**
+Yes — **bilibili.tv** links (episodes, whole seasons, uploads) work in the same box, with no account. Shows there are licensed per country, so an episode that isn't available in your region says so instead of downloading. **bilibili.com** links aren't supported: that site only gives subtitles to signed-in users. Look for the same show on bilibili.tv instead.
+
 ---
 
 ### Troubleshooting & Support
 
 **Why am I seeing Japanese words in my Chinese frequency results?**
 Check your Advanced Settings. Ensure that "Chinese" is checked as your target language and that "Japanese" is completely unchecked.
+
+**My Chinese content mixes Simplified and Traditional. Why does 学习 show up separately from 學習?**
+Because they're written differently, Surasura counts them as two words unless you tell it otherwise. Go to **Settings → 🌐 Language & Parsing → Script** (shown when Chinese is selected) and pick **Simplified (简体)** or **Traditional (繁體)**. Everything — content, known words, lists — is then read in that one script, so each word counts once and a known word matches in either script. Your files are never changed; pick **As-is** to go back. Simplified → Traditional can occasionally choose the wrong character in a rare context, and it uses standard forms (爲, 裏) rather than Taiwan's (為, 裡).
 
 **What file formats does Surasura currently support?**
 Analysis reads `.txt`, `.md`, `.srt` and `.ass`. You can also drop in a **`.zip`** — Surasura unpacks the supported files inside it and adds them as one ordered group. EPUBs and Anki decks go through the built-in **📖 Extract (EPUB / Anki)** tool, which converts and splits them into text first.

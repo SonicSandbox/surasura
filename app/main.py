@@ -200,6 +200,27 @@ class MasterDashboardApp:
                 return key
         return "all"
 
+    # Chinese script (`zh_script`): stored key -> the label shown under Language & Parsing.
+    ZH_SCRIPT_LABELS = {
+        "asis": "As-is",
+        "s": "Simplified (简体)",
+        "t": "Traditional (繁體)",
+    }
+
+    @classmethod
+    def _zh_script_key(cls, label):
+        """Settings label -> stored key. Unknown labels fall back to 'asis' (the default)."""
+        for key, text in cls.ZH_SCRIPT_LABELS.items():
+            if text == label:
+                return key
+        return "asis"
+
+    def _effective_zh_script(self, lang):
+        """The conversion that applies to `lang` right now — "asis" unless it's Chinese with a script
+        chosen. UI thread only (reads a Tk variable); workers get it passed in."""
+        from app.zh_script import effective
+        return effective(lang, self.var_zh_script.get())
+
     def __init__(self, root):
         self.root = root
         self.root.title(f"Surasura - Immersion Architect Dashboard v{__version__}")
@@ -233,6 +254,7 @@ class MasterDashboardApp:
         self.var_split_length = tk.IntVar(value=3000)
         self.var_language = tk.StringVar(value="ja")
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
+        self.var_zh_script = tk.StringVar(value="asis")  # read all Chinese as one script (asis/s/t)
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
@@ -285,6 +307,7 @@ class MasterDashboardApp:
         self.lang_frame: Optional[ttk.Frame] = None
         self.lang_options_frame: Optional[ttk.Frame] = None
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
+        self.zh_script_frame: Optional[ttk.Frame] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -632,9 +655,10 @@ class MasterDashboardApp:
         import threading
         lang = self.var_language.get() or "ja"
         sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+        script = self._effective_zh_script(lang)     # read here: the worker must not touch Tk vars
 
         # Cache hit: same inputs as the last good compute -> reuse the cached previews, no worker.
-        sig = self._preview_signature(lang, sel)
+        sig = self._preview_signature(lang, sel, script)
         if (not force and sig is not None and sig == getattr(self, "_preview_sig", None)
                 and getattr(self, "_band_previews", None) is not None):
             self._update_band_preview_labels(self.var_band.get())
@@ -645,31 +669,32 @@ class MasterDashboardApp:
         self.var_band_coverage.set("Calculating…")
 
         def _work():
-            previews = self._compute_band_previews(lang, sel)
+            previews = self._compute_band_previews(lang, sel, script)
             self.gui_queue.put(lambda: self._apply_preview_result(gen, previews, sig))
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _preview_signature(self, lang, sel):
+    def _preview_signature(self, lang, sel, script="asis"):
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store
         (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
-        lists, and the selection settings. Returns None if it can't be computed (forces a refresh)."""
+        lists, the selection settings, and the Chinese script they're all read in. Returns None if it
+        can't be computed (forces a refresh)."""
         try:
             from app.path_utils import get_user_files_path
             uf = get_user_files_path(lang)
             db = token_index.store_path_for(lang)
             db_mtime = os.path.getmtime(db) if os.path.exists(db) else 0
             known_path = os.path.join(uf, "KnownWord.json")
-            ksig = token_index.known_signature(known_path)
+            ksig = token_index.known_signature(known_path, script)
             lists = tuple(
                 os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
                 for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
             )
-            return (lang, db_mtime, ksig, lists, json.dumps(sel, sort_keys=True))
+            return (lang, db_mtime, ksig, lists, json.dumps(sel, sort_keys=True), script)
         except Exception:
             return None
 
-    def _compute_band_previews(self, lang, sel):
+    def _compute_band_previews(self, lang, sel, script="asis"):
         """The heavy read (token store + known-words file). Runs on a WORKER thread — it must NOT
         touch any tk widget; it only returns the {band: preview} dict (or None)."""
         try:
@@ -679,19 +704,19 @@ class MasterDashboardApp:
                 if not total:
                     return None
                 from app.path_utils import get_user_files_path
-                ignore_set = self._load_ignore_for_preview(lang)
+                ignore_set = self._load_ignore_for_preview(lang, script)
                 # Prefer the store's EXACT normalized known set when it's fresh (matches the current
                 # KnownWord.json). Only when that cache is stale do we parse the multi-MB KnownWord.json
                 # for the dictForm approximation — so the common (fresh) path never touches it.
                 known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
-                cached = store.get_cached_known(token_index.known_signature(known_path))
+                cached = store.get_cached_known(token_index.known_signature(known_path, script))
                 if cached is not None:
                     known_tuples, known_lemmas = cached
                     freqs = store.unknown_frequencies(
                         known_tuples=known_tuples, known_lemmas=known_lemmas,
                         ignore_set=ignore_set, skip_singles=(lang == "ja"))
                 else:
-                    known_approx = self._load_known_approx(lang)
+                    known_approx = self._load_known_approx(lang, script)
                     freqs = store.unknown_frequencies(
                         known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
                 avg_file = total / (store.file_count() or 1)
@@ -716,9 +741,12 @@ class MasterDashboardApp:
         self._effective_bands = self._compute_effective_bands()
         self._apply_effective_bands()
 
-    def _load_ignore_for_preview(self, lang):
-        """The ignore/blacklist/graduated words — cheap plain-text reads, loaded on every preview."""
+    def _load_ignore_for_preview(self, lang, script="asis"):
+        """The ignore/blacklist/graduated words — cheap plain-text reads, loaded on every preview.
+        Read in the library's Chinese script, like the analyzer reads them (stdlib only, so the
+        conversion is safe in this process; the tables load only if a script is chosen)."""
         from app.path_utils import get_user_files_path
+        from app.zh_script import convert
         uf = get_user_files_path(lang)
         ignore = set()
         for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
@@ -727,16 +755,17 @@ class MasterDashboardApp:
                     for line in f:
                         s = line.strip()
                         if s and not s.startswith("#"):
-                            ignore.add(s)
+                            ignore.add(convert(s, script))
             except Exception:
                 pass
         return ignore
 
-    def _load_known_approx(self, lang):
+    def _load_known_approx(self, lang, script="asis"):
         """Known lemmas WITHOUT the tokenizer (dictForm approximation). Only used when the store's
         normalized known-cache is stale — parsing KnownWord.json is the expensive bit on a big
         library, so it's kept off the common (fresh-cache) preview path."""
         from app.path_utils import get_user_files_path
+        from app.zh_script import convert
         uf = get_user_files_path(lang)
         known = set()
         try:
@@ -747,7 +776,7 @@ class MasterDashboardApp:
                 if e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1:
                     term = e.get("dictForm", "")
                     if term:
-                        known.add(term)
+                        known.add(convert(term, script))
         except Exception:
             pass
         return known
@@ -775,11 +804,16 @@ class MasterDashboardApp:
                     for r, _d, names in os.walk(base):
                         files += [os.path.join(r, n) for n in names
                                   if n.lower().endswith((".txt", ".md", ".srt", ".ass"))]
+            script = self._effective_zh_script(lang)
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
+                # needs_reconcile is stat-only, so a tokenizer change (Chinese reinforce / script)
+                # alone would never re-index: compare the identity the store was built with too.
                 need = (store.needs_reconcile(files)
-                        or store.get_cached_known(token_index.known_signature(known_file)) is None)
+                        or store.get_meta("build_sig") != token_index.build_signature(
+                            lang, self.var_reinforce.get(), script)
+                        or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:
                 store.close()
         except Exception:
@@ -828,14 +862,20 @@ class MasterDashboardApp:
             if self.settings_window and self.settings_window.winfo_exists():
                 if self.chk_reinforce_widget:
                     self.chk_reinforce_widget.pack_forget()
+                if self.zh_script_frame:
+                    self.zh_script_frame.pack_forget()
 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
                     if self.chk_reinforce_widget:
                         self.chk_reinforce_widget.pack(anchor=tk.W)
                         self.chk_reinforce_widget.configure(state='normal')
+                    if self.zh_script_frame:
+                        self.zh_script_frame.pack(anchor=tk.W, pady=(2, 0))
                 else:
                     self.var_reinforce.set(False)
+                    # zh_script is deliberately NOT reset: it belongs to the Chinese library, and
+                    # a trip to Japanese and back must not silently change how Chinese is read.
     
             self.save_settings()
         finally:
@@ -1189,6 +1229,22 @@ class MasterDashboardApp:
         self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Seg", variable=self.var_reinforce, command=self.save_settings)
         ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'.")
 
+        # Script (Chinese): read the whole library in one script. Packed by update_ui_for_language,
+        # like Reinforce above. Changing it re-indexes the library in the background.
+        self.zh_script_frame = ttk.Frame(self.lang_options_frame)
+        ttk.Label(self.zh_script_frame, text="Script:").pack(side=tk.LEFT)
+        combo_script = ttk.Combobox(self.zh_script_frame, values=list(self.ZH_SCRIPT_LABELS.values()),
+                                    state="readonly", width=16)
+        combo_script.set(self.ZH_SCRIPT_LABELS.get(self.var_zh_script.get(), "As-is"))
+        combo_script.pack(side=tk.LEFT, padx=(5, 0))
+        combo_script.bind("<<ComboboxSelected>>",
+                          lambda e: (self.var_zh_script.set(self._zh_script_key(combo_script.get())),
+                                     self.save_settings()))
+        ToolTip(combo_script, "Read all Chinese content and known words in one script, so 学习 and "
+                              "學習 count as one word. Your files are not changed. Simplified→"
+                              "Traditional can occasionally pick the wrong character, and uses "
+                              "standard forms (爲, 裏) rather than Taiwan's (為, 裡).")
+
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Ignore 1-char words (Recommended)")
@@ -1211,7 +1267,7 @@ class MasterDashboardApp:
         if _yt_module_available:
             chk_youtube = ttk.Checkbutton(group_lang, text="Enable YouTube Transcripts", variable=self.var_enable_youtube)
             chk_youtube.pack(anchor=tk.W, pady=(10, 0))
-            ToolTip(chk_youtube, "Show a YouTube transcript downloader in Library Content. Also controls whether it is bundled when you build the app.")
+            ToolTip(chk_youtube, "Show a transcript downloader (YouTube and bilibili.tv) in Library Content. Also controls whether it is bundled when you build the app.")
 
             chk_preview = ttk.Checkbutton(group_lang, text="Enable YouTube Preview", variable=self.var_enable_preview)
             chk_preview.pack(anchor=tk.W, pady=(4, 0))
@@ -1897,6 +1953,8 @@ class MasterDashboardApp:
             self.var_language.set(lang)
 
             self.var_reinforce.set(settings.get("reinforce_segmentation", False))
+            zh_mode = settings.get("zh_script", "asis")
+            self.var_zh_script.set(zh_mode if zh_mode in self.ZH_SCRIPT_LABELS else "asis")
             src_mode = settings.get("source_display", "off")
             self.var_source_display.set(src_mode if src_mode in self.SOURCE_DISPLAY_LABELS else "off")
             self.var_word_search.set(settings.get("word_search_enabled", True))
@@ -1998,6 +2056,7 @@ class MasterDashboardApp:
                 "split_length": self._iv(self.var_split_length, cur.get("split_length", 3000)),
                 "target_language": self.var_language.get(),
                 "reinforce_segmentation": self.var_reinforce.get(),
+                "zh_script": self.var_zh_script.get(),
                 "source_display": self.var_source_display.get(),
                 "word_search_enabled": self.var_word_search.get(),
                 "word_search_category": self.var_word_search_category.get(),
@@ -2423,6 +2482,11 @@ class MasterDashboardApp:
         # Add Reinforce Flag if applicable
         if self.var_language.get() == 'zh' and self.var_reinforce.get():
             args.append('--reinforce')
+
+        # Chinese script: only when one is chosen, so an as-is run passes exactly the old args.
+        zh_mode = self._effective_zh_script(self.var_language.get())
+        if zh_mode != "asis":
+            args.append(f'--zh-script={zh_mode}')
             
         if self.var_ensure_audio.get():
             args.append('--ensure-audio-example')

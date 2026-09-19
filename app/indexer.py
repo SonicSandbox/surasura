@@ -39,28 +39,34 @@ def main():
         from app import token_index
         from app import settings_manager
         from app.path_utils import get_data_path, get_user_files_path
+        from app.zh_script import effective
 
         files = _content_files(get_data_path(language))
 
         # Must match the tokenizer identity a Generate run uses, or the two would fight over the
-        # store (each rebuilding the other's tokens). The GUI passes --reinforce to the analyzer for
-        # zh when this setting is on; mirror that here.
-        reinforce = bool(settings_manager.load_settings().get("reinforce_segmentation", False))
+        # store (each rebuilding the other's tokens). The GUI passes --reinforce and --zh-script to
+        # the analyzer for zh from these settings; mirror that here.
+        settings = settings_manager.load_settings()
+        reinforce = bool(settings.get("reinforce_segmentation", False))
+        script = effective(language, settings.get("zh_script", "asis"))
 
         store = token_index.open_store(language)
         try:
             # Delta reconcile: only changed/new files are tokenized; removed files are dropped.
-            store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce),
-                            build_signature=token_index.build_signature(language, reinforce))
+            store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
+                            build_signature=token_index.build_signature(language, reinforce, script))
 
             # Refresh the tokenizer-normalized known-words cache if KnownWord.json changed (edit,
             # delete, or new). Makes the preview's known-filter EXACT (not the GUI's dictForm approx).
             known_file = os.path.join(get_user_files_path(language), "KnownWord.json")
-            sig = token_index.known_signature(known_file)
+            sig = token_index.known_signature(known_file, script)
             if store.get_cached_known(sig) is None:
                 from app import analyzer
                 analyzer.SANITIZE_JA = (language == "ja")
-                tok = analyzer.ChineseTokenizer() if language == "zh" else analyzer.JapaneseTokenizer()
+                # The SAME tokenizer a run uses. This used to build ChineseTokenizer() with no
+                # reinforce while the analyzer passed it, and both write this one cache entry.
+                tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
+                       if language == "zh" else analyzer.JapaneseTokenizer())
                 known_tuples, known_lemmas = analyzer.load_known_words(known_file, tok)
                 store.set_cached_known(sig, known_tuples, known_lemmas)
         finally:

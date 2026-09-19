@@ -129,7 +129,13 @@ class AnchorFinder:
     _SRT_TIME = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->")
     _ASS_TIME = re.compile(r"^Dialogue:[^,]*,\s*(\d{1,2}):(\d{2}):(\d{2})[.:](\d{1,2})", re.M)
 
-    def __init__(self, cache_path=None):
+    def __init__(self, cache_path=None, script="asis"):
+        # The Chinese script the report's sentences were converted to (`zh_script`, already
+        # effective). With one chosen, sentences are searched in a converted copy of each file and
+        # the anchor handed back is the file's OWN wording at the same offsets (conversion is
+        # length-preserving), because the browser searches the real file.
+        self._script = script if script in ("s", "t") else "asis"
+        self._converted = {}
         self._cache = {}
         self._cues = {}
         self._sidecars = {}
@@ -152,6 +158,30 @@ class AnchorFinder:
             except OSError:
                 self._cache[path] = ""
         return self._cache[path]
+
+    def _hay(self, path):
+        """What a sentence is searched in: the file's own text, or a converted copy when a Chinese
+        script is chosen (cached — converting is the costly part)."""
+        if self._script == "asis":
+            return self._raw(path)
+        if path not in self._converted:
+            from app import zh_script
+            self._converted[path] = zh_script.convert(self._raw(path), self._script)
+        return self._converted[path]
+
+    def _original(self, path, needle, pos=None):
+        """The file's own wording for `needle`, found at `pos` in the searched text (default: where
+        _unique recorded it). As-is that IS `needle`. Remembers the position under the original
+        wording too, so cue_time() doesn't have to search for it again."""
+        if self._script == "asis":
+            return needle
+        if pos is None:
+            pos = self._pos.get((path, needle), -1)
+        if pos < 0:
+            return ""
+        wording = self._raw(path)[pos:pos + len(needle)]
+        self._pos[(path, wording)] = pos
+        return wording
 
     def _unique(self, raw, needle, path=None):
         """Present exactly once — anything else could scroll to the wrong line. Remembers where."""
@@ -198,6 +228,10 @@ class AnchorFinder:
             try:
                 st = os.stat(path)
                 self._sigs[path] = [st.st_mtime, st.st_size]
+                if self._script != "asis":
+                    # Answers found through a conversion are re-verified after a script switch.
+                    # As-is keeps the old signature, so nobody's memo is thrown away on upgrade.
+                    self._sigs[path].append(self._script)
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
@@ -331,23 +365,26 @@ class AnchorFinder:
         if not chunks:
             return ""
 
+        # Searched in the converted copy when a Chinese script is chosen; `raw` itself otherwise.
+        hay = self._hay(abs_path)
+
         # 1. Verbatim. Prose is stored exactly as written, so books and transcripts stop here.
         for chunk in chunks:
-            if self._unique(raw, chunk, abs_path):
-                return chunk
+            if self._unique(hay, chunk, abs_path):
+                return self._original(abs_path, chunk)
 
         # 2. Whitespace-tolerant. Anime subtitles space their phrases ('そうだ 女｡ お前に話がある｡')
         #    and the tokenizer removed those spaces, so match with optional gaps.
         for chunk in chunks:
-            verbatim = self._loose(raw, chunk[:self.MAX_ANCHOR])
+            verbatim = self._loose(hay, chunk[:self.MAX_ANCHOR])
             if not verbatim:
                 continue
             # Prefer a gap-free run of what we matched: a fragment with no whitespace in it is the
             # most reliable thing to hand a browser.
             for run in sorted(verbatim.split(), key=len, reverse=True):
-                if len(run) >= self.MIN_LEN and self._unique(raw, run, abs_path):
-                    return run
-            return " ".join(verbatim.split())
+                if len(run) >= self.MIN_LEN and self._unique(hay, run, abs_path):
+                    return self._original(abs_path, run)
+            return " ".join(self._original(abs_path, verbatim, hay.find(verbatim)).split())
         return ""
 
 
@@ -371,6 +408,21 @@ def _video_id(rel_path, meta=None):
     stem = os.path.splitext(os.path.basename(str(rel_path)))[0]
     match = _VIDEO_ID_RE.search(stem)
     return match.group(1) if match else ""
+
+
+def _video_link(rel_path, stype, meta=None):
+    """What a source's ▶ badge opens (the source table's 5th column), or "" for nothing.
+
+    A YouTube source gives its video id; the template builds the youtu.be link and the timestamp. A
+    bilibili.tv source gives the episode page URL recorded in its cue sidecar. There is no verified
+    start-time parameter for that site, so the badge opens the episode and its hover names the
+    moment."""
+    if stype == "youtube":
+        return _video_id(rel_path, meta)
+    if stype == "bilibili":
+        url = str((meta or {}).get("url") or "").split("#", 1)[0]
+        return url if url.startswith(("https://", "http://")) else ""
+    return ""
 
 
 def _group_label(rel_path):
@@ -410,12 +462,13 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                 index[val] = idx
                 meta = source_map.get(val, {})
                 abs_path = meta.get("abs") or val
-                # A YouTube source gets its video id, which turns the badge into a link that opens
-                # the video (at the sentence's moment when the cue times are known).
+                # A video source (YouTube, bilibili.tv) gets a link, which turns the badge into
+                # one that opens the video (at the sentence's moment when the site allows it).
                 vid = ""
-                if (meta.get("type") or "") == "youtube":
+                stype = meta.get("type") or ""
+                if stype in ("youtube", "bilibili"):
                     side = finder.sidecar(abs_path) if finder is not None else None
-                    vid = _video_id(val, side)
+                    vid = _video_link(val, stype, side)
                 table.append([meta.get("name") or os.path.basename(val),
                               meta.get("type") or "text",
                               abs_path,
@@ -465,7 +518,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     source_index = {}
     # Verifying scroll-to-text anchors means reading every source file, so only do it when the badge
     # is actually switched on — a run with it off pays nothing.
-    source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"))
+    from app.zh_script import effective as _effective_script
+    source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
+                                  script=_effective_script(target_lang, settings.get("zh_script")))
                      if settings.get("source_display", "off") != "off" else None)
 
     # Optional speech module: which sentences already have generated audio. Gated on the badge

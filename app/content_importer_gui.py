@@ -322,7 +322,7 @@ class ContentImporterApp:
         if self._youtube_enabled():
             self.btn_youtube = ttk.Button(add_row, text="▶ YouTube", command=self.open_youtube, style="Youtube.TButton")
             self.btn_youtube.pack(side=tk.LEFT, expand=True, fill=tk.X)
-            self.create_tooltip(self.btn_youtube, "Download YouTube transcripts into the selected section.")
+            self.create_tooltip(self.btn_youtube, "Download YouTube or bilibili.tv transcripts into the selected section.")
 
         # Below the box, right-justified: the muted quick-links, then a '?' help memo to their right.
         helper_row = ttk.Frame(main_frame)
@@ -1346,7 +1346,7 @@ class ContentImporterApp:
                     shutil.copy2(src, dst)
             except Exception:
                 pass
-        self.status_var.set(f"Added YouTube transcripts to {self.folder_map.get(tier, (tier,))[0]}")
+        self.status_var.set(f"Added transcripts to {self.folder_map.get(tier, (tier,))[0]}")
         self.refresh_file_list()
 
     def _launch_tool(self, script_name, extra_args):

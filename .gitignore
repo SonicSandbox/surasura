@@ -66,3 +66,7 @@ docs/research/
 # Large, third-party, and never shipped: the build script distils them into the
 # committed app/reference_data.py, which is what the app actually reads.
 docs/assets/reference_lists/
+
+# OpenCC dictionaries (Apache-2.0) — build inputs for scripts/build_zh_script_data.py only,
+# distilled into the committed app/zh_script_data.py.
+docs/assets/opencc/

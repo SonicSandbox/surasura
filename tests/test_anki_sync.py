@@ -764,3 +764,59 @@ def test_sync_settings_have_defaults_and_never_change_the_run_signature(tmp_path
                                 "anki_sync_include_suspended": True})
     assert base is not None
     assert analyzer.compute_run_signature("ja", [], args) == base
+
+
+def test_optional_module_settings_never_change_the_run_signature():
+    """The Junban panel saves its deck/order/touch-ups on every change, and the Anki window used to
+    save every module's defaults. Hashing those made each click cost a full re-analysis on the next
+    Generate. Module switches that only change what is SHOWN are excluded too — but not
+    enable_youtube_preview, which decides whether a run writes the preview's frequency cache."""
+    from app import analyzer
+    from app.path_utils import get_user_file
+
+    args = SimpleNamespace(language="ja", min_freq=2, target_coverage=90, only_i_plus_one=False,
+                           ensure_audio_example=False, include_single_chars=False,
+                           exclude_freq_one=False, reinforce=False, context_min=10, context_max=50,
+                           max_contexts=3)
+    settings_path = get_user_file("settings.json")
+    _write_json(settings_path, {"target_language": "ja"})
+    base = analyzer.compute_run_signature("ja", [], args)
+
+    _write_json(settings_path, {"target_language": "ja", "enable_junban": True,
+                                "junban_deck": "TheBank", "junban_scope": "all",
+                                "koe_voice": "Kore", "enable_koe": False, "reels_episode_range": "1-3",
+                                "enable_reels": False, "hide_satoru": True,
+                                "enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    assert base is not None
+    assert analyzer.compute_run_signature("ja", [], args) == base
+
+    _write_json(settings_path, {"target_language": "ja", "enable_youtube_preview": True})
+    assert analyzer.compute_run_signature("ja", [], args) != base
+
+
+def test_the_anki_window_writes_only_its_own_keys(tmp_path):
+    """Saving from the Anki window wrote the MERGED settings — every installed module's defaults —
+    so Speech's hidden koe_* keys appeared for users who never revealed it."""
+    import tkinter as tk
+    from unittest.mock import MagicMock
+    from app import anki_sync_gui
+    from app.path_utils import get_user_file
+
+    settings_path = get_user_file("settings.json")
+    _write_json(settings_path, {"target_language": "ja", "theme": "Dark Flow"})
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        host = MagicMock()
+        host.var_anki_sync_auto = tk.BooleanVar(master=root, value=False)
+        win = anki_sync_gui.AnkiSyncGui(root, app=host, language="ja")
+        win.withdraw()
+        win.decks = ["TheBank"]
+        win._save()
+    finally:
+        root.destroy()
+    with open(settings_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["anki_sync_decks"] == {"ja": ["TheBank"]}
+    assert saved["theme"] == "Dark Flow", "what was on disk is kept"
+    assert not [k for k in saved if k.startswith(("koe_", "junban_", "reels_"))], saved.keys()

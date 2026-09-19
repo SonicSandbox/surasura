@@ -2388,6 +2388,16 @@ class MasterDashboardApp:
         decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
         if not decks:
             return
+        # The FIRST sync is always the user's own "Sync now" (spec §5.6). The Anki window pre-picks
+        # every studied deck the moment it opens; until the user has reviewed that pick and synced
+        # once, nothing may be read into their known words behind their back — a sentence or kanji
+        # deck in that pick would otherwise be appended, and appends can't be taken back.
+        try:
+            from app import anki_sync
+            if not anki_sync.load_state(lang).get("last_sync"):
+                return
+        except Exception:
+            return
         if not self._anki_sync_lock.acquire(blocking=False):
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now

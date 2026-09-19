@@ -251,6 +251,27 @@ class TestAnkiSyncWindow(unittest.TestCase):
             start.call_args.args[0]()          # the job it queued is the replace, with a snapshot
         self.assertEqual(worker.call_args.args[0]["decks"], ["TheBank"])
 
+    def test_the_window_stays_busy_for_the_whole_replace(self):
+        """The dry run queues its result and then its own __DONE__. The confirm dialog opened while
+        that __DONE__ was still queued; after "Replace" it arrived and marked the window idle
+        mid-replace. A second Replace then backed up the already-replaced list, and "Restore
+        previous" pointed at that copy instead of the user's original."""
+        dry = _result(mode="dry-run", added=812, total_known=4318)
+        self.win.decks = ["TheBank"]
+        with patch.object(self.gui, "ask", return_value=True), \
+             patch.object(self.gui.threading, "Thread"):          # the jobs never actually run
+            self.win._start(lambda: None)                         # the dry run is job 1
+            dry_run_job = self.win._job
+            self.win.q.put(("__DRYRUN__", dry))
+            self.win.q.put(("__DONE__", dry_run_job))             # its DONE, still queued
+            self.win._drain_once()                                # confirm -> Replace starts
+        self.assertGreater(self.win._job, dry_run_job, "the replace is a new job")
+        self.assertTrue(self.win.busy, "a stale __DONE__ must not free the window mid-replace")
+
+        self.win.q.put(("__DONE__", self.win._job))                # the replace's own DONE
+        self.win._drain_once()
+        self.assertFalse(self.win.busy)
+
     def test_enter_and_escape_both_mean_no_in_the_confirmation(self):
         """Replace removes entries; a stray keypress must never confirm it."""
         import inspect

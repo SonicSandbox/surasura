@@ -1084,12 +1084,22 @@ def compute_run_signature(language, found_files, args):
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
             "anki_sync_include_suspended",
+            # Optional-module switches that change what the app SHOWS, never what a run computes.
+            # (`enable_youtube_preview` is NOT here: it decides whether a run writes the preview's
+            # library_frequency.json.)
+            "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
+            "enable_koe", "enable_junban", "enable_reels",
         }
+        # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
+        # on every change, and hashing them made each of those clicks cost a full re-analysis.
+        _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
         _settings_for_sig = ""
         try:
             with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
                 _sj = json.load(_sf)
             for _k in _NON_ANALYSIS_SETTINGS:
+                _sj.pop(_k, None)
+            for _k in [k for k in _sj if k.startswith(_NON_ANALYSIS_PREFIXES)]:
                 _sj.pop(_k, None)
             _settings_for_sig = json.dumps(_sj, sort_keys=True, ensure_ascii=False)
         except Exception:
@@ -2262,8 +2272,9 @@ def main():
                 # Both files are read by the same consumers (the exporters, and junban's content
                 # ordering), and a word named 須藤 in one and スドウ in the other would match in one
                 # place and not the other.
-                "Orth": _display_orth(lemma, stats["orths"]),
-                "Forms": _display_forms(lemma, stats["orths"], stats.get("surfaces")),
+                # .get: `stats` can be the bare fallback above, which has no spelling counters.
+                "Orth": _display_orth(lemma, stats.get("orths")),
+                "Forms": _display_forms(lemma, stats.get("orths"), stats.get("surfaces")),
                 "Reading": reading,
                 "Tier": tier_str,
                 "Score": stats["score"],

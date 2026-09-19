@@ -186,3 +186,11 @@ def test_both_output_lists_name_a_word_the_same_way(tmp_path):
             f"{progressive[word]!r} in the progressive list")
     # And the column is doing real work here, not just present-and-equal.
     assert any(priority[w] != w for w in shared), "this fixture must contain a lemma/orth mismatch"
+
+
+def test_a_word_with_no_stats_is_named_by_its_lemma_not_a_crash():
+    """The progressive pass falls back to a bare stats dict for a word it has no entry for (reachable
+    with logic.selection.min_count = 0 and an empty priority list). That fallback has no spelling
+    counters, and reading them with [] raised KeyError 'orths' and lost the whole report."""
+    assert analyzer._display_orth("須藤", None) == "須藤"
+    assert analyzer._display_forms("須藤", None, None) == ""

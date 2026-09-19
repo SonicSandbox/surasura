@@ -156,6 +156,7 @@ class AnkiSyncGui(tk.Toplevel):
         self.q = queue.Queue()
         self.busy = False
         self._closing = False
+        self._job = 0                   # the running job's id; only ITS __DONE__ clears busy
         self._connected = False
         self._all_decks = []      # every deck Anki has
         self._counts = {}         # chosen deck -> studied notes
@@ -221,10 +222,22 @@ class AnkiSyncGui(tk.Toplevel):
 
     def _save(self):
         """Write this window's own keys. Dicts are COPIED: settings_manager merges defaults with a
-        shallow update, so the dict in loaded settings can be the one inside DEFAULT_SETTINGS."""
+        shallow update, so the dict in loaded settings can be the one inside DEFAULT_SETTINGS.
+
+        Written onto the file AS IT IS ON DISK, not onto the merged settings: those carry every
+        installed module's defaults, and saving them wrote Speech's hidden `koe_*` keys for users
+        who never revealed it (and changed the analysis fingerprint on every deck click)."""
         try:
+            import json
             from app import settings_manager
-            s = settings_manager.load_settings()
+            from app.path_utils import get_user_file
+            try:
+                with open(get_user_file("settings.json"), "r", encoding="utf-8") as f:
+                    s = json.load(f)
+                if not isinstance(s, dict):
+                    raise ValueError("settings.json is not an object")
+            except (OSError, ValueError):
+                s = settings_manager.load_settings()
             decks = dict(s.get("anki_sync_decks") or {})
             decks[self.language] = list(self.decks)
             fields = dict(s.get("anki_sync_fields") or {})
@@ -826,17 +839,21 @@ class AnkiSyncGui(tk.Toplevel):
             self._close()
 
     def _start(self, worker):
+        # Each job's __DONE__ carries its id. Replace's confirm dialog opens while the dry run's own
+        # __DONE__ is still queued; unlabelled, that stale message arrived after Replace had started
+        # and marked the window idle mid-replace — Sync and Replace clickable again.
+        self._job += 1
         self._set_busy(True)
-        threading.Thread(target=self._guarded(worker), daemon=True).start()
+        threading.Thread(target=self._guarded(worker, self._job), daemon=True).start()
 
-    def _guarded(self, worker):
+    def _guarded(self, worker, job=None):
         def run():
             try:
                 worker()
             except Exception as e:           # a window must never lose a result to a traceback
                 self.q.put(("__MESSAGE__", f"Unexpected error: {e}"))
             finally:
-                self.q.put(("__DONE__",))
+                self.q.put(("__DONE__", job))
         return run
 
     # ------------------------------------------------------------------- pump
@@ -866,7 +883,9 @@ class AnkiSyncGui(tk.Toplevel):
                 elif tag == "__MESSAGE__":
                     self._set_result(item[1], ERROR)
                 elif tag == "__DONE__":
-                    self._set_busy(False)
+                    # Only the RUNNING job's completion frees the window (see _start).
+                    if len(item) < 2 or item[1] is None or item[1] == self._job:
+                        self._set_busy(False)
         except queue.Empty:
             pass
 

@@ -82,9 +82,13 @@ class _DashboardHarness(unittest.TestCase):
         return {"anki_sync_decks": {lang: list(decks)}, "anki_sync_fields": {lang: []},
                 "anki_sync_include_suspended": False}
 
-    def _call_sync(self, settings, force=False):
-        """Run _maybe_anki_sync with a captured Thread; returns the Thread mock."""
+    def _call_sync(self, settings, force=False, synced_before=True):
+        """Run _maybe_anki_sync with a captured Thread; returns the Thread mock. `synced_before`
+        is whether the user has pressed Sync now at least once for this language."""
+        from app import anki_sync
+        state = {"last_sync": "2026-09-18T12:00:00"} if synced_before else {}
         with patch.object(self.main.settings_manager, "load_settings", return_value=settings), \
+             patch.object(anki_sync, "load_state", return_value=state), \
              patch.object(self.main.threading, "Thread") as thread:
             self.MasterDashboardApp._maybe_anki_sync(self.app, force=force)
         return thread
@@ -105,6 +109,12 @@ class TestAutoSyncGate(_DashboardHarness):
         thread = self._call_sync(self._settings())
         thread.assert_called_once()
         self.assertTrue(thread.call_args.kwargs.get("daemon"))
+
+    def test_the_first_sync_is_always_the_users_own(self):
+        """Spec §5.6. The Anki window pre-picks every studied deck the moment it opens; if the user
+        closes it without pressing Sync now, that unreviewed pick (sentence decks, kanji decks) must
+        not be appended to their known words by a focus event — appends can't be taken back."""
+        self._call_sync(self._settings(), force=True, synced_before=False).assert_not_called()
 
     def test_focus_in_is_throttled_to_one_sync_per_five_minutes(self):
         """FocusIn fires for every child widget; without a throttle, every click would sync."""

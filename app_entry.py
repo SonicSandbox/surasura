@@ -120,6 +120,12 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 indexer.main()
                 return
+
+            elif command == 'sentence_corpus':
+                from app import sentence_corpus
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                sentence_corpus.main()
+                return
             else:
                 log_error(f"Unknown command: {command}")
 

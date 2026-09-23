@@ -11,6 +11,7 @@
     "source_display": "icon",
     "word_search_enabled": true,
     "word_search_category": "all",
+    "sentence_dictionary_source": false,
     "telemetry_enabled": true,
     "only_i_plus_one": false,
     "ensure_audio_example": false,

@@ -286,6 +286,7 @@ class MasterDashboardApp:
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
         self.var_word_search_category = tk.StringVar(value="all")
+        self.var_sentence_dictionary_source = tk.BooleanVar(value=False)  # the export dialog's choice
         self._lock_ui_updates = False
 
         # Update state (populated by the background check; consumed by the footer indicator)
@@ -1465,8 +1466,12 @@ class MasterDashboardApp:
         ToolTip(btn_export_freq, "Export internal frequency list for Migaku/Yomitan.")
 
         btn_reading_words = ttk.Button(group_data, text="Export Reading Words", command=self.generate_reading_words, width=20)
-        btn_reading_words.pack(fill=tk.X)
+        btn_reading_words.pack(fill=tk.X, pady=(0, 5))
         ToolTip(btn_reading_words, "A Yomitan list of words you'll read but hardly ever hear. If a word shows up in it while mining, make it a reading card.")
+
+        btn_sentence_dictionary = ttk.Button(group_data, text="Export Sentence Dictionary", command=self.export_sentence_dictionary, width=20)
+        btn_sentence_dictionary.pack(fill=tk.X)
+        ToolTip(btn_sentence_dictionary, "A Yomitan dictionary of up to 8 of the best sentences for every word in your library — hover a word in your browser to see them.")
 
         # 5. 📜 Processing Log (Right Side)
         log_frame = ttk.LabelFrame(right_col, text=" 📜 Processing Log", padding="10")
@@ -1952,6 +1957,7 @@ class MasterDashboardApp:
             self.var_word_search.set(settings.get("word_search_enabled", True))
             ws_cat = settings.get("word_search_category", "all")
             self.var_word_search_category.set(ws_cat if ws_cat in self.WORD_SEARCH_LABELS else "all")
+            self.var_sentence_dictionary_source.set(bool(settings.get("sentence_dictionary_source", False)))
             self.var_telemetry_enabled.set(settings.get("telemetry_enabled", True))
             self.var_only_i_plus_one.set(settings.get("only_i_plus_one", False))
             self.var_ensure_audio.set(settings.get("ensure_audio_example", False))
@@ -2052,6 +2058,7 @@ class MasterDashboardApp:
                 "source_display": self.var_source_display.get(),
                 "word_search_enabled": self.var_word_search.get(),
                 "word_search_category": self.var_word_search_category.get(),
+                "sentence_dictionary_source": self.var_sentence_dictionary_source.get(),
                 "telemetry_enabled": self.var_telemetry_enabled.get(),
                 "only_i_plus_one": self.var_only_i_plus_one.get(),
                 "ensure_audio_example": self.var_ensure_audio.get(),
@@ -2238,7 +2245,8 @@ class MasterDashboardApp:
                 'migaku_converter.py': 'convert_db',
                 'anki_db_importer_gui.py': 'anki_importer',
                 'frequency_list_gui.py': 'frequency_list_manager',
-                'indexer.py': 'index'
+                'indexer.py': 'index',
+                'sentence_corpus.py': 'sentence_corpus'
             }
             
             try:
@@ -2611,6 +2619,110 @@ class MasterDashboardApp:
             os.path.join(get_user_file("results"), "priority_learning_list.csv"),
             initial_name="MY Immersion FreqList",
             empty_message="You need to run an analysis first to generate data.")
+
+    def export_sentence_dictionary(self):
+        """Settings → Data & System → Export Sentence Dictionary: "Surasura Corpus (<lang>)", a Yomitan
+        dictionary of up to 8 of the best sentences for every word in the library
+        (app/sentence_corpus.py).
+
+        A small dialog asks first whether to write where each sentence came from under it — off by
+        default, since file names crowd the popup (each sentence's hover shows its file either way).
+        The answer is remembered (`sentence_dictionary_source`)."""
+        from app.analyzer import resolve_found_files
+        from app.sentence_corpus import dictionary_title
+
+        lang = self.var_language.get()
+        if not resolve_found_files(lang, verbose=False):
+            messagebox.showwarning("No Content", "Add content to your library first — the dictionary is "
+                                                 "built from your own files.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Export Sentence Dictionary")
+        dialog.geometry("420x230")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG_COLOR)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        wrapper = ttk.Frame(dialog, padding=20)
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text=dictionary_title(lang), font=('Segoe UI', 11, 'bold'),
+                  foreground=TEXT_COLOR, background=BG_COLOR).pack(anchor=tk.W, pady=(0, 12))
+
+        # The box edits a copy: Cancel / Esc leave the remembered answer as it was.
+        show_source = tk.BooleanVar(value=self.var_sentence_dictionary_source.get())
+        chk_source = ttk.Checkbutton(wrapper, text="Show where each sentence came from",
+                                     variable=show_source)
+        chk_source.pack(anchor=tk.W)
+        ToolTip(chk_source, "Adds a short file name under each sentence. Off keeps the popup cleaner — "
+                            "hovering a sentence still shows where it came from.")
+        ttk.Label(wrapper, text="Off: hover a sentence to see it", foreground="#aaaaaa",
+                  font=('Segoe UI', 8, 'italic')).pack(anchor=tk.W, padx=(22, 0))
+
+        def _export():
+            dialog.destroy()
+            self.var_sentence_dictionary_source.set(show_source.get())
+            self.save_settings()        # remember the choice
+            self._export_sentence_dictionary(lang, show_source.get())
+
+        buttons = ttk.Frame(wrapper)
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        btn_cancel = ttk.Button(buttons, text="Cancel", command=dialog.destroy)
+        btn_cancel.pack(side=tk.RIGHT)
+        ToolTip(btn_cancel, "Close without exporting.")
+        btn_export = ttk.Button(buttons, text="Export", command=_export, style="Action.TButton")
+        btn_export.pack(side=tk.RIGHT, padx=(0, 8))
+        ToolTip(btn_export, "Choose where to save the dictionary, then build it.")
+
+    def _export_sentence_dictionary(self, lang, show_source):
+        """Save dialog, then the export itself. It reads the whole library's cached sentences, so it
+        runs as its own process, the way Generate does — the window stays responsive, its memory is
+        returned when it ends, and its progress shows in the Processing Log. The zip only appears once
+        it is complete, so a fresh file is how this side knows the run succeeded."""
+        import time
+        import zipfile
+        from tkinter import filedialog
+        from app.sentence_corpus import dictionary_title
+
+        title = dictionary_title(lang)
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".zip",
+            initialfile=f"{title}.zip",
+            filetypes=[("Zip Files", "*.zip")],
+            title="Save Sentence Dictionary"
+        )
+        if not save_path:
+            return
+        started = time.time()
+
+        def _done():
+            try:
+                made = os.path.getmtime(save_path) >= started - 2
+            except OSError:
+                made = False
+            if not made:
+                messagebox.showerror("Sentence Dictionary",
+                                     "The dictionary couldn't be made — the Processing Log says why.")
+                return
+            try:
+                with zipfile.ZipFile(save_path) as zf:
+                    summary = json.loads(zf.read("index.json")).get("description", "")
+            except Exception:
+                summary = ""
+            messagebox.showinfo(
+                "Sentence Dictionary",
+                f"{title} is ready.\n{summary}\n\n"
+                f"In Yomitan: Settings → Dictionaries → Import, then choose:\n{save_path}\n\n"
+                "Already have an older one? Delete it in Yomitan first — Yomitan won't import a second "
+                "dictionary with the same name.")
+
+        cmd = ["sentence_corpus.py", "--language", lang, "--output", save_path]
+        if show_source:
+            cmd.append("--show-source")
+        self.run_command_async(cmd, "Sentence Dictionary", capture_output=True, show_spinner=True,
+                               on_complete=_done)
 
     def _show_export_dialog(self, source_csv, initial_name, empty_message):
         """Format picker shared by both word-list exports.

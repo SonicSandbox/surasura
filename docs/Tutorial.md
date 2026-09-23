@@ -125,6 +125,14 @@ Turn on **Settings → 📊 Experience & UI → Sentence source** and each examp
 *   Hover to see the file (and, for subtitles, the moment it's spoken); click to copy its path.
 *   For a YouTube transcript, clicking opens the video at that moment; shift-click opens the transcript.
 
+### 📖 Your Own Sentences in Yomitan
+**Settings → 🧮 Data & System → Export Sentence Dictionary** turns your library into a Yomitan dictionary, "Surasura Corpus":
+
+*   Import it in Yomitan (**Settings → Dictionaries → Import**), then hover a word while reading online: up to eight of the best sentences from your own content appear beside its definitions.
+*   Every word in your library gets an entry — best sentences first, at your **Ideal Sentence Range** (Settings → 🧠 Sentences & Logic).
+*   Before each export, choose whether to show where each sentence came from. Off keeps the popup clean — hovering a sentence still names its file.
+*   To refresh it after adding content, export again, delete the old copy in Yomitan, then import the new one.
+
 ### Look Up a Word (⌕)
 Each card has a **⌕** button (or press **\\**) that searches the word on Nadeshiko for more real-world sentences. Choose anime, live action, YouTube or everything under **Settings → 📊 Experience & UI → Lookup examples from**, or hide the button there.
 

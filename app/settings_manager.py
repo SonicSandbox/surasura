@@ -37,6 +37,10 @@ DEFAULT_SETTINGS = {
     # re-analyzes (see analyzer.compute_render_signature).
     "word_search_enabled": True,
     "word_search_category": "all",   # all | anime | liveaction | youtube
+    # Sentence dictionary export (app/sentence_corpus.py): show a short file name under each
+    # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
+    # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "sentence_dictionary_source": False,
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run

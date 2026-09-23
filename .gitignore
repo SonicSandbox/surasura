@@ -70,3 +70,8 @@ docs/assets/reference_lists/
 # OpenCC dictionaries (Apache-2.0) — build inputs for scripts/build_zh_script_data.py only,
 # distilled into the committed app/zh_script_data.py.
 docs/assets/opencc/
+
+# NLT gold set for the junban Patterns quality gate — exported by hand from NINJAL-LWP for TWC,
+# whose terms are research/educational: never published. The review page compares against it.
+docs/assets/nlt_gold/
+debug/patterns_review*.html

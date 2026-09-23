@@ -71,6 +71,9 @@ If you mark a word as "Known", "Ignore" or graduate it in Surasura, it will be e
 
 Note: A single Surasura could guide you for months without needing to re-generate.
 
+**Can I see my own sentences while reading online?**
+Yes. **Settings → 🧮 Data & System → Export Sentence Dictionary** makes a Yomitan dictionary, "Surasura Corpus", from your library. Import it in Yomitan (**Settings → Dictionaries → Import**), and hovering a word shows up to eight of the best sentences for it from your own shows, books and videos, alongside your other dictionaries. You choose before each export whether to show where each sentence came from; either way, hovering a sentence names its file. Export again whenever you've added content — delete the old copy in Yomitan first, since Yomitan won't import a second dictionary with the same name.
+
 **Can Surasura pick up the words I've learned in Anki by itself?**
 Yes. Press **Anki**, choose your decks and press **Sync now** — then tick **Sync automatically when Anki is running**. Whenever Anki is open, Surasura adds the words from cards you've studied since last time. New (unstudied) cards are never counted as known, and nothing is ever removed. It needs the AnkiConnect add-on.
 

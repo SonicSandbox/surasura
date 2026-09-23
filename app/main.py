@@ -276,6 +276,7 @@ class MasterDashboardApp:
         self.var_enable_reels = tk.BooleanVar(value=False)  # local video -> one mineable reel
         self.var_enable_junban = tk.BooleanVar(value=False)  # reorder Anki's new-card queue
         self.var_anki_sync_auto = tk.BooleanVar(value=False)  # pull known words from a running Anki
+        self.var_anki_backlog_on_generate = tk.BooleanVar(value=True)  # Generate reads the Anki backlog
         self.anki_sync_window = None
         # The Anki window's syncs and the background auto-sync append to the same file; one lock
         # so two appends can never interleave (each re-reads before writing, but not atomically).
@@ -390,6 +391,7 @@ class MasterDashboardApp:
         self.var_enable_junban.trace_add("write", lambda n, i, m: self.update_junban_visibility())
         self.var_auto_update.trace_add("write", self.save_settings)
         self.var_anki_sync_auto.trace_add("write", self.save_settings)
+        self.var_anki_backlog_on_generate.trace_add("write", self.save_settings)
         # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
         # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
         self.combo_theme.bind("<<ComboboxSelected>>",
@@ -1452,6 +1454,13 @@ class MasterDashboardApp:
                                "words — on startup and when you come back to Surasura. Choose the decks "
                                "with the Anki button.")
 
+        chk_backlog = ttk.Checkbutton(group_data, text="Read the Anki backlog on Generate",
+                                      variable=self.var_anki_backlog_on_generate)
+        chk_backlog.pack(anchor=tk.W, pady=(0, 10))
+        ToolTip(chk_backlog, "When Anki is running, Generate also reads the new cards waiting in the "
+                             "decks you chose with the Anki button, so your report can mark those "
+                             "words. Without decks chosen it does nothing.")
+
         btn_anki_sentences = ttk.Button(group_data, text="Generate Sentence List", command=self.generate_anki_sentence_warning, width=20)
         btn_anki_sentences.pack(fill=tk.X, pady=(0, 5))
         ToolTip(btn_anki_sentences, "Export an Anki-compatible CSV with sentences from your report.")
@@ -1989,6 +1998,7 @@ class MasterDashboardApp:
 
             self.var_auto_update.set(settings.get("auto_update_enabled", True))
             self.var_anki_sync_auto.set(bool(settings.get("anki_sync_auto", False)))
+            self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
             self.skipped_version = settings.get("skipped_version", "")
 
             # Load Logic Settings
@@ -2071,6 +2081,7 @@ class MasterDashboardApp:
                 "hide_satoru": self.var_hide_satoru.get(),
                 "auto_update_enabled": self.var_auto_update.get(),
                 "anki_sync_auto": self.var_anki_sync_auto.get(),
+                "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
                 "logic": {
                     **self.logic_settings,
@@ -2411,6 +2422,8 @@ class MasterDashboardApp:
                 url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
                 if anki_connect.probe(url).get("ok"):
                     result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
+                    # The same decks' new cards, for the report's backlog marks (read-only).
+                    anki_sync.sync_backlog(lang, url, decks, fields)
             except Exception as e:
                 print(f"Anki sync skipped: {e}")
             finally:
@@ -2420,6 +2433,38 @@ class MasterDashboardApp:
                     self.gui_queue.put(lambda: self._on_anki_sync_result(result, auto=True))
 
         self._anki_spinner(True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _maybe_backlog_sync(self):
+        """Generate's own read of the Anki backlog (Junban_Backlog_Spec WP-B7): the new cards waiting
+        in the decks chosen with the Anki button, into User Files/<lang>/anki_backlog.json.
+
+        In the background and never waited for — the report is rendered at the END of the analysis,
+        long after a read from a running Anki (well under a second) is done — so Generate is never
+        slower for it. Nothing at all without decks chosen; silent when Anki is closed (a closed port
+        can take ~2 s to refuse, on this thread, not the window's).
+        """
+        if not self.var_anki_backlog_on_generate.get() or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return
+        lang = self.var_language.get()
+        try:
+            s = settings_manager.load_settings() or {}
+        except Exception:
+            return
+        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
+        if not decks:
+            return
+        fields = list((s.get("anki_sync_fields") or {}).get(lang) or [])
+
+        def work():
+            try:
+                from app import anki_connect, anki_sync
+                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                if anki_connect.probe(url).get("ok"):
+                    anki_sync.sync_backlog(lang, url, decks, fields)
+            except Exception as e:
+                print(f"Anki backlog skipped: {e}")
+
         threading.Thread(target=work, daemon=True).start()
 
     def _anki_spinner(self, on):
@@ -2473,6 +2518,8 @@ class MasterDashboardApp:
     def run_analyzer(self):
         from app.path_utils import ensure_data_setup
         ensure_data_setup(self.var_language.get())
+        self._maybe_backlog_sync()          # in the background; see its docstring
+
         args = ['analyzer.py']
         if not self.var_exclude_single.get():
             args.append('--include-single-chars')

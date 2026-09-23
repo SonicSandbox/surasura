@@ -28,7 +28,7 @@ class TestJunbanSettingsDefaults(unittest.TestCase):
         defaults = settings_manager.get_default_settings()
         self.assertNotIn("enable_junban", defaults)
         for key in ("junban_scope", "junban_deck", "junban_url", "junban_word_fields",
-                    "junban_chunk_size", "junban_unmatched"):
+                    "junban_chunk_size", "junban_unlisted"):
             self.assertNotIn(key, defaults)
 
     def test_no_junban_key_leaks_into_the_core_defaults_at_all(self):

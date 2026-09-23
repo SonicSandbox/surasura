@@ -41,6 +41,10 @@ KNOWN_FILE = "KnownWord.json"
 STATE_FILE = "anki_sync_state.json"
 STATE_VERSION = 1
 SOURCE = "AnkiConnect"
+# The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
+# so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
+BACKLOG_FILE = "anki_backlog.json"
+BACKLOG_VERSION = 1
 
 # Copied from analyzer.has_target_language — importing the analyzer would load fugashi/pandas into
 # the dashboard (I6).
@@ -405,6 +409,117 @@ def _int_list(values):
         except (TypeError, ValueError):
             continue
     return out
+
+
+# --------------------------------------------------------------------------- #
+# The backlog (Junban_Backlog_Spec §5.2 / WP-B7) — the NEW cards of the same decks
+# --------------------------------------------------------------------------- #
+def _backlog_path(language):
+    return os.path.join(get_user_files_path(language), BACKLOG_FILE)
+
+
+def backlog_query(decks):
+    """'(deck:"A" OR deck:"B") is:new -is:suspended' — the cards waiting to be learned (D6: the known
+    sync's own decks)."""
+    terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
+    return f"({terms}) is:new -is:suspended"
+
+
+def load_backlog(language):
+    """The saved backlog, or {} when there is none or it cannot be read."""
+    try:
+        with open(_backlog_path(language), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+
+
+def count_backlog(language):
+    """How many notes wait in the saved backlog — 0 when none has been read yet."""
+    notes = load_backlog(language).get("notes")
+    return len(notes) if isinstance(notes, dict) else 0
+
+
+def backlog_keys(language):
+    """Every key a report word can match a backlog card by — its word and, for Japanese kana, the
+    hiragana fold (`anki_match`). An empty set for anyone who never synced."""
+    notes = load_backlog(language).get("notes")
+    keys = set()
+    for entry in (notes.values() if isinstance(notes, dict) else ()):
+        if isinstance(entry, dict):
+            keys.update(str(k) for k in entry.get("keys") or [] if k)
+    return keys
+
+
+def _backlog_entry(note, fields, language):
+    """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
+    word comes from the same field the known sync reads (Auto = the first), cleaned the way Junban
+    cleans it, so the report and the reorder agree on a card's word."""
+    from app import anki_match
+    note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
+    ordered = sorted(note_fields, key=lambda name: _field_order(note_fields[name]))
+    resolved = resolve_fields(ordered, fields)
+    if not resolved:
+        return None
+    value = note_fields.get(resolved[0])
+    word = anki_match.normalize_word(value.get("value", "") if isinstance(value, dict) else "")
+    if not word or not _has_target(word, language):
+        return None
+    keys = [word]
+    folded = anki_match.fold_kana(word) if language == "ja" else word
+    if folded != word:
+        keys.append(folded)
+
+    def text(name):
+        # HTML out, text kept whole — `normalize_word` would drop "[SubsPlease]" as furigana.
+        field_value = note_fields.get(name)
+        raw = field_value.get("value", "") if isinstance(field_value, dict) else ""
+        return " ".join(clean_field_html(raw).split())
+
+    freq = text("FreqSort")
+    return {"word": word, "keys": keys, "source": text("MiscInfo").split(" @ ")[0].strip(),
+            "freqsort": int(freq) if freq.isdigit() else None}
+
+
+def sync_backlog(language, url, decks, fields):
+    """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
+
+    Read-only on Anki; delta by note id (a note already read keeps its entry; the decks or fields
+    changing reads everything again). Never raises: returns `(count, error)`. A failed read, or an
+    empty answer where there was a backlog, keeps the previous file (the "refuse to write when the
+    input can't be trusted" rule).
+    """
+    decks = _clean_decks(decks)
+    fields = [str(f) for f in (fields or [])]
+    if not decks:
+        return 0, "Choose at least one deck first."
+    url = url or anki_connect.DEFAULT_URL
+    with _LOCK:
+        old = load_backlog(language)
+        same_scope = old.get("decks") == sorted(decks) and old.get("fields") == fields
+        cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
+        try:
+            note_ids = anki_connect.find_notes(url, backlog_query(decks))
+            todo = [n for n in note_ids if str(n) not in cached]
+            notes = anki_connect.notes_info(url, todo) if todo else []
+        except AnkiError as e:
+            return count_backlog(language), str(e)
+        entries = {str(n): cached[str(n)] for n in note_ids if str(n) in cached}
+        for note in notes:
+            entry = _backlog_entry(note, fields, language)
+            if entry is not None and note.get("noteId") is not None:
+                entries[str(note["noteId"])] = entry
+        if not entries and count_backlog(language):
+            return count_backlog(language), ("Anki answered with an empty backlog, so the last one "
+                                             "was kept.")
+        try:
+            _atomic_write_json(_backlog_path(language), {
+                "version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks),
+                "fields": fields, "notes": entries}, indent=None)
+        except OSError as e:
+            return count_backlog(language), f"Could not save your Anki backlog: {e}"
+        return len(entries), None
 
 
 # --------------------------------------------------------------------------- #

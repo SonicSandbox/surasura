@@ -50,6 +50,10 @@ DEFAULT_SETTINGS = {
     "anki_sync_decks": {},
     "anki_sync_fields": {},
     "anki_sync_include_suspended": False,
+    # Generate also reads the new-card backlog of those decks, in the background, when Anki is
+    # running (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json). Needs the decks above;
+    # without them it does nothing at all. Never in the run signature.
+    "anki_backlog_on_generate": True,
     "logic": {
         "inline_completed_files": False,
         "weights": {

@@ -146,6 +146,33 @@ class TestAutoSyncGate(_DashboardHarness):
         self.assertNotIn("restore_previous", source)
 
 
+class TestBacklogOnGenerate(_DashboardHarness):
+    """Junban_Backlog_Spec WP-B7: Generate reads the Anki backlog in the background — only with the
+    option on and decks chosen for this language (D5: a user without Anki pays nothing), never waited
+    for, and without the "first sync is the user's own" gate: it writes the backlog file, never the
+    known words."""
+
+    def _call(self, settings, on=True):
+        self.app.var_anki_backlog_on_generate = MagicMock()
+        self.app.var_anki_backlog_on_generate.get.return_value = on
+        with patch.object(self.main.settings_manager, "load_settings", return_value=settings),              patch.object(self.main.threading, "Thread") as thread:
+            self.MasterDashboardApp._maybe_backlog_sync(self.app)
+        return thread
+
+    def test_nothing_happens_without_decks_or_with_the_option_off(self):
+        self._call({"anki_sync_decks": {}}).assert_not_called()
+        self._call(self._settings(), on=False).assert_not_called()
+
+    def test_a_background_read_starts_with_decks_chosen(self):
+        from app import anki_connect, anki_sync
+        thread = self._call(self._settings())
+        thread.assert_called_once()
+        self.assertTrue(thread.call_args.kwargs.get("daemon"))
+        with patch.object(anki_connect, "probe", return_value={"ok": True}),              patch.object(anki_sync, "sync_backlog", return_value=(3, None)) as read:
+            thread.call_args.kwargs["target"]()
+        read.assert_called_once_with("ja", anki_connect.DEFAULT_URL, ["TheBank"], [])
+
+
 class TestAfterASync(_DashboardHarness):
     def _result(self, added=0, mode="delta", error=None):
         return SimpleNamespace(added=added, mode=mode, error=error, total_known=0, scanned=3)

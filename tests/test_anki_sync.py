@@ -125,6 +125,8 @@ class FakeCollection:
                 continue
             if "-is:new" in query and n["new"]:
                 continue
+            if re.search(r"(?<!-)is:new", query) and not n["new"]:
+                continue                        # the backlog: new cards only
             if "-is:suspended" in query and n["suspended"]:
                 continue
             if models and n["model"] not in models:
@@ -769,8 +771,9 @@ def test_sync_settings_have_defaults_and_never_change_the_run_signature(tmp_path
 def test_optional_module_settings_never_change_the_run_signature():
     """The Junban panel saves its deck/order/touch-ups on every change, and the Anki window used to
     save every module's defaults. Hashing those made each click cost a full re-analysis on the next
-    Generate. Module switches that only change what is SHOWN are excluded too — but not
-    enable_youtube_preview, which decides whether a run writes the preview's frequency cache."""
+    Generate. Module switches that only change what is SHOWN are excluded too — enable_youtube_preview
+    among them since ENGINE_REVISION 11, when every run began writing the frequency cache it used to
+    switch on. A setting the run does read still changes the signature."""
     from app import analyzer
     from app.path_utils import get_user_file
 
@@ -786,11 +789,12 @@ def test_optional_module_settings_never_change_the_run_signature():
                                 "junban_deck": "TheBank", "junban_scope": "all",
                                 "koe_voice": "Kore", "enable_koe": False, "reels_episode_range": "1-3",
                                 "enable_reels": False, "hide_satoru": True,
-                                "enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+                                "enable_youtube_transcripts": True, "youtube_risk_acknowledged": True,
+                                "enable_youtube_preview": True})
     assert base is not None
     assert analyzer.compute_run_signature("ja", [], args) == base
 
-    _write_json(settings_path, {"target_language": "ja", "enable_youtube_preview": True})
+    _write_json(settings_path, {"target_language": "ja", "exclude_single": False})
     assert analyzer.compute_run_signature("ja", [], args) != base
 
 
@@ -820,3 +824,104 @@ def test_the_anki_window_writes_only_its_own_keys(tmp_path):
     assert saved["anki_sync_decks"] == {"ja": ["TheBank"]}
     assert saved["theme"] == "Dark Flow", "what was on disk is kept"
     assert not [k for k in saved if k.startswith(("koe_", "junban_", "reels_"))], saved.keys()
+
+
+# --------------------------------------------------------------------------- #
+# The backlog (Junban_Backlog_Spec WP-B7): the new cards of the same decks, read-only
+# --------------------------------------------------------------------------- #
+_SOURCE = "[SubsPlease] Tetsunabe no Jan! - 04 (1080p)"
+
+
+def _mined_fields(word, freqsort="30265"):
+    """A Lapis note as anki_miner fills it (spec §4.2): the word, its sentence, its source and rank."""
+    return [("Expression", word), ("Sentence", f"こいつは最低の{word}だよ。"),
+            ("MiscInfo", f"{_SOURCE} @ 00:01:36"), ("FreqSort", freqsort)]
+
+
+def _backlog_file(language="ja"):
+    with open(os.path.join(get_user_files_path(language), "anki_backlog.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_the_backlog_is_the_new_cards_of_the_same_decks_and_nothing_is_written_to_anki():
+    """Only new, unsuspended cards of the chosen decks — studied ones are known words, not backlog —
+    each with its word, its keys, its source and its FreqSort. Reads only: findNotes and notesInfo."""
+    fake = FakeCollection()
+    critic = fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    fake.add("泣き虫", fields=_mined_fields("泣き虫"), new=True, suspended=True)
+    fake.add("冒険", new=False)
+    fake.add("甜麺醤", deck="The Accelerator", fields=_mined_fields("甜麺醤"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        count, error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+
+    assert (count, error) == (1, None)
+    entry = _backlog_file()["notes"][str(critic)]
+    assert entry == {"word": "評論家", "keys": ["評論家"], "source": _SOURCE, "freqsort": 30265}
+    assert set(fake.actions) <= {"findNotes", "notesInfo"}
+    assert anki_sync.backlog_keys("ja") == {"評論家"} and anki_sync.count_backlog("ja") == 1
+
+
+def test_a_second_backlog_read_asks_only_about_notes_it_has_not_seen():
+    """Delta by note id, like the known sync; a change of decks reads everything again."""
+    fake = FakeCollection()
+    fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        weep = fake.add("泣き虫", fields=_mined_fields("泣き虫"), new=True)
+        fake.requests.clear()
+        count, _error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        assert count == 2 and fake.notes_info_ids() == [weep]
+
+        fake.requests.clear()
+        anki_sync.sync_backlog("ja", URL, ["TheBank", "The Accelerator"], [])
+        assert len(fake.notes_info_ids()) == 2, "new decks: every note is read again"
+
+
+def test_a_katakana_word_is_also_kept_under_its_hiragana_for_the_report():
+    fake = FakeCollection()
+    fake.add("スルリ", fields=_mined_fields("スルリ", ""), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+
+    assert anki_sync.backlog_keys("ja") == {"スルリ", "するり"}
+    assert list(_backlog_file()["notes"].values())[0]["freqsort"] is None
+
+
+def test_a_failed_or_empty_backlog_read_keeps_the_last_one_and_known_words_are_never_touched(
+        migaku_file):
+    """Anki closed, or an empty answer where there was a backlog: the last backlog stays (the
+    "refuse to write when the input can't be trusted" rule). KnownWord.json is not the backlog's."""
+    before = _read_bytes(migaku_file)
+    fake = FakeCollection()
+    fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+    saved = _backlog_file()
+
+    with mock.patch("urllib.request.urlopen", FakeCollection(offline=True)):
+        count, error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+    assert count == 1 and error and _backlog_file() == saved
+
+    with mock.patch("urllib.request.urlopen", FakeCollection()):
+        count, error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+    assert count == 1 and "kept" in error and _backlog_file() == saved
+    assert _read_bytes(migaku_file) == before
+    assert anki_sync.sync_backlog("ja", URL, [], [])[1], "no decks, no read"
+
+
+def test_the_backlog_option_is_on_by_default_and_never_forces_a_reanalysis():
+    """D5: nothing for a user without Anki — the option does nothing without decks — and, like every
+    Anki sync setting, it is not part of what a run computes."""
+    from app import analyzer, settings_manager
+    from app.path_utils import get_user_file
+
+    assert settings_manager.DEFAULT_SETTINGS["anki_backlog_on_generate"] is True
+    args = SimpleNamespace(language="ja", min_freq=2, target_coverage=90, only_i_plus_one=False,
+                           ensure_audio_example=False, include_single_chars=False,
+                           exclude_freq_one=False, reinforce=False, context_min=10, context_max=50,
+                           max_contexts=3)
+    settings_path = get_user_file("settings.json")
+    _write_json(settings_path, {"target_language": "ja"})
+    base = analyzer.compute_run_signature("ja", [], args)
+    _write_json(settings_path, {"target_language": "ja", "anki_backlog_on_generate": False})
+    assert base is not None and analyzer.compute_run_signature("ja", [], args) == base

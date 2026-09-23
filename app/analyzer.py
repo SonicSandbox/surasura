@@ -49,7 +49,9 @@ ENSURE_AUDIO_EXAMPLE = False
 # stored signature and the analyzer served the OLD report from before the change.
 # 10: Japanese words are keyed by the lemma's reading (UniDic lForm) — one row per word, however it
 #     is conjugated (JapaneseTokenizer.tokenize_sentences).
-ENGINE_REVISION = 10
+# 11: library_frequency.json is written on every run and carries each word's first file, score and
+#     spelling (Junban places a mined word below the list's cut-off where the journey meets it).
+ENGINE_REVISION = 11
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -1096,12 +1098,12 @@ def compute_run_signature(language, found_files, args):
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
-            "anki_sync_include_suspended",
+            "anki_sync_include_suspended", "anki_backlog_on_generate",
             # Optional-module switches that change what the app SHOWS, never what a run computes.
-            # (`enable_youtube_preview` is NOT here: it decides whether a run writes the preview's
-            # library_frequency.json.)
+            # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
+            # library_frequency.json it used to switch on.)
             "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
-            "enable_koe", "enable_junban", "enable_reels",
+            "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
         }
         # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
         # on every change, and hashing them made each of those clicks cost a full re-analysis.
@@ -2200,51 +2202,52 @@ def main():
     except Exception as e:
         print(f"Warning: could not write reading-words list: {e}")
 
-    # --- Additive (optional): full library frequency map for the YouTube Preview feature ---
-    # Gated behind the 'enable_youtube_preview' toggle so standard runs are completely
-    # unaffected (no extra file, no extra time). This reuses the SAME in-memory word_stats
-    # data — including the sub-threshold words the other outputs drop — written as a compact
-    # counts-only map. It is a separate file (library_frequency.json); it never modifies
-    # word_stats.json or any existing output, and is wrapped so a failure can't break a run.
+    # --- The full library frequency map: every word, including the sub-threshold ones the other
+    # outputs drop ---
+    # Read by the YouTube Preview (counts) and by Junban (Junban_Backlog_Spec §11.1), which places a
+    # mined word below the list's cut-off exactly where the journey would meet it: its first file in
+    # study order and its score, plus the spelling the content uses — anki_miner writes that
+    # spelling, not the lemma. Written on EVERY run since ENGINE_REVISION 11 (it used to wait for the
+    # preview toggle): it reuses the in-memory word_stats and measured ~30 ms on a 25k-word library.
+    # A separate file; it never modifies word_stats.json or any other output, and is wrapped so a
+    # failure can't break a run. Entries: [total, high, low, goal, first_file, score, spelling].
     try:
-        _preview_enabled = settings_manager.load_settings().get("enable_youtube_preview", False)
-    except Exception:
-        _preview_enabled = False
-    if _preview_enabled:
-        try:
-            OUTPUT_LIB_FREQ = os.path.join(RESULTS_DIR, "library_frequency.json")
-            _weights = LOGIC.get("weights", {})
-            _lib_words = {}
-            for (lemma, reading), data in word_stats.items():
-                _lib_words[f"{lemma}|{reading}"] = [
-                    data.get("total_count", 0), data.get("high_count", 0),
-                    data.get("low_count", 0), data.get("goal_count", 0),
-                ]
-            _lib_payload = {
-                "settings": {
-                    # The active selection's effective count floor (was 'min_freq'). The YouTube
-                    # preview keeps a word if library+in-video counts meet this. total_tokens lets
-                    # the preview reason in density terms. 'min_freq' kept for older-cache readers.
-                    "min_count": floor_count,
-                    "min_freq": MIN_FREQ,
-                    "total_tokens": total_tokens,
-                    "weights": {
-                        "high": _weights.get("high", 10),
-                        "low": _weights.get("low", 5),
-                        "goal": _weights.get("goal", 2),
-                    },
+        OUTPUT_LIB_FREQ = os.path.join(RESULTS_DIR, "library_frequency.json")
+        _weights = LOGIC.get("weights", {})
+        _lib_words = {}
+        for (lemma, reading), data in word_stats.items():
+            _first = data.get("min_seq", 0)
+            _lib_words[f"{lemma}|{reading}"] = [
+                data.get("total_count", 0), data.get("high_count", 0),
+                data.get("low_count", 0), data.get("goal_count", 0),
+                _first if _first != float('inf') else 0, data.get("score", 0),
+                _display_orth(lemma, data.get("orths")),
+            ]
+        _lib_payload = {
+            "settings": {
+                # The active selection's effective count floor (was 'min_freq'). The YouTube
+                # preview keeps a word if library+in-video counts meet this. total_tokens lets
+                # the preview reason in density terms. 'min_freq' kept for older-cache readers.
+                "min_count": floor_count,
+                "min_freq": MIN_FREQ,
+                "total_tokens": total_tokens,
+                "weights": {
+                    "high": _weights.get("high", 10),
+                    "low": _weights.get("low", 5),
+                    "goal": _weights.get("goal", 2),
                 },
-                "words": _lib_words,
-            }
-            with open(OUTPUT_LIB_FREQ, 'w', encoding='utf-8') as f:
-                json.dump(_lib_payload, f, ensure_ascii=False)
-            try:
-                print(f"Saved library frequency map to {OUTPUT_LIB_FREQ} ({len(_lib_words)} words)")
-            except UnicodeEncodeError:
-                print("Saved library frequency map.")
-        except Exception as e:
-            # Never let the optional preview cache interfere with a normal run.
-            print(f"Warning: Could not write library frequency map: {e}")
+            },
+            "words": _lib_words,
+        }
+        with open(OUTPUT_LIB_FREQ, 'w', encoding='utf-8') as f:
+            json.dump(_lib_payload, f, ensure_ascii=False)
+        try:
+            print(f"Saved library frequency map to {OUTPUT_LIB_FREQ} ({len(_lib_words)} words)")
+        except UnicodeEncodeError:
+            print("Saved library frequency map.")
+    except Exception as e:
+        # Never let this map interfere with a normal run.
+        print(f"Warning: Could not write library frequency map: {e}")
 
     # --- Persist the token index (seed-for-free) so the word-selection preview is instant and
     # always fresh without re-tokenizing. Built from the per-file counts already computed this

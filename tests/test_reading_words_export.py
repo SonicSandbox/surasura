@@ -102,12 +102,14 @@ def test_blank_and_malformed_entries_are_skipped(tmp_path):
 
 # --- end-to-end: what the analyzer actually writes -------------------------------------------- #
 
-# 囁く is the discriminating fixture. Unidic hands it THREE readings across ordinary conjugations
-# (ササヤク / ササヤイ / ササヤキ), and the spoken corpora rank it ~37,000 — about one encounter per
-# 168 hours of listening, comfortably a reading word. That combination is the whole point: split
-# three ways, no single reading reaches logic.modality.min_lib_count (3), so judged per
-# (word, reading) the word earns no badge at all. Rolled up per LEMMA it is correctly flagged, once.
-# 吐息 is the single-reading control that must behave identically either way.
+# 囁く is the discriminating fixture. Its five uses below are three conjugations whose SURFACE
+# readings differ (ササヤク / ササヤイ / ササヤキ), and the spoken corpora rank it ~37,000 — about one
+# encounter per 168 hours of listening, comfortably a reading word. Split three ways, no single
+# reading reaches logic.modality.min_lib_count (3), so judged per (word, reading) the word earns no
+# badge at all; rolled up per LEMMA it is correctly flagged, once. The analyzer keys words by the
+# lemma's reading now (all five are ササヤク), which removes that split at the source — so the roll-up
+# is exercised by re-creating it (_split_by_surface_reading), the way a genuine homograph still arrives
+# (上手: ジョウズ / カミテ). 吐息 is the single-reading control that must behave identically either way.
 NARRATION = """彼は静かに囁く。
 彼女は小さな声で囁いた。
 老人が窓の外を見ながら囁いている。
@@ -185,13 +187,28 @@ def test_the_analyzer_writes_a_sidecar_the_ordinary_exporters_can_read(tmp_path)
     ]
 
 
-def test_the_lemma_is_the_unit_of_judgement_not_the_reading(tmp_path):
-    """One verdict and one entry per WORD, however many readings unidic files it under.
+def _split_by_surface_reading(word, readings):
+    """Hand `word` to the analyzer under several readings again, `readings` mapping each surface to
+    the reading its tokens should carry — how a word unidic genuinely files under more than one
+    reading still arrives. Patched on the class, so the token store's tokenizer gets it too."""
+    from unittest.mock import patch
+    from app import analyzer
+    real = analyzer.JapaneseTokenizer.tokenize_sentences
 
-    Both halves of the same fix. 囁く arrives as three readings; judged separately each sees only a
-    share of the evidence and falls under min_lib_count, so the word was missed entirely — and any
-    word that did clear the floor twice was listed twice at two different ranks, which is just
-    noise to whatever dictionary loads it.
+    def tokenize_sentences(self, text):
+        for s_text, tokens in real(self, text):
+            yield s_text, [(l, readings.get(s, r) if l == word else r, s, o) for l, r, s, o in tokens]
+
+    return patch.object(analyzer.JapaneseTokenizer, "tokenize_sentences", tokenize_sentences)
+
+
+def test_the_lemma_is_the_unit_of_judgement_not_the_reading(tmp_path):
+    """One verdict and one entry per WORD, however many conjugations it arrives in.
+
+    囁く's three surface readings used to be three rows; judged separately each saw only a share of
+    the evidence and fell under min_lib_count, so the word was missed entirely — and any word that
+    did clear the floor twice was listed twice at two different ranks, which is just noise to
+    whatever dictionary loads it. Keyed by the lemma's reading, it is one row with all five uses.
     """
     results = _analyze(tmp_path)
 
@@ -201,10 +218,29 @@ def test_the_lemma_is_the_unit_of_judgement_not_the_reading(tmp_path):
     assert words.count("囁く") == 1, f"listed more than once: {words}"
     assert len(words) == len(set(words)), f"duplicate entries: {words}"
 
-    # The same roll-up drives the report's 文 badge, so every row for a word must agree.
     with open(results / "priority_learning_list.csv", encoding="utf-8-sig", newline="") as f:
         rows = [r for r in csv.DictReader(f) if r["Word"] == "囁く"]
-    assert len(rows) > 1, "fixture no longer produces a multi-reading lemma; pick another word"
+    assert [(r["Reading"], r["Occurrences"], r["Modality"]) for r in rows] == [("ササヤク", "5", "reading")], (
+        "囁く is split across rows again — words are being keyed by their conjugated reading")
+
+
+def test_a_word_under_several_readings_still_gets_one_verdict(tmp_path):
+    """The roll-up still matters where a word does arrive under several readings (a true homograph
+    — the lemma's reading no longer splits conjugations, so the split is re-created here). Each
+    reading's share (1 / 2 / 2) is under min_lib_count, the word's five uses are not: it must be
+    flagged, listed once, and every row of it must agree — the same roll-up drives the report's 文
+    badge."""
+    with _split_by_surface_reading("囁く", {"囁く": "ササヤク", "囁い": "ササヤイ", "囁き": "ササヤキ"}):
+        results = _analyze(tmp_path)
+
+    words = [r["Word"] for r in _sidecar_rows(results)]
+    assert words.count("囁く") == 1, f"missed, or listed more than once: {words}"
+    assert len(words) == len(set(words)), f"duplicate entries: {words}"
+
+    with open(results / "priority_learning_list.csv", encoding="utf-8-sig", newline="") as f:
+        rows = [r for r in csv.DictReader(f) if r["Word"] == "囁く"]
+    assert sorted(r["Reading"] for r in rows) == ["ササヤイ", "ササヤキ", "ササヤク"], \
+        "the fixture no longer splits the word; the roll-up is not being exercised"
     assert {r["Modality"] for r in rows} == {"reading"}, (
         "the verdict differs between two readings of one word: "
         f"{[(r['Reading'], r['Modality']) for r in rows]}")

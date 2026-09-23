@@ -149,8 +149,9 @@ def test_listening_hours_uses_the_shared_minutes_per_file():
 # unidic files one word under several readings, so word_stats holds an entry per (lemma, reading)
 # and each sees only a share of the evidence. The arithmetic consequence is pinned below; that the
 # ANALYZER actually rolls the evidence up before judging is covered end-to-end by
-# tests/test_reading_words_export.py::test_the_lemma_is_the_unit_of_judgement_not_the_reading,
-# which runs a real analysis over a word unidic splits three ways.
+# tests/test_reading_words_export.py::test_a_word_under_several_readings_still_gets_one_verdict,
+# which runs a real analysis over a word split three ways. (Words are keyed by the lemma's reading
+# since ENGINE_REVISION 10, so only a true homograph — 上手: ジョウズ / カミテ — still splits.)
 
 def test_split_readings_would_flip_the_verdict():
     """Why the roll-up matters, in numbers.

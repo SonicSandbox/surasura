@@ -41,7 +41,9 @@ from collections import Counter
 #    continuation arrows joining cues), so every cached tokenization predates the fix.
 # v4 widened the token tuple to (lemma, reading, surface, orth). A v3 blob unpacks three values
 #    into a four-value loop and raises, so the old cache cannot be read — it has to be rebuilt.
-SCHEMA_VERSION = 4
+# v5 Japanese readings are the lemma's (UniDic lForm), no longer the conjugated surface's, so every
+#    cached blob — and the aggregate built from them — carries the old, per-conjugation readings.
+SCHEMA_VERSION = 5
 
 
 # --------------------------------------------------------------------------- #

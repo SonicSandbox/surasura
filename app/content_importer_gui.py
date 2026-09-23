@@ -23,6 +23,9 @@ TEXT_COLOR = "#ffffff"
 ERROR_COLOR = "#cf6679"
 SUCCESS_COLOR = "#03dac6"
 
+# A bulk Remove / Graduate / Demote updates the status line every this many files.
+BATCH_STATUS_EVERY = 100
+
 
 class ContentImporterApp:
     def __init__(self, root, language='ja'):
@@ -666,88 +669,116 @@ class ContentImporterApp:
 
     def add_to_manifest(self, item_path, target_folder_key):
         """Adds file(s) to the manifest. If item_path is a directory, adds all files inside."""
-        manifest = self.load_manifest()
-        marker_cache = {}
+        self._add_paths_to_manifest([item_path], target_folder_key)
+
+    def remove_from_manifest(self, item_path, refresh=True):
+        """Removes an item from all manifest phase lists.
+
+        `refresh=False` for a caller that refreshes once itself: refreshing mid-batch runs
+        _sync_disk_to_manifest, which sees a file ALREADY moved to its destination, registers it
+        itself as a "Disk Sync" entry, and makes the following add a no-op — so the destination
+        order came from the disk walk instead of the intended one. The bulk moves (Remove / Graduate
+        / Demote) now skip this entirely and use _remove_paths_from_manifest once per batch."""
+        if self._remove_paths_from_manifest([item_path]) and refresh:
+            self.refresh_file_list()
+
+    # --- Batched manifest updates for the bulk moves ---------------------------------------------- #
+    # Remove / Graduate / Demote used to load and save the whole manifest once or twice PER FILE (and
+    # Remove refreshed the whole tree per file), which made them quadratic: Remove 400 of 800 files
+    # took 33 s, and 3,000 froze the window for 10-25 minutes. Now the loops only move files, and
+    # these update the manifest once at the end. Pass `manifest` to fold several updates into the
+    # caller's single save (Graduate / Demote remove AND add); without it each loads and saves once.
+
+    def _remove_paths_from_manifest(self, paths, manifest=None):
+        """Drop every path in `paths` from all phases — one pass per phase against a set. Returns
+        True if anything was removed."""
+        own = manifest is None
+        if own:
+            manifest = self.load_manifest()
         schedule = manifest.get("schedule", {})
+        rel_paths = {self._normalize_path(p) for p in paths}
+
+        changed = False
+        for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
+            if phase in schedule:
+                kept = [e for e in schedule[phase] if e.get("physical_path") not in rel_paths]
+                if len(kept) != len(schedule[phase]):
+                    schedule[phase] = kept
+                    changed = True
+
+        if changed:
+            manifest["schedule"] = schedule
+            if own:
+                self.save_manifest(manifest)
+        return changed
+
+    def _add_paths_to_manifest(self, paths, target_folder_key, manifest=None):
+        """Append `paths` to the target phase IN THE ORDER GIVEN — that order is the resulting library
+        order for Graduate / Demote (see _resolve_items_to_paths). A directory adds the files inside.
+        Duplicates are checked against a set of the phase's paths. Returns True if anything was added."""
         phase_map = {
             "HighPriority": "PHASE_1_NOW",
             "LowPriority": "PHASE_2_SOON",
             "GoalContent": "PHASE_3_LATER"
         }
         phase_key = phase_map.get(target_folder_key)
-        if not phase_key: return
+        if not phase_key: return False
 
+        own = manifest is None
+        if own:
+            manifest = self.load_manifest()
+        marker_cache = {}
+        schedule = manifest.get("schedule", {})
         if phase_key not in schedule:
             schedule[phase_key] = []
-
-        files_to_add = []
-        if os.path.isfile(item_path):
-            files_to_add.append(item_path)
-        else:
-            for root, _, files in os.walk(item_path):
-                for f in files:
-                    files_to_add.append(os.path.join(root, f))
+        existing = {e.get("physical_path") for e in schedule[phase_key]}
 
         changed = False
-        for fpath in files_to_add:
-            if not self.is_content_file(fpath): continue
+        for item_path in paths:
+            files_to_add = []
+            if os.path.isfile(item_path):
+                files_to_add.append(item_path)
+            else:
+                for root, _, files in os.walk(item_path):
+                    for f in files:
+                        files_to_add.append(os.path.join(root, f))
 
-            # Calculate physical_path relative to data_root
-            rel = os.path.relpath(fpath, self.data_root).replace("\\", "/")
-            
-            # Check if already exists in target phase
-            if any(e.get("physical_path") == rel for e in schedule[phase_key]):
-                continue
-                
-            parts = rel.split("/")
-            # parent_folder is everything between bucket and file
-            hierarchy = parts[1:-1] if len(parts) > 2 else []
-            buckets = ["HighPriority", "LowPriority", "GoalContent"]
-            if hierarchy and hierarchy[0] in buckets:
-                hierarchy = hierarchy[1:]
-            parent_folder = "/".join(hierarchy)
+            for fpath in files_to_add:
+                if not self.is_content_file(fpath): continue
 
-            entry = {
-                "title": os.path.basename(fpath),
-                "physical_path": rel,
-                "parent_folder": parent_folder,
-                "origin_source": "Manual Import",
-                "source_type": self._detect_source_type(fpath, marker_cache),
-                "type": "File",
-                "status": "New"
-            }
-            schedule[phase_key].append(entry)
-            changed = True
+                # Calculate physical_path relative to data_root
+                rel = os.path.relpath(fpath, self.data_root).replace("\\", "/")
+
+                # Check if already exists in target phase
+                if rel in existing:
+                    continue
+
+                parts = rel.split("/")
+                # parent_folder is everything between bucket and file
+                hierarchy = parts[1:-1] if len(parts) > 2 else []
+                buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                if hierarchy and hierarchy[0] in buckets:
+                    hierarchy = hierarchy[1:]
+                parent_folder = "/".join(hierarchy)
+
+                entry = {
+                    "title": os.path.basename(fpath),
+                    "physical_path": rel,
+                    "parent_folder": parent_folder,
+                    "origin_source": "Manual Import",
+                    "source_type": self._detect_source_type(fpath, marker_cache),
+                    "type": "File",
+                    "status": "New"
+                }
+                schedule[phase_key].append(entry)
+                existing.add(rel)
+                changed = True
 
         if changed:
             manifest["schedule"] = schedule
-            self.save_manifest(manifest)
-
-    def remove_from_manifest(self, item_path, refresh=True):
-        """Removes an item from all manifest phase lists.
-
-        `refresh=False` for bulk moves (Graduate / Demote): refreshing mid-loop runs
-        _sync_disk_to_manifest, which sees the file ALREADY moved to its destination, registers it
-        itself as a "Disk Sync" entry, and makes the following add_to_manifest a no-op — so the
-        destination order came from the disk walk instead of the intended one. Callers doing a batch
-        refresh once at the end."""
-        manifest = self.load_manifest()
-        schedule = manifest.get("schedule", {})
-        rel_path = self._normalize_path(item_path)
-        
-        changed = False
-        for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
-            if phase in schedule:
-                original_len = len(schedule[phase])
-                schedule[phase] = [e for e in schedule[phase] if e.get("physical_path") != rel_path]
-                if len(schedule[phase]) != original_len:
-                    changed = True
-        
-        if changed:
-            manifest["schedule"] = schedule
-            self.save_manifest(manifest)
-            if refresh:
-                self.refresh_file_list()
+            if own:
+                self.save_manifest(manifest)
+        return changed
 
     def _get_manifest_indices_for_items(self, schedule_list, items, base_dir=None):
         """Returns a sorted list of manifest indices for given paths or GROUP: names."""
@@ -1198,20 +1229,26 @@ class ContentImporterApp:
                     count += 1
                     
             elif action_type == "remove":
-                for rm_op in data.get("removals", []):
+                # Folders the action cleared away come back first (an empty one has nothing that
+                # would recreate it); then everything moves back, the last thing moved first.
+                for dirpath in data.get("removed_dirs", []):
+                    os.makedirs(dirpath, exist_ok=True)
+                for rm_op in reversed(data.get("removals", [])):
                     orig = rm_op["original"]
                     trash = rm_op["trash"]
                     if os.path.exists(trash):
                         os.makedirs(os.path.dirname(orig), exist_ok=True)
                         shutil.move(trash, orig)
                     count += 1
-                    
+
             elif action_type == "graduate":
                 moves = data.get("moves", [])
                 words_added = data.get("words_added", 0)
                 sources = data.get("sources", [])
-                
-                for move_op in moves:
+
+                for dirpath in data.get("removed_dirs", []):
+                    os.makedirs(dirpath, exist_ok=True)
+                for move_op in reversed(moves):
                     src = move_op["source"]
                     dst = move_op["dest"]
                     if os.path.exists(dst):
@@ -1245,7 +1282,18 @@ class ContentImporterApp:
                                 
                         with open(grad_list_path, 'w', encoding='utf-8') as f:
                             f.writelines(lines)
-                            
+
+            # What the action itself created: marker copies, then every folder it made that is empty
+            # again (deepest first) — so the tree ends up exactly as it was.
+            for path in data.get("created", []):
+                if os.path.isfile(path):
+                    os.remove(path)
+            for dirpath in sorted(data.get("created_dirs", []), key=len, reverse=True):
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass      # not empty: something else lives there now
+
             if "previous_manifest" in data:
                 self.save_manifest(data["previous_manifest"])
                 
@@ -1804,6 +1852,164 @@ class ContentImporterApp:
                 add(val)
         return paths
 
+    def _selection_summary(self, paths):
+        """What a confirmation should count: FILES, not tree rows — a folder row holding 3,000 files
+        used to be asked about as "1 items". Returns e.g. '3,000 files (in 12 folders)'."""
+        tier_roots = {os.path.normpath(os.path.join(self.data_root, t))
+                      for t in ("HighPriority", "LowPriority", "GoalContent")}
+        folders = {os.path.normpath(os.path.dirname(p)) for p in paths} - tier_roots
+        text = f"{len(paths):,} file{'' if len(paths) == 1 else 's'}"
+        if folders:
+            text += f" (in {len(folders):,} folder{'' if len(folders) == 1 else 's'})"
+        return text
+
+    def _batch_progress(self, verb, n, total):
+        """Status line on every BATCH_STATUS_EVERY-th item, repainted at once. A bulk move runs on
+        the Tk thread (Tk isn't thread-safe, and the loop is linear, so a big batch takes seconds);
+        without this the window looked hung for its whole duration."""
+        if n % BATCH_STATUS_EVERY == 0:
+            self.status_var.set(f"{verb} {n:,} / {total:,}…")
+            self.root.update_idletasks()
+
+    def _report_failures(self, title, summary, failures, total, verb):
+        """ONE dialog for a whole batch, never one per file (a failing batch of 3,000 used to be 3,000
+        dialogs): '12 of 3,000 couldn't be moved:' plus the first 10 names."""
+        names = "\n".join(os.path.basename(p) for p in failures[:10])
+        if len(failures) > 10:
+            names += f"\n… and {len(failures) - 10:,} more"
+        messagebox.showerror(title, f"{summary}\n\n{len(failures):,} of {total:,} couldn't be {verb}:\n{names}")
+
+    # --- Metadata travels with its file; emptied folders don't stay behind ----------------------- #
+    # Two kinds of files are not content (path_utils.is_content_file) but belong to it: the per-FILE
+    # cue sidecar `<stem>.surasura.json` (a transcript's timestamps, behind the report's ▶ links) and
+    # the per-FOLDER producer marker `.surasura_source.json` (what makes an Extract folder read as a
+    # book). The bulk moves used to move the content file only, so a moved transcript opened at 0:00
+    # and a moved book chapter lost its 📖 badge — and every folder they emptied stayed in the tier.
+
+    def _makedirs_tracked(self, path, created_dirs):
+        """os.makedirs that records every directory it actually creates, so Undo can take away
+        exactly those — and only once they are empty again."""
+        missing = []
+        d = os.path.normpath(path)
+        while not os.path.isdir(d):
+            missing.append(d)
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+        os.makedirs(path, exist_ok=True)
+        created_dirs.extend(reversed(missing))
+
+    def _move_content_file(self, src, dst, copy_marker=True):
+        """Move one content file together with the metadata that belongs to it.
+
+        - The cue sidecar `<stem>.surasura.json` moves too, renamed to the DESTINATION's stem (a name
+          clash can rename the file on the way). An existing sidecar there is never overwritten.
+        - The folder's marker `.surasura_source.json` is COPIED when the destination folder has none:
+          the source folder may still hold other chapters that need it. `copy_marker=False` for the
+          trash, which is not a library folder (_tidy_emptied_folders moves the marker there with the
+          rest of an emptied folder).
+
+        Metadata is best-effort — a failure there never blocks or undoes the content move. Returns
+        (moved, created): the (from, to) pairs moved, the file first, and the files created (a marker
+        copy). Undo moves the first back and deletes the second."""
+        shutil.move(src, dst)
+        moved, created = [(src, dst)], []
+        if not os.path.isfile(dst):
+            return moved, created      # a whole folder carries its metadata inside it
+        try:
+            sidecar = os.path.splitext(src)[0] + SIDECAR_SUFFIX
+            dst_sidecar = os.path.splitext(dst)[0] + SIDECAR_SUFFIX
+            if os.path.isfile(sidecar) and not os.path.exists(dst_sidecar):
+                shutil.move(sidecar, dst_sidecar)
+                moved.append((sidecar, dst_sidecar))
+            marker = os.path.join(os.path.dirname(src), SOURCE_MARKER)
+            dst_marker = os.path.join(os.path.dirname(dst), SOURCE_MARKER)
+            if copy_marker and os.path.isfile(marker) and not os.path.exists(dst_marker):
+                shutil.copy2(marker, dst_marker)
+                created.append(dst_marker)
+        except OSError as e:
+            print(f"Warning: the metadata of {src} was not moved with it: {e}")
+        return moved, created
+
+    def _tidy_emptied_folders(self, source_dirs, tier_root, undo, dest_root=None, trash_dir=None):
+        """Clear away every folder a batch emptied: walking up from each of `source_dirs` to — never
+        including — `tier_root`, the topmost folder with no content file left at any depth goes.
+
+        What is still inside it — markers, stray sidecars, the user's own files like cover.jpg — is
+        never thrown away. Graduate / Demote (`dest_root`): it FOLLOWS the content to the same place
+        under the destination tier; the folder has moved as a whole (`_unique_path` on a clash, never
+        an overwrite; a marker copy this same batch made is simply replaced by the original).
+        Remove (`trash_dir`): it goes to the trash in one dated folder, `<name>_<YYYYmmddHHMMSS>`.
+        Then the emptied directories are removed, bottom-up. A folder that still holds content is
+        left exactly as it is, and the tier roots, Processed and .trash are never candidates.
+
+        Every step is recorded in `undo` so Undo can put the tree back exactly. Best-effort: whatever
+        can't be moved stays where it is, and so does its folder. Never raises."""
+        try:
+            tier_root = os.path.normpath(tier_root)
+            has_content = {}
+
+            def _has_content(folder):
+                if folder not in has_content:
+                    has_content[folder] = any(self.is_content_file(name)
+                                              for _r, _d, files in os.walk(folder) for name in files)
+                return has_content[folder]
+
+            # From each touched folder, climb while the folder is emptied; the last one climbed is
+            # the top of what goes. Two chains that meet reach the same top.
+            tops = set()
+            for d in {os.path.normpath(p) for p in source_dirs}:
+                top = None
+                while (os.path.normcase(d).startswith(os.path.normcase(tier_root) + os.sep)
+                       and os.path.isdir(d) and not _has_content(d)):
+                    top = d
+                    d = os.path.dirname(d)
+                if top:
+                    tops.add(top)
+
+            stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            created_copies = {os.path.normcase(os.path.normpath(p)) for p in undo.get("created", [])}
+            for top in sorted(tops):
+                leftovers = [os.path.join(r, name) for r, _d, files in os.walk(top) for name in files]
+                if leftovers:
+                    if trash_dir:
+                        target_root = self._unique_path(
+                            os.path.join(trash_dir, f"{os.path.basename(top)}_{stamp}"))
+                    else:
+                        target_root = os.path.join(dest_root, os.path.relpath(top, tier_root))
+                for src in leftovers:
+                    dst = os.path.join(target_root, os.path.relpath(src, top))
+                    try:
+                        self._makedirs_tracked(os.path.dirname(dst), undo["created_dirs"])
+                        key = os.path.normcase(os.path.normpath(dst))
+                        if key in created_copies:
+                            # Our own marker copy from this batch: the original takes its place.
+                            os.replace(src, dst)
+                            created_copies.discard(key)
+                            undo["created"] = [p for p in undo["created"]
+                                               if os.path.normcase(os.path.normpath(p)) != key]
+                        else:
+                            dst = self._unique_path(dst)
+                            shutil.move(src, dst)
+                        if trash_dir:
+                            undo["removals"].append({"original": src, "trash": dst})
+                        else:
+                            undo["moves"].append({"source": src, "dest": dst})
+                    except OSError as e:
+                        print(f"Warning: could not move {src}: {e}")
+                if trash_dir and leftovers:
+                    # The move keeps each file's old modified time, which the 30-day purge reads.
+                    restart_trash_clock(target_root)
+                for d, _dirs, _files in os.walk(top, topdown=False):
+                    try:
+                        os.rmdir(d)
+                        undo["removed_dirs"].append(d)
+                    except OSError:
+                        pass      # something in it couldn't be moved: the folder stays
+        except Exception as e:
+            print(f"Warning: could not tidy emptied folders: {e}")
+
     def demote_content(self):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -1816,12 +2022,12 @@ class ContentImporterApp:
             "LowPriority": "GoalContent",
             "HighPriority": "LowPriority"
         }
-        
+
         dest_folder_name = destination_map.get(current_folder)
         if not dest_folder_name:
             messagebox.showinfo("Info", "Cannot demote from this folder.")
             return
-            
+
         dest_root = os.path.join(self.data_root, dest_folder_name)
         items_to_process = self._resolve_items_to_paths(selected_items)
         if not items_to_process: return
@@ -1835,70 +2041,80 @@ class ContentImporterApp:
         friendly_src = names_map.get(current_folder, current_folder)
         friendly_dest = names_map.get(dest_folder_name, dest_folder_name)
 
-        msg = f"Demote {len(selected_items)} items from '{friendly_src}' to '{friendly_dest}'?"
+        msg = f"Demote {self._selection_summary(items_to_process)} from '{friendly_src}' to '{friendly_dest}'?"
         self._ignore_refresh = True
         confirm = messagebox.askyesno("Confirm Demotion", msg)
         self._ignore_refresh = False
-        
+
         if not confirm:
             return
 
         # Ensure destination exists
         if not os.path.exists(dest_root):
             os.makedirs(dest_root)
-            
+
         count = 0
         self._temp_manifest_snapshot = self.load_manifest()
-        moves_list = []
-        
+        source_bucket_root = os.path.join(self.data_root, current_folder)
+        content_moves = []      # (source, dest) of the content files: what the manifest follows
+        undo = {"moves": [], "created": [], "created_dirs": [], "removed_dirs": [],
+                "words_added": 0, "sources": []}
+        failures = []
+        total = len(items_to_process)
+
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
         try:
-            for filepath in items_to_process:
+            # Files only move here; the manifest is updated once after the loop.
+            for n, filepath in enumerate(items_to_process, 1):
+                self._batch_progress("Demoting", n, total)
                 if not os.path.exists(filepath): continue
-                
-                # Calculate relative path within source bucket to preserve hierarchy
-                source_bucket_root = os.path.join(self.data_root, current_folder)
-                rel_inner = os.path.relpath(filepath, source_bucket_root)
-                
-                parts_inner = rel_inner.replace("\\", "/").split("/")
-                buckets = ["HighPriority", "LowPriority", "GoalContent"]
-                if parts_inner and parts_inner[0] in buckets:
-                    parts_inner = parts_inner[1:]
-                clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
-                dest = os.path.join(dest_root, clean_rel_inner)
-                
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                
-                # Check target structure for dupes
-                base = os.path.basename(dest)
-                counter = 1
-                name, ext = os.path.splitext(base)
-                while os.path.exists(dest):
-                    dest = os.path.join(os.path.dirname(dest), f"{name}_{counter}{ext}")
-                    counter += 1
-                    
-                shutil.move(filepath, dest)
-                # refresh=False: batch — one refresh after the loop (see remove_from_manifest).
-                self.remove_from_manifest(filepath, refresh=False)
-                self.add_to_manifest(dest, dest_folder_name)
-                
-                moves_list.append({
-                    "source": filepath,
-                    "dest": dest
-                })
-                count += 1
-                
-            if moves_list:
-                self.set_undo_action("graduate", "Demote Content", {
-                    "moves": moves_list,
-                    "words_added": 0,
-                    "sources": []
-                })
-                
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to demote files: {e}")
-            
+                try:
+                    # Calculate relative path within source bucket to preserve hierarchy
+                    rel_inner = os.path.relpath(filepath, source_bucket_root)
+
+                    parts_inner = rel_inner.replace("\\", "/").split("/")
+                    buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                    if parts_inner and parts_inner[0] in buckets:
+                        parts_inner = parts_inner[1:]
+                    clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
+                    dest = os.path.join(dest_root, clean_rel_inner)
+
+                    self._makedirs_tracked(os.path.dirname(dest), undo["created_dirs"])
+
+                    # Check target structure for dupes
+                    base = os.path.basename(dest)
+                    counter = 1
+                    name, ext = os.path.splitext(base)
+                    while os.path.exists(dest):
+                        dest = os.path.join(os.path.dirname(dest), f"{name}_{counter}{ext}")
+                        counter += 1
+
+                    moved, created = self._move_content_file(filepath, dest)
+                    undo["moves"] += [{"source": s, "dest": d} for s, d in moved]
+                    undo["created"] += created
+                    content_moves.append((filepath, dest))
+                    count += 1
+                except Exception as e:
+                    print(f"Error demoting {filepath}: {e}")
+                    failures.append(filepath)
+
+            if content_moves:
+                manifest = self.load_manifest()
+                removed = self._remove_paths_from_manifest([s for s, _ in content_moves], manifest)
+                added = self._add_paths_to_manifest([d for _, d in content_moves], dest_folder_name, manifest)
+                if removed or added:
+                    self.save_manifest(manifest)
+                self._tidy_emptied_folders({os.path.dirname(s) for s, _ in content_moves},
+                                           source_bucket_root, undo, dest_root=dest_root)
+                self.set_undo_action("graduate", "Demote Content", undo)
+        finally:
+            self.root.config(cursor="")
+
         self.refresh_file_list()
         self.status_var.set(f"Demoted {count} items.")
+        if failures:
+            self._report_failures("Demote", f"Demoted {count:,} files.", failures, total, "moved")
 
     def graduate_content(self):
         selected_items = self.tree.selection()
@@ -1936,13 +2152,14 @@ class ContentImporterApp:
         friendly_dest = names_map.get(dest_folder_name, dest_folder_name)
 
         # Confirmation Logic.
+        selection_text = self._selection_summary(items_to_process)
         if current_folder == "HighPriority":
-            msg = (f"Graduate {len(selected_items)} items to '{friendly_dest}'?\n\n"
+            msg = (f"Graduate {selection_text} to '{friendly_dest}'?\n\n"
                    "CAUTION: This will mark words as KNOWN based on the MOST RECENT analysis.\n"
                    "Words from these files found in the 'word_stats.json' report will be added to your GraduatedList.\n\n"
                    f"The files will be moved to your local '{friendly_dest}' archive.")
         else:
-            msg = f"Move {len(selected_items)} items from '{friendly_src}' to '{friendly_dest}'?"
+            msg = f"Move {selection_text} from '{friendly_src}' to '{friendly_dest}'?"
             
         self._ignore_refresh = True
         confirm = messagebox.askyesno("Confirm Graduation", msg)
@@ -1972,96 +2189,117 @@ class ContentImporterApp:
                 
         self._temp_manifest_snapshot = self.load_manifest()
 
-        # Process Items
-        moves_list = []
+        # Process Items — files only move here; the manifest is updated once after the loop.
+        source_bucket_root = os.path.join(self.data_root, current_folder)
+        content_moves = []      # (source, dest) of the content files: what the manifest follows
+        undo = {"moves": [], "created": [], "created_dirs": [], "removed_dirs": []}
         words_added_total = 0
         sources_modified = []
-        
-        for source_path in items_to_process:
-            if not os.path.exists(source_path): continue
-            
-            filename = os.path.basename(source_path)
-            dest_path = os.path.join(dest_root, filename)
-            
-            try:
-                # 1. Graduate Words Logic (High Priority only)
-                if current_folder == "HighPriority" and grad_index and settings.get("add_graduated_words", True):
-                    # Find all filenames associated with this item
-                    filenames_to_match = set()
-                    if os.path.isfile(source_path):
-                        filenames_to_match.add(filename)
-                    else:
-                        for root, dirs, files in os.walk(source_path):
-                            for f in files:
-                                filenames_to_match.add(f)
+        failures = []
+        total = len(items_to_process)
 
-                    # Union of every matched file's words (same result as scanning word_stats'
-                    # per-word `sources`, just read from the pre-built reverse index).
-                    file_words = set()
-                    for f in filenames_to_match:
-                        file_words.update(grad_index.get(f, []))
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            for n, source_path in enumerate(items_to_process, 1):
+                self._batch_progress("Graduating", n, total)
+                if not os.path.exists(source_path): continue
 
-                    if file_words:
-                        file_words = sorted(file_words)
-                        project_root = os.path.dirname(os.path.dirname(self.data_root))
-                        user_files_dir = os.path.join(project_root, "User Files", self.language)
-                        if not os.path.exists(user_files_dir):
-                             os.makedirs(user_files_dir)
-                        
-                        rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
-                        grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
-                        with open(grad_list_path, 'a', encoding='utf-8') as f:
-                            f.write(f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n")
-                            for w in file_words:
-                                f.write(f"{w}\n")
-                        words_graduated += len(file_words)
-                        words_added_total += len(file_words)
-                        sources_modified.append(rel_path)
+                filename = os.path.basename(source_path)
+                dest_path = os.path.join(dest_root, filename)
 
-                # Calculate relative path within source bucket to preserve hierarchy
-                source_bucket_root = os.path.join(self.data_root, current_folder)
-                rel_inner = os.path.relpath(source_path, source_bucket_root)
-                
-                # Sanity: prevent bucket leak in subfolders
-                parts_inner = rel_inner.replace("\\", "/").split("/")
-                buckets = ["HighPriority", "LowPriority", "GoalContent"]
-                if parts_inner and parts_inner[0] in buckets:
-                    parts_inner = parts_inner[1:]
-                clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
-                dest_path = os.path.join(dest_root, clean_rel_inner)
-                
-                # Ensure destination directory exists
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                try:
+                    # 1. Graduate Words Logic (High Priority only)
+                    if current_folder == "HighPriority" and grad_index and settings.get("add_graduated_words", True):
+                        # Find all filenames associated with this item
+                        filenames_to_match = set()
+                        if os.path.isfile(source_path):
+                            filenames_to_match.add(filename)
+                        else:
+                            for root, dirs, files in os.walk(source_path):
+                                for f in files:
+                                    filenames_to_match.add(f)
 
-                # 2. Move File
-                if os.path.exists(dest_path):
-                    # Simple conflict resolution: rename source
-                    base, ext = os.path.splitext(os.path.basename(dest_path))
-                    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                    dest_path = os.path.join(os.path.dirname(dest_path), f"{base}_{timestamp}{ext}")
+                        # Union of every matched file's words (same result as scanning word_stats'
+                        # per-word `sources`, just read from the pre-built reverse index).
+                        file_words = set()
+                        for f in filenames_to_match:
+                            file_words.update(grad_index.get(f, []))
 
-                shutil.move(source_path, dest_path)
-                
-                # 3. Update Manifest (refresh=False: batched — one refresh after the loop)
-                self.remove_from_manifest(source_path, refresh=False)
+                        if file_words:
+                            file_words = sorted(file_words)
+                            project_root = os.path.dirname(os.path.dirname(self.data_root))
+                            user_files_dir = os.path.join(project_root, "User Files", self.language)
+                            if not os.path.exists(user_files_dir):
+                                 os.makedirs(user_files_dir)
 
+                            rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
+                            grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
+                            with open(grad_list_path, 'a', encoding='utf-8') as f:
+                                f.write(f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n")
+                                for w in file_words:
+                                    f.write(f"{w}\n")
+                            words_graduated += len(file_words)
+                            words_added_total += len(file_words)
+                            sources_modified.append(rel_path)
+
+                    # Calculate relative path within source bucket to preserve hierarchy
+                    rel_inner = os.path.relpath(source_path, source_bucket_root)
+
+                    # Sanity: prevent bucket leak in subfolders
+                    parts_inner = rel_inner.replace("\\", "/").split("/")
+                    buckets = ["HighPriority", "LowPriority", "GoalContent"]
+                    if parts_inner and parts_inner[0] in buckets:
+                        parts_inner = parts_inner[1:]
+                    clean_rel_inner = os.path.join(*parts_inner) if parts_inner else ""
+                    dest_path = os.path.join(dest_root, clean_rel_inner)
+
+                    # Ensure destination directory exists
+                    self._makedirs_tracked(os.path.dirname(dest_path), undo["created_dirs"])
+
+                    # 2. Move File (and its metadata)
+                    if os.path.exists(dest_path):
+                        # Simple conflict resolution: rename source
+                        base, ext = os.path.splitext(os.path.basename(dest_path))
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                        dest_path = os.path.join(os.path.dirname(dest_path), f"{base}_{timestamp}{ext}")
+
+                    moved, created = self._move_content_file(source_path, dest_path)
+                    undo["moves"] += [{"source": s, "dest": d} for s, d in moved]
+                    undo["created"] += created
+                    content_moves.append((source_path, dest_path))
+                    count += 1
+
+                except Exception as e:
+                    print(f"Error graduating {source_path}: {e}")
+                    failures.append(source_path)
+
+            # 3. Update Manifest — once for the whole batch — then clear the folders it emptied.
+            if content_moves:
+                manifest = self.load_manifest()
+                removed = self._remove_paths_from_manifest([s for s, _ in content_moves], manifest)
+                added = False
                 if dest_folder_name in ["HighPriority", "LowPriority", "GoalContent"]:
-                    self.add_to_manifest(dest_path, dest_folder_name)
-                
-                moves_list.append({"source": source_path, "dest": dest_path})
-                count += 1
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to graduate {filename}:\n{e}")
-        
-        self.set_undo_action("graduate", "Graduate", {"moves": moves_list, "words_added": words_added_total, "sources": list(set(sources_modified))})
-        
+                    added = self._add_paths_to_manifest([d for _, d in content_moves], dest_folder_name, manifest)
+                if removed or added:
+                    self.save_manifest(manifest)
+                self._tidy_emptied_folders({os.path.dirname(s) for s, _ in content_moves},
+                                           source_bucket_root, undo, dest_root=dest_root)
+        finally:
+            self.root.config(cursor="")
+
+        undo.update({"words_added": words_added_total, "sources": list(set(sources_modified))})
+        self.set_undo_action("graduate", "Graduate", undo)
+
         self.refresh_file_list()
         status_msg = f"Moved {count} items to {dest_folder_name}."
         if words_graduated > 0:
             status_msg += f" Added {words_graduated} words to GraduatedList."
         self.status_var.set(status_msg)
-        messagebox.showinfo("Success", status_msg)
+        if failures:
+            self._report_failures("Graduate", status_msg, failures, total, "moved")
+        else:
+            messagebox.showinfo("Success", status_msg)
 
     def remove_files(self):
         selected_items = self.tree.selection()
@@ -2069,57 +2307,69 @@ class ContentImporterApp:
             messagebox.showwarning("No Selection", "Please select items to remove.")
             return
 
+        # Resolved BEFORE asking, so the question can count files rather than tree rows.
+        paths_to_delete = self._resolve_items_to_paths(selected_items)
+        if not paths_to_delete:
+            return
+
         confirm = messagebox.askyesno(
-            "Confirm Deletion", 
-            f"Are you sure you want to delete {len(selected_items)} selected items and their contents?\nThis can be undone."
+            "Confirm Removal",
+            f"Remove {self._selection_summary(paths_to_delete)}? This can be undone."
         )
-        
+
         if confirm:
             self._temp_manifest_snapshot = self.load_manifest()
-            target_dir = self.get_current_dir()
             count = 0
-            
-            # Resolve to absolute paths robustly
-            paths_to_delete = self._resolve_items_to_paths(selected_items)
-            
+
             trash_dir = os.path.join(self.data_root, ".trash")
             os.makedirs(trash_dir, exist_ok=True)
-            removals_list = []
-            
-            for path in paths_to_delete:
-                try:
-                    if os.path.exists(path):
-                        # Move to trash instead of deleting
-                        filename = os.path.basename(path)
-                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                        base, ext = os.path.splitext(filename)
-                        # De-duped: the stamp is only unique to the second, and two same-named files
-                        # removed together (two seasons' 01.srt) would otherwise share one trash name.
-                        trash_path = self._unique_path(os.path.join(trash_dir, f"{base}_{timestamp}{ext}"))
+            undo = {"removals": [], "created_dirs": [], "removed_dirs": []}
+            removed_paths = []   # their manifest rows go: moved to trash, or already missing
+            failures = []
+            total = len(paths_to_delete)
 
-                        shutil.move(path, trash_path)
-                        # The move keeps the file's old modified time, which is what the 30-day purge
-                        # reads; restart it so the countdown runs from the removal.
-                        restart_trash_clock(trash_path)
-                        removals_list.append({"original": path, "trash": trash_path})
-                        
-                    self.remove_from_manifest(path)
-                    count += 1
-                except Exception as e:
-                    print(f"Error deleting {path}: {e}")
-            
-            # Ensure parents empty
-            for path in paths_to_delete:
-                 parent = os.path.dirname(path)
-                 if os.path.exists(parent) and not os.listdir(parent):
-                      try: os.rmdir(parent)
-                      except: pass
-            
-            if removals_list:
-                self.set_undo_action("remove", "Remove Items", {"removals": removals_list})
-                
+            self.root.config(cursor="watch")
+            self.root.update_idletasks()
+            try:
+                # Files only move here; the manifest is updated once after the loop.
+                for n, path in enumerate(paths_to_delete, 1):
+                    self._batch_progress("Removing", n, total)
+                    try:
+                        if os.path.exists(path):
+                            # Move to trash instead of deleting
+                            filename = os.path.basename(path)
+                            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                            base, ext = os.path.splitext(filename)
+                            # De-duped: the stamp is only unique to the second, and two same-named files
+                            # removed together (two seasons' 01.srt) would otherwise share one trash name.
+                            trash_path = self._unique_path(os.path.join(trash_dir, f"{base}_{timestamp}{ext}"))
+
+                            moved, _ = self._move_content_file(path, trash_path, copy_marker=False)
+                            for original, trashed in moved:
+                                # The move keeps the file's old modified time, which is what the 30-day
+                                # purge reads; restart it so the countdown runs from the removal.
+                                restart_trash_clock(trashed)
+                                undo["removals"].append({"original": original, "trash": trashed})
+
+                        removed_paths.append(path)
+                        count += 1
+                    except Exception as e:
+                        print(f"Error deleting {path}: {e}")
+                        failures.append(path)
+
+                self._remove_paths_from_manifest(removed_paths)
+                self._tidy_emptied_folders({os.path.dirname(p) for p in removed_paths},
+                                           self.get_current_dir(), undo, trash_dir=trash_dir)
+            finally:
+                self.root.config(cursor="")
+
+            if undo["removals"]:
+                self.set_undo_action("remove", "Remove Items", undo)
+
             self.refresh_file_list()
             self.status_var.set(f"Removed {count} items.")
+            if failures:
+                self._report_failures("Remove", f"Removed {count:,} files.", failures, total, "removed")
 
     def open_path_in_system(self, path):
         """Open a file (or folder) with the OS default handler. Never fatal."""

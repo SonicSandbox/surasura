@@ -294,6 +294,30 @@ def test_schema_version_mismatch_rebuilds(tmp_path):
     s2.close()
 
 
+def test_a_store_from_before_the_lemma_reading_key_is_rebuilt(tmp_path):
+    """v4 -> v5: Japanese words are keyed by the lemma's reading now. A v4 store's cached sentences
+    and aggregate carry the conjugated readings (辿り着いた -> タドリツイ), and reusing them would bring
+    the per-conjugation split straight back — so it must be dropped and rebuilt, never read."""
+    assert ti.SCHEMA_VERSION == 5
+    db = _db(tmp_path)
+    f = tmp_path / "journey.txt"
+    _write(f, "長い旅の末に、ついに城へ辿り着いた。\nこの道を行けば、必ず海に辿り着く。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    s.close()
+    conn = sqlite3.connect(db)      # what a v4 store holds for the first line
+    conn.execute("UPDATE aggregate SET reading = 'タドリツイ' WHERE lemma = '辿り着く'")
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v4 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    rows = s2.conn.execute("SELECT reading, count FROM aggregate WHERE lemma = '辿り着く'").fetchall()
+    assert rows == [("タドリツク", 2)]
+    s2.close()
+
+
 def test_concurrent_reader_sees_committed_writes(tmp_path):
     """WAL: a second connection reads the committed state; no corruption from two connections."""
     db = _db(tmp_path)

@@ -157,8 +157,9 @@ def test_forms_is_not_named_like_an_example_sentence():
 def test_engine_revision_was_bumped_for_the_forms_column():
     """A new column changes what a run outputs for unchanged inputs. Without the bump the stored run
     signature still matches and the old report — with no Forms — is served. Pinned exactly so the
-    next person to bump it updates this knowingly."""
-    assert analyzer.ENGINE_REVISION == 9
+    next person to bump it updates this knowingly. (9 was the Forms column; 10 keys Japanese words by
+    the lemma's reading — Bugfix_Batch_2026-09-22 fix C.)"""
+    assert analyzer.ENGINE_REVISION == 10
 
 
 # --------------------------------------------------------------------------- #

@@ -47,7 +47,9 @@ ENSURE_AUDIO_EXAMPLE = False
 # Without it the signature's only engine component is `__version__`, which moves once per RELEASE:
 # during development (and for any hotfix shipped without a version bump) identical inputs matched the
 # stored signature and the analyzer served the OLD report from before the change.
-ENGINE_REVISION = 9
+# 10: Japanese words are keyed by the lemma's reading (UniDic lForm) — one row per word, however it
+#     is conjugated (JapaneseTokenizer.tokenize_sentences).
+ENGINE_REVISION = 10
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -139,7 +141,15 @@ class JapaneseTokenizer(Tokenizer):
                 lemma = word.feature.lemma if word.feature.lemma else word.surface
                 if SANITIZE_JA:
                     lemma = _sanitize_term(lemma)
-                reading = word.feature.kana if word.feature.kana else ""
+                # The reading of the LEMMA (UniDic lForm), not of this conjugated surface (`kana`):
+                # a word is keyed on (lemma, reading), so the surface reading split a verb into one
+                # row per conjugation — 辿り着く sat on four rows (タドリツイ 102, タドリツク 40,
+                # タドリツケ 32, タドリツキ 18) and ranked far below its true 192, and a word none of
+                # whose forms cleared the floor alone (立ち入る, 31 in all) never appeared. lForm is one
+                # value per word (辿り着い / 辿り着ける -> タドリツク; 仕方ねえ -> シカタナイ) yet still
+                # tells real homographs apart (上手: ジョウズ / カミテ). `kanaBase` is no substitute: it
+                # keeps the potential form (辿り着ける -> タドリツケル). Chinese readings stay "".
+                reading = word.feature.lForm or word.feature.kana or ""
                 # orthBase is the dictionary form in the spelling THIS text used, where `lemma` is
                 # UniDic's canonical headword for the lexeme. They differ for ~38% of content
                 # tokens: 引きずって -> lemma 引き摺る but orthBase 引きずる; 須藤 -> lemma スドウ

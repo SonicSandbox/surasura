@@ -497,7 +497,30 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                     rec[f"Aud {n}"] = 1
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0):
+def anki_backlog_keys(language, settings):
+    """The words of the new cards already waiting in Anki, for the report's label — "Label backlogged
+    Anki words" (`anki_backlog_on_generate`; Junban_Backlog_Spec WP-B8). Keys only, never card
+    content: each card's word and its hiragana fold, as the Anki sync wrote them
+    (`User Files/<lang>/anki_backlog.json`). Chinese keys are read in the script the report is in,
+    as the list is. `[]` when switched off, with no backlog file, or on any error — the report then
+    has no label, no filter entry and no count: a user without Anki sees nothing different."""
+    if not (settings or {}).get("anki_backlog_on_generate", True):
+        return []
+    try:
+        from app import anki_sync
+        keys = anki_sync.backlog_keys(language)
+        if keys and language == "zh":
+            from app.zh_script import convert, effective
+            script = effective(language, (settings or {}).get("zh_script"))
+            if script != "asis":
+                keys = {convert(key, script) for key in keys}
+        return sorted(keys)
+    except Exception as e:
+        print(f"Warning: could not read the Anki backlog for the report: {e}")
+        return []
+
+
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -737,10 +760,12 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
     except Exception:
         koe_config = None
     koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
+    anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {}),
+                               ensure_ascii=False).replace("</", "<\\/")
 
     html_content = html_content.replace(
         "let globalData = null;",
-        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};"
+        f"let globalData = {json_str};\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};"
     )
 
     # Embed Icon as Favicon and Header Logo
@@ -766,6 +791,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
         f.write(html_content)
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
+    if not open_browser:
+        return                      # the dashboard's automatic Generate: written, not opened
     if app_mode:
         open_as_app(OUTPUT_FILE)
     else:

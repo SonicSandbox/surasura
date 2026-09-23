@@ -70,6 +70,8 @@ class _DashboardHarness(unittest.TestCase):
         self.app._last_anki_sync = 0.0
         self.app._current_settings = {}
         self.app.gui_queue = MagicMock()
+        # "Generate when Anki adds known words" did not start a Generate — the default, option off.
+        self.app._maybe_auto_generate.return_value = False
         # conftest sets this for every test so nothing reaches a live Anki; these tests capture the
         # thread instead of running it, so they lift it explicitly.
         self.env = patch.dict(os.environ)
@@ -249,6 +251,98 @@ class TestSettingsCarryThrough(_DashboardHarness):
         self.app.var_anki_sync_auto.get.return_value = True
         saved = self._save({}, {})
         self.assertIs(saved["anki_sync_auto"], True)
+
+    def test_the_auto_generate_toggle_is_written_from_its_checkbox(self):
+        """save_settings() rebuilds settings.json from scratch — a key it does not list is dropped on
+        the next save (CLAUDE.md), and the checkbox would reset itself."""
+        self.app.var_anki_auto_generate.get.return_value = True
+        saved = self._save({}, {})
+        self.assertIs(saved["anki_auto_generate"], True)
+
+
+class TestAutoGenerate(_DashboardHarness):
+    """"Generate when Anki adds known words" (Settings → Data & System). The user's choices,
+    2026-09-23: only new known words from Anki trigger it (new episodes are theirs to order first);
+    quiet — the report is written, not opened; at most every 10 minutes; never while a Generate, an
+    import, the indexer or the Content Manager is running — each is a child process of the window."""
+
+    def setUp(self):
+        super().setUp()
+        self.app.var_anki_auto_generate = MagicMock()
+        self.app.var_anki_auto_generate.get.return_value = True
+        self.app._auto_generate_pending = True
+        self.app._last_auto_generate = 0.0
+        self.app.active_processes = []
+        self.app._library_has_content.return_value = True
+
+    def _try(self):
+        return self.MasterDashboardApp._maybe_auto_generate(self.app)
+
+    def test_it_runs_quietly_once_anki_has_brought_words_in(self):
+        self.assertTrue(self._try())
+        self.app.run_analyzer.assert_called_once_with(quiet=True)
+
+    def test_nothing_without_new_words_from_anki_or_with_the_option_off(self):
+        self.app._auto_generate_pending = False
+        self.assertFalse(self._try())
+        self.app._auto_generate_pending = True
+        self.app.var_anki_auto_generate.get.return_value = False
+        self.assertFalse(self._try())
+        self.app.run_analyzer.assert_not_called()
+
+    def test_never_while_anything_else_runs_and_it_waits_rather_than_forgets(self):
+        """The Content Manager, an importer, the indexer or a Generate — all child processes. The
+        words will not come in a second time, so the Generate stays pending for the next chance."""
+        running = MagicMock()
+        running.poll.return_value = None
+        self.app.active_processes = [running]
+        self.assertFalse(self._try())
+        self.assertTrue(self.app._auto_generate_pending)
+        running.poll.return_value = 0          # it finished
+        self.assertTrue(self._try())
+
+    def test_at_most_every_ten_minutes(self):
+        self.assertTrue(self._try())
+        self.app._auto_generate_pending = True
+        self.assertFalse(self._try())
+        self.assertEqual(self.app.run_analyzer.call_count, 1)
+
+    def test_the_test_guard_blocks_it(self):
+        os.environ["SURASURA_NO_ANKI_SYNC"] = "1"
+        self.assertFalse(self._try())
+
+    def test_a_sync_that_added_words_starts_it_instead_of_a_separate_reindex(self):
+        """Generate re-reads the store itself; running the indexer beside it would only race it."""
+        self.app._auto_generate_pending = False
+        self.app._maybe_auto_generate.return_value = True
+        result = SimpleNamespace(added=5, mode="delta", error=None, total_known=0, scanned=3)
+        self.MasterDashboardApp._on_anki_sync_result(self.app, result, auto=True)
+        self.assertTrue(self.app._auto_generate_pending)
+        self.app._maybe_launch_indexer.assert_not_called()
+
+    def test_the_quiet_generate_writes_without_opening_and_keeps_the_log(self):
+        self.app._analyzer_args.return_value = ["analyzer.py", "--language=ja"]
+        self.MasterDashboardApp.run_analyzer(self.app, quiet=True)
+        args = self.app.run_command_async.call_args.args[0]
+        kwargs = self.app.run_command_async.call_args.kwargs
+        self.assertIn("--no-open", args)
+        self.assertIs(kwargs["clear_log"], False)
+        self.app._try_open_existing_report.assert_not_called()
+        self.assertFalse(self.app._auto_generate_pending)
+
+    def test_the_generate_button_shows_blue_when_it_has_work_and_a_check_when_not(self):
+        self.MasterDashboardApp._set_journey_state(self.app, False)
+        self.app.journey_border.config.assert_called_with(
+            highlightbackground=self.main.SURASURA_BLUE, highlightcolor=self.main.SURASURA_BLUE)
+        self.app.lbl_journey_state.place_forget.assert_called()
+        self.MasterDashboardApp._set_journey_state(self.app, True)
+        self.app.journey_border.config.assert_called_with(
+            highlightbackground=self.main.BG_COLOR, highlightcolor=self.main.BG_COLOR)
+        # ON the button, at its right edge — never a column of its own that shortens the button.
+        placed = self.app.lbl_journey_state.place.call_args.kwargs
+        self.assertIs(placed["in_"], self.app.btn_journey)
+        self.assertEqual((placed["relx"], placed["anchor"]), (1.0, "e"))
+        self.app.lbl_journey_state.pack.assert_not_called()
 
 
 class TestJunbanAutoReorder(_DashboardHarness):

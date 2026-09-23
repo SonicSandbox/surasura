@@ -940,6 +940,9 @@ def _build_analysis_parser():
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
     parser.add_argument("--context-max", type=int, default=None, help="Ideal sentence maximum words/characters")
     parser.add_argument("--max-contexts", type=int, default=3, help="Maximum number of example sentences exported per word")
+    # The dashboard's automatic Generate (after the Anki sync adds known words): write the report,
+    # do not open it. Not an analysis input, so it stays out of compute_run_signature.
+    parser.add_argument("--no-open", action="store_true", help="Write the report but do not open it")
     return parser
 
 
@@ -1098,7 +1101,7 @@ def compute_run_signature(language, found_files, args):
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
-            "anki_sync_include_suspended", "anki_backlog_on_generate",
+            "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
             # Optional-module switches that change what the app SHOWS, never what a run computes.
             # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
             # library_frequency.json it used to switch on.)
@@ -1174,11 +1177,26 @@ def compute_render_signature(args):
         # existing report was reused and its badges stayed mute. Absent module -> False, so this
         # costs nothing for anyone who doesn't have it.
         bool(_s.get("enable_koe", False)),
+        # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): the switch, and — only while it
+        # is on — the backlog file the Anki sync keeps. Both are INJECTED, so a sync costs one
+        # re-render on the next Generate, never a re-analysis (§3 I3).
+        bool(_s.get("anki_backlog_on_generate", True)),
+        _backlog_fingerprint(getattr(args, "language", "ja"))
+        if _s.get("anki_backlog_on_generate", True) else None,
         # The templates themselves. Without this a template-only change (a new report tab, a CSS
         # fix) was invisible to both fast paths: they reopened the old HTML until something else
         # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
         _template_fingerprint(),
     ])
+
+
+def _backlog_fingerprint(language):
+    """(mtime, size) of `User Files/<lang>/anki_backlog.json`, or None when there is none."""
+    try:
+        st = os.stat(os.path.join(get_user_files_path(language), "anki_backlog.json"))
+        return [st.st_mtime, st.st_size]
+    except (OSError, TypeError):
+        return None
 
 
 def _template_fingerprint():
@@ -1415,11 +1433,13 @@ def main():
                 # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
                 if os.path.exists(_html) and _store.get_meta("last_render_sig") == _render_sig:
                     print("Report already up to date - opening it.")
-                    static_html_generator.open_report(app_mode=args.app_mode)
+                    if not args.no_open:
+                        static_html_generator.open_report(app_mode=args.app_mode)
                 else:
                     print("Re-rendering report from existing results (presentation changed)...")
                     static_html_generator.generate_static_html(
-                        theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
+                        theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
+                        open_browser=not args.no_open)
                     try:
                         _store.set_meta("last_render_sig", _render_sig)
                     except Exception:
@@ -2415,7 +2435,8 @@ def main():
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
             static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
+                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
+                open_browser=not args.no_open)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
 

@@ -160,3 +160,39 @@ def test_dashboard_fast_path_reopens_only_this_runs_results(stamp, reopens):
     with patch("app.static_html_generator.open_report") as open_report:
         assert MasterDashboardApp._try_open_existing_report(dashboard, argv) is reopens
     assert open_report.called is reopens
+
+
+# --- The Generate button's state: the same question as the fast path, asked on its own -------- #
+def test_the_generate_button_knows_when_the_journey_is_up_to_date():
+    """`journey_is_current` is what puts the thin blue border on Generate (False) or the check mark
+    beside it (True). It must agree with the fast path exactly: up to date only for THIS run's
+    results; out of date once the known words change (an Anki sync) — and so the moment they do."""
+    from app.main import journey_is_current
+    argv = _fast_path_state("this run")
+    assert journey_is_current(argv, "ja") is True
+
+    known = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", "ja", "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN"}]}))
+    assert journey_is_current(argv, "ja") is False
+
+
+def test_the_generate_button_is_out_of_date_for_another_runs_results_and_before_any():
+    from app.main import journey_is_current
+    argv = _fast_path_state("signature-of-the-chinese-run")
+    assert journey_is_current(argv, "ja") is False
+    for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
+        os.remove(os.path.join(os.environ["SURASURA_TEST_ROOT"], "results", name))
+    assert journey_is_current(argv, "ja") is False, "never generated: Generate has work to do"
+
+
+def test_not_opening_the_report_is_not_an_analysis_input():
+    """`--no-open` (the quiet Generate) changes nothing a run computes, so it must never change the
+    run signature — otherwise every automatic Generate would look like new work to the next one."""
+    _fast_path_state("this run")
+    found = analyzer.resolve_found_files("ja", verbose=False)
+    plain = analyzer.parse_analysis_args(["--language", "ja", "--static"])
+    quiet = analyzer.parse_analysis_args(["--language", "ja", "--static", "--no-open"])
+    assert quiet.no_open is True and plain.no_open is False
+    assert analyzer.compute_run_signature("ja", found, plain) == \
+        analyzer.compute_run_signature("ja", found, quiet)

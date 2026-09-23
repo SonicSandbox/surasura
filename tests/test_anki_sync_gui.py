@@ -47,6 +47,7 @@ class TestAnkiSyncWindow(unittest.TestCase):
         self.gui = anki_sync_gui
         self.host = MagicMock()
         self.host.var_anki_sync_auto = tk.BooleanVar(master=_ROOT, value=False)
+        self.host.var_anki_auto_generate = tk.BooleanVar(master=_ROOT, value=False)
         self.win = anki_sync_gui.AnkiSyncGui(_ROOT, app=self.host, language="ja")
         self.win.withdraw()
 
@@ -167,6 +168,31 @@ class TestAnkiSyncWindow(unittest.TestCase):
         with patch.object(self.win, "_start"):
             self.win._remove_selected()
         self.assertEqual(self.win.decks, ["The Accelerator"])
+
+    def test_both_automatic_options_live_here_as_the_dashboards_own_settings(self):
+        """The user (2026-09-23): the Anki options belong in the Anki window — one setting each, not a
+        second checkbox in Settings. Opened from the dashboard, each box IS the dashboard's variable,
+        so there is nothing to keep in step."""
+        boxes = {}
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Checkbutton):
+                    boxes[str(child.cget("text"))] = str(child.cget("variable"))
+                walk(child)
+        walk(self.win)
+        self.assertEqual(boxes["Sync automatically when Anki is running"], str(self.host.var_anki_sync_auto))
+        self.assertEqual(boxes["Generate when Anki adds known words"],
+                         str(self.host.var_anki_auto_generate))
+
+    def test_opened_on_its_own_it_saves_the_generate_option_itself(self):
+        win = self.gui.AnkiSyncGui(_ROOT, app=None, language="ja")
+        try:
+            win.var_generate.set(True)
+            win._on_auto_changed()
+        finally:
+            win.destroy()
+        self.assertIs(settings_manager.load_settings()["anki_auto_generate"], True)
 
     def test_saving_never_mutates_the_default_settings_dict(self):
         """settings_manager merges defaults shallowly, so the loaded dict can BE the default."""

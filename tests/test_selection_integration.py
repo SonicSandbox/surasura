@@ -204,7 +204,7 @@ def test_presentation_args_do_not_invalidate_the_run(env):
 def _fake_render_writing_html(env):
     """A generate_static_html stand-in that actually creates the report file, so the analyzer's
     'does the HTML exist?' fast-path check behaves realistically without opening a real browser."""
-    def _fake(theme="default", app_mode=False, zen_limit=0):
+    def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True):
         (env["results"] / "reading_list_static.html").write_text("<html></html>", encoding="utf-8")
     return _fake
 
@@ -234,6 +234,19 @@ def test_skip_same_presentation_opens_without_rerender(env):
         _run(env, ["--min-freq", "1", "--static", "--theme=world-class"], clear=False)      # identical -> open only
     assert mock_gen.call_count == 1, "an identical re-run must NOT re-render"
     assert mock_open.call_count == 1, "an identical re-run must open the existing report"
+
+
+def test_the_quiet_generate_never_opens_the_report(env):
+    """`--no-open`, the dashboard's automatic Generate after the Anki sync: the render is told not to
+    open (first run) and an identical re-run does not open the existing report either."""
+    from unittest.mock import patch
+    import app.static_html_generator as shg
+    with patch.object(shg, "generate_static_html", side_effect=_fake_render_writing_html(env)) as mock_gen, \
+         patch.object(shg, "open_report") as mock_open:
+        _run(env, ["--min-freq", "1", "--static", "--no-open"])
+        _run(env, ["--min-freq", "1", "--static", "--no-open"], clear=False)
+    assert mock_gen.call_args.kwargs.get("open_browser") is False
+    assert mock_open.call_count == 0
 
 
 def test_toggling_open_in_new_window_does_not_rerender(env):

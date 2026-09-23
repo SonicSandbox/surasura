@@ -32,6 +32,47 @@ TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#bb86fc"
 SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
+# The logo's blue (app/assets/images/app_icon.png) — the Generate button's "run me" border.
+SURASURA_BLUE = "#1a6bb5"
+
+
+def journey_is_current(args, language):
+    """Would Generate compute anything new? True when the last run still describes this library,
+    these known words and these analysis settings; False when it would not (or never ran); None when
+    it cannot tell. The analyzer's OWN signature (`compute_run_signature` + the store's last one + the
+    results stamp), so the Generate button's state can never disagree with what Generate then does —
+    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit)
+    is not part of it: that re-renders in a moment and needs no nudge."""
+    try:
+        from app import analyzer as _analyzer
+        from app import token_index as _ti
+        from app.path_utils import get_user_file
+
+        found = _analyzer.resolve_found_files(language, verbose=False)
+        if not found:
+            return None
+        sig = _analyzer.compute_run_signature(language, found, _analyzer.parse_analysis_args(args[1:]))
+        if not sig:
+            return None
+        results_dir = get_user_file("results")
+        if not all(os.path.exists(os.path.join(results_dir, name)) for name in
+                   ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
+            return False
+        store = _ti.open_store(language)
+        try:
+            stored = store.get_meta("last_run_signature")
+        finally:
+            store.close()
+        return stored == sig and _analyzer.read_run_stamp(results_dir) == sig
+    except Exception:
+        return None
+
+
+def anki_sync_is_set_up(settings):
+    """Has the user chosen Anki decks in the Anki window, for any language? The Anki-only settings
+    are shown only then — someone without Anki never sees them (Junban_Backlog_Spec §11.1 item 3)."""
+    decks = (settings or {}).get("anki_sync_decks")
+    return isinstance(decks, dict) and any(bool(chosen) for chosen in decks.values())
 
 
 def build_subprocess_env(frozen=None):
@@ -277,6 +318,7 @@ class MasterDashboardApp:
         self.var_enable_junban = tk.BooleanVar(value=False)  # reorder Anki's new-card queue
         self.var_anki_sync_auto = tk.BooleanVar(value=False)  # pull known words from a running Anki
         self.var_anki_backlog_on_generate = tk.BooleanVar(value=True)  # Generate reads the Anki backlog
+        self.var_anki_auto_generate = tk.BooleanVar(value=False)  # Generate quietly on new known words
         self.anki_sync_window = None
         # The Anki window's syncs and the background auto-sync append to the same file; one lock
         # so two appends can never interleave (each re-reads before writing, but not atomically).
@@ -288,6 +330,10 @@ class MasterDashboardApp:
         self._last_junban_auto = 0.0
         self._junban_spin_job = None
         self._last_junban_auto_message = ""
+        # The automatic Generate (Anki brought in known words) and the Generate button's state.
+        self._last_auto_generate = 0.0
+        self._auto_generate_pending = False   # Anki brought words in; a Generate has not run since
+        self._journey_state_job = None
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
@@ -397,6 +443,7 @@ class MasterDashboardApp:
         self.var_auto_update.trace_add("write", self.save_settings)
         self.var_anki_sync_auto.trace_add("write", self.save_settings)
         self.var_anki_backlog_on_generate.trace_add("write", self.save_settings)
+        self.var_anki_auto_generate.trace_add("write", self.save_settings)
         # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
         # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
         self.combo_theme.bind("<<ComboboxSelected>>",
@@ -405,7 +452,8 @@ class MasterDashboardApp:
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
-                                               self._maybe_anki_sync(), self._maybe_junban_auto()))
+                                               self._maybe_anki_sync(), self._maybe_junban_auto(),
+                                               self._maybe_auto_generate(), self._schedule_journey_state()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -419,6 +467,9 @@ class MasterDashboardApp:
 
             # Pick up words studied in Anki since last time (only if the user turned it on).
             self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
+
+            # Whether the journey is up to date — the Generate button's border / check mark.
+            self.root.after(1200, self._schedule_journey_state)
 
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
@@ -837,6 +888,7 @@ class MasterDashboardApp:
         def _done():
             self._indexer_busy = False
             self._refresh_band_preview(force=True)   # store just changed -> recompute, don't trust cache
+            self._maybe_auto_generate()              # one waiting for the indexer can go now
 
         self.run_command_async(['indexer.py', '--language', self.var_language.get()],
                                "Indexing", on_complete=_done)
@@ -1098,11 +1150,35 @@ class MasterDashboardApp:
         # The small red YouTube-preview button sits to its right (shown only when that feature is on).
         self.journey_row = ttk.Frame(view_frame)
         self.journey_row.pack(fill=tk.X)
-        self.btn_journey = ttk.Button(self.journey_row, text="Generate Journey", style="Action.TButton",
+        # A thin Surasura-blue border while Generate has something new to compute (the library, known
+        # words or an analysis setting changed since the last run), and a quiet check mark beside it
+        # once the journey is up to date. Invisible until the first check answers — see
+        # _refresh_journey_state.
+        self._journey_state = None
+        self.journey_border = tk.Frame(self.journey_row, bg=BG_COLOR, highlightthickness=2,
+                                       highlightbackground=BG_COLOR, highlightcolor=BG_COLOR)
+        self.journey_border.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.btn_journey = ttk.Button(self.journey_border, text="Generate Journey", style="Action.TButton",
                                  command=self.run_analyzer)
-        self.btn_journey.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ToolTip(self.btn_journey, "Generate your learning path and open it in the browser. Reuses the last "
-                             "analysis if nothing changed, so theme / Zen limit apply instantly.")
+        self.btn_journey.pack(fill=tk.X, expand=True)
+        ToolTip(self.btn_journey, lambda: (
+            "Generate your learning path and open it in the browser. Reuses the last analysis if "
+            "nothing changed, so theme / Zen limit apply instantly."
+            + (" Your library, known words or settings changed since the last Generate."
+               if self._journey_state is False else "")))
+        # The check sits ON the button, at its right edge, so the button never changes length (the
+        # user, 2026-09-23). It wears the button's own colours — dark, and purple under the pointer
+        # like the button — and a click on it is a click on the button.
+        self.lbl_journey_state = tk.Label(self.journey_border, text="✓", bg=SURFACE_COLOR, fg="#4db6ac",
+                                          font=("Segoe UI", 10, "bold"), bd=0, padx=0, pady=0)
+        ToolTip(self.lbl_journey_state, "Up to date — nothing has changed since your last Generate.")
+        self.lbl_journey_state.bind("<Button-1>", lambda e: self.btn_journey.invoke(), add="+")
+        self.btn_journey.bind("<Enter>", lambda e: self._light_journey_check(True), add="+")
+        self.btn_journey.bind("<Leave>", lambda e: self._light_journey_check(False), add="+")
+        self.lbl_journey_state.bind("<Enter>", lambda e: self._light_journey_check(True, on_check=True),
+                                    add="+")
+        self.lbl_journey_state.bind("<Leave>", lambda e: self._light_journey_check(False, on_check=True),
+                                    add="+")
 
         self.btn_preview = ttk.Button(self.journey_row, text="▷", style="Youtube.TButton", width=3,
                                       command=self.open_youtube_preview)
@@ -1314,6 +1390,19 @@ class MasterDashboardApp:
         chk_hide_audio.pack(anchor=tk.W)
         ToolTip(chk_hide_audio, "Hide speaker icon in the report.")
 
+        # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): mark each word a new card is
+        # already waiting for in Anki. Presentation only — it re-renders, never re-analyzes. Shown
+        # only once Anki sync is set up (decks chosen in the Anki window): without Anki there is
+        # nothing to label, and no checkbox to wonder about (§11.1 item 3).
+        if anki_sync_is_set_up(settings_manager.load_settings()):
+            chk_anki_label = ttk.Checkbutton(group_ui, text="Label backlogged Anki words",
+                                             variable=self.var_anki_backlog_on_generate)
+            chk_anki_label.pack(anchor=tk.W)
+            ToolTip(chk_anki_label, "Mark each word that already has a new card waiting in your Anki "
+                                    "decks: a small card icon on the word, an 'In Anki' Show filter, "
+                                    "and a count per episode. Reads the decks chosen in the Anki "
+                                    "window. Takes effect on your next Generate.")
+
         # Per-sentence source badge. Presentation only — changing it re-renders the report but
         # never re-analyzes (see analyzer.compute_render_signature).
         src_frame = ttk.Frame(group_ui)
@@ -1453,18 +1542,10 @@ class MasterDashboardApp:
         chk_auto_update.pack(anchor=tk.W, pady=(0, 10))
         ToolTip(chk_auto_update, "Offer one-click in-app updates for minor releases. Major updates always download manually.")
 
-        chk_anki_sync = ttk.Checkbutton(group_data, text="Sync known words from Anki", variable=self.var_anki_sync_auto)
-        chk_anki_sync.pack(anchor=tk.W, pady=(0, 10))
-        ToolTip(chk_anki_sync, "When Anki is running, add words from cards you've studied to your known "
-                               "words — on startup and when you come back to Surasura. Choose the decks "
-                               "with the Anki button.")
-
-        chk_backlog = ttk.Checkbutton(group_data, text="Read the Anki backlog on Generate",
-                                      variable=self.var_anki_backlog_on_generate)
-        chk_backlog.pack(anchor=tk.W, pady=(0, 10))
-        ToolTip(chk_backlog, "When Anki is running, Generate also reads the new cards waiting in the "
-                             "decks you chose with the Anki button, so your report can mark those "
-                             "words. Without decks chosen it does nothing.")
+        # The Anki options live in the Anki button's window, beside the decks they depend on (the
+        # user, 2026-09-23): "Sync automatically when Anki is running" — one setting, which used to
+        # have a second checkbox here — and "Generate when Anki adds known words". Reading the Anki
+        # backlog is "Label backlogged Anki words" in Experience & UI, with the label it switches.
 
         btn_anki_sentences = ttk.Button(group_data, text="Generate Sentence List", command=self.generate_anki_sentence_warning, width=20)
         btn_anki_sentences.pack(fill=tk.X, pady=(0, 5))
@@ -2004,6 +2085,7 @@ class MasterDashboardApp:
             self.var_auto_update.set(settings.get("auto_update_enabled", True))
             self.var_anki_sync_auto.set(bool(settings.get("anki_sync_auto", False)))
             self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
+            self.var_anki_auto_generate.set(bool(settings.get("anki_auto_generate", False)))
             self.skipped_version = settings.get("skipped_version", "")
 
             # Load Logic Settings
@@ -2087,6 +2169,7 @@ class MasterDashboardApp:
                 "auto_update_enabled": self.var_auto_update.get(),
                 "anki_sync_auto": self.var_anki_sync_auto.get(),
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
+                "anki_auto_generate": self.var_anki_auto_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
                 "logic": {
                     **self.logic_settings,
@@ -2165,6 +2248,8 @@ class MasterDashboardApp:
 
             settings_manager.save_settings(settings)
             self._current_settings = settings
+            # An analysis setting may have changed what Generate would compute — re-check the button.
+            self._schedule_journey_state()
 
             # Update UI state (enable/disable language specific options). Skipped for band-slider
             # saves — a commonness-band change never affects the language-dependent UI, and the
@@ -2226,11 +2311,13 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
             
-    def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None):
+    def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
+                          clear_log=True):
         """Runs a command with optional output redirection to the terminal.
 
         on_complete: optional zero-arg callable run on the GUI thread after the process exits
-        (e.g. refreshing the band preview once a new analysis has written its token index)."""
+        (e.g. refreshing the band preview once a new analysis has written its token index).
+        clear_log: False keeps what the log already shows (the automatic Generate appends to it)."""
         
         # UI updates must be queued
         def _start_loading():
@@ -2242,7 +2329,7 @@ class MasterDashboardApp:
                 self.spinner.start(10)
 
             # Clear terminal only if it exists
-            if capture_output and self.terminal:
+            if capture_output and self.terminal and clear_log:
                 self.terminal.config(state=tk.NORMAL)
                 self.terminal.delete(1.0, tk.END)
                 self.terminal.config(state=tk.DISABLED)
@@ -2518,6 +2605,91 @@ class MasterDashboardApp:
         self._junban_spinner(True)
         threading.Thread(target=work, daemon=True).start()
 
+    def _maybe_auto_generate(self):
+        """The quiet Generate, when the Anki sync brought in known words — returns True if it started.
+
+        The user's choices (2026-09-23): only for new known words from Anki, never for new episodes
+        (those are theirs to order first — the sync alone sets `_auto_generate_pending`); the report
+        is written, not opened; at most every 10 minutes; never while a Generate, an import, the
+        indexer or the Content Manager is running (each is a child process of this window). A
+        pending one waits — the same words will not arrive a second time — and is retried when the
+        window regains focus and when the indexer finishes.
+        """
+        if not self._auto_generate_pending or not self.var_anki_auto_generate.get():
+            return False
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return False
+        import time
+        now = time.monotonic()
+        if now - self._last_auto_generate < 600:
+            return False
+        try:
+            if any(proc.poll() is None for proc in list(self.active_processes)):
+                return False
+        except Exception:
+            return False
+        if not self._library_has_content():
+            return False
+        self._last_auto_generate = now
+        self.log_to_terminal("Anki brought in words you know now — generating in the background; "
+                             "the report is not opened.")
+        self.run_analyzer(quiet=True)
+        return True
+
+    def _schedule_journey_state(self):
+        """Check, shortly, whether the journey is up to date. Debounced: FocusIn fires for every child
+        widget, and several triggers can arrive at once."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            return
+        if self._journey_state_job is not None:
+            try:
+                self.root.after_cancel(self._journey_state_job)
+            except Exception:
+                pass
+        self._journey_state_job = self.root.after(600, self._refresh_journey_state)
+
+    def _refresh_journey_state(self):
+        """Ask the analyzer's own signature, off the GUI thread (it stats every library file), whether
+        Generate would compute anything new — and show the answer on the Generate button."""
+        self._journey_state_job = None
+        if not hasattr(self, "btn_journey") or not self._library_has_content():
+            self._set_journey_state(None)
+            return
+        args, language = self._analyzer_args(), self.var_language.get()
+
+        def work():
+            state = journey_is_current(args, language)
+            self.gui_queue.put(lambda: self._set_journey_state(state))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set_journey_state(self, current):
+        """`False` — a thin Surasura-blue border: Generate has something new to compute. `True` — no
+        border, a quiet check mark on the button's right edge. `None` (cannot tell, no content) —
+        neither. The button itself never changes size."""
+        self._journey_state = current
+        try:
+            color = SURASURA_BLUE if current is False else BG_COLOR
+            self.journey_border.config(highlightbackground=color, highlightcolor=color)
+            if current is True:
+                self.lbl_journey_state.place(in_=self.btn_journey, relx=1.0, rely=0.5, anchor="e", x=-10)
+                self.lbl_journey_state.lift()
+            else:
+                self.lbl_journey_state.place_forget()
+        except Exception:
+            pass
+
+    def _light_journey_check(self, lit, on_check=False):
+        """The check follows the button's hover colours. With the pointer on the check itself, the
+        button stays lit, as if the pointer were still on it."""
+        try:
+            self.lbl_journey_state.config(bg=ACCENT_COLOR if lit else SURFACE_COLOR,
+                                          fg=BG_COLOR if lit else "#4db6ac")
+            if on_check:
+                self.btn_journey.state(["active"] if lit else ["!active"])
+        except Exception:
+            pass
+
     def _on_junban_auto(self, message):
         """One line in the log — and never the same one twice running, so a reason to wait ("choose
         one deck") is said once rather than every five minutes."""
@@ -2580,7 +2752,14 @@ class MasterDashboardApp:
                 message = f"✓ Anki: +{result.added:,} known word{'s' if result.added != 1 else ''}"
                 self.status_var.set(message)
                 self.root.after(6000, lambda: self.status_var.get() == message and self.status_var.set("Ready"))
-            self._maybe_launch_indexer(force=True)
+            # The known words changed, so the list is out of date. With "Generate when Anki adds known
+            # words" on, a quiet Generate runs now — it re-reads the store itself, so no separate
+            # re-index — or as soon as nothing else is running (_maybe_auto_generate).
+            if self.var_anki_auto_generate.get():
+                self._auto_generate_pending = True
+            if not self._maybe_auto_generate():
+                self._maybe_launch_indexer(force=True)
+            self._schedule_journey_state()
         win = getattr(self, "anki_sync_window", None)
         if auto and win is not None:
             try:
@@ -2598,11 +2777,38 @@ class MasterDashboardApp:
     def run_frequency_list_manager(self):
         self.run_command_async(['frequency_list_gui.py', '--language', self.var_language.get()], "Frequency List Manager")
 
-    def run_analyzer(self):
+    def run_analyzer(self, quiet=False):
+        """Generate. `quiet` is the automatic run after the Anki sync brought in known words
+        (`_maybe_auto_generate`): the report is written, not opened; the log is not cleared; and the
+        reopen-only fast path below is skipped, since all it does is open the report."""
         from app.path_utils import ensure_data_setup
         ensure_data_setup(self.var_language.get())
         self._maybe_backlog_sync()          # in the background; see its docstring
 
+        self._auto_generate_pending = False   # this run includes whatever the Anki sync brought in
+        args = self._analyzer_args()
+
+        # --- Fast no-change path: reopen the existing report WITHOUT spawning the analyzer ---
+        # If nothing analysis-affecting changed since the last run AND presentation is unchanged AND
+        # the report exists, just reopen it in-process. This skips the whole analyzer subprocess
+        # (a ~1-2s cold-start in a frozen build). It uses the analyzer's OWN signature functions, so
+        # the GUI's decision can never diverge from what the analyzer would decide. Any hiccup falls
+        # through to the normal subprocess run — the fast path is a pure optimization, never required.
+        if quiet:
+            args.append('--no-open')     # written, not opened — and no fast path to open it
+        elif self._try_open_existing_report(args):
+            self._maybe_junban_auto(force=True)
+            self._schedule_journey_state()
+            return
+
+        self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
+                               capture_output=True, show_spinner=not quiet, clear_log=not quiet,
+                               on_complete=lambda: (self._refresh_band_preview(force=True),
+                                                    self._maybe_junban_auto(force=True),
+                                                    self._schedule_journey_state()))
+
+    def _analyzer_args(self):
+        """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread."""
         args = ['analyzer.py']
         if not self.var_exclude_single.get():
             args.append('--include-single-chars')
@@ -2660,20 +2866,7 @@ class MasterDashboardApp:
         zen_limit = self.var_zen_limit.get()
         if zen_limit > 0:
             args.append(f'--zen-limit={zen_limit}')
-
-        # --- Fast no-change path: reopen the existing report WITHOUT spawning the analyzer ---
-        # If nothing analysis-affecting changed since the last run AND presentation is unchanged AND
-        # the report exists, just reopen it in-process. This skips the whole analyzer subprocess
-        # (a ~1-2s cold-start in a frozen build). It uses the analyzer's OWN signature functions, so
-        # the GUI's decision can never diverge from what the analyzer would decide. Any hiccup falls
-        # through to the normal subprocess run — the fast path is a pure optimization, never required.
-        if self._try_open_existing_report(args):
-            self._maybe_junban_auto(force=True)
-            return
-
-        self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True,
-                               on_complete=lambda: (self._refresh_band_preview(force=True),
-                                                    self._maybe_junban_auto(force=True)))
+        return args
 
     def _try_open_existing_report(self, args):
         """Return True and reopen the existing report if a full analysis is provably unnecessary.
@@ -2688,33 +2881,24 @@ class MasterDashboardApp:
             from app.path_utils import get_user_file
 
             lang = self.var_language.get()
+            # Analysis unchanged: the analyzer's own signature AND the results stamp — results/ is
+            # shared by both languages, and without the stamp a Japanese -> Chinese -> Japanese switch
+            # reopened the Chinese report (see analyzer.read_run_stamp). The Generate button's border
+            # asks the very same question (journey_is_current), so the two cannot disagree.
+            if journey_is_current(args, lang) is not True:
+                return False
             a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
-            found = _analyzer.resolve_found_files(lang, verbose=False)
-            sig = _analyzer.compute_run_signature(lang, found, a)
-            if not sig:
+            report = os.path.join(get_user_file("results"), "reading_list_static.html")
+            if not os.path.exists(report):
                 return False
-
-            results_dir = get_user_file("results")
-            report = os.path.join(results_dir, "reading_list_static.html")
-            outputs_present = all(os.path.exists(os.path.join(results_dir, f)) for f in
-                                  ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"))
-            if not (outputs_present and os.path.exists(report)):
-                return False
-
-            render_sig = _analyzer.compute_render_signature(a)   # shared: cannot drift from the engine
             store = _ti.open_store(lang)
             try:
-                stored_sig = store.get_meta("last_run_signature")
                 stored_render = store.get_meta("last_render_sig")
             finally:
                 store.close()
 
-            # Analysis unchanged AND presentation unchanged -> reopen the existing report as-is.
-            # The results stamp must match too: results/ is shared by both languages, and without it
-            # a Japanese -> Chinese -> Japanese switch reopened the Chinese report (see
-            # analyzer.read_run_stamp).
-            if (stored_sig == sig and stored_render == render_sig
-                    and _analyzer.read_run_stamp(results_dir) == sig):
+            # ...and presentation unchanged -> reopen the existing report as-is.
+            if stored_render == _analyzer.compute_render_signature(a):   # shared with the engine
                 try:
                     from app import static_html_generator
                 except ImportError:

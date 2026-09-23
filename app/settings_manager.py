@@ -50,10 +50,16 @@ DEFAULT_SETTINGS = {
     "anki_sync_decks": {},
     "anki_sync_fields": {},
     "anki_sync_include_suspended": False,
-    # Generate also reads the new-card backlog of those decks, in the background, when Anki is
-    # running (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json). Needs the decks above;
-    # without them it does nothing at all. Never in the run signature.
+    # "Label backlogged Anki words" (Settings -> Experience & UI; Junban_Backlog_Spec WP-B8): Generate
+    # reads the new-card backlog of those decks, in the background, when Anki is running
+    # (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json), and the report marks each word
+    # a card is waiting for. Needs the decks above; without them it does nothing at all. In the
+    # render signature, never the run signature.
     "anki_backlog_on_generate": True,
+    # Generate on its own, quietly (the report is written, not opened), when the Anki sync brings
+    # in known words. Only then — new episodes are the user's to order first. Never in the run
+    # signature.
+    "anki_auto_generate": False,
     "logic": {
         "inline_completed_files": False,
         "weights": {

@@ -168,9 +168,12 @@ class AnkiSyncGui(tk.Toplevel):
         self.var_field1 = tk.StringVar(value=fields[0] if fields else AUTO_FIELD)
         self.var_field2 = tk.StringVar(value=fields[1] if len(fields) > 1 else NO_FIELD)
         self.var_suspended = tk.BooleanVar(value=bool(saved.get("anki_sync_include_suspended", False)))
-        # One source of truth with the Settings checkbox when the dashboard opened us.
+        # The dashboard's own variables when it opened us — these two options live only here now,
+        # beside the decks they depend on; the dashboard's trace saves them.
         self.var_auto = getattr(app, "var_anki_sync_auto", None) or \
             tk.BooleanVar(value=bool(saved.get("anki_sync_auto", False)))
+        self.var_generate = getattr(app, "var_anki_auto_generate", None) or \
+            tk.BooleanVar(value=bool(saved.get("anki_auto_generate", False)))
 
         self.title(f"Surasura - {TITLE}")
         self.configure(bg=BG)
@@ -247,6 +250,7 @@ class AnkiSyncGui(tk.Toplevel):
             s["anki_sync_include_suspended"] = bool(self.var_suspended.get())
             if self.app is None:
                 s["anki_sync_auto"] = bool(self.var_auto.get())
+                s["anki_auto_generate"] = bool(self.var_generate.get())
             settings_manager.save_settings(s)
         except Exception as e:
             self._set_result(f"Could not save your choices: {e}", ERROR)
@@ -427,7 +431,15 @@ class AnkiSyncGui(tk.Toplevel):
                                    command=self._on_auto_changed)
         chk_auto.pack(anchor="w", pady=(4, 0))
         ToolTip(chk_auto, "When Anki is open, Surasura adds new known words on its own — at start-up "
-                          "and when you come back to it. Same as the option in Settings.")
+                          "and when you come back to it.")
+        chk_generate = ttk.Checkbutton(box, text="Generate when Anki adds known words",
+                                       variable=self.var_generate, style="Aks.TCheckbutton",
+                                       command=self._on_auto_changed)
+        chk_generate.pack(anchor="w", pady=(4, 0))
+        ToolTip(chk_generate, "When a sync brings in words you now know, Generate runs on its own in "
+                              "the background, so your list is current — without opening the "
+                              "report. At most every 10 minutes, and never while the Content "
+                              "Manager, an import or a Generate is running.")
 
     def _build_status(self, parent):
         box = ttk.Frame(parent, style="Aks.TFrame")

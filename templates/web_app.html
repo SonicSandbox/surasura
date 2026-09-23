@@ -351,6 +351,24 @@
             text-shadow: none;
         }
 
+        /* Already in your Anki backlog (Junban_Backlog_Spec WP-B8): a card with a star, in a muted
+           Anki blue. A masked shape rather than a character, so a dictionary extension hovering the
+           card finds nothing to read — and an inline image, never a fetched one: the report stays
+           offline. */
+        .marker-anki::before {
+            content: "";
+            display: inline-block;
+            width: 0.8em;
+            height: 0.8em;
+            background-color: #6c9bd2;
+            -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill-rule='evenodd' d='M6 1h12a3 3 0 0 1 3 3v16a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V4a3 3 0 0 1 3-3zm6 5l1.8 3.7 4.1.6-3 2.9.7 4.1-3.6-1.9-3.6 1.9.7-4.1-3-2.9 4.1-.6z'/></svg>") center / contain no-repeat;
+            mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill-rule='evenodd' d='M6 1h12a3 3 0 0 1 3 3v16a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V4a3 3 0 0 1 3-3zm6 5l1.8 3.7 4.1.6-3 2.9.7 4.1-3.6-1.9-3.6 1.9.7-4.1-3-2.9 4.1-.6z'/></svg>") center / contain no-repeat;
+        }
+
+        .theme-modern-light .marker-anki::before {
+            background-color: #2f5f9e;
+        }
+
 
         .tier-badge {
             background-color: #333;
@@ -1334,6 +1352,24 @@
             display: none;
         }
 
+        body.filter-anki .card:not(.in-anki) {
+            display: none;
+        }
+
+        body.filter-non-anki .card.in-anki {
+            display: none;
+        }
+
+        /* "12 new · 5 already in Anki" above a file's words (WP-B8). */
+        .anki-backlog-line {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin: 4px 0 10px;
+        }
+
         .sort-menu {
             display: none;
             position: fixed;
@@ -2006,7 +2042,9 @@
 
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.dataset.filename = fileData.filename;
-                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace;">(${fileData.words.length})</span>`;
+                const inAnkiCount = ankiBacklogCount(fileData.words);
+                const countText = inAnkiCount ? `${fileData.words.length} · ${inAnkiCount}<span class="priority-marker marker-anki" style="font-size: 0.8em; margin-left: 2px;" title="${inAnkiCount} already in your Anki backlog"></span>` : `${fileData.words.length}`;
+                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
                 applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2140,6 +2178,15 @@
 
                 const targetDays = createTargetDaysBox(cumulativeWords || words.length, words.length, filename);
                 if (targetDays) listContainer.appendChild(targetDays);
+            }
+
+            // "12 new · 5 already in Anki" — only when some of this file's new words are (WP-B8).
+            const inAnkiCount = ankiBacklogCount(words);
+            if (inAnkiCount) {
+                const line = document.createElement('div');
+                line.className = 'anki-backlog-line';
+                line.innerHTML = `<span class="priority-marker marker-anki"></span><span>${words.length} new · ${inAnkiCount} already in Anki</span>`;
+                listContainer.appendChild(line);
             }
 
             const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
@@ -2374,7 +2421,9 @@
             'priority': 'filter-priority',
             'non-priority': 'filter-non-priority',
             'reading': 'filter-reading',
-            'non-reading': 'filter-non-reading'
+            'non-reading': 'filter-non-reading',
+            'anki': 'filter-anki',
+            'non-anki': 'filter-non-anki'
         };
 
         function applyPriorityFilter() {
@@ -2400,7 +2449,9 @@
                 'priority': 'priority (✦) words',
                 'non-priority': 'non-priority words',
                 'reading': 'reading (文) words',
-                'non-reading': 'non-reading words'
+                'non-reading': 'non-reading words',
+                'anki': 'words already in your Anki backlog',
+                'non-anki': 'words not in your Anki backlog'
             };
             btn.title = active
                 ? `Showing ${FILTER_TITLES[globalPriorityFilter] || globalPriorityFilter}`
@@ -2419,6 +2470,8 @@
                 <button class="sort-menu-item" data-filter="non-priority">No <span class="priority-marker marker-priority"></span></button>
                 <button class="sort-menu-item" data-filter="reading"><span class="priority-marker marker-reading"></span></button>
                 <button class="sort-menu-item" data-filter="non-reading">No <span class="priority-marker marker-reading"></span></button>
+                ${ANKI_BACKLOG.size ? `<button class="sort-menu-item" data-filter="anki"><span class="priority-marker marker-anki"></span> In Anki</button>
+                <button class="sort-menu-item" data-filter="non-anki">Not in Anki</button>` : ''}
             `;
             menu.querySelectorAll('.sort-menu-item').forEach(item => {
                 item.onclick = () => { setPriorityFilter(item.dataset.filter); closeSortMenu(); };
@@ -2521,6 +2574,42 @@
             return (typeof orth === 'string' && orth.trim()) ? orth : data.Word;
         }
 
+        // --- Anki backlog label (Junban_Backlog_Spec WP-B8) ---
+        // The words of the new cards already waiting in Anki ("Label backlogged Anki words"), as the
+        // keys the Anki sync wrote: each card's word and its hiragana fold. Empty when the setting is
+        // off or there is no backlog — then there is no label, no filter entry and no count at all.
+        const ANKI_BACKLOG = new Set((typeof globalAnkiBacklog !== 'undefined' && globalAnkiBacklog) || []);
+
+        function foldKana(text) {
+            // Katakana to hiragana, for words written only in kana: スルリ on a card is するり here.
+            return /^[\u3041-\u309f\u30a0-\u30ff]+$/.test(text)
+                ? text.replace(/[\u30a1-\u30f6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60))
+                : text;
+        }
+
+        // A word is in the backlog when a card's word is its Word, its Orth or one of its Forms — the
+        // keys Junban reorders by — with Junban's Japanese rules: kana spellings fold together, and a
+        // one-character spelling counts only as the row's own word (a 谷 card is not the surname タニ).
+        function inAnkiBacklog(data) {
+            if (!ANKI_BACKLOG.size || !data) return false;
+            if (data._inAnki !== undefined) return data._inAnki;
+            const lemma = (typeof data.Word === 'string') ? data.Word.trim() : '';
+            const forms = (typeof data.Forms === 'string') ? data.Forms.split('|') : [];
+            const keys = [lemma, (typeof data.Orth === 'string') ? data.Orth : '', ...forms];
+            const japanese = (typeof globalLanguage === 'undefined') || globalLanguage === 'ja';
+            data._inAnki = keys.some(raw => {
+                const key = String(raw || '').trim();
+                if (!key) return false;
+                if (japanese && key.length === 1 && key !== lemma) return false;
+                return ANKI_BACKLOG.has(key) || ANKI_BACKLOG.has(foldKana(key));
+            });
+            return data._inAnki;
+        }
+
+        function ankiBacklogCount(words) {
+            return ANKI_BACKLOG.size ? (words || []).filter(inAnkiBacklog).length : 0;
+        }
+
         // --- Card Component ---
         // --- Word Card Component (Optimized) ---
         function createWordCard(data) {
@@ -2598,6 +2687,10 @@
             const isReading = data.Modality === 'reading';
             if (isReading) el.classList.add('is-reading');
 
+            // Already waiting in Anki (WP-B8): its own mark and its own Show filter.
+            const inAnki = inAnkiBacklog(data);
+            if (inAnki) el.classList.add('in-anki');
+
             // Low-leverage words (Score < 10) get a subtle reddish tint (see .card.low-score).
             const _scoreVal = parseFloat(data.Score);
             if (!isNaN(_scoreVal) && _scoreVal < 10) el.classList.add('low-score');
@@ -2619,7 +2712,7 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}
+                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>

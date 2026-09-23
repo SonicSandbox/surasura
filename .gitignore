@@ -75,3 +75,6 @@ docs/assets/opencc/
 # whose terms are research/educational: never published. The review page compares against it.
 docs/assets/nlt_gold/
 debug/patterns_review*.html
+
+# Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
+debug/*.png

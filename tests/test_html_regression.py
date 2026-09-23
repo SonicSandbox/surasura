@@ -90,6 +90,23 @@ class TestHTMLRegression(unittest.TestCase):
 
         return BeautifulSoup(content, "html.parser")
 
+    def test_the_automatic_generate_writes_the_report_without_opening_it(self):
+        """The dashboard's quiet Generate (after the Anki sync brought in known words) passes
+        `--no-open`: the report must be written — current next time it is opened — and no browser
+        tab or app window may appear on its own."""
+        from app.static_html_generator import generate_static_html, OUTPUT_FILE
+        with patch("webbrowser.open") as opened, \
+             patch("app.static_html_generator.open_as_app") as as_app:
+            generate_static_html(theme="default", open_browser=False)
+            generate_static_html(theme="default", app_mode=True, open_browser=False)
+        self.assertTrue(os.path.exists(OUTPUT_FILE))
+        opened.assert_not_called()
+        as_app.assert_not_called()
+
+        with patch("webbrowser.open") as opened:
+            generate_static_html(theme="default")
+        opened.assert_called_once()
+
     def test_zen_mode_regression(self):
         """Verify Zen Mode specific requirements"""
         soup = self._verify_html(theme="Zen Mode", zen_limit=50)

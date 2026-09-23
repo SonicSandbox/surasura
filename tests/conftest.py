@@ -71,6 +71,18 @@ def _no_gui_anki_sync(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_gui_update_check(monkeypatch):
+    """Stop the dashboard's startup update check from calling the real GitHub API during tests.
+
+    Constructing MasterDashboardApp starts check_updates_thread, which asks api.github.com for the
+    latest release. Nothing failed because of it (a daemon thread that gives up silently offline),
+    so it went unnoticed: every test that built the window made a live request, spending the
+    developer's anonymous GitHub quota (60/hour) that the real app's own check also needs. The
+    update logic is covered directly by test_update_checker.py with the HTTP layer patched."""
+    monkeypatch.setenv("SURASURA_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_ui_timers(monkeypatch):
     """Stop GUI windows from leaving Tk `after` timers behind when a test destroys them.
 

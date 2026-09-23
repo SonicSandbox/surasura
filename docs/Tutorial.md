@@ -57,7 +57,7 @@ Press **Generate Journey** to build your list and see the report.
 
 If no changes, it reuses the last analysis, so theme tweaks are instant.
 
-![Graduation Interface](assets/images/tutorial/generate_journey.png)
+![Generate Journey](assets/images/tutorial/generate_journey.png)
 
 ## 6. Understanding the Output
 The report orders words by real payoff across *your* library:
@@ -66,7 +66,9 @@ The report orders words by real payoff across *your* library:
 *   **Frequency** — how often the word appears in your content.
 *   **Star (Priority)** ✦ — high-leverage words you'll see throughout all of your content.
 *   **Lopsided** ⚖ — words you'll see a lot in the next 2 weeks, but rarely after.
-*   **Show filter** (⇅) — focus the list on **All**, **✦** only, or **No ✦**.
+*   **Reading word** 文 — a word you'll meet in text but will rarely *hear*, so it's worth a reading-first card.
+*   **Show filter** (⇅) — focus the list on **All**, **✦** only, **No ✦**, **文** only, or **No 文**.
+*   **🔍 Search** — a tab beside **Priority List** (press **/** from anywhere): any word, and every sentence that uses it.
 *   **Mark Complete** (✓) — tick off a file you've finished; it advances you to the next.
 *   **Ignore Word / Other Freq Lists** — exclude words, or see tags from imported frequency lists.
 
@@ -109,3 +111,26 @@ Feed Surasura straight from YouTube. Press **▶ YouTube** in the Content Manage
 *   Like it? One checkbox adds the transcript to the front of **NOW** for future runs.
 
 ![Preview a video against your library](assets/images/tutorial/youtube_preview.png)
+
+### 🔍 Search Your Report
+Open the **🔍** tab (or press **/** anywhere in the report) and type a word:
+
+*   The word's own card comes first, then every other word whose example sentences contain it.
+*   Search 食べる and you also get sentences that say 食べた or 食べて — only forms that really occur in your content.
+*   Hiragana or katakana both work, and clicking any result searches for that word instead.
+
+### Where a Sentence Came From
+Turn on **Settings → 📊 Experience & UI → Sentence source** and each example sentence gets a small badge:
+
+*   Hover to see the file (and, for subtitles, the moment it's spoken); click to copy its path.
+*   For a YouTube transcript, clicking opens the video at that moment; shift-click opens the transcript.
+
+### Look Up a Word (⌕)
+Each card has a **⌕** button (or press **\\**) that searches the word on Nadeshiko for more real-world sentences. Choose anime, live action, YouTube or everything under **Settings → 📊 Experience & UI → Lookup examples from**, or hide the button there.
+
+### 順 Junban — Put Your Anki Backlog in Order *(optional)*
+Mine as much as you like, then press **順** at the bottom of the dashboard: the **new** cards waiting in your Anki deck are re-sorted into Surasura's learn order. Needs Anki open with the AnkiConnect add-on.
+
+*   Only new cards move — reviews, learning and suspended cards are never touched.
+*   You always see a preview of the new order before anything is written.
+*   **Restore previous order** puts everything back exactly as it was.

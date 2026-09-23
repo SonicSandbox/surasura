@@ -8,7 +8,11 @@ import requests
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, get_user_files_path
+from app.path_utils import get_user_file, get_user_files_path, backup_to_trash
+
+# The key reaches this process through its environment, never its command line: app_entry logs every
+# argv to debug/app_debug_log.txt, and a command line is visible to other programs on the machine.
+API_KEY_ENV = "SURASURA_JITEN_API_KEY"
 
 def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
     if not output_json:
@@ -108,8 +112,24 @@ def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
         print(f"  Learning Words: {stats['learningWords']}")
         print(f"  Unknown Words: {stats['unknownWords']}")
         
+        # An import that found nothing must never wipe the known words already there — the backup
+        # below would keep them, but the list would still be empty.
+        if not words and os.path.exists(output_json) and os.path.getsize(output_json) > 0:
+            print("Error: Jiten returned no words, so your existing known words were left unchanged.")
+            return False
+
+        # This import REPLACES the file. Keep a dated copy of what it replaces first
+        # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
+        try:
+            backup = backup_to_trash(output_json)
+        except OSError as e:
+            print(f"Error: could not back up your current known words, so nothing was changed ({e}).")
+            return False
+        if backup:
+            print(f"Backed up your previous known words to: {backup}")
+
         print(f"\nWriting JSON to: {output_json}")
-        
+
         json_data = {
             'exportDate': datetime.now().isoformat(),
             'source': 'Jiten API',
@@ -148,12 +168,20 @@ def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Jiten API Importer")
-    parser.add_argument("api_key", help="Jiten API Key")
+    parser.add_argument("api_key", nargs='?',
+                        help=f"Jiten API Key (default: the {API_KEY_ENV} environment variable)")
     parser.add_argument("out_file", nargs='?', help="Optional output JSON path")
     parser.add_argument("--language", default='ja', help="Target language (default: ja)")
-    
+
     args = parser.parse_args()
-    fetch_jiten_vocabulary(args.api_key, args.out_file, args.language)
+    api_key = args.api_key or os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print("Error: No Jiten API key was given.")
+        sys.exit(1)
+    ok = fetch_jiten_vocabulary(api_key, args.out_file, args.language)
+    # The importer window reads the exit code to choose between "Success" and "Error"; returning
+    # normally on a failure (e.g. a rejected key) made it announce success for nothing written.
+    sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":
     main()

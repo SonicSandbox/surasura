@@ -262,6 +262,27 @@
             content: attr(data-content);
         }
 
+        /* "6+" chip on a sidebar file from the 6+ months list: a faint outline in the theme's own
+           secondary colours, so it sets later-goal content apart without competing with the
+           filename. Its text is drawn by ::after like .hidden-content, so dictionary extensions
+           never read it — but unlike .hidden-content it keeps pointer events, for its hover title. */
+        .tier-chip {
+            display: inline-block;
+            font-size: 0.7em;
+            line-height: 1.4;
+            padding: 0 4px;
+            margin-right: 6px;
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            color: var(--text-secondary);
+            opacity: 0.8;
+            user-select: none;
+        }
+
+        .tier-chip::after {
+            content: attr(data-content);
+        }
+
         /* --- Audio Button --- */
         .btn-audio {
             background: transparent;
@@ -1979,8 +2000,8 @@
 
                 let goalIndicator = "";
                 if (fileData.is_goal_content) {
-                    // Make it more visible: a small text badge
-                    goalIndicator = `<span style="display:inline-block; background-color:rgba(76, 175, 80, 0.2); color:#4caf50; border:1px solid #4caf50; border-radius:3px; font-size:0.7em; padding:0 4px; margin-right:6px; font-weight:bold;" title="Goal Content">G</span>`;
+                    // A quiet chip for content from the 6+ months list (styled in .tier-chip).
+                    goalIndicator = `<span class="tier-chip" data-content="6+" title="From your 6+ months list" migaku_ignore data-yomichan-ignore></span>`;
                 }
 
                 const safeFilename = escapeHtml(fileData.filename);

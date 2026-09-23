@@ -254,9 +254,9 @@ class MigakuImporterGUI:
             process.wait()
             
             if process.returncode == 0:
-                json_name = "KnownWord_zh.json" if self.language == 'zh' else "KnownWord.json"
-                self.log(f"Success! {json_name} updated.")
-                messagebox.showinfo("Success", f"Database processed successfully!\n{json_name} has been updated.")
+                # Both languages write KnownWord.json — each in its own User Files/<lang>/ folder.
+                self.log("Success! KnownWord.json updated.")
+                messagebox.showinfo("Success", "Database processed successfully!\nKnownWord.json has been updated.")
             else:
                 self.log("Error during processing.")
                 messagebox.showerror("Error", "An error occurred while processing. Check the log.")

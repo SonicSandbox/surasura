@@ -12,7 +12,8 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
-                            get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX)
+                            get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX,
+                            backup_to_trash, restart_trash_clock)
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -504,21 +505,87 @@ class ContentImporterApp:
         return os.path.join(self.user_files_root, "master_manifest.json")
 
     def load_manifest(self):
+        """The library order, or {} when there is none yet.
+
+        A manifest that exists but can't be used is handled one of two ways, because treating it as
+        simply "empty" let the next save write a fresh folder-order manifest over the user's arranged
+        order, with no copy kept (the YouTube preview already refuses to — see its preview.py):
+
+        - UNREADABLE (held open by antivirus or a sync tool): the file is fine, we just can't see it.
+          Change nothing — save_manifest refuses until a later read succeeds.
+        - DAMAGED (cut short mid-write, not JSON): move it to User Files/<lang>/.trash with a date
+          stamp, then carry on from {} so the library is rebuilt from the folders, as before."""
         path = self.get_manifest_path()
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading manifest: {e}")
+        self._manifest_unreadable = False
+        if not os.path.exists(path):
+            return {}
+        try:
+            # utf-8-sig: a manifest re-saved from Notepad starts with a BOM, which plain utf-8 rejects.
+            with open(path, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        except OSError as e:
+            self._manifest_unreadable = True
+            self._warn_manifest_once(
+                "unreadable", "Library Order Not Changed",
+                f"Your library order file couldn't be opened:\n{e}\n\n"
+                "Nothing will be changed until it can be read. Close any program that may be using "
+                "it (a sync or backup tool), then reopen the Content Manager.")
+            return {}
+        except ValueError as e:   # JSONDecodeError and UnicodeDecodeError are both ValueErrors
+            data = e
+        if isinstance(data, dict):
+            return data
+        self._set_aside_damaged_manifest(path, data if isinstance(data, Exception) else
+                                         "it is not in the expected format")
         return {}
+
+    def _set_aside_damaged_manifest(self, path, error):
+        """Move an unparseable manifest into .trash (dated), so the library is rebuilt from the
+        folders. If it can't be moved, it stays exactly where it is and saving is blocked instead."""
+        try:
+            kept = backup_to_trash(path, move=True)
+        except OSError as e:
+            self._manifest_unreadable = True
+            self._warn_manifest_once(
+                "unreadable", "Library Order Not Changed",
+                f"Your library order file couldn't be read ({error}) or moved aside ({e}).\n\n"
+                "Nothing will be changed. Close any program that may be using it, then reopen the "
+                "Content Manager.")
+            return
+        print(f"Damaged manifest set aside: {kept}")
+        self._warn_manifest_once(
+            "damaged", "Library Order Rebuilt",
+            f"Your library order file couldn't be read ({error}), so the library is shown in folder "
+            f"order again.\n\nThe unreadable file was kept here:\n{kept}")
+
+    def _warn_manifest_once(self, kind, title, text):
+        """One warning per problem per window: the manifest is re-read on every refresh."""
+        warned = getattr(self, "_manifest_warned", set())
+        if kind in warned:
+            return
+        warned.add(kind)
+        self._manifest_warned = warned
+        messagebox.showwarning(title, text)
 
     def save_manifest(self, data):
         path = self.get_manifest_path()
+        if getattr(self, "_manifest_unreadable", False):
+            # The order on disk couldn't be read, so `data` was built without it. Writing now would
+            # replace the user's real order with that — keep their file until a read succeeds.
+            print("Skipped saving the library order: the current file couldn't be read.")
+            return
+        # Written to a temp file and swapped in, so a crash mid-write can never leave half a
+        # manifest behind (which is how one became unreadable in the first place).
+        tmp = path + ".tmp"
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
         except Exception as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             print(f"Error saving manifest: {e}")
             messagebox.showerror("Error", f"Failed to save manifest:\n{e}")
 
@@ -528,9 +595,9 @@ class ContentImporterApp:
         manifest_path = self.get_manifest_path()
         if os.path.exists(manifest_path):
             try:
-                with open(manifest_path, 'r', encoding='utf-8') as f:
+                with open(manifest_path, 'r', encoding='utf-8-sig') as f:   # -sig: see load_manifest
                     data = json.load(f)
-                
+
                 rank = 0
                 schedule = data.get("schedule", {})
                 for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
@@ -1455,7 +1522,10 @@ class ContentImporterApp:
 
         if filepaths:
             self._temp_manifest_snapshot = self.load_manifest()
+            import filecmp
             count = 0
+            already = 0
+            renamed = 0
             target_folder_key = self.target_folder_var.get()
             added_paths = []
             empty_zips = []
@@ -1476,6 +1546,16 @@ class ContentImporterApp:
                         continue
 
                     dest = os.path.join(target_dir, filename)
+                    # Never overwrite: the section may already hold a file of this name. Same rule as
+                    # add_folder — an identical file is simply already here, a different one comes in
+                    # under a de-duped name. Copying over it, then letting Undo delete the "added"
+                    # path, used to lose both the old file and the new one.
+                    if os.path.exists(dest):
+                        if filecmp.cmp(path, dest, shallow=False):
+                            already += 1
+                            continue
+                        dest = self._unique_path(dest)
+                        renamed += 1
                     shutil.copy2(path, dest)
 
                     self.add_to_manifest(dest, target_folder_key)
@@ -1490,6 +1570,10 @@ class ContentImporterApp:
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
             summary = f"Successfully added {count} files."
+            if already:
+                summary += f" {already} already present."
+            if renamed:
+                summary += f" {renamed} kept as a copy (name clash)."
             if empty_zips:
                 summary += ("\n\nNo supported content found in: " + ", ".join(empty_zips) +
                             "\n(Supported: .txt, .md, .srt, .ass — EPUBs go through Extract.)")
@@ -2009,9 +2093,14 @@ class ContentImporterApp:
                         filename = os.path.basename(path)
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                         base, ext = os.path.splitext(filename)
-                        trash_path = os.path.join(trash_dir, f"{base}_{timestamp}{ext}")
-                        
+                        # De-duped: the stamp is only unique to the second, and two same-named files
+                        # removed together (two seasons' 01.srt) would otherwise share one trash name.
+                        trash_path = self._unique_path(os.path.join(trash_dir, f"{base}_{timestamp}{ext}"))
+
                         shutil.move(path, trash_path)
+                        # The move keeps the file's old modified time, which is what the 30-day purge
+                        # reads; restart it so the countdown runs from the removal.
+                        restart_trash_clock(trash_path)
                         removals_list.append({"original": path, "trash": trash_path})
                         
                     self.remove_from_manifest(path)

@@ -1,5 +1,9 @@
 # Zen Mode (Legacy Documentation)
 
+> **Historical — out of date.** Zen Mode was brought back in v1.5 and is a live theme today
+> (`templates/zen_app.html`, "Zen Mode" in the theme list). This page describes the February 2026
+> version and is kept only as history; read the template, not this, for how Zen works now.
+
 This document preserves the implementation details of "Zen Mode" (and the "Zen Focus" theme), which was removed in February 2026. This is intended for reference in case the feature needs to be re-implemented or if its minimal design principles are needed for other features.
 
 ## Overview

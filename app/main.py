@@ -412,8 +412,11 @@ class MasterDashboardApp:
             # Pick up words studied in Anki since last time (only if the user turned it on).
             self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
 
-        # Start update check in background
-        threading.Thread(target=self.check_updates_thread, daemon=True).start()
+        # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
+        # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
+        # would otherwise go online.
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+            threading.Thread(target=self.check_updates_thread, daemon=True).start()
         
         # Initial UI update for language
         self.update_ui_for_language()
@@ -1273,20 +1276,9 @@ class MasterDashboardApp:
             chk_preview.pack(anchor=tk.W, pady=(4, 0))
             ToolTip(chk_preview, "Show a 'Preview against library' button next to Generate Journey, and cache a library frequency map on runs so the preview is fast.")
 
-        # Reels toggle (optional module) — grouped here because it is about content and parsing.
-        # Shown only when the module is present locally; the button it controls additionally
-        # requires a language the module supports (the module owns that rule, not this file).
-        try:
-            import modules.reels  # noqa: F401
-            _reels_module_available = True
-        except Exception:
-            _reels_module_available = False
-        if _reels_module_available:
-            chk_reels = ttk.Checkbutton(group_lang, text="Enable Reels", variable=self.var_enable_reels)
-            chk_reels.pack(anchor=tk.W, pady=(4, 0))
-            ToolTip(chk_reels, "Show the 🎬 Reels button, which turns a series you own into one video "
-                               "containing every word you need. Japanese only. Also controls whether "
-                               "it is bundled when you build the app.")
+        # Reels is SUNSET (2026-09-22): no Settings toggle. The module stays on disk and the rest of
+        # its wiring stays dormant (enable_reels false, excluded from every build) — see
+        # docs/agent instructions/Reels_Module_Spec.md for how to bring it back.
 
         # Junban toggle (optional module). Shown only when the module is present locally. Unlike
         # Reels there is no language condition — reordering an Anki backlog works for ja and zh alike.
@@ -1581,7 +1573,7 @@ class MasterDashboardApp:
 
         if cls == "APP":
             body = ("This is a quick in-app update — it refreshes only the program code and "
-                    "report templates (a few hundred KB). Your words, data, settings, and file "
+                    "report templates (about 15–20 MB). Your words, data, settings, and file "
                     "order are never touched. Surasura will briefly close and reopen.")
         else:
             body = ("This is a larger update and should be downloaded manually (it changes more "
@@ -2578,7 +2570,11 @@ class MasterDashboardApp:
                 store.close()
 
             # Analysis unchanged AND presentation unchanged -> reopen the existing report as-is.
-            if stored_sig == sig and stored_render == render_sig:
+            # The results stamp must match too: results/ is shared by both languages, and without it
+            # a Japanese -> Chinese -> Japanese switch reopened the Chinese report (see
+            # analyzer.read_run_stamp).
+            if (stored_sig == sig and stored_render == render_sig
+                    and _analyzer.read_run_stamp(results_dir) == sig):
                 try:
                     from app import static_html_generator
                 except ImportError:

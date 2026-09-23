@@ -43,11 +43,21 @@ Use Surasura to know every word you learn is immediately relevant to your conten
 
 ### 🏆 Features
 
-- 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Anki Decks or Jiten.moe.
+- 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Jiten.moe, or Anki — live from a running Anki (AnkiConnect), or from a deck file.
+
+- 順 **Anki Backlog Order**: Re-sort the new cards waiting in your Anki deck into Surasura's learn order. Only new cards move, you see a preview first, and one click restores the old order.
 
 - 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
 
-- 🎬 **YouTube Transcripts**: Pull clean, analysis-ready transcripts from YouTube videos and playlists straight into your library.
+- 🎬 **YouTube & bilibili.tv Transcripts**: Pull clean, analysis-ready transcripts from YouTube videos and playlists, or bilibili.tv episodes, straight into your library.
+
+- 🔍 **Search Your Report**: Any word, every sentence that uses it, and the other forms it takes in your content.
+
+- 🔗 **Sentence Sources**: See which file or episode each example sentence came from — YouTube lines open the video at that moment.
+
+- 文 **Reading Words**: Flags words you'll mostly read but rarely hear, so they get a reading-first card.
+
+- ⌕ **Word Lookup**: One click finds more real-world sentences for a word on Nadeshiko.
 
 - 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
 
@@ -145,7 +155,7 @@ To create your own standalone executable:
    ```bash
    python package_app.py
    ```
-This cleans previous builds, runs PyInstaller with the correct configuration, and creates a ready-to-use package in `dist/Surasura_v<version>`.
+This runs the test suite, cleans previous builds, runs PyInstaller with the correct configuration, and creates the ready-to-use app in `dist/Surasura/`. Add `--zip` to also produce `dist/Surasura_v<version>.zip`. (See [README_PACKAGING.md](README_PACKAGING.md) for the release options.)
 
 ## 📂 Project Structure
 - `app/`: Core application scripts and GUI modules.

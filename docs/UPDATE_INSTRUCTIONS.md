@@ -4,8 +4,8 @@ Surasura can update itself for most releases, and you can always update manually
 prefer. Either way, **your personal data is never touched by an update.**
 
 ## What an automatic update changes (and what it doesn't)
-An in-app update refreshes **only the program itself and the report templates** — a small
-download (a few megabytes), versus the ~400 MB full package. It **never** reads or changes:
+An in-app update refreshes **only the program itself and the report templates** — a download
+of roughly 15–20 MB, versus the ~400 MB full package. It **never** reads or changes:
 
 - your known words (`KnownWord.json`), ignore/blacklist/graduated lists,
 - your content in `data/`, your generated `results/`,
@@ -19,7 +19,9 @@ settings are left exactly as you had them.
    bottom-left of the dashboard. It never interrupts you — click it when you're ready.
 2. Choose **Update now**. Surasura downloads the small update, verifies it, then briefly
    closes and reopens itself on the new version. That's it.
-3. If you'd rather not, choose **Skip this version** (it won't ask again) or **Later**.
+3. If you'd rather not, choose **Later**, or **Skip this version** — Surasura then won't offer
+   to install that version in one click again. The ⬆ link stays, but only offers the manual
+   download, until a newer version comes out.
 
 You can turn automatic updates off anytime in **Settings → Data & System → Automatic
 Updates**. Bigger "major" updates (the rare ones that change the app's internals) always use
@@ -35,9 +37,11 @@ retrying.
 2. Download the latest **`Surasura_vX.Y.zip`** from the
    [Releases page](https://github.com/SonicSandbox/surasura/releases).
 3. Extract it to a new folder and run `Surasura.exe`.
-4. If you're moving from an old version, copy your `User Files/<language>/` files
-   (`KnownWord.json`, `IgnoreList.txt`, `Blacklist.txt`, `GraduatedList.txt`, any frequency
-   lists) and your `data/<language>/` content into the new folder.
+4. If you're moving from an old version, copy your whole `User Files` folder and your `data`
+   folder into the new one. `User Files/<language>/` holds your known words (`KnownWord.json`),
+   your lists (`IgnoreList.txt`, `Blacklist.txt`, `GraduatedList.txt`), any frequency lists, and
+   `master_manifest.json` — **your library order**. Leave that one behind and your content is
+   shown in plain folder order again.
 
 ## Release Notes
 See the `RELEASE_*.md` files or the GitHub Releases page for what's new in each version.

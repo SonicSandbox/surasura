@@ -554,6 +554,20 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
                 all_files_order = [s["File"] for s in stats]
         except: pass
 
+    # Which files are 6+ months content, for the sidebar's "6+" chip. The tier comes from where the
+    # file is SCHEDULED (the manifest's phase, via the analyzer's own resolve_found_files), never its
+    # folder — the same rule the analysis follows, so the chip agrees with the report it decorates.
+    # (It used to look for the file under User Files/<lang>/GoalContent, a folder that never exists,
+    # so the chip had never once appeared.) By basename, like the rest of the per-file report.
+    goal_files = set()
+    try:
+        from app import analyzer as _analyzer
+        goal_files = {os.path.basename(path) for path, label, _weight, _type
+                      in _analyzer.resolve_found_files(target_lang, verbose=False)
+                      if label == "GoalContent"}
+    except Exception as e:
+        print(f"Warning: could not read the library tiers for the report: {e}")
+
     # Load Progressive
     if os.path.exists(PROGRESSIVE_CSV):
         try:
@@ -573,24 +587,11 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0):
                 # Get total words from stats if available
                 total_words = stats_map.get(filename, {}).get("Total Words", 0)
                 
-                # Determine if Goal Content
-                is_goal_content = False
-                try:
-                    from app.path_utils import get_user_files_path
-                    # GoalContent is in User Files/<lang>/GoalContent
-                    goal_dir = os.path.join(get_user_files_path(target_lang), "GoalContent")
-                    
-                    # Check if file exists in GoalContent
-                    if os.path.exists(os.path.join(goal_dir, filename)):
-                        is_goal_content = True
-                except Exception:
-                    pass
-
                 data["progressive"].append({
                     "filename": filename,
                     "words": compressed_words,
                     "total_words": total_words,
-                    "is_goal_content": is_goal_content
+                    "is_goal_content": filename in goal_files
                 })
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")

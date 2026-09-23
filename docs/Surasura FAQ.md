@@ -12,11 +12,19 @@ Welcome to the Surasura FAQ! If you can't find the answer you're looking for her
 
 ### Core Concepts
 
-**What is the actual difference between the "Now," "Soon," and "6 Months" timelines?**
-These timelines affect sorting and weighting. "Now" content appears first, receives a higher priority icon, and ranks higher when exporting your frequency list.
+**What is the actual difference between the "NOW," "Soon," and "6+ months" timelines?**
+These timelines affect sorting and weighting. NOW content appears first, receives a higher priority icon, and ranks higher when exporting your frequency list.
 
 **Are the generated sentences exactly "i+1"?**
-Yes. It will find the best i+1 sentences in your content based on your settings. It scans your entire library and identifies the best options.
+As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → 🧠 Sentences & Logic → Only include i+1 sentences**; words without one are then left out.
+
+**Does Surasura go online? What leaves my computer?**
+Your content, known words and analysis never leave your computer — everything is worked out on your own machine. Surasura only goes online for:
+- a quick check on GitHub for a newer version, each time you open it;
+- an anonymous usage ping when you open it (app version, system, language, how many times you've opened it, and a random install ID — never your words or files). Turn it off with **Settings → 🧮 Data & System → Enable Anonymous Telemetry**; a completed update still sends one "updated" notice, with a throwaway ID instead of yours;
+- features you start yourself: the Jiten import, YouTube / bilibili.tv transcripts (the downloader fetches its `yt-dlp` helper on first use), and links you click in the report.
+
+Anki sync talks only to the Anki running on your own computer.
 
 ---
 
@@ -79,7 +87,7 @@ Yes — **bilibili.tv** links (episodes, whole seasons, uploads) work in the sam
 ### Troubleshooting & Support
 
 **Why am I seeing Japanese words in my Chinese frequency results?**
-Check your Advanced Settings. Ensure that "Chinese" is checked as your target language and that "Japanese" is completely unchecked.
+First check the language: the flag at the bottom of the dashboard (or **Settings → 🌐 Language & Parsing**) should be Chinese. Each language has its own library, so also check that no Japanese files ended up in your Chinese library — open the **Content Manager** with Chinese selected and look through the tabs.
 
 **My Chinese content mixes Simplified and Traditional. Why does 学习 show up separately from 學習?**
 Because they're written differently, Surasura counts them as two words unless you tell it otherwise. Go to **Settings → 🌐 Language & Parsing → Script** (shown when Chinese is selected) and pick **Simplified (简体)** or **Traditional (繁體)**. Everything — content, known words, lists — is then read in that one script, so each word counts once and a known word matches in either script. Your files are never changed; pick **As-is** to go back. Simplified → Traditional can occasionally choose the wrong character in a rare context, and it uses standard forms (爲, 裏) rather than Taiwan's (為, 裡).

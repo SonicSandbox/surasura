@@ -55,7 +55,7 @@ def extract_field_text(notes, model_field_map, target_field):
             if idx < len(values):
                 raw_text = values[idx]
                 # CLEANING: Remove HTML and Anki tags
-                clean_text = re.sub(r'<[^<ctrl42>]+?>', '', raw_text)
+                clean_text = re.sub(r'<[^<]+?>', '', raw_text)
                 clean_text = re.sub(r'\[sound:[^\]]+?\]', '', clean_text)
                 extracted_lines.append(clean_text.strip())
     return "\n".join(extracted_lines)

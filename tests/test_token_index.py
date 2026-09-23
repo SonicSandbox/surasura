@@ -326,23 +326,32 @@ def test_concurrent_writers_serialize_without_double_apply(tmp_path):
 
     # Two threads, each its OWN connection to one shared DB, released together for max contention.
     db = _db(tmp_path, "shared.db")
-    barrier = threading.Barrier(2)
+    # A timeout on the barrier, and daemon workers: if one worker fails BEFORE reaching the barrier
+    # (e.g. 'database is locked' on a loaded machine), the other must not wait forever. Without
+    # them it did — the join below timed out, the test failed, and then pytest itself hung at exit
+    # on the still-blocked non-daemon thread.
+    barrier = threading.Barrier(2, timeout=30)
     errors = []
 
     def worker():
+        store = None
         try:
             store = ti.open_store("ja", path=db)
             tok = ti.make_tokenizer("ja")      # build before the barrier: test DB contention, not tok init
             barrier.wait()
             store.reconcile(files, tok)
-            store.close()
         except Exception as e:                 # pragma: no cover - only on a real concurrency failure
             errors.append(repr(e))
+            barrier.abort()                    # release the partner at once instead of at the timeout
+        finally:
+            if store is not None:
+                store.close()
 
-    threads = [threading.Thread(target=worker) for _ in range(2)]
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(2)]
     for t in threads: t.start()
-    for t in threads: t.join(timeout=30)
+    for t in threads: t.join(timeout=60)
 
+    assert not any(t.is_alive() for t in threads), "a concurrent reconcile never finished"
     assert not errors, f"concurrent reconcile raised: {errors}"
     final = ti.open_store("ja", path=db)
     try:

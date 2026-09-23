@@ -1,17 +1,19 @@
 
 import os
+import re
+import sys
 import pytest
 import sqlite3
 import json
-import tempfile
+from unittest.mock import patch
 from app.migaku_converter import convert_db_to_json
 
 @pytest.fixture
-def temp_json_file():
-    fd, path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    yield path
-    os.remove(path)
+def temp_json_file(tmp_path):
+    """An output path inside the test's own sandbox, not yet created. (It used to be an empty
+    mkstemp file in the system temp dir; an existing file is now backed up to a `.trash` folder
+    beside it before being replaced, which there would leave litter outside the sandbox.)"""
+    return str(tmp_path / "KnownWord.json")
 
 def test_migaku_import_ja(ja_resources_dir, temp_json_file):
     """Test importing the Japanese Migaku DB."""
@@ -93,3 +95,84 @@ def test_migaku_creates_missing_output_directory(tmp_path):
     nested = tmp_path / "User Files" / "ja" / "KnownWord.json"  # parents don't exist yet
     assert convert_db_to_json(str(db), str(nested), language="ja") is True
     assert nested.exists()
+
+
+# --- Replacing known words: a dated backup first, never an empty overwrite -------------------- #
+# A Migaku import REPLACES KnownWord.json. Before, it did so with no copy kept — words synced from
+# Anki, an earlier Jiten import, anything else in the file was simply gone.
+_FULL_COLS = ["dictForm", "secondary", "partOfSpeech", "language", "knownStatus",
+              "hasCard", "tracked", "created", "mod", "isModern"]
+_PREVIOUS = {"source": "AnkiConnect",
+             "words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "hasCard": 1, "language": "ja"}]}
+
+
+def _known_words_file(tmp_path, data=_PREVIOUS):
+    path = tmp_path / "User Files" / "ja" / "KnownWord.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_replacing_known_words_keeps_a_dated_backup_of_the_old_file(tmp_path):
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    assert convert_db_to_json(str(db), str(known), language="ja") is True
+
+    [backup] = list((known.parent / ".trash").iterdir())
+    assert re.fullmatch(r"KnownWord\.\d{8}-\d{6}\.json", backup.name), backup.name
+    assert backup.read_bytes() == before
+    assert [w["dictForm"] for w in json.loads(known.read_text(encoding="utf-8"))["words"]] == ["日本語"]
+
+
+def test_a_first_import_makes_no_backup(tmp_path, temp_json_file):
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    assert convert_db_to_json(str(db), temp_json_file, language="ja") is True
+    assert not os.path.exists(os.path.join(os.path.dirname(temp_json_file), ".trash"))
+
+
+def test_an_empty_import_never_replaces_existing_known_words(tmp_path):
+    """A database holding only Chinese rows, imported for Japanese, finds nothing — and must not
+    wipe the Japanese list with that nothing."""
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("学习", "xuéxí", "v", "zh", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == before
+    assert not (known.parent / ".trash").exists()
+
+
+def test_a_failed_backup_leaves_the_known_words_untouched(tmp_path):
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    with patch("app.migaku_converter.backup_to_trash", side_effect=OSError("disk full")):
+        assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == before
+
+
+def test_the_exit_code_tells_the_import_window_whether_it_worked(tmp_path, monkeypatch):
+    """The window shows "Success" on exit code 0. A failed conversion used to exit 0 as well."""
+    from app import migaku_converter
+    good = tmp_path / "good.db"
+    _make_wordlist_db(good, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    out = str(tmp_path / "KnownWord.json")
+
+    monkeypatch.setattr(sys, "argv", ["convert_db", str(good), out, "--language", "ja"])
+    with pytest.raises(SystemExit) as ok:
+        migaku_converter.main()
+    assert ok.value.code == 0
+
+    no_table = tmp_path / "not_migaku.db"
+    sqlite3.connect(no_table).close()
+    monkeypatch.setattr(sys, "argv", ["convert_db", str(no_table), out, "--language", "ja"])
+    with pytest.raises(SystemExit) as failed:
+        migaku_converter.main()
+    assert failed.value.code == 1

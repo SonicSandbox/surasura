@@ -973,7 +973,9 @@ def resolve_found_files(language, verbose=True):
             except UnicodeEncodeError:
                 print("Loading Sort Order from Manifest (path contains non-ASCII characters)")
         try:
-            with open(manifest_path, 'r', encoding='utf-8') as f:
+            # utf-8-sig: the same BOM tolerance as the Content Manager's load_manifest, so a
+            # manifest re-saved from Notepad orders the analysis exactly as the library shows it.
+            with open(manifest_path, 'r', encoding='utf-8-sig') as f:
                 manifest = json.load(f)
             schedule = manifest.get("schedule", {})
             phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
@@ -1178,6 +1180,41 @@ def _template_fingerprint():
     return h.hexdigest()[:12]
 
 
+# --- Which run the files in results/ came from --------------------------------------------------- #
+# results/ holds ONE set of outputs, shared by both languages, while each language keeps its own
+# "last run signature" in its own token store. So after Generate in Japanese, then Chinese, then
+# Japanese again with nothing changed, the Japanese signature still matched and the skip reopened
+# the CHINESE results as the Japanese report. A completed run now also stamps results/ with its
+# signature, and both skips (main() below, and the dashboard's in-process fast path) require the
+# stamp to match too. When it doesn't, they simply run — exactly what happens today when anything
+# changes. A stamp that is missing (results from before this existed) counts as a mismatch: one
+# full run, then back to skipping.
+RUN_STAMP_FILE = "run_signature.txt"
+
+
+def read_run_stamp(results_dir):
+    """The run signature that produced the outputs in `results_dir`, or None. Never raises."""
+    try:
+        with open(os.path.join(results_dir, RUN_STAMP_FILE), "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _set_run_stamp(results_dir, signature):
+    """Record (or, with signature=None, forget) which run the outputs in `results_dir` belong to.
+    Best-effort: a stamp that can't be written only costs one extra full run next time."""
+    path = os.path.join(results_dir, RUN_STAMP_FILE)
+    try:
+        if signature:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(signature)
+        elif os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        print(f"Warning: could not update the results stamp: {e}")
+
+
 def main():
     import sys
 
@@ -1347,7 +1384,8 @@ def main():
     # compute_render_signature — shared with the dashboard so the two can't drift).
     _render_sig = compute_render_signature(args)
     if (_store is not None and _run_sig and _analysis_outputs_present
-            and _store.get_meta("last_run_signature") == _run_sig):
+            and _store.get_meta("last_run_signature") == _run_sig
+            and read_run_stamp(RESULTS_DIR) == _run_sig):   # ...and results/ is THIS run's (above)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
         # A completed run is being reused; make sure the Content Manager sidecars exist and are
         # current (backfills them from word_stats.json on the first skip after an update). One-time.
@@ -1381,6 +1419,10 @@ def main():
     # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
     # "nothing changed" skip path above never pays its ~0.35s import cost.
     import pandas as pd
+
+    # A real run is about to replace results/. Drop the stamp first, so a run that dies part-way
+    # leaves outputs that no skip will ever mistake for a finished run. Re-stamped at the end.
+    _set_run_stamp(RESULTS_DIR, None)
 
     # --- Past the skip: this is a real run, so NOW load the heavy content the skip check above
     #     deliberately avoided (tokenizer, known-words normalization, ignore lists, frequency lists). ---
@@ -2366,6 +2408,7 @@ def main():
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint so a same-setting re-run can open the
     # report without re-rendering), then close the store.
+    _set_run_stamp(RESULTS_DIR, _run_sig)
     if _store is not None:
         try:
             if _run_sig:

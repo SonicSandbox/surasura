@@ -300,6 +300,56 @@ def cleanup_trash_async(trash_path):
                     except: pass
         except Exception as e:
             print(f"Trash cleanup error: {e}")
-            
+
     threading.Thread(target=run_cleanup, daemon=True).start()
+
+
+def restart_trash_clock(path):
+    """Start the 30-day purge countdown for something just moved into a `.trash` folder.
+
+    cleanup_trash_async() prunes by each file's MODIFIED time, and a move keeps the time the file
+    already had — so a file last edited over a month ago was purged at the very next
+    ensure_data_setup() (a Generate, opening the Content Manager), leaving no time to undo a removal.
+    Stamping it (every file, for a folder) with the current time makes the 30 days count from the
+    removal. Best-effort: a file that can't be stamped just keeps its old time."""
+    targets = [path]
+    if os.path.isdir(path):
+        targets = [os.path.join(root, name) for root, _dirs, files in os.walk(path) for name in files]
+    for target in targets:
+        try:
+            os.utime(target)
+        except OSError:
+            pass
+
+
+def backup_to_trash(path, move=False):
+    """Keep a dated copy of a user-data file in the `.trash` folder beside it, before it is replaced.
+
+    `KnownWord.json` -> `.trash/KnownWord.<YYYYmmdd-HHMMSS>.json` (`-1`, `-2`, ... if that name is
+    taken) — the naming the Anki sync's Replace already uses (app/anki_sync.py), so every backup of
+    a file sits together and sorts by date. Unlike `data/<lang>/.trash`, this folder is never purged.
+
+    A copy is verified byte-for-byte; `move=True` moves the file instead (for one that is being set
+    aside, not overwritten). Returns the backup path, or None when there is no file. Raises OSError
+    when the backup can't be made — the caller must then leave the original alone."""
+    if not os.path.isfile(path):
+        return None
+    trash = os.path.join(os.path.dirname(path), ".trash")
+    os.makedirs(trash, exist_ok=True)
+    stem, ext = os.path.splitext(os.path.basename(path))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"{stem}.{stamp}{ext}"
+    n = 1
+    while os.path.exists(os.path.join(trash, name)):
+        name = f"{stem}.{stamp}-{n}{ext}"
+        n += 1
+    dst = os.path.join(trash, name)
+    if move:
+        os.replace(path, dst)
+        return dst
+    shutil.copyfile(path, dst)
+    with open(path, "rb") as a, open(dst, "rb") as b:
+        if a.read() != b.read():
+            raise OSError("the backup copy did not match the original")
+    return dst
 

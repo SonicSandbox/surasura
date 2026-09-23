@@ -8,7 +8,7 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, get_user_files_path
+from app.path_utils import get_user_file, get_user_files_path, backup_to_trash
 
 def convert_db_to_json(db_path, output_json=None, language=None):
     if not output_json:
@@ -90,6 +90,25 @@ def convert_db_to_json(db_path, output_json=None, language=None):
         languages_str = ", ".join([str(l) for l in languages_list])
         print(f"  Languages: {languages_str}")
 
+        # An import that found nothing (no rows for this language, say) must never wipe the known
+        # words already there — the backup below would keep them, but the list would still be empty.
+        if not words and os.path.exists(output_json) and os.path.getsize(output_json) > 0:
+            print("Error: the database has no words for this language, so your existing known "
+                  "words were left unchanged.")
+            conn.close()
+            return False
+
+        # This import REPLACES the file. Keep a dated copy of what it replaces first
+        # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
+        try:
+            backup = backup_to_trash(output_json)
+        except OSError as e:
+            print(f"Error: could not back up your current known words, so nothing was changed ({e}).")
+            conn.close()
+            return False
+        if backup:
+            print(f"Backed up your previous known words to: {backup}")
+
         print(f"\nWriting JSON to: {output_json}")
         json_data = {
             'exportDate': datetime.now().isoformat(),
@@ -127,7 +146,10 @@ def main():
     parser.add_argument("--language", help="Optional language filter (e.g., ja, zh)")
     
     args = parser.parse_args()
-    convert_db_to_json(args.db_file, args.out_file, args.language)
+    ok = convert_db_to_json(args.db_file, args.out_file, args.language)
+    # The importer window reads the exit code to choose between "Success" and "Error"; returning
+    # normally on a failure made it announce success for an import that wrote nothing.
+    sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":
     main()

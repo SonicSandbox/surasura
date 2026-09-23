@@ -21,6 +21,7 @@ import inspect
 import os
 import sys
 import threading
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -248,6 +249,87 @@ class TestSettingsCarryThrough(_DashboardHarness):
         self.app.var_anki_sync_auto.get.return_value = True
         saved = self._save({}, {})
         self.assertIs(saved["anki_sync_auto"], True)
+
+
+class TestJunbanAutoReorder(_DashboardHarness):
+    """The dashboard's side of Junban's automatic reorder — a test option (`junban_auto_reorder`
+    in settings.json). The dashboard only SCHEDULES it, after a Generate and when focus returns, the
+    way it schedules the Anki sync; every decision to write is the module's (`auto.run_quietly`),
+    which has its own suite. The module is stood in here, so this file never needs `modules/`."""
+
+    def setUp(self):
+        super().setUp()
+        self.app.var_enable_junban = MagicMock()
+        self.app.var_enable_junban.get.return_value = True
+        self.app._junban_auto_lock = threading.Lock()
+        self.app._last_junban_auto = 0.0
+        self.app.junban_window = None
+        self.auto = types.ModuleType("modules.junban.auto")
+        self.auto.enabled = lambda settings: settings.get("junban_auto_reorder") is True
+        self.auto.run_quietly = MagicMock(return_value="")
+
+    def _modules(self):
+        parent, junban = types.ModuleType("modules"), types.ModuleType("modules.junban")
+        parent.junban, junban.auto = junban, self.auto
+        return {"modules": parent, "modules.junban": junban, "modules.junban.auto": self.auto}
+
+    def _call(self, settings, force=False, modules=None):
+        with patch.dict(sys.modules, self._modules() if modules is None else modules), \
+             patch.object(self.main.settings_manager, "load_settings", return_value=settings), \
+             patch.object(self.main.threading, "Thread") as thread:
+            self.MasterDashboardApp._maybe_junban_auto(self.app, force=force)
+        return thread
+
+    def test_nothing_happens_unless_switched_on_in_settings(self):
+        self._call({}).assert_not_called()
+        self._call({"junban_auto_reorder": False}, force=True).assert_not_called()
+
+    def test_it_runs_in_the_background_with_the_spinner_on(self):
+        thread = self._call({"junban_auto_reorder": True})
+        thread.assert_called_once()
+        self.assertTrue(thread.call_args.kwargs.get("daemon"))
+        self.app._junban_spinner.assert_called_with(True)
+
+    def test_focus_is_throttled_but_a_generate_is_not(self):
+        """When focus returns: at most every five minutes, like the Anki sync. After a Generate the
+        list has just changed, so it runs at once."""
+        self._call({"junban_auto_reorder": True}).assert_called_once()
+        self.app._junban_auto_lock.release()          # the captured thread never ran to release it
+        self._call({"junban_auto_reorder": True}).assert_not_called()
+        self._call({"junban_auto_reorder": True}, force=True).assert_called_once()
+
+    def test_never_while_the_junban_window_is_open(self):
+        """The user is ordering by hand there; a write underneath would leave their preview
+        describing a queue that has moved."""
+        self.app.junban_window = MagicMock()
+        self.app.junban_window.winfo_exists.return_value = True
+        self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+
+    def test_a_build_without_the_module_is_untouched(self):
+        """The Prime Invariant: no `modules/junban`, nothing scheduled and nothing raised."""
+        self._call({"junban_auto_reorder": True}, force=True,
+                   modules={"modules.junban": None}).assert_not_called()
+
+    def test_the_test_guard_blocks_it(self):
+        os.environ["SURASURA_NO_ANKI_SYNC"] = "1"
+        self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+
+    def test_the_run_reads_the_dashboards_live_language(self):
+        self.app.var_language.get.return_value = "zh"
+        thread = self._call({"junban_auto_reorder": True, "target_language": "ja"})
+        thread.call_args.kwargs["target"]()
+        self.assertEqual(self.auto.run_quietly.call_args.args[0]["target_language"], "zh")
+
+    def test_a_generate_triggers_it_whether_or_not_the_analysis_ran(self):
+        """The analyzer's own completion AND the fast path that only reopens the report."""
+        source = inspect.getsource(self.MasterDashboardApp.run_analyzer)
+        self.assertEqual(source.count("_maybe_junban_auto(force=True)"), 2)
+
+    def test_a_reason_to_wait_is_said_once_not_every_five_minutes(self):
+        self.app._last_junban_auto_message = ""
+        for _ in range(3):
+            self.MasterDashboardApp._on_junban_auto(self.app, "順 automatic reorder waits: one deck")
+        self.app.log_to_terminal.assert_called_once()
 
 
 class TestSyncSettingsAreNotAnalysis(unittest.TestCase):

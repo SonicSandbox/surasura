@@ -259,6 +259,13 @@ def _short_label(stem):
     return label
 
 
+def short_name(stem):
+    """A file's short name as the dictionary shows it — release tags, video ids and quality tags
+    trimmed (`_short_label`) — for anyone else naming a library file in a few words (Junban's
+    "why" column)."""
+    return _short_label(_clean(stem))
+
+
 def _hiragana(kana):
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in kana)
 

@@ -283,6 +283,11 @@ class MasterDashboardApp:
         self._anki_sync_lock = threading.Lock()
         self._last_anki_sync = 0.0
         self._anki_spin_job = None
+        # Junban's automatic reorder (a test option in settings.json) — the same shape as the sync.
+        self._junban_auto_lock = threading.Lock()
+        self._last_junban_auto = 0.0
+        self._junban_spin_job = None
+        self._last_junban_auto_message = ""
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
@@ -400,7 +405,7 @@ class MasterDashboardApp:
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
-                                               self._maybe_anki_sync()))
+                                               self._maybe_anki_sync(), self._maybe_junban_auto()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -2467,6 +2472,84 @@ class MasterDashboardApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _maybe_junban_auto(self, force=False):
+        """Junban's automatic reorder — a test option, `junban_auto_reorder` in settings.json.
+
+        After a Generate (`force`) and when the window comes back into focus (at most every 5
+        minutes, like the Anki sync), on a daemon thread with a spinner on the 順 button. Every
+        decision about whether to write lives in the module (`modules/junban/auto.py`); this only
+        schedules it. Never while the 順 window is open — the user is ordering by hand there, and a
+        write underneath would make the preview on their screen describe a queue that has moved.
+        """
+        if os.environ.get("SURASURA_NO_ANKI_SYNC") or not self.var_enable_junban.get():
+            return
+        import time
+        now = time.monotonic()
+        if not force and now - self._last_junban_auto < 300:
+            return
+        try:
+            settings = dict(settings_manager.load_settings() or {})
+            from modules.junban import auto
+        except Exception:
+            return
+        settings["target_language"] = self.var_language.get()
+        if not auto.enabled(settings):
+            return
+        window = getattr(self, "junban_window", None)
+        try:
+            if window is not None and window.winfo_exists():
+                return
+        except Exception:
+            pass
+        if not self._junban_auto_lock.acquire(blocking=False):
+            return
+        self._last_junban_auto = now
+
+        def work():
+            message = ""
+            try:
+                message = auto.run_quietly(settings)
+            finally:
+                self._junban_auto_lock.release()
+                self.gui_queue.put(lambda: self._junban_spinner(False))
+                if message:
+                    self.gui_queue.put(lambda: self._on_junban_auto(message))
+
+        self._junban_spinner(True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_junban_auto(self, message):
+        """One line in the log — and never the same one twice running, so a reason to wait ("choose
+        one deck") is said once rather than every five minutes."""
+        if message == self._last_junban_auto_message:
+            return
+        self._last_junban_auto_message = message
+        self.log_to_terminal(message)
+        if message.startswith("順 (automatic)"):
+            self.status_var.set("✓ 順: new cards reordered")
+            self.root.after(6000, lambda: self.status_var.get() == "✓ 順: new cards reordered"
+                            and self.status_var.set("Ready"))
+
+    def _junban_spinner(self, on):
+        """The Anki button's spinner, on the 順 button, while the automatic reorder runs."""
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        if self._junban_spin_job is not None:
+            try:
+                self.root.after_cancel(self._junban_spin_job)
+            except Exception:
+                pass
+            self._junban_spin_job = None
+        if self.btn_junban is None:
+            return
+        if not on:
+            self.btn_junban.config(text="順", width=3)
+            return
+
+        def tick(i=0):
+            self.btn_junban.config(text=f"順{frames[i % len(frames)]}", width=4)
+            self._junban_spin_job = self.root.after(100, tick, i + 1)
+        tick()
+
     def _anki_spinner(self, on):
         """A small braille spinner on the Anki button while a background sync runs."""
         frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -2585,10 +2668,12 @@ class MasterDashboardApp:
         # the GUI's decision can never diverge from what the analyzer would decide. Any hiccup falls
         # through to the normal subprocess run — the fast path is a pure optimization, never required.
         if self._try_open_existing_report(args):
+            self._maybe_junban_auto(force=True)
             return
 
         self.run_command_async(args, "Analyzer", capture_output=True, show_spinner=True,
-                               on_complete=lambda: self._refresh_band_preview(force=True))
+                               on_complete=lambda: (self._refresh_band_preview(force=True),
+                                                    self._maybe_junban_auto(force=True)))
 
     def _try_open_existing_report(self, args):
         """Return True and reopen the existing report if a full analysis is provably unnecessary.

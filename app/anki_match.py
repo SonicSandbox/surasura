@@ -402,6 +402,18 @@ def lookup(word, rank_of, language=None):
     return ""
 
 
+def library_floor(path):
+    """The list's own cut-off — the occurrences a word needs to be on it (the run's `min_count`) —
+    from the library map, or None when there is no map to read it from. What "frequent enough" means
+    for a phrase the list cannot hold (Junban's "List first", 2026-09-23)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            floor = (json.load(handle).get("settings") or {}).get("min_count")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return floor if isinstance(floor, (int, float)) and not isinstance(floor, bool) else None
+
+
 def load_library(path, language=None):
     """`{key: (file, score, total)}` for every word in the library — below the list's cut-off
     included — from `results/library_frequency.json`, which every run writes since ENGINE_REVISION

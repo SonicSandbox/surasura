@@ -222,6 +222,26 @@ def test_a_map_the_journey_cannot_be_read_from_places_nothing(tmp_path):
     assert anki_match.load_library(str(damaged), "ja") == {}
 
 
+def test_the_lists_cut_off_is_read_from_the_map_and_nothing_else_passes_for_it(tmp_path):
+    """Junban's "List first" holds a phrase to the list's own bar — the occurrences a word needs to
+    make the list (the run's `min_count`; 10.97 on the reference library, a density-band floor). No
+    map, a damaged one, one without the number, or `true` where the number belongs: None, and the
+    caller says so rather than inventing a bar."""
+    band = tmp_path / "band.json"
+    band.write_text(json.dumps({"settings": {"min_count": 10.97}, "words": {}}), encoding="utf-8")
+    without = tmp_path / "without.json"
+    without.write_text(json.dumps({"settings": {}, "words": {}}), encoding="utf-8")
+    boolean = tmp_path / "boolean.json"
+    boolean.write_text(json.dumps({"settings": {"min_count": True}}), encoding="utf-8")
+    damaged = tmp_path / "damaged.json"
+    damaged.write_text("{\"settings\": ", encoding="utf-8")
+
+    assert anki_match.library_floor(_write_map(tmp_path / "map.json", {})) == 2
+    assert anki_match.library_floor(str(band)) == 10.97
+    for path in (without, boolean, damaged, tmp_path / "missing.json"):
+        assert anki_match.library_floor(str(path)) is None, path.name
+
+
 def test_each_list_row_carries_the_journeys_numbers(tmp_path):
     """The progressive list's `Sequence`, `Score` and `Occurrences (Global)` — what a library word
     is placed among. The priority list has no `Sequence`: 0 there."""

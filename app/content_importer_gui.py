@@ -27,6 +27,51 @@ SUCCESS_COLOR = "#03dac6"
 BATCH_STATUS_EVERY = 100
 
 
+def place_new_entries(existing, new_entries):
+    """One tab's order with `new_entries` placed in it (New_Content_Placement_Spec.md, the user
+    2026-09-24 — "I've noticed that i'm always dragging them back to the top after insertion. at the
+    top is best."):
+
+      * a file whose folder already has files in this tab goes right after that folder's LAST item —
+        for a folder the user split to interleave it with other content, after its last part;
+      * everything else — a new folder (a new season folder inside a series too), a loose file —
+        goes to the TOP of the tab, all together, in the order given (the disk walk's, or the order
+        the user selected things in for a move).
+
+    The existing entries are never reordered: splitting and interleaving a series is the user's own
+    arrangement ("It's an ADVANTAGE that someone can split a series"). An empty tab comes out in the
+    order given, exactly as appending did.
+    """
+    last_of = {}
+    for index, entry in enumerate(existing):
+        folder = _entry_folder(entry)
+        if folder:
+            last_of[folder] = index
+    placed, after = [], {}
+    for entry in new_entries:
+        folder = _entry_folder(entry)
+        if folder in last_of:
+            after.setdefault(last_of[folder], []).append(entry)
+        else:
+            placed.append(entry)
+    for index, entry in enumerate(existing):
+        placed.append(entry)
+        placed.extend(after.get(index, ()))
+    return placed
+
+
+def _entry_folder(entry):
+    """The folder a manifest entry belongs to — its `parent_folder`, the grouping the library draws —
+    or "" for a file loose in the tab (never an anchor: a loose file goes to the top)."""
+    if not isinstance(entry, dict):
+        return ""
+    folder = entry.get("parent_folder")
+    if isinstance(folder, str):
+        return folder
+    parts = str(entry.get("physical_path") or "").split("/")
+    return "/".join(parts[1:-1]) if len(parts) > 2 else ""
+
+
 class ContentImporterApp:
     def __init__(self, root, language='ja'):
         self.root = root
@@ -713,9 +758,11 @@ class ContentImporterApp:
         return changed
 
     def _add_paths_to_manifest(self, paths, target_folder_key, manifest=None):
-        """Append `paths` to the target phase IN THE ORDER GIVEN — that order is the resulting library
-        order for Graduate / Demote (see _resolve_items_to_paths). A directory adds the files inside.
-        Duplicates are checked against a set of the phase's paths. Returns True if anything was added."""
+        """Place `paths` in the target phase (`place_new_entries`): a file whose folder is already in
+        the tab after that folder's last item, anything else at the top — IN THE ORDER GIVEN, which
+        for Graduate / Demote is the order the user selected (see _resolve_items_to_paths). A
+        directory adds the files inside. Duplicates are checked against a set of the phase's paths.
+        Returns True if anything was added."""
         phase_map = {
             "HighPriority": "PHASE_1_NOW",
             "LowPriority": "PHASE_2_SOON",
@@ -734,6 +781,7 @@ class ContentImporterApp:
         existing = {e.get("physical_path") for e in schedule[phase_key]}
 
         changed = False
+        new_entries = []
         for item_path in paths:
             files_to_add = []
             if os.path.isfile(item_path):
@@ -770,11 +818,12 @@ class ContentImporterApp:
                     "type": "File",
                     "status": "New"
                 }
-                schedule[phase_key].append(entry)
+                new_entries.append(entry)
                 existing.add(rel)
                 changed = True
 
         if changed:
+            schedule[phase_key] = place_new_entries(schedule[phase_key], new_entries)
             manifest["schedule"] = schedule
             if own:
                 self.save_manifest(manifest)
@@ -1056,10 +1105,11 @@ class ContentImporterApp:
 
         # A tree "group" is a CONTIGUOUS RUN of entries sharing a parent_folder, not a folder. The
         # manifest orders content independently of the folders on disk — that separation is
-        # deliberate, it's what lets you order a library without moving files — and every path that
-        # adds or relocates content APPENDS to the end of a phase (Graduate, Demote, add_files and
-        # the disk sync all do). So one folder's files routinely end up in several runs. Count them
-        # up front so each node can say which run it is rather than pretending to be the whole folder.
+        # deliberate, it's what lets you order a library without moving files — and the user splits
+        # and interleaves series on purpose ("It's an ADVANTAGE that someone can split a series"). So
+        # one folder's files can be in several runs. (New content no longer adds runs on its own: it is
+        # placed after its folder's last item, or at the top — place_new_entries.) Count the runs up
+        # front so each node can say which run it is rather than pretending to be the whole folder.
         run_totals = {}
         _prev = None
         for _, _, _, parent in rendered:
@@ -1114,7 +1164,9 @@ class ContentImporterApp:
         self._update_empty_state()   # show the onboarding card iff the library has no content
 
     def _sync_disk_to_manifest(self):
-        """Scans the 3 main data folders and ensures any untracked files are added to the manifest."""
+        """Scans the 3 main data folders and ensures any untracked files are added to the manifest —
+        placed, not appended (`place_new_entries`): a new folder or loose file at the top of its tab,
+        a new file in a folder already there after that folder's last item."""
         manifest = self.load_manifest()
         marker_cache = {}   # one producer-marker read per directory across the whole walk
         schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
@@ -1138,7 +1190,8 @@ class ContentImporterApp:
             "LowPriority": "PHASE_2_SOON",
             "GoalContent": "PHASE_3_LATER"
         }
-        
+        found = {}    # phase -> the untracked files, in the disk walk's order
+
         for folder, p_key in phase_lookup.items():
             abs_dir = os.path.join(self.data_root, folder)
             if not os.path.exists(abs_dir): continue
@@ -1175,11 +1228,13 @@ class ContentImporterApp:
                             "type": "File",
                             "status": "New"
                         }
-                        if p_key not in schedule: schedule[p_key] = []
-                        schedule[p_key].append(entry)
+                        found.setdefault(p_key, []).append(entry)
                         existing_paths.add(rel)
                         changed = True
-        
+
+        for p_key, entries in found.items():
+            schedule[p_key] = place_new_entries(schedule.get(p_key, []), entries)
+
         if changed:
             manifest["schedule"] = schedule
             self.save_manifest(manifest)

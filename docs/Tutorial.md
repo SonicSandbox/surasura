@@ -33,7 +33,7 @@ Press **Import Content** to open the Content Manager — one place to add and or
 ## 3. Order Your Library
 Your library is split into three tabs. 
 
-Added content lands in the tab you're on. **Order matters** — drag files (and use ▲▼) into the order you'll actually immerse.
+Added content lands at the **top** of the tab you're on — or, when it joins a folder that's already there, right after that folder's last file. **Order matters** — drag files (and use ▲▼) into the order you'll actually immerse.
 
 *   **NOW**: what you're consuming *today* and over the next ~2 weeks. *(Order matters a lot.)*
 *   **Soon**: your medium-term list (within 6 months). *(Order matters a little.)*

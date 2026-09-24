@@ -159,8 +159,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     signature still matches and the old report — with no Forms — is served. Pinned exactly so the
     next person to bump it updates this knowingly. (9 was the Forms column; 10 keys Japanese words by
     the lemma's reading — Bugfix_Batch_2026-09-22 fix C; 11 writes library_frequency.json on every
-    run, with each word's first file, score and spelling — Junban_Backlog_Spec §11.1.)"""
-    assert analyzer.ENGINE_REVISION == 11
+    run, with each word's first file, score and spelling — Junban_Backlog_Spec §11.1; 12 cuts a
+    leading verse number off an example sentence — Junban_Backlog_Spec §16.11.)"""
+    assert analyzer.ENGINE_REVISION == 12
 
 
 # --------------------------------------------------------------------------- #

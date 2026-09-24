@@ -1,9 +1,10 @@
 """Fragmented folders in the Content Manager library tree.
 
 The manifest orders content independently of the folders on disk — deliberately, so a library can be
-ordered without moving a single file. Because every path that adds or relocates content APPENDS to
-the end of a phase (Graduate, Demote, add_files, the disk sync), one folder's files routinely end up
-in several non-contiguous runs. The tree draws a node per RUN, so several nodes can share a name.
+ordered without moving a single file — and the user splits and interleaves series on purpose, so one
+folder's files can sit in several non-contiguous runs. (Adding content used to split folders too, by
+appending; it now lands after its folder's last item or at the top — test_new_content_placement.py.)
+The tree draws a node per RUN, so several nodes can share a name.
 
 That exposed a real bug: `_restore_selection` matched nodes by their `GROUP:<name>` value, which is
 identical across every run of a folder — so moving one run selected them ALL, and the next press

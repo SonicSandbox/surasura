@@ -344,6 +344,14 @@ class TestAutoGenerate(_DashboardHarness):
         self.assertEqual((placed["relx"], placed["anchor"]), (1.0, "e"))
         self.app.lbl_journey_state.pack.assert_not_called()
 
+    def test_the_check_is_a_quiet_gray_and_goes_back_to_gray_after_a_hover(self):
+        """The user, 2026-09-23: the teal check stood out too much. Gray at rest, dark on the lit
+        button under the pointer, gray again when the pointer leaves."""
+        self.MasterDashboardApp._light_journey_check(self.app, True)
+        self.app.lbl_journey_state.config.assert_called_with(bg=self.main.ACCENT_COLOR, fg=self.main.BG_COLOR)
+        self.MasterDashboardApp._light_journey_check(self.app, False)
+        self.app.lbl_journey_state.config.assert_called_with(bg=self.main.SURFACE_COLOR, fg="#8a8a8a")
+
 
 class TestJunbanAutoReorder(_DashboardHarness):
     """The dashboard's side of Junban's automatic reorder — a test option (`junban_auto_reorder`
@@ -411,8 +419,37 @@ class TestJunbanAutoReorder(_DashboardHarness):
     def test_the_run_reads_the_dashboards_live_language(self):
         self.app.var_language.get.return_value = "zh"
         thread = self._call({"junban_auto_reorder": True, "target_language": "ja"})
-        thread.call_args.kwargs["target"]()
+        with patch.object(self.main, "journey_is_current", return_value=True):
+            thread.call_args.kwargs["target"]()
         self.assertEqual(self.auto.run_quietly.call_args.args[0]["target_language"], "zh")
+
+    def test_it_is_told_whether_the_list_is_up_to_date_by_the_generate_buttons_own_check(self):
+        """Junban_Backlog_Spec §16.6: known words from Anki, a changed setting — not only a changed
+        library — mean the list is behind, and the automatic reorder waits for a Generate. The
+        arguments are read on the GUI thread; the check runs on the worker's."""
+        self.app._analyzer_args.return_value = ["analyzer.py", "--static", "--language=ja"]
+        thread = self._call({"junban_auto_reorder": True})
+        with patch.object(self.main, "journey_is_current", return_value=False) as current:
+            thread.call_args.kwargs["target"]()
+        current.assert_called_once_with(["analyzer.py", "--static", "--language=ja"], "ja")
+        self.assertIs(self.auto.run_quietly.call_args.kwargs["list_current"], False)
+
+    def test_every_generate_tells_an_open_junban_window(self):
+        """§16.9: the 順 window's "Generate & preview" waits for the dashboard's Generate — the
+        analyzer's completion and the reopen-only fast path alike."""
+        source = inspect.getsource(self.MasterDashboardApp.run_analyzer)
+        self.assertEqual(source.count("_tell_junban_list_changed()"), 2)
+        window = MagicMock()
+        window.winfo_exists.return_value = True
+        self.app.junban_window = window
+        self.MasterDashboardApp._tell_junban_list_changed(self.app)
+        window.on_list_updated.assert_called_once_with()
+        window.reset_mock()
+        window.winfo_exists.return_value = False       # closed: nothing to tell
+        self.MasterDashboardApp._tell_junban_list_changed(self.app)
+        window.on_list_updated.assert_not_called()
+        self.app.junban_window = None
+        self.MasterDashboardApp._tell_junban_list_changed(self.app)   # never opened: no error
 
     def test_a_generate_triggers_it_whether_or_not_the_analysis_ran(self):
         """The analyzer's own completion AND the fast path that only reopens the report."""

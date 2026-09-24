@@ -521,6 +521,100 @@ def unknowns_beside(word, raw, tokenize, unknown):
     return count
 
 
+# --- Check matches (Junban_Backlog_Spec §16): the same word, spelled another way ------------------ #
+# A suggestion, never a match: the user ticks it or it moves nothing (§16.1 — the user reversed I6).
+Suggestion = namedtuple("Suggestion", "key via evidence reading")
+_KANJI_RE = re.compile('[㐀-鿿豈-﫿]')
+
+
+def suggest(word, raw_sentence, tokenize, rank_of, language):
+    """The list word a card's word may be, when the exact keys (L1–L4) found none — or None.
+
+    **L6, the sentence bridge.** The card's word is found in its own sentence (the `<b>` span, else
+    its first occurrence) and tokenized there, exactly as the library was: the token that IS the
+    card's word (its orthBase or surface equals it) gives its dictionary spelling and UniDic lemma,
+    and either may be on the list — 見とれる -> 見惚れる, なり代わる -> 成り代わる. With no sentence to
+    read it in, the word is tokenized alone, but only when it holds a kanji: a kana word alone is
+    read wrong too often (まく -> 膜, §8 gotcha 2).
+
+    **L7, affixes.** 同行する / 過熱する -> the noun on the list; きゅっと -> きゅっ (Yomitan cards;
+    real と-adverbs — ずっと, やっと — are single tokens and match exactly first).
+
+    Japanese only; nothing for a word the list already has. `tokenize(text)` yields the analyzer's
+    `(lemma, reading, surface, orth)`. `reading` is the matched word's, in hiragana, for the user to
+    check at a glance. Deliberately absent (§4.4, §16.1): reading-only matches, containment either
+    way, and a compound's parts (伊勢海老 is not 伊勢).
+    """
+    if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
+        return None
+    if lookup(word, rank_of, language):
+        return None
+    located = _in_sentence(raw_sentence, word, tokenize)
+    token = located[3] if located else None
+    if token is None and _KANJI_RE.search(word):
+        alone = list(tokenize(word))
+        if len(alone) == 1 and word in (alone[0][3], alone[0][2]):
+            token = alone[0]
+    if token is not None:
+        for name in (token[3], token[0]):      # the dictionary spelling, then the lemma
+            key = lookup(name, rank_of, language)
+            if key and key != word:
+                return Suggestion(key, "L6", "same word, other spelling", fold_kana(token[1] or ""))
+    for ending, evidence in (("する", "+ する"), ("と", "+ と")):
+        stem = word[:-len(ending)]
+        if word.endswith(ending) and stem:
+            key = lookup(stem, rank_of, language)
+            if key:
+                alone = list(tokenize(stem))
+                reading = fold_kana(alone[0][1] or "") if len(alone) == 1 else ""
+                return Suggestion(key, "L7", evidence, reading)
+    return None
+
+
+def _in_sentence(raw, word, tokenize):
+    """`(text, start, end, token)` — the token of the card's sentence that IS the card's word (its
+    orthBase or surface equals it), inside the `<b>` span when there is one, else anywhere: a
+    sentence without bold may still say なり代わろう for なり代わる. None when no token is the word."""
+    found = sentence_span(raw, word)
+    if found is not None:
+        text, start, end = found
+    else:
+        text = normalize_word(raw) if isinstance(raw, str) else ""
+        start, end = 0, len(text)
+    if not text or not tokenize:
+        return None
+    at = 0
+    for candidate in tokenize(text):
+        surface = candidate[2]
+        pos = text.find(surface, at) if surface else -1
+        if pos < 0:
+            continue
+        at = pos + len(surface)
+        if pos < end and at > start and word in (candidate[3], surface):
+            return text, pos, at, candidate
+    return None
+
+
+def sentence_excerpt(raw, word, width=48, tokenize=None):
+    """The card's sentence as one line, its word in 【】 — what the user reads to judge a suggestion:
+    the `<b>` span or the word as written, else (with `tokenize`) the word as conjugated there. Cut to
+    about `width` characters around the word; "" when there is no sentence to show."""
+    found = sentence_span(raw, word)
+    if found is None and tokenize:
+        located = _in_sentence(raw, word, tokenize)
+        found = located[:3] if located else None
+    if found is None:
+        text = normalize_word(raw) if isinstance(raw, str) else ""
+        return text if len(text) <= width else text[:width - 1] + "…"
+    text, start, end = found
+    marked = text[:start] + "【" + text[start:end] + "】" + text[end:]
+    if len(marked) <= width:
+        return marked
+    left = max(0, start - (width - (end - start) - 2) // 2)
+    piece = marked[left:left + width - 2]
+    return ("…" if left else "") + piece + ("…" if left + width - 2 < len(marked) else "")
+
+
 # --- phrases (L9, Junban_Backlog_Spec §11.1 item 2) --------------------------------------------- #
 # Half of a real backlog is phrases and compounds — 気がつく, 俺たち, 騎士団. anki_miner and the
 # analyzer produce the SAME tokens; anki_miner then glues them into one card word when the result is

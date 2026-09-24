@@ -86,6 +86,12 @@ Yes. Once you've chosen decks in the **Anki** window, every word a new card is a
 **What does 順 Junban do with the Anki cards that aren't on my list?**
 It still gives each one a place: after your list, easiest sentence first, and words you already know last. You can also act on them — under **Also update the cards → Cards not on your list**, tick any of **Tag**, **Flag purple** and **Suspend**. Nothing ticked (the default) changes only their order. Junban never deletes a card, and **Restore previous order** undoes all of it, unsuspending only the cards Junban suspended — never ones you suspended yourself. To treat a word on your list as not on it, click it in the preview.
 
+**Junban asks "Same word as one on your list?" — what is that?**
+A card's word can be a word on your list spelled another way: 引き伸ばす on your card, 引き延ばす on your list; 豹変する on the card, 豹変 on your list. Junban won't guess — it shows each one with its reading and the sentence from your card. Tick the ones that are the same word and they move up with your list's words; the rest stay where their sentence puts them. Your answers are kept when you press **Reorder**, so a word is only asked about once, and **earlier answers** lets you change one.
+
+**Why does Junban say my list is out of date?**
+Your library, your known words or a setting has changed since your last Generate, so the order would follow an old list. **Preview order** turns into **Generate & preview**: press it, and Surasura brings your list up to date in the background (the report doesn't open), then shows the new order. **Reorder** is available again once it has.
+
 **Why does Junban put phrases like ことが出来る with my list's words?**
 Your list counts words one at a time, so a phrase can never be on it — yet phrases are often half of a mined backlog. Junban finds each one whole in your library, and one you meet as often as your list's own words is placed with them, in the episode you first meet it. Untick **Phrases** in the Junban window to put them with the rest. (Japanese only.)
 

@@ -34,6 +34,7 @@ SECONDARY_COLOR = "#03dac6"
 ERROR_COLOR = "#cf6679"
 # The logo's blue (app/assets/images/app_icon.png) — the Generate button's "run me" border.
 SURASURA_BLUE = "#1a6bb5"
+CHECK_GRAY = "#8a8a8a"   # the Generate button's "up to date" check — quiet, like the ⓘ beside the slider
 
 
 def journey_is_current(args, language):
@@ -1169,7 +1170,7 @@ class MasterDashboardApp:
         # The check sits ON the button, at its right edge, so the button never changes length (the
         # user, 2026-09-23). It wears the button's own colours — dark, and purple under the pointer
         # like the button — and a click on it is a click on the button.
-        self.lbl_journey_state = tk.Label(self.journey_border, text="✓", bg=SURFACE_COLOR, fg="#4db6ac",
+        self.lbl_journey_state = tk.Label(self.journey_border, text="✓", bg=SURFACE_COLOR, fg=CHECK_GRAY,
                                           font=("Segoe UI", 10, "bold"), bd=0, padx=0, pady=0)
         ToolTip(self.lbl_journey_state, "Up to date — nothing has changed since your last Generate.")
         self.lbl_journey_state.bind("<Button-1>", lambda e: self.btn_journey.invoke(), add="+")
@@ -2591,11 +2592,14 @@ class MasterDashboardApp:
         if not self._junban_auto_lock.acquire(blocking=False):
             return
         self._last_junban_auto = now
+        # Read on this thread (the widgets), asked on the worker's: is the list up to date — the
+        # Generate button's own question, so a reorder never follows a list that is behind.
+        args, language = self._analyzer_args(), self.var_language.get()
 
         def work():
             message = ""
             try:
-                message = auto.run_quietly(settings)
+                message = auto.run_quietly(settings, list_current=journey_is_current(args, language))
             finally:
                 self._junban_auto_lock.release()
                 self.gui_queue.put(lambda: self._junban_spinner(False))
@@ -2604,6 +2608,16 @@ class MasterDashboardApp:
 
         self._junban_spinner(True)
         threading.Thread(target=work, daemon=True).start()
+
+    def _tell_junban_list_changed(self):
+        """After any Generate: an open 順 window that was waiting for an up-to-date list (its
+        "Generate & preview", Junban_Backlog_Spec §16.9) previews again. The window decides."""
+        window = getattr(self, "junban_window", None)
+        try:
+            if window is not None and window.winfo_exists():
+                window.on_list_updated()
+        except Exception:
+            pass
 
     def _maybe_auto_generate(self):
         """The quiet Generate, when the Anki sync brought in known words — returns True if it started.
@@ -2684,7 +2698,7 @@ class MasterDashboardApp:
         button stays lit, as if the pointer were still on it."""
         try:
             self.lbl_journey_state.config(bg=ACCENT_COLOR if lit else SURFACE_COLOR,
-                                          fg=BG_COLOR if lit else "#4db6ac")
+                                          fg=BG_COLOR if lit else CHECK_GRAY)
             if on_check:
                 self.btn_journey.state(["active"] if lit else ["!active"])
         except Exception:
@@ -2799,13 +2813,15 @@ class MasterDashboardApp:
         elif self._try_open_existing_report(args):
             self._maybe_junban_auto(force=True)
             self._schedule_journey_state()
+            self._tell_junban_list_changed()
             return
 
         self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
                                capture_output=True, show_spinner=not quiet, clear_log=not quiet,
                                on_complete=lambda: (self._refresh_band_preview(force=True),
                                                     self._maybe_junban_auto(force=True),
-                                                    self._schedule_journey_state()))
+                                                    self._schedule_journey_state(),
+                                                    self._tell_junban_list_changed()))
 
     def _analyzer_args(self):
         """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread."""

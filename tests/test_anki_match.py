@@ -395,3 +395,74 @@ def test_each_other_unknown_word_counts_and_the_cards_own_word_never_does():
     assert anki_match.unknowns_beside("眼鏡", "新[あたら]しい眼鏡[めがね]を買[か]いに行[い]った。",
                                       tokenize, unknown) == 2
     assert anki_match.unknowns_beside("眼鏡", "", tokenize, unknown) is None
+
+
+# --------------------------------------------------------------------------- #
+# Check matches (Junban_Backlog_Spec §16): the same word spelled another way — a SUGGESTION only.
+# The words are the real backlog's (§12): cards the exact keys cannot place.
+# --------------------------------------------------------------------------- #
+_LIST = {"見惚れる": 957, "成り代わる": 2209, "引き延ばす": 3001, "過熱": 1343, "同行": 1344, "きゅっ": 2210}
+
+
+def test_a_spelling_on_the_card_reaches_the_list_word_through_its_own_sentence():
+    """anki_miner writes the dictionary form in the text's spelling (見とれる); the list keys UniDic's
+    lemma (見惚れる). Read in its sentence, the card's word IS the token whose lemma is on the list."""
+    tokenize = _tokenizer().tokenize
+    seen = anki_match.suggest("見とれる", "思わず<b>見とれて</b>しまった。", tokenize, _LIST, "ja")
+    assert seen == anki_match.Suggestion("見惚れる", "L6", "same word, other spelling", "みとれる")
+    assert anki_match.suggest("なり代わる", "あいつに<b>なり代わって</b>やる。", tokenize, _LIST, "ja").key == "成り代わる"
+    assert anki_match.suggest("引き伸ばす", "写真を引き伸ばす", tokenize, _LIST, "ja").key == "引き延ばす"
+
+
+def test_without_a_sentence_only_a_word_with_kanji_is_read_on_its_own():
+    """Alone, a kana word is read wrong too often — まく is 膜 to the tokenizer, not 撒く."""
+    tokenize = _tokenizer().tokenize
+    assert anki_match.suggest("見とれる", "", tokenize, _LIST, "ja").key == "見惚れる"
+    assert anki_match.suggest("まく", "", tokenize, {"膜": 0}, "ja") is None
+
+
+def test_a_noun_with_suru_and_a_sound_word_with_to_suggest_the_word_on_the_list():
+    tokenize = _tokenizer().tokenize
+    assert anki_match.suggest("同行する", "私も<b>同行する</b>よ", tokenize, _LIST, "ja") == \
+        anki_match.Suggestion("同行", "L7", "+ する", "どうこう")
+    assert anki_match.suggest("過熱する", "議論が<b>過熱し</b>ている。", tokenize, _LIST, "ja").key == "過熱"
+    assert anki_match.suggest("きゅっと", "手を<b>きゅっと</b>握った。", tokenize, _LIST, "ja") == \
+        anki_match.Suggestion("きゅっ", "L7", "+ と", "きゅっ")
+
+
+def test_the_rules_measured_wrong_never_suggest_anything():
+    """§4.4: a compound's part (伊勢海老 is not 伊勢 — dropped with L8, §16.1), a shared reading
+    (布陣 is not 婦人), containment either way (ピーマン is not ピー, 夢見る is not 見る)."""
+    tokenize = _tokenizer().tokenize
+    for word, sentence, listed in (("伊勢海老", "伊勢海老のグリルを食べた。", {"伊勢": 0, "イセ": 0}),
+                                   ("布陣", "布陣を敷く", {"婦人": 0}),
+                                   ("ピーマン", "ピーマンは苦手だ。", {"ピー": 0}),
+                                   ("夢見る", "夢見る少女", {"見る": 0})):
+        assert anki_match.suggest(word, sentence, tokenize, listed, "ja") is None, word
+
+
+def test_nothing_is_suggested_for_a_listed_word_for_chinese_or_without_a_tokenizer():
+    tokenize = _tokenizer().tokenize
+    assert anki_match.suggest("見惚れる", "思わず<b>見惚れて</b>しまった。", tokenize, _LIST, "ja") is None
+    # Reached exactly through the kana fold (L4) — already placed, so never a question.
+    assert anki_match.suggest("スルリ", "スルリと抜けた", tokenize, {"するり": 5}, "ja") is None
+    assert anki_match.suggest("學習", "我們一起學習", tokenize, {"学习": 0}, "zh") is None
+    assert anki_match.suggest("見とれる", "思わず見とれてしまった。", None, _LIST, "ja") is None
+    assert anki_match.suggest("見とれる", "思わず見とれてしまった。", tokenize, {}, "ja") is None
+
+
+def test_the_excerpt_marks_the_word_and_stays_one_short_line():
+    assert anki_match.sentence_excerpt("思わず<b>見とれて</b>しまった。", "見とれる") == "思わず【見とれて】しまった。"
+    long = "彼女は窓の外の景色にずっと" + "<b>見とれて</b>" + "いたので、先生に呼ばれても全く気がつかなかったらしい。"
+    line = anki_match.sentence_excerpt(long, "見とれる", width=24)
+    assert "【見とれて】" in line and len(line) <= 24 and line.startswith("…") and line.endswith("…")
+    assert anki_match.sentence_excerpt("", "見とれる") == ""
+
+
+def test_a_word_conjugated_in_a_sentence_without_bold_is_still_found_and_marked():
+    """The real なり代わる card: no <b>, and the sentence says なり代わろう — the token that IS the
+    card's word is found anywhere in its sentence, and marked as the sentence wrote it."""
+    tokenize = _tokenizer().tokenize
+    sentence = "こんな腕で この俺に なり代わろうとは"
+    assert anki_match.suggest("なり代わる", sentence, tokenize, _LIST, "ja").key == "成り代わる"
+    assert anki_match.sentence_excerpt(sentence, "なり代わる", tokenize=tokenize) ==         "こんな腕で この俺に 【なり代わろう】とは"

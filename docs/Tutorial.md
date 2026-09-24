@@ -149,4 +149,6 @@ Mine as much as you like, then press **順** at the bottom of the dashboard: the
 *   **Click a word on your list** to take it off: it goes with the cards not on your list. Click a greyed card to leave it where it is. Click again to undo.
 *   **Cards not on your list** — under **Also update the cards**, tick any of **Tag**, **Flag purple** and **Suspend**, or none (the default). Junban never deletes a card.
 *   **Restore previous order** puts everything back exactly as it was — the order, the flags and the tag — and unsuspends only the cards Junban suspended.
+*   **Same word, other spelling?** When a card's word may be a word on your list written another way — 引き伸ばす on the card, 引き延ばす on your list — a short list above the preview asks, with the reading and the card's sentence. Tick the ones that are the same word; nothing moves unless you do. Your answers are kept when you press Reorder, so each word is asked about once.
+*   **Your list out of date?** If your library, known words or settings have changed since your last Generate, **Preview order** becomes **Generate & preview**: one press brings your list up to date and shows the new order. Reorder waits until then.
 *   The **Anki** window shows how many new cards are waiting in your backlog.

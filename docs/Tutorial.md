@@ -15,7 +15,7 @@
 First, import your existing knowledge. The analyzer uses this to calculate your known % and skip words you already know.
 
 *   **Migaku / Jiten / Anki** — pull known words straight from your decks or exports.
-*   **Anki, live** — with Anki open (and the AnkiConnect add-on), press **Anki → Sync now**. Only cards you've studied count, and it can keep itself up to date automatically.
+*   **Anki, live** — with Anki open (and the AnkiConnect add-on), press **Anki → Sync now**. Only cards you've studied count, and it can keep itself up to date automatically. Tick **Generate when Anki adds known words** there too, and your list catches up on its own in the background.
 *   **Edit Ignore List** — hand-exclude words you never want suggested.
 
 ![Import Known Vocabulary Interface](assets/images/tutorial/import_vocab.png)
@@ -57,6 +57,8 @@ Press **Generate Journey** to build your list and see the report.
 
 If no changes, it reuses the last analysis, so theme tweaks are instant.
 
+The button tells you which it will be: a thin blue border means something has changed since your last Generate (your library, your known words or a setting); a small ✓ on its right edge means your journey is up to date.
+
 ![Generate Journey](assets/images/tutorial/generate_journey.png)
 
 ## 6. Understanding the Output
@@ -67,7 +69,8 @@ The report orders words by real payoff across *your* library:
 *   **Star (Priority)** ✦ — high-leverage words you'll see throughout all of your content.
 *   **Lopsided** ⚖ — words you'll see a lot in the next 2 weeks, but rarely after.
 *   **Reading word** 文 — a word you'll meet in text but will rarely *hear*, so it's worth a reading-first card.
-*   **Show filter** (⇅) — focus the list on **All**, **✦** only, **No ✦**, **文** only, or **No 文**.
+*   **In Anki** (a small card icon) — a new card for this word is already waiting in your Anki deck. Shown once you've chosen decks in the **Anki** window; switch it off under **Settings → 📊 Experience & UI → Label backlogged Anki words**.
+*   **Show filter** (⇅) — focus the list on **All**, **✦** only, **No ✦**, **文** only, or **No 文** — and **In Anki** / **Not in Anki** when you have an Anki backlog.
 *   **🔍 Search** — a tab beside **Priority List** (press **/** from anywhere): any word, and every sentence that uses it.
 *   **Mark Complete** (✓) — tick off a file you've finished; it advances you to the next.
 *   **Ignore Word / Other Freq Lists** — exclude words, or see tags from imported frequency lists.
@@ -140,5 +143,10 @@ Each card has a **⌕** button (or press **\\**) that searches the word on Nades
 Mine as much as you like, then press **順** at the bottom of the dashboard: the **new** cards waiting in your Anki deck are re-sorted into Surasura's learn order. Needs Anki open with the AnkiConnect add-on.
 
 *   Only new cards move — reviews, learning and suspended cards are never touched.
-*   You always see a preview of the new order before anything is written.
-*   **Restore previous order** puts everything back exactly as it was.
+*   **Your list first**: cards whose word is on your list lead, in the order you'll meet them. Phrases you meet as often as your list's words (ことが出来る, その気になる) come with them — untick **Phrases** to leave them with the rest.
+*   **Then everything else**, easiest first: cards whose sentence has no other new word, then the fewest new words. Words you already know go last. Untick **List first** to mix the words your list cut off in where your journey meets them.
+*   You always see a preview of the new order before anything is written. The **why** column says where each card goes; greyed rows are the cards not on your list.
+*   **Click a word on your list** to take it off: it goes with the cards not on your list. Click a greyed card to leave it where it is. Click again to undo.
+*   **Cards not on your list** — under **Also update the cards**, tick any of **Tag**, **Flag purple** and **Suspend**, or none (the default). Junban never deletes a card.
+*   **Restore previous order** puts everything back exactly as it was — the order, the flags and the tag — and unsuspends only the cards Junban suspended.
+*   The **Anki** window shows how many new cards are waiting in your backlog.

@@ -34,7 +34,7 @@ Anki sync talks only to the Anki running on your own computer.
 To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools. It lives inside the **Content Manager**, under **📖 Extract (EPUB / Anki)**.
 
 **There used to be two buttons — "Generate Journey" and "View Vocab Journey". Where did they go?**
-They're now a single **Generate Journey** button. If anything has changed since your last run it re-analyzes; if nothing has, it simply reopens your existing report instantly. Changing only the theme or Zen limit re-renders the report without re-analyzing.
+They're now a single **Generate Journey** button. If anything has changed since your last run it re-analyzes; if nothing has, it simply reopens your existing report instantly. Changing only the theme or Zen limit re-renders the report without re-analyzing. The button shows which it will be: a thin blue border means something has changed since your last Generate, and a small ✓ on its right edge means your journey is up to date.
 
 **Can I see which file an example sentence came from?**
 Yes — turn on **Settings → Experience & UI → "Sentence source"**. Each example sentence then gets a small marker showing its source: hover for the file (and, for subtitles, the timestamp), click to copy the full path, and shift-click to open the file at that exact sentence. For a YouTube transcript, clicking opens the video at the moment the line is spoken.
@@ -76,6 +76,18 @@ Yes. **Settings → 🧮 Data & System → Export Sentence Dictionary** makes a 
 
 **Can Surasura pick up the words I've learned in Anki by itself?**
 Yes. Press **Anki**, choose your decks and press **Sync now** — then tick **Sync automatically when Anki is running**. Whenever Anki is open, Surasura adds the words from cards you've studied since last time. New (unstudied) cards are never counted as known, and nothing is ever removed. It needs the AnkiConnect add-on.
+
+**Can my list update itself when I learn words in Anki?**
+Yes. In the **Anki** window, tick **Generate when Anki adds known words**. When a sync brings in words you now know, Generate runs by itself in the background: it doesn't open the report, runs at most every 10 minutes, and waits while the Content Manager, an import or another Generate is running. New episodes never set it off — you may want to order them first.
+
+**Can I see which words I already have Anki cards for?**
+Yes. Once you've chosen decks in the **Anki** window, every word a new card is already waiting for gets a small card icon in the report, the **Show** menu gains **In Anki** and **Not in Anki**, and each episode says how many of its words are already in Anki. The Anki window shows how many new cards are waiting. Switch the icon off under **Settings → 📊 Experience & UI → Label backlogged Anki words**.
+
+**What does 順 Junban do with the Anki cards that aren't on my list?**
+It still gives each one a place: after your list, easiest sentence first, and words you already know last. You can also act on them — under **Also update the cards → Cards not on your list**, tick any of **Tag**, **Flag purple** and **Suspend**. Nothing ticked (the default) changes only their order. Junban never deletes a card, and **Restore previous order** undoes all of it, unsuspending only the cards Junban suspended — never ones you suspended yourself. To treat a word on your list as not on it, click it in the preview.
+
+**Why does Junban put phrases like ことが出来る with my list's words?**
+Your list counts words one at a time, so a phrase can never be on it — yet phrases are often half of a mined backlog. Junban finds each one whole in your library, and one you meet as often as your list's own words is placed with them, in the episode you first meet it. Untick **Phrases** in the Junban window to put them with the rest. (Japanese only.)
 
 **Is there a way to bulk-download YouTube transcripts to feed into Surasura?**
 Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any number of links — single videos, pasted lists, or whole playlists. Clean `.txt` transcripts land in your **Processed** folder and in the tab you're on. (This is an optional feature; if you don't see the button, enable it under **Settings → Language & Parsing**.)

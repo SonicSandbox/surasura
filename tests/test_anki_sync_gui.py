@@ -243,6 +243,78 @@ class TestAnkiSyncWindow(unittest.TestCase):
         self.win._drain_once()
         self.assertEqual(self.win.result_var.get(), "KnownWord.json を読み込めません")
 
+    # ------------------------------------------------------------ backlog count (Junban_Backlog_Spec WP-B7)
+    def test_the_backlog_count_shows_under_the_total_only_once_there_is_one(self):
+        """398 = the real TheBank backlog this was built against. No backlog read yet (a user who never
+        synced, or an empty deck) shows nothing rather than '0 new cards'."""
+        self.win.q.put(("__KNOWN__", 4318, {}, 398))
+        self.win._drain_once()
+        self.assertEqual(self.win.backlog_var.get(), "398 new cards in your backlog")
+        self.assertEqual(self.win.lbl_backlog.winfo_manager(), "pack")
+        self.win.q.put(("__KNOWN__", 4318, {}, 1))
+        self.win._drain_once()
+        self.assertEqual(self.win.backlog_var.get(), "1 new card in your backlog")
+        self.win.q.put(("__KNOWN__", 4318, {}, 0))
+        self.win._drain_once()
+        self.assertEqual(self.win.backlog_var.get(), "")
+        self.assertEqual(self.win.lbl_backlog.winfo_manager(), "")
+
+    def test_a_result_without_a_count_leaves_the_backlog_line_as_it_was(self):
+        """Replace and Restore change known words, never the backlog — their results carry no count."""
+        self.win.q.put(("__KNOWN__", 4318, {}, 398))
+        self.win.q.put(("__RESULT__", _result(mode="restore", total_known=4200), {}))
+        self.win._drain_once()
+        self.assertEqual(self.win.backlog_var.get(), "398 new cards in your backlog")
+
+    def test_the_opening_refresh_reads_the_backlog_count_with_the_total(self):
+        from app import anki_sync
+
+        class Inline:                                   # run the refresh's worker here, not on a thread
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+        with patch.object(self.gui.threading, "Thread", Inline), \
+             patch.object(anki_sync, "count_known", return_value=4318), \
+             patch.object(anki_sync, "load_state", return_value={}), \
+             patch.object(anki_sync, "count_backlog", return_value=398) as count:
+            self.win.refresh_known()
+        self.win._drain_once()
+        count.assert_called_once_with("ja")
+        self.assertEqual(self.win.backlog_var.get(), "398 new cards in your backlog")
+
+    def _run_sync(self, result, backlog=None):
+        from app import anki_sync
+        snap = {"url": "http://127.0.0.1:8765", "decks": ["TheBank"], "fields": [], "suspended": False}
+        with patch.object(anki_sync, "sync", return_value=result), \
+             patch.object(anki_sync, "load_state", return_value={}), \
+             patch.object(anki_sync, "sync_backlog", **(backlog or {"return_value": (398, None)})) as read, \
+             patch.object(anki_sync, "count_backlog", return_value=398):
+            self.win._sync_worker(False, snap)
+        self.win._drain_once()
+        return read
+
+    def test_sync_now_reads_the_same_decks_backlog_so_the_count_is_current(self):
+        """The window's own Sync does what the automatic sync does: the known words, then the new cards
+        of the same decks and field (read-only on Anki)."""
+        read = self._run_sync(_result(added=12, scanned=812, total_known=4330))
+        read.assert_called_once_with("ja", "http://127.0.0.1:8765", ["TheBank"], [])
+        self.assertEqual(self.win.known_var.get(), "4,330")
+        self.assertEqual(self.win.backlog_var.get(), "398 new cards in your backlog")
+
+    def test_a_failed_sync_does_not_go_on_to_read_the_backlog(self):
+        read = self._run_sync(_result(error="Anki isn't running."))
+        read.assert_not_called()
+        self.assertEqual(self.win.result_var.get(), "Anki isn't running.")
+
+    def test_a_backlog_read_that_breaks_never_costs_the_sync_its_result(self):
+        """The count is a nicety; the +12 words and the dashboard's quiet Generate are not."""
+        result = _result(added=12, scanned=812, total_known=4330)
+        self._run_sync(result, backlog={"side_effect": RuntimeError("connection reset")})
+        self.assertIn("+12 words", self.win.result_var.get())
+        self.host._on_anki_sync_result.assert_called_once_with(result, auto=False)
+
     def test_restore_appears_only_when_there_is_a_backup(self):
         self.win.deiconify()
         self.win.update()

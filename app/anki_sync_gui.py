@@ -455,6 +455,11 @@ class AnkiSyncGui(tk.Toplevel):
         self.delta_var = tk.StringVar(value="")
         ttk.Label(stat, textvariable=self.delta_var, style="AksDelta.TLabel").pack(
             side=tk.LEFT, padx=(10, 0), pady=(6, 0))
+        # The new cards waiting in the same decks (anki_backlog.json) — shown only once there are any.
+        self.backlog_var = tk.StringVar(value="")
+        self.lbl_backlog = ttk.Label(box, textvariable=self.backlog_var, style="AksMuted.TLabel")
+        ToolTip(self.lbl_backlog, "The new cards waiting to be learned in these decks, read with each "
+                                  "sync. Junban (順) can put them in your journey's order.")
 
         self.result_var = tk.StringVar(value="")
         self.lbl_result = ttk.Label(box, textvariable=self.result_var, style="AksMuted.TLabel",
@@ -638,8 +643,10 @@ class AnkiSyncGui(tk.Toplevel):
         except tk.TclError:
             pass
 
-    def _show_known(self, total, state=None):
+    def _show_known(self, total, state=None, backlog=None):
         self.known_var.set(f"{int(total):,}")
+        if backlog is not None:
+            self._show_backlog(backlog)
         state = state or {}
         if state.get("last_backup"):
             if not self.lnk_restore.winfo_ismapped():
@@ -649,6 +656,16 @@ class AnkiSyncGui(tk.Toplevel):
         if state.get("last_sync") and not self.result_var.get():
             added = state.get("last_added") or 0
             self._set_result(f"Last synced {_ago(state['last_sync'])} · +{added:,} word{'s' if added != 1 else ''}")
+
+    def _show_backlog(self, count):
+        """Shows "398 new cards in your backlog" under the total — nothing when none has been read."""
+        count = int(count or 0)
+        if count:
+            self.backlog_var.set(f"{count:,} new card{'s' if count != 1 else ''} in your backlog")
+            self.lbl_backlog.pack(anchor="w", before=self.lbl_result)
+        else:
+            self.backlog_var.set("")
+            self.lbl_backlog.pack_forget()
 
     def _flash_delta(self, added):
         if added <= 0:
@@ -742,7 +759,7 @@ class AnkiSyncGui(tk.Toplevel):
             try:
                 from app import anki_sync
                 self.q.put(("__KNOWN__", anki_sync.count_known(self.language),
-                            anki_sync.load_state(self.language)))
+                            anki_sync.load_state(self.language), anki_sync.count_backlog(self.language)))
             except Exception:
                 pass
         threading.Thread(target=work, daemon=True).start()
@@ -764,7 +781,15 @@ class AnkiSyncGui(tk.Toplevel):
         with self._lock():
             result = anki_sync.sync(self.language, snap["url"], snap["decks"], snap["fields"],
                                     include_suspended=snap["suspended"], full=full)
-        self.q.put(("__RESULT__", result, anki_sync.load_state(self.language)))
+            # The same decks' new cards, as the automatic sync reads them (read-only on Anki). Only a
+            # count here, so it can never cost the sync its result.
+            if not result.error:
+                try:
+                    anki_sync.sync_backlog(self.language, snap["url"], snap["decks"], snap["fields"])
+                except Exception:
+                    pass
+        self.q.put(("__RESULT__", result, anki_sync.load_state(self.language),
+                    anki_sync.count_backlog(self.language)))
 
     def on_replace(self):
         if self.busy or not self._connected or not self.decks:
@@ -823,7 +848,7 @@ class AnkiSyncGui(tk.Toplevel):
             lock = self._own_lock = getattr(self, "_own_lock", None) or threading.Lock()
         return lock
 
-    def _show_result(self, result, state):
+    def _show_result(self, result, state, backlog=None):
         if result.error:
             self._set_result(result.error, ERROR)
         else:
@@ -837,7 +862,7 @@ class AnkiSyncGui(tk.Toplevel):
             self._set_result(text, SECONDARY if (result.added or result.mode != "delta") else MUTED)
             if result.mode not in ("replace", "restore"):
                 self._flash_delta(result.added)
-        self._show_known(result.total_known, state)
+        self._show_known(result.total_known, state, backlog)
         if self.app is not None and hasattr(self.app, "_on_anki_sync_result"):
             try:
                 self.app._on_anki_sync_result(result, auto=False)
@@ -886,9 +911,9 @@ class AnkiSyncGui(tk.Toplevel):
                     self._render_decks()
                     self._render_fields()
                 elif tag == "__KNOWN__":
-                    self._show_known(item[1], item[2])
+                    self._show_known(*item[1:])
                 elif tag == "__RESULT__":
-                    self._show_result(item[1], item[2])
+                    self._show_result(*item[1:])
                 elif tag == "__DRYRUN__":
                     self._set_busy(False)
                     self._confirm_replace(item[1])

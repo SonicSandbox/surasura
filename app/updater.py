@@ -8,15 +8,18 @@ off, then reads back the result on the next launch.
 
 Deliberately UI-free (no tkinter) so every step is unit-testable, and deliberately narrow in
 what it touches: only program files under the frozen ``_internal/`` dir plus the small
-marker / result JSONs next to the executable. It NEVER reads or writes User Files, data,
-results, or settings.json — user data is entirely outside the blast radius.
+marker / result JSONs next to the executable, and a failure report under ``debug/``. It NEVER
+reads or writes User Files, data, results, or settings.json — user data is entirely outside the
+blast radius.
 """
 import os
 import sys
 import json
+import time
 import hashlib
 import zipfile
 import shutil
+import platform
 import subprocess
 import urllib.request
 
@@ -29,6 +32,7 @@ STAGING_DIRNAME = ".update_staging"
 BACKUP_DIRNAME = ".update_backup"
 MARKER_NAME = "pending_update.json"
 RESULT_NAME = "last_update_result.json"
+REPORT_NAME = "update_report.txt"
 UPDATER_EXE_NAME = "updater.exe"
 
 
@@ -66,6 +70,10 @@ def backup_dir():
 
 def updater_exe_path():
     return os.path.join(_user_dir(), UPDATER_EXE_NAME)
+
+
+def report_path():
+    return os.path.join(_user_dir(), "debug", REPORT_NAME)
 
 
 def can_auto_apply():
@@ -296,6 +304,36 @@ def consume_result():
         }
 
     return None
+
+
+def write_report(stage, reason, to_version="", from_version=""):
+    """Append a plain-text account of a failed update to ``debug/update_report.txt``.
+
+    The frozen app has no console, so without this the reason is gone the moment its dialog
+    closes. The user can attach the file to a bug report. Appended, never overwritten, so an
+    earlier failure isn't lost to a later one (a helper that never started is reported again, as
+    "did not complete", on the next launch). Holds versions, the reason and the system — nothing
+    from User Files. Best-effort: returns the file's path, or None if it couldn't be written.
+    """
+    try:
+        path = report_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = [
+            f"--- Surasura update report, {time.strftime('%Y-%m-%d %H:%M:%S')} ---",
+            f"Stage: {stage}",
+            f"From version: {from_version or __version__}",
+            f"To version: {to_version or 'unknown'}",
+            f"Reason: {reason}",
+            f"System: {platform.platform()}, Python {platform.python_version()}",
+            f"Packaged build: {'yes' if path_utils.is_frozen() else 'no'}; "
+            f"updater.exe present: {'yes' if os.path.exists(updater_exe_path()) else 'no'}",
+            f"Install folder: {_user_dir()}",
+        ]
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n\n")
+        return path
+    except Exception:
+        return None
 
 
 def effective_class(cls, info, skipped_version="", auto_enabled=True, can_apply=True):

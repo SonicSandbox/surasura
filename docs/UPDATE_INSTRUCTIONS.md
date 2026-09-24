@@ -29,7 +29,9 @@ the manual path below, even with automatic updates on.
 
 If an automatic update ever can't finish (e.g. no internet), Surasura simply keeps running
 the version you have and lets you try again or update manually — it will never get stuck
-retrying.
+retrying. It also notes what went wrong in `debug/update_report.txt`, inside your Surasura
+folder; if it keeps happening, attach that file to an issue on the
+[GitHub repository](https://github.com/SonicSandbox/surasura/issues).
 
 ## Manual update (always available)
 1. **(Optional) Back up your data.** Auto-updates don't need this, but for a manual full

@@ -1730,11 +1730,17 @@ class MasterDashboardApp:
             try:
                 marker = updater.prepare_update(info)
             except Exception as e:
-                self.gui_queue.put(lambda: messagebox.showerror(
-                    "Update",
-                    f"Couldn't download the update:\n{e}\n\n"
-                    "You can try again later, or update manually from the releases page."))
-                self.gui_queue.put(lambda: self.status_var.set("Ready"))
+                report = updater.write_report("download", e, to_version=info.version)
+                # Bind the error now: Python deletes `e` when this block ends, before the UI thread
+                # runs the callback (an unbound `e` raised NameError and no dialog ever showed).
+                def _show_error(err=e, report=report):
+                    messagebox.showerror(
+                        "Update",
+                        f"Couldn't download the update:\n{err}\n\n"
+                        "You can try again later, or update manually from the releases page."
+                        + self._update_report_note(report))
+                    self.status_var.set("Ready")
+                self.gui_queue.put(_show_error)
                 return
             # Arming + closing the app must happen on the main (UI) thread.
             self.gui_queue.put(lambda: self._apply_and_restart(marker))
@@ -1746,7 +1752,10 @@ class MasterDashboardApp:
         try:
             updater.launch_helper(marker)
         except Exception as e:
-            messagebox.showerror("Update", f"Couldn't start the updater:\n{e}")
+            report = updater.write_report("start updater", e,
+                                          to_version=getattr(self._update_info, "version", ""))
+            messagebox.showerror("Update", f"Couldn't start the updater:\n{e}"
+                                 + self._update_report_note(report))
             self.status_var.set("Ready")
             return
         # Terminate child processes and wait briefly so their file handles are released before
@@ -1791,12 +1800,24 @@ class MasterDashboardApp:
                 self.skipped_version = ver
                 self.save_settings()
             reason = res.get("reason", "")
+            report = updater.write_report("install", reason, to_version=ver,
+                                          from_version=res.get("from") or "")
             detail = f" ({reason})" if reason else ""
             if messagebox.askyesno(
                 "Update",
-                f"The automatic update didn't finish{detail}.\n\n"
-                "Open the download page to update manually?"):
+                f"The automatic update didn't finish{detail}."
+                + self._update_report_note(report)
+                + "\n\nOpen the download page to update manually?"):
                 webbrowser.open("https://github.com/SonicSandbox/surasura/releases/latest")
+
+    @staticmethod
+    def _update_report_note(report):
+        """The dialog lines naming a saved update report ('' when none could be written)."""
+        if not report:
+            return ""
+        return ("\n\nA report was saved to:\n" + report +
+                "\nIf this keeps happening, please attach it to an issue at "
+                "github.com/SonicSandbox/surasura/issues.")
 
     def log_to_terminal(self, message):
         """Appends text to the terminal widget safely via queue"""

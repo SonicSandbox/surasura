@@ -89,6 +89,9 @@ It still gives each one a place: after your list, easiest sentence first, and wo
 **Junban asks "Same word as one on your list?" — what is that?**
 A card's word can be a word on your list spelled another way: 引き伸ばす on your card, 引き延ばす on your list; 豹変する on the card, 豹変 on your list. Junban won't guess — it shows each one with its reading and the sentence from your card. Tick the ones that are the same word and they move up with your list's words; the rest stay where their sentence puts them. Your answers are kept when you press **Reorder**, so a word is only asked about once, and **earlier answers** lets you change one.
 
+**What does "i+1 first" do in the Junban window?**
+It makes sure a card on your list is readable when it comes up. If the sentence on the card has another word from your list that you'd only learn later, Junban brings that word's card right before it — as long as that card is readable there itself — so you learn it first, then the card. If it can't (the word has no card, or its card needs something later too), the card waits with the cards that have more new words. Names never hold a card back, nor do words too rare to be on your list. It never chains: a card brought forward never brings anything else. Off until you tick it.
+
 **Why does Junban say my list is out of date?**
 Your library, your known words or a setting has changed since your last Generate, so the order would follow an old list. **Preview order** turns into **Generate & preview**: press it, and Surasura brings your list up to date in the background (the report doesn't open), then shows the new order. **Reorder** is available again once it has.
 

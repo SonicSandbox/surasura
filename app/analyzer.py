@@ -51,7 +51,9 @@ ENSURE_AUDIO_EXAMPLE = False
 #     is conjugated (JapaneseTokenizer.tokenize_sentences).
 # 11: library_frequency.json is written on every run and carries each word's first file, score and
 #     spelling (Junban places a mined word below the list's cut-off where the journey meets it).
-ENGINE_REVISION = 11
+# 12: a Japanese example sentence loses a leading verse number (「13そこで…」 -> 「そこで…」,
+#     strip_verse_number) — never a counted number (「3人で」, 「5番目」).
+ENGINE_REVISION = 12
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -180,6 +182,34 @@ class JapaneseTokenizer(Tokenizer):
                 s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
                 if s_text and has_target_language(s_text, 'ja'):
                     yield s_text, current_sentence_tokens
+
+_LEADING_DIGITS_RE = re.compile(r"^[0-9０-９]+")
+
+
+def strip_verse_number(sentence, tagger):
+    """A Japanese example sentence without the verse number some texts put before it — 「13そこで
+    モーサヤは…」 reads 「そこでモーサヤは…」 (a scripture-style book in the library numbered every
+    verse, and those numbers were landing on cards). Only a number made of digits, and only when what
+    follows is not what the number counts: a counter or suffix (3人, 2つ目, 10年前, 5番目, 12月,
+    1日中), another number (100万) or punctuation (2、3日) keeps it. Only the front is cut, so the
+    sentence is still a verbatim piece of its file and its source anchor still finds it.
+
+    `tagger` is the fugashi tagger the run already holds; the digits are not a word, so nothing the
+    analysis counted changes — only the sentence shown."""
+    if not sentence or not _LEADING_DIGITS_RE.match(sentence):
+        return sentence
+    words = list(tagger(sentence))
+    if len(words) < 2:
+        return sentence
+    first, following = words[0], words[1]
+    if first.feature.pos2 != "数詞" or not _LEADING_DIGITS_RE.fullmatch(first.surface):
+        return sentence
+    feature = following.feature
+    if (feature.pos1 in ("接尾辞", "補助記号", "空白") or feature.pos2 == "数詞"
+            or str(feature.pos3 or "").startswith("助数詞")):
+        return sentence
+    return sentence[len(first.surface):].lstrip() or sentence
+
 
 class ChineseTokenizer(Tokenizer):
     def __init__(self, reinforce_segmentation=False, script="asis"):
@@ -1996,6 +2026,8 @@ def main():
             context_key = f"Context {i+1}"
             has_ctx = len(selected_contexts) > i
             context_val = selected_contexts[i][3].strip() if has_ctx else ""
+            if context_val and args.language == "ja":
+                context_val = strip_verse_number(context_val, tokenizer.tagger)
             r[context_key] = context_val
             # Where that sentence came from. Deliberately NOT named "Context Source N": both report
             # templates collect extra examples with startsWith('Context '), so such a column would

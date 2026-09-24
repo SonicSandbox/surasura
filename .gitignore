@@ -39,6 +39,8 @@ debug/testprofile*.csv
 # (dev artifacts; they hold the developer's own deck and note contents)
 debug/anki_*.json
 debug/wpk_*.json
+# Your own settings.json, parked while the clean shipped one is committed (it names your decks).
+debug/settings.personal*.json
 
 # Auto-update runtime artifacts (created next to the exe at runtime)
 .update_staging/

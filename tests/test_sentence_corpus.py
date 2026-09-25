@@ -163,6 +163,87 @@ def test_a_word_without_a_good_length_sentence_gets_no_entry(tmp_path):
     assert "冒険" in terms and "困難" not in terms
 
 
+def test_a_wanted_set_keeps_only_those_words_sentences_ranked_the_same():
+    """Anki Backfill's 例文 asks for a few words, not all 29,000: the same ranking, sentences kept for
+    those words only (the memory the pass keeps is the sentences)."""
+    easy = "明日から冒険に出かけよう。"
+    hard = "未知の迷宮で壮絶な冒険が始まった。"
+    files = {"第01話.txt": [hard, easy]}
+    known = _lemmas(easy) - {"冒険"}
+    everything = _collect(files, known=known)
+    key = next(k for k in everything if k[0] == "冒険")
+    cache = {name: _tokenized(lines) for name, lines in files.items()}
+
+    some = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(known), set()), WINDOW,
+                      wanted={key})
+
+    assert [k for k, w in some.items() if w.best is not None] == [key]
+    assert some[key].best.result() == everything[key].best.result()
+
+
+def test_among_equally_easy_sentences_one_with_words_still_being_learned_leads():
+    """The user (2026-09-24): an i+1 sentence is "even better if the words are NOT mature". Both lines
+    are all-known apart from 冒険 and the same length class; the second practises 旅立ち, a word still
+    being learned — it leads. Nothing is skipped: the other is still there, second."""
+    plain = "明日から冒険に出かけよう。"
+    fresh = "旅立ちの朝に冒険が始まる。"
+    files = {"第01話.txt": [plain, fresh]}
+    known = (_lemmas(plain) | _lemmas(fresh)) - {"冒険"}
+    cache = {name: _tokenized(lines) for name, lines in files.items()}
+    key = next(k for _t, tokens in cache["第01話.txt"] for k in [tuple(t[:2]) for t in tokens] if k[0] == "冒険")
+    young = {tuple(t[:2]) for _t, tokens in _tokenized([fresh]) for t in tokens if t[0] == "旅立ち"}
+    assert young
+
+    def order(**kw):
+        words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(known), set()), WINDOW,
+                           wanted={key}, **kw)
+        return _texts(words[key].best.result())
+
+    assert order() == [plain, fresh]                 # library order, as it always was
+    assert order(young=young) == [fresh, plain]
+
+
+def test_best_for_reads_the_indexed_library_and_puts_the_easiest_sentence_first(tmp_path):
+    """End to end, from the token store as the indexer leaves it: every other word of the easy line is
+    known, so it leads with no unknown word besides 冒険 itself, and the word's surface comes along to
+    be marked on the card."""
+    easy = "明日から冒険に出かけよう。"
+    hard = "未知の迷宮で壮絶な冒険が始まった。"
+    _library(("第01話.txt", [hard, easy]), known=sorted(_lemmas(easy) - {"冒険"}))
+    sc.build("ja", str(tmp_path / "corpus.zip"), progress=lambda message: None)   # indexes the library
+    key = next((l, r) for _t, tokens in _tokenized([easy]) for l, r, _s, _o in tokens if l == "冒険")
+
+    found = sc.best_for("ja", {key})
+
+    assert list(found) == [key]
+    assert [text for _others, text, _surface, _file in found[key]] == [easy, hard]
+    assert found[key][0] == (0, easy, "冒険", 0)
+    assert found[key][1][0] > 0
+    assert sc.best_for("ja", set()) == {}
+
+
+def test_a_phrase_is_found_as_its_run_of_words_however_it_is_inflected():
+    """A card's word can be several tokens — 気を取り直す, 当事者 (当事 + 者). It is found as that run of
+    lemmas, in any conjugation (取り直して), its own words never count as unknown, and it comes back under
+    its name with the words as written in THAT sentence, to be marked."""
+    line = "彼女は気を取り直して歩き出した。"
+    other = "そこで気を取り直すことにした。"
+    files = {"第01話.txt": [line, other]}
+    cache = {name: _tokenized(lines) for name, lines in files.items()}
+    phrase = tuple(t[0] for _t, tokens in _tokenized(["気を取り直す"]) for t in tokens)
+    assert len(phrase) == 3
+    known = (_lemmas(line) | _lemmas(other)) - {"取り直す"}
+
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(known), set()), WINDOW,
+                       wanted=set(), phrases={"気を取り直す": phrase})
+
+    best = words["気を取り直す"].best.result()
+    assert [c[1] for c in best] == [line, other]
+    assert [c[0][0] for c in best] == [0, 0]                 # 取り直す is the card's own word
+    assert [c[3] for c in best] == ["気を取り直し", "気を取り直す"]
+    assert not [k for k, w in words.items() if w.best is not None and k != "気を取り直す"]
+
+
 def test_chinese_keeps_single_characters_and_has_no_readings(tmp_path):
     """I5: Jieba's most common words are single characters, and Chinese has no reading to fill."""
     lines = ["我今天去图书馆看书。", "我们明天一起去公园散步吧。"]

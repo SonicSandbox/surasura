@@ -126,6 +126,17 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 sentence_corpus.main()
                 return
+
+            elif command == 'junban_patterns':
+                # The Anki Backfill window's "Build & preview" (Patterns_Spec §17.2): the library's
+                # パターン data, counted in its own process. Guarded — the module may be absent.
+                try:
+                    from modules.junban import patterns_build
+                except ImportError:
+                    log_error("junban_patterns: the Junban module is not installed")
+                    sys.exit(1)
+                sys.argv = [sys.argv[0]] + sys.argv[2:]
+                sys.exit(patterns_build.main())
             else:
                 log_error(f"Unknown command: {command}")
 

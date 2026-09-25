@@ -196,6 +196,26 @@ class AnkiSyncGui(tk.Toplevel):
         self._closing = True
         self.destroy()
 
+    def sync_backfill_button(self):
+        """Show "Backfill cards…" only while the dashboard offers it — Junban switched on and
+        installed. Called on open and again whenever the Junban toggle changes."""
+        try:
+            offered = bool(self.app is not None and self.app.backfill_available())
+        except Exception:
+            offered = False
+        try:
+            packed = self.btn_backfill.winfo_manager() == "pack"
+            if offered and not packed:
+                self.btn_backfill.pack(side=tk.RIGHT, after=self.conn_lbl)
+            elif not offered and packed:
+                self.btn_backfill.pack_forget()
+        except tk.TclError:
+            pass
+
+    def open_backfill(self):
+        if self.app is not None and hasattr(self.app, "open_backfill"):
+            self.app.open_backfill()
+
     # ------------------------------------------------------------------- settings
     def _url(self):
         from app import anki_connect
@@ -346,6 +366,13 @@ class AnkiSyncGui(tk.Toplevel):
         self.conn_lbl = ttk.Label(title_row, textvariable=self.conn_var, style="AksState.TLabel")
         self.conn_lbl.pack(side=tk.RIGHT, padx=(12, 10))
         self.conn_tip = ToolTip(self.conn_lbl, "")
+        # Anki Backfill lives in the Junban module. The dashboard says whether it is offered — this
+        # window never imports a module itself (spec I1) — and the button hides with Junban.
+        self.btn_backfill = ttk.Button(title_row, text="Backfill cards…", style="Aks.TButton",
+                                       command=self.open_backfill)
+        ToolTip(self.btn_backfill, "Fill fields on your cards from Surasura.")
+        self._title_row = title_row
+        self.sync_backfill_button()
 
         ttk.Label(main,
                   text=f"Adds the words from {LANG_NAMES[self.language]} cards you've studied to your "

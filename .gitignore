@@ -78,5 +78,10 @@ docs/assets/opencc/
 docs/assets/nlt_gold/
 debug/patterns_review*.html
 
+# General Japanese corpora for the Patterns databases and the corpus assets (Patterns_Spec.md
+# WP-P10) — third-party downloads under their own licences (CC BY-SA, CC BY-NC, NC-ND, …) and the
+# text and dictionaries built from them. Large, never shipped, never published.
+docs/assets/corpora/
+
 # Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
 debug/*.png

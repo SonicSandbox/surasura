@@ -165,13 +165,20 @@ class _Word:
         self.listed = listed        # False: counted (so sentences know it) but never an entry
 
 
-def collect(files, file_tokens, language, known, window, progress=None):
+def collect(files, file_tokens, language, known, window, progress=None, wanted=None, young=None,
+            phrases=None):
     """The streaming pass. `files` are the library's paths in library order; `file_tokens(path)` returns
     that file's cached sentences [(text, [[lemma, reading, surface, orth], ...]), ...] — called once per
     file, and nothing of a file outlives its turn except the few sentences a word keeps (I7).
 
     `known` = (known_tuples, known_lemmas, ignore), the analyzer's own sets; `window` = length_range().
-    Returns {(lemma, reading): _Word}."""
+    `wanted`, a set of (lemma, reading), keeps sentences for those words only — the same ranking, a
+    fraction of the memory (`best_for`). `young`, a set of keys the learner is still learning, puts a
+    sentence with more of them first among equally easy ones of a good length (the user, 2026-09-24:
+    "even better if the words are NOT mature"); without it the order is as it always was. `phrases`,
+    {name: (lemma, …)}, finds several-word targets (当事者, 気を取り直す) as that run of lemmas, however
+    inflected, ranked the same with their own words not counted against them; they come back under
+    their name. Returns {(lemma, reading) or name: _Word}."""
     from app.analyzer import has_target_language
 
     known_tuples, known_lemmas, ignore = known
@@ -179,6 +186,10 @@ def collect(files, file_tokens, language, known, window, progress=None):
     words = {}
     lang_ok = {}                # memo: a string -> has target-language characters
     known_memo = {}             # memo: (lemma, reading) -> known / ignored
+    starts = {}                 # a phrase's first lemma -> [(name, lemmas)]
+    for name, lemmas in (phrases or {}).items():
+        if len(lemmas) > 1:
+            starts.setdefault(lemmas[0], []).append((name, tuple(lemmas)))
 
     def _lang(text):
         ok = lang_ok.get(text)
@@ -200,7 +211,8 @@ def collect(files, file_tokens, language, known, window, progress=None):
                     # One-character kana in Japanese are particles and endings — never an entry, but
                     # still words a sentence can be hard for. Chinese keeps single characters, as the
                     # analyzer does (most of its common words are one character).
-                    listed = not (language == "ja" and len(lemma) == 1 and _KANA_ONLY.match(lemma))
+                    listed = not (language == "ja" and len(lemma) == 1 and _KANA_ONLY.match(lemma)) \
+                        and (wanted is None or key in wanted)
                     word = words[key] = _Word(listed)
                 word.count += 1
                 word.orths[orth] = word.orths.get(orth, 0) + 1
@@ -217,16 +229,39 @@ def collect(files, file_tokens, language, known, window, progress=None):
             if not (lo <= size <= hi) or not present:
                 continue
             margin = 0 if own_lo <= size <= own_hi else 1
+            fresh = sum(1 for key in present if key in young) if young else 0
             for key, surface in present.items():
                 word = words[key]
                 if not word.listed:
                     continue
                 others = unknown - (0 if known_memo[key] else 1)
-                word.best.offer(((others, margin, fidx, sidx), text, fidx, surface))
+                # Its own word never counts toward the young words it practises.
+                recent = fresh - (1 if young and key in young else 0)
+                word.best.offer(((others, margin, -recent, fidx, sidx), text, fidx, surface))
+            if starts:
+                for name, span in _phrases_in(tokens, starts):
+                    inside = {(t[0], t[1]) for t in span}
+                    others = unknown - sum(1 for k in inside if known_memo.get(k) is False)
+                    recent = fresh - sum(1 for k in inside if young and k in young)
+                    word = words.get(name)
+                    if word is None:
+                        word = words[name] = _Word(True)
+                    word.best.offer(((others, margin, -recent, fidx, sidx), text, fidx,
+                                     "".join(t[2] for t in span)))
 
         if progress and ((fidx + 1) % PROGRESS_EVERY == 0 or fidx + 1 == total):
             progress(f"Reading your library: {fidx + 1:,} / {total:,} files…")
     return words
+
+
+def _phrases_in(tokens, starts):
+    """Each phrase of `starts` found in a sentence's tokens, once: (name, its tokens there)."""
+    found = set()
+    for i, token in enumerate(tokens):
+        for name, lemmas in starts.get(token[0], ()):
+            if name not in found and tuple(t[0] for t in tokens[i:i + len(lemmas)]) == lemmas:
+                found.add(name)
+                yield name, tokens[i:i + len(lemmas)]
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -453,12 +488,76 @@ def export_dictionary(words, sources, save_path, language, tag=None, progress=No
 # --------------------------------------------------------------------------------------------- #
 # The run
 # --------------------------------------------------------------------------------------------- #
+def known_sets(language, store, settings):
+    """(known_tuples, known_lemmas, ignore): the analyzer's own sets — the known words as the token
+    store caches them (by KnownWord.json's signature), and the Ignore, Blacklist and Graduated lists."""
+    import sqlite3
+    from app import analyzer, token_index
+    from app.path_utils import get_user_files_path
+    from app.zh_script import effective
+
+    reinforce = bool(settings.get("reinforce_segmentation", False))
+    script = effective(language, settings.get("zh_script", "asis"))
+    user_files = get_user_files_path(language)
+    known_file = os.path.join(user_files, "KnownWord.json")
+    signature = token_index.known_signature(known_file, script)
+    cached = store.get_cached_known(signature)
+    if cached is None:
+        tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
+               if language == "zh" else analyzer.JapaneseTokenizer())
+        cached = analyzer.load_known_words(known_file, tok)
+        try:
+            store.set_cached_known(signature, *cached)
+        except sqlite3.Error:
+            pass
+    ignore = set()
+    for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
+        ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script)
+    return cached[0], cached[1], ignore
+
+
+def best_for(language, wanted, progress=None, young=None, phrases=None):
+    """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
+    them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
+    (keys still being learned) breaks ties toward sentences that practise them; `phrases` ({name:
+    lemmas}) finds several-word targets too, under their name. For Anki Backfill's 例文
+    (`modules/junban/backfill.py`). Reads the token store as it stands and never tokenizes the
+    library: the background indexer keeps it current.
+
+    -> {key or name: [(others, text, surface, file)]}, best first — `others` is how many words besides
+    the target's own the learner doesn't know; `file` tells two sentences' episodes apart. A target
+    with no sentence of a good length is absent."""
+    from app import analyzer, settings_manager, token_index
+
+    if not wanted and not phrases:
+        return {}
+    settings = settings_manager.load_settings()
+    # As every run sets it, before the known words are read (a new cache is tokenized with it).
+    analyzer.SANITIZE_JA = (language == "ja")
+    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    if not files:
+        return {}
+    store = token_index.open_store(language)
+    try:
+        words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
+                        length_range(settings), progress=progress, wanted=set(wanted or ()),
+                        young=set(young or ()), phrases=phrases)
+    finally:
+        store.close()
+    found = {}
+    for key, word in words.items():
+        best = word.best.result() if word.best is not None else []
+        if best:
+            found[key] = [(rank[0], text, surface, fidx) for rank, text, fidx, surface in best]
+    return found
+
+
 def build(language, save_path, progress=print, show_source=False):
     """Library -> token store (only new or changed files tokenized) -> one pass -> the dictionary.
     Returns the number of words written (0: nothing to export, nothing written)."""
     import sqlite3
     from app import analyzer, settings_manager, token_index
-    from app.path_utils import get_data_path, get_user_files_path
+    from app.path_utils import get_data_path
     from app.zh_script import effective
 
     settings = settings_manager.load_settings()
@@ -488,24 +587,8 @@ def build(language, save_path, progress=print, show_source=False):
             progress(f"Your library is being indexed right now ({e}); using what is ready — files "
                      "added in the last few minutes may be missing.")
 
-        known_file = os.path.join(get_user_files_path(language), "KnownWord.json")
-        signature = token_index.known_signature(known_file, script)
-        cached = store.get_cached_known(signature)
-        if cached is None:
-            tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
-                   if language == "zh" else analyzer.JapaneseTokenizer())
-            cached = analyzer.load_known_words(known_file, tok)
-            try:
-                store.set_cached_known(signature, *cached)
-            except sqlite3.Error:
-                pass
-        user_files = get_user_files_path(language)
-        ignore = set()
-        for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-            ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script)
-
-        words = collect(files, store.file_tokens, language, (cached[0], cached[1], ignore), window,
-                        progress=progress)
+        words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
+                        window, progress=progress)
     finally:
         store.close()
 

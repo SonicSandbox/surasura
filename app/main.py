@@ -2033,6 +2033,31 @@ class MasterDashboardApp:
                 self.btn_junban.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_junban))
         else:
             self.btn_junban.pack_forget()
+        # The Anki window's "Backfill cards…" follows the same switch (the user, 2026-09-24).
+        window = getattr(self, "anki_sync_window", None)
+        try:
+            if window is not None and window.winfo_exists():
+                window.sync_backfill_button()
+        except Exception:
+            pass
+
+    def backfill_available(self):
+        """Is Anki Backfill offered? Only while Junban is switched on AND importable — it lives there.
+        Asked by the Anki window, which must not import a module itself (Anki_Known_Sync_Spec I1)."""
+        if not self.var_enable_junban.get():
+            return False
+        try:
+            import modules.junban  # noqa: F401
+        except (ImportError, ModuleNotFoundError):
+            return False
+        return True
+
+    def open_backfill(self):
+        # One window, whichever door: the module keeps it on this dashboard (`host.backfill_window`).
+        if not self.backfill_available():
+            return
+        from modules.junban import open_backfill
+        open_backfill(self)
 
     def _update_zen_visibility(self, event=None):
         """Show the Zen Limit slider only when the Zen Mode theme is selected (it has no effect on

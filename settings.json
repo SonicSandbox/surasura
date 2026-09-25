@@ -129,6 +129,7 @@
     "junban_chunk_size": 150,
     "junban_unlisted": "list_first",
     "junban_phrases": true,
+    "junban_ready_first": true,
     "junban_order": "content",
     "junban_tag_markers": false,
     "junban_only_markers": [],

@@ -83,5 +83,10 @@ debug/patterns_review*.html
 # text and dictionaries built from them. Large, never shipped, never published.
 docs/assets/corpora/
 
+# Chinese gold set for the junban Patterns quality gate (Patterns_Chinese_Spec.md §11) — CC-CEDICT, the UD
+# Chinese treebanks, Wiktionary's separable verbs (all CC BY-SA 4.0), downloaded for local checks only.
+docs/assets/zh_gold/
+debug/patterns_review_zh*.html
+
 # Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
 debug/*.png

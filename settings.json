@@ -23,9 +23,9 @@
     "open_count": 0,
     "hide_satoru": true,
     "auto_update_enabled": true,
-    "anki_sync_auto": false,
+    "anki_sync_auto": true,
     "anki_backlog_on_generate": true,
-    "anki_auto_generate": false,
+    "anki_auto_generate": true,
     "skipped_version": "",
     "logic": {
         "inline_completed_files": false,
@@ -123,7 +123,7 @@
     "reels_ffmpeg_dir": "",
     "enable_junban": true,
     "junban_scope": "deck",
-    "junban_deck": "",
+    "junban_deck": "The Accelerator",
     "junban_url": "http://127.0.0.1:8765",
     "junban_word_fields": {},
     "junban_chunk_size": 150,
@@ -131,7 +131,7 @@
     "junban_phrases": true,
     "junban_ready_first": true,
     "junban_order": "content",
-    "junban_tag_markers": false,
+    "junban_tag_markers": true,
     "junban_only_markers": [],
     "junban_tag": "Surasura",
     "junban_write_frequency": false,
@@ -141,11 +141,26 @@
     "junban_sentence_mode": "if_empty",
     "junban_later_tag": false,
     "junban_later_flag": false,
-    "junban_later_suspend": false,
+    "junban_later_suspend": true,
     "junban_auto_reorder": false,
     "junban_auto_actions": false,
+    "junban_backfill_deck": "The Accelerator",
+    "junban_backfill_cards": "all",
+    "junban_backfill_replace": false,
+    "junban_backfill_fills": [
+        "sentence"
+    ],
+    "junban_backfill_fields": {},
+    "junban_auto_backfill": false,
     "anki_connect_url": "http://127.0.0.1:8765",
-    "anki_sync_decks": {},
-    "anki_sync_fields": {},
+    "anki_sync_decks": {
+        "ja": [
+            "The Accelerator",
+            "TheBank"
+        ]
+    },
+    "anki_sync_fields": {
+        "ja": []
+    },
     "anki_sync_include_suspended": false
 }

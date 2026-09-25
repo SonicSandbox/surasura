@@ -186,6 +186,7 @@ Surasura's shared パターン data is built from:
 - [RealPersonaChat](https://github.com/nu-dialogue/real-persona-chat) — Yamashita et al. (2023), CC BY-SA 4.0
 - [Aozora Bunko](https://www.aozora.gr.jp/) — public-domain works, via [aozorabunko-clean](https://huggingface.co/datasets/globis-university/aozorabunko-clean) (CC BY 4.0)
 - [Japanese Wikipedia](https://ja.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
+- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Japanese news 2015–2019, Universität Leipzig, CC BY 4.0 (counts only)
 
 The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 

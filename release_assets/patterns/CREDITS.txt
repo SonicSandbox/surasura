@@ -2,7 +2,7 @@ Surasura パターン data — patterns_ja_shared.db
 Licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
 
 Counts of how Japanese words are used (particles, forms, word pairs, frames), computed by Surasura
-(builder version 4) from:
+(builder version 5) from:
 
   * RealPersonaChat — Yamashita et al. (2023), nu-dialogue, CC BY-SA 4.0.
     https://github.com/nu-dialogue/real-persona-chat
@@ -10,6 +10,10 @@ Counts of how Japanese words are used (particles, forms, word pairs, frames), co
     https://www.aozora.gr.jp/  https://huggingface.co/datasets/globis-university/aozorabunko-clean
   * Japanese Wikipedia — Wikipedia contributors, CC BY-SA 4.0 (dump of 2026-09-20).
     https://ja.wikipedia.org/
+  * Leipzig Corpora Collection — Japanese newscrawl 2015, 2016, 2018 and 2019, © Universität Leipzig /
+    Sächsische Akademie der Wissenschaften / InfAI, CC BY 4.0. Counted into word statistics only.
+    https://wortschatz.uni-leipzig.de/  — D. Goldhahn, T. Eckart & U. Quasthoff: Building Large
+    Monolingual Dictionaries at the Leipzig Corpora Collection: From 100 to 200 Languages. LREC 2012.
 
 Changes: the texts were split into words (fugashi + UniDic-lite) and only counts, short word
 pairings and spellings of words seen at least 20 times are kept; no sentences are included.

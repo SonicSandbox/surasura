@@ -181,12 +181,20 @@ Encountered a bug or have a feature request? Please search the [Issues](https://
 
 ## 🙏 Data Credits
 
-Surasura's shared パターン data is built from:
+Surasura's shared パターン data for Japanese is built from:
 
 - [RealPersonaChat](https://github.com/nu-dialogue/real-persona-chat) — Yamashita et al. (2023), CC BY-SA 4.0
 - [Aozora Bunko](https://www.aozora.gr.jp/) — public-domain works, via [aozorabunko-clean](https://huggingface.co/datasets/globis-university/aozorabunko-clean) (CC BY 4.0)
 - [Japanese Wikipedia](https://ja.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
 - [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Japanese news 2015–2019, Universität Leipzig, CC BY 4.0 (counts only)
+
+…and for Chinese from:
+
+- [Tatoeba](https://tatoeba.org/) — Mandarin sentences, CC BY 2.0 FR
+- [KdConv](https://github.com/thu-coai/KdConv) — Zhou et al. (2020), film and music conversations, Apache License 2.0
+- [Chinese Wikipedia](https://zh.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
+- [Chinese Wikinews](https://zh.wikinews.org/) — 维基新闻 contributors, CC BY 4.0
+- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Chinese news 2007–2009 and 2020, Traditional newscrawl 2011, Universität Leipzig, CC BY 4.0 (counts only)
 
 The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 

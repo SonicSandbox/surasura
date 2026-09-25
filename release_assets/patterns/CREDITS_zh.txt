@@ -1,0 +1,24 @@
+Surasura パターン data — patterns_zh_shared.db
+Licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
+
+Counts of how Chinese words are used (measure words, prepositions, forms, word pairs, frames), computed
+by Surasura (Chinese builder version 1) from:
+
+  * Tatoeba — Mandarin sentences, CC BY 2.0 FR.
+    https://tatoeba.org/
+  * KdConv — Zhou et al. (2020), thu-coai: its film and music conversations, Apache License 2.0 (the
+    licence is LICENSE-KdConv.txt in this package).
+    https://github.com/thu-coai/KdConv
+  * Chinese Wikipedia — Wikipedia contributors, CC BY-SA 4.0 (dump of 2026-09-20).
+    https://zh.wikipedia.org/
+  * Chinese Wikinews — 维基新闻 contributors, CC BY 4.0 (CC BY 2.5 before 2025-01-30).
+    https://zh.wikinews.org/
+  * Leipzig Corpora Collection — Chinese news 2007–2009 and 2020, Traditional Chinese newscrawl 2011,
+    © Universität Leipzig / Sächsische Akademie der Wissenschaften / InfAI, CC BY 4.0. Counted into word
+    statistics only.
+    https://wortschatz.uni-leipzig.de/  — D. Goldhahn, T. Eckart & U. Quasthoff: Building Large
+    Monolingual Dictionaries at the Leipzig Corpora Collection: From 100 to 200 Languages. LREC 2012.
+
+Changes: the texts were converted to Simplified Chinese (OpenCC's tables), split into words (jieba), and
+only counts, short word pairings and spellings of words seen at least 20 times are kept; no
+sentences are included. Wikinews's source citations and headline boxes were left out.

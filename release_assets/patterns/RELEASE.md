@@ -26,6 +26,29 @@ RealPersonaChat, Aozora Bunko and Japanese Wikipedia, and its zip is 26.8 MB.
 Credits are in `CREDITS.txt`, which is also inside the zip. The file is CC BY-SA 4.0. This folder is
 not part of the app build.
 
+# Surasura's shared パターン data (Chinese)
+
+`patterns_zh_shared.zip` is the same thing for Chinese cards. It works the same way: published by being
+committed here, then pinned. The pin is `SHARED["zh"]` in `modules/junban/patterns_package.py`: the
+commit's raw URL, the zip's sha256, its size in MB and its credit line.
+
+**Pinned now: nothing yet.** Version 1 (Chinese builder 1, 2026-09-25) waits for its commit.
+- **What goes in:** 17.8M words from Tatoeba, KdConv's film and music talk, Chinese Wikipedia (16M
+  characters), Chinese Wikinews, and Leipzig's Chinese news (16M characters: 2007–09, 2020, and the
+  Traditional newscrawl of 2011). News is counted only: no sentence of it is in the file.
+- **What stays out:** CrossWOZ and KdConv's travel talk, which are booking templates.
+- **Size:** 53,615 words, and a 9.5 MB zip. sha256
+  `ac9e50f83ef82b21bec96ab8e44fb2be240367a235daa534f52575c8d84e8907`.
+- **The gate:** the agent judged it (Patterns_Chinese_Spec.md §16.1, WP-Z6). There is no written-style
+  tag for Chinese.
+
+Credits are in `CREDITS_zh.txt`, which is also inside the zip as `CREDITS.txt`, next to KdConv's
+Apache licence. The file is CC BY-SA 4.0.
+
+To make a new version: run `python docs/assets/corpora/prepare_zh.py`, read the gate's numbers again,
+then run `python docs/assets/corpora/build_shared_zh.py` and `build_shared_zh.py --publish`. Then do
+steps 4–6 below with `SHARED["zh"]`.
+
 ## A new version of the data
 
 1. Run `python docs/assets/corpora/build_shared.py`. It builds a candidate in

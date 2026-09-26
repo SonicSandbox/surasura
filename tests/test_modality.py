@@ -10,6 +10,10 @@ hearing a word proves it is hearable, but NOT hearing one proves almost nothing.
 
 import math
 import os
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
 
 from app import analyzer, modality
 
@@ -181,3 +185,33 @@ def test_shipped_default_threshold_is_sane():
     # At 300 h of listening a year, that has to land somewhere near the handful-of-encounters
     # mark that incidental acquisition needs.
     assert 2 <= 300 / target <= 20
+
+
+# --- the language: the ranks are Japanese ----------------------------------------------------- #
+@pytest.mark.parametrize("language, text, badge", [
+    # 描写 is written the same in Chinese: a Chinese run took the Japanese word's rank — heard once in 77
+    # hours, past the 60 — and badged it 文 on evidence about another language (2026-09-25).
+    ("zh", "他的描写很生动。\n这本书的描写非常细腻。\n作者的描写让人印象深刻。\n", ""),
+    # ...while a Japanese run still badges it: the guard is the language, not the badge switched off.
+    ("ja", "彼の描写は生き生きしている。\nこの本の描写はとても細かい。\n作者の描写が印象に残る。\n", "reading"),
+])
+def test_the_reading_badge_goes_by_the_runs_own_language(tmp_path, language, text, badge):
+    (tmp_path / "User Files" / language).mkdir(parents=True)
+    high = tmp_path / "data" / language / "HighPriority"
+    high.mkdir(parents=True)
+    (high / "essay.txt").write_text(text, encoding="utf-8")
+    results = tmp_path / "results"
+    results.mkdir()
+    with patch("app.analyzer.get_user_file", side_effect=lambda p: str(tmp_path / p)), \
+         patch("app.analyzer.get_data_path",
+               side_effect=lambda l=None: str(tmp_path / "data" / l) if l else str(tmp_path / "data")), \
+         patch("app.analyzer.get_user_files_path",
+               side_effect=lambda l=None: str(tmp_path / "User Files" / l) if l else str(tmp_path / "User Files")), \
+         patch("app.analyzer.RESULTS_DIR", str(results)), \
+         patch("app.analyzer.OUTPUT_CSV", str(results / "priority_learning_list.csv")), \
+         patch("app.analyzer.OUTPUT_STATS", str(results / "file_statistics.txt")), \
+         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results / "progressive_learning_list.csv")), \
+         patch("sys.argv", ["analyzer.py", "--language", language, "--min-freq", "1"]):
+        analyzer.main()
+    listed = pd.read_csv(results / "priority_learning_list.csv", encoding="utf-8-sig", keep_default_na=False)
+    assert {row["Word"]: row["Modality"] for row in listed.to_dict("records")}["描写"] == badge

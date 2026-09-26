@@ -57,8 +57,8 @@ ENSURE_AUDIO_EXAMPLE = False
 #     one you can read through its known word (利用者, 利用 known) scores half and is no unknown in a
 #     sentence (U9).
 # 14: the join table's お / ご words are decided once per word, however UniDic tags each spelling
-#     (おやすみ, ご存知 / ご存じ); さ after a な-word and a prefix after a number stay apart (複雑さ, 三大祭り).
-#     Still 2.3: one re-analysis with 13.
+#     (おやすみ, ご存知 / ご存じ); さ after a な-word and a prefix after a number stay apart (複雑さ, 三大祭り);
+#     a Chinese run reads no Japanese spoken ranks, so no 文 badge on 描写. Still 2.3: one re-analysis with 13.
 ENGINE_REVISION = 14
 
 # Load Logic Settings from settings.json
@@ -2004,7 +2004,9 @@ def main():
     _library_series = len(library_series)
     try:
         from app import reference_data as _reference_data
-        _spoken_ranks = _reference_data.spoken_ranks()
+        # The ranks are Japanese words' (spoken Japanese, through unidic): a Chinese word written like one
+        # (描写, 研究) would take a Japanese word's rank and its 文 badge, so a Chinese run has none.
+        _spoken_ranks = _reference_data.spoken_ranks() if language == 'ja' else {}
     except Exception as e:
         # Missing/corrupt generated data must never break a run — the column just stays blank.
         print(f"Warning: reading/listening reference data unavailable ({e}).")

@@ -6,12 +6,23 @@ repository at the commit that added it, and accepts **only that exact file**. Bo
 sha256 live in `modules/junban/patterns_package.py` (`SHARED_URL`, `SHARED_SHA256`). A commit never
 changes, so every app version keeps getting the file it was built for. No GitHub release is needed.
 
-**Pinned now: version 3** (builder 6, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the sha256
-matched, and the app's own download installed it. The same sources as version 2,
-rebuilt for Surasura 2.3's パターン (Patterns_Quality_Spec.md): words keep their prefixes and suffixes
-(新幹線, 可能性), each pattern carries the number of documents it is in, and the pairings and frames under the
-lookup's fixed limits (fewer than 3 documents, strength under 2, fewer than 3 uses) are left out. 2.3 counts
-version 2 (builder 5) as not ready, so 2.3 must ship with this pin.
+**Version 4** (builder 7, 2026-09-25) is the file in this folder. The app is pinned to it at the commit that
+adds it; its URL goes here with the pin. The same sources and rules as version 3, rebuilt on Surasura's
+corrected join table (Patterns_Quality_Spec.md §15.9): the spellings of one お / ご word are one word (おやすみ
+and お休み, ご存じ and ご存知), お話し and お帰り are お + a word, 複雑さ is 複雑 + さ. 2.3 counts version 3
+(builder 6) as not ready, so 2.3 must ship with this pin.
+- **Size:** 67,491 words, and a 32.2 MB zip. sha256
+  `ea3bdd8e415b8d2194f953179150d0e6b64526bc461d1f080ce68f565419b416`.
+- **The gate:** every yardstick equal to version 3's — the NLT gold 13/18 top particles and 29/90 top-5
+  pairings, cards filled from it 88.3% of the known words tested. Patterns_Quality_Spec.md §15.9 has the
+  numbers.
+
+**Version 3** (builder 6, 2026-09-25) stays reachable for the app versions pinned to it. Checked on
+2026-09-25 by downloading the URL: the sha256 matched, and the app's own download installed it. The same
+sources as version 2, rebuilt for Surasura 2.3's パターン (Patterns_Quality_Spec.md): words keep their prefixes
+and suffixes (新幹線, 可能性), each pattern carries the number of documents it is in, and the pairings and
+frames under the lookup's fixed limits (fewer than 3 documents, strength under 2, fewer than 3 uses) are left
+out.
 - **Size:** 67,509 words, and a 32.2 MB zip. sha256
   `7882e6ab80e8d712a878cbf942ebc5edeec9a8ea8ea5f81ef833c243bfd38527`.
 - **The gate:** this file's yardsticks held against version 2 — the NLT gold, 13/18 top particles and 29/90

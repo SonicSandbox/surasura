@@ -137,8 +137,6 @@
     "junban_write_frequency": false,
     "junban_frequency_field": "Frequency",
     "junban_write_freqsort": false,
-    "junban_sentence_field": "",
-    "junban_sentence_mode": "if_empty",
     "junban_later_tag": false,
     "junban_later_flag": false,
     "junban_later_suspend": true,
@@ -151,6 +149,7 @@
         "sentence"
     ],
     "junban_backfill_fields": {},
+    "junban_backfill_note_languages": {},
     "junban_auto_backfill": false,
     "anki_connect_url": "http://127.0.0.1:8765",
     "anki_sync_decks": {

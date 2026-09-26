@@ -6,8 +6,8 @@ repository at the commit that added it, and accepts **only that exact file**. Bo
 sha256 live in `modules/junban/patterns_package.py` (`SHARED_URL`, `SHARED_SHA256`). A commit never
 changes, so every app version keeps getting the file it was built for. No GitHub release is needed.
 
-**Version 4** (builder 7, 2026-09-25) is the file in this folder. The app is pinned to it at the commit that
-adds it; its URL goes here with the pin. The same sources and rules as version 3, rebuilt on Surasura's
+**Pinned now: version 4** (builder 7, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the sha256
+matched, and the app's own download installed it. The same sources and rules as version 3, rebuilt on Surasura's
 corrected join table (Patterns_Quality_Spec.md §15.9): the spellings of one お / ご word are one word (おやすみ
 and お休み, ご存じ and ご存知), お話し and お帰り are お + a word, 複雑さ is 複雑 + さ. 2.3 counts version 3
 (builder 6) as not ready, so 2.3 must ship with this pin.
@@ -16,6 +16,9 @@ and お休み, ご存じ and ご存知), お話し and お帰り are お + a wor
 - **The gate:** every yardstick equal to version 3's — the NLT gold 13/18 top particles and 29/90 top-5
   pairings, cards filled from it 88.3% of the known words tested. Patterns_Quality_Spec.md §15.9 has the
   numbers.
+
+      https://raw.githubusercontent.com/SonicSandbox/surasura/8f126cfb8523c661d09c2dab2870c98f2189646f/release_assets/patterns/patterns_ja_shared.zip
+      sha256 ea3bdd8e415b8d2194f953179150d0e6b64526bc461d1f080ce68f565419b416
 
 **Version 3** (builder 6, 2026-09-25) stays reachable for the app versions pinned to it. Checked on
 2026-09-25 by downloading the URL: the sha256 matched, and the app's own download installed it. The same

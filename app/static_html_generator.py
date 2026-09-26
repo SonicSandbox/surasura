@@ -501,9 +501,10 @@ def anki_backlog_keys(language, settings):
     """The words of the new cards already waiting in Anki, for the report's label — "Label backlogged
     Anki words" (`anki_backlog_on_generate`; Junban_Backlog_Spec WP-B8). Keys only, never card
     content: each card's word and its hiragana fold, as the Anki sync wrote them
-    (`User Files/<lang>/anki_backlog.json`). Chinese keys are read in the script the report is in,
-    as the list is. `[]` when switched off, with no backlog file, or on any error — the report then
-    has no label, no filter entry and no count: a user without Anki sees nothing different."""
+    (`User Files/<lang>/anki_backlog.json`), and for Japanese the word the dictionary reads each card
+    as (`_dictionary_keys`). Chinese keys are read in the script the report is in, as the list is.
+    `[]` when switched off, with no backlog file, or on any error — the report then has no label, no
+    filter entry and no count: a user without Anki sees nothing different."""
     if not (settings or {}).get("anki_backlog_on_generate", True):
         return []
     try:
@@ -514,10 +515,50 @@ def anki_backlog_keys(language, settings):
             script = effective(language, (settings or {}).get("zh_script"))
             if script != "asis":
                 keys = {convert(key, script) for key in keys}
+        if keys and language == "ja":
+            keys |= _dictionary_keys(anki_sync.load_backlog(language))
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
         return []
+
+
+def _dictionary_keys(backlog):
+    """The list words a Japanese backlog's cards ARE, read through the dictionary
+    (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
+    content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
+    labels 逃げ出す and 引き伸ばす 引き延ばす, spellings the card's own keys never meet. A する, な or に
+    written onto the word is dropped first (同行する labels 同行, `anki_match.is_attached_tail`);
+    anything longer is a phrase or a compound, not one row. A kana-only word is left out: alone it
+    is read wrong too often (まく -> 膜, Junban_Backlog_Spec §8 gotcha 2).
+
+    The tokenizer is built only when a card needs it, here where the report renders — never in the
+    dashboard (Anki_Known_Sync_Spec I6). One that cannot be had leaves the cards' own keys, as
+    before."""
+    from app import anki_match
+    notes = backlog.get("notes")
+    words = {entry["word"] for entry in (notes.values() if isinstance(notes, dict) else ())
+             if isinstance(entry, dict) and isinstance(entry.get("word"), str)
+             and anki_match._KANJI_RE.search(entry["word"])}
+    if not words:
+        return set()
+    keys = set()
+    try:
+        from app import analyzer
+        # As every Japanese run sets it. The report can render in a process of its own, where it is
+        # still off, and a glossed lemma (同行-連れ立つ, 私-代名詞) is no row's Word.
+        analyzer.SANITIZE_JA = True
+        tokenize = analyzer.JapaneseTokenizer().tokenize
+        for word in words:
+            tokens = tokenize(word)
+            if len(tokens) == 2 and anki_match.is_attached_tail(tokens[1][0]):
+                tokens = tokens[:1]
+            if len(tokens) == 1 and tokens[0][0]:
+                keys.add(tokens[0][0])
+    except Exception as e:
+        print(f"Warning: could not read the Anki backlog through the dictionary: {e}")
+        return set()
+    return keys
 
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):

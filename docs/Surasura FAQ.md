@@ -16,7 +16,7 @@ Welcome to the Surasura FAQ! If you can't find the answer you're looking for her
 These timelines affect sorting and weighting. NOW content appears first, receives a higher priority icon, and ranks higher when exporting your frequency list.
 
 **Are the generated sentences exactly "i+1"?**
-As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → 🧠 Sentences & Logic → Only include i+1 sentences**; words without one are then left out.
+As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. A word you can read through one you already know — 利用者 when you know 利用 — doesn't count against a sentence either (it still has its own place on your list, a little lower). The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → 🧠 Sentences & Logic → Only include i+1 sentences**; words without one are then left out.
 
 **Does Surasura go online? What leaves my computer?**
 Your content, known words and analysis never leave your computer — everything is worked out on your own machine. Surasura only goes online for:
@@ -97,6 +97,9 @@ Your library, your known words or a setting has changed since your last Generate
 
 **Why does Junban put phrases like ことが出来る with my list's words?**
 Your list counts words one at a time, so a phrase can never be on it — yet phrases are often half of a mined backlog. Junban finds each one whole in your library, and one you meet as often as your list's own words is placed with them, in the episode you first meet it. Untick **Phrases** in the Junban window to put them with the rest. (Japanese only.)
+
+**What do the percentages in a card's パターン mean — and why is the label sometimes amber?**
+A percentage is the share of *all* the word's uses: `を〜 31%` on 利用する means that 31 of every 100 times the word is used, を comes right before it. Pairings show only when they turn up in at least three different episodes, books or articles, so one show's catchphrase doesn't become the word's pattern. When the word was seen fewer than 50 times in the data the lines came from — your library, or Surasura's shared set — Anki Backfill marks the lines "thin": they are still real uses, just few of them, so read them as a hint. A card template can show that mark (an amber パターン label, for instance); a template that doesn't know it simply ignores it, and no text is ever added to your card for it.
 
 **Is there a way to bulk-download YouTube transcripts to feed into Surasura?**
 Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any number of links — single videos, pasted lists, or whole playlists. Clean `.txt` transcripts land in your **Processed** folder and in the tab you're on. (This is an optional feature; if you don't see the button, enable it under **Settings → Language & Parsing**.)

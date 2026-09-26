@@ -83,6 +83,20 @@ def test_the_fewest_unknown_words_come_first_not_the_first_one_met():
     assert _texts(_best(words, "冒険")) == [easy, hard]
 
 
+def test_a_word_read_through_its_known_word_is_no_unknown_in_a_sentence():
+    """U9 (the user, checkpoint A): knowing 利用, the learner reads 利用者 — so for 公園 the line with it is
+    as easy as one of known words, and leads the line with 不自然, a prefix word that knowing 自然 does
+    not read. The report's example sentences count it the same way."""
+    easy = "公園の利用者が増えた。"
+    hard = "公園の雰囲気が不自然だ。"
+    known = ((_lemmas(easy) | _lemmas(hard)) - {"公園", "利用者", "不自然"}) | {"利用", "自然"}
+    words = _collect({"a.txt": [hard, easy]}, known=known)
+
+    best = _best(words, "公園")
+    assert _texts(best) == [easy, hard]
+    assert [c[0][0] for c in best] == [0, 1]           # how many other words the learner doesn't know
+
+
 def test_the_users_own_range_comes_before_the_leeway_and_outside_lengths_are_left_out():
     """With the same number of unknown words, a sentence inside the user's own 10–35 beats one in the
     ±5 margin (37 characters); 4 and 50 characters are outside the window altogether."""
@@ -105,7 +119,8 @@ def test_at_most_two_sentences_come_from_one_file_when_others_have_the_word():
     words = _collect({"第01話.txt": adventure,
                       "第02話.txt": ["彼は毎日冒険に出かけます。", "冒険の準備はできていますか？"],
                       "第03話.txt": ["私たちは新しい冒険を求めている。", "この本は彼の冒険について書かれている。"],
-                      "第04話.txt": ["冒険家として非常に有名です。", "冒険したい。"]})
+                      # Not 冒険家: a word with its suffix is a word of its own (Patterns_Quality_Spec Part A)
+                      "第04話.txt": ["彼の冒険はまだ終わらない。", "冒険したい。"]})
 
     best = _best(words, "冒険")
     assert len(best) == 8
@@ -882,3 +897,53 @@ def test_the_process_the_dashboard_launches_writes_the_dictionary(ja_resources_d
     assert "Saved Surasura Corpus (ja)" in output
     entries = _entries(str(out))
     assert entries and "　（第01話）" in _html(entries[0][5][0]["content"])
+
+
+# ---------------------------------------------------------------------------------------------- #
+# Part D (Patterns_Quality_Spec.md): among equally easy sentences, one that shows how the word is used
+# ---------------------------------------------------------------------------------------------- #
+KEIJI = {"第01話.txt": ["啓示は大切なものだ。"], "第02話.txt": ["彼は神の啓示を受けた。"]}
+KEIJI_KNOWN = ("は", "大切", "だ", "物", "彼", "神", "の", "を", "受ける", "た")
+
+
+def test_without_a_preference_every_rank_is_exactly_as_it_was():
+    # The Yomitan export never passes one, and a Backfill with no pairing to show asks with an empty one:
+    # the ranks — and so the sentences and their order — must be the ones collect always gave.
+    cache = {name: _tokenized(lines) for name, lines in KEIJI.items()}
+
+    def run(**prefer):
+        words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(KEIJI_KNOWN), set()), WINDOW,
+                           **prefer)
+        return {key: w.best.result() for key, w in words.items() if w.best is not None}
+    assert run() == run(prefer=None) == run(prefer={})
+
+
+def test_a_sentence_showing_the_words_top_pairing_leads_among_equally_easy_ones():
+    # 啓示's top pairing is 啓示を受ける: of two sentences with nothing else unknown and a good length, the
+    # one that says it comes first — before the library's order, which put the other first.
+    words = sc.collect(list(KEIJI), {n: _tokenized(l) for n, l in KEIJI.items()}.__getitem__, "ja",
+                       (set(), set(KEIJI_KNOWN), set()), WINDOW)
+    assert _texts(_best(words, "啓示")) == ["啓示は大切なものだ。", "彼は神の啓示を受けた。"]
+    cache = {n: _tokenized(l) for n, l in KEIJI.items()}
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(KEIJI_KNOWN), set()), WINDOW,
+                       prefer={("啓示", "ケイジ"): [("啓示", "を", "受ける")]})
+    assert _texts(_best(words, "啓示")) == ["彼は神の啓示を受けた。", "啓示は大切なものだ。"]
+
+
+def test_the_preference_never_beats_an_easier_sentence():
+    # Only a tie-break: a sentence with an unknown word besides the target still comes after one without.
+    cache = {n: _tokenized(l) for n, l in KEIJI.items()}
+    known = set(KEIJI_KNOWN) - {"神"}
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), known, set()), WINDOW,
+                       prefer={("啓示", "ケイジ"): [("啓示", "を", "受ける")]})
+    assert _texts(_best(words, "啓示"))[0] == "啓示は大切なものだ。"
+
+
+def test_a_chinese_sentence_showing_the_pairing_leads_too():
+    # U14: both languages. 接到电话 for 电话; the library's first sentence doesn't say it.
+    lines = {"第01集.txt": ["电话在桌子上。"], "第02集.txt": ["他接到电话了。"]}
+    cache = {n: _tokenized(l, "zh") for n, l in lines.items()}
+    known = (set(), {"在", "桌子", "上", "他", "接到", "了"}, set())
+    words = sc.collect(list(cache), cache.__getitem__, "zh", known, WINDOW,
+                       prefer={("电话", ""): [("接到", "电话")]})
+    assert _texts(_best(words, "电话")) == ["他接到电话了。", "电话在桌子上。"]

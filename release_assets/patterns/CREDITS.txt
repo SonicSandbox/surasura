@@ -2,7 +2,7 @@ Surasura パターン data — patterns_ja_shared.db
 Licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
 
 Counts of how Japanese words are used (particles, forms, word pairs, frames), computed by Surasura
-(builder version 5) from:
+(builder version 6) from:
 
   * RealPersonaChat — Yamashita et al. (2023), nu-dialogue, CC BY-SA 4.0.
     https://github.com/nu-dialogue/real-persona-chat

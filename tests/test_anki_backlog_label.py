@@ -13,7 +13,10 @@ What this file holds still:
     costs one re-render) and never the run signature (a sync never costs a re-analysis, §3 I3);
   * **the mark is invisible to dictionary extensions** and needs no network — a masked inline shape;
   * **the match is Junban's** — Word, Orth or any Forms entry, kana folded, one-character spellings
-    only as the row's own word.
+    only as the row's own word;
+  * **a Japanese card is also read through the dictionary** (Patterns_Quality_Spec §7) — a card word
+    holding a kanji, tokenized alone, adds the word it is (逃げだす -> 逃げ出す, 同行する -> 同行); kana
+    cards and Chinese keep their own keys.
 
 There is no JS engine in this suite, so the template is a string contract (test_word_search_button.py).
 """
@@ -25,6 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from app import analyzer, settings_manager
+from app.anki_match import fold_kana
 from app.main import anki_sync_is_set_up
 from app.static_html_generator import anki_backlog_keys
 
@@ -86,6 +90,103 @@ def test_the_rendered_report_carries_the_words(tmp_path):
         shg.generate_static_html(theme="default", open_browser=False)
     with open(out, encoding="utf-8") as f:
         assert 'let globalAnkiBacklog = ["辿り着く"];' in f.read()
+
+
+# --- the cards read through the dictionary (Patterns_Quality_Spec §7) ------------------------------- #
+def _cards(*words):
+    """A backlog of real cards, each keyed as the Anki sync keys it: its word, and its hiragana fold
+    when that differs (`anki_sync._backlog_entry`)."""
+    notes = {}
+    for number, word in enumerate(words):
+        folded = fold_kana(word)
+        keys = [word] if folded == word else [word, folded]
+        notes[str(1789711432600 + number)] = {"word": word, "keys": keys, "source": "", "freqsort": None}
+    return {"version": 1, "synced_at": "2026-09-25T09:00:00", "decks": ["TheBank"], "notes": notes}
+
+
+def _count_tokenizers(monkeypatch):
+    """Records each Japanese tokenizer the report builds — still a real one — so a test can hold it to
+    building none when no card needs one (the spec's cost rule)."""
+    built = []
+    real = analyzer.JapaneseTokenizer
+
+    def build():
+        built.append(1)
+        return real()
+    monkeypatch.setattr(analyzer, "JapaneseTokenizer", build)
+    return built
+
+
+def test_a_card_spelled_another_way_labels_the_row_the_dictionary_reads_it_as():
+    """逃げだす, 引き伸ばす and なり代わる on the user's cards are 逃げ出す, 引き延ばす and 成り代わる on
+    their list (F14: rows #146, #2,383, #3,593) — the same verbs, filed under UniDic's lemma, which is
+    the row's `Word` the label compares. The cards' own keys never meet those spellings."""
+    _write_backlog(data=_cards("逃げだす", "引き伸ばす", "なり代わる"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
+        "なり代わる", "引き伸ばす", "引き延ばす", "成り代わる", "逃げだす", "逃げ出す"]
+
+
+def test_a_word_written_with_its_suru_na_or_ni_labels_the_word_itself(monkeypatch):
+    """同行する is 同行 + する to the dictionary, and the list's row is 同行 (#773); 斬新な and 一気に
+    carry the copula's な and the particle に the same way. The report can render in a process of its
+    own (`static_generator`), where no run has switched SANITIZE_JA on — and there UniDic's lemma is
+    同行-連れ立つ, which is no row's Word."""
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", False)
+    _write_backlog(data=_cards("同行する", "斬新な", "一気に"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
+        "一気", "一気に", "同行", "同行する", "斬新", "斬新な"]
+
+
+def test_a_kana_only_card_is_never_read_alone(monkeypatch):
+    """Alone, a word with no kanji is read wrong too often to key anything: まく comes back 膜, not 撒く
+    or 巻く (Junban_Backlog_Spec §8 gotcha 2). わびる would come back right (詫びる), but nothing tells
+    the two apart — so kana cards keep their own keys, and no tokenizer is built for them."""
+    built = _count_tokenizers(monkeypatch)
+    _write_backlog(data=_cards("わびる", "まく", "スルリ"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["するり", "まく", "わびる", "スルリ"]
+    assert built == []
+
+
+def test_a_phrase_or_a_compound_on_a_card_adds_no_key():
+    """気がつく and 恩を売る are phrases, 伊勢海老 a compound of two words: none is ONE row, so none adds
+    a key (Junban places phrases, L9). Only a card that is one word, its tail aside, is a row's Word."""
+    _write_backlog(data=_cards("気がつく", "恩を売る", "伊勢海老"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["伊勢海老", "恩を売る", "気がつく"]
+
+
+def test_a_chinese_backlog_is_unchanged_and_never_meets_the_japanese_dictionary(monkeypatch):
+    """Chinese keys are the words themselves (Patterns_Quality_Spec §10: Part B is Japanese only). The
+    Japanese dictionary would read 豆豉 (fermented black beans) as トーチ, a torch."""
+    built = _count_tokenizers(monkeypatch)
+    _write_backlog("zh", {"version": 1, "notes": {"1": {"word": "學習", "keys": ["學習"]},
+                                                  "2": {"word": "豆豉", "keys": ["豆豉"]}}})
+    assert anki_backlog_keys("zh", {"anki_backlog_on_generate": True}) == ["學習", "豆豉"]
+    assert anki_backlog_keys("zh", {"anki_backlog_on_generate": True, "zh_script": "s"}) == ["学习", "豆豉"]
+    assert built == []
+
+
+def test_without_the_dictionary_the_cards_keep_their_own_keys(monkeypatch):
+    """A dictionary that cannot be loaded (a broken install) costs the new spellings, never the label:
+    the cards' own keys are injected as before (testing.md: missing dependencies)."""
+    def missing():
+        raise ImportError("No module named 'fugashi'")
+    monkeypatch.setattr(analyzer, "JapaneseTokenizer", missing)
+    _write_backlog(data=_cards("逃げだす", "同行する"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["同行する", "逃げだす"]
+
+
+def test_damaged_cards_are_passed_over_and_a_broken_backlog_labels_nothing():
+    """A hand-edited or half-written backlog: a card whose word is a number, one that is not a card at
+    all, one with no word — each is passed over, and 逃げだす is still read as 逃げ出す. A file whose
+    notes are not a table at all labels nothing, as a damaged file always has."""
+    _write_backlog(data={"version": 1, "notes": {"1": {"word": "逃げだす", "keys": ["逃げだす"]},
+                                                  "2": {"word": 1789, "keys": ["豹変する"]},
+                                                  "3": "同行する",
+                                                  "4": {"keys": ["引き伸ばす"]}}})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
+        "引き伸ばす", "豹変する", "逃げだす", "逃げ出す"]
+    _write_backlog(data={"version": 1, "notes": ["逃げだす", "同行する"]})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == []
 
 
 # --- a presentation setting: re-render, never re-analyze -------------------------------------------- #

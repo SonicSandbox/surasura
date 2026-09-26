@@ -615,6 +615,20 @@ def sentence_excerpt(raw, word, width=48, tokenize=None):
     return ("…" if left else "") + piece + ("…" if left + width - 2 < len(marked) else "")
 
 
+# --- a word written with its tail (Patterns_Quality_Spec §7) ------------------------------------ #
+# A card writes some words with what follows them attached — 同行する, 斬新な, 一気に — where the list
+# has 同行, 斬新, 一気. Read on its own such a word is two tokens, and the second is the tail. Known by
+# its LEMMA, because the analyzer's tokens carry no part of speech: 為る is する, だ the copula's な / に,
+# に the particle — the same three tails パターン's lookup drops (`modules/junban/patterns.py`).
+ATTACHED_TAILS = frozenset(("為る", "だ", "に"))
+
+
+def is_attached_tail(lemma):
+    """True when a token with this lemma, second in a word read on its own, is written ONTO the word
+    rather than being a word of its own: する (為る), the copula's な / に (だ), the particle に."""
+    return lemma in ATTACHED_TAILS
+
+
 # --- phrases (L9, Junban_Backlog_Spec §11.1 item 2) --------------------------------------------- #
 # Half of a real backlog is phrases and compounds — 気がつく, 俺たち, 騎士団. anki_miner and the
 # analyzer produce the SAME tokens; anki_miner then glues them into one card word when the result is

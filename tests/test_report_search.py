@@ -160,8 +160,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     next person to bump it updates this knowingly. (9 was the Forms column; 10 keys Japanese words by
     the lemma's reading — Bugfix_Batch_2026-09-22 fix C; 11 writes library_frequency.json on every
     run, with each word's first file, score and spelling — Junban_Backlog_Spec §11.1; 12 cuts a
-    leading verse number off an example sentence — Junban_Backlog_Spec §16.11.)"""
-    assert analyzer.ENGINE_REVISION == 12
+    leading verse number off an example sentence — Junban_Backlog_Spec §16.11; 13 keeps a word's
+    prefixes and suffixes, so 新幹線 and 可能性 are words — Patterns_Quality_Spec §6.6.)"""
+    assert analyzer.ENGINE_REVISION == 13
 
 
 # --------------------------------------------------------------------------- #

@@ -166,7 +166,7 @@ class _Word:
 
 
 def collect(files, file_tokens, language, known, window, progress=None, wanted=None, young=None,
-            phrases=None):
+            phrases=None, prefer=None):
     """The streaming pass. `files` are the library's paths in library order; `file_tokens(path)` returns
     that file's cached sentences [(text, [[lemma, reading, surface, orth], ...]), ...] — called once per
     file, and nothing of a file outlives its turn except the few sentences a word keeps (I7).
@@ -178,14 +178,29 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     "even better if the words are NOT mature"); without it the order is as it always was. `phrases`,
     {name: (lemma, …)}, finds several-word targets (当事者, 気を取り直す) as that run of lemmas, however
     inflected, ranked the same with their own words not counted against them; they come back under
-    their name. Returns {(lemma, reading) or name: _Word}."""
-    from app.analyzer import has_target_language
+    their name. `prefer`, {(lemma, reading): [(lemma, …), …]}, puts a sentence holding one of a word's
+    runs first among equally easy ones of a good length — its top pairing or form, 啓示を受ける for 啓示
+    (Patterns_Quality_Spec.md Part D); without it every rank is exactly what it always was. Returns
+    {(lemma, reading) or name: _Word}."""
+    from app.analyzer import affix_joins, has_target_language, see_through_base
 
     known_tuples, known_lemmas, ignore = known
     lo, hi, own_lo, own_hi = window
     words = {}
     lang_ok = {}                # memo: a string -> has target-language characters
-    known_memo = {}             # memo: (lemma, reading) -> known / ignored
+    known_memo = {}             # memo: (lemma, reading) -> known / ignored / read through its known word
+    joins = affix_joins() if language == "ja" else {}
+    tagger = []                 # made on the first joined word
+
+    def _readable(key):
+        """利用者 when 利用 is known: no unknown in a sentence, as in the report (U9, see_through_base)."""
+        if key[0] not in joins:
+            return False
+        if not tagger:
+            import fugashi
+            tagger.append(fugashi.Tagger())
+        base = see_through_base(key[0], key[1], tagger[0], joins)
+        return base is not None and (base[0] in ignore or base[0] in known_lemmas or base in known_tuples)
     starts = {}                 # a phrase's first lemma -> [(name, lemmas)]
     for name, lemmas in (phrases or {}).items():
         if len(lemmas) > 1:
@@ -221,7 +236,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                     is_known = known_memo.get(key)
                     if is_known is None:
                         is_known = known_memo[key] = (lemma in ignore or lemma in known_lemmas
-                                                      or key in known_tuples)
+                                                      or key in known_tuples or _readable(key))
                     if not is_known:
                         unknown += 1
 
@@ -230,6 +245,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 continue
             margin = 0 if own_lo <= size <= own_hi else 1
             fresh = sum(1 for key in present if key in young) if young else 0
+            lemmas = [t[0] for t in tokens] if prefer else None
             for key, surface in present.items():
                 word = words[key]
                 if not word.listed:
@@ -237,7 +253,12 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 others = unknown - (0 if known_memo[key] else 1)
                 # Its own word never counts toward the young words it practises.
                 recent = fresh - (1 if young and key in young else 0)
-                word.best.offer(((others, margin, -recent, fidx, sidx), text, fidx, surface))
+                if prefer:
+                    shows = any(_has_run(lemmas, run) for run in prefer.get(key, ()))
+                    rank = (others, margin, -shows, -recent, fidx, sidx)
+                else:
+                    rank = (others, margin, -recent, fidx, sidx)
+                word.best.offer((rank, text, fidx, surface))
             if starts:
                 for name, span in _phrases_in(tokens, starts):
                     inside = {(t[0], t[1]) for t in span}
@@ -252,6 +273,12 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         if progress and ((fidx + 1) % PROGRESS_EVERY == 0 or fidx + 1 == total):
             progress(f"Reading your library: {fidx + 1:,} / {total:,} files…")
     return words
+
+
+def _has_run(lemmas, run):
+    """Does the sentence's run of `lemmas` hold `run` (啓示 を 受ける), however each word is inflected?"""
+    n = len(run)
+    return bool(n) and any(lemmas[i:i + n] == list(run) for i, lemma in enumerate(lemmas) if lemma == run[0])
 
 
 def _phrases_in(tokens, starts):
@@ -391,12 +418,14 @@ def _content(best, sources, language, show_source=False):
 
 def _default_tagger():
     """tag(text) -> (lemma, lForm, kanaBase, cType) when `text` is exactly one Japanese word, else
-    None."""
+    None. A word with its prefix or suffix (可能性, 不自然) is one word, read as the dictionary reads it."""
     import fugashi   # lazy: only a Japanese export pays this import
+    from app.analyzer import affix_joins, join_affixes
     tagger = fugashi.Tagger()
+    joins = affix_joins()
 
     def tag(text):
-        tokens = list(tagger(text))
+        tokens = join_affixes(tagger(text), joins)
         if len(tokens) != 1:
             return None
         f = tokens[0].feature
@@ -516,13 +545,14 @@ def known_sets(language, store, settings):
     return cached[0], cached[1], ignore
 
 
-def best_for(language, wanted, progress=None, young=None, phrases=None):
+def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None):
     """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
     them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
     (keys still being learned) breaks ties toward sentences that practise them; `phrases` ({name:
-    lemmas}) finds several-word targets too, under their name. For Anki Backfill's 例文
-    (`modules/junban/backfill.py`). Reads the token store as it stands and never tokenizes the
-    library: the background indexer keeps it current.
+    lemmas}) finds several-word targets too, under their name; `prefer` ({key: [lemmas, …]}) puts one
+    that shows the word's top pairing or form first among equally easy ones. For Anki Backfill's 例文
+    (`modules/junban/backfill.py`) — the Yomitan export never passes `prefer`. Reads the token store as it
+    stands and never tokenizes the library: the background indexer keeps it current.
 
     -> {key or name: [(others, text, surface, file)]}, best first — `others` is how many words besides
     the target's own the learner doesn't know; `file` tells two sentences' episodes apart. A target
@@ -541,7 +571,7 @@ def best_for(language, wanted, progress=None, young=None, phrases=None):
     try:
         words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
                         length_range(settings), progress=progress, wanted=set(wanted or ()),
-                        young=set(young or ()), phrases=phrases)
+                        young=set(young or ()), phrases=phrases, prefer=prefer)
     finally:
         store.close()
     found = {}

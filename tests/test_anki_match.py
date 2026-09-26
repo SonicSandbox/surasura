@@ -47,11 +47,13 @@ def test_importing_the_matcher_is_cheap():
 
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
-    """The analyser's own 160-row output (BOM, real columns): a katakana lemma the user would never
-    type (ナカノ) and the spelling their content uses (中野) reach the same rank."""
+    """The analyser's own 184-row output (BOM, real columns): a katakana lemma the user would never
+    type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 since words
+    keep their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
+    Patterns_Quality_Spec A.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 16
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 20
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -153,7 +155,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 16
+    assert rank_of["中野"] == rank_of["ナカノ"] == 20
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -272,10 +274,11 @@ def _tokenizer():
 
 def test_a_phrase_is_the_run_of_words_it_is_made_of_and_a_word_is_not_a_phrase():
     """気がつく is 気 + が + つく to the tokenizer anki_miner and Surasura share; 冒険 is one word and
-    goes through the ordinary keys instead."""
+    goes through the ordinary keys instead — and so is 騎士団, now that words keep their suffixes
+    (Patterns_Quality_Spec.md Part A: 騎士 + 団 was a "phrase" before)."""
     phrases = anki_match.phrase_lemmas(["気がつく", "冒険", "騎士団", ""], _tokenizer().tokenize)
 
-    assert set(phrases) == {"気がつく", "騎士団"}
+    assert set(phrases) == {"気がつく"}
     assert len(phrases["気がつく"]) >= 2 and all(isinstance(lemma, str) for lemma in phrases["気がつく"])
 
 
@@ -466,3 +469,29 @@ def test_a_word_conjugated_in_a_sentence_without_bold_is_still_found_and_marked(
     sentence = "こんな腕で この俺に なり代わろうとは"
     assert anki_match.suggest("なり代わる", sentence, tokenize, _LIST, "ja").key == "成り代わる"
     assert anki_match.sentence_excerpt(sentence, "なり代わる", tokenize=tokenize) ==         "こんな腕で この俺に 【なり代わろう】とは"
+
+
+# --------------------------------------------------------------------------- #
+# Patterns_Quality_Spec §7: a word written with its tail — する, the copula's な / に, the particle に
+# --------------------------------------------------------------------------- #
+def test_a_tail_written_onto_a_word_is_known_by_its_lemma():
+    """同行する, 斬新な and 一気に read alone are the word + する (為る), the copula's な (だ) and the
+    particle に — the list has 同行, 斬新, 一気. Told apart by the lemma alone: the analyzer's tokens
+    carry no part of speech."""
+    tokenize = _tokenizer().tokenize
+    for word, lemmas in (("同行する", ["同行", "為る"]), ("斬新な", ["斬新", "だ"]), ("一気に", ["一気", "に"])):
+        tokens = tokenize(word)
+        assert [token[0] for token in tokens] == lemmas, word
+        assert anki_match.is_attached_tail(tokens[1][0]), word
+
+
+def test_a_second_word_or_another_ending_is_not_a_tail():
+    """伊勢海老's 海老 is a word of its own, 疲れた's た the past, 利用できる's できる a verb, 恩を's を
+    another particle: none of these cards is one row. A surface is not a lemma (する's is 為る), and
+    an empty lemma is nothing."""
+    tokenize = _tokenizer().tokenize
+    for word in ("伊勢海老", "疲れた", "利用できる", "恩を"):
+        tokens = tokenize(word)
+        assert len(tokens) == 2 and not anki_match.is_attached_tail(tokens[1][0]), word
+    for lemma in ("する", "", None):
+        assert not anki_match.is_attached_tail(lemma), lemma

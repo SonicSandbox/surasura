@@ -2,7 +2,7 @@ Surasura パターン data — patterns_zh_shared.db
 Licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
 
 Counts of how Chinese words are used (measure words, prepositions, forms, word pairs, frames), computed
-by Surasura (Chinese builder version 1) from:
+by Surasura (Chinese builder version 2) from:
 
   * Tatoeba — Mandarin sentences, CC BY 2.0 FR.
     https://tatoeba.org/

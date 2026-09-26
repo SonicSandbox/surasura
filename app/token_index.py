@@ -43,7 +43,9 @@ from collections import Counter
 #    into a four-value loop and raises, so the old cache cannot be read — it has to be rebuilt.
 # v5 Japanese readings are the lemma's (UniDic lForm), no longer the conjugated surface's, so every
 #    cached blob — and the aggregate built from them — carries the old, per-conjugation readings.
-SCHEMA_VERSION = 5
+# v6 prefixes and suffixes are joined to their word, so every cached blob holds the old pieces
+#    (幹線 for 新幹線, 可能 + 性 for 可能性 — analyzer.join_affixes).
+SCHEMA_VERSION = 6
 
 
 # --------------------------------------------------------------------------- #

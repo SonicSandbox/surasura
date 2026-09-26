@@ -298,7 +298,6 @@ def test_a_store_from_before_the_lemma_reading_key_is_rebuilt(tmp_path):
     """v4 -> v5: Japanese words are keyed by the lemma's reading now. A v4 store's cached sentences
     and aggregate carry the conjugated readings (辿り着いた -> タドリツイ), and reusing them would bring
     the per-conjugation split straight back — so it must be dropped and rebuilt, never read."""
-    assert ti.SCHEMA_VERSION == 5
     db = _db(tmp_path)
     f = tmp_path / "journey.txt"
     _write(f, "長い旅の末に、ついに城へ辿り着いた。\nこの道を行けば、必ず海に辿り着く。\n")
@@ -315,6 +314,30 @@ def test_a_store_from_before_the_lemma_reading_key_is_rebuilt(tmp_path):
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     rows = s2.conn.execute("SELECT reading, count FROM aggregate WHERE lemma = '辿り着く'").fetchall()
     assert rows == [("タドリツク", 2)]
+    s2.close()
+
+
+def test_a_store_from_before_words_kept_their_affixes_is_rebuilt(tmp_path):
+    """v5 -> v6: prefixes and suffixes are joined to their word (Patterns_Quality_Spec §6.6). A v5
+    store's cached sentences hold the pieces — 新 + 幹線 — and reusing them would keep counting 幹線, so
+    it must be dropped and rebuilt, never read. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 6
+    db = _db(tmp_path)
+    f = tmp_path / "trains.txt"
+    _write(f, "新幹線に乗って東京へ行った。\n新幹線はとても速い。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    s.close()
+    conn = sqlite3.connect(db)      # what a v5 store holds: the pieces
+    conn.execute("UPDATE aggregate SET lemma = '幹線', reading = 'カンセン' WHERE lemma = '新幹線'")
+    conn.execute("PRAGMA user_version = 5")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v5 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    rows = s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('新幹線', '幹線')").fetchall()
+    assert rows == [("新幹線", "シンカンセン", 2)]
     s2.close()
 
 

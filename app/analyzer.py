@@ -53,7 +53,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     spelling (Junban places a mined word below the list's cut-off where the journey meets it).
 # 12: a Japanese example sentence loses a leading verse number (「13そこで…」 -> 「そこで…」,
 #     strip_verse_number) — never a counted number (「3人で」, 「5番目」).
-ENGINE_REVISION = 12
+# 13: words keep their prefixes and suffixes — 不自然, 新幹線, 可能性 are one word each (join_affixes);
+#     one you can read through its known word (利用者, 利用 known) scores half and is no unknown in a
+#     sentence (U9).
+ENGINE_REVISION = 13
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -103,20 +106,175 @@ class Tokenizer(abc.ABC):
     def tokenize_sentences(self, text):
         pass
 
+# --- Words keep their prefixes and suffixes (Patterns_Quality_Spec.md Part A) ----------------------- #
+# UniDic's short units cut 接頭辞 and 接尾辞 off a word — 新幹線 is 新 + 幹線, 可能性 可能 + 性, 日本人 日本 +
+# 人 — so the list counted 幹線, 可能 and 日本, and never offered the word the content says. A run is
+# joined back where the joined form is a dictionary word: a headword of JPDB 2024 or Jiten, distilled at
+# build time into reference_data's affix joins together with its reading (unidic-lite reads the suffix 人
+# as ニン everywhere: 日本人 would be ニッポンニン). So names (レーマン人), counts (三回目, 3年生) and odd
+# pieces (お兄) never become words. `join_affixes` is the ONE place this happens: the analyzer, the
+# パターン builder and its lookup, the sentence dictionary, 順 and the reference-data build all key words
+# through it.
+
+# Never joined onto a word: plural / collective suffixes (私たち, 子供たち, 先生方). An honorific joins
+# only where the dictionary has the word (母さん, 皆さん, 神様, お客様 — the user, checkpoint A); never
+# after a name, since a name is no base (田中さん).
+_NEVER_JOINED = frozenset(("たち", "達", "ら", "等", "ども", "共", "がた"))
+# A nominalizer after a な-word stays a token of its own: 不自然さ counts toward 不自然 (the user, U2).
+_NOMINALIZERS = frozenset(("さ", "み"))
+# UniDic files 感 as a noun, not a suffix, though it builds words the way 性 and 的 do: 違和感, 存在感,
+# 緊張感, 罪悪感.
+_NOUN_SUFFIXES = frozenset(("感",))
+# A suffix's category decides what the joined word is: 可能性 (形状詞 + 名詞的 性) is a noun, 具体的 (名詞 +
+# 形状詞的 的) a な-adjective, 子供っぽい (名詞 + 形容詞的 っぽい) an adjective, 嫌がる (形状詞 + 動詞的 がる) a verb.
+_SUFFIX_POS = {"名詞的": "名詞", "形状詞的": "形状詞", "形容詞的": "形容詞", "動詞的": "動詞"}
+
+
+class JoinedWord:
+    """A run of tokens joined into one word. Shaped like a fugashi node (`surface`, `feature`,
+    `is_unk`), so every caller reads it the same way, plus `parts`: each piece's (surface, feature).
+    Built from copies — a fugashi node is only valid until the tagger's next call."""
+    __slots__ = ("surface", "feature", "parts", "is_unk")
+
+    def __init__(self, surface, feature, parts):
+        self.surface, self.feature, self.parts, self.is_unk = surface, feature, parts, False
+
+
+def affix_joins():
+    """{written form: [lemma, reading]} — the dictionary words `join_affixes` may make."""
+    from app import reference_data
+    return getattr(reference_data, "affix_joins", dict)()
+
+
+def _is_base(word, honorific=False):
+    """Can `word` carry a prefix or a suffix? A noun (never a number or a person's name — place names
+    join: 日本人, アメリカ人) or a な-word; after お / ご / 御, also a verb in the 連用形 used as a noun
+    (お願い, お休み, ご存じ)."""
+    f = word.feature
+    if word.is_unk:
+        return False
+    if f.pos1 == "名詞":
+        return f.pos2 != "数詞" and not (f.pos2 == "固有名詞" and f.pos3 == "人名")
+    if f.pos1 == "形状詞":
+        return True
+    return honorific and f.pos1 == "動詞" and str(f.cForm).startswith("連用形")
+
+
+def _suffixed(words, end, key, pos1, joins):
+    """-> (end, key, pos1) of the longest dictionary word that `key` (the word ending at words[end])
+    grows into with the suffixes after it, each in its dictionary form (子供 + っぽく -> 子供っぽい) —
+    through pieces that are no word themselves (お母 + さん -> お母さん) — or None."""
+    found = (end, key, pos1) if key in joins else None
+    while end + 1 < len(words):
+        s = words[end + 1]
+        f = s.feature
+        if f.pos1 == "接尾辞":
+            category, spelled = _SUFFIX_POS.get(f.pos2), f.orthBase or s.surface
+        elif f.pos1 == "名詞" and s.surface in _NOUN_SUFFIXES:
+            category, spelled = "名詞", s.surface
+        else:
+            break
+        if (category is None or s.surface in _NEVER_JOINED or f.lemma in _NEVER_JOINED
+                or (f.lemma == "方" and f.lForm == "ガタ")
+                or (pos1 == "形状詞" and s.surface in _NOMINALIZERS)):
+            break
+        key, pos1, end = key + spelled, category, end + 1
+        if key in joins:
+            found = (end, key, pos1)
+    return found
+
+
+def _joined(parts, key, pos1, entry):
+    """One `JoinedWord` for the nodes `parts`: lemma and reading from the dictionary (日本人 ニホンジン,
+    never the parts' ニッポン + ニン), the text's own spelling, the part of speech of the suffix — or, with
+    only a prefix, of the base — and the conjugation of the last part (子供っぽく, 嫌がった)."""
+    lemma, reading = entry
+    snaps = tuple((w.surface, w.feature) for w in parts)
+    last = snaps[-1][1]
+    # A noun keeps its last part's use (真夜中 副詞可能, 再開発 サ変可能, 午前中 副詞可能); お + a verb is a
+    # plain noun; only a verb or an adjective conjugates.
+    pos3 = last.pos3 if pos1 == "名詞" and last.pos1 != "動詞" else "*"
+    ctype, cform = (last.cType, last.cForm) if pos1 in ("動詞", "形容詞") else ("*", "*")
+    surface = "".join(s for s, _ in snaps)
+    feature = last._replace(
+        pos1=pos1, pos2="普通名詞" if pos1 == "名詞" else "一般", pos3=pos3 if pos3 else "*", pos4="*",
+        cType=ctype, cForm=cform, lForm=reading, lemma=lemma, orth=surface, orthBase=key,
+        pron=reading, pronBase=reading, kana=reading, kanaBase=reading, form=reading, formBase=reading)
+    return JoinedWord(surface, feature, snaps)
+
+
+def join_affixes(words, joins=None):
+    """`words` — one tagger call's nodes — with every prefix / suffix run that makes a dictionary word
+    joined into one `JoinedWord` (§ above); every other node passes through untouched.
+
+    A prefix joins the noun or な-word after it (不 + 自然, 新 + 幹線, お + 茶); a word then takes the
+    suffixes that follow (可能 + 性, 日本 + 人, 子供 + っぽい), up to the longest run that `joins` has —
+    the written form: prefix and base as the text writes them, each suffix in its dictionary form.
+    Nothing after a number is ever a base (3年生, 三回目, 第3話). `joins` defaults to reference_data's
+    table."""
+    if joins is None:
+        joins = affix_joins()
+    if not joins:
+        return words
+    out, i, n = [], 0, len(words)
+    while i < n:
+        w = words[i]
+        f = w.feature
+        found = None
+        if f.pos1 == "接頭辞":
+            if i + 1 < n and _is_base(words[i + 1], honorific=f.lemma == "御"):
+                base = words[i + 1]
+                found = _suffixed(words, i + 1, w.surface + base.surface,
+                                  "名詞" if base.feature.pos1 == "動詞" else base.feature.pos1, joins)
+        elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or words[i + 1].surface in _NOUN_SUFFIXES)
+                and _is_base(w) and not (i and words[i - 1].feature.pos2 == "数詞")):
+            found = _suffixed(words, i, w.surface, f.pos1, joins)
+        if found and found[0] > i:
+            end, key, pos1 = found
+            out.append(_joined(words[i:end + 1], key, pos1, joins[key]))
+            i = end + 1
+        else:
+            out.append(w)
+            i += 1
+    return out
+
+
+def see_through_base(lemma, reading, tagger, joins=None):
+    """(lemma, reading) of the word inside a word + suffixes that make a noun — 利用 in 利用者, 可能 in 可能性,
+    母 in 母さん — else None. Never a prefix word (不自然: the prefix changes the meaning) and never a
+    suffix that makes another kind of word (具体的, 子供っぽい). For U9 (Patterns_Quality_Spec.md §6.8):
+    when the learner knows that word, the joined one stays on the list, lower, and is no unknown when
+    choosing example sentences."""
+    if joins is None:
+        joins = affix_joins()
+    entry = joins.get(lemma)
+    if not entry or tuple(entry) != (lemma, reading):
+        return None
+    words = join_affixes(tagger(lemma), joins)
+    if len(words) != 1 or not isinstance(words[0], JoinedWord) or words[0].feature.pos1 != "名詞":
+        return None
+    surface, base = words[0].parts[0]
+    if base.pos1 == "接頭辞":
+        return None
+    base_lemma = base.lemma or surface
+    return (_sanitize_term(base_lemma) if SANITIZE_JA else base_lemma), base.lForm or base.kana or ""
+
+
 class JapaneseTokenizer(Tokenizer):
     def __init__(self):
         import fugashi   # lazy: only a Japanese run pays this import
         self.tagger = fugashi.Tagger()
 
-    def tokenize(self, text):
-        """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples."""
+    def tokenize(self, text, pieces=None):
+        """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples. `pieces`, a
+        list, also receives the (lemma, reading) of each piece of every joined word (§ above)."""
         # Simple wrapper around sentences
         all_tokens = []
-        for _, tokens in self.tokenize_sentences(text):
+        for _, tokens in self.tokenize_sentences(text, pieces):
             all_tokens.extend(tokens)
         return all_tokens
 
-    def tokenize_sentences(self, text):
+    def tokenize_sentences(self, text, pieces=None):
         """Yields (sentence_string, list_of_filtered_tokens).
 
         Fugashi consumes newlines, so '\\n' in the boundary set never fired and separate lines
@@ -128,12 +286,18 @@ class JapaneseTokenizer(Tokenizer):
         # times on a full library, and an `any(ch in ... for ch in surface)` generator here measured
         # ~11% slower across the whole tokenization pass.
         boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n"))
+        joins = affix_joins()
 
         for line in text.split("\n"):
             current_sentence_tokens = []
             current_sentence_surface = []
 
-            for word in self.tagger(line):
+            for word in join_affixes(self.tagger(line), joins):
+                if pieces is not None and isinstance(word, JoinedWord):
+                    for part_surface, part in word.parts:
+                        part_lemma = part.lemma if part.lemma else part_surface
+                        pieces.append((_sanitize_term(part_lemma) if SANITIZE_JA else part_lemma,
+                                       part.lForm or part.kana or ""))
                 surface = word.surface
                 pos = word.feature.pos1
                 # CHARACTER-wise, not whole-token: the tokenizer glues a terminator to an adjacent
@@ -532,7 +696,10 @@ def load_known_words(json_path, tokenizer):
             if term:
                 # Normalize using the same tokenizer
                 try:
-                    tokens = tokenizer.tokenize(term)
+                    # A known joined word marks its pieces known too, as it did before words kept their
+                    # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
+                    pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
+                    tokens = tokenizer.tokenize(term) if pieces is None else tokenizer.tokenize(term, pieces)
                     term = zh_script.convert(term, script)
 
                     # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
@@ -542,7 +709,10 @@ def load_known_words(json_path, tokenizer):
                     for lemma, reading, _, _ in tokens:
                         known_tuples.add((lemma, reading))
                         known_lemmas.add(lemma)
-                        
+                    for lemma, reading in pieces or ():
+                        known_tuples.add((lemma, reading))
+                        known_lemmas.add(lemma)
+
                     # 2. Heuristic: If multiple tokens, add the combined form too.
                     # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 
                     # but find as "Made" particle in context).
@@ -1513,6 +1683,20 @@ def main():
     ignore_list.update(load_simple_list(black_list_file, script))        # merge blacklist into ignore list
     ignore_list.update(load_simple_list(graduated_list_file, script))    # merge graduated list into ignore list
 
+    # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
+    # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
+    # example sentences (the user's "halfway + lower", U9, Patterns_Quality_Spec.md §6.8).
+    _joins = affix_joins() if language == 'ja' else {}
+    _see_through_memo = {}
+
+    def _readable(lr, known_tuples, known_lemmas):
+        """Is `lr` such a word, with its word among these known ones? (see_through_base, asked once per word)"""
+        base = _see_through_memo.get(lr, False)
+        if base is False:
+            base = _see_through_memo[lr] = (see_through_base(lr[0], lr[1], tokenizer.tagger, _joins)
+                                            if lr[0] in _joins else None)
+        return base is not None and (base in known_tuples or base[0] in known_lemmas or base[0] in ignore_list)
+
     # Load all yomitan frequency lists (discovered above; contents read here on a real run only).
     freq_data = {}
     for list_name, filepath in sorted(available_freq_lists.items()):
@@ -1670,10 +1854,12 @@ def main():
             is_over_hard_max = len(s_text) > LOGIC.get("context", {}).get("max_chars", 150)
 
             # Running frequency of each of this sentence's unknowns (ascending) — used to score
-            # each candidate by its rarer-than-target co-words (see rolling_context_cost).
+            # each candidate by its rarer-than-target co-words (see rolling_context_cost). A word the
+            # learner can read through its known word (利用者) is not one of them (U9, above).
             unk_freqs = sorted(
                 word_stats[lr]["total_count"] if lr in word_stats else 0
                 for lr in unique_lrs
+                if not _readable(lr, known_words_initial, known_lemmas_initial)
             )
 
             for (lemma, reading) in unique_lrs:
@@ -1750,6 +1936,11 @@ def main():
         })
 
     # (The token store stays open until the end of the run so we can record the run-signature.)
+
+    # U9's "lower": a word the learner can read through its known word (利用者) scores half.
+    for lr, entry in word_stats.items():
+        if _readable(lr, known_words_initial, known_lemmas_initial):
+            entry["score"] //= 2
 
     # --- Resolve the word-selection floor (replaces the retired raw min_freq default) ---
     # Now that aggregation is done we know the library's total token count, so a density-band
@@ -1898,6 +2089,9 @@ def main():
             for lr in unique_lrs:
                 if lr == target_lr: continue
                 if lr not in rolling_known_tuples and lr[0] not in rolling_known_lemmas:
+                    # 利用者 once 利用 is known by this point of the list is no unknown (U9).
+                    if _readable(lr, rolling_known_tuples, rolling_known_lemmas):
+                        continue
                     unknown_count += 1
                     # Optimization 4: Fast-Fail Evaluation
                     # If strict i+1 mode is ON, any sentence > 0 unknowns is guaranteed garbage
@@ -2005,7 +2199,8 @@ def main():
                     unknowns = sum(1 for lr in ctx[3]
                                    if lr != target_lr
                                    and lr not in rolling_known_tuples
-                                   and lr[0] not in rolling_known_lemmas)
+                                   and lr[0] not in rolling_known_lemmas
+                                   and not _readable(lr, rolling_known_tuples, rolling_known_lemmas))
                     if ONLY_I_PLUS_ONE and unknowns > 0:
                         continue
                     # i+1 first, because an example you can actually read is worth more than a

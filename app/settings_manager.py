@@ -29,7 +29,8 @@ DEFAULT_SETTINGS = {
     "ensure_audio_example": False,
     "add_graduated_words": True,
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
-    "skipped_version": "",          # a version the user skipped or that failed to auto-apply
+    "skipped_version": "",          # a version the user skipped — never offered again
+    "failed_update_version": "",    # a version whose in-app update failed — a manual download after
     # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
     # Presentation only — it never changes the analysis, just how each example sentence is labelled.
     "source_display": "off",

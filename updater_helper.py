@@ -247,7 +247,7 @@ def run(marker_path):
         return 1
 
     # Record the attempt for diagnostics. (The real guard against retry loops is the app's
-    # `skipped_version`, set when it sees a failed/interrupted result — see app/updater.py.)
+    # `failed_update_version`, set when it sees a failed/interrupted result — see app/updater.py.)
     marker["attempt"] = int(marker.get("attempt", 0)) + 1
     _safe_write_json(marker_path, marker)
 

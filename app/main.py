@@ -10,7 +10,7 @@ import webbrowser
 import json
 from typing import Optional
 from app import __version__
-from app.update_checker import get_update_info, classify_update
+from app.update_checker import get_update_info, classify_update, parse_version
 from app import settings_manager
 from app import updater
 from app import word_selection
@@ -345,7 +345,9 @@ class MasterDashboardApp:
         # Update state (populated by the background check; consumed by the footer indicator)
         self._update_info = None
         self._update_class = "NONE"
-        self.skipped_version = ""
+        self.skipped_version = ""          # "Skip this version": never offered again
+        self.failed_update_version = ""    # its in-app update failed: a manual download from then on
+        self.btn_offer_skipped = None      # Settings' way back from a skip (`_sync_skipped_row`)
         self.update_label: Optional[ttk.Label] = None
 
         # Initialize status var early to satisfy linter
@@ -1543,6 +1545,14 @@ class MasterDashboardApp:
         chk_auto_update.pack(anchor=tk.W, pady=(0, 10))
         ToolTip(chk_auto_update, "Offer one-click in-app updates for minor releases. Major updates always download manually.")
 
+        # The way back from "Skip this version", which hides that version's offer for good (the user,
+        # 2026-09-25: one accidental Skip left no way to update in one click). Shown only while the
+        # skipped version is still newer than this one (`_sync_skipped_row`).
+        self._chk_auto_update = chk_auto_update
+        self.btn_offer_skipped = ttk.Button(group_data, command=self._offer_skipped_again, width=20)
+        ToolTip(self.btn_offer_skipped, "You chose Skip this version. Offer it again as a one-click update.")
+        self._sync_skipped_row()
+
         # The Anki options live in the Anki button's window, beside the decks they depend on (the
         # user, 2026-09-23): "Sync automatically when Anki is running" — one setting, which used to
         # have a second checkbox here — and "Generate when Anki adds known words". Reading the Anki
@@ -1618,15 +1628,17 @@ class MasterDashboardApp:
         try:
             info = get_update_info()
             cls = classify_update(__version__, info)
-            # Apply the kill-switch / anti-loop guard using saved settings (thread-safe: we
-            # read the plain dict, not tk vars). A disabled toggle, a missing updater.exe, or
-            # a version that already failed/was skipped downgrades an APP update to manual.
+            # Apply the skip / kill-switch / anti-loop guard using saved settings (thread-safe: we
+            # read the plain dict, not tk vars). A skipped version isn't offered at all; a disabled
+            # toggle, a missing updater.exe, or a version that already failed downgrades an APP
+            # update to manual.
             cur = getattr(self, "_current_settings", {}) or {}
             cls = updater.effective_class(
                 cls, info,
                 skipped_version=cur.get("skipped_version", ""),
                 auto_enabled=cur.get("auto_update_enabled", True),
                 can_apply=updater.can_auto_apply(),
+                failed_version=cur.get("failed_update_version", ""),
             )
             if cls == "NONE" or info is None:
                 return
@@ -1672,13 +1684,7 @@ class MasterDashboardApp:
                   font=('Segoe UI', 13, 'bold'), foreground=SECONDARY_COLOR,
                   background=BG_COLOR).pack(anchor=tk.W, pady=(0, 8))
 
-        if cls == "APP":
-            body = ("This is a quick in-app update — it refreshes only the program code and "
-                    "report templates (about 15–20 MB). Your words, data, settings, and file "
-                    "order are never touched. Surasura will briefly close and reopen.")
-        else:
-            body = ("This is a larger update and should be downloaded manually (it changes more "
-                    "than the app code). Your personal data stays where it is.")
+        body = self._update_body(cls, info, getattr(self, "failed_update_version", ""))
         ttk.Label(wrapper, text=body, wraplength=400, justify=tk.LEFT,
                   foreground=TEXT_COLOR, background=BG_COLOR, font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 16))
 
@@ -1702,16 +1708,59 @@ class MasterDashboardApp:
 
         ttk.Button(btn_row, text="Later", command=dialog.destroy).pack(side=tk.RIGHT)
 
+    @staticmethod
+    def _update_body(cls, info, failed_version=""):
+        """What the update dialog says. A version whose in-app update already failed is a manual
+        download for that reason — it isn't "a larger update", and saying so sent people looking."""
+        if cls == "APP":
+            return ("This is a quick in-app update — it refreshes only the program code and "
+                    "report templates (about 15–20 MB). Your words, data, settings, and file "
+                    "order are never touched. Surasura will briefly close and reopen.")
+        version = getattr(info, "version", "")
+        if failed_version and version == failed_version:
+            return (f"The in-app update to v{version} didn't finish last time, so this one is a "
+                    "manual download. Your personal data stays where it is.")
+        return ("This is a larger update and should be downloaded manually (it changes more "
+                "than the app code). Your personal data stays where it is.")
+
     def _skip_update(self, dialog):
-        """Remember this version so it is never auto-offered again, and hide the indicator."""
+        """Remember this version so it is never offered again — a newer one is, and Settings → Data &
+        System can bring this one back — and hide the indicator."""
         info = self._update_info
         if info:
             self.skipped_version = info.version
             self.save_settings()
+            self._sync_skipped_row()
         if self.update_label:
             self.update_label.pack_forget()
         self.status_var.set("Ready")
         dialog.destroy()
+
+    def _sync_skipped_row(self):
+        """Settings' "vX skipped — Offer again": there only while a skipped version is still newer than
+        this one (after a manual update to it, or past it, there's nothing to bring back)."""
+        button = getattr(self, "btn_offer_skipped", None)
+        if button is None:
+            return
+        version = getattr(self, "skipped_version", "")
+        try:
+            if version and parse_version(version) > parse_version(__version__):
+                button.config(text=f"v{version} skipped — Offer again")
+                if button.winfo_manager() != "pack":
+                    button.pack(fill=tk.X, pady=(0, 10), after=self._chk_auto_update)
+            elif button.winfo_manager() == "pack":
+                button.pack_forget()
+        except tk.TclError:
+            pass
+
+    def _offer_skipped_again(self):
+        """Undo "Skip this version": forget the skip and check again, so the footer offers it — in one
+        click, unless its in-app update once failed."""
+        self.skipped_version = ""
+        self.save_settings()
+        self._sync_skipped_row()
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+            threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
     def _do_auto_update(self, dialog):
         """Download+verify the app package on a worker thread, then arm+restart on the UI thread."""
@@ -1794,10 +1843,11 @@ class MasterDashboardApp:
                 pass
         else:
             # Failed / interrupted: remember the version so we never auto-retry it, and offer
-            # the manual path. This is the loop-breaker.
+            # the manual path. This is the loop-breaker — its own mark, not a skip: the version is
+            # still offered, as a download.
             ver = res.get("to") or ""
             if ver:
-                self.skipped_version = ver
+                self.failed_update_version = ver
                 self.save_settings()
             reason = res.get("reason", "")
             report = updater.write_report("install", reason, to_version=ver,
@@ -2134,6 +2184,8 @@ class MasterDashboardApp:
             self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
             self.var_anki_auto_generate.set(bool(settings.get("anki_auto_generate", False)))
             self.skipped_version = settings.get("skipped_version", "")
+            self.failed_update_version = settings.get("failed_update_version", "")
+            self._sync_skipped_row()
 
             # Load Logic Settings
             self.logic_settings = settings.get("logic", {})
@@ -2218,6 +2270,7 @@ class MasterDashboardApp:
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
                 "anki_auto_generate": self.var_anki_auto_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
+                "failed_update_version": getattr(self, "failed_update_version", ""),
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),

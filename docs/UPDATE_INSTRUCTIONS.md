@@ -19,17 +19,18 @@ settings are left exactly as you had them.
    bottom-left of the dashboard. It never interrupts you — click it when you're ready.
 2. Choose **Update now**. Surasura downloads the small update, verifies it, then briefly
    closes and reopens itself on the new version. That's it.
-3. If you'd rather not, choose **Later**, or **Skip this version** — Surasura then won't offer
-   to install that version in one click again. The ⬆ link stays, but only offers the manual
-   download, until a newer version comes out.
+3. If you'd rather not, choose **Later** — the ⬆ link stays for when you're ready — or **Skip
+   this version**: Surasura then doesn't offer that version again, and the next one comes as
+   usual. Skipped it by mistake? **Settings → Data & System → "vX skipped — Offer again"** brings
+   it back, in one click.
 
 You can turn automatic updates off anytime in **Settings → Data & System → Automatic
 Updates**. Bigger "major" updates (the rare ones that change the app's internals) always use
 the manual path below, even with automatic updates on.
 
 If an automatic update ever can't finish (e.g. no internet), Surasura simply keeps running
-the version you have and lets you try again or update manually — it will never get stuck
-retrying. It also notes what went wrong in `debug/update_report.txt`, inside your Surasura
+the version you have, and the ⬆ link offers that version as a manual download instead — it will
+never get stuck retrying. The next version is offered in one click again. It also notes what went wrong in `debug/update_report.txt`, inside your Surasura
 folder; if it keeps happening, attach that file to an issue on the
 [GitHub repository](https://github.com/SonicSandbox/surasura/issues).
 

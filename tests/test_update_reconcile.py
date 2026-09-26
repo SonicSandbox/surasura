@@ -84,11 +84,26 @@ def test_effective_class_downgrades_when_cannot_apply():
     assert updater.effective_class("APP", _info(), auto_enabled=True, can_apply=False) == "FULL"
 
 
-def test_effective_class_downgrades_skipped_or_failed_version():
-    # The version already failed/was skipped once -> never auto-offer it again (loop-breaker).
-    assert updater.effective_class("APP", _info("2.1"), skipped_version="2.1") == "FULL"
+def test_effective_class_hides_a_version_the_user_skipped():
+    # "Skip this version" means that version is never offered again — not offered as a download
+    # instead, which is what an accidental Skip used to leave (2026-09-25).
+    assert updater.effective_class("APP", _info("2.1"), skipped_version="2.1") == "NONE"
+    assert updater.effective_class("FULL", _info("2.1"), skipped_version="2.1") == "NONE"
+
+
+def test_effective_class_offers_a_newer_version_than_the_skipped_one():
+    # A skip holds one version: the next release is offered in one click as usual.
+    assert updater.effective_class("APP", _info("2.2"), skipped_version="2.1") == "APP"
+
+
+def test_effective_class_keeps_a_failed_version_a_manual_download():
+    # The loop-breaker: a version whose in-app update failed is never retried in place, but it is
+    # still offered — as a download.
+    assert updater.effective_class("APP", _info("2.1"), failed_version="2.1") == "FULL"
+    assert updater.effective_class("APP", _info("2.2"), failed_version="2.1") == "APP"
 
 
 def test_effective_class_leaves_none_and_full_untouched():
     assert updater.effective_class("NONE", None) == "NONE"
+    assert updater.effective_class("NONE", None, skipped_version="2.1") == "NONE"
     assert updater.effective_class("FULL", _info()) == "FULL"

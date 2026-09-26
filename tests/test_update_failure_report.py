@@ -61,6 +61,7 @@ def _dashboard():
     app.gui_queue = queue.Queue()
     app.status_var = _Var()
     app.skipped_version = ""
+    app.failed_update_version = ""
     app.active_processes = []
     app.update_label = None
     app._update_info = UpdateInfo(version="2.3", update_type="app", sha256="ab" * 32,
@@ -162,7 +163,8 @@ def test_failed_install_keeps_the_helpers_reason_in_the_report(install_root, mon
     assert "From version: 2.2" in text
     assert "To version: 2.3" in text
     assert reason in text
-    assert app.skipped_version == "2.3", "the loop-breaker still runs"
+    assert app.failed_update_version == "2.3", "the loop-breaker still runs"
+    assert app.skipped_version == "", "a failure is not a skip: the version is still offered, as a download"
     assert not os.path.exists(updater.result_path()), "the result is still consumed"
 
 

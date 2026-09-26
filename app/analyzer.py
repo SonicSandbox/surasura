@@ -1311,7 +1311,7 @@ def compute_run_signature(language, found_files, args):
         _NON_ANALYSIS_SETTINGS = {
             "theme", "open_app_mode", "zen_limit",
             "words_per_day", "show_words_per_day",
-            "open_count", "skipped_version",
+            "open_count", "skipped_version", "failed_update_version",
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run

@@ -336,18 +336,25 @@ def write_report(stage, reason, to_version="", from_version=""):
         return None
 
 
-def effective_class(cls, info, skipped_version="", auto_enabled=True, can_apply=True):
-    """Downgrade an 'APP' classification to 'FULL' (manual) when auto-apply must not happen.
+def effective_class(cls, info, skipped_version="", auto_enabled=True, can_apply=True, failed_version=""):
+    """Decide what the footer offers, from the checker's class and the user's settings.
 
-    This is the loop/kill-switch guard, kept as a pure function so it is directly testable:
-      * auto-updates disabled in settings, or no bundled updater.exe -> never auto-apply.
-      * the target version already failed/was skipped once -> never auto-apply it again.
-    'NONE' and 'FULL' pass through unchanged.
+    This is the skip, loop and kill-switch guard, kept as a pure function so it is directly testable:
+      * the user chose "Skip this version" -> 'NONE': that version is never offered again (a newer one
+        is, and Settings -> Data & System can bring it back).
+      * auto-updates disabled in settings, or no bundled updater.exe -> 'APP' becomes 'FULL' (manual).
+      * the in-app update of that version already failed once -> 'FULL', never retried in place (the
+        loop-breaker). A skip and a failure are kept apart: the user pressing Skip by accident once
+        left only the manual download (2026-09-25).
+    'FULL' otherwise passes through unchanged, and 'NONE' always does.
     """
+    version = getattr(info, "version", "") if info is not None else ""
+    if cls == "NONE" or (version and version == skipped_version):
+        return "NONE"
     if cls != "APP":
         return cls
     if not auto_enabled or not can_apply:
         return "FULL"
-    if info is not None and getattr(info, "version", "") and info.version == skipped_version:
+    if version and version == failed_version:
         return "FULL"
     return "APP"

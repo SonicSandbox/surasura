@@ -6,16 +6,22 @@ repository at the commit that added it, and accepts **only that exact file**. Bo
 sha256 live in `modules/junban/patterns_package.py` (`SHARED_URL`, `SHARED_SHA256`). A commit never
 changes, so every app version keeps getting the file it was built for. No GitHub release is needed.
 
-**Version 3 — in this folder, waiting to be pinned** (builder 6, 2026-09-25). The same sources as version 2,
+**Pinned now: version 3** (builder 6, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the sha256
+matched, and the app's own download installed it. The same sources as version 2,
 rebuilt for Surasura 2.3's パターン (Patterns_Quality_Spec.md): words keep their prefixes and suffixes
-(新幹線, 可能性), each pattern carries the number of documents it is in, and the pairings and frames no card
-can show are left out. 2.3 counts version 2 (builder 5) as not ready, so 2.3 must ship with this pin.
+(新幹線, 可能性), each pattern carries the number of documents it is in, and the pairings and frames under the
+lookup's fixed limits (fewer than 3 documents, strength under 2, fewer than 3 uses) are left out. 2.3 counts
+version 2 (builder 5) as not ready, so 2.3 must ship with this pin.
 - **Size:** 67,509 words, and a 32.2 MB zip. sha256
   `7882e6ab80e8d712a878cbf942ebc5edeec9a8ea8ea5f81ef833c243bfd38527`.
-- **The gate:** every yardstick at or above version 2 but one — the conversational NLT top-5 pairings, 24 → 23
-  (受ける's fifth pairing gave way to another real one). Patterns_Quality_Spec.md §15.7 has the numbers.
+- **The gate:** this file's yardsticks held against version 2 — the NLT gold, 13/18 top particles and 29/90
+  top-5 pairings on both — and cards filled from it went from 84.9% to 88.3% of the known words tested.
+  Patterns_Quality_Spec.md §15.7 has the numbers.
 
-**Pinned now: version 2** (builder 5, 2026-09-25). It adds modern news from the Leipzig Corpora
+      https://raw.githubusercontent.com/SonicSandbox/surasura/f996b2c19d9866a2748cbf2b9130471e75ea9d0a/release_assets/patterns/patterns_ja_shared.zip
+      sha256 7882e6ab80e8d712a878cbf942ebc5edeec9a8ea8ea5f81ef833c243bfd38527
+
+**Version 2** (builder 5, 2026-09-25) stays reachable for the app versions pinned to it. It adds modern news from the Leipzig Corpora
 Collection, and its zip is 29.2 MB. Checked on 2026-09-25 by downloading the URL: the sha256 matched,
 and the app's own download installed it.
 - **What goes in:** Japanese newscrawl 2015–2019. Translations are dropped (foreign outlets' Japanese
@@ -41,7 +47,8 @@ not part of the app build.
 committed here, then pinned. The pin is `SHARED["zh"]` in `modules/junban/patterns_package.py`: the
 commit's raw URL, the zip's sha256, its size in MB and its credit line.
 
-**Version 2 — in this folder, waiting to be pinned** (Chinese builder 2, 2026-09-25). The same sources as
+**Pinned now: version 2** (Chinese builder 2, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the
+sha256 matched, and the app's own download installed it. The same sources as
 version 1, rebuilt for Surasura 2.3 (Patterns_Quality_Spec.md §10): the same pairing filters as Japanese,
 coverb rows only where they cover enough of a word's uses, no 演唱会-type forms, adverbs' pairings, and
 Tatoeba's sentences counted as documents of their own. 2.3 counts version 1 (builder 1) as not ready, so
@@ -50,7 +57,10 @@ Tatoeba's sentences counted as documents of their own. 2.3 counts version 1 (bui
   `5afa2d4c0667788946acc17c3e466454bb15cf3d1551241ff8d9e12811d95d58`.
 - **The check:** against version 1, each read by its own code (Patterns_Quality_Spec.md §15.7).
 
-**Pinned now: version 1** (Chinese builder 1, 2026-09-25). Checked on 2026-09-25 by downloading the URL:
+      https://raw.githubusercontent.com/SonicSandbox/surasura/f996b2c19d9866a2748cbf2b9130471e75ea9d0a/release_assets/patterns/patterns_zh_shared.zip
+      sha256 5afa2d4c0667788946acc17c3e466454bb15cf3d1551241ff8d9e12811d95d58
+
+**Version 1** (Chinese builder 1, 2026-09-25) stays reachable for the app versions pinned to it. Checked on 2026-09-25 by downloading the URL:
 the sha256 matched, and the app's own download installed it.
 
       https://raw.githubusercontent.com/SonicSandbox/surasura/d62e6464c494f2e2494e797a3326a999f733b25b/release_assets/patterns/patterns_zh_shared.zip
@@ -80,6 +90,9 @@ To make a new version of the Chinese data:
    - read the same pair on the review page (`review_patterns_zh.py`, same arguments).
 
    Adopt it only if no measure-word, coverb or filled number is lower, and no new word reads wrong.
+   When the builder or the lookup changed as well, the numbers move by design: compare each side by its
+   own code instead (`docs/assets/corpora/tools/zh/zh_check.py both --code <a copy of modules/junban from
+   before the change>`) and read what moved.
 3. Run `build_shared_zh.py --publish`. It copies the zip and `CREDITS_zh.txt` here.
 4. Commit and push them. Update the README credits if the sources changed.
 5. Pin `SHARED["zh"]` in `modules/junban/patterns_package.py` to the commit that added the zip
@@ -95,7 +108,9 @@ To make a new version of the Chinese data:
 1. Run `python docs/assets/corpora/build_shared.py`. It builds a candidate in
    `docs/assets/corpora/out/shared/`.
 2. Run `python docs/assets/corpora/gate.py`. It compares the candidate against the pinned file and
-   writes `GATE.md`. Adopt only if no yardstick is lower.
+   writes `GATE.md`. Adopt only if no yardstick is lower. When the code changed with the data, run
+   `gate.py --today-code <a copy of modules/junban from before the change> --today-library <the library
+   database from before>`, so "today" is what users have today, and explain every yardstick that moved.
 3. Run `python docs/assets/corpora/build_shared.py --publish`. It copies the zip and `CREDITS.txt` here.
 4. Commit and push them. Update the README credits if the sources changed.
 5. Put that commit's full hash into `SHARED_URL` and the zip's sha256 into `SHARED_SHA256`. Update

@@ -97,6 +97,18 @@ def test_a_word_read_through_its_known_word_is_no_unknown_in_a_sentence():
     assert [c[0][0] for c in best] == [0, 1]           # how many other words the learner doesn't know
 
 
+def test_a_base_word_on_the_ignore_list_reads_the_joined_word_in_a_sentence_too():
+    """An ignored word counts as known, so 利用 on IgnoreList.txt reads 利用者 as a known 利用 does (U9) —
+    the analyzer's own rule, which `collect` must mirror for the export and Backfill's 例文."""
+    easy = "公園の利用者が増えた。"
+    hard = "公園の雰囲気が不自然だ。"
+    known = ((_lemmas(easy) | _lemmas(hard)) - {"公園", "利用者", "不自然"}) | {"自然"}
+    cache = {"a.txt": _tokenized([hard, easy])}
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(known), {"利用"}), WINDOW)
+
+    assert _texts(_best(words, "公園")) == [easy, hard]
+
+
 def test_the_users_own_range_comes_before_the_leeway_and_outside_lengths_are_left_out():
     """With the same number of unknown words, a sentence inside the user's own 10–35 beats one in the
     ±5 margin (37 characters); 4 and 50 characters are outside the window altogether."""

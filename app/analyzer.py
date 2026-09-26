@@ -56,7 +56,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 13: words keep their prefixes and suffixes — 不自然, 新幹線, 可能性 are one word each (join_affixes);
 #     one you can read through its known word (利用者, 利用 known) scores half and is no unknown in a
 #     sentence (U9).
-ENGINE_REVISION = 13
+# 14: the join table's お / ご words are decided once per word, however UniDic tags each spelling
+#     (おやすみ, ご存知 / ご存じ); さ after a な-word and a prefix after a number stay apart (複雑さ, 三大祭り).
+#     Still 2.3: one re-analysis with 13.
+ENGINE_REVISION = 14
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -120,7 +123,9 @@ class Tokenizer(abc.ABC):
 # only where the dictionary has the word (母さん, 皆さん, 神様, お客様 — the user, checkpoint A); never
 # after a name, since a name is no base (田中さん).
 _NEVER_JOINED = frozenset(("たち", "達", "ら", "等", "ども", "共", "がた"))
-# A nominalizer after a な-word stays a token of its own: 不自然さ counts toward 不自然 (the user, U2).
+# A nominalizer after a な-word stays a token of its own: 不自然さ counts toward 不自然 (the user, U2). UniDic
+# files most な-words as nouns that can be one (複雑, 便利: 形状詞可能) — 複雑さ and 便利さ stay apart too, while
+# 人間味 and よそみ, whose み is 味 and 見, still join.
 _NOMINALIZERS = frozenset(("さ", "み"))
 # UniDic files 感 as a noun, not a suffix, though it builds words the way 性 and 的 do: 違和感, 存在感,
 # 緊張感, 罪悪感.
@@ -141,9 +146,13 @@ class JoinedWord:
 
 
 def affix_joins():
-    """{written form: [lemma, reading]} — the dictionary words `join_affixes` may make."""
-    from app import reference_data
-    return getattr(reference_data, "affix_joins", dict)()
+    """{written form: [lemma, reading]} — the dictionary words `join_affixes` may make. Degrades to {} when
+    the generated table is absent, as `_spelling_alias` does: words stay in UniDic's pieces."""
+    try:
+        from app import reference_data
+        return getattr(reference_data, "affix_joins", dict)()
+    except Exception:
+        return {}
 
 
 def _is_base(word, honorific=False):
@@ -176,7 +185,7 @@ def _suffixed(words, end, key, pos1, joins):
             break
         if (category is None or s.surface in _NEVER_JOINED or f.lemma in _NEVER_JOINED
                 or (f.lemma == "方" and f.lForm == "ガタ")
-                or (pos1 == "形状詞" and s.surface in _NOMINALIZERS)):
+                or (s.surface in _NOMINALIZERS and (pos1 == "形状詞" or words[end].feature.pos3 == "形状詞可能"))):
             break
         key, pos1, end = key + spelled, category, end + 1
         if key in joins:
@@ -210,8 +219,9 @@ def join_affixes(words, joins=None):
     A prefix joins the noun or な-word after it (不 + 自然, 新 + 幹線, お + 茶); a word then takes the
     suffixes that follow (可能 + 性, 日本 + 人, 子供 + っぽい), up to the longest run that `joins` has —
     the written form: prefix and base as the text writes them, each suffix in its dictionary form.
-    Nothing after a number is ever a base (3年生, 三回目, 第3話). `joins` defaults to reference_data's
-    table."""
+    Nothing after a number is ever a base (3年生, 三回目, 第3話), nor does a prefix after one join its word:
+    三大祭り is "the three great" festivals — 三 + 大 + 祭り, never 三 + 大祭り. `joins` defaults to
+    reference_data's table."""
     if joins is None:
         joins = affix_joins()
     if not joins:
@@ -222,10 +232,17 @@ def join_affixes(words, joins=None):
         f = w.feature
         found = None
         if f.pos1 == "接頭辞":
-            if i + 1 < n and _is_base(words[i + 1], honorific=f.lemma == "御"):
+            if (i + 1 < n and _is_base(words[i + 1], honorific=f.lemma == "御")
+                    and not (i and words[i - 1].feature.pos2 == "数詞")):
                 base = words[i + 1]
                 found = _suffixed(words, i + 1, w.surface + base.surface,
                                   "名詞" if base.feature.pos1 == "動詞" else base.feature.pos1, joins)
+                # A polite お / ご gives way to a longer word its base makes with the suffixes after it:
+                # お父上 is お + 父上, never お父 + 上 (お父, おとう, is a word too).
+                if found and f.lemma == "御" and _is_base(base):
+                    own = _suffixed(words, i + 1, base.surface, base.feature.pos1, joins)
+                    if own and own[0] > found[0]:
+                        found = None
         elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or words[i + 1].surface in _NOUN_SUFFIXES)
                 and _is_base(w) and not (i and words[i - 1].feature.pos2 == "数詞")):
             found = _suffixed(words, i, w.surface, f.pos1, joins)

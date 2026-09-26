@@ -88,11 +88,12 @@ docs/assets/corpora/
 docs/assets/zh_gold/
 debug/patterns_review_zh*.html
 
-# Measurements for Patterns_Quality_Spec.md — checkpoint A's diff, the お/ご join table, the build's test logs.
-# They quote the user's own library.
+# Measurements for Patterns_Quality_Spec.md — checkpoint A's diff, the お/ご join table, the build's test logs,
+# the readability check (§8.2). They quote the user's own library.
 debug/affix_diff.md
 debug/ogo_joins.md
 debug/quality_q/
+debug/readability_u8.md
 
 # Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
 debug/*.png

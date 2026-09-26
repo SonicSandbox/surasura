@@ -45,7 +45,10 @@ from collections import Counter
 #    cached blob — and the aggregate built from them — carries the old, per-conjugation readings.
 # v6 prefixes and suffixes are joined to their word, so every cached blob holds the old pieces
 #    (幹線 for 新幹線, 可能 + 性 for 可能性 — analyzer.join_affixes).
-SCHEMA_VERSION = 6
+# v7 the join table's お / ご words are decided once per word (おやすみ joins as お休み does; お話し
+#    splits as お話 does) and 複雑さ / 三大祭り stay in pieces — still 2.3, so users rebuild once; a v6 blob
+#    holds the first table's words (Patterns_Quality_Spec §15.9).
+SCHEMA_VERSION = 7
 
 
 # --------------------------------------------------------------------------- #

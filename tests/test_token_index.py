@@ -320,8 +320,7 @@ def test_a_store_from_before_the_lemma_reading_key_is_rebuilt(tmp_path):
 def test_a_store_from_before_words_kept_their_affixes_is_rebuilt(tmp_path):
     """v5 -> v6: prefixes and suffixes are joined to their word (Patterns_Quality_Spec §6.6). A v5
     store's cached sentences hold the pieces — 新 + 幹線 — and reusing them would keep counting 幹線, so
-    it must be dropped and rebuilt, never read. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 6
+    it must be dropped and rebuilt, never read."""
     db = _db(tmp_path)
     f = tmp_path / "trains.txt"
     _write(f, "新幹線に乗って東京へ行った。\n新幹線はとても速い。\n")
@@ -338,6 +337,31 @@ def test_a_store_from_before_words_kept_their_affixes_is_rebuilt(tmp_path):
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     rows = s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('新幹線', '幹線')").fetchall()
     assert rows == [("新幹線", "シンカンセン", 2)]
+    s2.close()
+
+
+def test_a_store_from_before_each_polite_word_was_decided_once_is_rebuilt(tmp_path):
+    """v6 -> v7: the join table decides an お / ご word once for all its spellings (Patterns_Quality_Spec
+    §15.9) — おやすみ now joins, as お休み did. A v6 store's cached sentences hold おやすみ in pieces, and
+    reusing them would keep counting 休む, so it must be dropped and rebuilt. Pinned exactly: the next bump
+    updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 7
+    db = _db(tmp_path)
+    f = tmp_path / "night.txt"
+    _write(f, "おやすみなさい。\nおやすみ、また明日ね。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    s.close()
+    conn = sqlite3.connect(db)      # what a v6 store holds: お + 休む
+    conn.execute("UPDATE aggregate SET lemma = '休む', reading = 'ヤスム' WHERE lemma = 'おやすみ'")
+    conn.execute("PRAGMA user_version = 6")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v6 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    rows = s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('おやすみ', '休む')").fetchall()
+    assert rows == [("おやすみ", "オヤスミ", 2)]
     s2.close()
 
 

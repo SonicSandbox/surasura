@@ -109,6 +109,7 @@ OGO_SOURCES = {"realpersonachat": None, "aozora": 23_000_000, "wikipedia": 25_00
 OGO_TALK = "realpersonachat"
 OGO_TALK_SHARE = 0.50
 OGO_REPORT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "debug", "ogo_joins.md")
+_KANJI = re.compile(r"[一-鿿々]")
 
 
 def load_list(name):
@@ -236,7 +237,8 @@ def _noun_use(nxt):
 
 
 def _ogo_count(path):
-    """-> (Counter of お/ご words, Counter of their bare bases) in one text file."""
+    """-> (Counter of お/ご words, Counter of their bare words) in one text file. A bare noun is counted
+    by its key, a verb's 連用形 used as a noun by its key and surface (お願い's 願い, not every ねがい)."""
     from collections import Counter
     from app.analyzer import JoinedWord, join_affixes
     tagger, joins, bases = _OGO["tagger"], _OGO["joins"], _OGO["bases"]
@@ -246,50 +248,120 @@ def _ogo_count(path):
             words = join_affixes(tagger(line.rstrip("\n")), joins)
             for i, w in enumerate(words):
                 if isinstance(w, JoinedWord):
-                    if w.feature.orthBase in bases.get("words", ()):
+                    if w.feature.orthBase in bases["words"]:
                         prefixed[w.feature.orthBase] += 1
                     continue
                 f_ = w.feature
                 key = (f_.lemma, f_.lForm)
-                if key in bases["nouns"]:
-                    noun = True
-                elif key in bases["verbs"]:
-                    noun = (str(f_.cForm).startswith("連用形") and w.surface == bases["verbs"][key]
-                            and _noun_use(words[i + 1] if i + 1 < len(words) else None))
-                else:
+                if key not in bases["nouns"] and key not in bases["verbs"]:
                     continue
                 prev = words[i - 1] if i else None
-                if prev is not None and not isinstance(prev, JoinedWord) and prev.feature.pos1 == "接頭辞" \
-                        and prev.feature.lemma == "御":
+                if prev is not None and not isinstance(prev, JoinedWord) and prev.feature.lemma == "御":
                     continue            # お名前 not joined: neither the prefixed word nor the bare one
-                if noun:
+                if key in bases["nouns"]:
                     bare[key] += 1
+                if (key in bases["verbs"] and str(f_.cForm).startswith("連用形") and w.surface in bases["verbs"][key]
+                        and _noun_use(words[i + 1] if i + 1 < len(words) else None)):
+                    bare[key + (w.surface,)] += 1
     return prefixed, bare
 
 
-def ogo_filter(tagger, joins, workers=10):
+def _bare_keys(tagger, word, reading):
+    """-> (what follows the prefix, the keys its bare word is counted under) for an お / ご / 御 word, with
+    the keys None for a word of its own that has more than a word after the prefix (お調子者); None for any
+    other word, and for one that ends in an honorific — a word of its own that keeps its own lemma too:
+    grouped across tags, お義母さん (read おかあさん) would fall in with お母さん. The prefix is any 御 (UniDic
+    files it as a noun in 御内, 御付き). A noun base is counted under its key; a verb's 連用形 under its key
+    and surface (お願い's 願い, not every ねがい) and, written with a kanji, under the common noun of the same
+    written form too (お帰り: 帰りが遅い) — each only where it reads as the お word ends (ご利益 is no 利益 りえき)."""
+    tokens = tagger(word)
+    if len(tokens) < 2 or tokens[0].feature.lemma != "御" \
+            or tokens[-1].surface in HONORIFICS or tokens[-1].feature.lemma in HONORIFICS:
+        return None
+    rest = "".join(t.surface for t in tokens[1:])
+    if len(tokens) > 2:
+        return rest, None
+    base, surface = tokens[1].feature, tokens[1].surface
+    key = (base.lemma, base.lForm)
+    if base.pos1 != "動詞":
+        return rest, {key} if reading.endswith(base.lForm) else set()
+    keys = {key + (surface,)}
+    alone = tagger(surface)
+    if len(alone) == 1 and alone[0].feature.pos2 == "普通名詞" and _KANJI.search(surface) \
+            and reading.endswith(alone[0].feature.lForm):
+        keys.add((alone[0].feature.lemma, alone[0].feature.lForm))
+    return rest, keys
+
+
+def _ogo_groups(joins, rest):
+    """The お / ご / 御 spellings of one word, decided together and listed under one lemma (U16): the
+    spellings `one_lemma_per_spelling` put under one lemma, and — however UniDic tags each one's base — the
+    words the lists read alike whose bases share a kanji (お話 / お話し, お休み / 御休み, お願い / 御願い),
+    with a kana base joining the one such word of its reading (おやすみ). `rest` maps a word to what
+    follows its prefix. Homophones keep apart (お腰 / お越し), and so does a kana spelling of two (おだい)."""
+    from collections import defaultdict
+    parent = {w: w for w in rest}
+
+    def find(w):
+        while parent[w] != w:
+            parent[w] = parent[parent[w]]
+            w = parent[w]
+        return w
+
+    by_lemma, by_reading = defaultdict(list), defaultdict(list)
+    for word in rest:
+        by_lemma[joins[word][0]].append(word)
+        by_reading[joins[word][1]].append(word)
+    for words in by_lemma.values():
+        for word in words[1:]:
+            parent[find(word)] = find(words[0])
+    for words in by_reading.values():
+        kanji = [w for w in words if _KANJI.search(rest[w])]
+        for n, a in enumerate(kanji):
+            for b in kanji[n + 1:]:
+                if set(_KANJI.findall(rest[a])) & set(_KANJI.findall(rest[b])):
+                    parent[find(a)] = find(b)
+        roots = {find(w) for w in kanji}
+        if len(roots) == 1:
+            for word in words:
+                if not _KANJI.search(rest[word]):
+                    parent[find(word)] = find(kanji[0])
+    groups = defaultdict(list)
+    for word in rest:
+        groups[find(word)].append(word)
+    return list(groups.values())
+
+
+def ogo_filter(tagger, joins, headwords, workers=10):
     """`joins` without the お / ご / 御 words that are not a usual form of their word (OGO_SHARE, U1, or
-    OGO_TALK_SHARE in conversation), decided once for all the spellings of a word; a word that ends in an
-    honorific stays (HONORIFICS). Writes the table it decided by to OGO_REPORT (debug/, gitignored) for
-    the user to read."""
+    OGO_TALK_SHARE in conversation), each word decided once for all its spellings, which share its
+    best-ranked spelling's lemma (`_ogo_groups`), its bare word counted however UniDic tags it
+    (`_bare_keys`). A word of its own stays whatever its share: one that ends in an honorific, one with more
+    than a word after its prefix (お調子者, お墨付き — or a kana word the tagger cut up: おこりっぽい), and one
+    whose base the text never reads as the お word does (ご利益 ごりやく is no 利益 りえき). The sweep of
+    2026-09-25 found the first version counted a verb's 連用形 by its last spelling's surface only — お帰り
+    86% against it, 20% against all of 帰り's uses — and decided spellings the tagger files differently
+    apart (お休み joined, おやすみ split). Writes the table it decided by to OGO_REPORT (debug/, gitignored)
+    for the user to read."""
     import multiprocessing
     from collections import Counter, defaultdict
     from concurrent.futures import ProcessPoolExecutor
-    ogo, nouns, verbs = {}, {}, {}
-    for word in joins:
-        tokens = tagger(word)
-        first, last = tokens[0].feature, tokens[-1]
-        if (first.pos1 != "接頭辞" or first.lemma != "御"
-                or last.surface in HONORIFICS or last.feature.lemma in HONORIFICS):
+    rest, keys, nouns, verbs = {}, {}, set(), defaultdict(set)
+    for word, (_lemma, reading) in joins.items():
+        found = _bare_keys(tagger, word, reading)
+        if found is None:
             continue
-        base = tokens[1]
-        key = (base.feature.lemma, base.feature.lForm)
-        ogo[word] = key
-        if base.feature.pos1 == "動詞":
-            verbs[key] = base.surface
-        else:
-            nouns[key] = base.surface
-    bases = {"words": frozenset(ogo), "nouns": nouns, "verbs": verbs}
+        rest[word], word_keys = found
+        if word_keys is None:
+            continue                    # a word of its own, unless a spelling of it is a prefix + a word
+        keys[word] = word_keys
+        for k in word_keys:
+            if len(k) == 3:
+                verbs[k[:2]].add(k[2])
+            else:
+                nouns.add(k)
+    bases = {"words": frozenset(rest), "nouns": frozenset(nouns),
+             "verbs": {k: frozenset(v) for k, v in verbs.items()}}
     paths = _ogo_texts()
     prefixed, bare, talk_prefixed, talk_bare = Counter(), Counter(), Counter(), Counter()
     with ProcessPoolExecutor(workers, multiprocessing.get_context("spawn"), _ogo_init, (joins, bases)) as pool:
@@ -299,38 +371,48 @@ def ogo_filter(tagger, joins, workers=10):
             if os.path.basename(os.path.dirname(path)) == OGO_TALK:
                 talk_prefixed.update(p)
                 talk_bare.update(b)
-    spellings = defaultdict(list)           # lemma -> its お/ご spellings (one_lemma_per_spelling)
-    for word in ogo:
-        spellings[joins[word][0]].append(word)
-    kept, rows = dict(joins), []
-    for lemma, words in spellings.items():
-        key = ogo.get(lemma, ogo[words[0]])
-        uses, talk = sum(prefixed[w] for w in words), sum(talk_prefixed[w] for w in words)
-        share = uses / (uses + bare[key]) if uses + bare[key] else 0.0
-        talk_share = talk / (talk + talk_bare[key]) if talk + talk_bare[key] else 0.0
-        joined = ((uses >= OGO_MIN_USES and share >= OGO_SHARE)
-                  or (talk >= OGO_MIN_USES and talk_share >= OGO_TALK_SHARE))
-        if not joined:
-            for word in words:
-                del kept[word]
-        if uses >= OGO_MIN_USES or talk >= OGO_MIN_USES:
-            rows.append((" / ".join(sorted(words, key=lambda w: w != lemma)), uses, bare[key], share,
-                         talk, talk_share, joined))
+    kept, rows, own, members = dict(joins), [], 0, defaultdict(list)
+    for word, (lemma, _reading) in joins.items():
+        members[lemma].append(word)
+    for words in _ogo_groups(joins, rest):
+        best = min(words, key=lambda w: (headwords[w][1], w))
+        lemmas, lemma = {joins[w][0] for w in words}, joins[best][0]
+        pairs = [w for w in words if w in keys]
+        group_keys = set().union(*(keys[w] for w in pairs)) if pairs else set()
+        if group_keys:
+            uses, talk = sum(prefixed[w] for w in words), sum(talk_prefixed[w] for w in words)
+            b, tb = sum(bare[k] for k in group_keys), sum(talk_bare[k] for k in group_keys)
+            share = uses / (uses + b) if uses + b else 0.0
+            talk_share = talk / (talk + tb) if talk + tb else 0.0
+            joined = ((uses >= OGO_MIN_USES and share >= OGO_SHARE)
+                      or (talk >= OGO_MIN_USES and talk_share >= OGO_TALK_SHARE))
+            if uses >= OGO_MIN_USES or talk >= OGO_MIN_USES:
+                rows.append((" / ".join(sorted(words, key=lambda w: (w != best, w))), uses, b, share,
+                             talk, talk_share, joined))
+        else:
+            joined, own = True, own + 1
+        for word in (w for old in lemmas for w in members[old]):     # every table word of them (御内 is おうち)
+            if joined:
+                kept[word] = [lemma, joins[word][1]]
+            else:
+                kept.pop(word, None)
     rows.sort(key=lambda r: (-max(r[3], r[5]), r[0]))
     os.makedirs(os.path.dirname(OGO_REPORT), exist_ok=True)
     with open(OGO_REPORT, "w", encoding="utf-8") as f:
         f.write(f"# お / ご / 御 words — joined at a share of at least {OGO_SHARE:.0%}, or {OGO_TALK_SHARE:.0%} "
                 f"in conversation ({date.today()})\n\n"
                 f"Over the shared set's text, and its conversation ({OGO_TALK}) alone; words with at least "
-                f"{OGO_MIN_USES} prefixed uses in either. {sum(r[6] for r in rows)} join, "
-                f"{sum(not r[6] for r in rows)} stay a prefix + a word. Words that end in an honorific "
-                "(お母さん, お客様) always join and are not listed.\n\n"
+                f"{OGO_MIN_USES} prefixed uses in either, all spellings of a word together (the first is the "
+                f"list word). {sum(r[6] for r in rows)} join, {sum(not r[6] for r in rows)} stay a prefix + a "
+                f"word. Words of their own always join and are not listed: those that end in an honorific "
+                f"(お母さん, お客様), and {own:,} more — a compound after the prefix (お調子者) or a reading of its "
+                f"own (ご利益 ごりやく).\n\n"
                 "| word | prefixed | bare | share | in conversation | share there | joined |\n"
                 "| :-- | --: | --: | --: | --: | --: | :-- |\n")
         f.writelines(f"| {w} | {u:,} | {b:,} | {s:.0%} | {t:,} | {ts:.0%} | {'yes' if j else 'no'} |\n"
                      for w, u, b, s, t, ts, j in rows)
-    print(f"  お/ご words: {len(spellings):,} in the lists, {len(rows):,} with ≥ {OGO_MIN_USES} uses, "
-          f"{sum(r[6] for r in rows):,} joined (report: {OGO_REPORT})")
+    print(f"  お/ご words: {len(rest):,} in the lists, {len(rows):,} words with ≥ {OGO_MIN_USES} uses, "
+          f"{sum(r[6] for r in rows):,} joined, {own:,} words of their own (report: {OGO_REPORT})")
     return kept
 
 
@@ -381,7 +463,7 @@ def main():
 
     print("\nBuilding the affix joins (tokenizing the dictionaries' headwords)...")
     headwords = load_headwords(JOIN_LISTS)
-    joins = ogo_filter(tagger, one_lemma_per_spelling(tagger, build_joins(tagger, headwords), headwords))
+    joins = ogo_filter(tagger, one_lemma_per_spelling(tagger, build_joins(tagger, headwords), headwords), headwords)
     print(f"  {len(headwords):,} headwords, {len(joins):,} joins")
 
     print("\nBuilding alias map (tokenizing reference vocabulary)...")

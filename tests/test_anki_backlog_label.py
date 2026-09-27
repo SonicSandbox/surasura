@@ -147,6 +147,32 @@ def test_a_kana_only_card_is_never_read_alone(monkeypatch):
     assert built == []
 
 
+def _write_pairs(pairs, language="ja"):
+    """Junban's answers to "Same word as one on your list?", as `modules/junban/pairs.py` writes them."""
+    folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", language)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "junban_pairs.json"), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "pairs": pairs}, f, ensure_ascii=False)
+
+
+def test_a_sound_word_mined_with_its_to_labels_the_word_the_list_has():
+    """A tester's カラフル cards (2026-09-26): バシッと and ひょいと were waiting in Anki, yet バシッ and ひょい
+    showed "Not in Anki" — the very list they mine by hand from. A kana card is read when an ending comes
+    off it, and keyed by its own letters as Junban looks it up (Anki_Match_Consistency_Scope.md item 1)."""
+    _write_backlog(data=_cards("バシッと", "ひょいと"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
+        "ばしっ", "ばしっと", "ひょい", "ひょいと", "バシッ", "バシッと"]
+
+
+def test_a_yes_in_junban_labels_its_word_and_a_no_keeps_the_ending_from_labelling():
+    """あおぐ, answered "yes — 仰ぐ" in Junban, is labelled where Junban places it: 仰ぐ. 同行する, answered
+    "no", no longer labels 同行 — the label says exactly where Junban puts a card."""
+    _write_backlog(data=_cards("あおぐ", "同行する"))
+    _write_pairs({"あおぐ": {"target": "仰ぐ", "answer": "yes", "via": "L6", "at": "2026-09-26T10:00:00"},
+                  "同行する": {"target": "同行", "answer": "no", "via": "L7", "at": "2026-09-26T10:00:00"}})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["あおぐ", "仰ぐ", "同行する"]
+
+
 def test_a_phrase_or_a_compound_on_a_card_adds_no_key():
     """気がつく and 恩を売る are phrases, 伊勢海老 a compound of two words: none is ONE row, so none adds
     a key (Junban places phrases, L9). Only a card that is one word, its tail aside, is a row's Word."""
@@ -205,6 +231,15 @@ def test_a_new_backlog_rerenders_the_report_only_while_the_label_is_on():
     off = _signatures()
     _write_backlog(data=dict(_BACKLOG, synced_at="2026-09-23T11:00:00", decks=["TheBank", "Mining"]))
     assert _signatures() == off, "switched off, the backlog file is nothing to the report"
+
+
+def test_an_answer_in_junban_rerenders_the_report_while_the_label_is_on():
+    """A "yes" labels a new word, so a new answer must re-render — never re-analyse."""
+    settings_manager.save_settings(dict(settings_manager.load_settings(), anki_backlog_on_generate=True))
+    _write_backlog(data=_cards("あおぐ"))
+    before = _signatures()
+    _write_pairs({"あおぐ": {"target": "仰ぐ", "answer": "yes", "via": "L6", "at": "2026-09-26T10:00:00"}})
+    assert _signatures() != before, "a new answer must re-render, or 仰ぐ keeps showing Not in Anki"
 
 
 def test_the_backlog_never_forces_a_reanalysis():

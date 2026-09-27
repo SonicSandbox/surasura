@@ -95,5 +95,8 @@ debug/ogo_joins.md
 debug/quality_q/
 debug/readability_u8.md
 
+# Measurements for Compound_Join_Measurement.md — its scripts and what they wrote. They quote the user's own library.
+debug/compound_join/
+
 # Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
 debug/*.png

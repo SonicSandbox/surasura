@@ -433,6 +433,54 @@ def test_a_noun_with_suru_and_a_sound_word_with_to_suggest_the_word_on_the_list(
         anki_match.Suggestion("きゅっ", "L7", "+ と", "きゅっ")
 
 
+# --------------------------------------------------------------------------- #
+# Placed with no question (Anki_Match_Consistency_Scope.md, 2026-09-26): an exact key, the user's "yes",
+# or ONE word with an ending written onto it — `card_key`, shared by Junban and the report's label.
+# --------------------------------------------------------------------------- #
+def test_a_word_with_its_suru_or_to_is_that_word_with_no_question():
+    """The user's 努力する and 仲良くする, a tester's バシッと and ひょいと (カラフル, mined by AnkiMiner): UniDic
+    reads each as the word + する or と, and the list has the word. The user, 2026-09-26: "I'd prefer
+    them to be one word" — so it is placed as the word, not offered as a question (L7)."""
+    tokenize = _tokenizer().tokenize
+    listed = {"努力": 0, "仲良く": 1, "バシッ": 2, "ひょい": 3, "同行": 4}
+    for word, key in (("努力する", "努力"), ("仲良くする", "仲良く"), ("バシッと", "バシッ"),
+                      ("ひょいと", "ひょい"), ("同行する", "同行")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+    assert anki_match.one_word(tokenize("努力する"))[0] == "努力"
+    assert anki_match.one_word(tokenize("冒険"))[0] == "冒険"
+
+
+def test_a_verb_of_its_own_a_phrase_or_a_bare_kana_word_is_never_read_as_a_list_word():
+    """対する is ONE verb to UniDic (the 対 on the list is another word); 楽しみにする and クビにする carry
+    two endings — their meaning moves, so they stay phrases; ずっと is a と-adverb of its own; まく alone
+    is read as 膜 — a bare kana word is never read alone (Junban_Backlog_Spec §8 gotcha 2)."""
+    tokenize = _tokenizer().tokenize
+    listed = {"対": 0, "楽しみ": 1, "クビ": 2, "ずっ": 3, "膜": 4}
+    for word in ("対する", "楽しみにする", "クビにする", "ずっと", "まく"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+    assert anki_match.one_word(tokenize("楽しみにする")) is None
+    assert anki_match.one_word(tokenize("気がつく")) is None
+
+
+def test_the_users_answers_come_before_the_ending_and_a_no_is_never_overruled():
+    """あおぐ is a bare kana word: only the user's "yes" (a tester's, カラフル) makes it 仰ぐ. A "no" to
+    同行する being 同行 keeps it off the list, and an exact key needs no answer at all."""
+    tokenize = _tokenizer().tokenize
+    listed = {"仰ぐ": 0, "同行": 1, "冒険": 2}
+    answers = {"あおぐ": {"target": "仰ぐ", "answer": "yes"}, "同行する": {"target": "同行", "answer": "no"}}
+    assert anki_match.card_key("あおぐ", listed, "ja", answers, tokenize) == ("仰ぐ", "yes")
+    assert anki_match.card_key("あおぐ", listed, "ja", None, tokenize) == ("", "")
+    assert anki_match.card_key("同行する", listed, "ja", answers, tokenize) == ("", "")
+    assert anki_match.card_key("冒険", listed, "ja", answers, tokenize) == ("冒険", "exact")
+
+
+def test_chinese_and_a_missing_tokenizer_keep_exact_keys_and_answers_only():
+    tokenize = _tokenizer().tokenize
+    assert anki_match.card_key("学习", {"学习": 0}, "zh", None, tokenize) == ("学习", "exact")
+    assert anki_match.card_key("努力する", {"努力": 0}, "ja", None, None) == ("", "")
+    assert anki_match.card_key("努力する", {"努力": 0}, "zh", None, tokenize) == ("", "")
+
+
 def test_the_rules_measured_wrong_never_suggest_anything():
     """§4.4: a compound's part (伊勢海老 is not 伊勢 — dropped with L8, §16.1), a shared reading
     (布陣 is not 婦人), containment either way (ピーマン is not ピー, 夢見る is not 見る)."""

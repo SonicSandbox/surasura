@@ -516,21 +516,34 @@ def anki_backlog_keys(language, settings):
             if script != "asis":
                 keys = {convert(key, script) for key in keys}
         if keys and language == "ja":
-            keys |= _dictionary_keys(anki_sync.load_backlog(language))
+            backlog = anki_sync.load_backlog(language)
+            answers = _pair_answers(language)
+            keys |= _dictionary_keys(backlog, answers)
+            keys |= _confirmed_keys(backlog, answers)
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
         return []
 
 
-def _dictionary_keys(backlog):
+# How a card's ending is written — する, な, に, と (`anki_match.CARD_ENDINGS`): a kana-only card word is
+# read alone only when it ends in one of these, so a bare kana word never is.
+_ENDING_SPELLINGS = ("する", "な", "に", "と")
+
+
+def _dictionary_keys(backlog, answers=None):
     """The list words a Japanese backlog's cards ARE, read through the dictionary
     (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
     content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
-    labels 逃げ出す and 引き伸ばす 引き延ばす, spellings the card's own keys never meet. A する, な or に
-    written onto the word is dropped first (同行する labels 同行, `anki_match.is_attached_tail`);
-    anything longer is a phrase or a compound, not one row. A kana-only word is left out: alone it
-    is read wrong too often (まく -> 膜, Junban_Backlog_Spec §8 gotcha 2).
+    labels 逃げ出す and 引き伸ばす 引き延ばす, spellings the card's own keys never meet. An ending written
+    onto the word is dropped first (`anki_match.one_word`: 同行する labels 同行); anything longer is a
+    phrase or a compound, not one row.
+
+    A kana-only word alone is read wrong too often (まく -> 膜, Junban_Backlog_Spec §8 gotcha 2), so it is
+    read only when an ending comes off it — バシッと, ひょいと (Anki_Match_Consistency_Scope.md item 1) —
+    and then keyed by the letters it is written in, as Junban looks it up (`anki_match.card_key`). The
+    user's "no" to a card's word being that list word (`answers`) keeps it from being labelled, as it
+    keeps Junban from placing it there.
 
     The tokenizer is built only when a card needs it, here where the report renders — never in the
     dashboard (Anki_Known_Sync_Spec I6). One that cannot be had leaves the cards' own keys, as
@@ -539,7 +552,7 @@ def _dictionary_keys(backlog):
     notes = backlog.get("notes")
     words = {entry["word"] for entry in (notes.values() if isinstance(notes, dict) else ())
              if isinstance(entry, dict) and isinstance(entry.get("word"), str)
-             and anki_match._KANJI_RE.search(entry["word"])}
+             and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS))}
     if not words:
         return set()
     keys = set()
@@ -551,14 +564,46 @@ def _dictionary_keys(backlog):
         tokenize = analyzer.JapaneseTokenizer().tokenize
         for word in words:
             tokens = tokenize(word)
-            if len(tokens) == 2 and anki_match.is_attached_tail(tokens[1][0]):
-                tokens = tokens[:1]
-            if len(tokens) == 1 and tokens[0][0]:
-                keys.add(tokens[0][0])
+            token = anki_match.one_word(tokens)
+            if token is None:
+                continue
+            if anki_match._KANJI_RE.search(word):
+                found = {token[0]} if token[0] else set()
+            elif len(tokens) == 2 and token[2]:
+                found = {token[2], anki_match.fold_kana(token[2])}
+            else:
+                continue
+            answer = (answers or {}).get(word) or {}
+            if answer.get("answer") == "no" and answer.get("target") in found | {token[0], token[3]}:
+                continue
+            keys |= found
     except Exception as e:
         print(f"Warning: could not read the Anki backlog through the dictionary: {e}")
         return set()
     return keys
+
+
+def _pair_answers(language):
+    """`{card word: {"target", "answer", …}}` — the user's answers to Junban's "Same word as one on your
+    list?" (`User Files/<lang>/junban_pairs.json`). Read as plain JSON, so the label needs no Junban
+    module; a file that won't read is no answers."""
+    try:
+        from app.path_utils import get_user_files_path
+        with open(os.path.join(get_user_files_path(language), "junban_pairs.json"), encoding="utf-8") as f:
+            pairs = json.load(f).get("pairs")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {word: pair for word, pair in pairs.items() if isinstance(pair, dict)} if isinstance(pairs, dict) else {}
+
+
+def _confirmed_keys(backlog, answers):
+    """The list words the user said a waiting card IS — their "yes" (`_pair_answers`): あおぐ is 仰ぐ.
+    Junban places the card there, so the label marks it there."""
+    notes = backlog.get("notes")
+    words = {entry.get("word") for entry in (notes.values() if isinstance(notes, dict) else ())
+             if isinstance(entry, dict)}
+    return {str(pair["target"]) for word, pair in (answers or {}).items()
+            if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):

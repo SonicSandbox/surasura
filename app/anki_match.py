@@ -629,6 +629,52 @@ def is_attached_tail(lemma):
     return lemma in ATTACHED_TAILS
 
 
+# A card's word ending: the tails above, and the と Yomitan and anki_miner mine an adverb WITH —
+# バシッと, ひょいと are the word + と to UniDic (a real と-adverb, ずっと or ちゃんと, is one token and never
+# meets this). ONE ending, never two: 楽しみにする and クビにする stay phrases, their meaning moves.
+# Junban places such a card as the word, and the report labels the word (Anki_Match_Consistency_Scope.md).
+CARD_ENDINGS = ATTACHED_TAILS | {"と"}
+
+
+def one_word(tokens):
+    """The token a card's word IS, read alone: its only token, or the first of two when the second is an
+    ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ) — else None, a phrase or a
+    compound being no one word. `tokens` are the analyzer's `(lemma, reading, surface, orth)`."""
+    tokens = list(tokens or ())
+    if len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS:
+        tokens = tokens[:1]
+    return tokens[0] if len(tokens) == 1 else None
+
+
+def card_key(word, rank_of, language=None, answers=None, tokenize=None):
+    """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
+
+    L1–L4 (`lookup`; via "exact"); else the user's "yes" to "Same word as one on your list?" (`answers`,
+    `junban_pairs.json`; via "yes"); else — Japanese, with a tokenizer — the word read alone as ONE word
+    with an ending on it (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ. A kana word is looked up
+    by the letters it is written in, never by the lemma the tagger guesses for it (まく -> 膜), and nothing
+    is taken against the user's "no" to that very pair. A bare word that only reads as a list word alone
+    is `suggest`'s L6 — a question, not this. Shared by Junban's placement and the report's label."""
+    key = lookup(word, rank_of, language)
+    if key:
+        return key, "exact"
+    answer = (answers or {}).get(word) or {}
+    if answer.get("answer") == "yes" and answer.get("target") in (rank_of or {}):
+        return answer["target"], "yes"
+    if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
+        return "", ""
+    tokens = list(tokenize(word))
+    token = one_word(tokens) if len(tokens) == 2 else None
+    if token is None:
+        return "", ""
+    names = (token[2],) if _KANA_ONLY_RE.match(word) else (token[3], token[0], token[2])
+    for name in names:
+        key = lookup(name, rank_of, language)
+        if key and not (answer.get("answer") == "no" and answer.get("target") == key):
+            return key, "L7"
+    return "", ""
+
+
 # --- phrases (L9, Junban_Backlog_Spec §11.1 item 2) --------------------------------------------- #
 # Half of a real backlog is phrases and compounds — 気がつく, 俺たち, 騎士団. anki_miner and the
 # analyzer produce the SAME tokens; anki_miner then glues them into one card word when the result is

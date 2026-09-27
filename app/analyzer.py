@@ -1400,6 +1400,10 @@ def compute_render_signature(args):
         bool(_s.get("anki_backlog_on_generate", True)),
         _backlog_fingerprint(getattr(args, "language", "ja"))
         if _s.get("anki_backlog_on_generate", True) else None,
+        # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
+        # (Anki_Match_Consistency_Scope.md item 1).
+        _backlog_fingerprint(getattr(args, "language", "ja"), "junban_pairs.json")
+        if _s.get("anki_backlog_on_generate", True) else None,
         # The templates themselves. Without this a template-only change (a new report tab, a CSS
         # fix) was invisible to both fast paths: they reopened the old HTML until something else
         # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
@@ -1407,10 +1411,11 @@ def compute_render_signature(args):
     ])
 
 
-def _backlog_fingerprint(language):
-    """(mtime, size) of `User Files/<lang>/anki_backlog.json`, or None when there is none."""
+def _backlog_fingerprint(language, name="anki_backlog.json"):
+    """(mtime, size) of `User Files/<lang>/<name>` — the Anki backlog, or Junban's answers — or None
+    when there is none."""
     try:
-        st = os.stat(os.path.join(get_user_files_path(language), "anki_backlog.json"))
+        st = os.stat(os.path.join(get_user_files_path(language), name))
         return [st.st_mtime, st.st_size]
     except (OSError, TypeError):
         return None

@@ -891,7 +891,9 @@ class AnkiSyncGui(tk.Toplevel):
         self._show_known(result.total_known, state, backlog)
         if self.app is not None and hasattr(self.app, "_on_anki_sync_result"):
             try:
-                self.app._on_anki_sync_result(result, auto=False)
+                # This window's language: the dashboard's may have changed since it opened, and its
+                # automatic Generate waits for the language the words came for.
+                self.app._on_anki_sync_result(result, auto=False, language=self.language)
             except Exception:
                 pass
 

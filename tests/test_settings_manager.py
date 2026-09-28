@@ -118,6 +118,32 @@ class TestSettingsManager(unittest.TestCase):
         self.assertEqual(sel["min_count"], 2)                # missing scalar filled
         self.assertEqual(sel["minutes_per_file"], 18)
 
+    def test_automatic_rarity_ships_off_with_an_850_word_line(self):
+        # Automatic rarity starts OFF (D5): on, it would change every new user's list without asking.
+        # Its line is 850 words (D1), edited only in settings.json — so the block's _comment says so.
+        sel = settings_manager.get_default_settings()["logic"]["selection"]
+        self.assertIs(sel["auto"], False)
+        self.assertEqual(sel["auto_max_words"], 850)
+        self.assertIn("auto_max_words", sel["_comment"])
+
+    def test_automatic_rarity_is_filled_into_an_older_settings_file_and_user_values_win(self):
+        # A settings.json saved before automatic rarity existed has a selection block without its two
+        # keys. They're filled from the defaults (off, 850) and the user's band stays theirs; a file
+        # that has them keeps its own values.
+        with open(self.test_settings_path, 'w', encoding='utf-8') as f:
+            json.dump({"logic": {"selection": {"band": "very_rare", "min_count": 2}}}, f)
+        sel = settings_manager.load_settings()["logic"]["selection"]
+        self.assertEqual(sel["band"], "very_rare")
+        self.assertIs(sel["auto"], False)
+        self.assertEqual(sel["auto_max_words"], 850)
+
+        with open(self.test_settings_path, 'w', encoding='utf-8') as f:
+            json.dump({"logic": {"selection": {"auto": True, "auto_max_words": 600}}}, f)
+        sel = settings_manager.load_settings()["logic"]["selection"]
+        self.assertIs(sel["auto"], True)
+        self.assertEqual(sel["auto_max_words"], 600)
+        self.assertEqual(sel["band"], "occasional")          # its own band, filled as before
+
     def test_save_settings_validation(self):
         # Should handle non-dict input gracefully
         with patch('builtins.print') as mock_print:

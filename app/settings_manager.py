@@ -105,8 +105,10 @@ DEFAULT_SETTINGS = {
             "lopsided_threshold": 0.85
         },
         "selection": {
-            "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors — how common a word must be to be included; scale-stable across library sizes; 'native' is a tiny 1ppm floor (~= min_count on typical libraries). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. These are the single source of truth (no magic numbers in code).",
+            "_comment": "Density-band word selection (used when top-level 'strategy' == 'freq'; 'coverage' uses target_coverage instead). bands_ppm: per-band parts-per-million floors — how common a word must be to be included; scale-stable across library sizes; 'native' is a tiny 1ppm floor (~= min_count on typical libraries). band: the chosen tier. min_count: universal floor that drops one-off words from every band. minutes_per_file: immersion minutes per file, for the 'meet each word every N hours' estimate. auto (Automatic rarity, Settings -> Sentences & Logic): every Generate picks the band itself, the rarest band with auto_max_words words or fewer (the counts the Rarity slider shows), in place of 'band'; auto_max_words is edited here only. These are the single source of truth (no magic numbers in code).",
             "band": "occasional",
+            "auto": False,
+            "auto_max_words": 850,
             "min_count": 2,
             "minutes_per_file": 18,
             "bands_ppm": {"core": 2000, "common": 150, "occasional": 25, "uncommon": 10, "rare": 4, "very_rare": 2.5, "native": 1}
@@ -207,6 +209,8 @@ def load_settings() -> Dict[str, Any]:
             ppm.update(sel["bands_ppm"])      # user floors override; missing bands stay default
         sel["bands_ppm"] = ppm
         sel.setdefault("band", default_sel["band"])
+        sel.setdefault("auto", default_sel["auto"])
+        sel.setdefault("auto_max_words", default_sel["auto_max_words"])
         sel.setdefault("min_count", default_sel["min_count"])
         sel.setdefault("minutes_per_file", default_sel["minutes_per_file"])
     except Exception:

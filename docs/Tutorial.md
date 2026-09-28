@@ -46,7 +46,7 @@ Added content lands at the **top** of the tab you're on — or, when it joins a 
 ## 4. Choose How to Generate
 Two modes drive the word list:
 
-1.  **By Commonness** *(RECOMMENDED)* — a slider from **Core** (only the most common words) to **Native** (everything but one-offs). Slide to include rarer words; a live preview shows the word count and coverage % you'd reach.
+1.  **By Commonness** *(RECOMMENDED)* — a slider from **Core** (only the most common words) to **Native** (everything but one-offs). Slide to include rarer words; a live preview shows the word count and coverage % you'd reach. Rather not choose? Turn on **Automatic rarity** in **Settings → 🧠 Sentences & Logic**: it picks the rarest band that still has 850 words or fewer, moves on by itself as you learn, and keeps the slider locked on its choice (it reads **Rarity (auto)**).
 
 2.  **Target % Coverage** — include enough words to hit a coverage % of your content. *(Still ordered by leverage.)*
 
@@ -57,7 +57,7 @@ Press **Generate Journey** to build your list and see the report.
 
 If no changes, it reuses the last analysis, so theme tweaks are instant.
 
-The button tells you which it will be: a thin blue border means something has changed since your last Generate (your library, your known words or a setting); a small ✓ on its right edge means your journey is up to date.
+The button tells you which it will be: a thin blue border means something has changed since your last Generate (your library, your known words or a setting); a small ✓ on its right edge means your journey is up to date. With **Generate when Anki adds known words** on, Surasura generates on its own after Anki brings in words you know; a small spinner takes the ✓'s place until it's done.
 
 ![Generate Journey](assets/images/tutorial/generate_journey.png)
 

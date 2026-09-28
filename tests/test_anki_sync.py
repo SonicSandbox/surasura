@@ -978,6 +978,61 @@ def test_a_failed_or_empty_backlog_read_keeps_the_last_one_and_known_words_are_n
     assert anki_sync.sync_backlog("ja", URL, [], [])[1], "no decks, no read"
 
 
+def _backlog_path(language="ja"):
+    return os.path.join(get_user_files_path(language), "anki_backlog.json")
+
+
+def _as_if_written_an_hour_ago(path):
+    """Move the file's mtime back an hour — whether a read rewrote it then never hangs on the
+    clock's tick. Returns the new mtime."""
+    st = os.stat(path)
+    os.utime(path, (st.st_atime, st.st_mtime - 3600))
+    return os.stat(path).st_mtime
+
+
+def test_an_unchanged_backlog_is_not_rewritten():
+    """Every read rewrote anki_backlog.json with a fresh `synced_at` — which nothing reads. The file's
+    (mtime, size) is in the report's render signature, so after an automatic Generate (which reads the
+    backlog twice) the next press re-rendered the report, for seconds, instead of opening it at once.
+    A read that finds the same cards leaves the file as it is, and answers exactly as before."""
+    fake = FakeCollection()
+    fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    fake.add("スルリ", fields=_mined_fields("スルリ", ""), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        first = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        before = (_as_if_written_an_hour_ago(_backlog_path()), _read_bytes(_backlog_path()))
+        second = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+
+    assert first == second == (2, None)
+    assert (os.stat(_backlog_path()).st_mtime, _read_bytes(_backlog_path())) == before, \
+        "same mtime, same bytes (so the same size)"
+    assert anki_sync.backlog_keys("ja") == {"評論家", "スルリ", "するり"}
+
+
+def test_a_new_card_rewrites_the_backlog():
+    """What the report labels does change when a card is mined or learned, and those reads write —
+    only those: the read after a change leaves the file alone again."""
+    fake = FakeCollection()
+    critic = fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        mtime = _as_if_written_an_hour_ago(_backlog_path())
+        weep = fake.add("泣き虫", fields=_mined_fields("泣き虫"), new=True)      # a card mined
+        assert anki_sync.sync_backlog("ja", URL, ["TheBank"], []) == (2, None)
+        assert os.stat(_backlog_path()).st_mtime != mtime
+        assert set(_backlog_file()["notes"]) == {str(critic), str(weep)}
+
+        mtime = _as_if_written_an_hour_ago(_backlog_path())
+        assert anki_sync.sync_backlog("ja", URL, ["TheBank"], []) == (2, None)  # nothing new
+        assert os.stat(_backlog_path()).st_mtime == mtime
+
+        fake.note(critic)["new"] = False                                      # 評論家 learned
+        assert anki_sync.sync_backlog("ja", URL, ["TheBank"], []) == (1, None)
+        assert os.stat(_backlog_path()).st_mtime != mtime
+        assert set(_backlog_file()["notes"]) == {str(weep)}
+    assert anki_sync.backlog_keys("ja") == {"泣き虫"}
+
+
 def test_the_backlog_option_is_on_by_default_and_never_forces_a_reanalysis():
     """D5: nothing for a user without Anki — the option does nothing without decks — and, like every
     Anki sync setting, it is not part of what a run computes."""

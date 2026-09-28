@@ -408,6 +408,70 @@ def known_signature(known_path, script="asis"):
 
 
 # --------------------------------------------------------------------------- #
+# The Rarity slider's distribution — one recipe for the dashboard and the analyzer
+# --------------------------------------------------------------------------- #
+def preview_frequencies(store, language, user_files_dir, script="asis"):
+    """The unknown-word distribution behind the Rarity slider's numbers. ONE recipe, shared: the
+    dashboard's preview reads it, and the analyzer's automatic rarity decides from it, so the band the
+    dashboard shows is the band Generate uses. Neither side keeps its own copy.
+
+    Tokenizer-free, so the dashboard can run it (fugashi never enters the GUI process): known words
+    are the store's normalized known cache when it matches KnownWord.json, else the dictForm
+    approximation; the three lists are their plain lines (the analyzer's own ignore set also reads a
+    hiragana line through the tokenizer, する -> 為る, and still decides the list itself — this one
+    only the band); single characters never count in Japanese. None for an empty store."""
+    if not store.total_tokens():
+        return None
+    cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
+    if cached is not None:
+        known_tuples, known_lemmas = cached
+    else:
+        known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
+    return store.unknown_frequencies(
+        known_tuples=known_tuples, known_lemmas=known_lemmas,
+        ignore_set=preview_ignore_set(user_files_dir, language, script), skip_singles=(language == "ja"))
+
+
+def preview_ignore_set(user_files_dir, language, script="asis"):
+    """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
+    reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
+    (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
+    chosen)."""
+    from app.path_utils import read_text
+    from app.zh_script import convert
+    ignore = set()
+    for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
+        try:
+            for line in read_text(os.path.join(user_files_dir, name), language).splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    ignore.add(convert(s, script))
+        except Exception:
+            pass
+    return ignore
+
+
+def preview_known_approx(user_files_dir, language, script="asis"):
+    """Known lemmas WITHOUT the tokenizer (dictForm approximation), for preview_frequencies when the
+    store's normalized known cache is stale — parsing KnownWord.json is the expensive bit on a big
+    library, so it's kept off the common (fresh-cache) path."""
+    from app.path_utils import read_text
+    from app.zh_script import convert
+    known = set()
+    try:
+        data = json.loads(read_text(os.path.join(user_files_dir, "KnownWord.json"), language))   # its own encoding
+        entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        for e in entries:
+            if e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1:
+                term = e.get("dictForm", "")
+                if term:
+                    known.add(convert(term, script))
+    except Exception:
+        pass
+    return known
+
+
+# --------------------------------------------------------------------------- #
 # Tokenizer factory (default; injectable for tests)
 # --------------------------------------------------------------------------- #
 def build_signature(language, reinforce=False, script="asis"):

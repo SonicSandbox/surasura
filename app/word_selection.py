@@ -25,6 +25,7 @@ _SELECTION_DEFAULTS = DEFAULT_SETTINGS["logic"]["selection"]
 DEFAULT_BANDS_PPM = dict(_SELECTION_DEFAULTS["bands_ppm"])
 DEFAULT_MIN_COUNT = _SELECTION_DEFAULTS["min_count"]
 MINUTES_PER_FILE = _SELECTION_DEFAULTS["minutes_per_file"]
+DEFAULT_AUTO_MAX_WORDS = _SELECTION_DEFAULTS["auto_max_words"]
 
 # Slider order = the band keys in their defined order ('native', the min_count baseline, last).
 BANDS_ORDER = list(DEFAULT_BANDS_PPM.keys())
@@ -83,6 +84,23 @@ def band_previews(freqs, bands_ppm=None, min_count=DEFAULT_MIN_COUNT,
         b: preview(freqs, b, bands_ppm, min_count, avg_file_tokens, minutes_per_file)
         for b in BANDS_ORDER
     }
+
+
+def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None):
+    """Automatic rarity (logic.selection.auto): the RAREST band whose list holds `max_words` words or
+    fewer — the same word counts the slider shows (band_previews). Learning shrinks every band, so the
+    choice moves on by itself; new content can grow a band past the line again, and then it steps back
+    — worked out fresh on every run, it always describes the list you have. A collapsed tail (Very
+    Rare == Native) picks Native, the band the slider still shows. If even the first band (Core) holds
+    more, the first band. None when there is no preview: the caller keeps the band it has."""
+    if not previews:
+        return None
+    bands = bands or BANDS_ORDER
+    chosen = bands[0]
+    for band in bands:
+        if band in previews and previews[band]["word_count"] <= max_words:
+            chosen = band
+    return chosen
 
 
 def preview(freqs, band, bands_ppm=None, min_count=DEFAULT_MIN_COUNT,

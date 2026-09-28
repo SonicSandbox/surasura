@@ -1,5 +1,6 @@
 
 import csv
+import importlib
 import os
 import shutil
 import sys
@@ -153,7 +154,8 @@ ANALYZER_MUTABLE_GLOBALS = (
 
 @pytest.fixture(scope="session", autouse=True)
 def _real_analyzer_imported_first():
-    """Import the REAL analyzer once, before any test class can mock `app.path_utils`.
+    """Import the REAL analyzer, anki_sync and token_index once, before any test class can mock
+    `app.path_utils`.
 
     The dashboard-wiring tests patch `sys.modules['app.path_utils']` with a MagicMock for a whole
     class. If `_isolate_analyzer_module_state` below then imported the analyzer for the FIRST time
@@ -161,11 +163,21 @@ def _real_analyzer_imported_first():
     MagicMock and created a real "MagicMock/" folder in the repo root. Invisible in a full run (the
     analyzer is already cached), it happened whenever such a file was run on its own. A session
     fixture runs before every class-level setUp, so the analyzer is always cached first.
+
+    The same for the modules the wiring harness imports under that mock. The patch drops them from
+    sys.modules when the class ends, but the `app` package keeps each as an attribute, and every
+    later `from app import …` gets that one:
+      * `app.anki_sync` binds `get_user_files_path` at import. The report's backlog labels then read
+        nothing, and a backlog read (`sync_backlog`) wrote "MagicMock/…/anki_backlog.json" into the
+        working folder — test_anki_sync_wiring.py, then test_anki_backlog_label.py.
+      * `app.token_index`: `_isolate_token_store` patches the attribute, so a leftover one took the
+        patch while a fresh import (`from app.token_index import …`) kept the real `store_path_for`.
     """
-    try:
-        import app.analyzer  # noqa: F401
-    except Exception:
-        pass
+    for name in ("app.analyzer", "app.anki_sync", "app.token_index"):
+        try:
+            importlib.import_module(name)
+        except Exception:
+            pass
     yield
 
 

@@ -296,6 +296,10 @@ class MasterDashboardApp:
         self.var_exclude_single = tk.BooleanVar(value=True) 
         # Density-band word selection (replaces the retired min-freq slider).
         self.var_band = tk.StringVar(value="occasional")
+        # Automatic rarity (logic.selection.auto): the band is picked for you and the slider locked on
+        # it — display only, never written to var_band (turning it off is the one exception, D3).
+        self.var_auto_band = tk.BooleanVar(value=False)
+        self._band_locked = False    # the slider currently shows that lock (_show_band_lock)
         self.var_band_name = tk.StringVar(value="Occasional")     # slider-side label
         self.var_band_coverage = tk.StringVar(value="")           # "≈ 90% coverage · 801 words"
         self._band_hours_text = ""   # immersion-hours line, shown as a tooltip on the coverage text
@@ -341,17 +345,30 @@ class MasterDashboardApp:
         # The Anki window's syncs and the background auto-sync append to the same file; one lock
         # so two appends can never interleave (each re-reads before writing, but not atomically).
         self._anki_sync_lock = threading.Lock()
-        self._last_anki_sync = 0.0
+        # The throttles start as "never", not 0.0: on Windows time.monotonic() counts from when the
+        # computer started, so 0.0 read as "just now" and turned the focus sync, 順's reorder and the
+        # automatic Generate away for the first minutes after every boot.
+        self._last_anki_sync = float("-inf")
         self._anki_spin_job = None
         # Junban's automatic reorder (a test option in settings.json) — the same shape as the sync.
         self._junban_auto_lock = threading.Lock()
-        self._last_junban_auto = 0.0
+        self._last_junban_auto = float("-inf")
         self._junban_spin_job = None
         self._last_junban_auto_message = ""
         # The automatic Generate (Anki brought in known words) and the Generate button's state.
-        self._last_auto_generate = 0.0
-        self._auto_generate_pending = False   # Anki brought words in; a Generate has not run since
+        self._last_auto_generate = float("-inf")
+        # False, or the language Anki brought words in for ("ja"), which no Generate of it has run since.
+        # True (from before it held the language) still means the language open now.
+        self._auto_generate_pending = False
+        self._auto_generate_job = None        # the alarm for when the 10-minute limit is up
+        # The running Generate — None, "manual" (the button), "quiet" (順's "Generate & preview") or
+        # "automatic" (Anki's words) — so there are never two at once. Set until its process ends,
+        # however it ends (run_command_async's on_exit).
+        self._generate_running = None
+        self._open_report_when_generated = False   # Generate was pressed while a quiet one ran
         self._journey_state_job = None
+        self._journey_gen = 0                 # generation counter: a late up-to-date answer is dropped
+        self._journey_spin_job = None         # the automatic Generate's spinner in the check mark's spot
         self.var_auto_update = tk.BooleanVar(value=True) # One-click in-place updates
         self.var_source_display = tk.StringVar(value="off")  # per-sentence source badge in the report
         self.var_word_search = tk.BooleanVar(value=True)      # ⌕ lookup button on each report card
@@ -440,6 +457,8 @@ class MasterDashboardApp:
         # so the (cheap, cached) preview stays instant and the save happens once, ~250ms after you
         # settle (or immediately on mouse-release). See _save_band_debounced.
         self.var_band.trace_add("write", self._save_band_debounced)
+        # Automatic rarity: saved, and the slider locked or unlocked, the moment it is switched.
+        self.var_auto_band.trace_add("write", self._on_auto_band_toggled)
         self.var_open_app_mode.trace_add("write", self.save_settings)
         self.var_inline_completed.trace_add("write", self.save_settings)
         self.var_telemetry_enabled.trace_add("write", self.save_settings)
@@ -505,6 +524,12 @@ class MasterDashboardApp:
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
         # Known words are per language, and so are the chosen decks.
         self.var_language.trace_add("write", lambda *args: self._maybe_anki_sync(force=True))
+        # And so is the band preview: its numbers, and the band Automatic rarity locks the slider on,
+        # come from that language's store. The indexer refreshes it only when the store has work to do,
+        # so a switch to an up-to-date Chinese store kept the Japanese numbers — and the Japanese
+        # automatic band, which turning Automatic rarity off then saved as yours. The preview's
+        # signature holds the language, so this recomputes on a real switch only.
+        self.var_language.trace_add("write", lambda *args: self._refresh_band_preview())
 
         # Bind close event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -636,7 +661,10 @@ class MasterDashboardApp:
                 self.root.after_cancel(self._band_save_after)
             except Exception:
                 pass
-        self._band_save_after = self.root.after(250, lambda: self.save_settings(skip_ui=True))
+        # Cleared when it fires, so it means "a save is pending": a click on the locked slider (automatic
+        # rarity) then flushes nothing — the locked slider never writes settings.json (I2).
+        self._band_save_after = self.root.after(
+            250, lambda: (setattr(self, "_band_save_after", None), self.save_settings(skip_ui=True)))
 
     def _flush_band_save(self, event=None):
         """Force any pending debounced band-save to happen now (bound to the slider's mouse-release)."""
@@ -650,7 +678,12 @@ class MasterDashboardApp:
 
     def _on_band_slide(self, value):
         """Slider moved: map its index to a band, update the side label, save, and refresh the
-        preview lines. Pure arithmetic over cached counts — instant, no tokenization."""
+        preview lines. Pure arithmetic over cached counts — instant, no tokenization.
+
+        Does nothing while automatic rarity is on: the slider is locked, and Tk calls this for a
+        programmatic set() too — placing it on the automatic band must never write var_band (I2)."""
+        if self.var_auto_band.get():
+            return
         bands = self._effective_bands or word_selection.BANDS_ORDER
         try:
             idx = max(0, min(int(float(value)), len(bands) - 1))
@@ -710,19 +743,83 @@ class MasterDashboardApp:
     def _apply_effective_bands(self):
         """Resize the slider to the currently-meaningful bands and keep the selection valid. A now-
         hidden band (e.g. Very Rare) folds into the last visible one (Native), which selects
-        identically."""
+        identically.
+
+        With automatic rarity on, the slider is locked on the band it picks ("Auto" until a preview
+        exists). Display only: var_band is never written then — settings.json is in the run
+        signature, so saving the automatic band after every Generate would turn the button blue (I2)."""
         if not hasattr(self, "band_slider"):
             self._update_band_preview_labels(self.var_band.get())
             return
         bands = self._effective_bands or list(word_selection.BANDS_ORDER)
         self.band_slider.config(to=max(0, len(bands) - 1))
-        band = self.var_band.get()
-        if band not in bands:
+        auto = self.var_auto_band.get()
+        band = self._auto_band_choice() if auto else self.var_band.get()
+        if band is not None and band not in bands:
             band = bands[-1]              # hidden band -> its identical, still-visible neighbour
-            self.var_band.set(band)       # trace -> save; harmless (same selection)
-        self.band_slider.set(bands.index(band))
-        self.var_band_name.set(word_selection.band_label(band))
+            if not auto:
+                self.var_band.set(band)   # trace -> save; harmless (same selection)
+        if band is not None:
+            self.band_slider.config(state=tk.NORMAL)   # Tk ignores set() on a disabled Scale
+            self.band_slider.set(bands.index(band))
+        self._show_band_lock(auto)
+        self.var_band_name.set(word_selection.band_label(band) if band else "Auto")
         self._update_band_preview_labels(band)
+
+    def _auto_max_words(self):
+        """Automatic rarity's line: logic.selection.auto_max_words (edited in settings.json only)."""
+        try:
+            return self._current_settings["logic"]["selection"]["auto_max_words"]
+        except Exception:
+            return word_selection.DEFAULT_AUTO_MAX_WORDS
+
+    def _auto_max_words_text(self):
+        """The line as the tooltips say it: 850 with its thousands separator, or as written when a hand
+        edit made it something else ("850" in quotes) — `:,` raises on a string, and the tooltip then
+        never showed."""
+        n = self._auto_max_words()
+        return f"{n:,}" if isinstance(n, (int, float)) else str(n)
+
+    def _auto_band_choice(self):
+        """The band automatic rarity picks from the current preview — word_selection.auto_band over the
+        numbers the slider shows, the rule the analyzer applies on the same ones (I3) — or None before
+        any preview exists. A line the rule can't compare with ("850" in quotes, hand-edited into
+        settings.json) makes the analyzer keep your own band; so that is the band shown, locked."""
+        if not self._band_previews:
+            return None
+        try:
+            return word_selection.auto_band(self._band_previews, self._auto_max_words())
+        except Exception:
+            return self.var_band.get()
+
+    def _show_band_lock(self, locked):
+        """Automatic rarity's look (D2): the slider locked and greyed — flat, in muted colours, still
+        showing where the band sits between Core and Native — and "Rarity (auto):" beside it."""
+        self._band_locked = locked
+        if locked:
+            self.band_slider.config(state=tk.DISABLED, sliderrelief=tk.FLAT,
+                                    bg=SURFACE_COLOR, troughcolor=BG_COLOR)
+        else:
+            self.band_slider.config(state=tk.NORMAL, sliderrelief=tk.RAISED,
+                                    bg=BG_COLOR, troughcolor=SURFACE_COLOR)
+        self.lbl_rarity.config(text="Rarity (auto):" if locked else "Rarity:")
+
+    def _on_auto_band_toggled(self, *args):
+        """Automatic rarity switched on or off (Settings → Sentences & Logic): saved at once, and the
+        slider locked on the band it picks — or, switched off, unlocked on that same band, which then
+        becomes yours (D3): the list doesn't change the moment you switch it off."""
+        auto = self.var_auto_band.get()
+        if auto == self._band_locked:
+            return    # a reload that changes nothing (Tk traces every write, the same value too)
+        if not auto:
+            band = self._auto_band_choice()
+            if band and band != self.var_band.get():
+                self.var_band.set(band)   # its trace arms the band save, flushed just below
+        if getattr(self, "_band_save_after", None):
+            self._flush_band_save()       # one save, with the switch in it
+        else:
+            self.save_settings(skip_ui=True)
+        self._apply_effective_bands()
 
     def _refresh_band_preview(self, force=False):
         """Refresh the band-preview numbers WITHOUT blocking the GUI. Opening the SQLite store and
@@ -744,7 +841,8 @@ class MasterDashboardApp:
         sig = self._preview_signature(lang, sel, script)
         if (not force and sig is not None and sig == getattr(self, "_preview_sig", None)
                 and getattr(self, "_band_previews", None) is not None):
-            self._update_band_preview_labels(self.var_band.get())
+            self._update_band_preview_labels(
+                self._auto_band_choice() if self.var_auto_band.get() else self.var_band.get())
             return
 
         self._preview_gen = getattr(self, "_preview_gen", 0) + 1
@@ -779,30 +877,16 @@ class MasterDashboardApp:
 
     def _compute_band_previews(self, lang, sel, script="asis"):
         """The heavy read (token store + known-words file). Runs on a WORKER thread — it must NOT
-        touch any tk widget; it only returns the {band: preview} dict (or None)."""
+        touch any tk widget; it only returns the {band: preview} dict (or None). The distribution is
+        token_index.preview_frequencies: the analyzer's automatic rarity decides from the same one."""
         try:
             store = token_index.open_store(lang)
             try:
-                total = store.total_tokens()
-                if not total:
-                    return None
                 from app.path_utils import get_user_files_path
-                ignore_set = self._load_ignore_for_preview(lang, script)
-                # Prefer the store's EXACT normalized known set when it's fresh (matches the current
-                # KnownWord.json). Only when that cache is stale do we parse the multi-MB KnownWord.json
-                # for the dictForm approximation — so the common (fresh) path never touches it.
-                known_path = os.path.join(get_user_files_path(lang), "KnownWord.json")
-                cached = store.get_cached_known(token_index.known_signature(known_path, script))
-                if cached is not None:
-                    known_tuples, known_lemmas = cached
-                    freqs = store.unknown_frequencies(
-                        known_tuples=known_tuples, known_lemmas=known_lemmas,
-                        ignore_set=ignore_set, skip_singles=(lang == "ja"))
-                else:
-                    known_approx = self._load_known_approx(lang, script)
-                    freqs = store.unknown_frequencies(
-                        known_lemmas=known_approx, ignore_set=ignore_set, skip_singles=(lang == "ja"))
-                avg_file = total / (store.file_count() or 1)
+                freqs = token_index.preview_frequencies(store, lang, get_user_files_path(lang), script)
+                if freqs is None:
+                    return None
+                avg_file = freqs["total_tokens"] / (store.file_count() or 1)
                 return word_selection.band_previews(
                     freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
                     avg_file, sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
@@ -825,42 +909,14 @@ class MasterDashboardApp:
         self._apply_effective_bands()
 
     def _load_ignore_for_preview(self, lang, script="asis"):
-        """The ignore/blacklist/graduated words — cheap plain-text reads, loaded on every preview.
-        Read in the library's Chinese script, like the analyzer reads them (stdlib only, so the
-        conversion is safe in this process; the tables load only if a script is chosen)."""
-        from app.path_utils import get_user_files_path, read_text
-        from app.zh_script import convert
-        uf = get_user_files_path(lang)
-        ignore = set()
-        for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-            try:
-                for line in read_text(os.path.join(uf, name), lang).splitlines():   # its own encoding
-                    s = line.strip()
-                    if s and not s.startswith("#"):
-                        ignore.add(convert(s, script))
-            except Exception:
-                pass
-        return ignore
+        """The ignore/blacklist/graduated words as the preview reads them (token_index.preview_ignore_set)."""
+        from app.path_utils import get_user_files_path
+        return token_index.preview_ignore_set(get_user_files_path(lang), lang, script)
 
     def _load_known_approx(self, lang, script="asis"):
-        """Known lemmas WITHOUT the tokenizer (dictForm approximation). Only used when the store's
-        normalized known-cache is stale — parsing KnownWord.json is the expensive bit on a big
-        library, so it's kept off the common (fresh-cache) preview path."""
-        from app.path_utils import get_user_files_path, read_text
-        from app.zh_script import convert
-        uf = get_user_files_path(lang)
-        known = set()
-        try:
-            data = json.loads(read_text(os.path.join(uf, "KnownWord.json"), lang))   # its own encoding
-            entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-            for e in entries:
-                if e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1:
-                    term = e.get("dictForm", "")
-                    if term:
-                        known.add(convert(term, script))
-        except Exception:
-            pass
-        return known
+        """Known lemmas without the tokenizer, for a stale known cache (token_index.preview_known_approx)."""
+        from app.path_utils import get_user_files_path
+        return token_index.preview_known_approx(get_user_files_path(lang), lang, script)
 
     def _maybe_launch_indexer(self, force=False):
         """Keep the token store (and thus the band preview) always-fresh: if the library or the
@@ -1077,7 +1133,8 @@ class MasterDashboardApp:
         # Left label + a half-length slider + the current band name to its right.
         band_row = ttk.Frame(self.freq_frame)
         band_row.pack(fill=tk.X)
-        ttk.Label(band_row, text="Rarity:").pack(side=tk.LEFT, padx=(0, 8))
+        self.lbl_rarity = ttk.Label(band_row, text="Rarity:")   # "Rarity (auto):" under automatic rarity
+        self.lbl_rarity.pack(side=tk.LEFT, padx=(0, 8))
         # Band name pinned to the right (fixed width so it doesn't jitter as the label changes),
         # with a margin so it's never flush against the edge; the slider fills the space between.
         ttk.Label(band_row, textvariable=self.var_band_name, width=11,
@@ -1090,12 +1147,17 @@ class MasterDashboardApp:
         self.band_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         # Persist the setting the instant the drag ends (the debounce timer is the fallback).
         self.band_slider.bind("<ButtonRelease-1>", self._flush_band_save)
-        # Shown ABOVE so it doesn't cover the coverage line below.
-        ToolTip(self.band_slider,
+        # Shown ABOVE so it doesn't cover the coverage line below. Locked by automatic rarity, it says
+        # why and where to turn that off.
+        ToolTip(self.band_slider, lambda: (
+                f"Chosen for you by Automatic rarity: the rarest band with {self._auto_max_words_text()} "
+                "words or fewer. To choose it yourself, turn off Automatic rarity in "
+                "Settings → Sentences & Logic."
+                if self.var_auto_band.get() else
                 "Which words to include, by how common they are in your library:\n\n"
                 "• Core: only the most common words (~50% coverage)\n"
                 "• Native: everything except one-off words (~99% coverage)\n\n"
-                "Slide right to learn rarer, less frequent words.",
+                "Slide right to learn rarer, less frequent words."),
                 above=True)
 
         # Live preview line + an info (ppm) icon. Hovering the coverage text reveals the
@@ -1194,7 +1256,7 @@ class MasterDashboardApp:
         # like the button — and a click on it is a click on the button.
         self.lbl_journey_state = tk.Label(self.journey_border, text="✓", bg=SURFACE_COLOR, fg=CHECK_GRAY,
                                           font=("Segoe UI", 10, "bold"), bd=0, padx=0, pady=0)
-        ToolTip(self.lbl_journey_state, "Up to date — nothing has changed since your last Generate.")
+        ToolTip(self.lbl_journey_state, self._journey_check_tip)
         self.lbl_journey_state.bind("<Button-1>", lambda e: self.btn_journey.invoke(), add="+")
         self.btn_journey.bind("<Enter>", lambda e: self._light_journey_check(True), add="+")
         self.btn_journey.bind("<Leave>", lambda e: self._light_journey_check(False), add="+")
@@ -1567,6 +1629,15 @@ class MasterDashboardApp:
         chk_add_graduated = ttk.Checkbutton(group_logic, text="Add Words on 'Graduate'", variable=self.var_add_graduated)
         chk_add_graduated.pack(anchor=tk.W)
         ToolTip(chk_add_graduated, "Uncheck to skip vocab extraction when graduating files.")
+
+        # Automatic rarity (logic.selection.auto): every Generate picks the Rarity band itself and the
+        # main window's slider is locked on it. The line is logic.selection.auto_max_words.
+        chk_auto_band = ttk.Checkbutton(group_logic, text="Automatic rarity", variable=self.var_auto_band)
+        chk_auto_band.pack(anchor=tk.W)
+        ToolTip(chk_auto_band, lambda: (
+            f"Picks the Rarity band for you: the rarest band with {self._auto_max_words_text()} words or "
+            "fewer. It moves on by itself as you learn. The slider on the main window is locked while "
+            "this is on. By Commonness only."))
 
 
         # --- RIGHT COLUMN (Col 1) ---
@@ -2253,6 +2324,10 @@ class MasterDashboardApp:
                     self.band_slider.set(word_selection.BANDS_ORDER.index(band))
                 except Exception:
                     pass
+            # Automatic rarity: the slider locks on the band it picks ("Auto" until a preview lands).
+            self.var_auto_band.set(sel.get("auto") is True)
+            if self.var_auto_band.get():
+                self._apply_effective_bands()
 
             self.update_strategy_ui() # Apply state
         except Exception as e:
@@ -2316,11 +2391,13 @@ class MasterDashboardApp:
                     "inline_completed_files": self.var_inline_completed.get(),
                     "hide_audio_button": self.var_hide_audio.get(),
                     "paren_readings": self.var_paren_readings.get(),
-                    # Persist the whole selection block (bands_ppm / min_count / minutes_per_file are
-                    # user-editable in settings.json, like 'weights'); the slider sets 'band'.
+                    # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /
+                    # auto_max_words are user-editable in settings.json, like 'weights'); the slider
+                    # sets 'band', the Automatic rarity checkbox 'auto'.
                     "selection": {
                         **self.logic_settings.get("selection", {}),
                         "band": self.var_band.get(),
+                        "auto": self.var_auto_band.get(),
                     },
                     "context": {
                         **self.logic_settings.get("context", {}),
@@ -2453,12 +2530,16 @@ class MasterDashboardApp:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
             
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
-                          clear_log=True):
+                          clear_log=True, on_exit=None):
         """Runs a command with optional output redirection to the terminal.
 
         on_complete: optional zero-arg callable run on the GUI thread after the process exits
         (e.g. refreshing the band preview once a new analysis has written its token index).
-        clear_log: False keeps what the log already shows (the automatic Generate appends to it)."""
+        clear_log: False keeps what the log already shows (the automatic Generate appends to it).
+        on_exit: like on_complete, but run however the command ends — also when it could not be
+        started at all (Generate's "one is running" must never stick).
+        Whenever a command ends, an automatic Generate waiting for it gets its chance
+        (_maybe_auto_generate)."""
         
         # UI updates must be queued
         def _start_loading():
@@ -2567,6 +2648,11 @@ class MasterDashboardApp:
                         self.spinner.stop()
                         self.spinner.pack_forget()
                 self.gui_queue.put(_stop_loading)
+                if on_exit:
+                    self.gui_queue.put(on_exit)
+                # An automatic Generate held back while this ran (the Content Manager, an importer, the
+                # indexer, a Generate) can go now. It does nothing unless one is waiting.
+                self.gui_queue.put(self._maybe_auto_generate)
                     
         threading.Thread(target=task, daemon=True).start()
 
@@ -2663,7 +2749,8 @@ class MasterDashboardApp:
                 self._anki_sync_lock.release()
                 self.gui_queue.put(lambda: self._anki_spinner(False))
                 if result is not None:
-                    self.gui_queue.put(lambda: self._on_anki_sync_result(result, auto=True))
+                    # Words for `lang`, the language this sync read — the window may be on another by now.
+                    self.gui_queue.put(lambda: self._on_anki_sync_result(result, auto=True, language=lang))
 
         self._anki_spinner(True)
         threading.Thread(target=work, daemon=True).start()
@@ -2767,16 +2854,20 @@ class MasterDashboardApp:
         is written, not opened; at most every 10 minutes; never while a Generate, an import, the
         indexer or the Content Manager is running (each is a child process of this window). A
         pending one waits — the same words will not arrive a second time — and is retried when the
-        window regains focus and when the indexer finishes.
+        window regains focus, when any child process ends (`run_command_async`), and — when the
+        10-minute limit is all that holds it back — by an alarm for the moment the limit is up.
+        Anki's words belong to the language they came for: Japanese words wait while Chinese is open.
+        (The alarm used to run a Chinese Generate then, which cleared them without generating them.)
         """
-        if not self._auto_generate_pending or not self.var_anki_auto_generate.get():
+        pending = self._auto_generate_pending
+        if not pending or not self.var_anki_auto_generate.get():
             return False
         if os.environ.get("SURASURA_NO_ANKI_SYNC"):
             return False
-        import time
-        now = time.monotonic()
-        if now - self._last_auto_generate < 600:
-            return False
+        if pending is not True and pending != self.var_language.get():
+            return False                # for the other language: it runs once that one is open again
+        if self._generate_running is not None:
+            return False                # a Generate is running (or starting): its end asks again
         try:
             if any(proc.poll() is None for proc in list(self.active_processes)):
                 return False
@@ -2784,11 +2875,36 @@ class MasterDashboardApp:
             return False
         if not self._library_has_content():
             return False
+        import math
+        import time
+        now = time.monotonic()
+        wait = 600 - (now - self._last_auto_generate)
+        if wait > 0:
+            # Only the limit is in the way: one alarm for when it is up, which asks all of this again.
+            # Replaced, never stacked; not scheduled under test (testing.md §5.4).
+            if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+                if self._auto_generate_job is not None:
+                    try:
+                        self.root.after_cancel(self._auto_generate_job)
+                    except Exception:
+                        pass
+                self._auto_generate_job = self.root.after(int(math.ceil(wait * 1000)),
+                                                          self._auto_generate_alarm)
+            return False
         self._last_auto_generate = now
         self.log_to_terminal("Anki brought in words you know now — generating in the background; "
                              "the report is not opened.")
         self.run_analyzer(quiet=True)
+        if self._generate_running == "quiet":          # it started, and it is Anki's own:
+            self._generate_running = "automatic"
+            self._journey_spinner(True)                # the check mark's spot spins until it ends
         return True
+
+    def _auto_generate_alarm(self):
+        """The 10-minute limit is up: a Generate that waited only for it runs now, unless something
+        else holds it back by then (`_maybe_auto_generate` asks everything again)."""
+        self._auto_generate_job = None
+        self._maybe_auto_generate()
 
     def _schedule_journey_state(self):
         """Check, shortly, whether the journey is up to date. Debounced: FocusIn fires for every child
@@ -2804,8 +2920,14 @@ class MasterDashboardApp:
 
     def _refresh_journey_state(self):
         """Ask the analyzer's own signature, off the GUI thread (it stats every library file), whether
-        Generate would compute anything new — and show the answer on the Generate button."""
+        Generate would compute anything new — and show the answer on the Generate button.
+
+        Answers land in order: each check has a generation, like the band preview's `_preview_gen`, and
+        one that a newer check has overtaken is dropped — a check asked during a Generate must never
+        land after the one asked when it finished."""
         self._journey_state_job = None
+        self._journey_gen += 1
+        gen = self._journey_gen
         if not hasattr(self, "btn_journey") or not self._library_has_content():
             self._set_journey_state(None)
             return
@@ -2813,7 +2935,7 @@ class MasterDashboardApp:
 
         def work():
             state = journey_is_current(args, language)
-            self.gui_queue.put(lambda: self._set_journey_state(state))
+            self.gui_queue.put(lambda: gen == self._journey_gen and self._set_journey_state(state))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2825,6 +2947,8 @@ class MasterDashboardApp:
         try:
             color = SURASURA_BLUE if current is False else BG_COLOR
             self.journey_border.config(highlightbackground=color, highlightcolor=color)
+            if self._generate_running == "automatic":
+                return                  # its spinner keeps the spot; the check after it fills it
             if current is True:
                 self.lbl_journey_state.place(in_=self.btn_journey, relx=1.0, rely=0.5, anchor="e", x=-10)
                 self.lbl_journey_state.lift()
@@ -2832,6 +2956,38 @@ class MasterDashboardApp:
                 self.lbl_journey_state.place_forget()
         except Exception:
             pass
+
+    def _journey_check_tip(self):
+        """The check mark's tooltip — or, while the automatic Generate spins in its place, what runs."""
+        if self._generate_running == "automatic":
+            return "Generating automatically — Anki brought in known words."
+        return "Up to date — nothing has changed since your last Generate."
+
+    def _journey_spinner(self, on):
+        """The Anki button's spinner, in the check mark's spot on Generate, while the automatic Generate
+        runs. The spot sits on the button's right edge, so the button never changes size. Off, the spot
+        is left empty: the up-to-date check that follows every Generate puts the ✓ back, or doesn't."""
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        if self._journey_spin_job is not None:
+            try:
+                self.root.after_cancel(self._journey_spin_job)
+            except Exception:
+                pass
+            self._journey_spin_job = None
+        try:
+            if not on:
+                self.lbl_journey_state.config(text="✓")
+                self.lbl_journey_state.place_forget()
+                return
+            self.lbl_journey_state.place(in_=self.btn_journey, relx=1.0, rely=0.5, anchor="e", x=-10)
+            self.lbl_journey_state.lift()
+        except Exception:
+            return
+
+        def tick(i=0):
+            self.lbl_journey_state.config(text=frames[i % len(frames)])
+            self._journey_spin_job = self.root.after(100, tick, i + 1)
+        tick()
 
     def _light_journey_check(self, lit, on_check=False):
         """The check follows the button's hover colours. With the pointer on the check itself, the
@@ -2894,9 +3050,10 @@ class MasterDashboardApp:
             self._anki_spin_job = self.root.after(100, tick, i + 1)
         tick()
 
-    def _on_anki_sync_result(self, result, auto=False):
+    def _on_anki_sync_result(self, result, auto=False, language=None):
         """After any sync: say so briefly, and refresh the commonness preview straight away (it
-        would otherwise wait for the next FocusIn to notice the known words changed)."""
+        would otherwise wait for the next FocusIn to notice the known words changed). `language` is
+        the one the sync read — the background sync's, or the Anki window's own; None, the one open."""
         if result.error:
             if auto:
                 print(f"Anki sync: {result.error}")
@@ -2908,9 +3065,10 @@ class MasterDashboardApp:
                 self.root.after(6000, lambda: self.status_var.get() == message and self.status_var.set("Ready"))
             # The known words changed, so the list is out of date. With "Generate when Anki adds known
             # words" on, a quiet Generate runs now — it re-reads the store itself, so no separate
-            # re-index — or as soon as nothing else is running (_maybe_auto_generate).
+            # re-index — or as soon as nothing else is running (_maybe_auto_generate). Pending for the
+            # language the words came for, so a Generate of another one never uses them up.
             if self.var_anki_auto_generate.get():
-                self._auto_generate_pending = True
+                self._auto_generate_pending = language or self.var_language.get()
             if not self._maybe_auto_generate():
                 self._maybe_launch_indexer(force=True)
             self._schedule_journey_state()
@@ -2934,12 +3092,29 @@ class MasterDashboardApp:
     def run_analyzer(self, quiet=False):
         """Generate. `quiet` is the automatic run after the Anki sync brought in known words
         (`_maybe_auto_generate`): the report is written, not opened; the log is not cleared; and the
-        reopen-only fast path below is skipped, since all it does is open the report."""
+        reopen-only fast path below is skipped, since all it does is open the report.
+
+        Never two at once — both would write results/ and the report, and one could read the other's
+        half-written CSV. A press while a quiet one runs waits for it, then opens the report; a press
+        while a pressed one runs starts nothing and says so; a quiet request while any runs starts
+        nothing (the running one tells an open 順 window when it's done)."""
+        if self._generate_running is not None:
+            if not quiet:
+                if self._generate_running != "manual":
+                    self._open_report_when_generated = True     # _on_generate_exit opens it
+                    if self.spinner:
+                        self.spinner.pack(fill=tk.X, pady=(5, 0))
+                        self.spinner.start(10)
+                self.status_var.set("Already generating — the report opens when it's done.")
+            return
         from app.path_utils import ensure_data_setup
         ensure_data_setup(self.var_language.get())
         self._maybe_backlog_sync()          # in the background; see its docstring
 
-        self._auto_generate_pending = False   # this run includes whatever the Anki sync brought in
+        # This run includes whatever the Anki sync brought in — for its own language: Japanese words
+        # stay pending through a Chinese Generate, for the Japanese one they are waiting for.
+        if self._auto_generate_pending is True or self._auto_generate_pending == self.var_language.get():
+            self._auto_generate_pending = False
         args = self._analyzer_args()
 
         # --- Fast no-change path: reopen the existing report WITHOUT spawning the analyzer ---
@@ -2956,12 +3131,27 @@ class MasterDashboardApp:
             self._tell_junban_list_changed()
             return
 
+        self._generate_running = "quiet" if quiet else "manual"
         self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
                                capture_output=True, show_spinner=not quiet, clear_log=not quiet,
                                on_complete=lambda: (self._refresh_band_preview(force=True),
                                                     self._maybe_junban_auto(force=True),
                                                     self._schedule_journey_state(),
-                                                    self._tell_junban_list_changed()))
+                                                    self._tell_junban_list_changed()),
+                               on_exit=self._on_generate_exit)
+
+    def _on_generate_exit(self):
+        """However a Generate ended — finished, failed, or never started — the next one may run. The
+        automatic one's spinner leaves the check mark's spot, the up-to-date check answers (✓, or the
+        blue border if it failed), and a press that waited for a quiet one is honoured: the normal
+        Generate, which reopens the report at once when the journey is up to date."""
+        if self._generate_running == "automatic":
+            self._journey_spinner(False)
+        self._generate_running = None
+        self._schedule_journey_state()
+        if self._open_report_when_generated:
+            self._open_report_when_generated = False
+            self.run_analyzer()
 
     def _analyzer_args(self):
         """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread."""

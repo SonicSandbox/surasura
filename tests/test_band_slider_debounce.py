@@ -71,3 +71,16 @@ def test_flush_with_nothing_pending_is_a_noop():
     app = _app()
     app._flush_band_save()
     assert app._saves == []
+
+
+def test_a_release_after_the_timer_saved_has_nothing_left_to_flush():
+    """The timer clears the pending mark when it fires, so a mouse-release afterwards writes nothing
+    more. That's what keeps a click on the locked slider (automatic rarity) from rewriting
+    settings.json (I2), where the old mark made every later release save again."""
+    app = _app()
+    app._save_band_debounced()
+    _delay, cb = app.root.scheduled[-1]
+    cb()
+    assert app._band_save_after is None
+    app._flush_band_save()
+    assert app._saves == [{"skip_ui": True}]

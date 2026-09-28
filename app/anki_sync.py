@@ -494,7 +494,10 @@ def sync_backlog(language, url, decks, fields):
     Read-only on Anki; delta by note id (a note already read keeps its entry; the decks, the fields
     or `BACKLOG_VERSION` changing reads everything again). Never raises: returns `(count, error)`.
     A failed read, or an empty answer where there was a backlog, keeps the previous file (the
-    "refuse to write when the input can't be trusted" rule).
+    "refuse to write when the input can't be trusted" rule). The file is written only when what it
+    holds changed — its notes, decks, fields or version: its (mtime, size) is in the report's render
+    signature, and a rewrite for a new `synced_at` alone (which nothing reads) made the next Generate
+    re-render the report instead of opening it.
     """
     decks = _clean_decks(decks)
     fields = [str(f) for f in (fields or [])]
@@ -520,6 +523,8 @@ def sync_backlog(language, url, decks, fields):
         if not entries and count_backlog(language):
             return count_backlog(language), ("Anki answered with an empty backlog, so the last one "
                                              "was kept.")
+        if same_scope and old.get("notes") == entries:
+            return len(entries), None       # nothing it holds changed: the file stays as it is
         try:
             _atomic_write_json(_backlog_path(language), {
                 "version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks),

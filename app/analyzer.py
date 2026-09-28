@@ -2086,6 +2086,10 @@ def main():
     SELECT_BAND = _sel.get("band", "occasional")
     SELECT_BANDS_PPM = _sel.get("bands_ppm") or word_selection.DEFAULT_BANDS_PPM
     SELECT_MIN_COUNT = _sel.get("min_count", word_selection.DEFAULT_MIN_COUNT)
+    # Automatic rarity (logic.selection.auto, off by default): the band is picked at the cut below —
+    # the rarest band with auto_max_words words or fewer — in place of SELECT_BAND.
+    SELECT_AUTO = _sel.get("auto") is True
+    SELECT_AUTO_MAX_WORDS = _sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS)
 
     language = args.language
     print(f"Configuration: Target Language = {language}")
@@ -2527,9 +2531,40 @@ def main():
     elif args.target_coverage > 0:
         floor_count = SELECT_MIN_COUNT
     else:
+        band, why = SELECT_BAND, ""
+        if SELECT_AUTO:
+            # Automatic rarity: the RAREST band whose list holds auto_max_words words or fewer
+            # (word_selection.auto_band), decided on the numbers the Rarity slider shows —
+            # token_index.preview_frequencies, the dashboard's own recipe, over this run's store — so
+            # the band the dashboard shows is the band this run uses. It picks the band only: the list
+            # itself keeps this run's own ignore set. Without the store, this run's own counts.
+            freqs = None
+            if _store is not None:
+                try:
+                    freqs = _token_index.preview_frequencies(_store, language, user_files_dir, script)
+                except Exception as e:
+                    # Open, but unreadable now (locked, an I/O error, a damaged table): the same as no
+                    # store. Keeping the hand-picked band instead stamped this run current on a band
+                    # the dashboard doesn't show (I3) — the band isn't in the run signature, so every
+                    # later Generate skipped.
+                    print(f"Warning: automatic rarity could not read the token store ({e}); "
+                          f"deciding on this run's own counts.")
+            try:
+                if freqs is None:
+                    freqs = {"total_tokens": total_tokens,
+                             "unknown": [(_token_index.make_key(l, r), e["total_count"])
+                                         for (l, r), e in word_stats.items()]}
+                auto = word_selection.auto_band(
+                    word_selection.band_previews(freqs, SELECT_BANDS_PPM, SELECT_MIN_COUNT),
+                    SELECT_AUTO_MAX_WORDS)
+            except Exception as e:
+                print(f"Warning: automatic rarity could not pick a band ({e}); keeping '{SELECT_BAND}'.")
+                auto = None
+            if auto is not None:
+                band, why = auto, f" (automatic: the rarest band with {SELECT_AUTO_MAX_WORDS} words or fewer)"
         floor_count = word_selection.band_floor_count(
-            SELECT_BAND, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
-        print(f"Configuration: Selection band '{SELECT_BAND}' -> keep count >= {floor_count:.2f} "
+            band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
+        print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor_count:.2f} "
               f"(of {total_tokens} library tokens).")
 
     # Output Priority CSV

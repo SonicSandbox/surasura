@@ -304,6 +304,34 @@ def test_an_answer_in_junban_rerenders_the_report_while_the_label_is_on():
     assert _signatures() != before, "a new answer must re-render, or 仰ぐ keeps showing Not in Anki"
 
 
+def test_after_an_automatic_generate_an_unchanged_backlog_read_keeps_the_report_current():
+    """Item 1.6. The automatic flow reads the Anki backlog twice — in the sync, then again as the
+    Generate starts — and every read rewrote the file, possibly after the run had taken the report's
+    fingerprint. The run stores that fingerprint at its end and the next press compares it with the
+    current one, so a rewrite alone made them differ: "Re-rendering report…" instead of opening the
+    prepared report at once. A read that finds the same cards leaves the file, and the fingerprint,
+    as they were."""
+    from app import anki_sync
+    settings_manager.save_settings(dict(settings_manager.load_settings(), anki_backlog_on_generate=True))
+    card = {"noteId": 1789711432547, "modelName": "Lapis", "fields": {
+        "Expression": {"value": "辿り着く", "order": 0},
+        "MiscInfo": {"value": "[SubsPlease] Tetsunabe no Jan! - 04 (1080p) @ 00:01:36", "order": 1},
+        "FreqSort": {"value": "12034", "order": 2}}}
+
+    def read_the_backlog():
+        with patch.object(anki_sync.anki_connect, "find_notes", return_value=[card["noteId"]]), \
+             patch.object(anki_sync.anki_connect, "notes_info", return_value=[card]):
+            return anki_sync.sync_backlog("ja", "http://127.0.0.1:8765", ["TheBank"], [])
+
+    assert read_the_backlog() == (1, None)                      # the sync's read
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", "ja", "anki_backlog.json")
+    st = os.stat(path)
+    os.utime(path, (st.st_atime, st.st_mtime - 3600))           # …some time before the run
+    stored = _signatures()                                      # what the quiet run stores at its end
+    assert read_the_backlog() == (1, None)                      # Generate's own read, as it starts
+    assert _signatures() == stored, "the next press reopens the prepared report"
+
+
 def test_the_backlog_never_forces_a_reanalysis():
     """§3 I3: a sync — or flipping the label — must never cost a full analysis."""
     from app.path_utils import get_data_path

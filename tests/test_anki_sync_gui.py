@@ -236,7 +236,21 @@ class TestAnkiSyncWindow(unittest.TestCase):
         self.assertEqual(self.win.known_var.get(), "4,330")
         self.assertIn("+12 words", self.win.result_var.get())
         self.assertEqual(self.win.delta_var.get(), "+12")
-        self.host._on_anki_sync_result.assert_called_once_with(result, auto=False)
+        self.host._on_anki_sync_result.assert_called_once_with(result, auto=False, language="ja")
+
+    def test_a_sync_result_tells_the_dashboard_the_windows_own_language(self):
+        """The dashboard's automatic Generate waits for the language Anki's words came for, so a
+        Generate of another language never uses them up. That is this window's language — the
+        dashboard's may have changed since the window opened."""
+        win = self.gui.AnkiSyncGui(_ROOT, app=self.host, language="zh")
+        try:
+            win.withdraw()
+            result = _result(added=3, scanned=40, total_known=512)
+            win.q.put(("__RESULT__", result, {}))
+            win._drain_once()
+            self.host._on_anki_sync_result.assert_called_once_with(result, auto=False, language="zh")
+        finally:
+            win.destroy()
 
     def test_an_error_result_is_shown_verbatim(self):
         self.win.q.put(("__RESULT__", _result(error="KnownWord.json を読み込めません"), {}))
@@ -313,7 +327,7 @@ class TestAnkiSyncWindow(unittest.TestCase):
         result = _result(added=12, scanned=812, total_known=4330)
         self._run_sync(result, backlog={"side_effect": RuntimeError("connection reset")})
         self.assertIn("+12 words", self.win.result_var.get())
-        self.host._on_anki_sync_result.assert_called_once_with(result, auto=False)
+        self.host._on_anki_sync_result.assert_called_once_with(result, auto=False, language="ja")
 
     def test_restore_appears_only_when_there_is_a_backup(self):
         self.win.deiconify()

@@ -78,6 +78,7 @@ class TestZhScriptDashboard(unittest.TestCase):
         with patch.object(self.app, "_try_open_existing_report", return_value=False), \
              patch.object(self.app, "run_command_async") as run:
             self.app.run_analyzer()
+        run.call_args.kwargs["on_exit"]()       # the run ends, so the next Generate may start
         return run.call_args[0][0]
 
     def test_analyzer_gets_the_flag_only_when_a_script_is_chosen(self):

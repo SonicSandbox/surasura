@@ -144,3 +144,68 @@ def test_custom_bands_ppm_override(freqs):
     strict = len(ws.select_band(freqs["unknown"], total, "common", {"common": 1_000_000}))
     assert loose >= strict
     assert strict == 0    # an absurdly high floor selects nothing
+
+
+# --- Automatic rarity: the rarest band with auto_max_words words or fewer ----------------------- #
+def _ladder(*counts):
+    """Band previews holding these word counts, Core -> Native. The rule reads only word_count —
+    the same "N words" the slider's line shows for each band."""
+    return {b: {"band": b, "word_count": n, "coverage_percent": 0.0, "floor_ppm": 0.0,
+                "hours_between": None} for b, n in zip(ws.BANDS_ORDER, counts)}
+
+
+# The user's Japanese library as measured on 2026-09-28 (1,987 files, 4.35M tokens; known words and
+# the three lists applied, no single characters): the numbers the ratified rule was chosen on.
+MEASURED_LIBRARY = _ladder(0, 5, 193, 756, 2_474, 4_541, 9_978)
+
+
+def test_automatic_rarity_picks_uncommon_at_850_and_occasional_at_750_on_the_measured_library():
+    """The ratified rule (D1: A with 850): the RAREST band whose list fits under the line. Uncommon's
+    756 fits under 850 and Rare's 2,474 doesn't. Under the scope's first number, 750, Uncommon is 6
+    over — which is why 850 was chosen: 94 words of room instead of a flip every few episodes."""
+    assert ws.auto_band(MEASURED_LIBRARY, 850) == "uncommon"
+    assert ws.auto_band(MEASURED_LIBRARY, 750) == "occasional"
+
+
+def test_automatic_rarity_uses_the_settings_850_when_no_number_is_given():
+    """No magic number in code: the default line is logic.selection.auto_max_words."""
+    assert ws.DEFAULT_AUTO_MAX_WORDS == 850
+    assert ws.auto_band(MEASURED_LIBRARY) == "uncommon"
+
+
+def test_automatic_rarity_counts_850_words_as_fitting_and_851_as_not():
+    """'850 words or fewer' is inclusive: a band of exactly 850 is the list; one word more and the
+    rule steps back to the band before it."""
+    assert ws.auto_band(_ladder(0, 5, 193, 850, 2_474, 4_541, 9_978), 850) == "uncommon"
+    assert ws.auto_band(_ladder(0, 5, 193, 851, 2_474, 4_541, 9_978), 850) == "occasional"
+
+
+def test_automatic_rarity_goes_all_the_way_to_native_when_every_band_fits():
+    """An advanced learner: even Native (everything but one-offs) is under the line."""
+    assert ws.auto_band(_ladder(0, 3, 12, 40, 118, 305, 640), 850) == "native"
+
+
+def test_automatic_rarity_stays_on_core_when_even_core_is_over_the_line():
+    """A beginner: the commonest words alone are more than 850. The list can't be smaller than Core,
+    so it stays there rather than picking nothing."""
+    assert ws.auto_band(_ladder(1_204, 3_010, 5_122, 6_030, 8_415, 9_120, 9_561), 850) == "core"
+
+
+def test_automatic_rarity_on_a_collapsed_tail_picks_native_the_band_the_slider_still_shows():
+    """On a small library Very Rare selects exactly what Native does, and the slider hides Very Rare.
+    The rule must land on the band that is still on the slider."""
+    assert ws.auto_band(_ladder(0, 5, 193, 300, 520, 610, 610), 850) == "native"
+
+
+def test_automatic_rarity_without_a_preview_says_none_so_the_caller_keeps_its_band():
+    """Before the first Generate there are no numbers: None, never a guess."""
+    assert ws.auto_band(None, 850) is None
+    assert ws.auto_band({}, 850) is None
+
+
+def test_automatic_rarity_steps_back_a_band_when_new_content_grows_one_past_the_line():
+    """D4: worked out fresh every time. Learning brought Rare down to 840, so it moved on; a new
+    season then grows Rare past the line again, and the rule steps back rather than keep a list
+    that is no longer 850 words or fewer."""
+    assert ws.auto_band(_ladder(0, 5, 193, 756, 840, 4_541, 9_978), 850) == "rare"
+    assert ws.auto_band(_ladder(0, 6, 210, 790, 1_020, 5_100, 11_000), 850) == "uncommon"

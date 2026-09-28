@@ -69,6 +69,15 @@ DEFAULT_SETTINGS = {
         # changes what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS), and in the token
         # store's build signature when it isn't the default.
         "paren_readings": "hiragana",
+        # Names are one word, not pieces (app/names.py; Settings -> Language & Parsing), Japanese only. Each
+        # changes what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS). names_katakana: a
+        # katakana name no dictionary list spells (トゥー + リ -> トゥーリ); read as a file is tokenized, so it is in
+        # the token store's build signature when off. names_recurring: a katakana name the library keeps using
+        # (リム + ハイ -> リムハイ); names_kanji: a kanji name (JMnedict) the library holds 3+ times (一 + 護 -> 一護) —
+        # both from the library's own tables, applied as the cache is read: flipping one needs only a Generate.
+        "names_katakana": True,
+        "names_recurring": True,
+        "names_kanji": True,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,

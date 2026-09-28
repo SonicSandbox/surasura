@@ -198,6 +198,13 @@ Surasura's shared パターン data for Japanese is built from:
 
 The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
+The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names as one word") come from
+[JMnedict](https://www.edrdg.org/enamdict/enamdict_doc.html), the Japanese proper-names dictionary of the JMdict/EDICT
+project, property of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html),
+used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — by way of the name lists in
+[anki_miner](https://github.com/0xzerolight/anki_miner). Only the spellings of surnames and given names are kept; that
+table (`app/name_data.py`) is shared under the same licence.
+
 ## 📜License
 
 Distributed under the MIT License. See `LICENSE` for more information.

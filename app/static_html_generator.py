@@ -201,13 +201,19 @@ class AnchorFinder:
         [音楽]: analyzer.REMOVED_INLINE), which the sentence no longer holds. Empty if absent or
         ambiguous."""
         from app.analyzer import REMOVED_INLINE
-        pattern = rf"(?:\s|{REMOVED_INLINE})*".join(re.escape(ch) for ch in needle)
-        found = None
-        for match in re.finditer(pattern, raw):
-            if found is not None:
-                return ""       # more than one place it could be
-            found = match.group(0)
-        return found or ""
+        # Whitespace alone first: the pattern that allows the removals too takes about 15 ms to build
+        # for a 40-character sentence (40 s over a library's anchor pass, against 1 s), so only a
+        # sentence the plain search doesn't place exactly once pays for it.
+        for gap in (r"\s*", rf"(?:\s|{REMOVED_INLINE})*"):
+            found = None
+            for match in re.finditer(gap.join(re.escape(ch) for ch in needle), raw):
+                if found is not None:
+                    found = ""      # more than one place it could be
+                    break
+                found = match.group(0)
+            if found:
+                return found
+        return ""
 
     # -- on-disk memo ------------------------------------------------------------------------- #
     # A re-render (theme, Zen limit, Words Per Day) reruns this whole pass over unchanged files for

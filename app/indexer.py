@@ -55,6 +55,10 @@ def main():
             # Delta reconcile: only changed/new files are tokenized; removed files are dropped.
             store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
                             build_signature=token_index.build_signature(language, reinforce, script))
+            if language == "ja":
+                # The library's name tables the reconcile just computed: the known words read with them.
+                from app import names
+                names.use_library_tables(store.names_tables())
 
             # Refresh the tokenizer-normalized known-words cache if KnownWord.json changed (edit,
             # delete, or new). Makes the preview's known-filter EXACT (not the GUI's dictForm approx).

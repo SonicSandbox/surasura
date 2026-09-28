@@ -611,6 +611,9 @@ def build(language, save_path, progress=print, show_source=False):
         try:
             store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
                             build_signature=token_index.build_signature(language, reinforce, script))
+            if language == "ja":
+                from app import names
+                names.use_library_tables(store.names_tables())   # the known words read with them
         except sqlite3.OperationalError as e:
             # Another process (the background indexer, a Generate) holds the store. What is cached is
             # still whole; only the newest files may be missing — never block on it, and never fall

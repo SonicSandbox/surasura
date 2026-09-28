@@ -51,10 +51,11 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
     kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
     Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
-    一人 fell below it.)"""
+    一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
+    uses and joined the list's head.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 19
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 20
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -197,7 +198,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 19
+    assert rank_of["中野"] == rank_of["ナカノ"] == 20
 
 
 def test_lookup_answers_nothing_rather_than_guessing():

@@ -51,7 +51,9 @@ from collections import Counter
 # v8 the parsing fixes (2026-09-27) change what a file's text becomes — its encoding, its
 #    markup and conventions, where sentences end, the tagger reading NFKC, numbers and symbols no words — so every
 #    cached blob holds the old sentences and tokens.
-SCHEMA_VERSION = 8
+# v9 names stay whole (app/names.py): a v8 blob holds a name the tagger cut in pieces, and the store now records each
+#    file's name candidates in a column a v8 store lacks — still 2.4, so users rebuild once with v8.
+SCHEMA_VERSION = 9
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +141,8 @@ CREATE TABLE IF NOT EXISTS files (
     mtime  REAL, size INTEGER, -- reconcile signature (filesystem truth)
     total  INTEGER,            -- token count for this file
     counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
-    tokens BLOB                -- zlib(json sentences) — cached tokenization for Generate reuse
+    tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
+    names  BLOB                -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
@@ -154,7 +157,7 @@ def _ensure_schema(conn):
     ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if ver == SCHEMA_VERSION:
         try:  # verify tables actually exist (guard a half-built DB)
-            conn.execute("SELECT 1 FROM files LIMIT 1")
+            conn.execute("SELECT names FROM files LIMIT 1")
             conn.execute("SELECT 1 FROM aggregate LIMIT 1")
             return
         except sqlite3.DatabaseError:
@@ -194,19 +197,21 @@ def open_store(language, path=None):
         return c
 
     try:
-        return Store(_connect())
+        return Store(_connect(), language)
     except sqlite3.DatabaseError:
         # Corrupt DB -> delete + rebuild (it's a regenerable cache).
         _delete_db(db_path)
-        return Store(_connect())
+        return Store(_connect(), language)
 
 
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
 class Store:
-    def __init__(self, conn):
+    def __init__(self, conn, language=None):
         self.conn = conn
+        self.language = language
+        self._names = None          # the library's name tables, read on the first cached file (Japanese)
 
     def close(self):
         try:
@@ -230,9 +235,90 @@ class Store:
 
     def file_tokens(self, path):
         """Cached tokenized sentences for a file: [(s_text, [[lemma,reading,surface],...]),...].
-        Empty list if the file isn't indexed. Lets Generate reuse tokens for unchanged files."""
-        row = self.conn.execute("SELECT tokens FROM files WHERE path=?", (_norm(path),)).fetchone()
-        return _decode_tokens(row[0]) if row else []
+        Empty list if the file isn't indexed. Lets Generate reuse tokens for unchanged files.
+
+        Japanese: with the library's name tables applied (app/names.py) — the cache holds each file as it reads
+        alone, plus where its name candidates sit, so a new table needs no re-tokenizing."""
+        row = self.conn.execute("SELECT tokens, names FROM files WHERE path=?", (_norm(path),)).fetchone()
+        if not row:
+            return []
+        sentences = _decode_tokens(row[0])
+        switches = _library_switches(self.language)
+        if row[1] and any(switches):
+            if self._names is None:
+                self._names = self.names_tables() or {}
+            if self._names:
+                from app import names
+                spans = _decode_counts(row[1]).get("s", [])
+                if spans:
+                    names.apply_spans(sentences, spans, self._names, *switches)
+        return sentences
+
+    # -- the library's name tables (app/names.py) ---------------------------- #
+    def names_tables(self):
+        """The name tables the last index computed, or None (none yet, or not a Japanese store)."""
+        try:
+            return json.loads(self.get_meta("names_tables") or "null")
+        except Exception:
+            return None
+
+    def _update_names_tables(self, cur):
+        """Compute the library's name tables from every file's recorded candidates (and the last tables, for the
+        flip guard) and store them — after a reconcile changed something. Japanese only."""
+        from app import analyzer, names
+        row = cur.execute("SELECT value FROM meta WHERE key='names_tables'").fetchone()
+        try:
+            previous = json.loads(row[0]) if row else None
+        except Exception:
+            previous = None
+        records = (_decode_counts(blob) for (blob,) in cur.execute("SELECT names FROM files WHERE names IS NOT NULL"))
+        tables = names.compute_tables(list(records), previous, analyzer._sanitize_term)
+        for key, value in (("names_tables", tables), ("names_adjust", self._names_adjust(cur, tables))):
+            value = json.dumps(value, ensure_ascii=False)
+            cur.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=?",
+                        (key, value, value))
+        self._names = None
+
+    def _names_adjust(self, cur, tables):
+        """What the name tables change in the running totals, for each way the two switches can be set. The aggregate
+        counts each file as it reads alone; the list counts its cached tokens with the tables applied (file_tokens) —
+        so the Rarity slider's numbers, and the band automatic rarity picks from them, must add each joined name and
+        take away its pieces, counted as the aggregate counts (a token with target-language characters).
+        {"11" | "10" | "01" (recurring, kanji): {"counts": [[lemma, reading, delta], ...], "total": delta}}."""
+        from app import analyzer, names
+        if not tables:
+            return {}
+        has_lang = analyzer.has_target_language
+        spellings = {kind: set(table) for kind, table in tables.items() if isinstance(table, dict)}
+        deltas = {combo: [Counter(), 0] for combo in ("11", "10", "01")}
+        for tokens_blob, names_blob in cur.execute(
+                "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
+            spans = _decode_counts(names_blob).get("s", [])
+            if not any(span[6] in spellings.get(span[5], ()) for span in spans):
+                continue                                # no joined name here: nothing to decode
+            sentences = _decode_tokens(tokens_blob)
+            for combo, switches in (("11", (True, True)), ("10", (True, False)), ("01", (False, True))):
+                delta = deltas[combo]
+                for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
+                    joined = [(token, 1)] + [(piece, -1) for piece in sentences[s][1][a:b]]
+                    for (lemma, reading, surface, *_rest), sign in joined:
+                        if has_lang(lemma, self.language) or has_lang(surface, self.language):
+                            delta[0][(lemma, reading)] += sign
+                            delta[1] += sign
+        return {combo: {"counts": [[l, r, n] for (l, r), n in counts.items() if n], "total": total}
+                for combo, (counts, total) in deltas.items()}
+
+    def _names_adjustment(self):
+        """({(lemma, reading): delta}, total delta) that the name tables make with the switches set now — ({}, 0) when
+        both are off, before the first index, or for Chinese."""
+        combo = "".join("1" if on else "0" for on in _library_switches(self.language))
+        if combo == "00":
+            return {}, 0
+        try:
+            entry = json.loads(self.get_meta("names_adjust") or "{}").get(combo) or {}
+            return {(l, r): n for l, r, n in entry.get("counts", ())}, int(entry.get("total", 0))
+        except Exception:
+            return {}, 0
 
     # -- meta key/value (run-signature, known-words cache) ------------------- #
     def get_meta(self, key, default=None):
@@ -246,9 +332,27 @@ class Store:
         self.conn.commit()
 
     # -- known-words cache (skip re-tokenizing known terms every run) -------- #
+    def _known_key(self, signature):
+        """`signature` with what else decides how a Japanese known word reads: the names switches and the library's
+        name tables (a known name is one word only with them) — so either change reads the known words again. The
+        switches are read fresh, as the build signature's are: the dashboard's check must see a change as the
+        indexer it launches will."""
+        if not signature or self.language != "ja":
+            return signature
+        try:
+            from app import settings_manager
+            logic = settings_manager.load_settings()["logic"]
+        except Exception:
+            return signature
+        switches = [bool(logic.get(k, True)) for k in ("names_katakana", "names_recurring", "names_kanji")]
+        stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
+        return signature if switches == [True, True, True] and stamp is None else \
+            f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
+
     def get_cached_known(self, signature):
         """Return (known_tuples, known_lemmas) if the cache matches `signature`, else None.
         `signature` encodes KnownWord.json's (exists, mtime, size) — so any edit/delete/add misses."""
+        signature = self._known_key(signature)
         if not signature or self.get_meta("known_sig") != signature:
             return None
         try:
@@ -259,6 +363,7 @@ class Store:
             return None
 
     def set_cached_known(self, signature, known_tuples, known_lemmas):
+        signature = self._known_key(signature)
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
         try:
@@ -300,8 +405,9 @@ class Store:
     def reconcile(self, files, tokenize_file, build_signature=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
-        tokenize_file(path) -> {"sentences": [...], "counts": Counter}. Sequences are cached (for
-        Generate reuse); counts maintain the aggregate. Runs in a single BEGIN IMMEDIATE
+        tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
+        name candidates). Sequences are cached (for Generate reuse); counts maintain the aggregate; after
+        a change the library's name tables are computed again. Runs in a single BEGIN IMMEDIATE
         transaction (atomic; serialized against other writers).
 
         `build_signature` (optional) fingerprints the TOKENIZER IDENTITY (e.g. Chinese `reinforce`
@@ -313,12 +419,14 @@ class Store:
         """
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
+        changed = False
         try:
             if build_signature is not None:
                 _row = cur.execute("SELECT value FROM meta WHERE key='build_sig'").fetchone()
                 if _row is not None and _row[0] != build_signature:
                     cur.execute("DELETE FROM files")      # tokenizer identity changed -> full rebuild
                     cur.execute("DELETE FROM aggregate")
+                    changed = True
             existing = {
                 r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4]}
                 for r in cur.execute("SELECT path, mtime, size, total, counts FROM files")
@@ -330,6 +438,7 @@ class Store:
                 if key not in current:
                     self._apply(cur, _decode_counts(existing[key]["counts"]), -1)
                     cur.execute("DELETE FROM files WHERE path=?", (key,))
+                    changed = True
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta.
             for key, realpath in current.items():
@@ -346,14 +455,19 @@ class Store:
                 if row is not None:  # changed: subtract the stale contribution first
                     self._apply(cur, _decode_counts(row["counts"]), -1)
                 self._apply(cur, counts, +1)
+                names = result.get("names")
                 cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens) "
-                    "VALUES(?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names) "
+                    "VALUES(?,?,?,?,?,?,?)",
                     (key, mtime, size, total, _encode_counts(counts),
-                     _encode_tokens(result["sentences"])),
+                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None),
                 )
+                changed = True
 
             cur.execute("DELETE FROM aggregate WHERE count <= 0")  # prune emptied words
+            if self.language == "ja" and (changed or cur.execute(
+                    "SELECT 1 FROM meta WHERE key='names_tables'").fetchone() is None):
+                self._update_names_tables(cur)
             if build_signature is not None:
                 cur.execute("INSERT INTO meta(key, value) VALUES('build_sig', ?) "
                             "ON CONFLICT(key) DO UPDATE SET value=?", (build_signature, build_signature))
@@ -373,7 +487,16 @@ class Store:
         ignore_set = ignore_set or set()
 
         unknown, known_tokens, all_counts = [], 0, []
-        for lemma, reading, n in self.conn.execute("SELECT lemma, reading, count FROM aggregate"):
+        rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
+        # Japanese: the name tables' joins, so these counts are the list's (a joined name counts once, its pieces
+        # no more there).
+        adjust, total_adjust = self._names_adjustment()
+        if adjust:
+            counts = {(lemma, reading): n for lemma, reading, n in rows}
+            for key, delta in adjust.items():
+                counts[key] = counts.get(key, 0) + delta
+            rows = [(lemma, reading, n) for (lemma, reading), n in counts.items() if n > 0]
+        for lemma, reading, n in rows:
             all_counts.append(n)
             if lemma in ignore_set or (lemma, reading) in known_tuples or lemma in known_lemmas:
                 known_tokens += n
@@ -386,8 +509,36 @@ class Store:
 
         unknown.sort(key=lambda kv: (-kv[1], kv[0]))
         all_counts.sort()
-        return {"total_tokens": self.total_tokens(), "known_tokens": known_tokens,
+        return {"total_tokens": self.total_tokens() + total_adjust, "known_tokens": known_tokens,
                 "unknown": unknown, "all_counts": all_counts}
+
+
+def read_names_tables(language):
+    """The library's name tables the language's store holds (app/names.py), read without writing anything — None
+    when there is no store or no tables yet."""
+    path = store_path_for(language)
+    if not os.path.exists(path):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='names_tables'").fetchone()
+        finally:
+            conn.close()
+        return json.loads(row[0]) if row else None
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _library_switches(language):
+    """(recurring, kanji): which of the library's name tables apply — Japanese only, as the run's settings say."""
+    if language != "ja":
+        return (False, False)
+    try:
+        from app import analyzer
+        return (bool(analyzer.LOGIC.get("names_recurring", True)), bool(analyzer.LOGIC.get("names_kanji", True)))
+    except Exception:
+        return (False, False)
 
 
 def known_signature(known_path, script="asis"):
@@ -478,12 +629,13 @@ def build_signature(language, reinforce=False, script="asis"):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
     config change invalidates stale tokens. What varies at runtime: Chinese `reinforce`
     segmentation, `script` conversion, the sentence boundaries settings.json sets — they decide
-    where every file splits — and what a Japanese book's kana in parentheses become (language is
-    already isolated per DB; a tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by
-    bumping SCHEMA_VERSION, which rebuilds). Normalized so ja ignores a stray reinforce or script.
-    Each suffix appears ONLY when it departs from the default — the script when converting, the
-    boundaries when edited, the readings when not hiragana only — so a store built as shipped keeps
-    its exact old signature and upgrading never rebuilds anyone's index (spec I2)."""
+    where every file splits — what a Japanese book's kana in parentheses become, and whether a
+    katakana name is one word (logic.names_katakana; language is already isolated per DB; a
+    tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by bumping SCHEMA_VERSION, which
+    rebuilds). Normalized so ja ignores a stray reinforce or script. Each suffix appears ONLY when it
+    departs from the default — the script when converting, the boundaries when edited, the readings
+    when not hiragana only, the katakana names when off — so a store built as shipped keeps its exact
+    old signature and upgrading never rebuilds anyone's index (spec I2)."""
     from app.zh_script import effective
     eff_reinforce = bool(reinforce) and language == "zh"
     sig = f"{language}|reinforce={eff_reinforce}"
@@ -494,7 +646,9 @@ def build_signature(language, reinforce=False, script="asis"):
     if boundaries is not None:
         sig = f"{sig}|boundaries={boundaries}"
     readings = _chosen_paren_readings(language)
-    return sig if readings is None else f"{sig}|paren_readings={readings}"
+    if readings is not None:
+        sig = f"{sig}|paren_readings={readings}"
+    return f"{sig}|names_katakana=off" if _katakana_names_off(language) else sig
 
 
 def _edited_boundaries(language):
@@ -530,6 +684,18 @@ def _chosen_paren_readings(language):
     return None if option == default else option
 
 
+def _katakana_names_off(language):
+    """Whether settings.json switches katakana names off (logic.names_katakana: app/names.py), for a Japanese store.
+    Read fresh, as the boundaries are."""
+    if language != "ja":
+        return False
+    try:
+        from app import settings_manager
+        return not settings_manager.load_settings()["logic"].get("names_katakana", True)
+    except Exception:
+        return False
+
+
 def make_tokenizer(language, reinforce=False, script="asis"):
     """Build the default `tokenize_file(path) -> {"sentences", "counts"}`, reusing the analyzer's
     real tokenizer + text extraction so the store matches what a run would produce.
@@ -543,18 +709,26 @@ def make_tokenizer(language, reinforce=False, script="asis"):
 
     # ja lemmas carry a gloss suffix the analyzer strips; match it so store lemmas == run lemmas.
     analyzer.SANITIZE_JA = (language == "ja")
+    # Japanese: each file as it reads alone, its name candidates recorded beside it (app/names.py) — the library's
+    # tables are applied as the cache is read (`Store.file_tokens`), so a new table needs no re-tokenizing.
     tok = analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script) \
-        if language == "zh" else analyzer.JapaneseTokenizer()
+        if language == "zh" else analyzer.JapaneseTokenizer(library=False)
     has_lang, extract = analyzer.has_target_language, analyzer.extract_text
 
     def tokenize_file(path):
-        sentences = list(tok.tokenize_sentences(extract(path, language)))
+        from app import names
+        record = names.Record() if language == "ja" else None
+        sentences = list(tok.tokenize_sentences(extract(path, language), names=record) if record
+                         else tok.tokenize_sentences(extract(path, language)))
         counts = Counter()
         for _s_text, s_tokens in sentences:
             for lemma, reading, surface, _orth in s_tokens:
                 if has_lang(lemma, language) or has_lang(surface, language):
                     counts[make_key(lemma, reading)] += 1
-        return {"sentences": sentences, "counts": counts}
+        result = {"sentences": sentences, "counts": counts}
+        if record is not None:
+            result["names"] = record.data()
+        return result
 
     return tokenize_file
 

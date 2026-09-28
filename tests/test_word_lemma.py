@@ -50,8 +50,9 @@ def test_a_letter_spelled_out_by_its_name_is_a_word_under_that_name(tokenizer, s
     # UniDic files デルタ / アルファー as 記号,文字 with the lemma δ / α-alpha: counted, the lemma was one character
     # (never listable) and never met a card or a known word written デルタ.
     assert ("デルタ", "デルタ", "デルタ", "デルタ") in _tokens(tokenizer, "デルタが餌を撒いた。")
-    # A spelling variant is the same word: the key is UniDic's lForm, the orth the text's own spelling.
-    assert ("アルファ", "アルファ", "アルファー", "アルファー") in _tokens(tokenizer, "プラスアルファーの価値がある。")
+    # A spelling variant is the same word: the key is UniDic's lForm, the orth the text's own spelling. (Alone: in
+    # プラスアルファー the whole run is one word — a katakana run no list spells, app/names.py.)
+    assert ("アルファ", "アルファ", "アルファー", "アルファー") in _tokens(tokenizer, "黒板にアルファーと書いた。")
     assert "ガンマ" in _lemmas(tokenizer, "ガンマ線を浴びた。")
 
 

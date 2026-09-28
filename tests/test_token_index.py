@@ -367,9 +367,7 @@ def test_a_store_from_before_each_polite_word_was_decided_once_is_rebuilt(tmp_pa
 def test_a_store_from_before_the_parsing_fixes_is_rebuilt(tmp_path):
     """v7 -> v8: the parsing fixes (2026-09-27) change what a file's text becomes —
     here the tagger reading NFKC: half-width ﾅｲﾌ is the word ナイフ, which a v7 store never counted. Reusing a
-    v7 store would keep it uncounted, so it must be dropped and rebuilt. Pinned exactly: the next bump updates
-    this knowingly."""
-    assert ti.SCHEMA_VERSION == 8
+    v7 store would keep it uncounted, so it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "knife.txt"
     _write(f, "ﾅｲﾌを持ってる。\nﾅｲﾌは危ない。\n")
@@ -387,6 +385,32 @@ def test_a_store_from_before_the_parsing_fixes_is_rebuilt(tmp_path):
     assert s2.total_tokens() == 0, "a v7 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE reading = 'ナイフ'").fetchall() == knife
+    s2.close()
+
+
+def test_a_store_from_before_names_stayed_whole_is_rebuilt(tmp_path):
+    """v8 -> v9: a name the tagger cuts into pieces is one word now (app/names.py) — here the made-up katakana name
+    ミロナイ, which a v8 store holds as ミロ + ナイ — and the store records each file's name candidates in a column a
+    v8 store lacks. Reusing a v8 store would keep the pieces, so it must be dropped and rebuilt. Pinned exactly: the
+    next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 9
+    db = _db(tmp_path)
+    f = tmp_path / "village.txt"
+    _write(f, "昨日、ミロナイが村に来た。\nミロナイは森に帰った。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    name = s.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = 'ミロナイ'").fetchall()
+    s.close()
+    assert name and name[0][2] == 2
+    conn = sqlite3.connect(db)      # what a v8 store holds: the pieces, never the name
+    conn.execute("DELETE FROM aggregate WHERE lemma = 'ミロナイ'")
+    conn.execute("PRAGMA user_version = 8")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v8 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = 'ミロナイ'").fetchall() == name
     s2.close()
 
 

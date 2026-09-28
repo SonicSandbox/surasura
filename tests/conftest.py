@@ -141,6 +141,23 @@ def _isolate_token_store(tmp_path_factory, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _forget_names_tables():
+    """The library's name tables a process applies (app/names.py) are read from the token store once and kept for a
+    while — and every test has a store of its own (above). Forget them around every test, so one test's library never
+    names another's words."""
+    try:
+        from app import names
+    except Exception:
+        yield
+        return
+    names.forget_library_tables()
+    try:
+        yield
+    finally:
+        names.forget_library_tables()
+
+
 # Analyzer module state that a test (or analyzer.main()) can reassign, and which therefore has to
 # be restored afterwards. Kept as a module constant so the guard test can assert it stays complete.
 ANALYZER_MUTABLE_GLOBALS = (

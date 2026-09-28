@@ -318,6 +318,11 @@ class MasterDashboardApp:
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_zh_script = tk.StringVar(value="asis")  # read all Chinese as one script (asis/s/t)
         self.var_paren_readings = tk.StringVar(value="hiragana")  # 漢字(かな) in a book: hiragana/any/off
+        # Names are one word, not pieces (app/names.py), Japanese only: katakana names, names the library repeats,
+        # kanji names — each its own switch (logic.names_*), on by default.
+        self.var_names_katakana = tk.BooleanVar(value=True)
+        self.var_names_recurring = tk.BooleanVar(value=True)
+        self.var_names_kanji = tk.BooleanVar(value=True)
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
@@ -399,6 +404,7 @@ class MasterDashboardApp:
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
         self.zh_script_frame: Optional[ttk.Frame] = None
         self.paren_readings_frame: Optional[ttk.Frame] = None
+        self.names_frame: Optional[ttk.Frame] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -1003,6 +1009,8 @@ class MasterDashboardApp:
                     self.zh_script_frame.pack_forget()
                 if self.paren_readings_frame:
                     self.paren_readings_frame.pack_forget()
+                if self.names_frame:
+                    self.names_frame.pack_forget()
 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
@@ -1018,6 +1026,8 @@ class MasterDashboardApp:
                     # (Nor is paren_readings on the way to Chinese: it belongs to the Japanese one.)
                     if self.paren_readings_frame:
                         self.paren_readings_frame.pack(anchor=tk.W, pady=(2, 0))
+                    if self.names_frame:
+                        self.names_frame.pack(anchor=tk.W, pady=(2, 0))
     
             self.save_settings()
         finally:
@@ -1434,6 +1444,28 @@ class MasterDashboardApp:
         ToolTip(combo_readings, "Drops a kanji's reading written after it in brackets, so it isn't "
                                 "counted twice: 山田太郎(やまだ・たろう) → 山田太郎. Katakana there is "
                                 "often a note, so it stays by default.")
+
+        # Names as one word (Japanese): a name the tagger cuts into pieces is one word, not words it isn't. Packed by
+        # update_ui_for_language for Japanese only, like the readings row above. The katakana switch changes how every
+        # file is read, so it re-indexes the library in the background; the other two use the library's own tables
+        # and take effect at the next Generate.
+        self.names_frame = ttk.Frame(self.lang_options_frame)
+        for var, text, tip in (
+                (self.var_names_katakana, "Katakana names as one word",
+                 "A katakana name no dictionary lists stays one word instead of being cut into "
+                 "pieces that count as other words: ミロ + ナイ → ミロナイ. Repeated sounds "
+                 "(ワンワンワン) and stutters (バッバカ) stay apart."),
+                (self.var_names_recurring, "Names your library repeats as one word",
+                 "Ordinary katakana words your content keeps using together, and hardly ever "
+                 "apart, become one word — the name of a place or a person in your story. "
+                 "Takes effect at the next Generate."),
+                (self.var_names_kanji, "Kanji names as one word",
+                 "A person's name cut into kanji is one word when a names dictionary "
+                 "(JMnedict) lists it and your library uses it 3+ times: 奏 + 汰 → 奏汰. "
+                 "Takes effect at the next Generate.")):
+            chk = ttk.Checkbutton(self.names_frame, text=text, variable=var, command=self.save_settings)
+            chk.pack(anchor=tk.W)
+            ToolTip(chk, tip)
 
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -2302,6 +2334,9 @@ class MasterDashboardApp:
             self.var_hide_audio.set(self.logic_settings.get("hide_audio_button", False))
             readings = self.logic_settings.get("paren_readings", "hiragana")
             self.var_paren_readings.set(readings if readings in self.PAREN_READINGS_LABELS else "hiragana")
+            self.var_names_katakana.set(bool(self.logic_settings.get("names_katakana", True)))
+            self.var_names_recurring.set(bool(self.logic_settings.get("names_recurring", True)))
+            self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
@@ -2391,6 +2426,9 @@ class MasterDashboardApp:
                     "inline_completed_files": self.var_inline_completed.get(),
                     "hide_audio_button": self.var_hide_audio.get(),
                     "paren_readings": self.var_paren_readings.get(),
+                    "names_katakana": self.var_names_katakana.get(),
+                    "names_recurring": self.var_names_recurring.get(),
+                    "names_kanji": self.var_names_kanji.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /
                     # auto_max_words are user-editable in settings.json, like 'weights'); the slider
                     # sets 'band', the Automatic rarity checkbox 'auto'.

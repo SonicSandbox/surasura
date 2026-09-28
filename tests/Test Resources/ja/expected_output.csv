@@ -3,6 +3,7 @@
 老婆,老婆,,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,オレの少し前に立つ老婆なんて、今にも転びそうなほどに足元がフラフラしていて危なっかしい。,HighPriority/H_priority_sample_1.txt,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,ＯＬは必死に涙を堪えながら、老婆へと小さな謝罪の言葉を口にする。,HighPriority/H_priority_sample_1.txt
 んっ,ん,んんっ,ンッ,Outside,80,8,8,0,0,,H_priority_sample,ん？,HighPriority/H_priority_sample_2.srt,ん…,HighPriority/H_priority_sample_2.srt,んんっ…,HighPriority/H_priority_sample_2.srt
 此奴,こいつ,,コイツ,Outside,80,8,8,0,0,,H_priority_sample,こいつらだって人の子。,HighPriority/H_priority_sample_2.srt,こいつ今ひどいこと言った。,HighPriority/H_priority_sample_2.srt,そういえばこいつ気にしないヤツだったな。,HighPriority/H_priority_sample_2.srt
+フータロー,フータロー,,,Outside,60,6,6,0,0,,H_priority_sample,フータロー現実を見てもうみんないない。,HighPriority/H_priority_sample_2.srt,フータローすぐに終わらせるから座って待ってて。,HighPriority/H_priority_sample_2.srt,やっぱフータロー君にそんな度胸はないよね。,HighPriority/H_priority_sample_2.srt
 混雑,混雑,,コンザツ,Outside,40,4,4,0,0,reading,H_priority_sample,そして気が付くと、仕事に追われフラストレーションを溜めたサラリーマンが、ついうっかり痴漢しちゃおっかな？と間違いを覚えてしまいそうなほどに車内は混雑している。,HighPriority/H_priority_sample_1.txt,運よく席を確保できたオレにとっては、混雑などどこ吹く風。,HighPriority/H_priority_sample_1.txt,少女は満面の笑みで頭を下げると、混雑をかき分け、老婆を空いた席へと誘導した。,HighPriority/H_priority_sample_1.txt
 お年寄り,お年寄り,,オトシヨリ,Outside,40,4,4,0,0,,H_priority_sample,お年寄りに譲るのは当然でしょう？」,HighPriority/H_priority_sample_1.txt,確かにお年寄りに席を譲ることは、社会貢献の一環かも知れない。,HighPriority/H_priority_sample_1.txt,お年寄りもゆっくりと腰を落ち着けられるだろう。,HighPriority/H_priority_sample_1.txt
 誠実,誠実,,セイジツ,Outside,40,4,4,0,0,,H_priority_sample,誠実に向き合えば分かってくれるよ。,HighPriority/H_priority_sample_2.srt,“誠実に”ってどうすりゃいいんだよ。,HighPriority/H_priority_sample_2.srt,誠実に向き合う…誠実に…,HighPriority/H_priority_sample_2.srt
@@ -120,7 +121,7 @@
 自習,自習,,ジシュウ,Outside,10,1,1,0,0,,H_priority_sample,私はここで自習してるだけなので。,HighPriority/H_priority_sample_2.srt,,,,
 おっと,おっと,,オット,Outside,10,1,1,0,0,,H_priority_sample,おっといけない優しく優しく。,HighPriority/H_priority_sample_2.srt,,,,
 お断り,お断り,,オコトワリ,Outside,10,1,1,0,0,,H_priority_sample,死んでもお断り。,HighPriority/H_priority_sample_2.srt,,,,
-はは,ハハ,,ハハ,Outside,10,1,1,0,0,,H_priority_sample,アッハハそれじゃあ今日は俺たちだけでやるか。,HighPriority/H_priority_sample_2.srt,,,,
+アッハハ,アッハハ,,,Outside,10,1,1,0,0,,H_priority_sample,アッハハそれじゃあ今日は俺たちだけでやるか。,HighPriority/H_priority_sample_2.srt,,,,
 いっけ,いっけ,,イッケ,Outside,10,1,1,0,0,,H_priority_sample,うわっいっけない！,HighPriority/H_priority_sample_2.srt,,,,
 やがる,やがる,やがっ,ヤガル,Outside,10,1,1,0,0,,H_priority_sample,二乃のヤツ毎度邪魔しやがって。,HighPriority/H_priority_sample_2.srt,,,,
 抹茶,抹茶,,マッチャ,Outside,10,1,1,0,0,,H_priority_sample,“抹茶ソーダ”って…,HighPriority/H_priority_sample_2.srt,,,,
@@ -161,7 +162,6 @@
 タロ,タロ,,タロ,Outside,10,1,1,0,0,,H_priority_sample,フータローそれホント？,HighPriority/H_priority_sample_2.srt,,,,
 有罪,有罪,,ユウザイ,Outside,10,1,1,0,0,,H_priority_sample,やっぱ有罪切腹。,HighPriority/H_priority_sample_2.srt,,,,
 筋合い,筋合い,,スジアイ,Outside,10,1,1,0,0,,H_priority_sample,お礼を言われる筋合いはありません。,HighPriority/H_priority_sample_2.srt,,,,
-フータロー,フータロー,,,Outside,10,1,1,0,0,,H_priority_sample,やっぱフータロー君にそんな度胸はないよね。,HighPriority/H_priority_sample_2.srt,,,,
 かっか,カッカ,,カッカ,Outside,10,1,1,0,0,,H_priority_sample,まあそうカッカしないで。,HighPriority/H_priority_sample_2.srt,,,,
 仲良し,仲よし,,ナカヨシ,Outside,10,1,1,0,0,,H_priority_sample,私たち昔は仲よし５姉妹だったじゃん？,HighPriority/H_priority_sample_2.srt,,,,
 不注意,不注意,,フチュウイ,Outside,10,1,1,0,0,,H_priority_sample,とはいえ俺の不注意が招いた事故だ。,HighPriority/H_priority_sample_2.srt,,,,

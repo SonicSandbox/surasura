@@ -179,7 +179,7 @@ def build_joins(tagger, headwords):
         tokens = tagger(word)
         if len(tokens) < 2:
             continue
-        joined = join_affixes(tokens, every)
+        joined = join_affixes(tokens, every, library=False)
         if len(joined) == 1 and isinstance(joined[0], JoinedWord) and joined[0].feature.orthBase == word:
             joins[word] = [word, reading]
     return joins
@@ -245,7 +245,7 @@ def _ogo_count(path):
     prefixed, bare = Counter(), Counter()
     with open(path, encoding="utf-8") as f:
         for line in f:
-            words = join_affixes(tagger(line.rstrip("\n")), joins)
+            words = join_affixes(tagger(line.rstrip("\n")), joins, library=False)
             for i, w in enumerate(words):
                 if isinstance(w, JoinedWord):
                     if w.feature.orthBase in bases["words"]:
@@ -428,7 +428,7 @@ def build_aliases(tagger, vocabularies, joins=None):
     best = {}
     for ranks in vocabularies:
         for word, rank in ranks.items():
-            tokens = join_affixes(tagger(word), joins or {})
+            tokens = join_affixes(tagger(word), joins or {}, library=False)
             if len(tokens) != 1:
                 continue               # multi-token entries would key on a misleading lemma
             lemma = tokens[0].feature.lemma or word
@@ -492,7 +492,7 @@ def main():
                 continue
 
         from app.analyzer import join_affixes
-        tokens = join_affixes(tagger(word), joins)
+        tokens = join_affixes(tagger(word), joins, library=False)
         if len(tokens) != 1:
             dropped["multi"] += 1
             continue

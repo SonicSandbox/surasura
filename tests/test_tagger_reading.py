@@ -9,6 +9,7 @@ library), checked against the project's fugashi + unidic-lite and jieba.
 """
 
 import json
+import sys
 
 import pytest
 
@@ -46,6 +47,41 @@ def test_ordinary_text_is_read_exactly_as_written(line):
     # The fast path, and constraint 3: punctuation and spaces are never read in another form, so the boundary
     # test and the sentence never see a different character than the file holds.
     assert analyzer.tagger_text(line) == (line, None)
+
+
+# --- which lines take the slow path ------------------------------------------------------------------------------ #
+# A line with no character read in another form goes to the tagger as it is; one such character anywhere sends the
+# whole line through the read-through. The quick test deciding that keeps the characters above U+FFFF (about 6,000)
+# in a set: as ranges in its pattern they made it several times slower on every line. So it is checked here on lines
+# of each kind and on every code point, the astral ones included.
+
+@pytest.mark.parametrize("line, read", [
+    ("ﾏｸﾞﾛの刺身を食べた。", "マグロの刺身を食べた。"),          # half-width katakana, a voiced mark included
+    ("会議は１４時からです。", "会議は14時からです。"),            # full-width digits
+    ("𩸽の塩焼きを食べた。", None),                                # 𩸽 (U+29E3D) is a kanji of its own: as written
+    ("𠮷野さんと待ち合わせた。", None),                            # 𠮷 (U+20BB7) likewise
+    ("𩸽とﾏｸﾞﾛを買った。", "𩸽とマグロを買った。"),                # the kanji as it is, the katakana read
+    ("本日🈚料で配布中。", "本日無料で配布中。"),                   # 🈚 (U+1F21A) is 無 in another form
+    ("葛\U000E0100城市に住んでいる。", "葛城市に住んでいる。"),       # a variation selector (U+E0100) is not read
+    ("今日は晴れです。", None),                                    # plain text
+])
+def test_a_line_is_read_differently_exactly_when_one_of_its_characters_is(line, read):
+    got, at = analyzer.tagger_text(line)
+    if read is None:
+        assert (got, at) == (line, None)
+    else:
+        assert got == read
+        _read_back(got, at, line)
+
+
+def test_the_quick_test_flags_exactly_the_characters_read_differently():
+    # Every code point, one at a time: a character sends its line down the slow path exactly when tagger_text reads
+    # it in another form, or it composes with the one before it.
+    analyzer.tagger_text("ｱ")                            # the tables are made on first use
+    named = set(analyzer._READ_AS) | analyzer._COMBINES
+    wrong = [f"U+{point:04X}" for point in range(sys.maxunicode + 1)
+             if (analyzer.tagger_text(chr(point))[1] is not None) != (chr(point) in named)]
+    assert not wrong, wrong[:10]
 
 
 def test_half_width_katakana_is_read_full_width_and_keeps_its_own_spelling(tokenizer, sanitized):

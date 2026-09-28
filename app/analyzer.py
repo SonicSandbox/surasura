@@ -27,6 +27,7 @@ from app import settings_manager
 from app import word_selection
 from app import modality
 from app import zh_script   # cheap: its tables decode only on the first conversion
+from app import names       # cheap: its tables decode only when a Japanese word is first read
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 
 # Default Weights (Overwritten by settings.json if present)
@@ -66,7 +67,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     stripped but not its letters, and each format's own conventions honoured (headers, SDH cues, Aozora ruby,
 #     scripture apparatus); sentences end per UAX #29 and the file's timing; the tagger reads NFKC (ﾅｲﾌ is ナイフ);
 #     numbers and symbols are no words; Han by Unicode's own ranges; a hiragana list line names its word.
-ENGINE_REVISION = 15
+# 16: names stay whole (app/names.py) — a katakana name no dictionary lists, a katakana run the library keeps using
+#     as one, and a JMnedict person name the library holds 3+ times are one word each, every switch in Settings.
+#     Still 2.4: one re-analysis with 15.
+ENGINE_REVISION = 16
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -137,12 +141,18 @@ _IGNORABLE = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1
               (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
 _READ_AS = {}       # character -> what a tagger reads for it, where that differs ("" = nothing)
 _COMBINES = set()   # characters that compose with the one before them (NFC): U+3099 in か + U+3099 = が
-_READ_RE = []       # the pattern of every character `tagger_text` reads differently, made on first use
+_READ_RE = []       # the pattern of those up to U+FFFF that `tagger_text` reads differently, made on first use
+_READ_ASTRAL = set()  # and those above U+FFFF, made with it
+_ASTRAL_RE = re.compile(r'[\U00010000-\U0010ffff]')
 
 
 def _read_pattern():
-    """The pattern of every character `tagger_text` reads differently — once per process, on first use: a pass over
-    Unicode's decompositions (about 0.2 s), so a line with none of them is read as written at regex speed."""
+    """The pattern of every character up to U+FFFF that `tagger_text` reads differently, and the set of those above it
+    (_READ_ASTRAL) — once per process, on first use: a pass over Unicode's decompositions (about 0.2 s), so a line with
+    none of them is read as written at regex speed. The ones above U+FFFF (about 6,000: invisible tags and variation
+    selectors, compatibility ideographs, mathematical letters) stay out of the pattern: as about 90 more ranges in its
+    class, `re` compared every character of every line with each of them in turn — measured on a 1,987-file library,
+    0.92 s for the test instead of 0.13 s."""
     if not _READ_RE:
         for point in range(sys.maxunicode + 1):
             ch = chr(point)
@@ -159,7 +169,9 @@ def _read_pattern():
             _READ_AS.update((chr(point), "") for point in range(first, last + 1))
         points, ranges = sorted({ord(ch) for ch in _READ_AS} | {ord(ch) for ch in _COMBINES}), []
         for point in points:
-            if ranges and point == ranges[-1][1] + 1:
+            if point > 0xFFFF:
+                _READ_ASTRAL.add(chr(point))
+            elif ranges and point == ranges[-1][1] + 1:
                 ranges[-1][1] = point
             else:
                 ranges.append([point, point])
@@ -167,12 +179,19 @@ def _read_pattern():
     return _READ_RE[0]
 
 
+def _reads_differently(text):
+    """Does `text` hold a character `tagger_text` reads differently? The pattern, then the set of those above U+FFFF —
+    looked at only when `text` holds such a character (_read_pattern)."""
+    return _read_pattern().search(text) is not None or (
+        _ASTRAL_RE.search(text) is not None and not _READ_ASTRAL.isdisjoint(text))
+
+
 def tagger_text(text):
     """(read, at): `text` as every tagger reads it (§ above) and, for read[i:j], the part text[at[i]:at[j]] it was
     read from — or (text, None) when a tagger reads `text` as written, as it does most lines. A character that is
     not read rides with the one before it, so every character of `text` belongs to exactly one part; a piece that
     starts inside one character's reading (株式会社 read from ㍿ is 株式 + 会社) has an empty part after the first."""
-    if not text or not _read_pattern().search(text):
+    if not text or not _reads_differently(text):
         return text, None
     groups = []                                     # [start, end, form]: the characters read as one
     for i, ch in enumerate(text):
@@ -192,12 +211,12 @@ def tagger_text(text):
 
 
 class ReadNode:
-    """A tagger's node for text it read in another form (`tagger_text`): fugashi's feature and is_unk, with the text's
-    own spelling as its surface."""
-    __slots__ = ("surface", "feature", "is_unk")
+    """A tagger's node for text it read in another form (`tagger_text`): fugashi's feature, is_unk and white_space
+    (the spaces before it), with the text's own spelling as its surface."""
+    __slots__ = ("surface", "feature", "is_unk", "white_space")
 
-    def __init__(self, surface, feature, is_unk):
-        self.surface, self.feature, self.is_unk = surface, feature, is_unk
+    def __init__(self, surface, feature, is_unk, white_space=""):
+        self.surface, self.feature, self.is_unk, self.white_space = surface, feature, is_unk, white_space
 
 
 class Tagger:
@@ -223,7 +242,7 @@ class Tagger:
                 # A word the dictionary doesn't know has no lemma: every caller names it by its text — the text
                 # as read (ﾀﾅｶ is the name タナカ, ５０ is 50), not the spelling kept as its surface.
                 feature = feature._replace(lemma=node.surface, orth=node.surface, orthBase=node.surface)
-            out.append(ReadNode(text[at[start]:at[end]], feature, node.is_unk))
+            out.append(ReadNode(text[at[start]:at[end]], feature, node.is_unk, node.white_space))
         return out
 
 
@@ -359,7 +378,7 @@ def _joined(parts, key, pos1, entry):
     return JoinedWord(surface, feature, snaps)
 
 
-def join_affixes(words, joins=None):
+def join_affixes(words, joins=None, library=True):
     """`words` — one tagger call's nodes — with every prefix / suffix run that makes a dictionary word
     joined into one `JoinedWord` (§ above); every other node passes through untouched.
 
@@ -369,11 +388,25 @@ def join_affixes(words, joins=None):
     in its dictionary form.
     Nothing after a number is ever a base (3年生, 三回目, 第3話), nor does a prefix after one join its word:
     三大祭り is "the three great" festivals — 三 + 大 + 祭り, never 三 + 大祭り. `joins` defaults to
-    reference_data's table."""
+    reference_data's table.
+
+    Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
+    list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
+    the library keeps using (logic.names_recurring) and a kanji name it holds (logic.names_kanji). `library=False` is for what must not depend on one
+    user's library: the token store's cached tokens (they record the candidates instead) and shared data."""
     if joins is None:
         joins = affix_joins()
-    if not joins:
-        return words
+    if joins:
+        words = _join_affix_runs(words, joins)
+    if LOGIC.get("names_katakana", True):
+        words = names.join_katakana(words)
+    if library:
+        words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True))
+    return words
+
+
+def _join_affix_runs(words, joins):
+    """join_affixes' prefix / suffix joins (§ above)."""
     out, i, n = [], 0, len(words)
     while i < n:
         w = words[i]
@@ -511,8 +544,11 @@ def _sentence_ends(words, surfaces, boundaries):
 
 
 class JapaneseTokenizer(Tokenizer):
-    def __init__(self):
+    def __init__(self, library=True):
         self.tagger = Tagger()   # fugashi, reading text as every caller does (§ What the tagger reads)
+        # The library's name tables (app/names.py) — off only for the token store, which records their candidates
+        # (`tokenize_sentences(names=…)`) and applies the tables to its cached tokens as it reads them.
+        self.library = library
 
     def tokenize(self, text, pieces=None):
         """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples. `pieces`, a
@@ -523,12 +559,15 @@ class JapaneseTokenizer(Tokenizer):
             all_tokens.extend(tokens)
         return all_tokens
 
-    def tokenize_sentences(self, text, pieces=None):
+    def tokenize_sentences(self, text, pieces=None, names=None):
         """Yields (sentence_string, list_of_filtered_tokens).
 
         Fugashi consumes newlines, so '\\n' in the boundary set never fired and separate lines
         (e.g. a transcript's title / URL / '----' header) merged into one giant sentence. We
         therefore process the text line by line, treating each line break as a hard boundary.
+
+        `names`, an app.names.Record, receives every run the library's name tables could join, with the
+        sentence (as yielded) and the counted tokens it covers — how the token store keeps them for later.
         """
         # Unidic-lite pos1: '補助記号' (punctuation), '空白' (spaces)
         # A frozenset + isdisjoint keeps the per-token boundary test in C. This runs millions of
@@ -536,12 +575,16 @@ class JapaneseTokenizer(Tokenizer):
         # ~11% slower across the whole tokenization pass.
         boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。｡．！？!?\n"))
         joins = affix_joins()
+        yielded = 0                  # sentences yielded so far: the index of the one being built
 
         for line in text.split("\n"):
             current_sentence_tokens = []
             current_sentence_surface = []
-            words = join_affixes(self.tagger(line), joins)
+            words = join_affixes(self.tagger(line), joins, library=self.library)
             surfaces = [word.surface for word in words]
+            # Where each token lands — (sentence, counted tokens before it) — for the name candidates' spans.
+            cands = names.read_line(words) if names is not None else ()
+            at = [] if cands else None
             # CHARACTER-wise, not whole-token: the tokenizer glues a terminator to an adjacent
             # symbol, so '➡。' and '｡。' arrive as single tokens. Testing the whole surface let
             # every one of those slip past, and a "sentence" ran on through a dozen subtitle
@@ -580,6 +623,8 @@ class JapaneseTokenizer(Tokenizer):
                     orth = _sanitize_term(orth)
 
                 current_sentence_surface.append(surface)
+                if at is not None:
+                    at.append((yielded, len(current_sentence_tokens), lemma is not None))
                 if lemma is not None:
                     current_sentence_tokens.append((lemma, reading, word.surface, orth))
 
@@ -589,6 +634,7 @@ class JapaneseTokenizer(Tokenizer):
                     # only 「…………」, a list number's １． Never a usable example sentence.
                     if s_text and has_target_language(s_text, 'ja'):
                         yield s_text, current_sentence_tokens
+                        yielded += 1
                     current_sentence_tokens = []
                     current_sentence_surface = []
 
@@ -597,6 +643,12 @@ class JapaneseTokenizer(Tokenizer):
                 s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
                 if s_text and has_target_language(s_text, 'ja'):
                     yield s_text, current_sentence_tokens
+                    yielded += 1
+            # A candidate holds kana or kanji, so its sentence was yielded; no sentence end falls inside one.
+            for cand in cands:
+                sentence, a, _counted = at[cand.i]
+                _s, before, counted = at[cand.j - 1]
+                names.span(sentence, cand, a, before + counted, "".join(surfaces[cand.i:cand.j]))
 
 _LEADING_DIGITS_RE = re.compile(r"^[0-9０-９]+")
 
@@ -2241,6 +2293,29 @@ def main():
     else:
         tokenizer = JapaneseTokenizer()
 
+    # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the
+    # aggregation below reads those cached tokens, so unchanged files are never re-tokenized. First,
+    # because it also computes the library's name tables (app/names.py), which every word read from
+    # here on — the known words included — is read with.
+    if _store is not None:
+        try:
+            _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
+                             _token_index.make_tokenizer(language, reinforce=args.reinforce, script=script),
+                             build_signature=_token_index.build_signature(language, args.reinforce, script))
+        except Exception as e:
+            print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
+            try:
+                _store.close()
+            except Exception:
+                pass
+            _store = None
+    if language == 'ja':
+        # Without the store (locked, damaged) the run still reads with the tables the last index computed when the
+        # store's file can be read, so its words are the ones the Rarity slider counted; else names split, as they
+        # do before a first index.
+        names.use_library_tables(_store.names_tables() if _store is not None
+                                 else _token_index.read_names_tables(language))
+
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
     # above) and forces a fresh normalization, so a change to your known words is always reflected.
@@ -2279,21 +2354,6 @@ def main():
     for list_name, filepath in sorted(available_freq_lists.items()):
         freq_data[list_name] = load_yomitan_frequency_list(filepath, script, language)
     print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
-
-    # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the
-    # aggregation below reads those cached tokens, so unchanged files are never re-tokenized.
-    if _store is not None:
-        try:
-            _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
-                             _token_index.make_tokenizer(language, reinforce=args.reinforce, script=script),
-                             build_signature=_token_index.build_signature(language, args.reinforce, script))
-        except Exception as e:
-            print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
-            try:
-                _store.close()
-            except Exception:
-                pass
-            _store = None
 
     # Per-file (lemma, reading) counts captured during aggregation and reused by the
     # progressive pass, so the whole library is tokenized once instead of twice.

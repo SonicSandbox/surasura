@@ -16,6 +16,7 @@ the whole chain rather than the helper in isolation.
 
 import json
 import os
+import re
 from unittest.mock import patch
 
 import pandas as pd
@@ -224,6 +225,60 @@ def test_a_sentence_the_reader_cleaned_still_anchors(tmp_path, name, content):
         anchor = finder.anchor(str(path), sentence)
         assert anchor, f"no anchor for {sentence!r}"
         assert content.count(anchor) == 1, f"{anchor!r} must occur once, verbatim"
+
+
+# --- whitespace alone first ------------------------------------------------------------------------ #
+# A pattern that lets the reader's removals sit between every character of a sentence is slow to
+# build (about 15 ms for 40 characters), so the loose search tries whitespace alone first and builds
+# it only for a sentence the plain search doesn't place exactly once. The answer must be the one a
+# single search allowing both gives — the reference below.
+
+def _one_search(raw, needle):
+    """The loose search as one pattern: whitespace or a removal between every character."""
+    pattern = rf"(?:\s|{analyzer.REMOVED_INLINE})*".join(re.escape(ch) for ch in needle)
+    found = None
+    for match in re.finditer(pattern, raw):
+        if found is not None:
+            return ""
+        found = match.group(0)
+    return found or ""
+
+
+@pytest.mark.parametrize("raw, needle, expected", [
+    # Aozora Bunko's ruby and an editor's note between the characters
+    ("冬の朝、彼は古《ふる》い城［＃「城」に傍点］の門をくぐった。\n", "彼は古い城の門をくぐった",
+     "彼は古《ふる》い城［＃「城」に傍点］の門をくぐった"),
+    # a reading in brackets after a name in a book
+    ("その日、山田太郎(やまだたろう)が村に来た。\n", "山田太郎が村に来た", "山田太郎(やまだたろう)が村に来た"),
+    # subtitle markup inside the line: SubRip tags, ASS overrides, a sound cue inside a number's count
+    ("1\n00:00:01,000 --> 00:00:03,000\n<i>今夜は</i> 月が<b>綺麗</b>ですね\n", "今夜は月が綺麗ですね",
+     "今夜は</i> 月が<b>綺麗</b>ですね"),
+    ("Dialogue: 0,0:00:01.00,0:00:03.00,Default,,{\\an8}それは{\\i1}秘密{\\i0}です\n", "それは秘密です",
+     "それは{\\i1}秘密{\\i0}です"),
+    ("5[拍手]年ぶりに故郷へ帰った\n", "5年ぶりに故郷へ帰った", "5[拍手]年ぶりに故郷へ帰った"),
+    # found with whitespace alone: a subtitle spaces its phrases
+    ("ちょっと 待って｡ 話を聞いて｡\n", "ちょっと待って｡話を聞いて", "ちょっと 待って｡ 話を聞いて"),
+    # not in the file: both searches run and find nothing
+    ("冬の朝、彼は古《ふる》い城の門をくぐった。\n", "存在しない別の文です", ""),
+    # twice with whitespace alone, and still twice once removals are allowed: no anchor
+    ("そうだ 行こう\nそうだ　行こう\n", "そうだ行こう", ""),
+])
+def test_the_loose_search_answers_as_one_search_allowing_both(raw, needle, expected):
+    assert _one_search(raw, needle) == expected, "the reference itself"
+    assert AnchorFinder._loose(raw, needle) == expected
+
+
+def test_a_sentence_placed_by_whitespace_alone_never_builds_the_slow_pattern(tmp_path):
+    """The anchor pass runs over every sentence of a report and the plain search places most of the
+    ones that need a loose search — they must not pay for the pattern that allows the removals."""
+    f = tmp_path / "ep01.srt"
+    f.write_text(SRT, encoding="utf-8")
+    with patch.object(re, "finditer", wraps=re.finditer) as finditer:
+        anchor = AnchorFinder().anchor(str(f), "そうだ女｡お前に話がある。")
+    assert anchor and SRT.count(anchor) == 1
+    patterns = [call.args[0] for call in finditer.call_args_list]
+    assert patterns, "the loose search should have run"
+    assert not any(analyzer.REMOVED_INLINE in pattern for pattern in patterns)
 
 
 # --- subtitle cue timestamps --------------------------------------------------------------------- #

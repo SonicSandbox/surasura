@@ -8,6 +8,7 @@ corruption self-heal, persistence across reopen, and the cheap needs_reconcile p
 Every store is opened with an explicit temp `path` so tests never touch the real %APPDATA%.
 """
 
+import json
 import os
 import sqlite3
 import pytest
@@ -343,9 +344,7 @@ def test_a_store_from_before_words_kept_their_affixes_is_rebuilt(tmp_path):
 def test_a_store_from_before_each_polite_word_was_decided_once_is_rebuilt(tmp_path):
     """v6 -> v7: the join table decides an お / ご word once for all its spellings (Patterns_Quality_Spec
     §15.9) — おやすみ now joins, as お休み did. A v6 store's cached sentences hold おやすみ in pieces, and
-    reusing them would keep counting 休む, so it must be dropped and rebuilt. Pinned exactly: the next bump
-    updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 7
+    reusing them would keep counting 休む, so it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "night.txt"
     _write(f, "おやすみなさい。\nおやすみ、また明日ね。\n")
@@ -362,6 +361,32 @@ def test_a_store_from_before_each_polite_word_was_decided_once_is_rebuilt(tmp_pa
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     rows = s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('おやすみ', '休む')").fetchall()
     assert rows == [("おやすみ", "オヤスミ", 2)]
+    s2.close()
+
+
+def test_a_store_from_before_the_parsing_fixes_is_rebuilt(tmp_path):
+    """v7 -> v8: the parsing fixes (2026-09-27) change what a file's text becomes —
+    here the tagger reading NFKC: half-width ﾅｲﾌ is the word ナイフ, which a v7 store never counted. Reusing a
+    v7 store would keep it uncounted, so it must be dropped and rebuilt. Pinned exactly: the next bump updates
+    this knowingly."""
+    assert ti.SCHEMA_VERSION == 8
+    db = _db(tmp_path)
+    f = tmp_path / "knife.txt"
+    _write(f, "ﾅｲﾌを持ってる。\nﾅｲﾌは危ない。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    knife = s.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE reading = 'ナイフ'").fetchall()
+    s.close()
+    assert knife and knife[0][2] == 2
+    conn = sqlite3.connect(db)      # what a v7 store holds: nothing for ﾅｲﾌ
+    conn.execute("DELETE FROM aggregate WHERE reading = 'ナイフ'")
+    conn.execute("PRAGMA user_version = 7")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v7 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE reading = 'ナイフ'").fetchall() == knife
     s2.close()
 
 
@@ -466,6 +491,69 @@ def test_reconcile_rebuilds_when_build_signature_changes(tmp_path):
         "a reinforce toggle must re-tokenize every file (stale segmentation)"
     assert store.total_tokens() > 0
     store.close()
+
+
+def _write_boundaries(ja):
+    """settings.json (the sandboxed one) with the Japanese sentence boundaries set to `ja`."""
+    from app.path_utils import get_user_file
+    with open(get_user_file("settings.json"), "w", encoding="utf-8") as handle:
+        json.dump({"logic": {"sentence_boundaries": {"ja": ja}}}, handle, ensure_ascii=False)
+
+
+def test_the_default_sentence_boundaries_in_any_order_keep_the_old_signature():
+    """Spec I2: the user's own settings.json holds 。！？!?\\n｡ — the default's characters in another
+    order (settings_manager adds any default one an old copy lacks). No suffix, so upgrading rebuilds no
+    one's store; the Chinese set is untouched by the Japanese one."""
+    from app import settings_manager
+    default = settings_manager.DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["ja"]
+    assert ti.build_signature("ja") == "ja|reinforce=False"            # no settings.json: the default
+    _write_boundaries("。！？!?\n｡")
+    assert ti.build_signature("ja") == "ja|reinforce=False"
+    assert ti.build_signature("zh", False, "s") == "zh|reinforce=False|script=s"
+    _write_boundaries("。！？!?\n｡…")                                  # a learner who ends sentences at …
+    edited = sorted(set(default + "…"))
+    assert ti.build_signature("ja") == "ja|reinforce=False|boundaries=" + json.dumps(edited, ensure_ascii=False)
+    assert "\\n" in ti.build_signature("ja") and "\n" not in ti.build_signature("ja"), "one printable line"
+    assert ti.build_signature("zh", False, "s") == "zh|reinforce=False|script=s", "only the set that was edited"
+
+
+def test_edited_sentence_boundaries_rebuild_the_store_and_undoing_the_edit_rebuilds_it_again(tmp_path):
+    """The boundaries decide where every file splits. The files are unchanged on disk, so the
+    (mtime, size) delta sees nothing — but every cached sentence is stale, so an edit re-tokenizes
+    every file, once, and so does taking it back."""
+    db = _db(tmp_path)
+    f1 = tmp_path / "a.txt"; _write(f1, JA_ADVENTURE)
+    f2 = tmp_path / "b.txt"; _write(f2, JA_OTHER)
+    files = [str(f1), str(f2)]
+    store = ti.open_store("ja", path=db)
+    store.reconcile(files, ti.make_tokenizer("ja"), build_signature=ti.build_signature("ja"))
+
+    _write_boundaries("。！？!?\n｡…")
+    tok = _counting_tokenizer("ja")
+    store.reconcile(files, tok, build_signature=ti.build_signature("ja"))
+    assert set(tok.calls) == {ti._norm(str(f1)), ti._norm(str(f2))}, "an edited set re-tokenizes every file"
+    tok2 = _counting_tokenizer("ja")
+    store.reconcile(files, tok2, build_signature=ti.build_signature("ja"))
+    assert tok2.calls == [], "the same edited set, unchanged files: nothing to do"
+
+    _write_boundaries("。！？!?\n｡")
+    tok3 = _counting_tokenizer("ja")
+    store.reconcile(files, tok3, build_signature=ti.build_signature("ja"))
+    assert set(tok3.calls) == {ti._norm(str(f1)), ti._norm(str(f2))}, "back to the default: rebuilt again"
+    store.close()
+
+
+def test_a_settings_file_that_cannot_be_read_keeps_the_old_signature(monkeypatch):
+    """The signature is asked for on every indexer check: a settings read that fails leaves the
+    signature as it was, never an error."""
+    from app import settings_manager
+
+    def broken():
+        raise OSError("settings.json is locked")
+
+    monkeypatch.setattr(settings_manager, "load_settings", broken)
+    assert ti.build_signature("ja") == "ja|reinforce=False"
+    assert ti.build_signature("zh", True, "t") == "zh|reinforce=True|script=t"
 
 
 def test_known_words_cache_reuse_and_invalidation(tmp_path):

@@ -42,6 +42,14 @@ def test_bracket_furigana_and_its_leading_space_are_removed():
     assert clean_field_html("時々[ときどき]") == "時々", "々 belongs to the kanji group"
 
 
+def test_bracket_furigana_after_a_kanji_past_the_basic_plane_is_removed_too():
+    """𠮟 (the 常用 form of 叱 since 2010) and 𩸽 (ほっけ) are CJK Extension B, past U+FFFF: the kanji group is
+    Unicode's Han ranges (app/unicode_ranges.py), so their readings go like any other — the old group stopped
+    at U+FAFF and left 𠮟[しか]る on the card."""
+    assert clean_field_html(" 𠮟[しか]る") == "𠮟る"
+    assert clean_field_html("焼き 𩸽[ほっけ]") == "焼き𩸽"
+
+
 def test_brackets_that_are_not_furigana_survive():
     """Only a kana reading directly after kanji is furigana; anything else in brackets is content."""
     assert clean_field_html("[注意] 冒険") == "[注意] 冒険"

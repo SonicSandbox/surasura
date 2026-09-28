@@ -40,6 +40,8 @@ import re
 import unicodedata
 from collections import namedtuple
 
+from app.unicode_ranges import HAN, KANA
+
 # --- normalisation ---------------------------------------------------------------------------- #
 # Ruby readings go BEFORE tags, or stripping <ruby>漢字<rt>かんじ</rt></ruby> fuses the reading onto
 # the word and yields 漢字かんじ, which matches nothing on either side. Mirrors the same guard in
@@ -59,8 +61,9 @@ _STRAY_BRACKET_RE = re.compile(r'\[[^\]]*\]')
 # Anki editor, so a mismatch caused by one is impossible to see and impossible to fix by hand.
 _ZERO_WIDTH_RE = re.compile('[\u200b\u200c\u200d\u2060\ufeff\u00ad]')
 _WHITESPACE_RE = re.compile(r'\s+')
-# Hiragana and katakana only (\u30fc included) \u2014 the words the kana fold (L4) may compare.
-_KANA_ONLY_RE = re.compile('^[\u3041-\u309f\u30a0-\u30ff]+$')
+# Hiragana and katakana only (\u30fc included) \u2014 the words the kana fold (L4) may compare. The kana
+# blocks (app/unicode_ranges.py); the template's foldKana tests the same set.
+_KANA_ONLY_RE = re.compile(f'^[{KANA}]+$')
 
 # The columns `priority_learning_list.csv` carries example sentences in, best first. Read by NAME —
 # an older results folder that predates them simply offers no sentence (WP-L).
@@ -96,6 +99,49 @@ def normalize_word(raw):
     text = unicodedata.normalize('NFC', text)
     # `\s` covers the no-break space `&nbsp;` just unescaped into, and CRLF from a pasted field.
     return _WHITESPACE_RE.sub(' ', text).strip()
+
+
+# --- the word a card's field holds -------------------------------------------------------------- #
+# A Japanese card holds ONE word — JMdict's headword, anki_miner's one note per word. A field typed or
+# edited by hand carries more, none of it the word: a second line (Anki writes each line of a field as a
+# <br> or a <div>), the brackets or stop it was typed in (「撒く」, 撒く。), a reading or a note in
+# parentheses (仰ぐ（あおぐ）, 勉強(する)), a second word after a list separator (上層部、首脳部, 撒く・巻く).
+_LINE_TAG_RE = re.compile(r'<br\s*/?>|</?(?:div|p|li)\b[^>]*>', re.IGNORECASE)
+# Parentheses and the lenticular / square / tortoise-shell brackets hold annotations; no headword holds one.
+_NOTE_RE = re.compile(r'[（(【［〔][^（）()【】［］〔〕]*[）)】］〕]')
+# 、，, ／/ ；; and spaces part the words of a list. So does ・ — except between katakana, where it parts
+# the pieces of one foreign name or word (ジョン・スミス: the 中黒 convention).
+_SEPARATOR_RE = re.compile(r'[、，,／/；;\s]|(?<![ァ-ヺー])・|・(?![ァ-ヺー])')
+
+
+def _bare(text):
+    """`text` without the punctuation around it (Unicode's P categories): 「撒く」 -> 撒く, 撒く。 -> 撒く."""
+    start, end = 0, len(text)
+    while start < end and unicodedata.category(text[start]).startswith("P"):
+        start += 1
+    while end > start and unicodedata.category(text[end - 1]).startswith("P"):
+        end -= 1
+    return text[start:end]
+
+
+def card_word(raw, language=None):
+    """The word a card's word field holds, "" when it holds none.
+
+    Japanese: `normalize_word` of the field's first line, its annotations in brackets dropped, its first
+    word when a separator parts several, the punctuation around it gone — 撒く<br>まく, 「撒く」, 撒く。 and
+    撒く・巻く are all 撒く; 仰ぐ（あおぐ） is 仰ぐ. Any other language: `normalize_word` as it stands — what
+    of a Chinese field is its word is an open question (学习 (xuéxí), 学习 / 學習)."""
+    if language != "ja":
+        return normalize_word(raw)
+    if not isinstance(raw, str):
+        return ""
+    line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
+    line = _NOTE_RE.sub("", line) or line
+    for piece in _SEPARATOR_RE.split(line):
+        word = _bare(piece)
+        if word:
+            return word
+    return ""
 
 
 def fold_kana(text):
@@ -502,29 +548,34 @@ def unknowns_beside(word, raw, tokenize, unknown):
     the caller's verdict on one token — its known words, ignore lists and skips — so this stays
     free of them. Tokens are located by their surfaces in order, since the tokenizer drops
     punctuation.
+
+    The card's own word said again elsewhere in the sentence is still the card's word — a token with
+    the `(lemma, reading)` of one inside the span is never an unknown beside it, as the analyzer never
+    counts its target's own key (2026-09-27): 撒け、撒け、撒くんだ！ on a 撒く card (the span is the
+    first 撒く WRITTEN) had two unknowns, and an i+1 card dropped to "multi".
     """
     found = sentence_span(raw, word)
     if found is None:
         return None
     text, start, end = found
-    count, at = 0, 0
+    placed, at = [], 0
     for token in tokenize(text):
         surface = token[2]
         pos = text.find(surface, at) if surface else -1
         if pos < 0:
             continue
         at = pos + len(surface)
-        if pos < end and at > start:
-            continue                    # inside the card's own word
-        if unknown(token):
-            count += 1
-    return count
+        placed.append((token, pos < end and at > start))       # inside the card's own word?
+    own = {(token[0], token[1]) for token, inside in placed if inside}
+    return sum(1 for token, inside in placed
+               if not inside and (token[0], token[1]) not in own and unknown(token))
 
 
 # --- Check matches (Junban_Backlog_Spec §16): the same word, spelled another way ------------------ #
 # A suggestion, never a match: the user ticks it or it moves nothing (§16.1 — the user reversed I6).
 Suggestion = namedtuple("Suggestion", "key via evidence reading")
-_KANJI_RE = re.compile('[㐀-鿿豈-﫿]')
+# A kanji: Unicode's Han ranges (app/unicode_ranges.py) — Extension B and on (𠮟, 𩸽) included.
+_KANJI_RE = re.compile(f'[{HAN}]')
 
 
 def suggest(word, raw_sentence, tokenize, rank_of, language):
@@ -635,13 +686,33 @@ def is_attached_tail(lemma):
 # Junban places such a card as the word, and the report labels the word (Anki_Match_Consistency_Scope.md).
 CARD_ENDINGS = ATTACHED_TAILS | {"と"}
 
+# A word's paradigm, which no dictionary lists as words of their own (JMdict's headword is the dictionary
+# form): the past た (だ, たら), the polite ます, the negatives ない / ず (ぬ, ん) / まい, the desire たい,
+# the te-, ba- and tari-forms, and the aspect contractions UniDic files as auxiliaries (ちゃう, てる, とく).
+# By their UniDic lemmas, because the analyzer's tokens carry no part of speech (as ATTACHED_TAILS). Voice
+# and derivation make words JMdict does list, so they are no inflection here: 待たせる, 知らせる (せる),
+# 優しさ (さ — an open question).
+INFLECTIONS = frozenset(("た", "ます", "ない", "ず", "まい", "たい", "て", "ば", "たり", "ちゃう", "てる", "とく"))
+
+
+def _inflected(tokens):
+    """Is this ONE word in a conjugated form (its surface is not its dictionary form: 取り消し, 読ん, 美しかっ)
+    followed only by its paradigm (`INFLECTIONS`: 取り消した, 行きません, 飲んじゃう)? A word written in kana
+    alone never is: its dictionary form would be the tagger's guess (かった: 買う, 勝つ or 刈る), as a bare
+    kana card's word would (まく -> 膜)."""
+    if len(tokens) < 2 or not tokens[0][2] or tokens[0][2] == tokens[0][3] or _KANA_ONLY_RE.match(tokens[0][2]):
+        return False
+    return all(token[0] in INFLECTIONS for token in tokens[1:])
+
 
 def one_word(tokens):
-    """The token a card's word IS, read alone: its only token, or the first of two when the second is an
-    ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ) — else None, a phrase or a
-    compound being no one word. `tokens` are the analyzer's `(lemma, reading, surface, orth)`."""
+    """The token a card's word IS, read alone: its only token; the first of two when the second is an
+    ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ); the first of any number when
+    it is a conjugated word and the rest its inflection (`_inflected`: 取り消した -> 取り消す, a card is its
+    dictionary form) — else None, a phrase or a compound being no one word. `tokens` are the analyzer's
+    `(lemma, reading, surface, orth)`."""
     tokens = list(tokens or ())
-    if len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS:
+    if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens):
         tokens = tokens[:1]
     return tokens[0] if len(tokens) == 1 else None
 
@@ -651,10 +722,11 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
 
     L1–L4 (`lookup`; via "exact"); else the user's "yes" to "Same word as one on your list?" (`answers`,
     `junban_pairs.json`; via "yes"); else — Japanese, with a tokenizer — the word read alone as ONE word
-    with an ending on it (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ. A kana word is looked up
-    by the letters it is written in, never by the lemma the tagger guesses for it (まく -> 膜), and nothing
-    is taken against the user's "no" to that very pair. A bare word that only reads as a list word alone
-    is `suggest`'s L6 — a question, not this. Shared by Junban's placement and the report's label."""
+    with an ending on it or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ,
+    取り消した -> 取り消す. A kana word is looked up by the letters it is written in, never by the lemma the
+    tagger guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A
+    bare word that only reads as a list word alone is `suggest`'s L6 — a question, not this. Shared by
+    Junban's placement and the report's label."""
     key = lookup(word, rank_of, language)
     if key:
         return key, "exact"
@@ -664,10 +736,15 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
     if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
         return "", ""
     tokens = list(tokenize(word))
-    token = one_word(tokens) if len(tokens) == 2 else None
+    token = one_word(tokens) if len(tokens) >= 2 else None
     if token is None:
         return "", ""
-    names = (token[2],) if _KANA_ONLY_RE.match(word) else (token[3], token[0], token[2])
+    if _KANA_ONLY_RE.match(word):
+        names = (token[2],)
+    elif _inflected(tokens):
+        names = (token[3], token[0])   # the stem 考え of 考えた is the verb's, never the noun 考え
+    else:
+        names = (token[3], token[0], token[2])
     for name in names:
         key = lookup(name, rank_of, language)
         if key and not (answer.get("answer") == "no" and answer.get("target") == key):
@@ -826,8 +903,9 @@ def resolve_word_field(model_name, field_names, overrides):
     return names[0]
 
 
-def target_word(note, overrides):
-    """The normalised target word of one `notesInfo` note, or `""` when there isn't one.
+def target_word(note, overrides, language=None):
+    """The target word of one `notesInfo` note (`card_word` in the note's `language`), or `""` when
+    there isn't one.
 
     `""` is an ordinary answer, not a failure: an image-only field, an empty note, a note type with
     no fields at all. The planner treats such a card as unmatched and leaves its position alone,
@@ -860,4 +938,4 @@ def target_word(note, overrides):
     value = fields.get(chosen)
     if isinstance(value, dict):
         value = value.get("value")
-    return normalize_word(value)
+    return card_word(value, language)

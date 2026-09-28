@@ -13,7 +13,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
                             get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX,
-                            backup_to_trash, restart_trash_clock)
+                            backup_to_trash, restart_trash_clock, read_text)
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -1315,8 +1315,8 @@ class ContentImporterApp:
                     project_root = os.path.dirname(os.path.dirname(self.data_root))
                     grad_list_path = os.path.join(project_root, "User Files", self.language, "GraduatedList.txt")
                     if os.path.exists(grad_list_path):
-                        with open(grad_list_path, 'r', encoding='utf-8') as f:
-                            lines = f.readlines()
+                        # Its own encoding (path_utils.read_text), strictly: the list is written back.
+                        lines = read_text(grad_list_path, self.language, errors="strict").splitlines(True)
                             
                         for source_rel in sources:
                             target_header = f"# Source: {source_rel}"
@@ -1614,10 +1614,10 @@ class ContentImporterApp:
             title="Select Content Files",
             initialdir=initial_dir,
             filetypes=[
-                ("All Supported", "*.txt *.md *.srt *.ass *.zip"),
+                ("All Supported", "*.txt *.md *.srt *.ass *.ssa *.zip"),
                 ("Text Files", "*.txt"),
                 ("Markdown", "*.md"),
-                ("Subtitles", "*.srt *.ass"),
+                ("Subtitles", "*.srt *.ass *.ssa"),
                 ("Zip Archives", "*.zip"),
                 ("All Files", "*.*")
             ]
@@ -1679,7 +1679,7 @@ class ContentImporterApp:
                 summary += f" {renamed} kept as a copy (name clash)."
             if empty_zips:
                 summary += ("\n\nNo supported content found in: " + ", ".join(empty_zips) +
-                            "\n(Supported: .txt, .md, .srt, .ass — EPUBs go through Extract.)")
+                            "\n(Supported: .txt, .md, .srt, .ass, .ssa — EPUBs go through Extract.)")
             messagebox.showinfo("Success", summary)
 
     @staticmethod

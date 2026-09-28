@@ -9,6 +9,7 @@ import json
 import re
 import csv
 import hashlib
+import unicodedata
 # Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
 # module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
 # `pysrt` only for .srt files. Consequences: a "nothing changed" skip builds no tokenizer and writes
@@ -20,11 +21,13 @@ from datetime import datetime
 import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
-                            is_content_file, infer_source_type, read_source_marker)
+                            is_content_file, infer_source_type, read_source_marker, read_text,
+                            SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
 from app import modality
 from app import zh_script   # cheap: its tables decode only on the first conversion
+from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -59,7 +62,11 @@ ENSURE_AUDIO_EXAMPLE = False
 # 14: the join table's お / ご words are decided once per word, however UniDic tags each spelling
 #     (おやすみ, ご存知 / ご存じ); さ after a な-word and a prefix after a number stay apart (複雑さ, 三大祭り);
 #     a Chinese run reads no Japanese spoken ranks, so no 文 badge on 描写. Still 2.3: one re-analysis with 13.
-ENGINE_REVISION = 14
+# 15: the parsing fixes (2026-09-27): every file read in its own encoding; subtitle markup
+#     stripped but not its letters, and each format's own conventions honoured (headers, SDH cues, Aozora ruby,
+#     scripture apparatus); sentences end per UAX #29 and the file's timing; the tagger reads NFKC (ﾅｲﾌ is ナイフ);
+#     numbers and symbols are no words; Han by Unicode's own ranges; a hiragana list line names its word.
+ENGINE_REVISION = 15
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -67,7 +74,7 @@ LOGIC = {
     "tiers": {"thresholds": [2500, 5000, 7500, 10000]},
     "context": {"search_range": 20, "min_words": 4, "max_extra": 2, "preferred_max_chars": 50},
     "sentence_boundaries": {
-        "ja": "。！？!?\n",
+        "ja": "。｡．！？!?\n",
         "zh": "。！？!?\n；;……"
     },
     "priority_markers": {
@@ -108,6 +115,139 @@ class Tokenizer(abc.ABC):
     @abc.abstractmethod
     def tokenize_sentences(self, text):
         pass
+
+# --- What the tagger reads ---------------------------------------------------------------------------- #
+# A compatibility character is the same text in another form (Unicode NFKC): ﾅｲﾌ is ナイフ, ５０ is 50, ⽅ — the
+# Kangxi radical PDF extraction emits for 方 — is 方, ㌔ is キロ. A tagger knows one form only: unidic-lite reads
+# ﾅｲﾌ as an unknown word (the library's 6,727 half-width katakana tokens were never counted), １０分 as the
+# loanword テン + ブン, ⽅法 as nothing; jieba cuts a word at an invisible zero-width space. So every tagger call —
+# both tokenizers, the known words, the token store, パターン, the sentence dictionary, 順 — reads text through
+# `tagger_text`: a character whose NFKC form is made of letters, marks and digits is read in that form (ｶﾞ → ガ,
+# Ａ → A, ① → 1, and か + U+3099 → が), a default-ignorable one (a zero-width space, a variation selector,
+# a soft hyphen) is not read at all, and punctuation, symbols and spaces are read as written. Those are never
+# words; UniDic writes Japanese punctuation full width (its lemma for ! is ！); and NFKC would turn a full-width
+# space — a token that keeps two words apart — into a space the tagger skips. Each token keeps the text's own
+# spelling as its surface (`Tagger`): what a sentence shows, what the boundary test reads, what a source anchor
+# finds.
+
+# Default_Ignorable_Code_Point (Unicode's DerivedCoreProperties.txt): invisible, no text of their own.
+_IGNORABLE = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+              (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+              (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
+              (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+_READ_AS = {}       # character -> what a tagger reads for it, where that differs ("" = nothing)
+_COMBINES = set()   # characters that compose with the one before them (NFC): U+3099 in か + U+3099 = が
+_READ_RE = []       # the pattern of every character `tagger_text` reads differently, made on first use
+
+
+def _read_pattern():
+    """The pattern of every character `tagger_text` reads differently — once per process, on first use: a pass over
+    Unicode's decompositions (about 0.2 s), so a line with none of them is read as written at regex speed."""
+    if not _READ_RE:
+        for point in range(sys.maxunicode + 1):
+            ch = chr(point)
+            decomposition = unicodedata.decomposition(ch)
+            if not decomposition:
+                continue
+            parts = decomposition.split()
+            if len(parts) == 2 and not decomposition.startswith("<"):
+                _COMBINES.add(chr(int(parts[1], 16)))
+            form = unicodedata.normalize("NFKC", ch)
+            if form != ch and all(unicodedata.category(c)[0] in "LMN" for c in form):
+                _READ_AS[ch] = form
+        for first, last in _IGNORABLE:
+            _READ_AS.update((chr(point), "") for point in range(first, last + 1))
+        points, ranges = sorted({ord(ch) for ch in _READ_AS} | {ord(ch) for ch in _COMBINES}), []
+        for point in points:
+            if ranges and point == ranges[-1][1] + 1:
+                ranges[-1][1] = point
+            else:
+                ranges.append([point, point])
+        _READ_RE.append(re.compile("[" + "".join(f"\\U{a:08x}-\\U{b:08x}" for a, b in ranges) + "]"))
+    return _READ_RE[0]
+
+
+def tagger_text(text):
+    """(read, at): `text` as every tagger reads it (§ above) and, for read[i:j], the part text[at[i]:at[j]] it was
+    read from — or (text, None) when a tagger reads `text` as written, as it does most lines. A character that is
+    not read rides with the one before it, so every character of `text` belongs to exactly one part; a piece that
+    starts inside one character's reading (株式会社 read from ㍿ is 株式 + 会社) has an empty part after the first."""
+    if not text or not _read_pattern().search(text):
+        return text, None
+    groups = []                                     # [start, end, form]: the characters read as one
+    for i, ch in enumerate(text):
+        form = _READ_AS.get(ch, ch)
+        if groups and (not form or unicodedata.combining(form[0]) or form[0] in _COMBINES):
+            group = groups[-1]
+            group[1], group[2] = i + 1, group[2] + form
+        elif form:
+            groups.append([i if groups else 0, i + 1, form])
+    read, at = [], []
+    for start, end, form in groups:
+        form = unicodedata.normalize("NFC", form)
+        read.append(form)
+        at.extend([start] + [end] * (len(form) - 1))
+    at.append(len(text))
+    return "".join(read), at
+
+
+class ReadNode:
+    """A tagger's node for text it read in another form (`tagger_text`): fugashi's feature and is_unk, with the text's
+    own spelling as its surface."""
+    __slots__ = ("surface", "feature", "is_unk")
+
+    def __init__(self, surface, feature, is_unk):
+        self.surface, self.feature, self.is_unk = surface, feature, is_unk
+
+
+class Tagger:
+    """fugashi's tagger reading text as every caller must (`tagger_text`): `tagger(text)` -> the nodes of `text` as
+    read, each keeping the text's own spelling as its surface. The one tagger the tokenizer, パターン, the sentence
+    dictionary and 順 make."""
+
+    def __init__(self):
+        import fugashi   # lazy: only a Japanese run pays this import
+        self._tagger = fugashi.Tagger()
+
+    def __call__(self, text):
+        read, at = tagger_text(text)
+        nodes = self._tagger(read)
+        if at is None:
+            return nodes
+        out, end = [], 0
+        for node in nodes:
+            start = end + len(node.white_space)
+            end = start + len(node.surface)
+            feature = node.feature
+            if node.is_unk:
+                # A word the dictionary doesn't know has no lemma: every caller names it by its text — the text
+                # as read (ﾀﾅｶ is the name タナカ, ５０ is 50), not the spelling kept as its surface.
+                feature = feature._replace(lemma=node.surface, orth=node.surface, orthBase=node.surface)
+            out.append(ReadNode(text[at[start]:at[end]], feature, node.is_unk))
+        return out
+
+
+# --- What a token counts as ------------------------------------------------------------------------ #
+# UniDic's symbol classes are never words: 補助記号 (punctuation, emoji), 空白 (spaces) and 記号 — a character read
+# as a character (玖 キュウ in 玖渚, 乃 ノ in 二乃, しゃ in うっしゃ, the ああ it files as 記号). The filter named
+# 记号, the Chinese spelling, so a 1-in-10 sample of the library kept 913 of those as words (about 9,100 library-
+# wide: アア was list row #187, イー #641, ホウ #869). One kind of 記号 is text, though: a letter spelled out by its
+# name (記号,文字 — デルタ, アルファ, ガンマ線's ガンマ), a word in JMdict, which counts under that name — UniDic's
+# lForm, so アルファー is アルファ — and not under the symbol UniDic makes its lemma (δ, α-alpha); a letter written
+# as the symbol itself (ω in a kaomoji) is no word. Nor is a number (the user's call, 2026-09-27):
+# UniDic's 数詞 — 二十, 百, 〇, Ⅲ, 50, and 何 / 数 / 幾 counting (何人, 数十) — is never a list word and never an
+# unknown in a sentence (二十 was row #28, 五十 #102). Every caller that reads words off the tagger keys through
+# `word_lemma`: the tokenizer (so the token store, the known words, 例文 and card matching) and 順's sentences.
+
+def word_lemma(word):
+    """The lemma a tagger's node counts under (§ above), before sanitizing — or None when it is no word."""
+    f = word.feature
+    if f.pos1 in ("補助記号", "空白") or f.pos2 == "数詞":
+        return None
+    if f.pos1 == "記号":
+        return f.lForm if f.pos2 == "文字" and f.lForm and has_target_language(word.surface, "ja") else None
+    return f.lemma or word.surface
+
 
 # --- Words keep their prefixes and suffixes (Patterns_Quality_Spec.md Part A) ----------------------- #
 # UniDic's short units cut 接頭辞 and 接尾辞 off a word — 新幹線 is 新 + 幹線, 可能性 可能 + 性, 日本人 日本 +
@@ -169,6 +309,12 @@ def _is_base(word, honorific=False):
     return honorific and f.pos1 == "動詞" and str(f.cForm).startswith("連用形")
 
 
+def _read(word):
+    """A node's text as the tagger read it: UniDic's orth, which is its surface unless `tagger_text` read the text in
+    another form (ｱﾒﾘｶ人 read as アメリカ人 meets the table's アメリカ人). An unknown word has no orth."""
+    return word.feature.orth or word.surface
+
+
 def _suffixed(words, end, key, pos1, joins):
     """-> (end, key, pos1) of the longest dictionary word that `key` (the word ending at words[end])
     grows into with the suffixes after it, each in its dictionary form (子供 + っぽく -> 子供っぽい) —
@@ -178,14 +324,14 @@ def _suffixed(words, end, key, pos1, joins):
         s = words[end + 1]
         f = s.feature
         if f.pos1 == "接尾辞":
-            category, spelled = _SUFFIX_POS.get(f.pos2), f.orthBase or s.surface
-        elif f.pos1 == "名詞" and s.surface in _NOUN_SUFFIXES:
-            category, spelled = "名詞", s.surface
+            category, spelled = _SUFFIX_POS.get(f.pos2), f.orthBase or _read(s)
+        elif f.pos1 == "名詞" and _read(s) in _NOUN_SUFFIXES:
+            category, spelled = "名詞", _read(s)
         else:
             break
-        if (category is None or s.surface in _NEVER_JOINED or f.lemma in _NEVER_JOINED
+        if (category is None or _read(s) in _NEVER_JOINED or f.lemma in _NEVER_JOINED
                 or (f.lemma == "方" and f.lForm == "ガタ")
-                or (s.surface in _NOMINALIZERS and (pos1 == "形状詞" or words[end].feature.pos3 == "形状詞可能"))):
+                or (_read(s) in _NOMINALIZERS and (pos1 == "形状詞" or words[end].feature.pos3 == "形状詞可能"))):
             break
         key, pos1, end = key + spelled, category, end + 1
         if key in joins:
@@ -205,9 +351,10 @@ def _joined(parts, key, pos1, entry):
     pos3 = last.pos3 if pos1 == "名詞" and last.pos1 != "動詞" else "*"
     ctype, cform = (last.cType, last.cForm) if pos1 in ("動詞", "形容詞") else ("*", "*")
     surface = "".join(s for s, _ in snaps)
+    read = "".join(f.orth or s for s, f in snaps)       # as the tagger read it (`_read`): the surface, mostly
     feature = last._replace(
         pos1=pos1, pos2="普通名詞" if pos1 == "名詞" else "一般", pos3=pos3 if pos3 else "*", pos4="*",
-        cType=ctype, cForm=cform, lForm=reading, lemma=lemma, orth=surface, orthBase=key,
+        cType=ctype, cForm=cform, lForm=reading, lemma=lemma, orth=read, orthBase=key,
         pron=reading, pronBase=reading, kana=reading, kanaBase=reading, form=reading, formBase=reading)
     return JoinedWord(surface, feature, snaps)
 
@@ -218,7 +365,8 @@ def join_affixes(words, joins=None):
 
     A prefix joins the noun or な-word after it (不 + 自然, 新 + 幹線, お + 茶); a word then takes the
     suffixes that follow (可能 + 性, 日本 + 人, 子供 + っぽい), up to the longest run that `joins` has —
-    the written form: prefix and base as the text writes them, each suffix in its dictionary form.
+    the written form: prefix and base as the text writes them (as the tagger read it: `_read`), each suffix
+    in its dictionary form.
     Nothing after a number is ever a base (3年生, 三回目, 第3話), nor does a prefix after one join its word:
     三大祭り is "the three great" festivals — 三 + 大 + 祭り, never 三 + 大祭り. `joins` defaults to
     reference_data's table."""
@@ -235,17 +383,17 @@ def join_affixes(words, joins=None):
             if (i + 1 < n and _is_base(words[i + 1], honorific=f.lemma == "御")
                     and not (i and words[i - 1].feature.pos2 == "数詞")):
                 base = words[i + 1]
-                found = _suffixed(words, i + 1, w.surface + base.surface,
+                found = _suffixed(words, i + 1, _read(w) + _read(base),
                                   "名詞" if base.feature.pos1 == "動詞" else base.feature.pos1, joins)
                 # A polite お / ご gives way to a longer word its base makes with the suffixes after it:
                 # お父上 is お + 父上, never お父 + 上 (お父, おとう, is a word too).
                 if found and f.lemma == "御" and _is_base(base):
-                    own = _suffixed(words, i + 1, base.surface, base.feature.pos1, joins)
+                    own = _suffixed(words, i + 1, _read(base), base.feature.pos1, joins)
                     if own and own[0] > found[0]:
                         found = None
-        elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or words[i + 1].surface in _NOUN_SUFFIXES)
+        elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or _read(words[i + 1]) in _NOUN_SUFFIXES)
                 and _is_base(w) and not (i and words[i - 1].feature.pos2 == "数詞")):
-            found = _suffixed(words, i, w.surface, f.pos1, joins)
+            found = _suffixed(words, i, _read(w), f.pos1, joins)
         if found and found[0] > i:
             end, key, pos1 = found
             out.append(_joined(words[i:end + 1], key, pos1, joins[key]))
@@ -277,10 +425,94 @@ def see_through_base(lemma, reading, tagger, joins=None):
     return (_sanitize_term(base_lemma) if SANITIZE_JA else base_lemma), base.lForm or base.kana or ""
 
 
+# --- Where a sentence ends: Unicode UAX #29 (Sentence Boundaries) ---------------------------------- #
+# A token holding a character of the language's boundary set (settings: logic.sentence_boundaries) ends
+# a sentence — character-wise, since the tokenizer glues a terminator to a symbol (➡。). Then:
+#   SB8a / SB9  what closes a sentence stays with it — more terminators, closing brackets and quotes,
+#               spaces: 反応は!? (the ? was cut off and dropped as debris, leaving 反応は!), 「行くぞ。」
+#               (the 」 opened the next sentence and the ja tokenizer threw it away), “是黑车吗？”.
+#   SB6–SB8     a full stop that is also a decimal point or an abbreviation's (．, .) ends nothing when a
+#               digit or a Latin letter follows it: ３．１４, Ｎｏ．６, Ｍｒ．Ｓｍｉｔｈ.
+# Japanese only — a particle cannot begin a sentence:
+#   a question or exclamation quoted without brackets runs on to its verb: 本当に？と聞いた is one
+#   sentence. It keeps its ？ / ！ before と; a full stop before と is the conjunction and ends the
+#   sentence (ドアを開けた。と、そこには… — UniDic tags both と 格助詞).
+#   A quotation followed by a particle (UniDic 助詞: と / って, で, が, の …) or a verb is one sentence
+#   with what follows, whatever it holds: 「今日は晴れ。明日は雨」と言った。, 『吾輩は猫である。名前は
+#   まだ無い。』で始まる小説 (the user's call, 2026-09-27: the quotation is part of the sentence it stands in).
+#   Any other follower — a noun, a new subject — leaves its inner sentences apart (「行くぞ。」次だ。
+#   and 「はい。」彼女は頷いた。 are two each).
+# … is no boundary: it is as often a pause as an end (あの…すみません — the user's call, 2026-09-27).
+# A subtitle cue that ends in one has ended on its own timing (close_cue).
+_ATERMS = frozenset(".．")                                    # UAX #29 ATerm: the full stops that can be a
+_ATERM_JOINS = re.compile(r"[0-9A-Za-z０-９Ａ-Ｚａ-ｚ]")         # decimal point or an abbreviation's
+_QUOTE_OPENERS = frozenset("「『｢〝“")                          # Unicode's Quotation_Mark brackets
+_QUOTE_CLOSERS = frozenset("」』｣〞〟”")
+_QUOTED_MARKS = frozenset("！？!?")                            # what a quoted question or exclamation keeps
+
+
+def _terminates(surface, following, boundaries):
+    """Does the token `surface` end a sentence? `following` is the next token's surface ("" at the end
+    of the line): an ATerm with a digit or a Latin letter right after it is inside a number or a word."""
+    for k, ch in enumerate(surface):
+        if ch in boundaries and (ch not in _ATERMS or not _ATERM_JOINS.match(surface[k + 1:k + 2] or following[:1])):
+            return True
+    return False
+
+
+def _closes(surface, boundaries):
+    """Is the token part of what closes a sentence (SB8a / SB9): a terminator, a closing bracket or
+    quote, a space? With an empty `boundaries`: only a closing mark or a space."""
+    return all(ch in boundaries or ch.isspace() or unicodedata.category(ch) in ("Pe", "Pf") for ch in surface)
+
+
+def _takes_quotation(word, bracketed=False):
+    """Does `word` take what stands before it as a quotation: the quotative と / って — or, right after a
+    quotation's closing bracket, any particle or a verb (『…。…。』で始まる, 「うん」頷いた)?"""
+    f = word.feature
+    if bracketed:
+        return f.pos1 in ("助詞", "動詞")
+    return f.pos1 == "助詞" and f.lemma in ("と", "って")
+
+
+def _sentence_ends(words, surfaces, boundaries):
+    """The indices of the tokens of one line (fugashi nodes or JoinedWords, and their surfaces) that a
+    Japanese sentence ends after (§ above). Only the tokens holding a boundary character are looked at
+    one by one, and quotations only on a line that has one: for most tokens the test stays in C
+    (measured: the tokenizer's pass 5% slower on prose, 6% on short subtitle-like lines)."""
+    n = len(surfaces)
+    runs, last = [], -1              # (a terminator's index, the index of the last token closing it)
+    for i in [i for i, surface in enumerate(surfaces) if not boundaries.isdisjoint(surface)]:
+        if i > last and _terminates(surfaces[i], surfaces[i + 1] if i + 1 < n else "", boundaries):
+            last = i
+            while last + 1 < n and _closes(surfaces[last + 1], boundaries):
+                last += 1
+            runs.append((i, last))
+    if not runs:
+        return ()
+    joined = set()                   # the runs a quotation keeps inside its sentence
+    line = "".join(surfaces)
+    if not (_QUOTE_OPENERS.isdisjoint(line) and _QUOTE_CLOSERS.isdisjoint(line)):
+        opened = []                  # the index of each quotation still open on this line
+        for k, surface in enumerate(surfaces):
+            for ch in surface:
+                if ch in _QUOTE_OPENERS:
+                    opened.append(k)
+                elif ch in _QUOTE_CLOSERS:
+                    start = opened.pop() if opened else -1      # a closer alone: opened on an earlier line
+                    f = k + 1
+                    while f < n and _closes(surfaces[f], ()):
+                        f += 1
+                    if f < n and _takes_quotation(words[f], bracketed=True):
+                        joined.update(run for run in runs if start < run[0] < k)
+    return {j for i, j in runs if (i, j) not in joined and not (
+        j + 1 < n and _takes_quotation(words[j + 1])
+        and _QUOTED_MARKS.issuperset(ch for s in surfaces[i:j + 1] for ch in s if ch in boundaries))}
+
+
 class JapaneseTokenizer(Tokenizer):
     def __init__(self):
-        import fugashi   # lazy: only a Japanese run pays this import
-        self.tagger = fugashi.Tagger()
+        self.tagger = Tagger()   # fugashi, reading text as every caller does (§ What the tagger reads)
 
     def tokenize(self, text, pieces=None):
         """Returns a list of (lemma, parsing_reading, original_surface, orth_base) tuples. `pieces`, a
@@ -302,29 +534,31 @@ class JapaneseTokenizer(Tokenizer):
         # A frozenset + isdisjoint keeps the per-token boundary test in C. This runs millions of
         # times on a full library, and an `any(ch in ... for ch in surface)` generator here measured
         # ~11% slower across the whole tokenization pass.
-        boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。！?！？!\n"))
+        boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。｡．！？!?\n"))
         joins = affix_joins()
 
         for line in text.split("\n"):
             current_sentence_tokens = []
             current_sentence_surface = []
+            words = join_affixes(self.tagger(line), joins)
+            surfaces = [word.surface for word in words]
+            # CHARACTER-wise, not whole-token: the tokenizer glues a terminator to an adjacent
+            # symbol, so '➡。' and '｡。' arrive as single tokens. Testing the whole surface let
+            # every one of those slip past, and a "sentence" ran on through a dozen subtitle
+            # cues (measured: 409 characters on a real episode). What closes a sentence, and where
+            # a quotation keeps its sentences together: _sentence_ends (UAX #29).
+            ends = _sentence_ends(words, surfaces, boundaries)
 
-            for word in join_affixes(self.tagger(line), joins):
+            for i, word in enumerate(words):
                 if pieces is not None and isinstance(word, JoinedWord):
                     for part_surface, part in word.parts:
                         part_lemma = part.lemma if part.lemma else part_surface
                         pieces.append((_sanitize_term(part_lemma) if SANITIZE_JA else part_lemma,
                                        part.lForm or part.kana or ""))
-                surface = word.surface
-                pos = word.feature.pos1
-                # CHARACTER-wise, not whole-token: the tokenizer glues a terminator to an adjacent
-                # symbol, so '➡。' and '｡。' arrive as single tokens. Testing the whole surface let
-                # every one of those slip past, and a "sentence" ran on through a dozen subtitle
-                # cues (measured: 409 characters on a real episode).
-                is_boundary = not boundaries.isdisjoint(surface)
+                surface = surfaces[i]
 
-                lemma = word.feature.lemma if word.feature.lemma else word.surface
-                if SANITIZE_JA:
+                lemma = word_lemma(word)     # None: no word — a symbol, a space, a number (§ above)
+                if SANITIZE_JA and lemma is not None:
                     lemma = _sanitize_term(lemma)
                 # The reading of the LEMMA (UniDic lForm), not of this conjugated surface (`kana`):
                 # a word is keyed on (lemma, reading), so the surface reading split a verb into one
@@ -346,13 +580,13 @@ class JapaneseTokenizer(Tokenizer):
                     orth = _sanitize_term(orth)
 
                 current_sentence_surface.append(surface)
-                if pos not in ['记号', '補助記号', '空白']:
+                if lemma is not None:
                     current_sentence_tokens.append((lemma, reading, word.surface, orth))
 
-                if is_boundary:
+                if i in ends:
                     s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
-                    # A fragment with no Japanese in it is punctuation debris — '!?' splits into
-                    # '!' and a lone '?', for instance. Never a usable example sentence.
+                    # A fragment with no Japanese in it is punctuation debris — a line that is
+                    # only 「…………」, a list number's １． Never a usable example sentence.
                     if s_text and has_target_language(s_text, 'ja'):
                         yield s_text, current_sentence_tokens
                     current_sentence_tokens = []
@@ -430,22 +664,30 @@ class ChineseTokenizer(Tokenizer):
         
         # Simple approach: Tokenize everything, then buffer into sentences based on punctuation tokens
 
+        # jieba reads the text as every tagger does (§ What the tagger reads): ⽅法 is 方法, and a zero-width
+        # space no longer cuts a word in two. Each piece comes out as (word, surface): the word as read — the
+        # dictionary form, keyed and listed — and the text's own spelling, for the sentence and the boundary
+        # test. They differ only where the text was read in another form.
+        read, at = tagger_text(text)
         if self.script == "asis":
-            seg_list = jieba.cut(text, cut_all=False)
+            cut, words, shown = read, read, text
         else:
             # Segment in SIMPLIFIED whichever script is wanted: jieba's dictionary is Simplified
             # only (學習/這個 aren't in it, 学习/这个 are), so this is also what makes Traditional
             # text segment well. Every conversion is length-preserving (zh_script, I3), so each
-            # jieba token's offsets in `simp` are its offsets in the output text too — slice there.
-            simp = zh_script.to_simplified(text)
-            out = simp if self.script == "s" else zh_script.to_traditional(simp)
+            # jieba token's offsets in `cut` are its offsets in the output text too — slice there.
+            cut = zh_script.to_simplified(read)
+            words = cut if self.script == "s" else zh_script.to_traditional(cut)
+            shown = words if at is None else (zh_script.to_simplified(text) if self.script == "s"
+                                              else zh_script.to_traditional(zh_script.to_simplified(text)))
 
-            def _aligned(words, pos=0):
-                for w in words:
-                    yield out[pos:pos + len(w)]
-                    pos += len(w)
+        def _aligned(pieces, pos=0):
+            for w in pieces:
+                end = pos + len(w)
+                yield words[pos:end], (shown[pos:end] if at is None else shown[at[pos]:at[end]])
+                pos = end
 
-            seg_list = _aligned(jieba.cut(simp, cut_all=False))
+        seg_list = _aligned(jieba.cut(cut, cut_all=False))
         
         current_sentence_tokens = []
         current_sentence_surface = []
@@ -455,18 +697,30 @@ class ChineseTokenizer(Tokenizer):
         # Common particles/punctuation to skip in "meaningful token" list might be needed,
         # but for now we include everything that isn't strict punctuation/space.
         
-        for word in seg_list:
-            surface = word
+        ended = line_end = False
+        for word, surface in seg_list:
+            # What closes a sentence stays with it (UAX #29 SB8a / SB9, § above JapaneseTokenizer):
+            # ？？ and ？！ end together, and a closing quote joins the sentence it closes — “是黑车吗？”
+            # — where it used to open the next one. A line end ends the sentence where it stands.
+            if ended and (line_end or not _closes(surface, punctuation)):
+                s_text = "".join(current_sentence_surface).strip()
+                # Punctuation-only debris is never a usable example sentence.
+                if s_text and has_target_language(s_text, 'zh'):
+                    yield s_text, current_sentence_tokens
+                current_sentence_tokens = []
+                current_sentence_surface = []
+                ended = False
+            line_end = surface.strip() == '' and '\n' in surface
             # Character-wise for the same reason as Japanese: a terminator can arrive glued to an
             # adjacent symbol, and comparing the whole token would miss it. isdisjoint keeps the
             # per-token test in C.
-            is_boundary = (not punctuation.isdisjoint(surface)
-                           or (surface.strip() == '' and '\n' in surface))
+            is_boundary = not punctuation.isdisjoint(surface) or line_end
             
             # Strict filtering: Must contain at least one CJK character.
             # AND must NOT contain any Japanese Hiragana/Katakana (to avoid mixed JA text noise).
-            has_cjk = re.search(r'[\u4E00-\u9FFF]', surface)
-            has_kana = re.search(r'[\u3040-\u30FF]', surface)
+            # Unicode's own ranges (app/unicode_ranges.py): 〇 and Extension A / B are CJK too.
+            has_cjk = _ZH_TARGET_RE.search(word)
+            has_kana = _KANA_LETTER_RE.search(word)
             
             is_skippable = (not has_cjk) or (has_kana is not None) 
             
@@ -482,17 +736,11 @@ class ChineseTokenizer(Tokenizer):
             current_sentence_surface.append(surface)
             
             if not is_skippable:
-                # Jieba has no lemma/orth distinction — the surface IS the dictionary form — so the
+                # Jieba has no lemma/orth distinction — the word as read IS the dictionary form — so the
                 # orth slot simply repeats it, keeping the tuple shape identical across languages.
-                current_sentence_tokens.append((surface, "", surface, surface))
+                current_sentence_tokens.append((word, "", surface, word))
             
-            if is_boundary:
-                s_text = "".join(current_sentence_surface).strip()
-                # Punctuation-only debris is never a usable example sentence.
-                if s_text and has_target_language(s_text, 'zh'):
-                    yield s_text, current_sentence_tokens
-                current_sentence_tokens = []
-                current_sentence_surface = []
+            ended = ended or is_boundary
 
         # Flush
         if current_sentence_surface:
@@ -573,14 +821,51 @@ def _display_forms(lemma, orths, surfaces):
     forms = [s for s, _ in sorted(surfaces.items(), key=lambda kv: -kv[1]) if s and s not in shown]
     return "|".join(forms[:FORMS_LIMIT])
 
-def load_simple_list(file_path, script="asis"):
+# A list line is compared with the lemma as it stands — the report's Ignore button writes lemmas (為る,
+# 其れ) — so a line typed the way Japanese is mostly written, in hiragana (する, ある, それ), ignored nothing.
+# Such a line also names the ONE word the tokenizer reads it as, when that word is spelled with a kanji
+# and sounds as the line does (its reading, UniDic's lForm, IS the line): する -> 為る, それ -> 其れ. Only
+# that: the lists hold lemmas the report wrote, and read alone 12 of the user's 105 lines are ANOTHER
+# word (為る -> 成る, 書き -> 書く) and 12 split (一日 -> 一 + 日) — so a kanji or katakana line, a line read
+# as another sound (どん -> 何の ドノ, よう -> 良く ヨク) or as several words stays the lemma it names, and
+# the user's Blacklist 為る never ignores なる. A kana line names one homophone, as a kana known word
+# does (まく -> 膜); one kana is never read (お alone is the prefix 御). On the user's three
+# lists: adds nothing.
+_HIRAGANA_LINE_RE = re.compile(r'^[ぁ-ゖ]{2,}$')
+_KANJI_RE = re.compile(f'[{HAN}]')   # app/unicode_ranges.py
+
+
+def _kana_lines_read(lines):
+    """The kanji-spelled words the hiragana `lines` are typed for (する -> 為る; see above)."""
+    lines = [line for line in lines if _HIRAGANA_LINE_RE.match(line)]
+    if not lines:
+        return set()                                   # no tokenizer is built for a list without one
+    try:
+        tokenizer = JapaneseTokenizer()
+        words = set()
+        for line in lines:
+            tokens = tokenizer.tokenize(line)
+            sound = "".join(chr(ord(ch) + 0x60) for ch in line)   # the line in katakana, as lForm writes it
+            if len(tokens) == 1 and _KANJI_RE.search(tokens[0][0]) and tokens[0][1] == sound:
+                words.add(tokens[0][0])
+        return words
+    except Exception:
+        return set()                                   # no tokenizer: the lines as they are, as before
+
+
+def load_simple_list(file_path, script="asis", language=None):
     if not os.path.exists(file_path):
         return set()
-    with open(file_path, 'r', encoding='utf-8') as f:
-        # Ignore comments starting with # and empty lines. Chinese entries are read in the library's
-        # script (`zh_script`) so they still match converted tokens; the file itself is never touched.
-        return set(zh_script.convert(_sanitize_term(line.strip()) if SANITIZE_JA else line.strip(), script)
-                   for line in f if line.strip() and not line.strip().startswith("#"))
+    # In the file's own encoding (path_utils.read_text): a list saved with a BOM, as UTF-16 or in
+    # Windows' "ANSI" (CP932 / GBK) reads like any other instead of losing its first entry or
+    # stopping the run.
+    lines = read_text(file_path, language).splitlines()
+    # Ignore comments starting with # and empty lines. Chinese entries are read in the library's
+    # script (`zh_script`) so they still match converted tokens; the file itself is never touched.
+    entries = set(zh_script.convert(_sanitize_term(line.strip()) if SANITIZE_JA else line.strip(), script)
+                  for line in lines if line.strip() and not line.strip().startswith("#"))
+    # Japanese: a hiragana line also names the word it is typed for (する -> 為る; `_kana_lines_read`).
+    return (entries | _kana_lines_read(entries)) if SANITIZE_JA else entries
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -605,7 +890,7 @@ def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     
     return freq_lists
 
-def load_yomitan_frequency_list(csv_path, script="asis"):
+def load_yomitan_frequency_list(csv_path, script="asis", language=None):
     """
     Load a frequency list from a CSV file.
     Returns a dictionary mapping word -> rank (int).
@@ -622,6 +907,9 @@ def load_yomitan_frequency_list(csv_path, script="asis"):
 
     `script` ("s"/"t", Chinese only) reads the words in the library's script. Two spellings can then
     become one word (乾 and 幹 are both 干 in Simplified); it keeps the commoner rank.
+
+    Read in the file's own encoding (path_utils.read_text): Excel's "CSV UTF-8" starts with a BOM,
+    which glued to the "Word" header skipped every row, and its plain CSV is CP932 / GBK.
     """
     word_to_rank = {}
     
@@ -630,22 +918,21 @@ def load_yomitan_frequency_list(csv_path, script="asis"):
         return word_to_rank
     
     try:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    # Sanitize to match analysis lemmas ONLY when JA term sanitization is active.
-                    # _sanitize_term strips from the first hyphen/space (a Japanese-only cleanup);
-                    # Chinese (and JA with the toggle off) must keep the raw word.
-                    word = _sanitize_term(row['Word']) if SANITIZE_JA else (row['Word'] or '').strip()
-                    rank = int(row['Rank'])
-                    if script != "asis":
-                        word = zh_script.convert(word, script)
-                        if word_to_rank.get(word, rank) < rank:
-                            continue
-                    word_to_rank[word] = rank
-                except (ValueError, KeyError):
-                    continue  # Skip malformed rows
+        reader = csv.DictReader(read_text(csv_path, language).splitlines())
+        for row in reader:
+            try:
+                # Sanitize to match analysis lemmas ONLY when JA term sanitization is active.
+                # _sanitize_term strips from the first hyphen/space (a Japanese-only cleanup);
+                # Chinese (and JA with the toggle off) must keep the raw word.
+                word = _sanitize_term(row['Word']) if SANITIZE_JA else (row['Word'] or '').strip()
+                rank = int(row['Rank'])
+                if script != "asis":
+                    word = zh_script.convert(word, script)
+                    if word_to_rank.get(word, rank) < rank:
+                        continue
+                word_to_rank[word] = rank
+            except (ValueError, KeyError):
+                continue  # Skip malformed rows
     except Exception as e:
         print(f"Warning: Error loading frequency list {csv_path}: {e}")
     
@@ -682,8 +969,9 @@ def load_known_words(json_path, tokenizer):
         print("Warning: Known words file not found.")
         return set(), set()
     
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    # In the file's own encoding (path_utils.read_text): saved with a BOM (Notepad's "UTF-8 with
+    # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
+    data = json.loads(read_text(json_path, "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"))
         
     known_tuples = set()
     known_lemmas = set()
@@ -747,18 +1035,32 @@ def load_known_words(json_path, tokenizer):
 
 # Precompiled once at import \u2014 has_target_language runs per-token (millions of calls on a large
 # library), so compiling these inline made re.compile the single biggest hot spot in a full run.
-_JA_TARGET_RE = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]')  # Hiragana + Katakana + Kanji
-_ZH_TARGET_RE = re.compile(r'[\u4E00-\u9FFF]')                            # any CJK ideograph
+# The ranges are Unicode's own blocks (app/unicode_ranges.py), shared by every script test: the kanji
+# range used to stop at U+9FAF, so a word or card in CJK Extension A / B, the compatibility
+# ideographs or 〇 held no Japanese or Chinese at all.
+_JA_TARGET_RE = re.compile(f'[{KANA}{HAN}]')    # Hiragana + Katakana + Kanji
+_ZH_TARGET_RE = re.compile(f'[{HAN}]')          # any CJK ideograph
+# A kana LETTER: a Chinese token holding one is Japanese. Never the kana block's ・ — Chinese writes a
+# foreign name with it (约翰・列侬) — or ー.
+_KANA_LETTER_RE = re.compile(f'[{KANA_LETTERS}]')
 
 
 def has_target_language(text, language='ja'):
     if language == 'ja':
-        return bool(_JA_TARGET_RE.search(text))
+        pattern = _JA_TARGET_RE
     elif language == 'zh':
         # Japanese also uses Hanzi but usually mixed with Kana; pure Chinese is Hanzi + punctuation.
         # This check basically asks: "Is there any CJK character?"
-        return bool(_ZH_TARGET_RE.search(text))
-    return False
+        pattern = _ZH_TARGET_RE
+    else:
+        return False
+    if pattern.search(text):
+        return True
+    # The language in another form is still the language: a line in half-width katakana (ｷﾐ｡), a Kangxi
+    # radical (⽅) — so ask again of the text as every tagger reads it (§ What the tagger reads). The ranges
+    # stay the blocks' own; only a text with no match at all pays for the second look.
+    read, at = tagger_text(text)
+    return at is not None and bool(pattern.search(read))
 
 # Terminators a subtitle line may already end with. Includes the HALFWIDTH ｡ / ！ / ？, which anime
 # subs use throughout — treating those as "unterminated" appended a second, redundant '。' and left
@@ -772,23 +1074,61 @@ _CUE_TERMINATORS = '。｡．！？!?！？'
 # ― (U+2015 HORIZONTAL BAR) and — (U+2014 EM DASH) are Netflix's continuation markers, where the
 # fansub convention is an arrow. Measured on 4,200 real Netflix cues: 3.4% end in a dash, and every
 # one of them was being terminated mid-clause into a fragment. They are only ever consulted at the
-# END of a cue, so a leading speech dash (—そうだね) is untouched.
-_CUE_CONTINUATIONS = '➡→⇒➔►―—'
+# END of a cue, so a leading speech dash (—そうだね) is untouched. ➨ is the broadcast captions' arrow
+# (a broadcast .ja.ass: 35 sentences of one episode were closed mid-clause as …のは➨。).
+_CUE_CONTINUATIONS = '➡➨→⇒➔►―—'
+
+# A comma is a pause INSIDE a sentence (UAX #29 SContinue; 逗号 / 読点): a cue ending in one runs on into
+# the next, the comma kept as text — 我觉得， + 他不会来 read 我觉得，。 before.
+_CUE_COMMAS = '、，,､'
+
+# A cue that ends in an ellipsis has ended — the subtitle's own mark of speech trailing off — but … is
+# no sentence end inside running text (it is as often a pause), so the cue gains no 。: its end is marked with a
+# line break, which every reader takes as the end of a sentence, and the sentence stays a verbatim piece
+# of its file (12,530 .srt cues of the library read …。 before).
+_CUE_ELLIPSES = '…‥'
 
 
 def close_cue(block_text):
     """Finish one subtitle cue's text for concatenation with the next.
 
-    Returns the text terminated with '。' when the cue really ends, or left open (arrow removed) when
-    it continues into the following cue."""
+    Returns the text terminated with '。' when the cue really ends, with a line break when it ends in
+    an ellipsis, or left open when it continues into the following cue (arrow removed, comma kept).
+    A terminator is looked for past closing brackets and quotes: 「行くぞ。」 has ended (UAX #29 SB9)."""
     block_text = (block_text or '').strip()
     if not block_text:
         return ''
     if block_text[-1] in _CUE_CONTINUATIONS:
         return block_text.rstrip(_CUE_CONTINUATIONS).rstrip()
-    if block_text[-1] not in _CUE_TERMINATORS:
+    if block_text[-1] in _CUE_COMMAS:
+        return block_text
+    last = len(block_text) - 1
+    while last > 0 and unicodedata.category(block_text[last]) in ('Pe', 'Pf'):
+        last -= 1
+    if block_text[last] in _CUE_ELLIPSES:
+        return block_text + '\n'
+    if block_text[last] not in _CUE_TERMINATORS:
         return block_text + '。'
     return block_text
+
+
+def _captions(events):
+    """Each caption's text, closed (close_cue), from an .ass file's `events` — (timing, text) in the
+    file's order. Consecutive events with one timing — one start, one end — are on screen together: the
+    lines of one caption, read as one cue like an .srt cue's two lines (a broadcast .ja.ass writes
+    《門番は城への侵入者を / 厳しく取り調べた》 as two events; each was closed with 。 mid-clause). An .srt
+    is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
+    at once — Netflix writes two speakers talking together so (the 五等分の花嫁 sample: （風太郎）あれは
+    てめえが薬を… / （二乃）フフフフ…)."""
+    caption, shown = [], None
+    for timing, text in events:
+        if caption and timing != shown:
+            yield close_cue(" ".join(caption))
+            caption = []
+        caption.append(text)
+        shown = timing
+    if caption:
+        yield close_cue(" ".join(caption))
 
 
 _OPEN_BRACKETS = '(（'
@@ -827,31 +1167,101 @@ def _strip_bracketed(text):
     return ''.join(out)
 
 
+# SubRip's markup is HTML-style tags — <b> <i> <u> <s> and <font color="#ffff00" face=… size=…>, each closed by
+# its </…> — and a tag's name starts with a Latin letter, which is no Japanese or Chinese text. (The Amazon
+# subtitles in the library wrap every line in <b>: 4,638 pairs, 3,050 sentences.)
+_SUBRIP_TAG_RE = re.compile(r'</?[A-Za-z][^<>]*>')
+
+# ASS's escapes in an event's text: \N a forced line break, \n a soft one, \h a hard space (the ASS / SSA spec).
+_ASS_BREAK_RE = re.compile(r'\\[Nn]')
+_ASS_ESCAPE_RE = re.compile(r'\\[Nnh]')
+
+# ASS override blocks ({\pos(10,20)}, {\an8}, {\c&H00FFFF00&}) style the text around them. With \p1 — any \p
+# scale above 0 — what follows a block is a vector drawing (m 0 0 l 100 0 …) until \p0: the spec's drawing mode.
+_ASS_BLOCK_RE = re.compile(r'\{[^}]*\}')
+_ASS_DRAWING_RE = re.compile(r'\\p(\d+)')
+
+# Karaoke timing (\k, \K, \kf, \ko: each syllable's duration) marks an event as sung — an OP / ED the file itself
+# marks as song, repeated every episode. Decided 2026-09-27: skip only what the file marks as song;
+# a ♪ line is dialogue and a sign is content, so both stay. (A style's name is the subtitler's free text, not
+# the format's, so an OP whose lines carry no karaoke timing still counts.)
+_ASS_KARAOKE_RE = re.compile(r'\{[^}]*\\(?:kf|ko|k|K)\d')
+
+# Captions write what is heard but not said in square brackets — [音楽] [拍手] [笑い] (YouTube's captions), [無線]
+# 'over the radio', ［拍手］ — the SDH convention, as a subtitle's parentheses hold its sounds and labels.
+_SOUND_CUE_RE = re.compile(r'\[[^\[\]\n]*\]|［[^［］\n]*］')
+
+# A caption names who speaks with Name + a colon at the start of the line (アサ：…, 田中:…), or just inside the
+# voice-over bracket that opens it (⸨アサ：…⸩, 《田中:…》 — Unicode's open punctuation; the bracket stays, it is
+# the line's). A name holds no hiragana: Japanese grammar — particles, endings — is written in hiragana, so a colon
+# after a clause (理由は簡単：…) is speech and stays. Chinese has no such tell (他说：… is speech): Japanese only.
+_SPEAKER_LABEL_RE = re.compile(r'(\W?)(?:(?![\u3040-\u309F])[^\W\d_]|[・･])+[:：](?!//)\s*')
+
+
+def _strip_speaker_label(line):
+    label = _SPEAKER_LABEL_RE.match(line)
+    if label is None or (label.group(1) and unicodedata.category(label.group(1)) != 'Ps'):
+        return line
+    return label.group(1) + line[label.end():]
+
+
 def clean_subtitle_text(text, language='ja'):
-    # first remove ASS tags like {\pos(10,20)}
-    text = re.sub(r'\{.*?\}', '', text)
+    """One subtitle line as speech: the format's markup removed, the words kept whatever their script.
+
+    Latin letters and digits are part of what a line says — 30階, iPhoneを買った, No.６, T恤, 我有2个苹果 —
+    so only markup goes: ASS override blocks and escapes, SubRip's tags, the parenthesised groups (labels,
+    readings, sounds), sound cues in square brackets, a leading dialogue dash or >, and (Japanese)
+    a speaker's Name： label. What is left in Latin script is still never counted — analyzer.main (and the
+    Chinese tokenizer) count a token only when it holds the language's own script — and a line with none of it
+    (an English translation line) never gets here (the callers test has_target_language first). The cleaner
+    used to strip every ASCII letter and digit instead (to 2026-09): 30階の中野さん read 階の中野さん,
+    <i>…</i> left <>…</>, T恤 became 恤, and the number guard lost its numbers."""
+    # ASS override tags like {\pos(10,20)}, and SubRip's {b} / {\an8} (players read ASS's tags in .srt too)
+    text = _ASS_BLOCK_RE.sub('', text)
+    text = _SUBRIP_TAG_RE.sub('', text)
+    text = _ASS_ESCAPE_RE.sub(' ', text)
 
     # Remove speaker labels and furigana in parens (nested-aware — see _strip_bracketed)
+    # Decided 2026-09-27: every group goes, a thought line with them, until a library shows one.
     text = _strip_bracketed(text)
+    text = _SOUND_CUE_RE.sub('', text)
 
+    # Strip common subtitle noise like - or > if they are alone at start
+    text = re.sub(r'^[ \->]+', '', text)
     if language == 'ja':
-        # Keep: Kanji, Hiragana, Katakana, and Japanese-style punctuation
-        # Strip: ASCII letters and numbers (modeling the "Saturation Point" and "Noise Removal")
-        text = re.sub(r'[a-zA-Z0-9]', '', text)
-        
-        # Strip common subtitle noise like - or > if they are alone at start
-        text = re.sub(r'^[ \->]+', '', text)
-        text = text.strip()
-    elif language == 'zh':
-        text = re.sub(r'[a-zA-Z0-9]', '', text)
-        text = text.strip()
-        
-    return text
+        text = _strip_speaker_label(text)
+    return text.strip()
+
+
+def _ass_event_text(text):
+    """An ASS event's Text field without its override blocks — and without the drawing a \\p block starts."""
+    out, drawing, pos = [], False, 0
+    for block in _ASS_BLOCK_RE.finditer(text):
+        if not drawing:
+            out.append(text[pos:block.start()])
+        scales = _ASS_DRAWING_RE.findall(block.group())
+        if scales:
+            drawing = int(scales[-1]) > 0
+        pos = block.end()
+    if not drawing:
+        out.append(text[pos:])
+    return ''.join(out)
+
+
+def ass_dialogue_text(text, language='ja'):
+    """One ASS / SSA Dialogue event's Text as speech, or '' — read like an .srt cue: its lines (split at the
+    \\N / \\n line breaks) each kept only when they hold the language's script and cleaned, then joined
+    with a space as extract_text joins a cue's lines. A sung event (karaoke timing) is no speech."""
+    if _ASS_KARAOKE_RE.search(text):
+        return ""
+    lines = _ASS_BREAK_RE.split(_ass_event_text(text))
+    kept = [clean_subtitle_text(line, language) for line in lines if has_target_language(line, language)]
+    return " ".join(line for line in kept if line)
+
 
 def parse_ass(file_path, language='ja'):
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        content = read_text(file_path, language)    # the file's own encoding (path_utils.read_text)
     except Exception as e:
         print(f"Error reading ASS/SSA {file_path}: {e}")
         return ""
@@ -860,8 +1270,9 @@ def parse_ass(file_path, language='ja'):
     events_section = False
     format_line = None
     text_index = 9 # Default for standard ASS
+    start_index, end_index = 1, 2
     
-    output_parts = []
+    events = []
     
     for line in lines:
         line = line.strip()
@@ -877,6 +1288,7 @@ def parse_ass(file_path, language='ja'):
                 format_line = [f.strip() for f in format_line]
                 try:
                     text_index = format_line.index('Text')
+                    start_index, end_index = format_line.index('Start'), format_line.index('End')
                 except ValueError:
                     pass
                 continue
@@ -886,21 +1298,164 @@ def parse_ass(file_path, language='ja'):
                 # Split by comma but only up to text_index
                 comma_parts = line.split(',', text_index)
                 if len(comma_parts) > text_index:
-                    original_text = comma_parts[text_index]
-                    if has_target_language(original_text, language):
-                        cleaned = close_cue(clean_subtitle_text(original_text, language))
-                        if cleaned:
-                            output_parts.append(cleaned)
-                            
-    return " ".join(output_parts)
+                    cleaned = ass_dialogue_text(comma_parts[text_index], language)
+                    if cleaned:
+                        events.append(((comma_parts[start_index].strip(), comma_parts[end_index].strip()),
+                                       cleaned))
+
+    return " ".join(caption for caption in _captions(events) if caption)
+
+
+# --- what a text file's own format writes around its text ------------------------------------------------------ #
+# The transcript downloader's output (modules/youtube_downloader/downloader.build_text): six header lines — the
+# title, 'channel | date | duration', 'Captions: <language> (<kind>)', the URL, a blank line, a rule of 60 dashes
+# — then the cues from the next line on, joined by spaces or, with timestamps kept, one per line as '[00:01:02]
+# text' (the time as the cue's timing line wrote it: clean_vtt_cues). 93 of 原作's 160 uses came from headers.
+_TRANSCRIPT_RULE = "-" * 60
+_TRANSCRIPT_TIME_RE = re.compile(r'^\[(?:\d+:)?\d{2}:\d{2}\] ', re.M)
+
+# Markdown (CommonMark) marks structure and emphasis with ASCII punctuation — # headings, > quotes, - / 1. list
+# items, **strong** / *emphasis* / _emphasis_ (not inside a word), `code`, ~~strike~~, [text](url) links and
+# ![alt](src) images — markup, not text.
+_MD_BLOCK_RE = re.compile(r'^[ \t]{0,3}(?:#{1,6}(?=[ \t]|$)|(?:>[ \t]?)+|(?:[-*+]|\d{1,9}[.)])(?=[ \t]))[ \t]*',
+                          re.M)
+_MD_LINK_RE = re.compile(r'!?\[([^\[\]\n]*)\]\([^()\n]*\)')
+_MD_INLINE_RE = re.compile(r'\*+|`+|~~|(?<![^\W_])_+|_+(?![^\W_])')
+
+# Aozora Bunko's input notation (青空文庫 注記一覧; the plain-text ruby of 小説家になろう and カクヨム too): 《…》
+# right after kanji is its reading (漢字《かんじ》), ｜ marks where the ruby's base starts when it is not a run of
+# kanji (｜夏目漱石《なつめそうせき》), ［＃…］ is the transcriber's note (外字, 傍点, the source edition's
+# wording). A reading is kana, so 《…》 quoting a message (《直ちに着水せよ》) stays text. The file opens with a
+# legend of that notation between two rules of dashes (【テキスト中に現れる記号について】《》：ルビ …) and ends with
+# its colophon — 底本：, 初出：, 入力：, 校正：, the 青空文庫 notice — opening with the line 底本：.
+_KANJI = '\u3005\u3006\u3007\u30f6\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0003134f'
+_RUBY_KANA = '\u3041-\u309f\u30a1-\u30ff'
+_RUBY_BASE_RE = re.compile(rf'[|｜]([^|｜《》\n]+)《[{_RUBY_KANA}]+》')
+_RUBY_RE = re.compile(rf'(?<=[{_KANJI}])《[{_RUBY_KANA}]+》')
+_AOZORA_NOTE_RE = re.compile(r'［＃[^］\n]*］')
+# Kana alone in parentheses right after kanji — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ） — is by typographic habit that
+# kanji's reading: ruby where a plain .txt has none (小説家になろう turns it into ruby in its own files). Read as text
+# it is the same word counted again, often in pieces that are no word at all. A kanji's reading is written in
+# hiragana; katakana after kanji is as often an aside naming who is meant or a loanword's gloss (彼（ケン）は,
+# 複製（コピー）). So it is the learner's choice, settings.json logic.paren_readings: "hiragana" (the default) drops a
+# hiragana group (with ・ ー) as a 《ruby》 is dropped, "any" a katakana one too, "off" keeps every group as text.
+# Measured 2026-09-27 on 1,620 chapters of novels and non-fiction (.txt): 40 kana-only groups after kanji — 19
+# readings, 6 glosses, 15 asides; the 16 in hiragana were 15 readings and one gloss, no aside; 4 of the 24 with
+# katakana were readings.
+PAREN_READINGS = {"hiragana": '\u3041-\u309f\u30fb\u30fc', "any": _RUBY_KANA, "off": ""}
+_PAREN_READING_RES = {option: re.compile(rf'(?<=[{_KANJI}])[(（][{kana}]+[)）]')
+                      for option, kana in PAREN_READINGS.items() if kana}
+_AOZORA_LEGEND_RE = re.compile(r'^-{10,}\r?\n【テキスト中に現れる記号について】.*?^-{10,}\r?$', re.M | re.S)
+_AOZORA_COLOPHON_RE = re.compile(r'^底本[：:]', re.M)
+
+# Scripture apparatus. A cross-reference is a book's abbreviation, then chapter・verse — 1ニフ12・20－23,
+# アル45・14: the citation form of Japanese scripture; a line of nothing but references is
+# a chapter's footnotes (2,690 abbreviation tokens; ニフ was row #1 of the list). An abbreviation is katakana or
+# kanji — a hiragana run is a clause.
+_CITATION = r'\d*(?:(?![\u3040-\u309f])[^\W\d_]){1,6}\d+・\d+(?:[－\-–]\d+)?'
+_CITATION_LINE_RE = re.compile(
+    rf'^[ \t\u3000]*{_CITATION}(?:[ \t\u3000]*[、，,；;][ \t\u3000]*(?:{_CITATION}|\d+(?:[－\-–]\d+)?))*'
+    r'[ \t\u3000\r]*$', re.M)
+# Footnote marks: circled numbers (①–⑳, ㉑–㉟, ㊱–㊿ — Unicode's CIRCLED NUMBERs) tie a word to its note below the
+# text, or number a list; never a word. UniDic reads ① as 一, and the mark changes the parse around it (①罪 → ザイ).
+_CIRCLED_NUMBER_RE = re.compile('[①-⑳㉑-㉟㊱-㊿]')
+# A verse number opens each verse's line (see _strip_verse_numbers).
+_LEADING_NUMBER_RE = re.compile(r'[0-9０-９]+[ \u3000]?')
+
+# What the reader removes from INSIDE a line. The report's source anchor lets these sit between a sentence's
+# characters when it looks the sentence up in its file (static_html_generator.AnchorFinder._loose). A reading in
+# parentheses is listed as any kana — what every paren_readings option removes, so a sentence is found whichever
+# the learner chose (and one that kept its group simply matches it as written).
+REMOVED_INLINE = '|'.join((rf'《[{_RUBY_KANA}]+》', rf'[(（][{_RUBY_KANA}]+[)）]', r'[|｜]', _AOZORA_NOTE_RE.pattern,
+                           _CIRCLED_NUMBER_RE.pattern, _SOUND_CUE_RE.pattern, _SUBRIP_TAG_RE.pattern,
+                           _ASS_BLOCK_RE.pattern))
+
+
+def paren_readings(logic=None):
+    """What kana in parentheses right after kanji is in a Japanese book, as `logic` (a settings.json logic block;
+    default: this run's, LOGIC) sets it: "hiragana", "any" or "off" (see PAREN_READINGS). A missing or unknown value
+    is the default."""
+    default = settings_manager.DEFAULT_SETTINGS["logic"]["paren_readings"]
+    option = (LOGIC if logic is None else logic).get("paren_readings", default)
+    return option if option in PAREN_READINGS else default
+
+
+def transcript_body(text):
+    """The cues of a transcript the downloader wrote (its header gone), or None — any other text has no such
+    header."""
+    lines = text.split("\n", 6)
+    if (len(lines) >= 6 and lines[2].startswith("Captions: ") and not lines[4].strip()
+            and lines[5].strip() == _TRANSCRIPT_RULE):
+        return lines[6] if len(lines) == 7 else ""
+    return None
+
+
+def _strip_verse_numbers(text):
+    """A verse-numbered book's text without its verse numbers. The numbers count up line after line (1, 2, 3 …);
+    glued to the verse they change its parse — 7わが子よ reads 7わ as a count (把 'bundles'), so わが is no 我が.
+    Three or more lines in a row counting up by one are the book's numbering, and their numbers go before the
+    text is read. A count that opens every line of such a run (1人目 / 2人目 / 3人目 — the same character after
+    each number) is the text's own and stays, as does any number outside a run (3人で主に祈った。). What is shown
+    is still tidied by strip_verse_number, for a number this doesn't see."""
+    lines = text.split("\n")
+    runs, run, previous = [], [], None
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        number = _LEADING_NUMBER_RE.match(line)
+        n = int(number.group().strip()) if number and line[number.end():].strip() else None
+        if n is not None and run and n == previous + 1:
+            run.append((i, number.end()))
+        else:
+            if len(run) >= 3:
+                runs.append(run)
+            run = [(i, number.end())] if n is not None else []
+        previous = n
+    if len(run) >= 3:
+        runs.append(run)
+    for run in runs:
+        if len({lines[i][end] for i, end in run}) > 1:
+            for i, end in run:
+                lines[i] = lines[i][end:]
+    return "\n".join(lines)
+
+
+def strip_text_conventions(text, language='ja', ext='.txt'):
+    """A text file's content without what its format writes around the text: the downloader's header, its
+    timestamps and the captions' sound cues; Markdown's markup (.md); and in Japanese books Aozora Bunko's ruby,
+    notes and colophon, a reading in parentheses (as paren_readings() says) and a scripture's apparatus
+    (references, footnote marks, verse numbers). The words and punctuation of the text itself are taken as
+    written."""
+    body = transcript_body(text)
+    if body is not None:
+        return _SOUND_CUE_RE.sub('', _TRANSCRIPT_TIME_RE.sub('', body))
+    if ext == '.md':
+        text = _MD_LINK_RE.sub(r'\1', _SUBRIP_TAG_RE.sub('', text))
+        text = _MD_INLINE_RE.sub('', _MD_BLOCK_RE.sub('', text))
+    if language != 'ja':
+        return text
+    colophon = _AOZORA_COLOPHON_RE.search(text)
+    if colophon:
+        text = text[:colophon.start()]
+    text = _AOZORA_LEGEND_RE.sub('', text)
+    text = _RUBY_RE.sub('', _RUBY_BASE_RE.sub(r'\1', _AOZORA_NOTE_RE.sub('', text)))
+    readings = _PAREN_READING_RES.get(paren_readings())
+    if readings:
+        text = readings.sub('', text)
+    text = _CIRCLED_NUMBER_RE.sub('', _CITATION_LINE_RE.sub('', text))
+    return _strip_verse_numbers(text)
+
 
 def extract_text(file_path, language='ja'):
+    # Every format is decoded the one way (path_utils.read_text): a BOM names the encoding, else
+    # strict UTF-8, else the language's Windows encodings (CP932; GB18030, Big5) — a CP932 subtitle,
+    # a UTF-16 or GBK .txt contributed nothing before, silently.
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
     if ext == '.srt':
         try:
             import pysrt   # lazy: only reading a .srt subtitle file pays this import
-            subs = pysrt.open(file_path)
+            subs = pysrt.from_string(read_text(file_path, language))
             parts = []
             for sub in subs:
                 # Filter out lines without Target characters
@@ -924,13 +1479,10 @@ def extract_text(file_path, language='ja'):
     elif ext in ['.ass', '.ssa']:
         text = parse_ass(file_path, language)
     else:
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                text = f.read()
-        except UnicodeDecodeError:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                text = f.read()
+        text = read_text(file_path, language)
 
+    if ext not in SUBTITLE_EXTENSIONS:
+        text = strip_text_conventions(text, language, ext)
     return text
 
 def find_context_sentence(full_text, target_surface):
@@ -1330,8 +1882,7 @@ def compute_run_signature(language, found_files, args):
         _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
         _settings_for_sig = ""
         try:
-            with open(get_user_file("settings.json"), "r", encoding="utf-8") as _sf:
-                _sj = json.load(_sf)
+            _sj = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
             for _k in _NON_ANALYSIS_SETTINGS:
                 _sj.pop(_k, None)
             for _k in [k for k in _sj if k.startswith(_NON_ANALYSIS_PREFIXES)]:
@@ -1701,9 +2252,9 @@ def main():
             except Exception:
                 pass
 
-    ignore_list = load_simple_list(ignore_list_file, script)
-    ignore_list.update(load_simple_list(black_list_file, script))        # merge blacklist into ignore list
-    ignore_list.update(load_simple_list(graduated_list_file, script))    # merge graduated list into ignore list
+    ignore_list = load_simple_list(ignore_list_file, script, language)
+    ignore_list.update(load_simple_list(black_list_file, script, language))        # merge blacklist into ignore list
+    ignore_list.update(load_simple_list(graduated_list_file, script, language))    # merge graduated list into ignore list
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
@@ -1722,7 +2273,7 @@ def main():
     # Load all yomitan frequency lists (discovered above; contents read here on a real run only).
     freq_data = {}
     for list_name, filepath in sorted(available_freq_lists.items()):
-        freq_data[list_name] = load_yomitan_frequency_list(filepath, script)
+        freq_data[list_name] = load_yomitan_frequency_list(filepath, script, language)
     print(f"Found {len(freq_data)} frequency lists: {', '.join(sorted(freq_data.keys()))}")
 
     # Reconcile the token store: tokenize ONLY changed/new files (into cached sentences); the

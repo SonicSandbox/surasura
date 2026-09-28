@@ -194,6 +194,38 @@ def test_missing_file_and_junk_input_are_safe(tmp_path):
         assert finder.anchor(str(f), junk) == "", f"{junk!r} should yield no anchor"
 
 
+# --- sentences the reader cleaned inside a line ------------------------------------------------------- #
+@pytest.mark.parametrize("name, content", [
+    # A scripture verse: its footnote marks ①② and its verse number are apparatus the reader removes.
+    ("verses_2.txt", "1 これは第一の節である。\n"
+                     "2 見よ、山の民の①畑が今年は非常に豊かである。また、彼らは祭りのために②歌っている。\n"
+                     "3 これは第三の節である。\n"),
+    # Aozora Bunko: the ruby reading and the note are the notation, not the novel.
+    ("kokoro_28.txt", "私《わたくし》はその人を常に先生と呼んでいた。\n"
+                      "私に［＃「私に」は底本では「私は」］固より異議のありようはずがありません。\n"),
+    # A downloaded transcript: the captions' sound cue sits between a number and its counter.
+    ("video [A1b2C3d4E5f].txt", "動画タイトル\nことば研究室 | 2024-05-01 | 25:00\nCaptions: Japanese (native auto)\n"
+                                "https://www.youtube.com/watch?v=A1b2C3d4E5f\n\n" + "-" * 60 +
+                                "\n18[笑い]年後 には何をしていたいですか?\n"),
+])
+def test_a_sentence_the_reader_cleaned_still_anchors(tmp_path, name, content):
+    """The report's sentence no longer holds the ①, the 《reading》 or the [音楽] the reader removed, but the
+    file does: the anchor lets exactly those sit between the sentence's characters, and hands back the
+    file's own wording — a snippet the browser finds verbatim, once."""
+    path = tmp_path / name
+    path.write_text(content, encoding="utf-8")
+    analyzer.SANITIZE_JA = True
+    sentences = [s for s, _t in
+                 analyzer.JapaneseTokenizer().tokenize_sentences(analyzer.extract_text(str(path), "ja"))]
+    finder = AnchorFinder()
+    cleaned = [s for s in sentences if s not in content]
+    assert cleaned, f"the fixture should hold a sentence the reader cleaned: {sentences}"
+    for sentence in cleaned:
+        anchor = finder.anchor(str(path), sentence)
+        assert anchor, f"no anchor for {sentence!r}"
+        assert content.count(anchor) == 1, f"{anchor!r} must occur once, verbatim"
+
+
 # --- subtitle cue timestamps --------------------------------------------------------------------- #
 def test_cue_time_locates_the_right_subtitle_cue(env):
     """The anchor is verbatim file text, so its offset falls inside exactly one cue. No guessing, and

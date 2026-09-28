@@ -1,3 +1,4 @@
+import codecs
 import os
 import re
 import sys
@@ -105,8 +106,10 @@ SAMPLE_SUBFOLDERS = ["HighPriority", "LowPriority", "GoalContent", "Graduated", 
 # the analyzer's scan, and the background indexer — these three MUST agree: anything the importer
 # registers but the analyzer skips becomes a dead row in the library (that's how raw .epub/.html
 # ended up tracked-but-never-analyzed). Ebooks and web pages go through the content importer, which
-# converts and splits them into .txt first.
-CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass")
+# converts and splits them into .txt first. .ssa is the .ass format's predecessor — the same [Events] the
+# analyzer's parse_ass reads (v1.6 promised ASS / SSA; the scan skipped .ssa until 2026-09).
+CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass", ".ssa")
+SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa")
 
 
 def is_content_file(path):
@@ -183,7 +186,7 @@ def infer_source_type(path, declared=None, marker_type=None):
     """
     if declared in SOURCE_TYPES:
         return declared
-    if str(path).lower().endswith(('.srt', '.ass')):
+    if str(path).lower().endswith(SUBTITLE_EXTENSIONS):
         return "subtitle"
     if callable(marker_type):
         marker_type = marker_type()
@@ -352,4 +355,73 @@ def backup_to_trash(path, move=False):
         if a.read() != b.read():
             raise OSError("the backup copy did not match the original")
     return dst
+
+
+# --- Reading a file the user supplies or can edit ------------------------------------------------ #
+# A file's encoding is a property of the FILE, not of its text. A BOM
+# names it: UTF-8's (Notepad's "UTF-8 with BOM", Excel's "CSV UTF-8"), UTF-16's (Notepad's "Unicode") or
+# UTF-32's (pysrt honoured it, so a subtitle keeps reading). Without one, strict UTF-8, which a file in
+# another encoding practically never passes. Failing that, the encodings the language's own Windows saves
+# in, each tried strictly so a wrong guess fails instead of dropping bytes: CP932 (Shift_JIS as Windows
+# writes it) for Japanese; GB18030 (GBK's superset), then Big5 as Windows writes it (cp950 — with the
+# ETEN characters 恒 裏 碁 that plain Big5 refuses) for Chinese. The first that reads the file as standard
+# characters wins: a reading holding a Private Use character (U+E000–F8FF — no standard assigns one) is
+# not taken. That is what "strictly" leaves loose: GB18030 reads almost any byte pair, Big5's included,
+# and every Big5 comma and full stop (，。) comes out Private Use; cp932 gives the bytes it has no
+# character for (0xA0, 0xFD–0xFF) Private Use ones, so a damaged UTF-8 file isn't taken for Shift_JIS.
+# Before this, CP932 / UTF-16 / GBK files contributed nothing, silently, and a KnownWord.json or word
+# list saved with a BOM or as UTF-16 stopped Generate.
+#
+# What the app writes itself (settings, results, caches) is UTF-8 and read as it always was.
+LEGACY_ENCODINGS = {"ja": ("cp932",), "zh": ("gb18030", "cp950")}
+_PRIVATE_USE = re.compile("[\ue000-\uf8ff]")
+# UTF-32 LE's BOM begins with UTF-16 LE's, so it is looked for first.
+_BOMS = ((codecs.BOM_UTF8, "utf-8-sig"), (codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+         (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"))
+
+
+def _bom_encoding(raw):
+    """The encoding the bytes' BOM names, or None."""
+    return next((encoding for bom, encoding in _BOMS if raw.startswith(bom)), None)
+
+
+def _decode(raw, language):
+    """The bytes' text by the rule above, or None when no encoding reads them whole."""
+    def strictly(encoding):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            return None
+    bom = _bom_encoding(raw)
+    if bom:
+        return strictly(bom)
+    text = strictly("utf-8")
+    if text is not None:
+        return text
+    for encoding in LEGACY_ENCODINGS.get(language, ()):
+        text = strictly(encoding)
+        if text is not None and not _PRIVATE_USE.search(text):
+            return text
+    return None
+
+
+def read_text(path, language=None, errors="replace"):
+    """The text of a file the user supplies or can edit — content, KnownWord.json, the word lists, a
+    frequency list — decoded by the rule above for `language` ("ja" / "zh"; None tries no legacy
+    encoding), line ends read as open() reads them (CRLF and a lone CR are "\\n").
+
+    A file no encoding reads whole (damaged) is read as its BOM, else UTF-8, says, every bad sequence
+    marked U+FFFD — never dropped — with a warning. errors="strict" raises UnicodeDecodeError instead:
+    for a caller that writes the file back, where nothing may be lost to a guess."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    text = _decode(raw, language)
+    if text is None:
+        text = raw.decode(_bom_encoding(raw) or "utf-8", errors)
+        try:
+            print(f"Warning: {os.path.basename(path)} is damaged or in an unknown encoding; "
+                  f"its unreadable bytes are marked U+FFFD.")
+        except UnicodeEncodeError:
+            print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 

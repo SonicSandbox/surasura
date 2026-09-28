@@ -48,12 +48,13 @@ def test_importing_the_matcher_is_cheap():
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
     """The analyser's own 184-row output (BOM, real columns): a katakana lemma the user would never
-    type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 since words
-    keep their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
-    Patterns_Quality_Spec A.)"""
+    type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
+    kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
+    Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
+    一人 fell below it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 20
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 19
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -64,6 +65,47 @@ def test_a_mined_lapis_note_resolves_to_its_word_without_the_furigana():
     note = _note("Lapis", [("Expression", "引[ひ]きずる"),
                            ("Sentence", "彼は足を引きずって歩いていた。")])
     assert anki_match.target_word(note, {}) == "引きずる"
+
+
+# --------------------------------------------------------------------------- #
+# A Japanese card's field holds ONE word — whatever was typed around it
+# --------------------------------------------------------------------------- #
+def test_a_japanese_card_field_is_read_as_the_one_word_it_holds():
+    """Fields typed or edited by hand: the quotes or stop the word was typed in, a second line (Anki
+    writes each line as a <br> or a <div>), a reading or an optional する in brackets, a second word after
+    a list separator. None of it is the word — JMdict's headword, anki_miner's one note per word."""
+    for raw, word in (("「撒く」", "撒く"), ("撒く。", "撒く"), ("撒く<br>まく", "撒く"),
+                      ("撒く<div>まく</div>", "撒く"), ("<div>撒く</div><div>まく</div>", "撒く"),
+                      ("仰ぐ（あおぐ）", "仰ぐ"), ("勉強(する)", "勉強"), ("上層部、首脳部", "上層部"),
+                      ("撒く・巻く", "撒く"), ("撒く／巻く", "撒く"), ("撒く 巻く", "撒く"),
+                      ("引[ひ]きずる", "引きずる"), ("冒険", "冒険")):
+        assert anki_match.card_word(raw, "ja") == word, raw
+
+
+def test_a_foreign_name_keeps_its_middle_dot_and_an_empty_field_holds_no_word():
+    """Between katakana, ・ parts the pieces of ONE name (the 中黒 convention): ジョン・スミス is not ジョン. A
+    field holding only a note in brackets keeps what it wrote; an image, an empty field or none holds no
+    word at all — "" is an ordinary answer (`target_word`)."""
+    assert anki_match.card_word("ジョン・スミス", "ja") == "ジョン・スミス"
+    assert anki_match.card_word("（あおぐ）", "ja") == "あおぐ"
+    for raw in ("", None, '<img src="paste-8f3a.jpg">', "<br>", "「」"):
+        assert anki_match.card_word(raw, "ja") == "", raw
+
+
+def test_a_chinese_field_and_a_field_of_no_language_are_read_as_before():
+    """What of a Chinese field is its word is an open question (学习 (xuéxí),
+    学习 / 學習) — untouched; and with no language, a card is read exactly as `normalize_word` reads it."""
+    for raw in ("学习 (xuéxí)", "学习 / 學習", "「学习」", "学习<br>xuéxí"):
+        assert anki_match.card_word(raw, "zh") == anki_match.normalize_word(raw), raw
+    assert anki_match.card_word("「撒く」") == "「撒く」"
+    assert anki_match.card_word("撒く<br>まく") == anki_match.normalize_word("撒く<br>まく") == "撒くまく"
+
+
+def test_target_word_reads_the_field_in_the_notes_language():
+    """Junban's reorder passes the list's language; a caller that passes none reads a card as before."""
+    note = _note("Lapis", [("Expression", "「撒く」<br>まく"), ("Sentence", "庭に水を撒く。")])
+    assert anki_match.target_word(note, {}, "ja") == "撒く"
+    assert anki_match.target_word(note, {}) == "「撒く」まく"
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +197,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 20
+    assert rank_of["中野"] == rank_of["ナカノ"] == 19
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -400,6 +442,19 @@ def test_each_other_unknown_word_counts_and_the_cards_own_word_never_does():
     assert anki_match.unknowns_beside("眼鏡", "", tokenize, unknown) is None
 
 
+def test_the_cards_own_word_said_again_is_never_an_unknown_beside_it():
+    """The span is the <b>, else the first place the card's word is
+    WRITTEN — and the same word said again is still the card's word, as the analyzer never counts its
+    target's key. 撒け、撒け、撒くんだ！ had two unknowns beside 撒く, and an i+1 card dropped to "multi".
+    Another new word still counts: 企む beside 撒く."""
+    tokenize = _tokenizer().tokenize
+    unknown = _unknown_unless(set())
+    assert anki_match.unknowns_beside("撒く", "撒け、撒け、撒くんだ！", tokenize, unknown) == 0
+    assert anki_match.unknowns_beside("撒く", "<b>撒い</b>た餌を撒いた。", tokenize, unknown) == 0
+    assert anki_match.unknowns_beside("企む", "企む奴が企む。", tokenize, unknown) == 0
+    assert anki_match.unknowns_beside("撒く", "企む奴が餌を<b>撒い</b>た。", tokenize, unknown) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Check matches (Junban_Backlog_Spec §16): the same word spelled another way — a SUGGESTION only.
 # The words are the real backlog's (§12): cards the exact keys cannot place.
@@ -481,6 +536,30 @@ def test_chinese_and_a_missing_tokenizer_keep_exact_keys_and_answers_only():
     assert anki_match.card_key("努力する", {"努力": 0}, "zh", None, tokenize) == ("", "")
 
 
+def test_a_word_in_its_inflected_form_is_its_dictionary_form():
+    """The past, the polite form, the negative, the ちゃう contraction — a word's paradigm, which no
+    dictionary lists as words of their own. A card 取り消した is the word 取り消す (JMdict's headword)."""
+    tokenize = _tokenizer().tokenize
+    listed = {"取り消す": 0, "行く": 1, "食べる": 2, "美しい": 3, "読む": 4}
+    for word, key in (("取り消した", "取り消す"), ("行きません", "行く"), ("食べちゃった", "食べる"),
+                      ("美しかった", "美しい"), ("読んだ", "読む"), ("食べなかった", "食べる")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+        assert anki_match.one_word(tokenize(word))[0] == key, word
+
+
+def test_voice_derivation_a_second_verb_or_a_kana_word_is_no_inflection():
+    """Voice and derivation make words JMdict lists (待たせる, 優しさ — its さ an open question); ている and 始める
+    are verbs of their own; かった is 買った, 勝った or 刈った — a kana card's dictionary form is the
+    tagger's guess, so it is never read for its inflection. And the conjugated stem is the verb's: a
+    card 考えた never lands on the noun 考え."""
+    tokenize = _tokenizer().tokenize
+    listed = {"待つ": 0, "優しい": 1, "食べる": 2, "買う": 3, "勝つ": 4, "駆る": 5, "考え": 6}
+    for word in ("待たせる", "優しさ", "食べている", "食べ始める", "かった", "考えた"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+    for word in ("待たせる", "優しさ", "食べている", "食べ始める", "かった"):
+        assert anki_match.one_word(tokenize(word)) is None, word
+
+
 def test_the_rules_measured_wrong_never_suggest_anything():
     """§4.4: a compound's part (伊勢海老 is not 伊勢 — dropped with L8, §16.1), a shared reading
     (布陣 is not 婦人), containment either way (ピーマン is not ピー, 夢見る is not 見る)."""
@@ -535,8 +614,9 @@ def test_a_tail_written_onto_a_word_is_known_by_its_lemma():
 
 def test_a_second_word_or_another_ending_is_not_a_tail():
     """伊勢海老's 海老 is a word of its own, 疲れた's た the past, 利用できる's できる a verb, 恩を's を
-    another particle: none of these cards is one row. A surface is not a lemma (する's is 為る), and
-    an empty lemma is nothing."""
+    another particle: none of these is a tail written onto a word (疲れた is still one word — 疲れる, in
+    its paradigm: `test_a_word_in_its_inflected_form_is_its_dictionary_form`). A surface is not a lemma
+    (する's is 為る), and an empty lemma is nothing."""
     tokenize = _tokenizer().tokenize
     for word in ("伊勢海老", "疲れた", "利用できる", "恩を"):
         tokens = tokenize(word)

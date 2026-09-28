@@ -50,6 +50,21 @@ def test_a_saved_settings_file_cannot_drop_a_required_boundary(tmp_path):
     assert "｡" in merged["logic"]["sentence_boundaries"]["ja"]
 
 
+def test_the_full_width_full_stop_reaches_a_saved_settings_file(tmp_path):
+    """．(U+FF0E) is the full stop of horizontal technical and official Japanese. Like ｡, it joins
+    every saved set through the union, so no one has to edit settings.json; Chinese stays without it
+    (an open question: Taiwan writes the name interpunct as ．, 瑪麗．居禮)."""
+    assert "．" in DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["ja"]
+    assert "．" not in DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
+    stale = tmp_path / "settings.json"
+    stale.write_text(
+        '{"logic": {"sentence_boundaries": {"ja": "\\u3002\\uff01\\uff1f!?\\n\\uff61"}}}',
+        encoding="utf-8")
+    with patch("app.settings_manager.get_user_file", return_value=str(stale)):
+        merged = load_settings()
+    assert "．" in merged["logic"]["sentence_boundaries"]["ja"]
+
+
 def test_a_custom_boundary_is_preserved(tmp_path):
     """The union adds what's required; it must not throw away a user's own additions."""
     custom = tmp_path / "settings.json"
@@ -129,6 +144,37 @@ def test_a_nested_label_and_a_dash_on_the_same_cue():
 def test_close_cue_handles_empty_input():
     for junk in ("", "   ", None):
         assert analyzer.close_cue(junk) == ""
+
+
+def test_the_broadcast_captions_arrow_joins_the_next_cue():
+    """➨ is the broadcast captions' continuation arrow; unknown, it was kept and the cue
+    closed mid-clause (…のは➨。 — 35 sentences of one episode)."""
+    assert analyzer.close_cue("山の向こうで育ったのは➨") == "山の向こうで育ったのは"
+
+
+def test_a_cue_ending_in_an_ellipsis_ends_without_gaining_a_full_stop():
+    """A trailing … is the subtitle's own mark of speech trailing off: the cue has ended, on its timing,
+    but … is no terminator in running text. Its end becomes a line break, so the sentence
+    reads くっ… as the file does — it read くっ…。 (12,530 cues of the user's library)."""
+    assert analyzer.close_cue("くっ…") == "くっ…\n"
+    assert analyzer.close_cue("えっと‥") == "えっと‥\n"
+    assert analyzer.close_cue("「そうか…」") == "「そうか…」\n", "looked for past the closing bracket"
+    assert analyzer.close_cue("そうか…。") == "そうか…。", "a cue that already ends in 。 is untouched"
+
+
+def test_a_cue_ending_in_a_comma_runs_on_into_the_next():
+    """A comma is a pause inside a sentence (UAX #29 SContinue): the cue stays open, comma kept — it read
+    今日は、。 and 我觉得，。"""
+    assert analyzer.close_cue("今日は、") == "今日は、"
+    assert analyzer.close_cue("我觉得，") == "我觉得，"
+
+
+def test_a_terminator_behind_a_closing_bracket_is_found():
+    """「行くぞ。」 has ended (UAX #29 SB9) and gained a second 。 (「行くぞ。」。); a bracket with no
+    terminator behind it is closed as before."""
+    assert analyzer.close_cue("「行くぞ。」") == "「行くぞ。」"
+    assert analyzer.close_cue("《罰を与えられた》") == "《罰を与えられた》。"
+    assert analyzer.close_cue("」") == "」。", "a bracket alone: debris, dropped by the tokenizer"
 
 
 def test_punctuation_only_fragments_are_not_emitted():
@@ -214,6 +260,61 @@ def test_a_netflix_shaped_subtitle_joins_across_dashes(tmp_path):
     assert joined and "えたいの知れない男" in joined[0], \
         f"the dashed cue must join the one after it: {out}"
     assert any("水の分量" in s and "フィーリング" in s for s in out), out
+
+
+def test_ellipsis_cues_end_at_the_cue_and_read_as_written(tmp_path):
+    """The file's own boundary (the cue's timing) ends the sentence; the text gains no 。."""
+    path = tmp_path / "ep05.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nウウ…\n\n"
+        "2\n00:00:02,500 --> 00:00:04,000\n（健太）ハッ…\n\n"
+        "3\n00:00:04,500 --> 00:00:06,000\n行くぞ\n",
+        encoding="utf-8")
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == ["ウウ…", "ハッ…", "行くぞ。"]
+
+
+# The two lines of one broadcast caption, written as two events with one start and end, then a caption of its
+# own.
+_ONE_CAPTION_ASS = (
+    "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    "Dialogue: 0,0:01:10.00,0:01:13.50,Default,,0000,0000,0000,,今は様子を見るしかありませんから。\n"
+    "Dialogue: 0,0:01:13.50,0:01:17.00,Default,,0000,0000,0000,,{\\pos(212,437)}《門番は城への侵入者を\n"
+    "Dialogue: 0,0:01:13.50,0:01:17.00,Default,,0000,0000,0000,,{\\pos(252,497)}厳しく取り調べた》\n"
+    "Dialogue: 0,0:01:17.00,0:01:19.50,Default,,0000,0000,0000,,次の話だ\n")
+
+
+def test_ass_events_with_one_timing_are_one_caption(tmp_path):
+    """Events on screen together are one caption, read like an .srt cue's two lines — each used to be
+    closed with 。 mid-clause (…侵入者を。)."""
+    path = tmp_path / "caption.ja.ass"
+    path.write_text(_ONE_CAPTION_ASS, encoding="utf-8")
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == [
+        "今は様子を見るしかありませんから。", "《門番は城への侵入者を厳しく取り調べた》。", "次の話だ。"]
+
+
+def test_ass_events_in_another_format_order_still_group_by_timing(tmp_path):
+    """The Format line names where Start and End are; an SSA file (Marked, …) reads the same way."""
+    path = tmp_path / "old.ssa"
+    path.write_text(
+        "[Events]\nFormat: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: Marked=0,0:00:02.00,0:00:04.50,Default,,0000,0000,0000,,限られたこの夏の間に\n"
+        "Dialogue: Marked=0,0:00:02.00,0:00:04.50,Default,,0000,0000,0000,,泳ぎを上達させる\n"
+        "Dialogue: Marked=0,0:00:05.00,0:00:06.50,Default,,0000,0000,0000,,本当にそう思うの。\n",
+        encoding="utf-8")
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == [
+        "限られたこの夏の間に泳ぎを上達させる。", "本当にそう思うの。"]
+
+
+def test_srt_cues_with_one_timing_stay_two_captions(tmp_path):
+    """An .srt cue is its own caption: two cues with one timing are two captions shown at once — the
+    repo's own sample writes two speakers talking together so. Read as one caption, 二乃's laugh would
+    join 風太郎's line into one sentence."""
+    path = tmp_path / "gotoubun.srt"
+    path.write_text(
+        "62\n00:04:20,343 --> 00:04:21,844 \n（風太郎）あれは てめえが薬を…\n\n"
+        "63\n00:04:20,343 --> 00:04:21,844 \n（二乃）フフフフ…\n",
+        encoding="utf-8")
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == ["あれはてめえが薬を…", "フフフフ…"]
 
 
 def test_plain_prose_is_unaffected(tmp_path):

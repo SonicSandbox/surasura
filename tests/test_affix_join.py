@@ -55,13 +55,15 @@ def test_a_word_with_its_prefix_or_suffix_is_one_word(tokenizer, sanitized, sent
 @pytest.mark.parametrize("text, pieces", [
     ("田中さんが来た。", ["タナカ", "さん"]),   # a person's name and its honorific
     ("私たちの家。", ["私", "達"]),            # a plural suffix
-    ("第3話", ["第", "3", "話"]),            # nothing after a number is a base
-    ("三回目", ["三", "回", "目"]),            # 回目 IS a headword — but it follows a number
-    ("3年生", ["3", "年", "生"]),
+    # Nothing after a number is a base — and the number itself is no word: the pieces
+    # after it stay apart.
+    ("第3話", ["第", "話"]),
+    ("三回目", ["回", "目"]),                 # 回目 IS a headword — but it follows a number
+    ("3年生", ["年", "生"]),
     ("レーマン人", ["レーマン", "人"]),         # a name + 人 is no dictionary word
     ("不自然さ", ["不自然", "さ"]),            # the user (U2): さ stays, and counts toward 不自然
     ("複雑さに驚いた", ["複雑", "さ"]),         # a な-word UniDic files as a noun (形状詞可能) — U2 too
-    ("三大祭りの一つ", ["三", "大", "祭り"]),    # "the three great": a prefix after a number joins nothing
+    ("三大祭りの一つ", ["大", "祭り"]),         # "the three great": a prefix after a number joins nothing
     ("お話しします", ["御", "話す"]),          # humble お + 話す, decided with お話 (a prefix + a word)
     ("霊子", ["霊", "子"]),                  # one list's long tail, a name read タマコ (checkpoint A)
     ("エジプト人", ["エジプト", "人"]),         # one list only, past its top 60,000

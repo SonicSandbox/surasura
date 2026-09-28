@@ -16,7 +16,7 @@ try:
 except ImportError:
     pass
 
-from app.path_utils import get_user_file, get_data_path
+from app.path_utils import get_user_file, get_data_path, read_text
 from app.anki_utils import load_anki_data, extract_field_text, cleanup_temp_dir
 from app import settings_manager
 
@@ -470,94 +470,30 @@ class FileImporterApp:
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".epub":
             return self.convert_epub_to_text(file_path)
-        elif ext == ".srt":
-            return self.extract_text_from_srt(file_path)
-        elif ext in [".ass", ".ssa"]:
-            return self.extract_text_from_ass(file_path)
+        elif ext in [".srt", ".ass", ".ssa"]:
+            return self.extract_text_from_subtitle(file_path)
         else:
             return self.extract_text_from_generic(file_path)
 
     def extract_text_from_generic(self, file_path):
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                text = f.read()
+            # A text file is read in its own encoding (path_utils.read_text), as the
+            # analyzer reads the library: a CP932 / UTF-16 / GBK / Big5 file came out as U+FFFD marks before.
+            text = read_text(file_path, self.language)
             return text, None
         except Exception as e:
             return None, f"Failed to read file: {e}"
 
-    def contains_cjk(self, text):
-        # Matches Hiragana, Katakana, and CJK Unified Ideographs (Common + Rare + Ext A)
-        # Included: \u4E00-\u9FFF to cover common Chinese/Japanese Kanji
-        pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
-        return bool(pattern.search(text))
-
-    def extract_text_from_srt(self, file_path):
+    def extract_text_from_subtitle(self, file_path):
+        """A subtitle's text exactly as the library reads the same file (analyzer.extract_text): labels, readings,
+        markup and sound cues gone, each cue closed with 。 or joined to the next by its ➡ — so an extracted .srt
+        says what it says in a tier. Extract used to keep a cleaner of its own: the labels and the ➡ stayed, and
+        each cue line was written on a line of its own, so a sentence broke at every line."""
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            
-            lines = content.splitlines()
-            cleaned_lines = []
-            timestamp_re = re.compile(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}')
-            
-            for line in lines:
-                line = line.strip()
-                if not line or line.isdigit() or timestamp_re.match(line):
-                    continue
-                if self.contains_cjk(line):
-                    cleaned_lines.append(self.clean_subtitle_text(line))
-            
-            return "\n".join([l for l in cleaned_lines if l]), None
+            from app import analyzer   # light: fugashi and jieba load only with a tokenizer
+            return analyzer.extract_text(file_path, self.language), None
         except Exception as e:
-            return None, f"Failed to parse SRT: {e}"
-
-    def extract_text_from_ass(self, file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            
-            lines = content.splitlines()
-            events_section = False
-            text_index = 9 # Default for standard ASS
-            
-            output_parts = []
-            
-            for line in lines:
-                line = line.strip()
-                if not line: continue
-                
-                if line == '[Events]':
-                    events_section = True
-                    continue
-                
-                if events_section:
-                    if line.startswith('Format:'):
-                        format_line = [f.strip() for f in line[7:].split(',')]
-                        try:
-                            text_index = format_line.index('Text')
-                        except ValueError:
-                            pass
-                        continue
-                    
-                    if line.startswith('Dialogue:'):
-                        comma_parts = line.split(',', text_index)
-                        if len(comma_parts) > text_index:
-                            original_text = comma_parts[text_index]
-                            if self.contains_cjk(original_text):
-                                cleaned = self.clean_subtitle_text(original_text)
-                                if cleaned:
-                                    output_parts.append(cleaned)
-                                    
-            return "\n".join(output_parts), None
-        except Exception as e:
-            return None, f"Failed to parse ASS: {e}"
-
-    def clean_subtitle_text(self, text):
-        # Remove ASS tags like {\pos(10,20)}
-        text = re.sub(r'\{.*?\}', '', text)
-        # Strip common subtitle noise
-        text = re.sub(r'^[ \->]+', '', text)
-        return text.strip()
+            return None, f"Failed to read the subtitle: {e}"
 
     def convert_epub_to_text(self, epub_path):
         try:

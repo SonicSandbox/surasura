@@ -10,7 +10,7 @@ from datetime import datetime
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_user_file, get_user_files_path, get_icon_path
+from app.path_utils import get_user_file, get_user_files_path, get_icon_path, read_text
 from app.anki_utils import load_anki_data, extract_field_text, cleanup_temp_dir
 from app.analyzer import JapaneseTokenizer, ChineseTokenizer
 
@@ -339,8 +339,8 @@ class AnkiImporterApp:
             # A file we cannot parse must never be replaced by an Anki-only list: raise, write nothing
             # (process_extraction shows the error).
             try:
-                with open(output_json, 'r', encoding='utf-8') as f:
-                    existing_data = json.load(f)
+                # Its own encoding (a BOM, UTF-16, CP932 / GBK), strictly: the file is written back.
+                existing_data = json.loads(read_text(output_json, self.language, errors="strict"))
             except Exception as e:
                 raise ValueError(f"Your existing KnownWord.json could not be read, so nothing was changed.\n{e}")
 

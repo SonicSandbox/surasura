@@ -49,7 +49,6 @@ pending_update.json
 last_update_result.json
 updater.exe
 
-
 docs/agent instructions
 docs/pre release notes
 
@@ -63,6 +62,9 @@ docs/legacy_code_reviews/
 
 # Third-party integration research (local only — contains account identifiers)
 docs/research/
+
+# Platform study — native core (Rust/C++), Qt6 UI, the hato API (local only)
+docs/platform_study/
 
 # Reference corpora — build inputs for scripts/build_reference_data.py only.
 # Large, third-party, and never shipped: the build script distils them into the
@@ -94,9 +96,6 @@ debug/affix_diff.md
 debug/ogo_joins.md
 debug/quality_q/
 debug/readability_u8.md
-
-# Measurements for Compound_Join_Measurement.md — its scripts and what they wrote. They quote the user's own library.
-debug/compound_join/
 
 # Visual checks — screenshots a spec's done-condition asks for (e.g. Junban_Backlog_Spec WP-B8).
 debug/*.png

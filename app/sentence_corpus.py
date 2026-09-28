@@ -23,6 +23,8 @@ import re
 import zipfile
 from datetime import datetime
 
+from app.unicode_ranges import HAN, KANA
+
 SENTENCES_PER_WORD = 8
 # Variety: at most this many sentences from any one file, so the eight come from different episodes —
 # unless there aren't enough other files, when the best of the rest fill the remaining places.
@@ -36,8 +38,9 @@ MAX_SPELLINGS = 3
 
 _MARKERS = "①②③④⑤⑥⑦⑧"
 _PRIVATE_USE = re.compile("[-]")    # invisible glyphs some subtitle tools leave behind
-_KANJI = re.compile("[㐀-䶿一-鿿々]")
-_KANA_ONLY = re.compile("^[ぁ-ゟ゠-ヿ]+$")
+# Kanji and kana: Unicode's own ranges (app/unicode_ranges.py), Extension B and on included.
+_KANJI = re.compile(f"[{HAN}]")
+_KANA_ONLY = re.compile(f"^[{KANA}]+$")
 
 # A verb's potential form is its own UniDic entry under the SAME lemma — 辿り着ける is filed as
 # 辿り着く — so it shows up among a word's spellings. Its dictionary reading is the lemma's with the
@@ -182,7 +185,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     runs first among equally easy ones of a good length — its top pairing or form, 啓示を受ける for 啓示
     (Patterns_Quality_Spec.md Part D); without it every rank is exactly what it always was. Returns
     {(lemma, reading) or name: _Word}."""
-    from app.analyzer import affix_joins, has_target_language, see_through_base
+    from app.analyzer import Tagger, affix_joins, has_target_language, see_through_base
 
     known_tuples, known_lemmas, ignore = known
     lo, hi, own_lo, own_hi = window
@@ -197,8 +200,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         if key[0] not in joins:
             return False
         if not tagger:
-            import fugashi
-            tagger.append(fugashi.Tagger())
+            tagger.append(Tagger())
         base = see_through_base(key[0], key[1], tagger[0], joins)
         return base is not None and (base[0] in ignore or base[0] in known_lemmas or base in known_tuples)
     starts = {}                 # a phrase's first lemma -> [(name, lemmas)]
@@ -419,9 +421,8 @@ def _content(best, sources, language, show_source=False):
 def _default_tagger():
     """tag(text) -> (lemma, lForm, kanaBase, cType) when `text` is exactly one Japanese word, else
     None. A word with its prefix or suffix (可能性, 不自然) is one word, read as the dictionary reads it."""
-    import fugashi   # lazy: only a Japanese export pays this import
-    from app.analyzer import affix_joins, join_affixes
-    tagger = fugashi.Tagger()
+    from app.analyzer import Tagger, affix_joins, join_affixes
+    tagger = Tagger()   # loads fugashi: only a Japanese export pays this import
     joins = affix_joins()
 
     def tag(text):
@@ -541,7 +542,7 @@ def known_sets(language, store, settings):
             pass
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-        ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script)
+        ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)
     return cached[0], cached[1], ignore
 
 

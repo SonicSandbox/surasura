@@ -257,6 +257,22 @@ class MasterDashboardApp:
                 return key
         return "asis"
 
+    # Kana in ( ) right after kanji in a Japanese book (`logic.paren_readings`, read by
+    # analyzer.strip_text_conventions): stored key -> the label shown under Language & Parsing.
+    PAREN_READINGS_LABELS = {
+        "hiragana": "Hiragana only (recommended)",
+        "any": "Any kana",
+        "off": "Keep as text",
+    }
+
+    @classmethod
+    def _paren_readings_key(cls, label):
+        """Settings label -> stored key. Unknown labels fall back to 'hiragana' (the default)."""
+        for key, text in cls.PAREN_READINGS_LABELS.items():
+            if text == label:
+                return key
+        return "hiragana"
+
     def _effective_zh_script(self, lang):
         """The conversion that applies to `lang` right now — "asis" unless it's Chinese with a script
         chosen. UI thread only (reads a Tk variable); workers get it passed in."""
@@ -297,6 +313,7 @@ class MasterDashboardApp:
         self.var_language = tk.StringVar(value="ja")
         self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_zh_script = tk.StringVar(value="asis")  # read all Chinese as one script (asis/s/t)
+        self.var_paren_readings = tk.StringVar(value="hiragana")  # 漢字(かな) in a book: hiragana/any/off
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
@@ -364,6 +381,7 @@ class MasterDashboardApp:
         self.lang_options_frame: Optional[ttk.Frame] = None
         self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
         self.zh_script_frame: Optional[ttk.Frame] = None
+        self.paren_readings_frame: Optional[ttk.Frame] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -810,17 +828,16 @@ class MasterDashboardApp:
         """The ignore/blacklist/graduated words — cheap plain-text reads, loaded on every preview.
         Read in the library's Chinese script, like the analyzer reads them (stdlib only, so the
         conversion is safe in this process; the tables load only if a script is chosen)."""
-        from app.path_utils import get_user_files_path
+        from app.path_utils import get_user_files_path, read_text
         from app.zh_script import convert
         uf = get_user_files_path(lang)
         ignore = set()
         for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
             try:
-                with open(os.path.join(uf, name), encoding="utf-8") as f:
-                    for line in f:
-                        s = line.strip()
-                        if s and not s.startswith("#"):
-                            ignore.add(convert(s, script))
+                for line in read_text(os.path.join(uf, name), lang).splitlines():   # its own encoding
+                    s = line.strip()
+                    if s and not s.startswith("#"):
+                        ignore.add(convert(s, script))
             except Exception:
                 pass
         return ignore
@@ -829,13 +846,12 @@ class MasterDashboardApp:
         """Known lemmas WITHOUT the tokenizer (dictForm approximation). Only used when the store's
         normalized known-cache is stale — parsing KnownWord.json is the expensive bit on a big
         library, so it's kept off the common (fresh-cache) preview path."""
-        from app.path_utils import get_user_files_path
+        from app.path_utils import get_user_files_path, read_text
         from app.zh_script import convert
         uf = get_user_files_path(lang)
         known = set()
         try:
-            with open(os.path.join(uf, "KnownWord.json"), encoding="utf-8") as f:
-                data = json.load(f)
+            data = json.loads(read_text(os.path.join(uf, "KnownWord.json"), lang))   # its own encoding
             entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
             for e in entries:
                 if e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1:
@@ -860,15 +876,14 @@ class MasterDashboardApp:
         self._last_index_check = now
         try:
             lang = self.var_language.get() or "ja"
-            from app.path_utils import get_data_path, get_user_files_path
+            from app.path_utils import get_data_path, get_user_files_path, is_content_file
             data_dir = get_data_path(lang)
             files = []
             for folder in ("HighPriority", "LowPriority", "GoalContent"):
                 base = os.path.join(data_dir, folder)
                 if os.path.isdir(base):
                     for r, _d, names in os.walk(base):
-                        files += [os.path.join(r, n) for n in names
-                                  if n.lower().endswith((".txt", ".md", ".srt", ".ass"))]
+                        files += [os.path.join(r, n) for n in names if is_content_file(n)]
             script = self._effective_zh_script(lang)
             store = token_index.open_store(lang)
             try:
@@ -930,6 +945,8 @@ class MasterDashboardApp:
                     self.chk_reinforce_widget.pack_forget()
                 if self.zh_script_frame:
                     self.zh_script_frame.pack_forget()
+                if self.paren_readings_frame:
+                    self.paren_readings_frame.pack_forget()
 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
@@ -942,6 +959,9 @@ class MasterDashboardApp:
                     self.var_reinforce.set(False)
                     # zh_script is deliberately NOT reset: it belongs to the Chinese library, and
                     # a trip to Japanese and back must not silently change how Chinese is read.
+                    # (Nor is paren_readings on the way to Chinese: it belongs to the Japanese one.)
+                    if self.paren_readings_frame:
+                        self.paren_readings_frame.pack(anchor=tk.W, pady=(2, 0))
     
             self.save_settings()
         finally:
@@ -954,15 +974,15 @@ class MasterDashboardApp:
     def _library_has_content(self):
         """True if the current language's library has at least one analyzable content file. The
         extensions MUST match what the analyzer actually reads (analyzer.get_files_recursive:
-        .txt/.md/.srt/.ass) — otherwise Generate could enable on files the analysis then ignores
-        (e.g. a tier of only .vtt), yielding an empty journey."""
-        from app.path_utils import get_data_path
+        path_utils.is_content_file) — otherwise Generate could enable on files the analysis then
+        ignores (e.g. a tier of only .vtt), yielding an empty journey."""
+        from app.path_utils import get_data_path, is_content_file
         base = get_data_path(self.var_language.get() or "ja")
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(base, tier)
             if os.path.isdir(d):
                 for _r, _dirs, files in os.walk(d):
-                    if any(f.lower().endswith((".txt", ".md", ".srt", ".ass")) for f in files):
+                    if any(is_content_file(f) for f in files):
                         return True
         return False
 
@@ -1334,6 +1354,24 @@ class MasterDashboardApp:
                               "學習 count as one word. Your files are not changed. Simplified→"
                               "Traditional can occasionally pick the wrong character, and uses "
                               "standard forms (爲, 裏) rather than Taiwan's (為, 裡).")
+
+        # Readings in parentheses (Japanese): kana right after kanji in a book is that kanji's reading,
+        # a stand-in for ruby, not more words. Packed by update_ui_for_language for Japanese only;
+        # changing it re-indexes the library in the background, like Script above.
+        self.paren_readings_frame = ttk.Frame(self.lang_options_frame)
+        ttk.Label(self.paren_readings_frame, text="Readings in ( ) in books:").pack(side=tk.LEFT)
+        combo_readings = ttk.Combobox(self.paren_readings_frame,
+                                      values=list(self.PAREN_READINGS_LABELS.values()),
+                                      state="readonly", width=27)
+        combo_readings.set(self.PAREN_READINGS_LABELS.get(self.var_paren_readings.get(),
+                                                          self.PAREN_READINGS_LABELS["hiragana"]))
+        combo_readings.pack(side=tk.LEFT, padx=(5, 0))
+        combo_readings.bind("<<ComboboxSelected>>",
+                            lambda e: (self.var_paren_readings.set(self._paren_readings_key(combo_readings.get())),
+                                       self.save_settings()))
+        ToolTip(combo_readings, "Drops a kanji's reading written after it in brackets, so it isn't "
+                                "counted twice: 山田太郎(やまだ・たろう) → 山田太郎. Katakana there is "
+                                "often a note, so it stays by default.")
 
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -2191,6 +2229,8 @@ class MasterDashboardApp:
             self.logic_settings = settings.get("logic", {})
             self.var_inline_completed.set(self.logic_settings.get("inline_completed_files", False))
             self.var_hide_audio.set(self.logic_settings.get("hide_audio_button", False))
+            readings = self.logic_settings.get("paren_readings", "hiragana")
+            self.var_paren_readings.set(readings if readings in self.PAREN_READINGS_LABELS else "hiragana")
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
@@ -2275,6 +2315,7 @@ class MasterDashboardApp:
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),
                     "hide_audio_button": self.var_hide_audio.get(),
+                    "paren_readings": self.var_paren_readings.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file are
                     # user-editable in settings.json, like 'weights'); the slider sets 'band'.
                     "selection": {

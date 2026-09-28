@@ -6,7 +6,7 @@ import bisect
 import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text
 from app import settings_manager
 
 # Configuration
@@ -129,12 +129,15 @@ class AnchorFinder:
     _SRT_TIME = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->")
     _ASS_TIME = re.compile(r"^Dialogue:[^,]*,\s*(\d{1,2}):(\d{2}):(\d{2})[.:](\d{1,2})", re.M)
 
-    def __init__(self, cache_path=None, script="asis"):
+    def __init__(self, cache_path=None, script="asis", language=None):
         # The Chinese script the report's sentences were converted to (`zh_script`, already
         # effective). With one chosen, sentences are searched in a converted copy of each file and
         # the anchor handed back is the file's OWN wording at the same offsets (conversion is
         # length-preserving), because the browser searches the real file.
         self._script = script if script in ("s", "t") else "asis"
+        # The library's language: a file is read in its own encoding, as the analyzer read it
+        # (path_utils.read_text) — a CP932 or UTF-16 subtitle's sentences find their cue too.
+        self._language = language
         self._converted = {}
         self._cache = {}
         self._cues = {}
@@ -153,8 +156,7 @@ class AnchorFinder:
     def _raw(self, path):
         if path not in self._cache:
             try:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    self._cache[path] = f.read()
+                self._cache[path] = read_text(path, self._language)
             except OSError:
                 self._cache[path] = ""
         return self._cache[path]
@@ -194,9 +196,12 @@ class AnchorFinder:
 
     @staticmethod
     def _loose(raw, needle):
-        """The file's own wording for `needle`, allowing whitespace the tokenizer dropped. Empty if
-        absent or ambiguous."""
-        pattern = r"\s*".join(re.escape(ch) for ch in needle)
+        """The file's own wording for `needle`, allowing whitespace the tokenizer dropped — and what the
+        reader removed from inside a line (a footnote mark ①, a ruby reading 《かんじ》, a caption's
+        [音楽]: analyzer.REMOVED_INLINE), which the sentence no longer holds. Empty if absent or
+        ambiguous."""
+        from app.analyzer import REMOVED_INLINE
+        pattern = rf"(?:\s|{REMOVED_INLINE})*".join(re.escape(ch) for ch in needle)
         found = None
         for match in re.finditer(pattern, raw):
             if found is not None:
@@ -497,14 +502,21 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
                     rec[f"Aud {n}"] = 1
 
 
-def anki_backlog_keys(language, settings):
+def anki_backlog_keys(language, settings, list_path=None):
     """The words of the new cards already waiting in Anki, for the report's label — "Label backlogged
     Anki words" (`anki_backlog_on_generate`; Junban_Backlog_Spec WP-B8). Keys only, never card
     content: each card's word and its hiragana fold, as the Anki sync wrote them
     (`User Files/<lang>/anki_backlog.json`), and for Japanese the word the dictionary reads each card
     as (`_dictionary_keys`). Chinese keys are read in the script the report is in, as the list is.
     `[]` when switched off, with no backlog file, or on any error — the report then has no label, no
-    filter entry and no count: a user without Anki sees nothing different."""
+    filter entry and no count: a user without Anki sees nothing different.
+
+    `list_path` is the list the report shows. A Japanese card whose own spelling is a word on it
+    (`anki_match.lookup`, L1–L4) is placed there by Junban, and so is labelled there only: the
+    dictionary's reading and the user's "yes" are for the cards the list does not hold as written —
+    a 解す card is 解す's row, not also 解する's; 生き the noun's, not also 生きる's — and a kana
+    spelling's fold for the cards the list does not hold as spelled (`_own_keys`: スレ, not also
+    擦れる's すれ) — Junban's ladder, `anki_match.card_key`. Without a list, every card's keys are given."""
     if not (settings or {}).get("anki_backlog_on_generate", True):
         return []
     try:
@@ -516,10 +528,13 @@ def anki_backlog_keys(language, settings):
             if script != "asis":
                 keys = {convert(key, script) for key in keys}
         if keys and language == "ja":
+            from app import anki_match
             backlog = anki_sync.load_backlog(language)
             answers = _pair_answers(language)
-            keys |= _dictionary_keys(backlog, answers)
-            keys |= _confirmed_keys(backlog, answers)
+            listed = anki_match.build_index(list_path, language="ja").rank_of if list_path else {}
+            keys = _own_keys(backlog, listed) if listed else keys
+            keys |= _dictionary_keys(backlog, answers, listed)
+            keys |= _confirmed_keys(backlog, answers, listed)
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
@@ -531,7 +546,34 @@ def anki_backlog_keys(language, settings):
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
 
 
-def _dictionary_keys(backlog, answers=None):
+def _own_keys(backlog, listed):
+    """Each card's own keys as the Anki sync wrote them — its word, and the word's hiragana fold — but the
+    word alone when the list (`listed`) holds it as written: Junban tries the fold (L4) only when the
+    spelling misses, so a スレ card is スレ's row, never also the row that holds すれ (擦れる's Forms)."""
+    keys = set()
+    notes = backlog.get("notes")
+    for entry in (notes.values() if isinstance(notes, dict) else ()):
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("word"), str) and entry["word"] in listed:
+            keys.add(entry["word"])
+        else:
+            keys.update(str(key) for key in entry.get("keys") or [] if key)
+    return keys
+
+
+def _on_the_list(word, answers, listed):
+    """Whether Junban places this card with no reading of its own: its spelling is on the list (L1–L4),
+    or the user said "yes" to a word that is (`anki_match.card_key`'s first two rungs)."""
+    from app import anki_match
+    if not listed:
+        return False
+    answer = (answers or {}).get(word) or {}
+    return bool(anki_match.lookup(word, listed, "ja")
+                or (answer.get("answer") == "yes" and answer.get("target") in listed))
+
+
+def _dictionary_keys(backlog, answers=None, listed=None):
     """The list words a Japanese backlog's cards ARE, read through the dictionary
     (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
     content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
@@ -543,7 +585,8 @@ def _dictionary_keys(backlog, answers=None):
     read only when an ending comes off it — バシッと, ひょいと (Anki_Match_Consistency_Scope.md item 1) —
     and then keyed by the letters it is written in, as Junban looks it up (`anki_match.card_key`). The
     user's "no" to a card's word being that list word (`answers`) keeps it from being labelled, as it
-    keeps Junban from placing it there.
+    keeps Junban from placing it there. A card the list (`listed`, its `rank_of`) holds as written, or
+    by a "yes", is not read at all (`_on_the_list`): alone, 解す reads 解する and 生き 生きる.
 
     The tokenizer is built only when a card needs it, here where the report renders — never in the
     dashboard (Anki_Known_Sync_Spec I6). One that cannot be had leaves the cards' own keys, as
@@ -552,7 +595,8 @@ def _dictionary_keys(backlog, answers=None):
     notes = backlog.get("notes")
     words = {entry["word"] for entry in (notes.values() if isinstance(notes, dict) else ())
              if isinstance(entry, dict) and isinstance(entry.get("word"), str)
-             and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS))}
+             and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS))
+             and not _on_the_list(entry["word"], answers, listed)}
     if not words:
         return set()
     keys = set()
@@ -570,7 +614,8 @@ def _dictionary_keys(backlog, answers=None):
             if anki_match._KANJI_RE.search(word):
                 found = {token[0]} if token[0] else set()
             elif len(tokens) == 2 and token[2]:
-                found = {token[2], anki_match.fold_kana(token[2])}
+                found = ({token[2]} if token[2] in (listed or {})
+                         else {token[2], anki_match.fold_kana(token[2])})
             else:
                 continue
             answer = (answers or {}).get(word) or {}
@@ -596,12 +641,14 @@ def _pair_answers(language):
     return {word: pair for word, pair in pairs.items() if isinstance(pair, dict)} if isinstance(pairs, dict) else {}
 
 
-def _confirmed_keys(backlog, answers):
+def _confirmed_keys(backlog, answers, listed=None):
     """The list words the user said a waiting card IS — their "yes" (`_pair_answers`): あおぐ is 仰ぐ.
-    Junban places the card there, so the label marks it there."""
+    Junban places the card there, so the label marks it there — unless the card's own spelling is on
+    the list (`listed`): Junban's exact keys come before any answer."""
+    from app import anki_match
     notes = backlog.get("notes")
     words = {entry.get("word") for entry in (notes.values() if isinstance(notes, dict) else ())
-             if isinstance(entry, dict)}
+             if isinstance(entry, dict) and not (listed and anki_match.lookup(entry.get("word"), listed, "ja"))}
     return {str(pair["target"]) for word, pair in (answers or {}).items()
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
@@ -629,7 +676,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     # is actually switched on — a run with it off pays nothing.
     from app.zh_script import effective as _effective_script
     source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
-                                  script=_effective_script(target_lang, settings.get("zh_script")))
+                                  script=_effective_script(target_lang, settings.get("zh_script")),
+                                  language=target_lang)
                      if settings.get("source_display", "off") != "off" else None)
 
     # Optional speech module: which sentences already have generated audio. Gated on the badge
@@ -846,7 +894,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     except Exception:
         koe_config = None
     koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
-    anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {}),
+    anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
+                                                 PRIORITY_CSV),
                                ensure_ascii=False).replace("</", "<\\/")
 
     html_content = html_content.replace(

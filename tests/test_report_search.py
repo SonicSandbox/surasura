@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import analyzer
+from app.unicode_ranges import HAN
 
 
 # --------------------------------------------------------------------------- #
@@ -163,8 +164,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     leading verse number off an example sentence — Junban_Backlog_Spec §16.11; 13 keeps a word's
     prefixes and suffixes, so 新幹線 and 可能性 are words — Patterns_Quality_Spec §6.6; 14 decides each
     お / ご word once for all its spellings — Patterns_Quality_Spec §15.9 — and gives a Chinese run no
-    Japanese 文 ranks.)"""
-    assert analyzer.ENGINE_REVISION == 14
+    Japanese 文 ranks; 15 is the parsing fixes: encodings, subtitle markup and the
+    formats' conventions, UAX #29 sentence ends, NFKC for the tagger, numbers and symbols no words.)"""
+    assert analyzer.ENGINE_REVISION == 15
 
 
 # --------------------------------------------------------------------------- #
@@ -353,15 +355,16 @@ def rs_norm(s):
 
 
 def rs_keep_needle(s):
-    """Mirror of rsKeepNeedle."""
-    return bool(re.search(r"[㐀-䶿一-鿿々]", s)) or len(s) >= 3
+    """Mirror of rsKeepNeedle: a kanji is any Han character (app/unicode_ranges.py)."""
+    return bool(re.search(f"[{HAN}]", s)) or len(s) >= 3
 
 
 def test_the_mirrors_match_the_template(web_html):
     """If either JS rule changes, this fails until the mirror above is updated with it."""
     assert "s.normalize('NFKC').trim()" in web_html
     assert ".replace(/[\\u30A1-\\u30F6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60))" in web_html
-    assert "return /[\\u3400-\\u4DBF\\u4E00-\\u9FFF々]/.test(s) || s.length >= 3;" in web_html
+    assert ("return /[々〇\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\u{20000}-\\u{3FFFF}]/u.test(s) "
+            "|| s.length >= 3;") in web_html
 
 
 def test_a_hiragana_query_matches_a_katakana_reading_and_back():
@@ -381,6 +384,9 @@ def test_variant_needles_keep_kanji_stems_and_drop_short_kana():
     assert rs_keep_needle("ください")
     for stem in ("し", "さ", "で", "いっ"):
         assert not rs_keep_needle(stem)
+    # A kanji is any Han character (app/unicode_ranges.py): 〇, and 𠮟 past U+FFFF, which String.length
+    # counts as 2 — short of 3, so only the kanji test keeps it.
+    assert rs_keep_needle("〇") and rs_keep_needle("𠮟")
 
 
 def test_primary_is_an_exact_match_not_a_prefix():

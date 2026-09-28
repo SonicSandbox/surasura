@@ -34,8 +34,9 @@ from datetime import datetime
 from app import anki_connect
 from app.anki_connect import AnkiError
 from app.anki_utils import clean_field_html
-from app.path_utils import get_user_files_path
+from app.path_utils import get_user_files_path, read_text
 from app.token_index import known_signature
+from app.unicode_ranges import HAN, KANA
 
 KNOWN_FILE = "KnownWord.json"
 STATE_FILE = "anki_sync_state.json"
@@ -44,12 +45,15 @@ SOURCE = "AnkiConnect"
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
 BACKLOG_FILE = "anki_backlog.json"
-BACKLOG_VERSION = 1
+# Bump when a note's entry would now be read differently: a backlog saved under another version is
+# read again in full, once. 2: a field is read as its one word (`anki_match.card_word`: 「撒く」 -> 撒く).
+BACKLOG_VERSION = 2
 
-# Copied from analyzer.has_target_language — importing the analyzer would load fugashi/pandas into
-# the dashboard (I6).
-_JA_TARGET_RE = re.compile(r'[぀-ゟ゠-ヿ一-龯]')  # Hiragana + Katakana + Kanji
-_ZH_TARGET_RE = re.compile(r'[一-鿿]')                            # any CJK ideograph
+# analyzer.has_target_language, built from the same ranges (app/unicode_ranges.py) — importing the
+# analyzer would load fugashi/pandas into the dashboard (I6). The copy this replaced stopped at U+9FAF,
+# so a card whose word is written in CJK Extension B (𠮷, 𩸽) was dropped as "no Japanese".
+_JA_TARGET_RE = re.compile(f'[{KANA}{HAN}]')  # Hiragana + Katakana + Kanji
+_ZH_TARGET_RE = re.compile(f'[{HAN}]')        # any CJK ideograph
 
 # The dashboard's auto-sync thread and the window's Sync button may overlap; one writer at a time.
 _LOCK = threading.Lock()
@@ -116,8 +120,9 @@ def _read_known_file(language):
     if not os.path.exists(path):
         return None, None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # In the file's own encoding (path_utils.read_text) — a BOM or UTF-16 no longer refuses it —
+        # strictly: this file is written back, so a byte no encoding reads stops the sync instead.
+        data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError) as e:
         raise _KnownFileError(f"Your known words file could not be read, so nothing was changed "
                               f"({KNOWN_FILE}: {e}).")
@@ -454,8 +459,9 @@ def backlog_keys(language):
 
 def _backlog_entry(note, fields, language):
     """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
-    word comes from the same field the known sync reads (Auto = the first), cleaned the way Junban
-    cleans it, so the report and the reorder agree on a card's word."""
+    word comes from the same field the known sync reads (Auto = the first), read the way Junban reads
+    it (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く), so the report and the reorder agree on a
+    card's word."""
     from app import anki_match
     note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
     ordered = sorted(note_fields, key=lambda name: _field_order(note_fields[name]))
@@ -463,7 +469,7 @@ def _backlog_entry(note, fields, language):
     if not resolved:
         return None
     value = note_fields.get(resolved[0])
-    word = anki_match.normalize_word(value.get("value", "") if isinstance(value, dict) else "")
+    word = anki_match.card_word(value.get("value", "") if isinstance(value, dict) else "", language)
     if not word or not _has_target(word, language):
         return None
     keys = [word]
@@ -485,10 +491,10 @@ def _backlog_entry(note, fields, language):
 def sync_backlog(language, url, decks, fields):
     """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
 
-    Read-only on Anki; delta by note id (a note already read keeps its entry; the decks or fields
-    changing reads everything again). Never raises: returns `(count, error)`. A failed read, or an
-    empty answer where there was a backlog, keeps the previous file (the "refuse to write when the
-    input can't be trusted" rule).
+    Read-only on Anki; delta by note id (a note already read keeps its entry; the decks, the fields
+    or `BACKLOG_VERSION` changing reads everything again). Never raises: returns `(count, error)`.
+    A failed read, or an empty answer where there was a backlog, keeps the previous file (the
+    "refuse to write when the input can't be trusted" rule).
     """
     decks = _clean_decks(decks)
     fields = [str(f) for f in (fields or [])]
@@ -497,7 +503,8 @@ def sync_backlog(language, url, decks, fields):
     url = url or anki_connect.DEFAULT_URL
     with _LOCK:
         old = load_backlog(language)
-        same_scope = old.get("decks") == sorted(decks) and old.get("fields") == fields
+        same_scope = (old.get("version") == BACKLOG_VERSION and old.get("decks") == sorted(decks)
+                      and old.get("fields") == fields)
         cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
         try:
             note_ids = anki_connect.find_notes(url, backlog_query(decks))

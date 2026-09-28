@@ -26,7 +26,9 @@ class TestTelemetry(unittest.TestCase):
             "telemetry_enabled": True,
             "target_language": "zh"
         })
-        mock_open.return_value.read.return_value = settings_content
+        # The bytes a settings.json holds: load_settings reads them through path_utils.read_text,
+        # which decodes by the file's BOM (a Notepad-saved settings.json has one).
+        mock_open.return_value.read.return_value = settings_content.encode("utf-8")
         
         # Force environment to be production so it sends
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
@@ -61,7 +63,7 @@ class TestTelemetry(unittest.TestCase):
         settings_content = json.dumps({
             "telemetry_enabled": True
         })
-        mock_open.return_value.read.return_value = settings_content
+        mock_open.return_value.read.return_value = settings_content.encode("utf-8")
         
         # Force environment to be production so it sends
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
@@ -93,7 +95,7 @@ class TestTelemetry(unittest.TestCase):
         settings_content = json.dumps({
             "telemetry_enabled": True
         })
-        mock_open.return_value.read.return_value = settings_content
+        mock_open.return_value.read.return_value = settings_content.encode("utf-8")
         
         # Force environment to be production so it sends
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
@@ -120,7 +122,7 @@ class TestTelemetry(unittest.TestCase):
         mock_get_state.return_value = {"uid": "real-uid", "open_count": 5}
         mock_get_user_file.return_value = "dummy_settings.json"
         mock_exists.return_value = True
-        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False})
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False}).encode("utf-8")
 
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
              patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):
@@ -139,7 +141,7 @@ class TestTelemetry(unittest.TestCase):
         mock_get_state.return_value = {"uid": "real-uid", "open_count": 5}
         mock_get_user_file.return_value = "dummy_settings.json"
         mock_exists.return_value = True
-        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False})
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": False}).encode("utf-8")
 
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
              patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):
@@ -164,7 +166,7 @@ class TestTelemetry(unittest.TestCase):
         mock_get_state.return_value = {"uid": "real-uid", "open_count": 7}
         mock_get_user_file.return_value = "dummy_settings.json"
         mock_exists.return_value = True
-        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": True})
+        mock_open.return_value.read.return_value = json.dumps({"telemetry_enabled": True}).encode("utf-8")
 
         with patch('app.telemetry.TELEMETRY_ENV', 'production'), \
              patch('app.telemetry.TELEMETRY_URL', 'http://test-url.com'):

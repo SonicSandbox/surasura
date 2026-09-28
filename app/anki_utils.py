@@ -12,6 +12,8 @@ try:
 except ImportError:
     HAS_ZSTD = False
 
+from app.unicode_ranges import HAN, KANA
+
 
 def load_anki_data(apkg_path):
     """
@@ -139,8 +141,9 @@ _TAG_RE = re.compile(r'<[^<]+?>')
 _SOUND_RE = re.compile(r'\[sound:[^\]]+?\]')
 # Anki's bracket furigana: " 漢字[かんじ]" -> "漢字". The reading must follow a kanji/々 directly and
 # be kana only, so other bracketed text survives; the single ASCII space {{furigana:}} puts before
-# the kanji group goes with it.
-_BRACKET_FURIGANA_RE = re.compile(r' ?([㐀-䶿一-鿿豈-﫿々]+)\[[ぁ-ヿー]+\]')
+# the kanji group goes with it. Kanji and kana are Unicode's own ranges (app/unicode_ranges.py):
+# 𠮟[しか]る (Extension B) loses its reading too.
+_BRACKET_FURIGANA_RE = re.compile(rf' ?([{HAN}]+)\[[{KANA}]+\]')
 
 
 def clean_field_html(raw):

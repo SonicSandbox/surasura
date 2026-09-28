@@ -3,7 +3,7 @@ import os
 import copy
 import importlib
 from typing import Any, Dict
-from app.path_utils import get_user_file
+from app.path_utils import get_user_file, read_text
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
@@ -63,6 +63,12 @@ DEFAULT_SETTINGS = {
     "anki_auto_generate": False,
     "logic": {
         "inline_completed_files": False,
+        # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:
+        # "hiragana" reads a hiragana group as that kanji's reading and drops it, as Aozora's 《ruby》 is dropped;
+        # "any" a katakana group too; "off" keeps every group as text (analyzer.strip_text_conventions). It
+        # changes what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS), and in the token
+        # store's build signature when it isn't the default.
+        "paren_readings": "hiragana",
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,
@@ -84,8 +90,8 @@ DEFAULT_SETTINGS = {
             "recency_files": 1
         },
         "sentence_boundaries": {
-            "_comment": "Characters that trigger a sentence split for each language. Includes the HALFWIDTH ideographic full stop \uff61, which anime subtitles use throughout (alongside halfwidth katakana) \u2014 without it their sentences never end and run together into one huge block.",
-            "ja": "\u3002\uff61\uff01\uff1f!?\n",
+            "_comment": "Characters that trigger a sentence split for each language. Includes the HALFWIDTH ideographic full stop \uff61, which anime subtitles use throughout (alongside halfwidth katakana) \u2014 without it their sentences never end and run together into one huge block \u2014 and, for Japanese, the FULLWIDTH full stop \uff0e of horizontal technical and official writing (a decimal point or an abbreviation's is told apart in code: \uff13\uff0e\uff11\uff14).",
+            "ja": "\u3002\uff61\uff0e\uff01\uff1f!?\n",
             "zh": "\u3002\uff61\uff01\uff1f!?\n\uff1b;\u2026\u2026"
         },
         "gui": {
@@ -150,26 +156,27 @@ def load_settings() -> Dict[str, Any]:
 
     if os.path.exists(settings_path):
         try:
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                user_settings = json.load(f)
-                # Deep merge for 'logic'
-                if "logic" in user_settings and isinstance(user_settings["logic"], dict):
-                    user_logic = user_settings["logic"]
-                    if not isinstance(settings.get("logic"), dict):
-                        settings["logic"] = {}
-                        
-                    for key, value in user_logic.items():
-                        if key == "weights" and isinstance(value, dict) and isinstance(settings["logic"].get("weights"), dict):
-                            settings["logic"]["weights"].update(value)
-                        elif isinstance(value, dict) and isinstance(settings["logic"].get(key), dict):
-                            settings["logic"][key].update(value)
-                        else:
-                            settings["logic"][key] = value
-                
-                # Update top-level settings (excluding logic which we handled)
-                for key, value in user_settings.items():
-                    if key != "logic":
-                        settings[key] = value
+            # Hand-edited too (the reveal gates): read in its own encoding (path_utils.read_text), or a
+            # BOM from Notepad loaded the defaults — which the dashboard's next save then wrote over it.
+            user_settings = json.loads(read_text(settings_path))
+            # Deep merge for 'logic'
+            if "logic" in user_settings and isinstance(user_settings["logic"], dict):
+                user_logic = user_settings["logic"]
+                if not isinstance(settings.get("logic"), dict):
+                    settings["logic"] = {}
+                    
+                for key, value in user_logic.items():
+                    if key == "weights" and isinstance(value, dict) and isinstance(settings["logic"].get("weights"), dict):
+                        settings["logic"]["weights"].update(value)
+                    elif isinstance(value, dict) and isinstance(settings["logic"].get(key), dict):
+                        settings["logic"][key].update(value)
+                    else:
+                        settings["logic"][key] = value
+            
+            # Update top-level settings (excluding logic which we handled)
+            for key, value in user_settings.items():
+                if key != "logic":
+                    settings[key] = value
         except Exception as e:
             print(f"Warning: Could not load settings, using defaults: {e}")
 

@@ -1785,6 +1785,9 @@
                     }
                 }
 
+                // The "In Anki" label indexes the whole list, as Junban does (see ankiOwners).
+                ankiListRows = globalData ? globalData.priority : null;
+
                 // --- Filter Global Data with Local Ignore List ---
                 if (globalData && ignoredWords.size > 0) {
                     // Filter Progressive
@@ -2582,27 +2585,68 @@
 
         function foldKana(text) {
             // Katakana to hiragana, for words written only in kana: スルリ on a card is するり here.
-            return /^[\u3041-\u309f\u30a0-\u30ff]+$/.test(text)
+            // Kana only = the kana blocks, as anki_match's _KANA_ONLY_RE (app/unicode_ranges.py).
+            return /^[\u3040-\u30ff\u31f0-\u31ff\u{1aff0}-\u{1b16f}]+$/u.test(text)
                 ? text.replace(/[\u30a1-\u30f6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60))
                 : text;
         }
 
-        // A word is in the backlog when a card's word is its Word, its Orth or one of its Forms — the
-        // keys Junban reorders by — with Junban's Japanese rules: kana spellings fold together, and a
-        // one-character spelling counts only as the row's own word (a 谷 card is not the surname タニ).
+        // The list as the report received it: the label's index is Junban's, whatever this browser hides.
+        let ankiListRows = null;
+        let ankiOwnerIndex = null;
+
+        // A row by its word and reading — the same in both views (上手 is two rows: ジョウズ, カミテ).
+        function ankiRowId(data) {
+            return `${data.Word}|${(typeof data.Reading === 'string') ? data.Reading : ''}`;
+        }
+
+        // Which row each spelling belongs to — Junban's index (anki_match.build_index), so a card is
+        // labelled on the row Junban places it at and on no other: every row's own word (its Orth, then
+        // its Word) before any row's Forms, an earlier row before a later one, then each kana spelling's
+        // hiragana fold where no row holds it. A one-character spelling counts only as the row's own
+        // word (a 谷 card is not the surname タニ). Before this, a くどい card also marked 口説く, whose
+        // Forms hold くどい — 81 spellings of a real list (4,538 rows) marked two rows.
+        function ankiOwners() {
+            if (ankiOwnerIndex) return ankiOwnerIndex;
+            const owners = new Map();
+            const japanese = (typeof globalLanguage === 'undefined') || globalLanguage === 'ja';
+            const rows = ankiListRows || (globalData && globalData.priority) || [];
+            const claim = (raw, row, lemma) => {
+                const key = String(raw || '').trim();
+                if (!key || owners.has(key)) return;
+                if (japanese && Array.from(key).length === 1 && key !== lemma) return;
+                owners.set(key, ankiRowId(row));
+            };
+            rows.forEach(row => {
+                const lemma = (typeof row.Word === 'string') ? row.Word.trim() : '';
+                claim(row.Orth, row, lemma);
+                claim(row.Word, row, lemma);
+            });
+            rows.forEach(row => {
+                const forms = (typeof row.Forms === 'string') ? row.Forms.split('|') : [];
+                forms.forEach(form => claim(form, row, null));
+            });
+            if (japanese) {
+                [...owners].forEach(([key, owner]) => {
+                    const folded = foldKana(key);
+                    if (folded !== key && !owners.has(folded)) owners.set(folded, owner);
+                });
+            }
+            ankiOwnerIndex = owners;
+            return owners;
+        }
+
+        // A word is in the backlog when a card's key — its word, the word's hiragana fold, or the word
+        // the dictionary reads it as — is a spelling this row owns (above): the keys Junban reorders by.
         function inAnkiBacklog(data) {
             if (!ANKI_BACKLOG.size || !data) return false;
             if (data._inAnki !== undefined) return data._inAnki;
-            const lemma = (typeof data.Word === 'string') ? data.Word.trim() : '';
+            const owners = ankiOwners();
+            const row = ankiRowId(data);
             const forms = (typeof data.Forms === 'string') ? data.Forms.split('|') : [];
-            const keys = [lemma, (typeof data.Orth === 'string') ? data.Orth : '', ...forms];
-            const japanese = (typeof globalLanguage === 'undefined') || globalLanguage === 'ja';
-            data._inAnki = keys.some(raw => {
-                const key = String(raw || '').trim();
-                if (!key) return false;
-                if (japanese && key.length === 1 && key !== lemma) return false;
-                return ANKI_BACKLOG.has(key) || ANKI_BACKLOG.has(foldKana(key));
-            });
+            const keys = [data.Word, data.Orth, ...forms].map(raw => String(raw || '').trim());
+            data._inAnki = keys.some(key => key && [key, foldKana(key)].some(
+                spelling => ANKI_BACKLOG.has(spelling) && owners.get(spelling) === row));
             return data._inAnki;
         }
 
@@ -3293,7 +3337,7 @@
         // A variant form is worth matching as a substring only if it can't match everywhere: kana
         // stems like し / さ / で (forms of する / だ) would hit nearly every sentence.
         function rsKeepNeedle(s) {
-            return /[\u3400-\u4DBF\u4E00-\u9FFF々]/.test(s) || s.length >= 3;
+            return /[々〇\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}]/u.test(s) || s.length >= 3;
         }
 
         function rsBuildIndex() {

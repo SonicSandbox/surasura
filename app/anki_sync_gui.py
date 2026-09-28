@@ -253,10 +253,9 @@ class AnkiSyncGui(tk.Toplevel):
         try:
             import json
             from app import settings_manager
-            from app.path_utils import get_user_file
+            from app.path_utils import get_user_file, read_text
             try:
-                with open(get_user_file("settings.json"), "r", encoding="utf-8") as f:
-                    s = json.load(f)
+                s = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
                 if not isinstance(s, dict):
                     raise ValueError("settings.json is not an object")
             except (OSError, ValueError):

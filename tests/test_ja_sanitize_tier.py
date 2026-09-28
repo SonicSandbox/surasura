@@ -37,7 +37,7 @@ def ja_env():
     analyzer.OUTPUT_CSV = os.path.join(results, "priority_learning_list.csv")
     analyzer.OUTPUT_STATS = os.path.join(results, "file_statistics.txt")
     analyzer.OUTPUT_PROGRESSIVE = os.path.join(results, "progressive_learning_list.csv")
-    yield {"data": data_dir, "results": results}
+    yield {"data": data_dir, "results": results, "uf": uf}
     shutil.rmtree(temp, ignore_errors=True)
 
 
@@ -61,3 +61,24 @@ def test_suffixed_lemma_is_sanitized_and_matches_its_tier(ja_env):
     # (b) The (formerly suffixed) lemma now matches the frequency list => a real tier, not "Outside".
     row = df[df["Word"] == "テスト"].iloc[0]
     assert str(row["Tier"]) != "Outside"
+
+
+def test_a_typed_ignore_line_drops_its_word_and_a_kanji_line_only_its_own(ja_env):
+    """End to end: the Ignore line それ, typed as Japanese writes it, drops 其れ (its lemma) from the
+    list; the Blacklist line 為る — the user's own, the lemma the report wrote for する — drops する and
+    never なる, which 為る read alone would be (成る)."""
+    text = "それは大事なことになる。毎日練習する。それでも上手になる。練習するのは楽しい。"
+    with open(os.path.join(ja_env["data"], "HighPriority", "t.txt"), "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(os.path.join(ja_env["uf"], "IgnoreList.txt"), "w", encoding="utf-8") as f:
+        f.write("それ\n")
+    with open(os.path.join(ja_env["uf"], "Blacklist.txt"), "w", encoding="utf-8") as f:
+        f.write("# ja Blacklist\n為る\n")
+
+    sys.argv = ["analyzer.py", "--language", "ja", "--min-freq", "1",
+                "--context-min", "0", "--target-coverage", "100"]
+    analyzer.main()
+
+    words = set(pd.read_csv(os.path.join(ja_env["results"], "priority_learning_list.csv"))["Word"].astype(str))
+    assert "其れ" not in words and "為る" not in words
+    assert {"成る", "練習", "大事"} <= words

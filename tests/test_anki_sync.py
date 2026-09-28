@@ -616,6 +616,30 @@ def test_a_chinese_deck_appends_chinese_terms(zh_resources_dir):
     assert not os.path.exists(_known_path("ja"))
 
 
+def test_a_card_written_in_cjk_extension_b_is_a_japanese_word():
+    """𩸽 (ほっけ, Atka mackerel) and 𠮷 (the 吉 of 𠮷野家) are written in CJK Extension B, past U+FFFF. The
+    sync's Japanese test was a copy of the analyzer's that stopped at U+9FAF, so such a card was skipped as
+    holding no Japanese; both read app/unicode_ranges.py now. A field of Latin alone is still no word."""
+    fake = FakeCollection()
+    fake.add("𩸽")
+    fake.add("𠮷")
+    fake.add("", fields=[("Expression", "hokke")])
+    result = _sync(fake)
+    assert result.error is None and result.added == 2
+    assert _anki_forms() == ["𩸽", "𠮷"]
+
+
+def test_a_chinese_card_in_extension_a_or_b_or_a_ling_zero_is_a_chinese_word():
+    """㗎 (a Cantonese particle, Extension A), 𨋢 (Hong Kong 'lift', Extension B) and 〇 (líng, the zero of
+    二〇一六年) are Chinese characters: appended, where the old test ([一-鿿]) dropped all three."""
+    fake = FakeCollection()
+    for w in ("㗎", "𨋢", "〇"):
+        fake.add(w, deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", w), ("English", "a gloss")])
+    result = _sync(fake, decks=["中文"], language="zh")
+    assert result.error is None
+    assert _anki_forms("zh") == ["㗎", "𨋢", "〇"]
+
+
 # --------------------------------------------------------------------------- #
 # count_known (D10)
 # --------------------------------------------------------------------------- #
@@ -885,6 +909,51 @@ def test_a_katakana_word_is_also_kept_under_its_hiragana_for_the_report():
 
     assert anki_sync.backlog_keys("ja") == {"スルリ", "するり"}
     assert list(_backlog_file()["notes"].values())[0]["freqsort"] is None
+
+
+def test_a_new_card_written_in_cjk_extension_b_reaches_the_backlog():
+    """A 𠮷 card waiting in Anki is marked in the report like any other: the backlog kept only cards holding
+    Japanese by a range that stopped at U+9FAF, so it never reached the report."""
+    fake = FakeCollection()
+    fake.add("𠮷", fields=_mined_fields("𠮷"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        count, error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+    assert (count, error) == (1, None)
+    assert anki_sync.backlog_keys("ja") == {"𠮷"}
+
+
+def test_a_hand_typed_field_is_read_as_the_one_word_junban_reads():
+    """The label and the reorder read a card the same way (`anki_match.card_word`) — a word typed in
+    quotes with its reading on a second line is 撒く, and its key is 撒く, not 「撒く」まく."""
+    fake = FakeCollection()
+    note = fake.add("撒く", fields=_mined_fields("「撒く」<br>まく"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+
+    assert _backlog_file()["notes"][str(note)]["word"] == "撒く"
+    assert anki_sync.backlog_keys("ja") == {"撒く"}
+
+
+def test_a_backlog_saved_by_an_older_version_is_read_again_once():
+    """A note already read keeps its entry (delta by note id) — so a backlog saved before the field was
+    read as its one word would keep 「撒く」まく for good. Another BACKLOG_VERSION reads every note again,
+    once; the next sync is a delta again."""
+    fake = FakeCollection()
+    note = fake.add("撒く", fields=_mined_fields("「撒く」<br>まく"), new=True)
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    with open(os.path.join(get_user_files_path("ja"), "anki_backlog.json"), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "decks": ["TheBank"], "fields": [], "notes": {
+            str(note): {"word": "「撒く」まく", "keys": ["「撒く」まく"], "source": _SOURCE, "freqsort": 30265}}},
+            f, ensure_ascii=False)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        assert fake.notes_info_ids() == [note], "an older backlog is read again"
+        fake.requests.clear()
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        assert fake.notes_info_ids() == [], "and then kept, note by note"
+
+    saved = _backlog_file()
+    assert saved["version"] == anki_sync.BACKLOG_VERSION and saved["notes"][str(note)]["word"] == "撒く"
 
 
 def test_a_failed_or_empty_backlog_read_keeps_the_last_one_and_known_words_are_never_touched(

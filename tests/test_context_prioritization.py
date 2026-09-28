@@ -157,7 +157,8 @@ def test_japanese_quotation_cleanup():
     
     sentences = list(tokenizer.tokenize_sentences(text))
     # We expect 2 sentences:
-    # 1. そうです。
+    # 1. そうです。」 — the closing quote stays with the sentence it closes (Unicode UAX #29 SB9,
+    #    2026-09-27; it used to be stripped from the start of the next sentence and lost)
     # 2. 「うーん、よくわからないから、マインに任せるよ」 (not 」「うーん...)
     
     assert len(sentences) == 2
@@ -165,5 +166,5 @@ def test_japanese_quotation_cleanup():
     s1_text, _ = sentences[0]
     s2_text, _ = sentences[1]
     
-    assert s1_text == "そうです。"
+    assert s1_text == "そうです。」"
     assert s2_text == "「うーん、よくわからないから、マインに任せるよ」"

@@ -48,7 +48,10 @@ from collections import Counter
 # v7 the join table's お / ご words are decided once per word (おやすみ joins as お休み does; お話し
 #    splits as お話 does) and 複雑さ / 三大祭り stay in pieces — still 2.3, so users rebuild once; a v6 blob
 #    holds the first table's words (Patterns_Quality_Spec §15.9).
-SCHEMA_VERSION = 7
+# v8 the parsing fixes (2026-09-27) change what a file's text becomes — its encoding, its
+#    markup and conventions, where sentences end, the tagger reading NFKC, numbers and symbols no words — so every
+#    cached blob holds the old sentences and tokens.
+SCHEMA_VERSION = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -409,16 +412,58 @@ def known_signature(known_path, script="asis"):
 # --------------------------------------------------------------------------- #
 def build_signature(language, reinforce=False, script="asis"):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
-    config change invalidates stale tokens. Only Chinese `reinforce` segmentation and `script`
-    conversion vary at runtime (ja tokenization is fixed; language is already isolated per DB; a
-    tokenizer-LIBRARY change is handled by bumping SCHEMA_VERSION, which rebuilds). Normalized so ja
-    ignores a stray reinforce or script. The script suffix appears ONLY when converting: an as-is
-    store keeps its exact old signature, so upgrading never rebuilds anyone's index (spec I2)."""
+    config change invalidates stale tokens. What varies at runtime: Chinese `reinforce`
+    segmentation, `script` conversion, the sentence boundaries settings.json sets — they decide
+    where every file splits — and what a Japanese book's kana in parentheses become (language is
+    already isolated per DB; a tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by
+    bumping SCHEMA_VERSION, which rebuilds). Normalized so ja ignores a stray reinforce or script.
+    Each suffix appears ONLY when it departs from the default — the script when converting, the
+    boundaries when edited, the readings when not hiragana only — so a store built as shipped keeps
+    its exact old signature and upgrading never rebuilds anyone's index (spec I2)."""
     from app.zh_script import effective
     eff_reinforce = bool(reinforce) and language == "zh"
     sig = f"{language}|reinforce={eff_reinforce}"
     eff_script = effective(language, script)
-    return sig if eff_script == "asis" else f"{sig}|script={eff_script}"
+    if eff_script != "asis":
+        sig = f"{sig}|script={eff_script}"
+    boundaries = _edited_boundaries(language)
+    if boundaries is not None:
+        sig = f"{sig}|boundaries={boundaries}"
+    readings = _chosen_paren_readings(language)
+    return sig if readings is None else f"{sig}|paren_readings={readings}"
+
+
+def _edited_boundaries(language):
+    """The language's sentence boundaries as settings.json sets them (every run and the indexer split
+    with these) — a sorted JSON list — or None when they are the default set in any order: load_settings
+    adds any default character an old copy lacks, so the user's own 。！？!?\\n｡ counts as the default.
+    Read fresh, not from the analyzer's import-time LOGIC: the dashboard's check must see a hand edit
+    as the indexer it launches will."""
+    try:
+        from app import settings_manager
+        default = settings_manager.DEFAULT_SETTINGS["logic"]["sentence_boundaries"].get(language)
+        current = settings_manager.load_settings()["logic"]["sentence_boundaries"].get(language)
+    except Exception:
+        return None
+    if not isinstance(current, str) or not isinstance(default, str) or set(current) == set(default):
+        return None
+    return json.dumps(sorted(set(current)), ensure_ascii=False)
+
+
+def _chosen_paren_readings(language):
+    """What a Japanese book's kana in parentheses right after kanji become when settings.json chooses
+    other than the default (logic.paren_readings: "any" or "off" — analyzer.strip_text_conventions
+    reads it), else None: hiragana only, an unknown value, or a Chinese store the rule never reaches.
+    Read fresh, as the boundaries are."""
+    if language != "ja":
+        return None
+    try:
+        from app import analyzer, settings_manager
+        option = analyzer.paren_readings(settings_manager.load_settings()["logic"])
+        default = settings_manager.DEFAULT_SETTINGS["logic"]["paren_readings"]
+    except Exception:
+        return None
+    return None if option == default else option
 
 
 def make_tokenizer(language, reinforce=False, script="asis"):

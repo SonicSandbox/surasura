@@ -29,6 +29,7 @@ import pytest
 
 from app import analyzer, settings_manager
 from app.anki_match import fold_kana
+from app.unicode_ranges import KANA
 from app.main import anki_sync_is_set_up
 from app.static_html_generator import anki_backlog_keys
 
@@ -215,6 +216,67 @@ def test_damaged_cards_are_passed_over_and_a_broken_backlog_labels_nothing():
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == []
 
 
+# --- the card's own spelling first, as Junban places it --------------------------------------------- #
+def _write_list(tmp_path, rows):
+    """A priority list the way the analyzer writes one (UTF-8 with a BOM, columns by name)."""
+    path = os.path.join(str(tmp_path), "priority_learning_list.csv")
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write("Word,Orth,Forms,Reading\n")
+        for word, orth, forms, reading in rows:
+            f.write(f"{word},{orth},{forms},{reading}\n")
+    return path
+
+
+def test_a_card_the_list_holds_as_written_is_never_read_again(tmp_path):
+    """解す (ほぐす) and the noun 生き are rows of their own; read alone, the dictionary makes them 解する and
+    生きる — other rows. Junban places each card at its own row (L1), so the label keys it there only."""
+    listed = _write_list(tmp_path, [("解する", "解する", "", "カイスル"), ("解す", "解す", "", "ホグス"),
+                                    ("生きる", "生きる", "生き|生きれ", "イキル"), ("生き", "生き", "", "イキ")])
+    _write_backlog(data=_cards("解す", "生き"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["生き", "解す"]
+    # a card the list does not hold as written is still read through the dictionary (Part B)
+    _write_backlog(data=_cards("逃げだす"))
+    listed = _write_list(tmp_path, [("逃げ出す", "逃げ出す", "", "ニゲダス")])
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["逃げだす", "逃げ出す"]
+
+
+def test_a_yes_answer_yields_to_the_cards_own_spelling_on_the_list(tmp_path):
+    """Junban's exact keys come before any answer: a わびる card the list holds as written (a Forms entry of
+    詫びる) is that row, whatever was once answered for it."""
+    listed = _write_list(tmp_path, [("詫びる", "詫びる", "わびる", "ワビル"), ("侘びる", "侘びる", "", "ワビル")])
+    _write_backlog(data=_cards("わびる"))
+    _write_pairs({"わびる": {"target": "侘びる", "answer": "yes", "via": "L6", "at": "2026-09-26T10:00:00"}})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["わびる"]
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["わびる", "侘びる"], "no list: as before"
+
+
+def test_a_kana_card_the_list_holds_as_spelled_keeps_no_fold(tmp_path):
+    """スレ (a forum thread) is a row; すれ is a spelling of 擦れる. Junban folds a katakana card to hiragana
+    only when its spelling misses (L4) — so the スレ card never labels 擦れる too. バシッと's stem is read the
+    same way (L7)."""
+    listed = _write_list(tmp_path, [("スレ", "スレ", "", "スレ"), ("擦れる", "擦れる", "すれ|擦れ", "スレル"),
+                                    ("ばし", "バシッ", "", "バシ")])
+    _write_backlog(data=_cards("スレ", "バシッと"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == [
+        "ばしっと", "スレ", "バシッ", "バシッと"]
+    # a card the list only holds folded still reaches its row through the fold (スルリ -> するり)
+    listed = _write_list(tmp_path, [("するり", "するり", "", "スルリ")])
+    _write_backlog(data=_cards("スルリ"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["するり", "スルリ"]
+
+
+def test_the_report_labels_against_the_list_it_shows(tmp_path):
+    """The generator hands the label the priority list it renders — the same file Junban indexes."""
+    from app import static_html_generator as shg
+    priority = os.path.join(str(tmp_path), "none.csv")
+    with patch.object(shg, "PRIORITY_CSV", priority), \
+         patch.object(shg, "PROGRESSIVE_CSV", os.path.join(str(tmp_path), "none.csv")), \
+         patch.object(shg, "OUTPUT_FILE", os.path.join(str(tmp_path), "report.html")), \
+         patch.object(shg, "anki_backlog_keys", return_value=[]) as keys:
+        shg.generate_static_html(theme="default", open_browser=False)
+    assert keys.call_args[0][2] == priority
+
+
 # --- a presentation setting: re-render, never re-analyze -------------------------------------------- #
 def _signatures():
     args = analyzer.parse_analysis_args(["--language", "ja", "--static"])
@@ -290,8 +352,42 @@ def test_the_match_is_junbans_word_orth_forms_kana_folded_one_char_only_as_itsel
     match = web_html[web_html.index("function inAnkiBacklog(data)"):]
     match = match[:match.index("function ankiBacklogCount")]
     for piece in ("data.Word", "data.Orth", "data.Forms.split('|')", "foldKana(key)",
-                  "key.length === 1 && key !== lemma"):
+                  "owners.get(spelling) === row"):
         assert piece in match, piece
+
+
+def test_the_templates_kana_fold_tests_the_matchers_kana_blocks(web_html):
+    """foldKana folds a word written in kana alone, as anki_match's _KANA_ONLY_RE decides it: the kana blocks of
+    app/unicode_ranges.py, spelled out again in JavaScript. Change one and not the other, and a card's key is
+    folded for Junban and not for the label (or back)."""
+    fold = web_html[web_html.index("function foldKana(text)"):]
+    fold = fold[:fold.index("function inAnkiBacklog")]
+    assert "/^[\\u3040-\\u30ff\\u31f0-\\u31ff\\u{1aff0}-\\u{1b16f}]+$/u.test(text)" in fold
+    assert KANA == "\u3040-\u30FF\u31F0-\u31FF\U0001AFF0-\U0001B16F", (
+        "the kana blocks changed: update foldKana in templates/web_app.html with them")
+
+
+def test_each_spelling_marks_the_one_row_junbans_index_gives_it(web_html):
+    """build_index's precedence, in the browser: every row's own word (Orth, then Word) before any row's
+    Forms, the first row first, a kana spelling's fold last — so a くどい card marks くどい and never
+    口説く, whose Forms hold くどい (81 spellings of a real list marked two rows). A
+    one-character spelling counts in code points, as Python's len does (𠮷 is one)."""
+    owners = web_html[web_html.index("function ankiOwners()"):]
+    owners = owners[:owners.index("function inAnkiBacklog(data)")]
+    own, forms, folds = (owners.index("claim(row.Orth, row, lemma);"), owners.index("forms.forEach(form"),
+                         owners.index("const folded = foldKana(key);"))
+    assert own < owners.index("claim(row.Word, row, lemma);") < forms < folds
+    assert "if (!key || owners.has(key)) return;" in owners, "the first claim wins"
+    assert "if (folded !== key && !owners.has(folded))" in owners, "a fold never displaces a spelling"
+    assert "Array.from(key).length === 1 && key !== lemma" in owners
+
+
+def test_the_label_indexes_the_whole_list_whatever_the_browser_hides(web_html):
+    """Junban reads the list file; the report's Ignore hides rows in this browser only. The index is taken
+    before that filter, so a hidden row still owns its spellings."""
+    init = web_html[web_html.index("window.addEventListener('load'"):]
+    assert init.index("ankiListRows = globalData ? globalData.priority : null;") < init.index(
+        "globalData.priority = globalData.priority.filter(w => !ignoredWords.has(w.Word));")
 
 
 def test_the_show_menu_offers_in_anki_only_when_there_is_a_backlog(web_html):

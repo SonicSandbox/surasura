@@ -327,7 +327,10 @@ def test_after_an_automatic_generate_an_unchanged_backlog_read_keeps_the_report_
         "FreqSort": {"value": "12034", "order": 2}}}
 
     def read_the_backlog():
+        # A repeat read asks for the cards and for those edited since, in one request (`multi`); none was edited.
         with patch.object(anki_sync.anki_connect, "find_notes", return_value=[card["noteId"]]), \
+             patch.object(anki_sync.anki_connect, "multi", return_value=[
+                 {"result": [card["noteId"]], "error": None}, {"result": [], "error": None}]), \
              patch.object(anki_sync.anki_connect, "notes_info", return_value=[card]):
             return anki_sync.sync_backlog("ja", "http://127.0.0.1:8765", ["TheBank"], [])
 

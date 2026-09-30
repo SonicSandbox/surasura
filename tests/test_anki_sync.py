@@ -12,7 +12,7 @@ could otherwise be damaged without anyone noticing:
   * Replace is the only path that removes entries, and it verifies a byte-identical backup first (D12).
 
 `FakeCollection` behaves like a small Anki collection behind AnkiConnect: it answers `findNotes`
-by actually evaluating the deck / `-is:new` / `-is:suspended` / `note:` terms of the query, so a
+by actually evaluating the deck / `-is:new` / `-is:suspended` / `note:` / `edited:n` terms of the query, so a
 test fails if the engine sends the wrong search, not merely if it sends a different string. It is
 reached by patching the global `urllib.request.urlopen` — the same seam as `test_anki_connect.py`
 and every Junban test.
@@ -64,23 +64,31 @@ def _ok(result):
 class FakeCollection:
     """A handful of notes behind a fake AnkiConnect. Records every request (action + params)."""
 
-    def __init__(self, notes=(), offline=False):
+    def __init__(self, notes=(), offline=False, edited_search=True):
         self.notes = []
         self.requests = []
         self.offline = offline
+        self.edited_search = edited_search      # False: an Anki too old for `edited:n` (it refuses the search)
         for note in notes:
             self.add(**note)
 
     def add(self, word, deck="TheBank", model="Lapis", fields=None, new=False, suspended=False,
-            note_id=None):
-        """`fields` is [(name, value), ...] in field order; default: Lapis-like Expression first."""
+            note_id=None, edited=None):
+        """`fields` is [(name, value), ...] in field order; default: Lapis-like Expression first.
+        `edited`: how many days ago the note's text was last edited (None: long ago)."""
         if fields is None:
             fields = [("Expression", word), ("Sentence", f"{word}の例文です。"),
                       ("Meaning", "an English gloss")]
         note_id = note_id or NOTE_BASE + len(self.notes)
         self.notes.append({"noteId": note_id, "deck": deck, "model": model, "fields": fields,
-                           "new": new, "suspended": suspended})
+                           "new": new, "suspended": suspended, "edited": edited})
         return note_id
+
+    def edit(self, note_id, fields):
+        """The user corrects a note in Anki today: new field values, its edit time now."""
+        note = self.note(note_id)
+        note["fields"] = fields
+        note["edited"] = 0
 
     def note(self, note_id):
         return next(n for n in self.notes if n["noteId"] == note_id)
@@ -99,6 +107,8 @@ class FakeCollection:
         if action == "multi":
             return _ok([self._answer(sub) for sub in params["actions"]])
         if action == "findNotes":
+            if "edited:" in params["query"] and not self.edited_search:
+                return {"result": None, "error": "Invalid search: edited:"}
             return _ok(self._find(params["query"]))
         if action == "notesInfo":
             by_id = {n["noteId"]: n for n in self.notes}
@@ -131,6 +141,9 @@ class FakeCollection:
                 continue
             if models and n["model"] not in models:
                 continue
+            edited = re.search(r"edited:(\d+)", query)
+            if edited and (n["edited"] is None or n["edited"] >= int(edited.group(1))):
+                continue                        # Anki's edited:n — the text changed in the last n days
             out.append(n["noteId"])
         return out
 
@@ -367,7 +380,7 @@ def test_a_second_sync_with_no_changes_sends_one_findnotes_and_writes_nothing(ja
     result = _sync(fake)
 
     assert result.mode == "delta"
-    assert fake.actions == ["findNotes"], "no notesInfo when nothing is new"
+    assert fake.actions == ["multi"], "one request (the studied notes and the edited ones together); no notesInfo"
     assert (result.added, result.scanned, result.total_known) == (0, 0, 5)
     assert _read_bytes(_known_path()) == before
     assert os.stat(_known_path()).st_mtime_ns == mtime
@@ -930,6 +943,58 @@ def _mined_fields(word, freqsort="30265"):
 def _backlog_file(language="ja"):
     with open(os.path.join(get_user_files_path(language), "anki_backlog.json"), encoding="utf-8") as f:
         return json.load(f)
+
+
+# --------------------------------------------------------------------------- #
+# Edits: a card corrected after it was read is read again
+# --------------------------------------------------------------------------- #
+def test_a_card_edited_after_it_was_synced_is_read_again_and_nothing_is_removed(ja_words):
+    """A card fixed in Anki after its word was synced (its word corrected, its sentence rewritten) is read again on
+    the next everyday sync — Anki's own `edited:n` search, asked in the same request as the new notes — so the new
+    word counts. Append-only: the word the edit took out stays known. The other notes are not read again."""
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    _sync(fake)
+    fixed = fake.notes[0]["noteId"]
+    fake.edit(fixed, [("Expression", ja_words[5]), ("Sentence", f"{ja_words[5]}の例文です。")])
+
+    fake.requests.clear()
+    result = _sync(fake)
+
+    assert result.mode == "delta" and result.added == 1
+    assert fake.notes_info_ids() == [fixed], "only the edited note is read again"
+    forms = [w["dictForm"] for w in _words()]
+    assert ja_words[5] in forms and ja_words[0] in forms, "the new word is added; the old one stays known"
+
+
+def test_an_anki_that_does_not_know_the_edited_search_still_syncs_new_cards(ja_words):
+    """An Anki too old for `edited:n` refuses that search: the sync then reads new notes only, as it always did."""
+    fake = FakeCollection([{"word": ja_words[0]}], edited_search=False)
+    _sync(fake)
+    fake.add(ja_words[1])
+
+    result = _sync(fake)
+
+    assert result.error is None and result.added == 1
+    assert ja_words[1] in [w["dictForm"] for w in _words()]
+
+
+def test_a_backlog_card_edited_after_it_was_read_gets_its_new_word():
+    """The backlog reads a new card edited since it was written again, so the report's "In Anki" mark and Junban go
+    by the corrected word — and a card whose word field was emptied loses its old entry."""
+    fake = FakeCollection()
+    critic = fake.add("評論家", fields=_mined_fields("評論家"), new=True)
+    weep = fake.add("泣き虫", fields=_mined_fields("泣き虫"), new=True)
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+        fake.edit(critic, _mined_fields("批評家"))
+        fake.edit(weep, _mined_fields(""))
+        fake.requests.clear()
+        count, error = anki_sync.sync_backlog("ja", URL, ["TheBank"], [])
+
+    assert (count, error) == (1, None)
+    assert sorted(fake.notes_info_ids()) == sorted([critic, weep]), "only the edited cards are read again"
+    notes = _backlog_file()["notes"]
+    assert notes[str(critic)]["word"] == "批評家" and str(weep) not in notes
 
 
 def test_the_backlog_is_the_new_cards_of_the_same_decks_and_nothing_is_written_to_anki():

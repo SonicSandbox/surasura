@@ -16,9 +16,12 @@ The rules that make this safe to run silently in the background:
   * **Only studied notes count** (`-is:new`, D3) — the new-card backlog is exactly what Junban ranks.
   * **A file we cannot parse is never written** (I4). Every write is temp file + `os.replace` (I5).
   * **Delta by default.** The state file remembers the note ids already seen; only new ones are
-    fetched. Any change of decks/fields/url/suspended, or a KnownWord.json someone else rewrote
-    (D4: its stat signature no longer matches the one we recorded AFTER our own write), makes the
-    next run a full one — harmless, because appends are deduped.
+    fetched — and, in the same request, those Anki says were edited since the last sync (its own
+    `edited:n` search), so a card corrected after it was read is read again. A review is no edit.
+    Still append-only: a word an edit took out stays known (`replace()` starts over). Any change of
+    decks/fields/url/suspended, or a KnownWord.json someone else rewrote (D4: its stat signature no
+    longer matches the one we recorded AFTER our own write), makes the next run a full one —
+    harmless, because appends are deduped.
 """
 
 import json
@@ -222,6 +225,29 @@ def _multi_ids(url, queries):
     return counts
 
 
+def _ids_and_edits(url, query, since):
+    """(the note ids `query` finds, those among them whose text was edited since `since`) in ONE request.
+
+    The edits are Anki's own `edited:n` search: notes whose fields changed in the last n days — n whole
+    days back to `since` (an ISO time) plus one for Anki's day boundary, so a day's edits are read again
+    once more at most, harmlessly. A review never counts, only an edit. No usable `since` (a first read)
+    asks the one question; an Anki too old for `edited:` fails the second slot, and no edits is the answer.
+    Raises AnkiError as `find_notes` does when the first slot fails."""
+    try:
+        elapsed = (datetime.now() - datetime.fromisoformat(str(since))).total_seconds()
+    except (TypeError, ValueError):
+        return anki_connect.find_notes(url, query), set()
+    days = int(max(0.0, elapsed) // 86400) + 2
+    replies = anki_connect.multi([{"action": "findNotes", "params": {"query": query}},
+                                  {"action": "findNotes", "params": {"query": f"({query}) edited:{days}"}}], url)
+    found, edits = (list(replies) + [None, None])[:2]
+    if not isinstance(found, dict) or found.get("error") is not None or not isinstance(found.get("result"), list):
+        error = found.get("error") if isinstance(found, dict) else None
+        raise AnkiError(f"Anki could not search your decks: {error or 'no answer'}", kind="action")
+    edited = edits.get("result") if isinstance(edits, dict) and edits.get("error") is None else None
+    return anki_connect._int_ids(found["result"]), set(anki_connect._int_ids(edited or []))
+
+
 def deck_study_counts(url, decks, include_suspended=False):
     """{deck: studied note count} in ONE request. Raises AnkiError (offline etc.)."""
     decks = _clean_decks(decks)
@@ -383,9 +409,13 @@ def _sync(language, url, decks, fields, include_suspended, full):
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")
 
-    note_ids = anki_connect.find_notes(url, scope_query(decks, include_suspended))
+    query = scope_query(decks, include_suspended)
+    # A delta asks, in one request, for the studied notes and for those edited since the last sync — an edited
+    # card's text is read again (add-only: its new words are appended; a word the edit took out stays known).
+    note_ids, edited = ((anki_connect.find_notes(url, query), set()) if full
+                        else _ids_and_edits(url, query, state.get("last_sync")))
     seen = set() if full else set(_int_list(state.get("note_ids")))
-    todo = [n for n in note_ids if n not in seen]
+    todo = [n for n in note_ids if n not in seen or n in edited]
     notes = anki_connect.notes_info(url, todo)
     result.scanned = len(notes)
     terms = _terms_from_notes(notes, fields, language, result)
@@ -511,8 +541,10 @@ def _backlog_entry(note, fields, language):
 def sync_backlog(language, url, decks, fields):
     """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
 
-    Read-only on Anki; delta by note id (a note already read keeps its entry; the decks, the fields
-    or `BACKLOG_VERSION` changing reads everything again). Never raises: returns `(count, error)`.
+    Read-only on Anki; delta by note id (a note already read keeps its entry — unless Anki says it was
+    edited since the backlog was written, when it is read again, so a corrected card's word is the new
+    one; the decks, the fields or `BACKLOG_VERSION` changing reads everything again). Never raises:
+    returns `(count, error)`.
     A failed read, or an empty answer where there was a backlog, keeps the previous file (the
     "refuse to write when the input can't be trusted" rule). The file is written only when what it
     holds changed — its notes, decks, fields or version: its (mtime, size) is in the report's render
@@ -530,12 +562,13 @@ def sync_backlog(language, url, decks, fields):
                       and old.get("fields") == fields)
         cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
         try:
-            note_ids = anki_connect.find_notes(url, backlog_query(decks))
-            todo = [n for n in note_ids if str(n) not in cached]
+            note_ids, edited = (_ids_and_edits(url, backlog_query(decks), old.get("synced_at")) if cached
+                                else (anki_connect.find_notes(url, backlog_query(decks)), set()))
+            todo = [n for n in note_ids if str(n) not in cached or n in edited]
             notes = anki_connect.notes_info(url, todo) if todo else []
         except AnkiError as e:
             return count_backlog(language), str(e)
-        entries = {str(n): cached[str(n)] for n in note_ids if str(n) in cached}
+        entries = {str(n): cached[str(n)] for n in note_ids if str(n) in cached and n not in edited}
         for note in notes:
             entry = _backlog_entry(note, fields, language)
             if entry is not None and note.get("noteId") is not None:

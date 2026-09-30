@@ -68,8 +68,9 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.analyzer import (JoinedWord, ReadNode, _compound_part, _join_affix_runs, _join_compounds,  # noqa: E402
-                          _plural, _read, _sanitize_term, join_affixes, tagger_text)
+from app.analyzer import (_SAME_CHARACTER, _STRETCH_DROPPED_RE, JoinedWord, ReadNode, _compound_part,  # noqa: E402
+                          _join_affix_runs, _join_compounds, _lone_marks, _plural, _read, _sanitize_term, _stretched,
+                          join_affixes, tagger_text)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LISTS_DIR = os.path.join(ROOT, "docs", "assets", "reference_lists")
@@ -1270,17 +1271,30 @@ def dictionary_flags(compounds, ogo_split):
     return flags, ogo, created, skipped
 
 
+def stretched(tagger, word):
+    """Is `word` a stretched spelling — one the analyzer reads as another word's spelling, its stretched vowel
+    taken as one ー or dropped (analyzer § A stretched vowel)? シリ〜ズ is read シリーズ, ド〜ン ドーン, しゃーない
+    without its ー. Such a spelling is its word said longer, never the spelling a list uses for the word."""
+    if _stretched("".join(_SAME_CHARACTER.get(c, c) for c in word)):
+        return True
+    read, at = tagger_text(word)
+    return bool(_STRETCH_DROPPED_RE.search(read)) and bool(_lone_marks(read, at, tagger._tagger(read)))
+
+
 def build_aliases(tagger, vocabularies, joins=None, compounds=None):
     """lemma -> the best-ranked spelling that produces it.
 
     Collisions are the subtle part: many spellings collapse to one lemma (する, し, しぃ all
     give 為る), and taking the LAST one seen yields nonsense like 為る -> しぃ. Keep the
     lowest-ranked (most common) spelling instead, so 為る -> する. Words are read as the
-    analyzer reads them (`read_words`: the affix joins and the compounds).
+    analyzer reads them (`read_words`: the affix joins and the compounds); a stretched spelling is
+    skipped (`stretched`).
     """
     best = {}
     for ranks in vocabularies:
         for word, rank in ranks.items():
+            if stretched(tagger, word):
+                continue               # read as its word said longer: シリ〜ズ would become シリーズ's spelling
             tokens = read_words(tagger, word, joins or {}, compounds)
             if len(tokens) != 1:
                 continue               # multi-token entries would key on a misleading lemma

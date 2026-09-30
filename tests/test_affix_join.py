@@ -327,6 +327,12 @@ def test_a_noun_made_by_a_suffix_can_be_read_through_the_word_inside_it(sanitize
     assert analyzer.see_through_base("具体的", "グタイテキ", tagger) is None
     assert analyzer.see_through_base("公園", "コウエン", tagger) is None           # no joined word at all
     assert analyzer.see_through_base("利用者", "リヨウモノ", tagger) is None       # not the table's reading
+    # The polite お / ご is the one prefix read through: it adds politeness, not meaning. A dictionary お / ご word
+    # (ご苦労) stays a word of its own, read through its bare word as 母さん is through 母.
+    assert analyzer.see_through_base("お茶", "オチャ", tagger) == ("茶", "チャ")
+    assert analyzer.see_through_base("ご苦労", "ゴクロウ", tagger) == ("苦労", "クロウ")
+    assert analyzer.see_through_base("お兄ちゃん", "オニイチャン", tagger) == ("兄", "アニ")
+    assert analyzer.see_through_base("お願い", "オネガイ", tagger) == ("願う", "ネガウ")
 
 
 # --- end to end: the list names the whole word ----------------------------------------------------- #
@@ -396,6 +402,22 @@ def test_a_word_read_through_its_known_word_sits_lower_and_keeps_a_sentence_i_pl
     assert int(rows["公園"]["Score"]) == 30 and int(rows["利用者"]["Score"]) == 15
     assert list(listed["Word"]).index("利用者") > list(listed["Word"]).index("公園")
     assert "病院" not in rows and "不自然" not in rows
+
+
+TEA = ("お茶を飲んだ。\n"
+       "お茶が冷めた。\n"
+       "お茶と菓子を出した。\n")
+
+
+def test_a_polite_word_is_read_through_its_word_and_sits_lower(tmp_path):
+    # お茶 is 茶 said politely: knowing 茶, the learner reads お茶 — it stays on the list (a card of its own) at half
+    # the score, and a sentence whose only other new word is 菓子 stays i+1 for 菓子.
+    listed = _generate(tmp_path, TEA, known=("を", "飲む", "た", "が", "冷める", "と", "出す", "茶"),
+                       args=["--only-i-plus-one"])
+    rows = {row["Word"]: row for row in listed.to_dict("records")}
+    assert int(rows["お茶"]["Score"]) * 2 == int(_generate(tmp_path / "b", TEA, known=(
+        "を", "飲む", "た", "が", "冷める", "と", "出す"))[lambda d: d["Word"] == "お茶"]["Score"].iloc[0])
+    assert rows["菓子"]["Context 1"] == "お茶と菓子を出した。"
 
 
 def test_a_busy_word_keeps_the_sentence_it_can_read_among_its_thirty_candidates(tmp_path):

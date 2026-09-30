@@ -80,7 +80,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     word + と is its word, shown with と (ドキッと); お守り and お帰り are words of their own; laughter in katakana
 #     stays in pieces (アッハハ). A compound you can read through words you know sits lower and is no unknown; a rare
 #     compound counts toward its parts. Still 2.4: one re-analysis with 15, 16 and 17.
-ENGINE_REVISION = 18
+# 19: a card with a polite お / ご, a plural (たち, ら, ども) or a noun-making さ / み on it is its word — 順, the "In
+#     Anki" mark, パターン and 例文 read お部屋 as 部屋, 俺たち as 俺 and 優しさ as 優しい, as the list always has; an
+#     お / ご word you can read through its word (お茶 through 茶) sits lower and is no unknown. Still 2.4: one
+#     re-analysis with 15–18.
+ENGINE_REVISION = 19
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -983,10 +987,10 @@ def _join_sokuon_to(words, pos1s=None):
 
 def see_through_base(lemma, reading, tagger, joins=None):
     """(lemma, reading) of the word inside a word + suffixes that make a noun — 利用 in 利用者, 可能 in 可能性,
-    母 in 母さん — else None. Never a prefix word (不自然: the prefix changes the meaning) and never a
-    suffix that makes another kind of word (具体的, 子供っぽい). For U9 (Patterns_Quality_Spec.md §6.8):
-    when the learner knows that word, the joined one stays on the list, lower, and is no unknown when
-    choosing example sentences."""
+    母 in 母さん, and 茶 in お茶: the polite お / ご the one prefix read through — else None. Never another prefix word
+    (不自然: the prefix changes the meaning) and never a suffix that makes another kind of word (具体的, 子供っぽい).
+    For U9 (Patterns_Quality_Spec.md §6.8): when the learner knows that word, the joined one stays on the list,
+    lower, and is no unknown when choosing example sentences."""
     if joins is None:
         joins = affix_joins()
     entry = joins.get(lemma)
@@ -997,7 +1001,12 @@ def see_through_base(lemma, reading, tagger, joins=None):
         return None
     surface, base = words[0].parts[0]
     if base.pos1 == "接頭辞":
-        return None
+        # The polite お / ご is the one prefix read through: it adds politeness, not meaning — お茶 is 茶, ご苦労 苦労.
+        if (base.lemma, base.lForm) not in (("御", "オ"), ("御", "ゴ")) or len(words[0].parts) < 2:
+            return None
+        surface, base = words[0].parts[1]
+        if base.pos1 == "接頭辞":
+            return None
     base_lemma = base.lemma or surface
     return (_sanitize_term(base_lemma) if SANITIZE_JA else base_lemma), base.lForm or base.kana or ""
 

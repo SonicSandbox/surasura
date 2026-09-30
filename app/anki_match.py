@@ -698,8 +698,8 @@ CARD_ENDINGS = ATTACHED_TAILS | {"と"}
 # form): the past た (だ, たら), the polite ます, the negatives ない / ず (ぬ, ん) / まい, the desire たい,
 # the te-, ba- and tari-forms, and the aspect contractions UniDic files as auxiliaries (ちゃう, てる, とく).
 # By their UniDic lemmas, because the analyzer's tokens carry no part of speech (as ATTACHED_TAILS). Voice
-# and derivation make words JMdict does list, so they are no inflection here: 待たせる, 知らせる (せる),
-# 優しさ (さ — an open question).
+# and derivation make words JMdict does list, so they are no inflection here: 待たせる, 知らせる (せる). (優しさ's さ
+# is the adjective's own grammar — `affixes_off` below.)
 INFLECTIONS = frozenset(("た", "ます", "ない", "ず", "まい", "たい", "て", "ば", "たり", "ちゃう", "てる", "とく"))
 
 
@@ -725,6 +725,38 @@ def _suru_inflected(tokens):
 # and written forms — the ない after で / じゃ (UniDic's adjective 無い), the は of では, the ある of である / ではありません.
 COPULA_FORMS = INFLECTIONS | {"無い", "は", "有る"}
 
+# A word's own grammar, which the tokenizer keeps apart and the list counts toward the word — never a word to learn on
+# its own: the polite お / ご before it, a plural or collective suffix after it (俺たち, お前ら, 私ども), and the さ / み
+# that makes a noun of an adjective or a な-word (優しさ, 静かさ). A card written so is its word, in 順, the "In Anki"
+# mark, パターン and 例文 alike. By UniDic lemma and reading, as the analyzer's tokens carry no part of speech: 方 is left
+# out (UniDic reads the plural がた of 先生方 as 方, as it reads the 方 of 見方), and 御 only as お / ご (御心's ミ is kept).
+POLITE_PREFIXES = frozenset((("御", "オ"), ("御", "ゴ")))
+PLURALS = frozenset((("達", "タチ"), ("等", "ラ"), ("共", "ドモ")))
+NOMINALIZERS = frozenset((("さ", "サ"), ("味", "ミ")))    # the み of 新鮮み is 味 ミ to UniDic
+# How a kana card writes that grammar (and the inflected する / copula a card may end in: べんきょうした, しずかだった) —
+# what the report's mark lets through to be read by the tokenizer; change it with the sets above.
+AFFIX_SPELLINGS = (("お", "ご"), ("たち", "ら", "ども", "た", "て", "ない", "ます", "ません", "てる"))
+
+
+def affixes_off(tokens, kana=False):
+    """`tokens` — any tuples that start (lemma, reading, …): the analyzer's or パターン's — with the word's own grammar
+    taken off (above): a polite prefix first; then a plural last, or a さ / み last when exactly one word stands before
+    it and the card is not written in kana alone (`kana`: its stem would be the tagger's guess — やさしさ could be 優しさ
+    or 易しさ). At least one token always stays; nothing else changes."""
+    tokens = list(tokens or ())
+    if len(tokens) >= 2 and tuple(tokens[0][:2]) in POLITE_PREFIXES:
+        tokens = tokens[1:]
+    if len(tokens) >= 2 and tuple(tokens[-1][:2]) in PLURALS:
+        tokens = tokens[:-1]
+    elif len(tokens) == 2 and not kana and tuple(tokens[-1][:2]) in NOMINALIZERS:
+        tokens = tokens[:1]
+    return tokens
+
+
+def _nominalized(tokens, token):
+    """Did a さ / み come off after `token`, the word `one_word` found in `tokens`?"""
+    return len(tokens) >= 2 and token is tokens[-2] and tuple(tokens[-1][:2]) in NOMINALIZERS
+
 
 def _copula_inflected(tokens):
     """Is this ONE word + the copula (だ, or the polite です) in any of its forms? 静かだった, 静かでした, 静かじゃない
@@ -740,9 +772,12 @@ def one_word(tokens):
     ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ); the first of any number when
     it is a conjugated word and the rest its inflection (`_inflected`: 取り消した -> 取り消す, a card is its
     dictionary form), or when the ending is a conjugated する (`_suru_inflected`: 勉強した -> 勉強) or copula
-    (`_copula_inflected`: 静かだった -> 静か) — else None, a phrase or a compound being no one word. `tokens` are the
-    analyzer's `(lemma, reading, surface, orth)`."""
+    (`_copula_inflected`: 静かだった -> 静か) — else None, a phrase or a compound being no one word. The word's own
+    grammar comes off first (`affixes_off`: お部屋 -> 部屋, 俺たち -> 俺, 優しさ -> 優しい). `tokens` are the analyzer's
+    `(lemma, reading, surface, orth)`."""
     tokens = list(tokens or ())
+    tokens = affixes_off(tokens, kana=bool(tokens) and all(
+        isinstance(t[2], str) and _KANA_ONLY_RE.match(t[2]) for t in tokens))
     if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens) or _suru_inflected(tokens):
         tokens = tokens[:1]
     if _copula_inflected(tokens):
@@ -807,8 +842,8 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
         return "", ""
     if _KANA_ONLY_RE.match(word):
         names = (token[2],)
-    elif _inflected(tokens):
-        names = (token[3], token[0])   # the stem 考え of 考えた is the verb's, never the noun 考え
+    elif _inflected(affixes_off(tokens)) or _nominalized(tokens, token):
+        names = (token[3], token[0])   # the stem 考え of 考えた is the verb's, never the noun 考え; 優し of 優しさ 優しい's
     else:
         names = (token[3], token[0], token[2])
     for name in names:

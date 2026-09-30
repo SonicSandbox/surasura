@@ -184,6 +184,18 @@ def test_a_yes_in_junban_labels_its_word_and_a_no_keeps_the_ending_from_labellin
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["あおぐ", "仰ぐ", "同行する"]
 
 
+def test_a_polite_or_plural_card_marks_its_words_row():
+    """The list counts お部屋 as 部屋, 俺たち as 俺 and 優しさ as 優しい — the tokenizer keeps the polite お, the plural
+    and the さ apart — and Junban places the cards there; the mark says the same. A kana card is keyed by the
+    letters of its word (おれたち -> おれ, ごあんないする -> あんない, three tokens), and so is a kana card in a
+    conjugated する (べんきょうした -> べんきょう), where Junban places it. A dictionary お / ご word keys only itself."""
+    _write_backlog(data=_cards("お部屋", "俺たち", "優しさ", "おれたち", "ごあんないする", "べんきょうした", "お守り"))
+    keys = anki_backlog_keys("ja", {"anki_backlog_on_generate": True})
+    for key in ("部屋", "俺", "優しい", "おれ", "あんない", "べんきょう", "お守り"):
+        assert key in keys, key
+    assert "守り" not in keys and "やさしい" not in keys
+
+
 def test_a_phrase_or_a_compound_on_a_card_adds_no_key():
     """気がつく and 恩を売る are phrases, 伊勢海老 a compound of two words: none is ONE row, so none adds
     a key (Junban places phrases, L9). Only a card that is one word, its tail aside, is a row's Word."""

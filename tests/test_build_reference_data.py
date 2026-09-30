@@ -381,6 +381,22 @@ def test_the_compact_tables_come_back_as_the_seam_shapes(brd):
     assert len(parts["parts"]) == 6 and [parts["parts"][i] for i in parts["of"]["上層部"]] == table["上層部"][4]
 
 
+# --- Aliases ------------------------------------------------------------------------------------------------------ #
+
+def test_an_alias_never_takes_a_stretched_spelling_the_tagger_reads_as_its_word(brd, tagger):
+    # The analyzer reads a stretched vowel as its word (シリ〜ズ is シリーズ, ド〜ン ドーン, and しゃーない without its ー is
+    # しゃない, read 社内), so a list's stretched spelling, ranked better than the word's own, used to become the word's
+    # "common spelling". A spelling UniDic lists with its ー (はーい for はい) and a katakana ー (シリーズ) are no stretch.
+    for word in ("シリ〜ズ", "シリ～ズ", "ア〜ン", "ド〜ン", "しゃーない", "すごーーい", "暗ーい"):
+        assert brd.stretched(tagger, word), word
+    for word in ("シリーズ", "ラーメン", "はーい", "する", "しぃ", "食べる"):
+        assert not brd.stretched(tagger, word), word
+    aliases = brd.build_aliases(tagger, [{"シリ〜ズ": 1, "ド〜ン": 2, "しゃーない": 3, "すごーーい": 4, "する": 5, "しぃ": 6},
+                                         {"シリーズ": 1, "しゃない": 2}])
+    assert aliases == {"為る": "する", "社内": "しゃない"}
+    assert brd.build_aliases(tagger, [{}]) == {}
+
+
 # --- The shipped tables ---------------------------------------------------------------------------------------------- #
 
 def test_the_shipped_compound_table_names_each_word_its_kind_and_its_parts():

@@ -54,10 +54,10 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
     uses and joined the list's head; 19 since a word stretched with a long mark is read as itself — いー keeps 2
     of its 3 uses and fell below it; 22 since words made of words are one word — 優先席, 家庭教師 and 社会貢献
-    joined the list above it.)"""
+    joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 22
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 21
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -212,7 +212,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 22
+    assert rank_of["中野"] == rank_of["ナカノ"] == 21
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -645,16 +645,83 @@ def test_a_kanji_card_read_alone_as_one_word_is_placed_as_the_label_marks_it():
 
 
 def test_voice_derivation_a_second_verb_or_a_kana_word_is_no_inflection():
-    """Voice and derivation make words JMdict lists (待たせる, 優しさ — its さ an open question); ている and 始める
-    are verbs of their own; かった is 買った, 勝った or 刈った — a kana card's dictionary form is the
-    tagger's guess, so it is never read for its inflection. And the conjugated stem is the verb's: a
-    card 考えた never lands on the noun 考え."""
+    """Voice makes words JMdict lists (待たせる); ている and 始める are verbs of their own; かった is 買った, 勝った or
+    刈った — a kana card's dictionary form is the tagger's guess, so it is never read for its inflection. And the
+    conjugated stem is the verb's: a card 考えた never lands on the noun 考え. (優しさ left this test: its さ is the
+    adjective's own grammar — see the tests of a card's own grammar below.)"""
     tokenize = _tokenizer().tokenize
     listed = {"待つ": 0, "優しい": 1, "食べる": 2, "買う": 3, "勝つ": 4, "駆る": 5, "考え": 6}
-    for word in ("待たせる", "優しさ", "食べている", "食べ始める", "かった", "考えた"):
+    for word in ("待たせる", "食べている", "食べ始める", "かった", "考えた"):
         assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
-    for word in ("待たせる", "優しさ", "食べている", "食べ始める", "かった"):
+    for word in ("待たせる", "食べている", "食べ始める", "かった"):
         assert anki_match.one_word(tokenize(word)) is None, word
+
+
+# --------------------------------------------------------------------------- #
+# A card with the word's own grammar on it — a polite お / ご, a plural, a さ / み — is its word
+# --------------------------------------------------------------------------- #
+def test_a_card_with_a_polite_prefix_is_its_word():
+    """The list has never had a row for お部屋: the tokenizer reads 御 + 部屋 and counts 部屋. So a card mined as
+    お部屋 is 部屋 for Junban and the mark too, with no question; ご案内する takes the prefix and the する off; the
+    user's "no" to that very pair still wins."""
+    tokenize = _tokenizer().tokenize
+    listed = {"部屋": 0, "挨拶": 1, "案内": 2, "話す": 3}
+    for word, key in (("お部屋", "部屋"), ("ご挨拶", "挨拶"), ("ご案内する", "案内"), ("お話しする", "話す")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+        assert anki_match.one_word(tokenize(word))[0] == ("話す" if word == "お話しする" else key), word
+    no = {"お部屋": {"answer": "no", "target": "部屋"}}
+    assert anki_match.card_key("お部屋", listed, "ja", no, tokenize) == ("", "")
+
+
+def test_a_plural_card_is_its_word():
+    """たち, ら and ども are never joined onto a word, so 俺たち is 俺 + 達 wherever the list counts; the card is 俺.
+    A kana card is looked up by the letters it is written in (おれ), never the lemma the tagger guesses."""
+    tokenize = _tokenizer().tokenize
+    listed = {"俺": 0, "お前": 1, "私": 2, "彼": 3, "おれ": 4}
+    for word, key in (("俺たち", "俺"), ("お前ら", "お前"), ("お前たち", "お前"), ("私ども", "私"), ("彼ら", "彼"),
+                      ("おれたち", "おれ")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+    assert anki_match.card_key("おれたち", {"俺": 0}, "ja", None, tokenize) == ("", "")
+
+
+def test_an_adjective_made_a_noun_is_its_adjective():
+    """優しさ is 優しい + さ to the tokenizer (an adjective takes no suffix join), so the list counts 優しい; the card
+    is 優しい too. The stem is looked up by its dictionary form, never its surface: a row holding 優し is not reached."""
+    tokenize = _tokenizer().tokenize
+    listed = {"優しい": 0, "暑い": 1, "静か": 2, "大切": 3, "新鮮": 4}
+    for word, key in (("優しさ", "優しい"), ("暑さ", "暑い"), ("静かさ", "静か"), ("大切さ", "大切"), ("新鮮み", "新鮮"),
+                      ("お優しさ", "優しい")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+    assert anki_match.card_key("優しさ", {"優し": 0}, "ja", None, tokenize) == ("", "")
+
+
+def test_what_is_no_polite_or_plural_grammar_stays_as_it_is():
+    """やさしさ in kana could be 優しさ or 易しさ — the tagger's guess — so it keeps its さ. Two words before さ
+    (男らしさ) stay a phrase; 見方 and 先生方 are not taken apart (UniDic's 方 tells no plural from a way); a dictionary
+    お / ご word (お守り, ご苦労) is one token and its own word; 御 read ミ is kept (御心 is not 心); two endings stay a
+    phrase; a card that is only お or only たち is left alone."""
+    tokenize = _tokenizer().tokenize
+    listed = {"優しい": 0, "男": 1, "見る": 2, "先生": 3, "守り": 4, "苦労": 5, "心": 6, "待つ": 7, "楽しみ": 8,
+              "お茶": 9, "質": 10}
+    for word in ("やさしさ", "男らしさ", "先生方", "お守り", "ご苦労", "御心", "お待ちください", "楽しみにする",
+                 "お", "たち", ""):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+    assert anki_match.card_key("お茶する", listed, "ja", None, tokenize) == ("お茶", "L7")
+    assert anki_match.one_word(tokenize("見方")) is None
+    assert anki_match.affixes_off([("御", "オ", "お", "お")]) == [("御", "オ", "お", "お")]
+    assert anki_match.card_key("お部屋", {"部屋": 0}, "zh", None, tokenize) == ("", "")
+    assert anki_match.card_key("お部屋", {"部屋": 0}, "ja", None, None) == ("", "")
+
+
+def test_the_grammar_sets_are_the_tokens_the_tagger_gives():
+    """Each (lemma, reading) in the sets is what the tagger yields in a sentence — the test that keeps them honest."""
+    tokenize = _tokenizer().tokenize
+    seen = {tuple(t[:2]) for sentence in ("私たちは彼らが来るのを待った。", "野郎どもが騒いでいる。",
+                                          "お部屋にご案内します。", "その優しさを忘れない。", "赤みが差した頬の丸みが好きだ。")
+            for t in tokenize(sentence)}
+    assert anki_match.POLITE_PREFIXES <= seen
+    assert anki_match.PLURALS <= seen
+    assert anki_match.NOMINALIZERS <= seen | {tuple(t[:2]) for t in tokenize("新鮮みに欠ける。")}
 
 
 def test_the_rules_measured_wrong_never_suggest_anything():

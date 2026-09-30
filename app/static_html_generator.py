@@ -548,7 +548,8 @@ def anki_backlog_keys(language, settings, list_path=None):
 
 
 # How a card's ending is written — する, な, に, と (`anki_match.CARD_ENDINGS`): a kana-only card word is
-# read alone only when it ends in one of these, so a bare kana word never is.
+# read alone only when it ends in one of these, or starts or ends in the word's own grammar or an inflected
+# する / copula (`anki_match.AFFIX_SPELLINGS`: おへや, おれたち, べんきょうした), so a bare kana word never is.
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
 
 
@@ -588,7 +589,8 @@ def _dictionary_keys(backlog, answers=None, listed=None):
     phrase or a compound, not one row.
 
     A kana-only word alone is read wrong too often (まく -> 膜, Junban_Backlog_Spec §8 gotcha 2), so it is
-    read only when an ending comes off it — バシッと, ひょいと (Anki_Match_Consistency_Scope.md item 1) —
+    read only when an ending or the word's own grammar comes off it — バシッと, ひょいと (Anki_Match_Consistency_Scope.md
+    item 1), おれたち, べんきょうした —
     and then keyed by the letters it is written in, as Junban looks it up (`anki_match.card_key`). The
     user's "no" to a card's word being that list word (`answers`) keeps it from being labelled, as it
     keeps Junban from placing it there. A card the list (`listed`, its `rank_of`) holds as written, or
@@ -601,7 +603,9 @@ def _dictionary_keys(backlog, answers=None, listed=None):
     notes = backlog.get("notes")
     words = {entry["word"] for entry in (notes.values() if isinstance(notes, dict) else ())
              if isinstance(entry, dict) and isinstance(entry.get("word"), str)
-             and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS))
+             and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS)
+                  or entry["word"].startswith(anki_match.AFFIX_SPELLINGS[0])
+                  or entry["word"].endswith(anki_match.AFFIX_SPELLINGS[1]))
              and not _on_the_list(entry["word"], answers, listed)}
     if not words:
         return set()
@@ -621,7 +625,7 @@ def _dictionary_keys(backlog, answers=None, listed=None):
                 continue                # 見 alone is 見る's stem, 1人 is not 人 — Junban places neither
             if anki_match._KANJI_RE.search(word):
                 found = {token[0]} if token[0] else set()
-            elif len(tokens) == 2 and token[2]:
+            elif len(tokens) >= 2 and token[2]:     # read from two tokens or more: ごあんないする, べんきょうした
                 found = ({token[2]} if token[2] in (listed or {})
                          else {token[2], anki_match.fold_kana(token[2])})
             else:

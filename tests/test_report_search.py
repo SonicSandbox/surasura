@@ -169,8 +169,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     names whole — katakana names no dictionary lists, runs the library keeps using as one, JMnedict names; 17 reads a
     stretched word as itself and 𠮟 as 叱, keeps quotations in a row one sentence, ignores KnownWord.json's IGNORED
     entries and reads a card field as its one word; 18 makes words of words one word (上層部, 二十歳), a sound
-    word + と its word (ドキッと), and lists a compound you can already read lower.)"""
-    assert analyzer.ENGINE_REVISION == 18
+    word + と its word (ドキッと), and lists a compound you can already read lower; 19 reads a card's polite お / ご,
+    plural or さ as its word's grammar, and lists an お / ご word you can read through its word lower.)"""
+    assert analyzer.ENGINE_REVISION == 19
 
 
 # --------------------------------------------------------------------------- #

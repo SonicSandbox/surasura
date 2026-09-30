@@ -287,7 +287,7 @@ class AnchorFinder:
         try:
             tmp = self._cache_path + ".tmp"
             with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(live, f, ensure_ascii=False)
+                f.write(json.dumps(live, ensure_ascii=False))   # one write, the fast encoder
             os.replace(tmp, self._cache_path)
         except Exception as e:
             print(f"Warning: could not save the anchor cache: {e}")
@@ -786,10 +786,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
             files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
             
                 
-            grouped = df.groupby("Source File")
+            # Each file's rows in list order: the whole table turned into records once, then split by file —
+            # a table per file cost about a millisecond each, a second on a large library.
+            by_file = {}
+            for record in df.to_dict(orient="records"):
+                by_file.setdefault(record["Source File"], []).append(record)
             for filename in files_order:
-                group = grouped.get_group(filename)
-                words = group.to_dict(orient="records")
+                words = by_file[filename]
                 _intern_sources(words, source_map, source_table, source_index, source_finder,
                                 audio_probe)
                 compressed_words = compress_list_of_dicts(words)

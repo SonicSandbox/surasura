@@ -110,8 +110,14 @@ def store_path_for(language):
 # --------------------------------------------------------------------------- #
 # Per-file counts blob (compact; used to subtract a file's contribution on change/remove)
 # --------------------------------------------------------------------------- #
+# zlib's level for the blobs: 4 compresses a full re-read's 200 MB of tokens in about 2.3 s where the default (6) took
+# 5.4 s, for a store about 12% bigger. Every level reads back the same data (zlib), so a store written at the old
+# level is read as it is: the cached tokens don't change, and neither does SCHEMA_VERSION.
+_BLOB_LEVEL = 4
+
+
 def _encode_counts(counts):
-    return zlib.compress(json.dumps(counts, ensure_ascii=False).encode("utf-8"))
+    return zlib.compress(json.dumps(counts, ensure_ascii=False).encode("utf-8"), _BLOB_LEVEL)
 
 
 def _decode_counts(blob):
@@ -126,7 +132,7 @@ def _decode_counts(blob):
 def _encode_tokens(sentences):
     """Per-file tokenized sentences [(s_text, [[lemma,reading,surface],...]),...] -> compact blob.
     Reused by Generate so unchanged files never re-tokenize."""
-    return zlib.compress(json.dumps(sentences, ensure_ascii=False).encode("utf-8"))
+    return zlib.compress(json.dumps(sentences, ensure_ascii=False).encode("utf-8"), _BLOB_LEVEL)
 
 
 def _decode_tokens(blob):
@@ -405,15 +411,12 @@ class Store:
         return False
 
     # -- reconcile (delta, one transaction) ---------------------------------- #
-    def _apply(self, cur, counts, sign):
-        for key, n in counts.items():
-            lemma, reading = split_key(key)
-            d = sign * n
-            cur.execute(
-                "INSERT INTO aggregate(lemma, reading, count) VALUES(?,?,?) "
-                "ON CONFLICT(lemma, reading) DO UPDATE SET count = count + ?",
-                (lemma, reading, d, d),
-            )
+    def _apply(self, cur, counts):
+        cur.executemany(
+            "INSERT INTO aggregate(lemma, reading, count) VALUES(?,?,?) "
+            "ON CONFLICT(lemma, reading) DO UPDATE SET count = count + ?",
+            [(*split_key(key), n, n) for key, n in counts.items()],
+        )
 
     def reconcile(self, files, tokenize_file, build_signature=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
@@ -445,11 +448,15 @@ class Store:
                 for r in cur.execute("SELECT path, mtime, size, total, counts FROM files")
             }
             current = {_norm(p): p for p in files}
+            # What the files change in the aggregate, summed over the whole pass and written once at the end: a full
+            # rebuild wrote a million rows (every word of every file) where the library has some 50,000 words.
+            # Keys stay in the order they are first met, so new words are added in the same order as file by file.
+            delta = Counter()
 
             # Removals — subtract vanished files.
             for key in list(existing):
                 if key not in current:
-                    self._apply(cur, _decode_counts(existing[key]["counts"]), -1)
+                    delta.subtract(_decode_counts(existing[key]["counts"]))
                     cur.execute("DELETE FROM files WHERE path=?", (key,))
                     changed = True
 
@@ -466,8 +473,8 @@ class Store:
                 counts = {k: n for k, n in result["counts"].items() if n > 0}
                 total = sum(counts.values())
                 if row is not None:  # changed: subtract the stale contribution first
-                    self._apply(cur, _decode_counts(row["counts"]), -1)
-                self._apply(cur, counts, +1)
+                    delta.subtract(_decode_counts(row["counts"]))
+                delta.update(counts)
                 names = result.get("names")
                 cur.execute(
                     "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names) "
@@ -477,6 +484,7 @@ class Store:
                 )
                 changed = True
 
+            self._apply(cur, delta)
             cur.execute("DELETE FROM aggregate WHERE count <= 0")  # prune emptied words
             if self.language == "ja" and (changed or cur.execute(
                     "SELECT 1 FROM meta WHERE key='names_tables'").fetchone() is None):
@@ -700,16 +708,28 @@ def ignored_entries(user_files_dir, language):
     Ignore list is: off the list, and never an unknown in a sentence. One reader for every ignore set — the analyzer's
     (`analyzer.load_ignored_entries`, a list's lines read the way the lists are) and the Rarity preview's
     (`preview_ignore_set`), so the slider counts what the list counts. Tokenizer-free, in the file's own encoding; a
-    file that won't read ignores none of its entries."""
+    file that won't read ignores none of its entries.
+
+    The file's entries are read again only when the file changes (`known_signature`, as the known-words cache is):
+    every Rarity slider refresh asked, and parsing a large KnownWord.json was about a quarter of the refresh. The names
+    are asked every time — the switch and the library's tables change without the file."""
     from app.path_utils import read_text
-    try:
-        data = json.loads(read_text(os.path.join(user_files_dir, "KnownWord.json"), language))
-    except Exception:
-        data = None
-    entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    return [str(e.get("dictForm") or "").strip() for e in entries
-            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED"
-            and str(e.get("dictForm") or "").strip()] + ignored_names(language)
+    path = os.path.join(user_files_dir, "KnownWord.json")
+    signature = (language, known_signature(path))
+    kept = _IGNORED_ENTRIES.get(path)
+    if kept is None or kept[0] != signature:
+        try:
+            data = json.loads(read_text(path, language))
+        except Exception:
+            data = None
+        entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        kept = _IGNORED_ENTRIES[path] = (signature, [
+            str(e.get("dictForm") or "").strip() for e in entries
+            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()])
+    return list(kept[1]) + ignored_names(language)
+
+
+_IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries
 
 
 def preview_known_approx(user_files_dir, language, script="asis"):
@@ -829,6 +849,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     tok = analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script) \
         if language == "zh" else analyzer.JapaneseTokenizer(library=False)
     has_lang, extract = analyzer.has_target_language, analyzer.extract_text
+    lemma_in_language = {}      # lemma -> has_lang(lemma), asked once per word: the count below runs on every token
 
     def tokenize_file(path):
         from app import names
@@ -838,7 +859,10 @@ def make_tokenizer(language, reinforce=False, script="asis"):
         counts = Counter()
         for _s_text, s_tokens in sentences:
             for lemma, reading, surface, _orth in s_tokens:
-                if has_lang(lemma, language) or has_lang(surface, language):
+                in_language = lemma_in_language.get(lemma)
+                if in_language is None:
+                    in_language = lemma_in_language[lemma] = has_lang(lemma, language)
+                if in_language or has_lang(surface, language):
                     counts[make_key(lemma, reading)] += 1
         result = {"sentences": sentences, "counts": counts}
         if record is not None:

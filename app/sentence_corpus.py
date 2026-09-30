@@ -23,6 +23,7 @@ import re
 import zipfile
 from datetime import datetime
 
+from app.batch_gc import without_cycle_collection
 from app.unicode_ranges import HAN, KANA
 
 SENTENCES_PER_WORD = 8
@@ -673,6 +674,7 @@ def build(language, save_path, progress=print, show_source=False):
     return written
 
 
+@without_cycle_collection
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Surasura sentence dictionary (Yomitan) export")

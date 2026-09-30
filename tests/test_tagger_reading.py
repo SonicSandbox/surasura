@@ -159,11 +159,33 @@ def test_every_node_keeps_the_texts_own_spelling():
     assert all(isinstance(node, analyzer.ReadNode) for node in nodes)
 
 
-def test_plain_text_gets_the_taggers_own_nodes():
-    # Nothing is copied or wrapped when there is nothing to read differently (most lines of a library).
-    nodes = analyzer.Tagger()("今日は晴れです。")
-    assert not any(isinstance(node, analyzer.ReadNode) for node in nodes)
-    assert "".join(node.surface for node in nodes) == "今日は晴れです。"
+def test_plain_text_nodes_are_copies_sharing_each_dictionary_entrys_feature():
+    # Every node is a copy (ReadNode) carrying fugashi's own reading of it. fugashi splits a node's 26 feature fields
+    # anew for every token — a fifth of a full re-read, where a library's millions of tokens are a few tens of
+    # thousands of dictionary entries — so the same entry met again shares the one reading already made.
+    tagger = analyzer.Tagger()
+    line = "今日は晴れです。今日は雨です。"
+    nodes = tagger(line)
+    assert all(isinstance(node, analyzer.ReadNode) for node in nodes)
+    assert "".join(node.surface for node in nodes) == line
+    fresh = tagger._tagger(line)                     # fugashi's own nodes (valid until its next call): the same
+    assert [(n.surface, n.feature, n.is_unk, n.white_space) for n in nodes] == \
+        [(n.surface, n.feature, n.is_unk, n.white_space) for n in fresh]
+    kyou = [node for node in nodes if node.surface == "今日"]
+    assert kyou[0].feature is kyou[1].feature
+
+
+def test_the_shared_readings_are_bounded_and_start_again_when_full(monkeypatch):
+    # A process that tags a whole library keeps only the entries met lately (about 7 MB): full, it starts again —
+    # and every node still carries fugashi's reading, an unknown word's included (its text names it: word_lemma).
+    monkeypatch.setattr(analyzer, "_FEATURES", {})
+    monkeypatch.setattr(analyzer, "_FEATURES_KEPT", 3)
+    tagger = analyzer.Tagger()
+    line = "図書館でグリムジョーという名前の本を読んだ。"
+    nodes = tagger(line)
+    assert len(analyzer._FEATURES) <= 3
+    fresh = tagger._tagger(line)
+    assert [(n.surface, n.feature, n.is_unk) for n in nodes] == [(n.surface, n.feature, n.is_unk) for n in fresh]
 
 
 def test_text_that_is_only_invisible_characters_is_empty():

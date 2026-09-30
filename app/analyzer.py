@@ -17,7 +17,7 @@ import unicodedata
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter
-from operator import attrgetter
+from operator import attrgetter, itemgetter
 from datetime import datetime
 import abc
 
@@ -29,6 +29,7 @@ from app import word_selection
 from app import modality
 from app import zh_script   # cheap: its tables decode only on the first conversion
 from app import names       # cheap: its tables decode only when a Japanese word is first read
+from app.batch_gc import without_cycle_collection
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
 
 # Default Weights (Overwritten by settings.json if present)
@@ -336,10 +337,18 @@ class ReadNode:
         self.surface, self.feature, self.is_unk, self.white_space = surface, feature, is_unk, white_space
 
 
+_FEATURES = {}          # a node's raw feature string -> fugashi's reading of it, for the entries met lately (Tagger)
+_FEATURES_KEPT = 5000   # entries, about 7 MB — about 90% of a library's tokens; when full it starts again
+
+
 class Tagger:
     """fugashi's tagger reading text as every caller must (`tagger_text`): `tagger(text)` -> the nodes of `text` as
     read, each keeping the text's own spelling as its surface. The one tagger the tokenizer, パターン, the sentence
-    dictionary and 順 make."""
+    dictionary and 順 make.
+
+    Each node is a copy (ReadNode), valid after the next call too, whose feature is shared by every node of the same
+    dictionary entry: fugashi splits a node's feature string into its 26 fields anew for every token — a library's
+    5 million tokens are about 60,000 entries, and that splitting was a fifth of a full re-read."""
 
     def __init__(self):
         import fugashi   # lazy: only a Japanese run pays this import
@@ -352,13 +361,20 @@ class Tagger:
             lone = _lone_marks(read, at, nodes)
             if lone:             # a stretch UniDic lists no spelling for: read the word without it (§ above)
                 return self(text, lone)
-        if at is None:
-            return nodes
         out, end = [], 0
         for node in nodes:
+            raw = node.feature_raw
+            feature = _FEATURES.get(raw)
+            if feature is None:
+                feature = node.feature
+                if len(_FEATURES) >= _FEATURES_KEPT:
+                    _FEATURES.clear()
+                _FEATURES[raw] = feature
+            if at is None:
+                out.append(ReadNode(node.surface, feature, node.is_unk, node.white_space))
+                continue
             start = end + len(node.white_space)
             end = start + len(node.surface)
-            feature = node.feature
             if node.is_unk:
                 # A word the dictionary doesn't know has no lemma: every caller names it by its text — the text
                 # as read (ﾀﾅｶ is the name タナカ, ５０ is 50), not the spelling kept as its surface.
@@ -1499,6 +1515,10 @@ class ChineseTokenizer(Tokenizer):
                 yield s_text, current_sentence_tokens
 
 
+# How the aggregation ranks a word's candidate examples while it keeps the best 30: (too short, too long, cost).
+_CONTEXT_RANK = itemgetter(0, 1, 2)
+
+
 def rolling_context_cost(target_freq, sorted_unknown_freqs):
     """Approximate the i+1 cost of a candidate sentence for a target word.
 
@@ -2341,43 +2361,38 @@ def find_context_sentence(full_text, target_surface):
         return "..." + full_text[start:end].replace("\n", " ") + "..."
     return ""
 
+_SIMPLIFIED_SOURCES = {}    # file name -> the name group_sources lists it under: worked out once per name, not per word
+
+
 def group_sources(source_list):
     """
     Groups similar filenames.
     Less picky: Removes trailing digits, brackets, etc.
     """
     if not source_list: return ""
-    
-    sorted_sources = sorted(list(source_list))
-    groups = defaultdict(int)
-    
-    for src in sorted_sources:
-        base = os.path.splitext(src)[0]
-        # Regex: Remove any sequence of digits, brackets, parens at the end
-        # Also remove spaces/underscores/hyphens immediately preceding them
-        group_key = re.sub(r'[\s_\-\.\(\)\[\]\d]+$', '', base)
-        
-        if len(group_key) < 2: group_key = base # Fallback if aggressive strip leaves nothing
-        
-        groups[group_key] += 1
 
     simplified_sources = []
     for s in source_list:
+        simple = _SIMPLIFIED_SOURCES.get(s)
+        if simple is not None:
+            simplified_sources.append(simple)
+            continue
         base = os.path.splitext(s)[0]
-        
+
         # 1. Simplify CRC/Hash like [A1B2C3D4] or (1920x1080)
         # Remove standard CRC [8 chars hex]
         base = re.sub(r'\s*\[[0-9a-fA-F]{8}\]\s*$', '', base)
-        
+
         # 2. Heuristic: Remove trailing number sequence (likely episode/volume number)
         # Matches: Optional separators + Digits + Optional separators + End
         # This keeps "861" from "861_1" (removes _1)
         # But "861" -> Removes "861" -> Becomes empty -> Reverts to "861" below.
         simple = re.sub(r'[\s_\-\(\)\[\]]*\d+[\s_\-\(\)\[\]]*$', '', base)
-        
-        if not simple: 
+
+        if not simple:
              simple = base
-             
+
+        _SIMPLIFIED_SOURCES[s] = simple
         simplified_sources.append(simple)
     
     groups = Counter(simplified_sources)
@@ -2493,7 +2508,7 @@ def _write_sidecars(results_dir, stats):
         final = os.path.join(results_dir, name)
         tmp = final + ".tmp"
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(obj, f, ensure_ascii=False)
+            f.write(json.dumps(obj, ensure_ascii=False))
         os.replace(tmp, final)   # atomic on the same volume
 
     _atomic_dump("analyzed_files.json", sorted(analyzed))
@@ -2857,6 +2872,7 @@ def _set_run_stamp(results_dir, signature):
         print(f"Warning: could not update the results stamp: {e}")
 
 
+@without_cycle_collection
 def main():
     import sys
 
@@ -3277,7 +3293,12 @@ def main():
     # known): those don't change during the aggregation, so each word is judged once — `_judged` — and a sentence's
     # difficulty below takes a set lookup per word.
     _judged, _read_already = set(), set()
-    _in_language = {}       # lemma -> has_target_language(lemma): the aggregation's per-token test, once per word
+    # (lemma, reading) -> what the aggregation's per-token tests say of the word, asked once per word (below).
+    _word_state = {}
+    # An example sentence's lengths, the same for every sentence of the run.
+    min_chars = LOGIC.get("context", {}).get("min_chars", 10)
+    preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
+    max_chars = LOGIC.get("context", {}).get("max_chars", 150)
 
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
@@ -3295,6 +3316,7 @@ def main():
         # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
         # exactly (built in first-appearance order) for the progressive pass to reuse.
         file_counter = Counter()
+        file_count = file_counter.get
         file_credits = Counter()                      # the words this file meets inside a rare compound
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
@@ -3307,38 +3329,38 @@ def main():
         for s_text, s_tokens in sentences:
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
+            unknown_keys = []
             for lemma, reading, surface, orth in s_tokens:
+                key = (lemma, reading)
                 # Cache EVERY token (before the target-language filter below) so the cached
                 # multiset matches what tokenizer.tokenize() yields for the progressive pass.
-                file_counter[(lemma, reading)] += 1
-                # Skip tokens that contain no Target characters (e.g. SSA/ASS tags like {\an8},
-                # timestamps, markup, or other ASCII-only tokens). These should not count
-                # toward totals or be considered unknown words. Asked once per word (`_in_language`),
-                # not per token: this loop runs over every token of the library.
-                in_language = _in_language.get(lemma)
-                if in_language is None:
-                    in_language = _in_language[lemma] = has_target_language(lemma, language)
-                if not in_language and not has_target_language(surface, language):
+                file_counter[key] = file_count(key, 0) + 1
+                # What the word is, asked once per word (`_word_state`), not per token: this loop runs over every
+                # token of the library. 0: an unknown; 1: known (KnownWord.json) or ignored; 2 and 3: the same, for
+                # a lemma with no Target characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other
+                # ASCII-only tokens) — such a token counts toward the totals, or as an unknown, only when its
+                # surface has some.
+                state = _word_state.get(key)
+                if state is None:
+                    state = _word_state[key] = ((0 if has_target_language(lemma, language) else 2)
+                                                + (1 if (lemma in ignore_list or key in known_words_initial
+                                                         or lemma in known_lemmas_initial) else 0))
+                if state >= 2 and not has_target_language(surface, language):
                     continue
 
                 file_total_words += 1
-                if lemma in ignore_list:
+                if state & 1:
                     file_known_words += 1
                     continue
-                
-                # Check if it's considered "Known" by dictionary
-                is_known = (lemma, reading) in known_words_initial or (lemma in known_lemmas_initial)
-                if is_known:
-                    file_known_words += 1
-                    continue
-                
+
                 # It's an unknown word!
-                # Even if we skip learning it (e.g. single chars), it makes the sentence harder, 
+                # Even if we skip learning it (e.g. single chars), it makes the sentence harder,
                 # so it must be part of `sentence_unknowns`.
                 sentence_unknowns.append((lemma, reading, surface, orth))
+                unknown_keys.append(key)
 
             # Unique unknowns in this sentence.
-            unique_lrs = set((l, r) for l, r, s, o in sentence_unknowns)
+            unique_lrs = set(unknown_keys)
             # The words the sentence can be an example FOR: those that stand in it on their own. A compound too
             # rare for the list gets none (it is never listed), and nor do the parts it counts toward. How hard the
             # sentence is: such a compound is its parts when all of them are free (LearningView.units).
@@ -3395,14 +3417,14 @@ def main():
                             entry["min_seq"] = seq_idx
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
-            min_chars = LOGIC.get("context", {}).get("min_chars", 10)
+            if not targets:
+                continue        # an example for no word (most sentences, once most words are known)
             is_too_short = 1 if len(s_text) < min_chars else 0
             
-            preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
             is_too_long = 1 if len(s_text) > preferred_max_chars else 0
             # Hard cap: sentences longer than this are excluded from the candidate pool (they
             # make poor examples); a word's own/original sentence is still kept as a fallback.
-            is_over_hard_max = len(s_text) > LOGIC.get("context", {}).get("max_chars", 150)
+            is_over_hard_max = len(s_text) > max_chars
 
             # Running frequency of each of this sentence's unknowns (ascending) — used to score
             # each candidate by its rarer-than-target co-words (see rolling_context_cost). A word the
@@ -3453,8 +3475,9 @@ def main():
 
 
                 # Optimization 1: Insertion Caching - Fast exit if list is full and new sentence is worse
-                if len(entry["candidate_contexts"]) >= 30:
-                    worst_stored_ctx = entry["candidate_contexts"][-1]
+                candidates = entry["candidate_contexts"]
+                if len(candidates) >= 30:
+                    worst_stored_ctx = candidates[-1]
                     # Compare only the first three sorting tuples (is_too_short, is_too_long, cost)
                     new_sorting_tuple = (new_ctx[0], new_ctx[1], new_ctx[2])
                     worst_sorting_tuple = (worst_stored_ctx[0], worst_stored_ctx[1], worst_stored_ctx[2])
@@ -3463,7 +3486,7 @@ def main():
                         continue # No chance of beating the top 30, discard early!
 
                 # Check if this exact sentence is already in candidate_contexts (Moved AFTER fast-path)
-                if any(c[4] == s_text for c in entry["candidate_contexts"]):
+                if s_text in [c[4] for c in candidates]:
                     continue
 
                 if not entry["first_context"]:
@@ -3474,11 +3497,11 @@ def main():
                 if is_over_hard_max:
                     continue
 
-                entry["candidate_contexts"].append(new_ctx)
+                candidates.append(new_ctx)
                 # Sort initially by: length validity, then initial cost
-                entry["candidate_contexts"].sort(key=lambda x: (x[0], x[1], x[2]))
+                candidates.sort(key=_CONTEXT_RANK)
                 # Keep up to 30 promising candidates
-                entry["candidate_contexts"] = entry["candidate_contexts"][:30]
+                del candidates[30:]
 
         
         file_token_cache[file_path] = file_counter
@@ -3873,7 +3896,7 @@ def main():
             print("Saved stats to file.")
     
     with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
-        json.dump(file_stats, f, indent=4, ensure_ascii=False)
+        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
     try:
         print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
     except UnicodeEncodeError:
@@ -3933,7 +3956,9 @@ def main():
         serializable_stats[key] = serializable_data
 
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
-        json.dump(serializable_stats, f, indent=2, ensure_ascii=False)
+        # One write of the whole text: json.dump writes it piece by piece (about a million writes here), and only
+        # json.dumps uses the fast encoder where there is no indent (the source table, the frequency map). The same text.
+        f.write(json.dumps(serializable_stats, indent=2, ensure_ascii=False))
     try:
         print(f"Saved {'FULL' if _debug_word_stats else 'lean'} word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
@@ -3945,8 +3970,8 @@ def main():
     try:
         OUTPUT_SOURCES = os.path.join(RESULTS_DIR, "sources.json")
         with open(OUTPUT_SOURCES, 'w', encoding='utf-8') as f:
-            json.dump({s["path"]: {"name": s["name"], "type": s["type"], "abs": s["abs"]}
-                       for s in source_list}, f, ensure_ascii=False)
+            f.write(json.dumps({s["path"]: {"name": s["name"], "type": s["type"], "abs": s["abs"]}
+                                for s in source_list}, ensure_ascii=False))
         print(f"Saved source table ({len(source_list)} files).")
     except Exception as e:
         print(f"Warning: could not write source table: {e}")
@@ -4044,7 +4069,7 @@ def main():
             "words": _lib_words,
         }
         with open(OUTPUT_LIB_FREQ, 'w', encoding='utf-8') as f:
-            json.dump(_lib_payload, f, ensure_ascii=False)
+            f.write(json.dumps(_lib_payload, ensure_ascii=False))
         try:
             print(f"Saved library frequency map to {OUTPUT_LIB_FREQ} ({len(_lib_words)} words)")
         except UnicodeEncodeError:
@@ -4085,24 +4110,20 @@ def main():
 
         file_unknown_token_counts = Counter() # Count of each (lemma, reading) in THIS file
 
-        for (lemma, reading), count in file_counter.items():
+        for key, count in file_counter.items():
+            lemma = key[0]
             file_total_tokens += count
-            is_ignored = lemma in ignore_list
-            is_single = skip_singles and len(lemma) == 1
 
-            # Check strictly against initial known list
-            is_baseline = is_ignored or is_single or ((lemma, reading) in known_words_initial) or (lemma in known_lemmas_initial)
-
-            # Check against cumulative session known (includes previous files)
-            is_session_known = is_ignored or is_single or ((lemma, reading) in session_known) or (lemma in session_lemmas)
-
-            if is_baseline:
+            # Check strictly against initial known list — known then in the session too (it starts from that list)
+            if (lemma in ignore_list or (skip_singles and len(lemma) == 1) or key in known_words_initial
+                    or lemma in known_lemmas_initial):
                 file_baseline_known_count += count
-
-            if is_session_known:
+                file_current_start_count += count
+            # Check against cumulative session known (includes previous files)
+            elif key in session_known or lemma in session_lemmas:
                 file_current_start_count += count
             else:
-                file_unknown_token_counts[(lemma, reading)] += count
+                file_unknown_token_counts[key] += count
 
         # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
         # it makes none of this file's tokens known: coverage stays in the tokenizer's words.

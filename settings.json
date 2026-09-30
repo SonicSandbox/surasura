@@ -27,8 +27,13 @@
     "anki_backlog_on_generate": true,
     "anki_auto_generate": true,
     "skipped_version": "",
+    "failed_update_version": "",
     "logic": {
         "inline_completed_files": false,
+        "paren_readings": "hiragana",
+        "names_katakana": true,
+        "names_recurring": true,
+        "names_kanji": true,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,
@@ -57,7 +62,7 @@
         },
         "sentence_boundaries": {
             "_comment": "Characters that trigger a sentence split for each language.",
-            "ja": "\u3002\uff01\uff1f!?\n\uff61",
+            "ja": "\u3002\uff01\uff1f!?\n\uff61\uff0e",
             "zh": "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026\uff61"
         },
         "gui": {
@@ -146,6 +151,7 @@
     "junban_backfill_cards": "all",
     "junban_backfill_replace": false,
     "junban_backfill_fills": [
+        "patterns",
         "sentence"
     ],
     "junban_backfill_fields": {},

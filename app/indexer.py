@@ -12,6 +12,8 @@ cheaply detects a delta (stat only), launches this, and re-reads the store when 
 import sys
 import os
 
+from app.batch_gc import without_cycle_collection
+
 
 def _content_files(data_dir):
     # Must match the analyzer's scan exactly, or the store would index files a run never reads (or
@@ -28,6 +30,7 @@ def _content_files(data_dir):
     return files
 
 
+@without_cycle_collection
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Surasura background token indexer")

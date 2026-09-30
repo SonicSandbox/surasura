@@ -141,6 +141,32 @@ def test_added_file_only_tokenizes_new(tmp_path):
     store.close()
 
 
+def test_one_pass_that_removes_changes_and_adds_leaves_the_aggregate_of_a_fresh_build(tmp_path):
+    """The pass sums every file's change and writes the aggregate once: a word only the removed file had goes, a
+    word the changed file lost goes, a new file's words come in — row for row what a fresh build of the same
+    library holds."""
+    lib = tmp_path / "lib"; lib.mkdir()
+    a = lib / "a.txt"; _write(a, JA_ADVENTURE)
+    b = lib / "b.txt"; _write(b, JA_OTHER)
+    c = lib / "c.txt"; _write(c, "図書館で本を読んだ。\n")
+    store = ti.open_store("ja", path=_db(tmp_path))
+    store.reconcile([str(a), str(b), str(c)], ti.make_tokenizer("ja"))
+
+    b.unlink()                                                         # removed: 天気 goes
+    _write(c, "図書館で新聞を読んだ。\n"); _bump_mtime(c)                 # changed: 本 goes, 新聞 comes
+    d = lib / "d.txt"; _write(d, "公園を散歩しました。\n")                 # added: 散歩 comes back
+    store.reconcile([str(a), str(c), str(d)], ti.make_tokenizer("ja"))
+    rows = store.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
+    store.close()
+    assert not any(r[0] in ("天気", "本") for r in rows) and any(r[0] == "新聞" for r in rows)
+
+    fresh = ti.open_store("ja", path=_db(tmp_path, "fresh.db"))
+    fresh.reconcile([str(a), str(c), str(d)], ti.make_tokenizer("ja"))
+    expected = fresh.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
+    fresh.close()
+    assert sorted(rows) == sorted(expected)
+
+
 def test_out_of_band_edit_detected_by_signature(tmp_path):
     """A file edited directly on disk (never via the importer) is caught via (mtime, size)."""
     f = tmp_path / "adv.txt"; _write(f, JA_ADVENTURE)
@@ -234,6 +260,69 @@ def test_file_tokens_caches_sequences(tmp_path):
     assert "冒険" in lemmas
     assert store.file_tokens(str(tmp_path / "missing.txt")) == []
     store.close()
+
+
+def test_a_store_written_at_the_old_compression_reads_the_same_tokens(tmp_path):
+    """The blobs are compressed at level 4 now (level 6, zlib's default, was a full re-read's biggest single cost);
+    a store written before holds level-6 blobs and must read exactly as it did — no rebuild, the same tokens."""
+    import zlib
+    sample = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "samples", "ja", "LowPriority", "L_priority_sample_1.txt")
+    result = ti.make_tokenizer("ja")(sample)
+    counts = {k: n for k, n in result["counts"].items() if n > 0}
+    old_tokens = zlib.compress(json.dumps(result["sentences"], ensure_ascii=False).encode("utf-8"), 6)
+    old_counts = zlib.compress(json.dumps(counts, ensure_ascii=False).encode("utf-8"), 6)
+    new_tokens, new_counts = ti._encode_tokens(result["sentences"]), ti._encode_counts(counts)
+    assert old_tokens != new_tokens                     # really two compressions of one file
+    assert ti._decode_tokens(old_tokens) == ti._decode_tokens(new_tokens) != []
+    assert ti._decode_counts(old_counts) == ti._decode_counts(new_counts) == counts
+
+    # A store row holding the old blob reads through file_tokens just as a new one does.
+    store = ti.open_store("ja", path=_db(tmp_path))
+    store.reconcile([sample], ti.make_tokenizer("ja"))
+    fresh = store.file_tokens(sample)
+    store.conn.execute("UPDATE files SET tokens = ? WHERE path = ?", (old_tokens, ti._norm(sample)))
+    store.conn.commit()
+    assert store.file_tokens(sample) == fresh
+    store.close()
+
+
+def test_a_files_counts_are_its_tokens_with_japanese_in_the_lemma_or_the_surface(tmp_path):
+    """The count asks once per word whether a lemma holds Japanese (it ran on every token of a full re-read); the
+    answer stays the rule's, token by token — across files, with the surface still asked when the lemma has none."""
+    from collections import Counter
+    from app import analyzer
+    samples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samples", "ja")
+    tokenize_file = ti.make_tokenizer("ja")
+    for path in (os.path.join(samples, "LowPriority", "L_priority_sample_2.txt"),
+                 os.path.join(samples, "HighPriority", "H_priority_sample_2.srt")):
+        result = tokenize_file(path)
+        expected = Counter(ti.make_key(lemma, reading) for _s, tokens in result["sentences"]
+                           for lemma, reading, surface, _o in tokens
+                           if analyzer.has_target_language(lemma, "ja") or analyzer.has_target_language(surface, "ja"))
+        assert expected and result["counts"] == expected
+
+
+def test_ignored_entries_are_read_again_only_when_the_known_words_change(tmp_path, monkeypatch):
+    """Every Rarity slider refresh asks for KnownWord.json's IGNORED entries: the file is parsed again only when it
+    changes (its time or size), and the answer is always the file's."""
+    from app import path_utils
+    known = tmp_path / "KnownWord.json"
+
+    def write(ignored):
+        known.write_text(json.dumps({"words": [{"dictForm": w, "knownStatus": "IGNORED"} for w in ignored]
+                                     + [{"dictForm": "天気", "knownStatus": "KNOWN"}]}, ensure_ascii=False),
+                         encoding="utf-8")
+    write(["冒険"])
+    assert ti.ignored_entries(str(tmp_path), "ja") == ["冒険"]
+    reads = []
+    real = path_utils.read_text
+    monkeypatch.setattr(path_utils, "read_text", lambda *a, **k: reads.append(a) or real(*a, **k))
+    assert ti.ignored_entries(str(tmp_path), "ja") == ["冒険"]
+    assert reads == []                                   # unchanged: not parsed again
+    write(["冒険", "散歩"]); _bump_mtime(known)
+    assert ti.ignored_entries(str(tmp_path), "ja") == ["冒険", "散歩"]
+    assert len(reads) == 1
 
 
 def test_persists_across_reopen(tmp_path):

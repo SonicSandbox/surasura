@@ -166,8 +166,10 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     お / ご word once for all its spellings — Patterns_Quality_Spec §15.9 — and gives a Chinese run no
     Japanese 文 ranks; 15 is the parsing fixes: encodings, subtitle markup and the
     formats' conventions, UAX #29 sentence ends, NFKC for the tagger, numbers and symbols no words; 16 keeps
-    names whole — katakana names no dictionary lists, runs the library keeps using as one, JMnedict names.)"""
-    assert analyzer.ENGINE_REVISION == 16
+    names whole — katakana names no dictionary lists, runs the library keeps using as one, JMnedict names; 17 reads a
+    stretched word as itself and 𠮟 as 叱, keeps quotations in a row one sentence, ignores KnownWord.json's IGNORED
+    entries and reads a card field as its one word.)"""
+    assert analyzer.ENGINE_REVISION == 17
 
 
 # --------------------------------------------------------------------------- #

@@ -385,8 +385,9 @@ def _bom_encoding(raw):
     return next((encoding for bom, encoding in _BOMS if raw.startswith(bom)), None)
 
 
-def _decode(raw, language):
-    """The bytes' text by the rule above, or None when no encoding reads them whole."""
+def _decoding(raw, language):
+    """(text, encoding): the bytes' text by the rule above and the encoding that read it — or (None, None) when no
+    encoding reads them whole."""
     def strictly(encoding):
         try:
             return raw.decode(encoding)
@@ -394,15 +395,21 @@ def _decode(raw, language):
             return None
     bom = _bom_encoding(raw)
     if bom:
-        return strictly(bom)
+        text = strictly(bom)
+        return (text, bom) if text is not None else (None, None)
     text = strictly("utf-8")
     if text is not None:
-        return text
+        return text, "utf-8"
     for encoding in LEGACY_ENCODINGS.get(language, ()):
         text = strictly(encoding)
         if text is not None and not _PRIVATE_USE.search(text):
-            return text
-    return None
+            return text, encoding
+    return None, None
+
+
+def _decode(raw, language):
+    """The bytes' text by the rule above, or None when no encoding reads them whole."""
+    return _decoding(raw, language)[0]
 
 
 def read_text(path, language=None, errors="replace"):
@@ -425,3 +432,35 @@ def read_text(path, language=None, errors="replace"):
             print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
+
+# Adding to such a file is done in its own encoding — the one read_text reads it in — and with its own line ends:
+# UTF-8 added to a Shift_JIS list (what the Content Manager's graduation did to GraduatedList.txt) made a file no
+# encoding reads whole, which read_text then reads as UTF-8: every word the list held before came out U+FFFD. A
+# BOM's encoding goes on without a second BOM.
+_CONTINUED = ((codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF32_BE, "utf-32-be"),
+              (codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be"))
+
+
+def append_text(path, text, language=None):
+    """Add `text` to the end of a file the user can edit (a word list) in the file's own encoding (§ above); a new
+    or empty file, or one no encoding reads whole, gets UTF-8. When the file's encoding has no character for part
+    of `text` (𠮟 for a Shift_JIS list), the file is rewritten in UTF-8 with `text` added — a dated copy kept first
+    (backup_to_trash; OSError when it can't be made, and the file is left alone) — so no word is lost."""
+    raw = b""
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            raw = f.read()
+    old, encoding = _decoding(raw, language) if raw else ("", "utf-8")
+    encoding = next((bomless for bom, bomless in _CONTINUED if raw.startswith(bom)), encoding or "utf-8")
+    if old and "\r\n" in old:
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError:
+        backup_to_trash(path)
+        with open(path + ".tmp", "w", encoding="utf-8", newline="") as f:
+            f.write(old + text)
+        os.replace(path + ".tmp", path)
+        return
+    with open(path, "ab") as f:
+        f.write(data)

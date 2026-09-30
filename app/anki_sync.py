@@ -5,7 +5,8 @@ only through `app/anki_connect.py` and only ever READS from it (I7).
 
 **Why no tokenizer:** the analyzer tokenizes every `dictForm` itself when it loads KnownWord.json and
 also keeps the raw string as a known lemma (`analyzer.load_known_words`). So a synced entry's
-`dictForm` is simply the cleaned field text — the user's own spelling, no mis-tokenised isolated word.
+`dictForm` is simply the word the field holds (`anki_match.card_word` for Japanese) — the user's own
+spelling, no mis-tokenised isolated word.
 
 The rules that make this safe to run silently in the background:
 
@@ -47,7 +48,8 @@ SOURCE = "AnkiConnect"
 BACKLOG_FILE = "anki_backlog.json"
 # Bump when a note's entry would now be read differently: a backlog saved under another version is
 # read again in full, once. 2: a field is read as its one word (`anki_match.card_word`: 「撒く」 -> 撒く).
-BACKLOG_VERSION = 2
+# 3: in NFKC (ﾊﾞｼｯと -> バシッと).
+BACKLOG_VERSION = 3
 
 # analyzer.has_target_language, built from the same ranges (app/unicode_ranges.py) — importing the
 # analyzer would load fugashi/pandas into the dashboard (I6). The copy this replaced stopped at U+9FAF,
@@ -269,6 +271,13 @@ def resolve_fields(model_fields, chosen):
     return resolved
 
 
+def word_field(model_fields, chosen):
+    """[the note type's WORD field] — `chosen[0]`, or Auto's first field when `chosen == []` — or [] when the note
+    type lacks it. Roles go by the chosen index, never by position in `resolve_fields`' answer: where the word field
+    is missing, the "Also read" field (`chosen[1]`) is still no word field."""
+    return resolve_fields(model_fields, list(chosen or [])[:1])
+
+
 # --------------------------------------------------------------------------- #
 # Notes -> terms
 # --------------------------------------------------------------------------- #
@@ -287,6 +296,7 @@ def _field_order(value):
 def _terms_from_notes(notes, fields, language, result):
     """[(term, note_id)] from notesInfo entries, in note order, deduped within the batch.
     Fills result.fields_by_model and result.skipped_by_model."""
+    from app import anki_match
     out = []
     seen = set()
     for note in notes:
@@ -299,12 +309,21 @@ def _terms_from_notes(notes, fields, language, result):
         if not resolved:
             result.skipped_by_model[model] = result.skipped_by_model.get(model, 0) + 1
             continue
+        words = word_field(ordered, fields) if language == "ja" else []
         for name in resolved:
             value = note_fields.get(name)
             raw = value.get("value", "") if isinstance(value, dict) else ""
-            # One term per line: a <br> between two words must not fuse them. Separators like 、 or
-            # ・ within a line stay whole — the analyzer tokenizes the dictForm anyway.
-            for line in clean_field_html(raw).split("\n"):
+            # The Japanese WORD field: the one word it holds, read as Junban and the report read it
+            # (`anki_match.card_word`): 撒く<br>まく and 撒く<div>まく</div> are 撒く — never 撒くまく, and never
+            # まく, the reading on its second line, known as a word of its own. The "Also read" field, and
+            # Chinese: one term per line — a sentence field marks every word of its sentence known (the analyzer
+            # tokenizes each term); a <br> or a <div> between two lines parts them (in Japanese an opening <div>
+            # too, as Anki writes a second line), never fuses them.
+            if name in words:
+                lines = [anki_match.card_word(raw, "ja")]
+            else:
+                lines = clean_field_html(anki_match._LINE_TAG_RE.sub("\n", raw) if language == "ja" else raw).split("\n")
+            for line in lines:
                 term = line.strip()
                 key = _norm(term)
                 if not key or key in seen or not _has_target(term, language):
@@ -459,13 +478,14 @@ def backlog_keys(language):
 
 def _backlog_entry(note, fields, language):
     """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
-    word comes from the same field the known sync reads (Auto = the first), read the way Junban reads
-    it (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く), so the report and the reorder agree on a
+    word comes from the known sync's WORD field (`word_field`: Auto = the first; never the "Also read"
+    field, even on a note type that lacks the word field), read the way Junban reads it
+    (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く), so the report and the reorder agree on a
     card's word."""
     from app import anki_match
     note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
     ordered = sorted(note_fields, key=lambda name: _field_order(note_fields[name]))
-    resolved = resolve_fields(ordered, fields)
+    resolved = word_field(ordered, fields)
     if not resolved:
         return None
     value = note_fields.get(resolved[0])

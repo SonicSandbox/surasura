@@ -13,7 +13,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
                             get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX,
-                            backup_to_trash, restart_trash_clock, read_text)
+                            backup_to_trash, restart_trash_clock, read_text, append_text)
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -2290,10 +2290,11 @@ class ContentImporterApp:
 
                             rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
                             grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
-                            with open(grad_list_path, 'a', encoding='utf-8') as f:
-                                f.write(f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n")
-                                for w in file_words:
-                                    f.write(f"{w}\n")
+                            # In the list's own encoding (path_utils.append_text): UTF-8 added to a Shift_JIS
+                            # list left a file no encoding reads whole.
+                            append_text(grad_list_path,
+                                        f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n"
+                                        + "".join(f"{w}\n" for w in file_words), self.language)
                             words_graduated += len(file_words)
                             words_added_total += len(file_words)
                             sources_modified.append(rel_path)

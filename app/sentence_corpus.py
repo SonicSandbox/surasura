@@ -520,7 +520,8 @@ def export_dictionary(words, sources, save_path, language, tag=None, progress=No
 # --------------------------------------------------------------------------------------------- #
 def known_sets(language, store, settings):
     """(known_tuples, known_lemmas, ignore): the analyzer's own sets — the known words as the token
-    store caches them (by KnownWord.json's signature), and the Ignore, Blacklist and Graduated lists."""
+    store caches them (by KnownWord.json's signature), and the Ignore, Blacklist and Graduated lists with
+    KnownWord.json's IGNORED entries (`analyzer.load_ignored_entries`, as the list and the slider read them)."""
     import sqlite3
     from app import analyzer, token_index
     from app.path_utils import get_user_files_path
@@ -543,6 +544,7 @@ def known_sets(language, store, settings):
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
         ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)
+    ignore |= analyzer.load_ignored_entries(user_files, script, language)
     return cached[0], cached[1], ignore
 
 

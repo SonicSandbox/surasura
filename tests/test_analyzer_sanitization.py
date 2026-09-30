@@ -1,5 +1,6 @@
 import app.analyzer as analyzer
 from app.analyzer import _sanitize_term, load_yomitan_frequency_list, load_simple_list
+import json
 import os
 import tempfile
 import pytest
@@ -110,6 +111,69 @@ def test_chinese_or_a_list_with_no_hiragana_line_builds_no_tokenizer_and_a_missi
     assert built == [], "no hiragana line, no tokenizer"
     assert load_simple_list(_list_file(tmp_path, ["する", "冒険"])) == {"する", "冒険"}
     assert built == [True]
+
+
+# --------------------------------------------------------------------------- #
+# KnownWord.json's IGNORED entries (Migaku's status) are ignored words
+# --------------------------------------------------------------------------- #
+def _known_words(folder, entries, encoding="utf-8"):
+    (folder / "KnownWord.json").write_bytes(json.dumps(
+        {"words": [{"dictForm": form, "knownStatus": status} for form, status in entries]},
+        ensure_ascii=False).encode(encoding))
+
+
+def test_an_ignored_entry_in_the_known_words_file_is_ignored_as_a_list_line_is(tmp_path):
+    """Migaku marks a word the user dismissed IGNORED. It is an ignored word, read as a line of the Ignore
+    list is — a hiragana one also names the kanji word it is typed for (する -> 為る) — while KNOWN, LEARNING
+    and UNKNOWN entries are not ignored. The Rarity preview reads the same entries, from the same reader, as
+    plain lines like its lists. A file saved with a BOM reads the same."""
+    from app import token_index
+    analyzer.SANITIZE_JA = True
+    _known_words(tmp_path, [("冒険", "IGNORED"), ("する", "IGNORED"), ("準備", "KNOWN"), ("危険", "LEARNING"),
+                            ("価値", "UNKNOWN"), ("", "IGNORED")], "utf-8-sig")
+    assert analyzer.load_ignored_entries(str(tmp_path), "asis", "ja") == {"冒険", "する", "為る"}
+    assert token_index.preview_ignore_set(str(tmp_path), "ja") == {"冒険", "する"}
+
+
+def test_a_chinese_ignored_entry_is_read_in_the_librarys_script_and_a_broken_file_ignores_nothing(tmp_path):
+    """A Chinese library read in Simplified reads an IGNORED 學習 as 学习, as it reads its lists; a known
+    words file that won't parse, or none at all, ignores nothing — Generate still runs."""
+    from app import token_index
+    analyzer.SANITIZE_JA = False
+    _known_words(tmp_path, [("學習", "IGNORED")])
+    assert analyzer.load_ignored_entries(str(tmp_path), "s", "zh") == {"学习"}
+    assert token_index.preview_ignore_set(str(tmp_path), "zh", "s") == {"学习"}
+    (tmp_path / "KnownWord.json").write_text("{\"words\": [", encoding="utf-8")
+    assert analyzer.load_ignored_entries(str(tmp_path), "asis", "zh") == set()
+    os.remove(tmp_path / "KnownWord.json")
+    assert analyzer.load_ignored_entries(str(tmp_path), "asis", "zh") == set()
+    assert token_index.preview_ignore_set(str(tmp_path), "zh") == set()
+
+
+# --------------------------------------------------------------------------- #
+# A known entry is cut at a gloss, never inside a sentence
+# --------------------------------------------------------------------------- #
+def test_a_known_sentence_with_a_space_stays_whole_and_every_word_in_it_is_known(tmp_path):
+    """The Anki window's "Also read" field syncs whole sentences into the known words, and a subtitle line often holds
+    a space, full width or half. The cut Migaku's glosses need (アイリス-iris) used to cut such a sentence at its
+    space: only そうだ became known. It now cuts only when what follows the space or hyphen holds no Japanese."""
+    analyzer.SANITIZE_JA = True
+    full_width = "そうだ" + chr(0x3000) + "女の子だ"
+    _known_words(tmp_path, [(full_width, "KNOWN"), ("雨が降った 傘を持った", "KNOWN"), ("アイリス-iris", "KNOWN"),
+                            ("精霊-spirit", "KNOWN")])
+    _tuples, lemmas = analyzer.load_known_words(str(tmp_path / "KnownWord.json"), analyzer.JapaneseTokenizer())
+    assert {"そう", "女の子", "雨", "降る", "傘", "持つ"} <= lemmas, "every word of both sentences"
+    assert {"アイリス", "精霊"} <= lemmas and not {"アイリス-iris", "iris", "精霊-spirit", "spirit"} & lemmas, \
+        "a gloss is still cut off"
+
+
+def test_the_known_word_cut_leaves_the_lemma_cut_as_it_was():
+    """Only a known entry keeps a sentence whole: `_sanitize_term`, which the tokenizer's lemmas, the lists and the
+    frequency lists read, still cuts at the first space or hyphen (UniDic's パーティー-party is パーティー)."""
+    full_width = "そうだ" + chr(0x3000) + "女の子だ"
+    assert analyzer._known_term(full_width) == full_width
+    assert analyzer._known_term(" アイリス-iris ") == "アイリス"
+    assert _sanitize_term(full_width) == "そうだ" and _sanitize_term("パーティー-party") == "パーティー"
 
 
 if __name__ == "__main__":

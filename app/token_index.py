@@ -53,7 +53,10 @@ from collections import Counter
 #    cached blob holds the old sentences and tokens.
 # v9 names stay whole (app/names.py): a v8 blob holds a name the tagger cut in pieces, and the store now records each
 #    file's name candidates in a column a v8 store lacks — still 2.4, so users rebuild once with v8.
-SCHEMA_VERSION = 9
+# v10 the text a file becomes reads differently again: a word stretched with a wave dash or a long mark is read as the
+#    word (すご～い), 𠮟 as 叱, and sentences end by the quotation and caption rules — a v9 blob holds the old tokens
+#    and sentences; still 2.4, so users rebuild once.
+SCHEMA_VERSION = 10
 
 
 # --------------------------------------------------------------------------- #
@@ -587,7 +590,7 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
     """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
     reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
     (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
-    chosen)."""
+    chosen) — and KnownWord.json's IGNORED entries (`ignored_entries`), as the analyzer ignores them."""
     from app.path_utils import read_text
     from app.zh_script import convert
     ignore = set()
@@ -599,7 +602,24 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
                     ignore.add(convert(s, script))
         except Exception:
             pass
+    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language))
     return ignore
+
+
+def ignored_entries(user_files_dir, language):
+    """The dictForms of KnownWord.json's IGNORED entries, as written — Migaku's status for a word the user dismissed
+    there. They are ignored words, as a line of the Ignore list is: off the list, and never an unknown in a sentence.
+    One reader for every ignore set — the analyzer's (`analyzer.load_ignored_entries`, a list's lines read the way the
+    lists are) and the Rarity preview's (`preview_ignore_set`), so the slider counts what the list counts.
+    Tokenizer-free, in the file's own encoding; a file that won't read ignores nothing."""
+    from app.path_utils import read_text
+    try:
+        data = json.loads(read_text(os.path.join(user_files_dir, "KnownWord.json"), language))
+    except Exception:
+        return []
+    entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    return [str(e.get("dictForm") or "").strip() for e in entries
+            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()]
 
 
 def preview_known_approx(user_files_dir, language, script="asis"):

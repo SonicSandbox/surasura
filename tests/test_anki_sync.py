@@ -432,7 +432,8 @@ def test_changing_decks_or_fields_forces_a_full_resync(ja_words, change):
         assert _anki_forms() == [ja_words[0], ja_words[1]]
     else:
         result = _sync(fake, fields=["Sentence"])
-        assert f"{ja_words[0]}の例文です。" in _anki_forms()
+        # The field is read as the one word it holds (`anki_match.card_word`): its stop is punctuation.
+        assert f"{ja_words[0]}の例文です" in _anki_forms()
     assert result.mode == "full"
 
 
@@ -577,7 +578,9 @@ def test_field_resolution_auto_named_two_fields_case_insensitive_and_skipped_mod
 
 
 def test_field_cleaning_end_to_end(ja_words):
-    """Ruby, bracket furigana, <br>-separated alternatives, &quot; and [sound:] as real cards hold them."""
+    """Ruby, bracket furigana, a second line, &quot; and [sound:] as real cards hold them — each field read
+    as the ONE word it holds (`anki_match.card_word`, as Junban and the report read a card): the first
+    line, its first word, without the quotes around it."""
     fake = FakeCollection()
     fake.add("", fields=[("Expression", "<ruby>冒険<rt>ぼうけん</rt></ruby>[sound:bouken.mp3]")])
     fake.add("", fields=[("Expression", " 準備[じゅんび]")])
@@ -585,8 +588,70 @@ def test_field_cleaning_end_to_end(ja_words):
     fake.add("", fields=[("Expression", "&quot;有名&quot;")])
     fake.add("", fields=[("Expression", "素晴らしい・すばらしい")])
     _sync(fake)
-    assert _anki_forms() == ["冒険", "準備", "危険", "価値", '"有名"',
-                             "素晴らしい・すばらしい"]
+    assert _anki_forms() == ["冒険", "準備", "危険", "有名", "素晴らしい"]
+
+
+def test_a_japanese_fields_second_line_is_never_a_known_word_of_its_own():
+    """A word with its reading typed on a second line — Anki writes a new line as a <br>, or as a <div>
+    after the first. The known word is 撒く: before, the <div> line fused into 仰ぐあおぐ (no word at all) and
+    the <br> line made まく, the reading, a known word of its own — which the analyzer reads alone as another
+    word. A half-width field is its word in full width (ﾊﾞｼｯと is バシッと)."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "撒く<br>まく")])
+    fake.add("", fields=[("Expression", "仰ぐ<div>あおぐ</div>")])
+    fake.add("", fields=[("Expression", "ﾊﾞｼｯと")])
+    fake.add("", fields=[("Expression", "「冒険」")])
+    _sync(fake)
+    assert _anki_forms() == ["撒く", "仰ぐ", "バシッと", "冒険"]
+
+
+def test_the_word_field_is_one_word_and_the_also_read_sentence_field_is_read_whole(monkeypatch):
+    """The Anki window's two roles. The Word field holds one word: 撒く<br>まく is 撒く, never まく as a word of its
+    own. "Also read" is read line by line, as its tooltip promises — a sentence field marks every word in the
+    sentence as known: the analyzer tokenizes the whole line (you may have 1,000 cards but know 6,000 words)."""
+    from app import analyzer
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "撒く<br>まく"), ("Sentence", "昨日、友達と映画を見に行きました。")])
+    _sync(fake, fields=["Expression", "Sentence"])
+    assert _anki_forms() == ["撒く", "昨日、友達と映画を見に行きました。"]
+
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
+    _tuples, lemmas = analyzer.load_known_words(_known_path(), analyzer.JapaneseTokenizer())
+    assert {"撒く", "昨日", "友達", "映画", "見る", "行く"} <= lemmas
+
+
+def test_auto_with_nothing_in_also_read_reads_the_first_field_only():
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "撒く<br>まく"), ("Sentence", "昨日、友達と映画を見に行きました。")])
+    _sync(fake)
+    assert _anki_forms() == ["撒く"]
+
+
+def test_a_note_type_without_the_word_field_still_reads_also_read_line_by_line_and_never_as_a_word():
+    """Roles go by what the user chose, not by what a note type happens to have: a Kiku note has no Expression,
+    so its Sentence — the "Also read" field — is read line by line (two lines, two known terms, whether Anki
+    wrote the second as a <br> or a <div>), never cut to its first word; and the backlog, which reads the Word
+    field only, takes no word from it at all."""
+    fake = FakeCollection()
+    fake.add("", model="Kiku", fields=[("Word", "辞書"), ("Sentence", "駅前の本屋で辞書を買った。<br>帰りに公園を散歩した。")])
+    fake.add("", model="Kiku", fields=[("Word", "雨"), ("Sentence", "朝から雨が降っていた。<div>傘を持って出かけた。</div>")])
+    result = _sync(fake, fields=["Expression", "Sentence"])
+    assert result.fields_by_model == {"Kiku": ["Sentence"]}
+    assert _anki_forms() == ["駅前の本屋で辞書を買った。", "帰りに公園を散歩した。",
+                             "朝から雨が降っていた。", "傘を持って出かけた。"]
+    note = {"modelName": "Kiku", "fields": {"Word": {"value": "辞書", "order": 0},
+                                            "Sentence": {"value": "駅前の本屋で辞書を買った。", "order": 1}}}
+    assert anki_sync._backlog_entry(note, ["Expression", "Sentence"], "ja") is None
+    assert anki_sync._backlog_entry(note, [], "ja")["word"] == "辞書"
+
+
+def test_a_chinese_field_still_gives_one_term_per_line():
+    """What of a Chinese field is its word is still open: each line stays a term of its own, and a <br>
+    between two words never fuses them."""
+    fake = FakeCollection()
+    fake.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "冒险<br>挑战")])
+    _sync(fake, decks=["中文"], language="zh")
+    assert _anki_forms("zh") == ["冒险", "挑战"]
 
 
 def test_a_field_with_no_japanese_is_skipped(ja_words):

@@ -47,15 +47,16 @@ def test_importing_the_matcher_is_cheap():
 
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
-    """The analyser's own 184-row output (BOM, real columns): a katakana lemma the user would never
+    """The analyser's own 182-row output (BOM, real columns): a katakana lemma the user would never
     type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
     kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
     Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
     一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
-    uses and joined the list's head.)"""
+    uses and joined the list's head; 19 since a word stretched with a long mark is read as itself — いー keeps 2
+    of its 3 uses and fell below it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 20
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 19
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -91,6 +92,18 @@ def test_a_foreign_name_keeps_its_middle_dot_and_an_empty_field_holds_no_word():
     assert anki_match.card_word("（あおぐ）", "ja") == "あおぐ"
     for raw in ("", None, '<img src="paste-8f3a.jpg">', "<br>", "「」"):
         assert anki_match.card_word(raw, "ja") == "", raw
+
+
+def test_a_half_width_field_is_read_as_the_word_in_full_width():
+    """Half-width katakana and full-width digits are the same text in another form (Unicode NFKC), and the
+    list's keys carry the form the tagger reads: ﾊﾞｼｯと is バシッと, ｼﾞｮﾝ･ｽﾐｽ is one name, ２年生 is 2年生."""
+    for raw, word in (("ﾊﾞｼｯと", "バシッと"), ("ｼﾞｮﾝ･ｽﾐｽ", "ジョン・スミス"), ("｢ｶﾞｯｺｳ｣", "ガッコウ"),
+                      ("２年生", "2年生"), ("仰ぐ（あおぐ）", "仰ぐ")):
+        assert anki_match.card_word(raw, "ja") == word, raw
+    tokenize = _tokenizer().tokenize
+    word = anki_match.card_word("ﾊﾞｼｯと", "ja")
+    assert anki_match.card_key(word, {"バシッ": 0, "冒険": 1}, "ja", None, tokenize) == ("バシッ", "L7")
+    assert anki_match.card_word("ｶﾞｯｺｳ", "zh") == anki_match.normalize_word("ｶﾞｯｺｳ"), "Chinese as before"
 
 
 def test_a_chinese_field_and_a_field_of_no_language_are_read_as_before():
@@ -198,7 +211,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 20
+    assert rank_of["中野"] == rank_of["ナカノ"] == 19
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -546,6 +559,56 @@ def test_a_word_in_its_inflected_form_is_its_dictionary_form():
                       ("美しかった", "美しい"), ("読んだ", "読む"), ("食べなかった", "食べる")):
         assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
         assert anki_match.one_word(tokenize(word))[0] == key, word
+
+
+def test_a_noun_with_suru_in_any_of_its_forms_is_that_noun():
+    """する conjugates and the noun before it does not: 勉強した, 勉強しません, 勉強してる are 勉強する in the past,
+    the polite negative, the progressive — ONE word + one ending, placed as 勉強 with no question, as 努力する
+    is. Two endings (楽しみにした, クビにした: に then する) stay phrases — their meaning moves; voice is no
+    inflection (勉強させる), and できる is a verb of its own (勉強できる)."""
+    tokenize = _tokenizer().tokenize
+    listed = {"勉強": 0, "キャンセル": 1, "努力": 2, "楽しみ": 3, "クビ": 4}
+    for word, key in (("勉強した", "勉強"), ("勉強しました", "勉強"), ("勉強しない", "勉強"), ("勉強してる", "勉強"),
+                      ("勉強しなかった", "勉強"), ("キャンセルした", "キャンセル"), ("努力しません", "努力")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+        assert anki_match.one_word(tokenize(word))[0] == key, word
+    for word in ("楽しみにした", "クビにした", "勉強させる", "勉強できる", "勉強していた"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+        assert anki_match.one_word(tokenize(word)) is None, word
+
+
+def test_a_word_with_the_copula_in_any_of_its_forms_is_that_word():
+    """The user, 2026-09-29: the copula's forms are placed at the word, as する's are. 静か and 元気 (な-adjectives) and
+    学生 (a noun) don't conjugate — the copula after them does: だった, でした, じゃなかった, ではない, であった,
+    ではありません. A particle before the copula keeps a phrase (気のせいだった), and UniDic reads 只者ではない's で as a
+    particle — its meaning moves, it stays one; も adds a meaning of its own (静かでもない)."""
+    tokenize = _tokenizer().tokenize
+    listed = {"静か": 0, "元気": 1, "学生": 2, "気": 3, "只者": 4}
+    for word, key in (("静かだった", "静か"), ("静かでした", "静か"), ("元気じゃなかった", "元気"), ("静かではない", "静か"),
+                      ("元気でした", "元気"), ("学生だった", "学生"), ("静かであった", "静か"),
+                      ("静かではありません", "静か")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+        assert anki_match.one_word(tokenize(word))[0] == key, word
+    for word in ("気のせいだった", "只者ではない", "静かでもない"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+        assert anki_match.one_word(tokenize(word)) is None, word
+
+
+def test_a_kanji_card_read_alone_as_one_word_is_placed_as_the_label_marks_it():
+    """The user, 2026-09-29: Junban and the report's "In Anki" label give one answer. A card with a kanji that
+    reads alone as ONE word is that word — 逃げだす is UniDic's 逃げ出す, 引き伸ばす its 引き延ばす — placed with
+    no question. A kana card read alone is the tagger's guess (まく -> 膜) and stays a question; a one-character
+    card is a stem as often as a word (見 is 見る's) and never another row's; the user's "no" still wins."""
+    tokenize = _tokenizer().tokenize
+    listed = {"逃げ出す": 0, "引き延ばす": 1, "見惚れる": 2, "見る": 3, "膜": 4}
+    for word, key in (("逃げだす", "逃げ出す"), ("引き伸ばす", "引き延ばす"), ("見とれる", "見惚れる")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L6"), word
+    for word in ("みとれる", "まく", "見"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+    no = {"逃げだす": {"target": "逃げ出す", "answer": "no"}}
+    assert anki_match.card_key("逃げだす", listed, "ja", no, tokenize) == ("", "")
+    assert anki_match.whole_word_alone("逃げだす", tokenize("逃げだす"))
+    assert not anki_match.whole_word_alone("見", tokenize("見"))
 
 
 def test_voice_derivation_a_second_verb_or_a_kana_word_is_no_inflection():

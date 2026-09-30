@@ -959,3 +959,21 @@ def test_a_chinese_sentence_showing_the_pairing_leads_too():
     words = sc.collect(list(cache), cache.__getitem__, "zh", known, WINDOW,
                        prefer={("电话", ""): [("接到", "电话")]})
     assert _texts(_best(words, "电话")) == ["他接到电话了。", "电话在桌子上。"]
+
+
+def test_a_word_ignored_in_migaku_is_ignored_by_the_sentence_dictionary_too(tmp_path):
+    """KnownWord.json's IGNORED entries (Migaku's status for a word the user dismissed there) are ignored words
+    everywhere — the list, the Rarity slider, Junban — so the sentence dictionary and 例文 must not count one as an
+    unknown in a sentence either: it is in the ignore set their own counting reads."""
+    from app import token_index
+    root = _library(("第01話.txt", ["猫が窓の外を見ている。"]))
+    with open(os.path.join(root, "User Files", "ja", "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": "猫", "knownStatus": "KNOWN"},
+                             {"dictForm": "窓", "knownStatus": "IGNORED"}]}, f, ensure_ascii=False)
+    store = token_index.open_store("ja", path=str(tmp_path / "store.db"))
+    try:
+        _tuples, lemmas, ignore = sc.known_sets("ja", store, {})
+    finally:
+        store.close()
+    assert "窓" in ignore
+    assert "猫" in lemmas and "猫" not in ignore

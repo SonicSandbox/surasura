@@ -121,9 +121,6 @@ def test_a_quotation_nothing_takes_leaves_its_sentences_apart(ja):
     assert ja("「はい。」彼女は頷いた。") == ["「はい。」", "彼女は頷いた。"]
     assert ja("「今日は晴れ。明日は雨。」") == ["「今日は晴れ。", "明日は雨。」"]
     assert ja("「好き。」だって。") == ["「好き。」", "だって。"], "a copula is no particle: not decided, as before"
-    # Only the word right after the closing bracket counts: a quotation, or a comma, before the particle leaves
-    # the split (not built yet).
-    assert ja("「やめて。」「いやだ。」と言い合った。") == ["「やめて。」", "「いやだ。」と言い合った。"]
 
 
 def test_a_quotation_opened_on_an_earlier_line_closes_on_this_one(ja):
@@ -144,6 +141,19 @@ def test_the_boundary_rules_follow_the_saved_boundary_set(monkeypatch):
     monkeypatch.setitem(analyzer.LOGIC, "sentence_boundaries", {"ja": "。！？!?\n"})
     out = [s for s, _t in JapaneseTokenizer().tokenize_sentences("これはペンである．あれは本である．")]
     assert out == ["これはペンである．あれは本である．"]
+
+
+def test_quotations_in_a_row_are_taken_together_by_what_follows_the_last(ja):
+    # Both quotations are what と挨拶を交わした takes: one sentence. With nothing after them they are two lines.
+    assert ja("「おはよう。」「おはよう。」と挨拶を交わした。") == ["「おはよう。」「おはよう。」と挨拶を交わした。"]
+    assert ja("「おはよう。」「おはよう。」") == ["「おはよう。」", "「おはよう。」"]
+    assert ja("「行くぞ。」「うん。」次の日になった。") == ["「行くぞ。」", "「うん。」", "次の日になった。"]
+
+
+def test_a_comma_after_a_closing_bracket_continues_the_sentence(ja):
+    # UAX #29 SB8a: a comma (SContinue) after a terminator and its closing marks continues the sentence.
+    assert ja("「わかった。」、と彼女は答えた。") == ["「わかった。」、と彼女は答えた。"]
+    assert ja("「わかった。」と彼女は答えた。次の日。") == ["「わかった。」と彼女は答えた。", "次の日。"]
 
 
 # --- Chinese ------------------------------------------------------------------------------------- #

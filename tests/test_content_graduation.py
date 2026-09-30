@@ -345,3 +345,27 @@ def test_demote_group_with_empty_and_single_chapter_book(app_instance, tmp_path)
     assert _phase_order(manifest_path, "PHASE_2_SOON") == [
         f"LowPriority/短編/ch{i:02d}.txt" for i in (1, 2, 3)]
 
+
+def test_graduated_words_are_added_to_the_list_in_its_own_encoding(app_instance, tmp_path):
+    # A GraduatedList.txt saved in Shift_JIS (Windows' "ANSI") stays one readable file after a graduation adds to
+    # it: UTF-8 added to it used to leave a file no encoding reads whole, its old words read back as U+FFFD.
+    from app.path_utils import read_text
+    lesson = tmp_path / "data" / "ja" / "HighPriority" / "lesson.txt"
+    lesson.write_text("今日も勉強を頑張る。", encoding="utf-8")
+    manifest_path = tmp_path / "data" / "ja" / "master_manifest.json"
+    manifest_path.write_text(json.dumps({"schedule": {"PHASE_1_NOW": [
+        {"physical_path": "HighPriority/lesson.txt", "title": "lesson.txt"}]}}), encoding="utf-8")
+    app_instance.get_manifest_path = lambda: str(manifest_path)
+    graduated = tmp_path / "User Files" / "ja" / "GraduatedList.txt"
+    graduated.parent.mkdir(parents=True)
+    graduated.write_bytes("# 卒業した言葉\r\n練習\r\n".encode("cp932"))
+    app_instance._load_graduate_index = lambda: {"lesson.txt": ["勉強", "頑張る"]}
+    app_instance.tree.selection.return_value = ["item1"]
+    app_instance.tree.item.side_effect = lambda item_id, option=None, **kwargs: (
+        [str(lesson)] if option == "values" else {})
+
+    app_instance.graduate_content()
+
+    words = read_text(str(graduated), "ja", errors="strict").split("\n")
+    assert {"練習", "勉強", "頑張る"} <= set(words)
+    assert graduated.read_bytes().decode("cp932")      # still Shift_JIS throughout

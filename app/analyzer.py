@@ -70,7 +70,12 @@ ENSURE_AUDIO_EXAMPLE = False
 # 16: names stay whole (app/names.py) — a katakana name no dictionary lists, a katakana run the library keeps using
 #     as one, and a JMnedict person name the library holds 3+ times are one word each, every switch in Settings.
 #     Still 2.4: one re-analysis with 15.
-ENGINE_REVISION = 16
+# 17: a word stretched with a wave dash or a long mark is that word (すご～い is 凄い) and 𠮟 is 叱; quotations in a row
+#     taken by what follows are one sentence, and a comma after closing marks continues it; a Chinese caption's line
+#     break joins; broadcast captions part by speaker colour; a known-word entry is cut at a space only when no
+#     Japanese follows, and KnownWord.json's IGNORED entries are ignored; a card field is its one word, a する or
+#     copula form goes to its word, a kanji card read alone as one word is placed without asking. Still 2.4.
+ENGINE_REVISION = 17
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -139,6 +144,13 @@ _IGNORABLE = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1
               (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
               (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
               (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+# One character, two code points — read as UniDic writes it. ～ (U+FF5E) is JIS X 0208's wave dash as Windows' code
+# page 932 decodes it; the JIS standard's own mapping, and UniDic, write it 〜 (U+301C): すご〜い and あま〜い are
+# words UniDic lists, where すご～い is none and its ～ is read から. And the 常用漢字表 (2010) allows 叱 for 𠮟 (its
+# 許容字体): of the table's four such pairs that Unicode encodes apart (𠮟 叱, 塡 填, 剝 剥, 頰 頬), UniDic reads the
+# other three under their word already, and drops 𠮟 — outside the Basic Multilingual Plane — as a symbol: 𠮟られた
+# lost its 叱る.
+_SAME_CHARACTER = {"\uff5e": "\u301c", "\U00020b9f": "\u53f1"}
 _READ_AS = {}       # character -> what a tagger reads for it, where that differs ("" = nothing)
 _COMBINES = set()   # characters that compose with the one before them (NFC): U+3099 in か + U+3099 = が
 _READ_RE = []       # the pattern of those up to U+FFFF that `tagger_text` reads differently, made on first use
@@ -165,6 +177,7 @@ def _read_pattern():
             form = unicodedata.normalize("NFKC", ch)
             if form != ch and all(unicodedata.category(c)[0] in "LMN" for c in form):
                 _READ_AS[ch] = form
+        _READ_AS.update(_SAME_CHARACTER)
         for first, last in _IGNORABLE:
             _READ_AS.update((chr(point), "") for point in range(first, last + 1))
         points, ranges = sorted({ord(ch) for ch in _READ_AS} | {ord(ch) for ch in _COMBINES}), []
@@ -186,28 +199,123 @@ def _reads_differently(text):
         _ASTRAL_RE.search(text) is not None and not _READ_ASTRAL.isdisjoint(text))
 
 
-def tagger_text(text):
+def tagger_text(text, unread=()):
     """(read, at): `text` as every tagger reads it (§ above) and, for read[i:j], the part text[at[i]:at[j]] it was
     read from — or (text, None) when a tagger reads `text` as written, as it does most lines. A character that is
     not read rides with the one before it, so every character of `text` belongs to exactly one part; a piece that
-    starts inside one character's reading (株式会社 read from ㍿ is 株式 + 会社) has an empty part after the first."""
-    if not text or not _reads_differently(text):
+    starts inside one character's reading (株式会社 read from ㍿ is 株式 + 会社) has an empty part after the first.
+    `unread`: the indices of characters not to read at all — a stretched vowel's mark (§ A stretched vowel).
+
+    Only the characters read otherwise are looked at one by one; the text between them is copied as it stands — a
+    subtitle file is one line, and one ～ in an episode used to walk all of it a character at a time."""
+    if not text or not (_reads_differently(text) or unread or _stretched(text)):
         return text, None
-    groups = []                                     # [start, end, form]: the characters read as one
-    for i, ch in enumerate(text):
-        form = _READ_AS.get(ch, ch)
+    groups = []                                     # [start, end, form]: the characters read as one; a run read
+    last = 0                                        # as written is [start, end, its text, True]
+    for i in _odd_characters(text, unread):
+        if last < i:
+            groups.append([last if groups else 0, i, text[last:i], True])
+        last = i + 1
+        form = "" if i in unread else _READ_AS.get(text[i], text[i])
         if groups and (not form or unicodedata.combining(form[0]) or form[0] in _COMBINES):
             group = groups[-1]
+            if len(group) == 4:                     # a run read as written: its last character takes this one
+                end = group[1]
+                if len(group[2]) > 1:
+                    group[1], group[2] = end - 1, group[2][:-1]
+                    group = [end - 1, end, text[end - 1]]
+                    groups.append(group)
+                else:
+                    group = groups[-1] = [group[0], end, group[2]]
             group[1], group[2] = i + 1, group[2] + form
         elif form:
             groups.append([i if groups else 0, i + 1, form])
+    if last < len(text):
+        groups.append([last if groups else 0, len(text), text[last:], True])
     read, at = [], []
-    for start, end, form in groups:
-        form = unicodedata.normalize("NFC", form)
-        read.append(form)
-        at.extend([start] + [end] * (len(form) - 1))
+    for group in _stretches(groups):
+        start, end, form = group[0], group[1], group[2]
+        if len(group) == 4:
+            read.append(form)
+            at.append(start)
+            at.extend(range(end - len(form) + 1, end))
+        else:
+            form = unicodedata.normalize("NFC", form)
+            read.append(form)
+            at.extend([start] + [end] * (len(form) - 1))
     at.append(len(text))
     return "".join(read), at
+
+
+_MARKS_RE = re.compile("[ー〜]")
+_ATTACHING_RE = []  # the pattern of the combining marks up to U+FFFF, which ride with the character before them
+
+
+def _odd_characters(text, unread):
+    """The indices, in order, of the characters of `text` that tagger_text doesn't read one by one as themselves:
+    those read in another form or composing with the one before (_read_pattern), every other combining mark (it rides
+    with the character before it), the marks a stretched vowel may hold, and `unread`."""
+    if not _ATTACHING_RE:
+        points = [point for point in range(0x10000) if unicodedata.combining(chr(point))]
+        _ATTACHING_RE.append(re.compile("[" + "".join(f"\\u{point:04x}" for point in points) + "]"))
+    odd = {m.start() for m in _read_pattern().finditer(text)}
+    odd.update(m.start() for m in _ATTACHING_RE[0].finditer(text))
+    odd.update(m.start() for m in _MARKS_RE.finditer(text))
+    if _ASTRAL_RE.search(text) is not None:
+        odd.update(m.start() for m in _ASTRAL_RE.finditer(text)
+                   if m.group() in _READ_ASTRAL or unicodedata.combining(m.group()))
+    odd.update(unread)
+    return sorted(odd)
+
+
+# A stretched vowel. Inside a word — after a kana or a kanji, before a kana — a wave dash or a run of prolonged sound
+# marks stands for one prolonged sound mark (長音符), as UniDic's own pronunciations read it (あま〜い is アマーイ):
+# すご〜い, いらっしゃ～い and すごーーい are read すごーい and いらっしゃーい, spellings UniDic lists. Where it lists
+# no stretched spelling of the word, the tagger reads the mark as a symbol of its own — ふるーい is 振る + ー + い,
+# 暗ーい 暗 + ー + い — and after hiragana or a kanji the mark only lengthens the vowel before it: the word is read
+# without it (ふるい, 暗い). Hiragana writes a long vowel with a vowel letter (現代仮名遣い: おかあさん), so a ー there is
+# a stretch; katakana writes it with ー (外来語の表記: オットー, ゼニー), part of the word, so a mark after katakana stays.
+_STRETCH_MARKS = frozenset("ー〜")
+_STRETCH_BEFORE = re.compile(f"[{KANA_LETTERS}{HAN}]")
+_STRETCH_DROPPED_AFTER = re.compile(f"[\u3041-\u3096\u309d-\u309f{HAN}]")    # hiragana or a kanji
+_STRETCH_DROPPED_RE = re.compile(f"[\u3041-\u3096\u309d-\u309f{HAN}]ー[{KANA_LETTERS}]")
+_STRETCH_AFTER = re.compile(f"[{KANA_LETTERS}]")
+_STRETCH_RE = re.compile(f"(?<=[{KANA_LETTERS}{HAN}])[ー〜]+(?=[{KANA_LETTERS}])")
+
+
+def _stretched(text):
+    """Does `text` hold a stretched vowel that is read otherwise than as written — a wave dash, or two or more marks?
+    (A text with a ～ is read differently anyway.)"""
+    return ("〜" in text or "ーー" in text) and any(m.group() != "ー" for m in _STRETCH_RE.finditer(text))
+
+
+def _stretches(groups):
+    """tagger_text's `groups` with the marks of each stretched vowel read as one ー (§ above)."""
+    out, i, n = [], 0, len(groups)
+    while i < n:
+        j = i
+        while j < n and groups[j][2] in _STRETCH_MARKS:
+            j += 1
+        if i < j < n and out and _STRETCH_BEFORE.match(out[-1][2][-1]) and _STRETCH_AFTER.match(groups[j][2]):
+            out.append([groups[i][0], groups[j - 1][1], "ー"])
+            i = j
+        else:
+            out.append(groups[i])
+            i += 1
+    return out
+
+
+def _lone_marks(read, at, nodes):
+    """The indices of the text `read` was read from (tagger_text) that hold a stretched vowel's mark the tagger read
+    as a symbol of its own (§ A stretched vowel)."""
+    lone, end = set(), 0
+    for node in nodes:
+        start = end + len(node.white_space)
+        end = start + len(node.surface)
+        if (node.surface == "ー" and start and end < len(read) and _STRETCH_DROPPED_AFTER.match(read[start - 1])
+                and _STRETCH_AFTER.match(read[end])):
+            lone.update(range(start, end) if at is None else range(at[start], at[end]))
+    return lone
 
 
 class ReadNode:
@@ -228,9 +336,13 @@ class Tagger:
         import fugashi   # lazy: only a Japanese run pays this import
         self._tagger = fugashi.Tagger()
 
-    def __call__(self, text):
-        read, at = tagger_text(text)
+    def __call__(self, text, unread=()):
+        read, at = tagger_text(text, unread)
         nodes = self._tagger(read)
+        if not unread and "ー" in read and _STRETCH_DROPPED_RE.search(read):
+            lone = _lone_marks(read, at, nodes)
+            if lone:             # a stretch UniDic lists no spelling for: read the word without it (§ above)
+                return self(text, lone)
         if at is None:
             return nodes
         out, end = [], 0
@@ -466,6 +578,8 @@ def see_through_base(lemma, reading, tagger, joins=None):
 #               (the 」 opened the next sentence and the ja tokenizer threw it away), “是黑车吗？”.
 #   SB6–SB8     a full stop that is also a decimal point or an abbreviation's (．, .) ends nothing when a
 #               digit or a Latin letter follows it: ３．１４, Ｎｏ．６, Ｍｒ．Ｓｍｉｔｈ.
+#   SB8a        a comma, a colon or a dash after them (Unicode's SContinue) continues the sentence:
+#               「はい。」、と彼は言った。 is one sentence (Japanese).
 # Japanese only — a particle cannot begin a sentence:
 #   a question or exclamation quoted without brackets runs on to its verb: 本当に？と聞いた is one
 #   sentence. It keeps its ？ / ！ before と; a full stop before と is the conjunction and ends the
@@ -473,6 +587,7 @@ def see_through_base(lemma, reading, tagger, joins=None):
 #   A quotation followed by a particle (UniDic 助詞: と / って, で, が, の …) or a verb is one sentence
 #   with what follows, whatever it holds: 「今日は晴れ。明日は雨」と言った。, 『吾輩は猫である。名前は
 #   まだ無い。』で始まる小説 (the user's call, 2026-09-27: the quotation is part of the sentence it stands in).
+#   Quotations in a row are taken together by what follows the last: 「やめて。」「いやだ。」と言い合った。
 #   Any other follower — a noun, a new subject — leaves its inner sentences apart (「行くぞ。」次だ。
 #   and 「はい。」彼女は頷いた。 are two each).
 # … is no boundary: it is as often a pause as an end (あの…すみません — the user's call, 2026-09-27).
@@ -482,6 +597,8 @@ _ATERM_JOINS = re.compile(r"[0-9A-Za-z０-９Ａ-Ｚａ-ｚ]")         # decimal
 _QUOTE_OPENERS = frozenset("「『｢〝“")                          # Unicode's Quotation_Mark brackets
 _QUOTE_CLOSERS = frozenset("」』｣〞〟”")
 _QUOTED_MARKS = frozenset("！？!?")                            # what a quoted question or exclamation keeps
+_SCONTINUE = frozenset(",-:" "\u3001\uff0c\uff64\uff1a\uff0d\u2013\u2014"   # UAX #29 SContinue: 、，､：－–—
+                       "\ufe10\ufe11\ufe13\ufe31\ufe32\ufe50\ufe51\ufe55\ufe58\ufe63")  # and their small forms
 
 
 def _terminates(surface, following, boundaries):
@@ -527,20 +644,26 @@ def _sentence_ends(words, surfaces, boundaries):
     line = "".join(surfaces)
     if not (_QUOTE_OPENERS.isdisjoint(line) and _QUOTE_CLOSERS.isdisjoint(line)):
         opened = []                  # the index of each quotation still open on this line
+        run_of = None                # (where a run of quotations began, the index its next quotation opens at)
         for k, surface in enumerate(surfaces):
             for ch in surface:
                 if ch in _QUOTE_OPENERS:
                     opened.append(k)
                 elif ch in _QUOTE_CLOSERS:
                     start = opened.pop() if opened else -1      # a closer alone: opened on an earlier line
+                    if run_of is not None and run_of[1] == start:
+                        start = run_of[0]                       # 「…。」「…。」と: the run is taken together
+                    run_of = None
                     f = k + 1
                     while f < n and _closes(surfaces[f], ()):
                         f += 1
-                    if f < n and _takes_quotation(words[f], bracketed=True):
+                    if f < n and surfaces[f][:1] in _QUOTE_OPENERS:
+                        run_of = (start, f)
+                    elif f < n and _takes_quotation(words[f], bracketed=True):
                         joined.update(run for run in runs if start < run[0] < k)
-    return {j for i, j in runs if (i, j) not in joined and not (
-        j + 1 < n and _takes_quotation(words[j + 1])
-        and _QUOTED_MARKS.issuperset(ch for s in surfaces[i:j + 1] for ch in s if ch in boundaries))}
+    return {j for i, j in runs if (i, j) not in joined and not (j + 1 < n and surfaces[j + 1][:1] in _SCONTINUE)
+            and not (j + 1 < n and _takes_quotation(words[j + 1])
+                     and _QUOTED_MARKS.issuperset(ch for s in surfaces[i:j + 1] for ch in s if ch in boundaries))}
 
 
 class JapaneseTokenizer(Tokenizer):
@@ -834,6 +957,15 @@ def _sanitize_term(term):
     parts = re.split(r'[-\s]', term)
     return parts[0] if parts else term
 
+def _known_term(term):
+    """A KnownWord.json dictForm as a known word. Migaku writes some with a gloss after the word (アイリス-iris): cut
+    off as `_sanitize_term` cuts a lemma — but only when what follows the first space or hyphen holds no Japanese. A
+    sentence an Anki "Also read" field synced (そうだ　女の子だ) stays whole, so every word in it is known."""
+    if not isinstance(term, str):
+        return term
+    cut = _sanitize_term(term)
+    return term.strip() if _JA_TARGET_RE.search(term.strip()[len(cut) + 1:]) else cut
+
 def _display_orth(lemma, orths):
     """The spelling to SHOW for a word: the commonest orthBase seen for it, else the lemma.
 
@@ -911,13 +1043,25 @@ def load_simple_list(file_path, script="asis", language=None):
     # In the file's own encoding (path_utils.read_text): a list saved with a BOM, as UTF-16 or in
     # Windows' "ANSI" (CP932 / GBK) reads like any other instead of losing its first entry or
     # stopping the run.
-    lines = read_text(file_path, language).splitlines()
+    return _list_words(read_text(file_path, language).splitlines(), script)
+
+
+def _list_words(lines, script="asis"):
+    """The words a list's `lines` name, as every ignore set holds them (`load_simple_list`)."""
     # Ignore comments starting with # and empty lines. Chinese entries are read in the library's
     # script (`zh_script`) so they still match converted tokens; the file itself is never touched.
     entries = set(zh_script.convert(_sanitize_term(line.strip()) if SANITIZE_JA else line.strip(), script)
                   for line in lines if line.strip() and not line.strip().startswith("#"))
     # Japanese: a hiragana line also names the word it is typed for (する -> 為る; `_kana_lines_read`).
     return (entries | _kana_lines_read(entries)) if SANITIZE_JA else entries
+
+
+def load_ignored_entries(user_files_dir, script="asis", language=None):
+    """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) as ignored words — each
+    read as a line of the Ignore list is (`_list_words`). The one reader (`token_index.ignored_entries`) is the Rarity
+    preview's too, so the slider counts what the list counts."""
+    from app import token_index
+    return _list_words(token_index.ignored_entries(user_files_dir, language), script)
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -1048,7 +1192,7 @@ def load_known_words(json_path, tokenizer):
         if is_known:
             term = entry.get("dictForm", "")
             if SANITIZE_JA:
-                term = _sanitize_term(term)
+                term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
             if term:
                 # Normalize using the same tokenizer
@@ -1164,23 +1308,46 @@ def close_cue(block_text):
     return block_text
 
 
-def _captions(events):
-    """Each caption's text, closed (close_cue), from an .ass file's `events` — (timing, text) in the
+# A caption's lines are read as CSS Text 3 reads a line break in running text (its segment break rules): nothing
+# between two East Asian wide characters (width F, W or H, and not Hangul) — 我觉得 / 他不会来 is 我觉得他不会来, not
+# 我觉得 他不会来 — and a space elsewhere (我买了 / T恤). Japanese keeps the space: the tagger reads it as the word
+# boundary the subtitler broke the line at, and the sentence it shows drops it — the same text.
+_HANGUL_RE = re.compile('[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff\uffa0-\uffdc]')
+
+
+def _wide(ch):
+    return unicodedata.east_asian_width(ch) in ("F", "W", "H") and not _HANGUL_RE.match(ch)
+
+
+def _join_lines(lines, language='ja'):
+    """A caption's `lines` — cleaned, none empty — as one text (§ above)."""
+    if language == 'ja' or not lines:
+        return " ".join(lines)
+    text = lines[0]
+    for line in lines[1:]:
+        text += line if _wide(text[-1]) and _wide(line[0]) else " " + line
+    return text
+
+
+def _captions(events, language='ja'):
+    """Each caption's text, closed (close_cue), from an .ass file's `events` — (timing, colour, text) in the
     file's order. Consecutive events with one timing — one start, one end — are on screen together: the
     lines of one caption, read as one cue like an .srt cue's two lines (a broadcast .ja.ass writes
-    《門番は城への侵入者を / 厳しく取り調べた》 as two events; each was closed with 。 mid-clause). An .srt
+    《門番は城への侵入者を / 厳しく取り調べた》 as two events; each was closed with 。 mid-clause) — one caption
+    per colour: Japanese TV captions (字幕放送) tell speakers apart by colour, so two colours on screen at once
+    are two people speaking (え…養父様を？ in yellow, うむ。 in white; in the library every pair of events with
+    one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
     at once — Netflix writes two speakers talking together so (the 五等分の花嫁 sample: （風太郎）あれは
     てめえが薬を… / （二乃）フフフフ…)."""
-    caption, shown = [], None
-    for timing, text in events:
-        if caption and timing != shown:
-            yield close_cue(" ".join(caption))
-            caption = []
-        caption.append(text)
+    screen, shown = {}, None                        # colour -> the texts in it, of the events on screen together
+    for timing, colour, text in events:
+        if screen and timing != shown:
+            yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
+            screen = {}
+        screen.setdefault(colour, []).append(text)
         shown = timing
-    if caption:
-        yield close_cue(" ".join(caption))
+    yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
 
 
 _OPEN_BRACKETS = '(（'
@@ -1303,12 +1470,41 @@ def _ass_event_text(text):
 def ass_dialogue_text(text, language='ja'):
     """One ASS / SSA Dialogue event's Text as speech, or '' — read like an .srt cue: its lines (split at the
     \\N / \\n line breaks) each kept only when they hold the language's script and cleaned, then joined
-    with a space as extract_text joins a cue's lines. A sung event (karaoke timing) is no speech."""
+    as extract_text joins a cue's lines (_join_lines). A sung event (karaoke timing) is no speech."""
     if _ASS_KARAOKE_RE.search(text):
         return ""
     lines = _ASS_BREAK_RE.split(_ass_event_text(text))
     kept = [clean_subtitle_text(line, language) for line in lines if has_target_language(line, language)]
-    return " ".join(line for line in kept if line)
+    return _join_lines([line for line in kept if line], language)
+
+
+# The colour a Japanese TV caption tells its speaker by (_captions): an ASS event's text is drawn in its style's
+# PrimaryColour — &H00BBGGRR (ASS), a decimal number (SSA) — until an override block's \c / \1c sets another or \r
+# resets it to a style's.
+_ASS_COLOUR_RE = re.compile(r'\\(?:1?c(&H[0-9A-Fa-f]+)|r([^\\}]*))')
+
+
+def _ass_colour_value(value):
+    """A colour as ASS or SSA writes it, as BBGGRR."""
+    value = value.strip().rstrip('&')
+    try:
+        number = int(value[2:], 16) if value[:2].upper() == '&H' else int(value)
+    except ValueError:
+        return value
+    return format(number & 0xFFFFFF, '06X')
+
+
+def _ass_colour(text, colour, colours):
+    """The colour an event's first visible character is drawn in: `colour` (its style's) as the override blocks
+    before that character change it (§ above; `colours` holds each style's)."""
+    style_colour, pos = colour, 0
+    for block in _ASS_BLOCK_RE.finditer(text):
+        if _ASS_ESCAPE_RE.sub('', text[pos:block.start()]).strip():
+            break
+        for value, reset in _ASS_COLOUR_RE.findall(block.group()):
+            colour = _ass_colour_value(value) if value else colours.get(reset.strip(), style_colour)
+        pos = block.end()
+    return colour
 
 
 def parse_ass(file_path, language='ja'):
@@ -1322,7 +1518,8 @@ def parse_ass(file_path, language='ja'):
     events_section = False
     format_line = None
     text_index = 9 # Default for standard ASS
-    start_index, end_index = 1, 2
+    start_index, end_index, style_index = 1, 2, 3
+    colours, colour_index = {}, 3   # each style's PrimaryColour (§ above), and where a Style line holds it
     
     events = []
     
@@ -1341,6 +1538,7 @@ def parse_ass(file_path, language='ja'):
                 try:
                     text_index = format_line.index('Text')
                     start_index, end_index = format_line.index('Start'), format_line.index('End')
+                    style_index = format_line.index('Style')
                 except ValueError:
                     pass
                 continue
@@ -1352,10 +1550,20 @@ def parse_ass(file_path, language='ja'):
                 if len(comma_parts) > text_index:
                     cleaned = ass_dialogue_text(comma_parts[text_index], language)
                     if cleaned:
+                        colour = _ass_colour(comma_parts[text_index], colours.get(comma_parts[style_index].strip(), ''),
+                                             colours)
                         events.append(((comma_parts[start_index].strip(), comma_parts[end_index].strip()),
-                                       cleaned))
+                                       colour, cleaned))
+        elif line.startswith('Format:'):          # [V4+ Styles] / [V4 Styles]
+            fields = [f.strip() for f in line[7:].split(',')]
+            if 'PrimaryColour' in fields:
+                colour_index = fields.index('PrimaryColour')
+        elif line.startswith('Style:'):
+            fields = line[6:].split(',')
+            if len(fields) > colour_index:
+                colours[fields[0].strip()] = _ass_colour_value(fields[colour_index])
 
-    return " ".join(caption for caption in _captions(events) if caption)
+    return " ".join(caption for caption in _captions(events, language) if caption)
 
 
 # --- what a text file's own format writes around its text ------------------------------------------------------ #
@@ -1522,7 +1730,7 @@ def extract_text(file_path, language='ja'):
                         filtered_lines.append(cleaned)
 
                 if filtered_lines:
-                    block_text = close_cue(" ".join(filtered_lines))
+                    block_text = close_cue(_join_lines(filtered_lines, language))
                     if block_text:
                         parts.append(block_text)
             text = "".join(parts)
@@ -2334,6 +2542,7 @@ def main():
     ignore_list = load_simple_list(ignore_list_file, script, language)
     ignore_list.update(load_simple_list(black_list_file, script, language))        # merge blacklist into ignore list
     ignore_list.update(load_simple_list(graduated_list_file, script, language))    # merge graduated list into ignore list
+    ignore_list.update(load_ignored_entries(user_files_dir, script, language))     # and KnownWord.json's IGNORED entries
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing

@@ -391,9 +391,7 @@ def test_a_store_from_before_the_parsing_fixes_is_rebuilt(tmp_path):
 def test_a_store_from_before_names_stayed_whole_is_rebuilt(tmp_path):
     """v8 -> v9: a name the tagger cuts into pieces is one word now (app/names.py) — here the made-up katakana name
     ミロナイ, which a v8 store holds as ミロ + ナイ — and the store records each file's name candidates in a column a
-    v8 store lacks. Reusing a v8 store would keep the pieces, so it must be dropped and rebuilt. Pinned exactly: the
-    next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 9
+    v8 store lacks. Reusing a v8 store would keep the pieces, so it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "village.txt"
     _write(f, "昨日、ミロナイが村に来た。\nミロナイは森に帰った。\n")
@@ -411,6 +409,31 @@ def test_a_store_from_before_names_stayed_whole_is_rebuilt(tmp_path):
     assert s2.total_tokens() == 0, "a v8 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = 'ミロナイ'").fetchall() == name
+    s2.close()
+
+
+def test_a_store_from_before_stretched_words_were_read_is_rebuilt(tmp_path):
+    """v9 -> v10: the text a file becomes reads differently — here 𠮟 (the 常用漢字表's other form of 叱), which a v9
+    store dropped as a symbol and now reads as 叱る. Reusing a v9 store would keep the old tokens, so it must be
+    dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 10
+    db = _db(tmp_path)
+    f = tmp_path / "scold.txt"
+    _write(f, "先生に𠮟られた。\n母にも𠮟られた。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    scold = s.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = '叱る'").fetchall()
+    s.close()
+    assert scold and scold[0][2] == 2
+    conn = sqlite3.connect(db)      # what a v9 store holds: no 叱る — 𠮟 was dropped as a symbol
+    conn.execute("DELETE FROM aggregate WHERE lemma = '叱る'")
+    conn.execute("PRAGMA user_version = 9")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v9 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = '叱る'").fetchall() == scold
     s2.close()
 
 

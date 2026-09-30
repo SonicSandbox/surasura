@@ -1,16 +1,15 @@
 ﻿Word,Orth,Forms,Reading,Tier,Score,Occurrences,Count (High),Count (Low),Count (Goal),Modality,Sources,Context 1,Src 1,Context 2,Src 2,Context 3,Src 3
 うう,うっ,う|ううっ|ううう,ウウ,Outside,180,18,18,0,0,,H_priority_sample,うっ！,HighPriority/H_priority_sample_2.srt,うっ…うわああっ！,HighPriority/H_priority_sample_2.srt,ううっ…,HighPriority/H_priority_sample_2.srt
-老婆,老婆,,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,オレの少し前に立つ老婆なんて、今にも転びそうなほどに足元がフラフラしていて危なっかしい。,HighPriority/H_priority_sample_1.txt,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,ＯＬは必死に涙を堪えながら、老婆へと小さな謝罪の言葉を口にする。,HighPriority/H_priority_sample_1.txt
-んっ,ん,んんっ,ンッ,Outside,80,8,8,0,0,,H_priority_sample,ん？,HighPriority/H_priority_sample_2.srt,ん…,HighPriority/H_priority_sample_2.srt,んんっ…,HighPriority/H_priority_sample_2.srt
+老婆,老婆,,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,「何故この私が、老婆に席を譲らなければならないんだい？,HighPriority/H_priority_sample_1.txt,君や老婆が私よりも長い人生を送っていることは一目瞭然だ。,HighPriority/H_priority_sample_1.txt
+んっ,ん,んんっ,ンッ,Outside,80,8,8,0,0,,H_priority_sample,ん？,HighPriority/H_priority_sample_2.srt,ハッそんなのやるわけ…ん？,HighPriority/H_priority_sample_2.srt,ん…,HighPriority/H_priority_sample_2.srt
 此奴,こいつ,,コイツ,Outside,80,8,8,0,0,,H_priority_sample,こいつらだって人の子。,HighPriority/H_priority_sample_2.srt,こいつ今ひどいこと言った。,HighPriority/H_priority_sample_2.srt,そういえばこいつ気にしないヤツだったな。,HighPriority/H_priority_sample_2.srt
-フータロー,フータロー,,,Outside,60,6,6,0,0,,H_priority_sample,フータロー現実を見てもうみんないない。,HighPriority/H_priority_sample_2.srt,フータローすぐに終わらせるから座って待ってて。,HighPriority/H_priority_sample_2.srt,やっぱフータロー君にそんな度胸はないよね。,HighPriority/H_priority_sample_2.srt
+フータロー,フータロー,,,Outside,60,6,6,0,0,,H_priority_sample,フータロー現実を見てもうみんないない。,HighPriority/H_priority_sample_2.srt,フータローすぐに終わらせるから座って待ってて。,HighPriority/H_priority_sample_2.srt,それを考えるのがフータローの仕事でしょ？,HighPriority/H_priority_sample_2.srt
 混雑,混雑,,コンザツ,Outside,40,4,4,0,0,reading,H_priority_sample,そして気が付くと、仕事に追われフラストレーションを溜めたサラリーマンが、ついうっかり痴漢しちゃおっかな？と間違いを覚えてしまいそうなほどに車内は混雑している。,HighPriority/H_priority_sample_1.txt,運よく席を確保できたオレにとっては、混雑などどこ吹く風。,HighPriority/H_priority_sample_1.txt,少女は満面の笑みで頭を下げると、混雑をかき分け、老婆を空いた席へと誘導した。,HighPriority/H_priority_sample_1.txt
 お年寄り,お年寄り,,オトシヨリ,Outside,40,4,4,0,0,,H_priority_sample,お年寄りに譲るのは当然でしょう？」,HighPriority/H_priority_sample_1.txt,確かにお年寄りに席を譲ることは、社会貢献の一環かも知れない。,HighPriority/H_priority_sample_1.txt,お年寄りもゆっくりと腰を落ち着けられるだろう。,HighPriority/H_priority_sample_1.txt
 誠実,誠実,,セイジツ,Outside,40,4,4,0,0,,H_priority_sample,誠実に向き合えば分かってくれるよ。,HighPriority/H_priority_sample_2.srt,“誠実に”ってどうすりゃいいんだよ。,HighPriority/H_priority_sample_2.srt,誠実に向き合う…誠実に…,HighPriority/H_priority_sample_2.srt
 嫌い,嫌い,,キライ,Outside,40,4,4,0,0,,H_priority_sample,みんなバカばっかりで嫌いよ。,HighPriority/H_priority_sample_2.srt,嫌いって姉妹のこともか？,HighPriority/H_priority_sample_2.srt,俺が嫌いってだけじゃ説明がつかないんだよ。,HighPriority/H_priority_sample_2.srt
 車内,車内,,シャナイ,Outside,30,3,3,0,0,,H_priority_sample,そして気が付くと、仕事に追われフラストレーションを溜めたサラリーマンが、ついうっかり痴漢しちゃおっかな？と間違いを覚えてしまいそうなほどに車内は混雑している。,HighPriority/H_priority_sample_1.txt,静かな車内でＯＬの声は良く通り、周囲の人たちから自然と注目が集まる。,HighPriority/H_priority_sample_1.txt,このように混雑した車内で、優先席に座っている私をやり玉にあげているが、他にも我関せずと居座り黙り込んでいる者たちは放っておいていいのかい？,HighPriority/H_priority_sample_1.txt
 おばあさん,お婆さん,,オバアサン,Outside,30,3,3,0,0,,H_priority_sample,「そこの君、お婆さんが困っているのが見えないの？」,HighPriority/H_priority_sample_1.txt,「お婆さん、さっきからずっと辛そうにしているみたいなの。,HighPriority/H_priority_sample_1.txt,どなたかお婆さんに席を譲ってあげて貰えないでしょうか？,HighPriority/H_priority_sample_1.txt
-いー,い,,イー,Outside,30,3,3,0,0,,H_priority_sample,いらっしゃ～い上杉さん！,HighPriority/H_priority_sample_2.srt,い･い･か･ら！,HighPriority/H_priority_sample_2.srt,,
 高校生,高校生,,コウコウセイ,Outside,25,5,5,0,0,,H_priority_sample,というか高校生。,HighPriority/H_priority_sample_1.txt,何とも高校生らしくない喋り方だ。,HighPriority/H_priority_sample_1.txt,あなたは高校生でしょう!?,HighPriority/H_priority_sample_1.txt
 裁判長,裁判長,,サイバンチョウ,Outside,25,5,5,0,0,,H_priority_sample,裁判長これをご覧ください。,HighPriority/H_priority_sample_2.srt,うっうう…裁判長！,HighPriority/H_priority_sample_2.srt,裁判長。,HighPriority/H_priority_sample_2.srt
 真横,真横,,マヨコ,Outside,20,2,2,0,0,,H_priority_sample,彼の真横にはさっきの年老いた老婆。,HighPriority/H_priority_sample_1.txt,勇みの一歩を踏み出そうとした瞬間、真横から話しかけられ出鼻を挫かれた。,HighPriority/H_priority_sample_1.txt,,
@@ -24,12 +23,12 @@
 しい,シーッ,,シイ,Outside,20,2,2,0,0,,H_priority_sample,う…上杉さんがいるからシーッ！,HighPriority/H_priority_sample_2.srt,シーッ！,HighPriority/H_priority_sample_2.srt,,
 てまえ,てめえ,,テマエ,Outside,20,2,2,0,0,,H_priority_sample,あれはてめえが薬を…,HighPriority/H_priority_sample_2.srt,,,,
 ふふ,フフ,,フフ,Outside,20,2,2,0,0,,H_priority_sample,フフフフ…,HighPriority/H_priority_sample_2.srt,,,,
-はっ,ハッ,,ハッ,Outside,20,2,2,0,0,,H_priority_sample,ハッそんなのやるわけ…ん？,HighPriority/H_priority_sample_2.srt,ハッ！,HighPriority/H_priority_sample_2.srt,,
 面食い,面食い,,メンクイ,Outside,20,2,2,0,0,,H_priority_sample,二乃は面食いだから。,HighPriority/H_priority_sample_2.srt,面食いの何が悪いんですか？,HighPriority/H_priority_sample_2.srt,,
 ふっ,フッ,,フッ,Outside,20,2,2,0,0,,H_priority_sample,フッ。,HighPriority/H_priority_sample_2.srt,,,,
 盗撮,盗撮,,トウサツ,Outside,20,2,2,0,0,,H_priority_sample,盗撮魔！,HighPriority/H_priority_sample_2.srt,“撮りに”って盗撮よ！,HighPriority/H_priority_sample_2.srt,,
 イエイ,イエーイ,,イエイ,Outside,20,2,2,0,0,,H_priority_sample,イエーイ！,HighPriority/H_priority_sample_2.srt,,,,
 過度,過度,,カド,Outside,20,2,2,0,0,,H_priority_sample,あいつらはこれでいいんだろうか？って人の家に過度な干渉も…,HighPriority/H_priority_sample_2.srt,これだから過度な干渉は嫌なんだ。,HighPriority/H_priority_sample_2.srt,,
+いー,い,,イー,Outside,20,2,2,0,0,,H_priority_sample,い･い･か･ら！,HighPriority/H_priority_sample_2.srt,,,,
 ゆらゆら,ゆらゆら,,ユラユラ,Outside,10,1,1,0,0,,H_priority_sample,オレは学校に向かうバスの中、座席に座りゆらゆらと揺られていた。,HighPriority/H_priority_sample_1.txt,,,,
 揺られる,揺られる,揺られ,ユラレル,Outside,10,1,1,0,0,,H_priority_sample,オレは学校に向かうバスの中、座席に座りゆらゆらと揺られていた。,HighPriority/H_priority_sample_1.txt,,,,
 変わり行く,変わりゆく,,カワリユク,Outside,10,1,1,0,0,,H_priority_sample,景色の変わりゆく街の様子を、意味もなく車窓から眺めつつ過ごしていると、バスへの搭乗客は、じわじわと増えていった。,HighPriority/H_priority_sample_1.txt,,,,
@@ -115,7 +114,6 @@
 ロック,ロック,,ロック,Outside,10,1,1,0,0,,H_priority_sample,今どきオートロックも知らないんだ。,HighPriority/H_priority_sample_2.srt,,,,
 前途,前途,,ゼント,Outside,10,1,1,0,0,,H_priority_sample,前途多難だぜ　だが…,HighPriority/H_priority_sample_2.srt,,,,
 多難,多難,,タナン,Outside,10,1,1,0,0,,H_priority_sample,前途多難だぜ　だが…,HighPriority/H_priority_sample_2.srt,,,,
-いら,いらっ,,イラ,Outside,10,1,1,0,0,,H_priority_sample,いらっしゃ～い上杉さん！,HighPriority/H_priority_sample_2.srt,,,,
 下級,下級,,カキュウ,Outside,10,1,1,0,0,,H_priority_sample,フン上杉さんのオシャレ下級者！,HighPriority/H_priority_sample_2.srt,,,,
 万端,万端,,バンタン,Outside,10,1,1,0,0,,H_priority_sample,さあ準備万端です勉強を始めましょう！,HighPriority/H_priority_sample_2.srt,,,,
 自習,自習,,ジシュウ,Outside,10,1,1,0,0,,H_priority_sample,私はここで自習してるだけなので。,HighPriority/H_priority_sample_2.srt,,,,

@@ -127,6 +127,14 @@ def test_a_card_spelled_another_way_labels_the_row_the_dictionary_reads_it_as():
         "なり代わる", "引き伸ばす", "引き延ばす", "成り代わる", "逃げだす", "逃げ出す"]
 
 
+def test_a_one_character_card_or_a_card_read_as_only_part_of_itself_labels_nothing_new():
+    """Read alone, 見 is 見る's stem and 1人 comes back as 人 alone (a number is no word): neither card is that
+    list word. A one-character card is never another row's — Junban never places one there, and the label
+    gives the same answer (`anki_match.whole_word_alone`)."""
+    _write_backlog(data=_cards("見", "1人"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["1人", "見"]
+
+
 def test_a_word_written_with_its_suru_na_or_ni_labels_the_word_itself(monkeypatch):
     """同行する is 同行 + する to the dictionary, and the list's row is 同行 (#773); 斬新な and 一気に
     carry the copula's な and the particle に the same way. The report can render in a process of its

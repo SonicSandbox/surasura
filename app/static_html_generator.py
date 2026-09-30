@@ -617,6 +617,8 @@ def _dictionary_keys(backlog, answers=None, listed=None):
             token = anki_match.one_word(tokens)
             if token is None:
                 continue
+            if len(tokens) == 1 and not anki_match.whole_word_alone(word, tokens):
+                continue                # 見 alone is 見る's stem, 1人 is not 人 — Junban places neither
             if anki_match._KANJI_RE.search(word):
                 found = {token[0]} if token[0] else set()
             elif len(tokens) == 2 and token[2]:

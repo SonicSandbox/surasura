@@ -374,3 +374,39 @@ def test_the_dashboards_preview_reads_the_lists_and_known_words_in_their_own_enc
     _save(folder, "KnownWord.json", _known_json(["冒険"]), "utf-8-sig")
     assert MasterDashboardApp._load_ignore_for_preview(None, "ja") == {"一人", "彼"}
     assert MasterDashboardApp._load_known_approx(None, "ja") == {"冒険"}
+
+
+# --- adding to a word list: in its own encoding ------------------------------------------------------------------ #
+# The Content Manager's graduation appended UTF-8 to GraduatedList.txt whatever it was saved in; a Shift_JIS list then
+# read as no encoding, and its own words came out U+FFFD. path_utils.append_text adds in the file's own encoding.
+_GRADUATED = "# 卒業した言葉\n勉強\n練習\n"
+_ADDED = "\n# Source: 第一話.srt (2 words graduated)\n頑張る\n約束\n"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-16-be", "cp932"])
+def test_words_added_to_a_list_read_back_with_the_list_in_its_own_encoding(tmp_path, encoding):
+    path = _save(tmp_path, "GraduatedList.txt", _GRADUATED.replace("\n", "\r\n"), encoding)
+    path_utils.append_text(path, _ADDED, "ja")
+    assert read_text(path, "ja", errors="strict") == _GRADUATED + _ADDED
+    raw = open(path, "rb").read()
+    boms = [codecs.BOM_UTF8, codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE]
+    assert sum(raw.count(bom) for bom in boms) <= 1, "no second BOM in the middle of the file"
+    assert "\n" not in raw.decode(path_utils._decoding(raw, "ja")[1]).replace("\r\n", ""), "the file's CRLF kept"
+
+
+def test_a_new_list_is_started_in_utf8(tmp_path):
+    path = os.path.join(str(tmp_path), "GraduatedList.txt")
+    path_utils.append_text(path, _ADDED, "ja")
+    assert open(path, "rb").read() == _ADDED.encode("utf-8")
+
+
+def test_a_word_the_lists_encoding_cant_hold_rewrites_it_in_utf8_after_a_backup(tmp_path):
+    # 𠮟 has no Shift_JIS code: the list is kept whole in UTF-8, the original copied to .trash first.
+    path = _save(tmp_path, "GraduatedList.txt", _GRADUATED, "cp932")
+    before = open(path, "rb").read()
+    path_utils.append_text(path, "𠮟る\n", "ja")
+    assert open(path, "rb").read() == (_GRADUATED + "𠮟る\n").encode("utf-8")
+    trash = os.path.join(str(tmp_path), ".trash")
+    backups = os.listdir(trash)
+    assert len(backups) == 1 and open(os.path.join(trash, backups[0]), "rb").read() == before
+    assert not os.path.exists(path + ".tmp")

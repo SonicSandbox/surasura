@@ -324,3 +324,80 @@ def test_plain_prose_is_unaffected(tmp_path):
                     encoding="utf-8")
     out = _sentences(analyzer.extract_text(str(path), "ja"))
     assert out == ["少年は静かに扉を開けた。", "廊下には誰もいなかった。", "秘密の部屋が待っていた。"]
+
+
+# --- broadcast captions: a speaker by colour; a caption's lines -------------------------------------------------- #
+# Japanese TV captions (字幕放送) tell speakers apart by colour: two colours on screen at once are two people speaking.
+_BROADCAST_HEAD = (
+    "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n"
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+    "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+    "MarginR, MarginV, Encoding\n"
+    "Style: Default,Yu Gothic,46,&H00FFFFFF,&H000000FF,&H00000000,&H7F000000,1,0,0,0,100,100,4,0,1,2,2,1,0,0,0,1\n\n"
+    "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+
+
+def _broadcast(tmp_path, *texts, language="ja"):
+    """An .ass file whose events all share one timing, as a broadcast caption's lines do."""
+    path = tmp_path / "broadcast.ja.ass"
+    path.write_text(_BROADCAST_HEAD + "".join(
+        f"Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0000,0000,0000,,{text}\n" for text in texts), encoding="utf-8")
+    return analyzer.extract_text(str(path), language)
+
+
+def test_two_colours_on_screen_at_once_are_two_speakers(tmp_path):
+    text = _broadcast(tmp_path, "{\\pos(332,437)\\c&H0000FFFF}え…お父様を？", "{\\pos(432,497)}うむ。")
+    assert _sentences(text) == ["え…お父様を？", "うむ。"]
+
+
+def test_one_speakers_lines_around_anothers_are_read_in_order(tmp_path):
+    # White speaks two lines (right), yellow one (left) between them in the file: white's lines are one sentence.
+    text = _broadcast(tmp_path, "{\\pos(500,436)}駅前で待っている", "{\\pos(140,496)\\c&H0000FFFF}早く行こう。",
+                      "{\\pos(520,496)}友達がいるんだ。")
+    assert _sentences(text) == ["駅前で待っている友達がいるんだ。", "早く行こう。"]
+
+
+def test_a_captions_colour_is_its_first_visible_characters(tmp_path):
+    # A converter colours a narrowed space now and then; one speaker, one sentence.
+    text = _broadcast(tmp_path, "{\\pos(172,437)}その後{\\c&H0000FFFF\\fscx50}　{\\c&H00FFFFFF\\fscx100}会議を",
+                      "{\\pos(172,497)}開きます。")
+    assert _sentences(text) == ["その後　会議を開きます。"]
+
+
+def test_an_ssa_style_colour_in_decimal_is_the_same_colour(tmp_path):
+    # SSA writes a style's colour as a decimal number: 16777215 is white, as &H00FFFFFF is in an .ass override.
+    path = tmp_path / "old.ssa"
+    path.write_text(
+        "[V4 Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour\n"
+        "Style: Default,MS Gothic,28,16777215,65535,65535,0\n\n"
+        "[Events]\nFormat: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: Marked=0,0:00:02.00,0:00:04.50,Default,,0000,0000,0000,,放課後の市民プールで\n"
+        "Dialogue: Marked=0,0:00:02.00,0:00:04.50,Default,,0000,0000,0000,,{\\c&HFFFFFF&}泳ぎを覚えた。\n",
+        encoding="utf-8")
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == ["放課後の市民プールで泳ぎを覚えた。"]
+
+
+def test_a_japanese_cues_lines_keep_the_boundary_the_line_break_made(tmp_path):
+    # The space between a cue's lines is a word boundary to the tagger; the sentence shown drops it.
+    path = tmp_path / "two_lines.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:02,500\n行くぞ\nうん\n", encoding="utf-8")
+    tokens = [t for _s, ts in analyzer.JapaneseTokenizer().tokenize_sentences(analyzer.extract_text(str(path), "ja"))
+              for t in ts]
+    assert _sentences(analyzer.extract_text(str(path), "ja")) == ["行くぞうん。"]
+    assert "うん" in [lemma for lemma, _r, _s, _o in tokens]
+
+
+@pytest.mark.parametrize("cue, sentence", [
+    ("我明天\n要去北京", "我明天要去北京。"),       # between two Han characters a line break is nothing (CSS Text 3)
+    ("我买了一件\nT恤", "我买了一件 T恤。"),        # beside a Latin letter it stays a space
+])
+def test_a_chinese_captions_lines_join_as_running_text(tmp_path, cue, sentence):
+    path = tmp_path / "zh.srt"
+    path.write_text(f"1\n00:00:01,000 --> 00:00:02,500\n{cue}\n", encoding="utf-8")
+    text = analyzer.extract_text(str(path), "zh")
+    assert [s for s, _t in analyzer.ChineseTokenizer().tokenize_sentences(text)] == [sentence]
+
+
+def test_a_chinese_ass_line_break_joins_the_same_way(tmp_path):
+    text = _broadcast(tmp_path, "我觉得\\N他不会来", language="zh")
+    assert [s for s, _t in analyzer.ChineseTokenizer().tokenize_sentences(text)] == ["我觉得他不会来。"]

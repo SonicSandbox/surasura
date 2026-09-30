@@ -130,12 +130,16 @@ def card_word(raw, language=None):
     Japanese: `normalize_word` of the field's first line, its annotations in brackets dropped, its first
     word when a separator parts several, the punctuation around it gone — 撒く<br>まく, 「撒く」, 撒く。 and
     撒く・巻く are all 撒く; 仰ぐ（あおぐ） is 仰ぐ. Any other language: `normalize_word` as it stands — what
-    of a Chinese field is its word is an open question (学习 (xuéxí), 学习 / 學習)."""
+    of a Chinese field is its word is an open question (学习 (xuéxí), 学习 / 學習).
+
+    The Japanese line is read in NFKC, as the tagger reads text (`analyzer.tagger_text`): a half-width field is the
+    word in full width — ﾊﾞｼｯと is バシッと, ｼﾞｮﾝ･ｽﾐｽ is ジョン・スミス — the spelling the list's keys carry."""
     if language != "ja":
         return normalize_word(raw)
     if not isinstance(raw, str):
         return ""
     line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
+    line = unicodedata.normalize("NFKC", line)
     line = _NOTE_RE.sub("", line) or line
     for piece in _SEPARATOR_RE.split(line):
         word = _bare(piece)
@@ -705,16 +709,50 @@ def _inflected(tokens):
     return all(token[0] in INFLECTIONS for token in tokens[1:])
 
 
+def _suru_inflected(tokens):
+    """Is this ONE word + する, the する in a form of its own paradigm (`INFLECTIONS`)? 勉強した, 勉強しません,
+    勉強してる are 勉強する in the past, the polite negative, the progressive — する conjugates, the word before
+    it does not, so the card is still the word + one ending. Two endings stay a phrase (楽しみにした, クビにした:
+    に then する), and voice is no inflection (勉強させる)."""
+    return len(tokens) >= 3 and tokens[1][0] == "為る" and all(token[0] in INFLECTIONS for token in tokens[2:])
+
+
+# The copula's own forms after its word: its paradigm (`INFLECTIONS`), and what grammars give as the copula's negative
+# and written forms — the ない after で / じゃ (UniDic's adjective 無い), the は of では, the ある of である / ではありません.
+COPULA_FORMS = INFLECTIONS | {"無い", "は", "有る"}
+
+
+def _copula_inflected(tokens):
+    """Is this ONE word + the copula (だ, or the polite です) in any of its forms? 静かだった, 静かでした, 静かじゃない
+    and 静かではない are 静か, 学生だった is 学生 — the word before the copula does not conjugate, so the card is still
+    the word + one ending, as 勉強した is 勉強 (`_suru_inflected`). A particle before the copula keeps a phrase
+    (気のせいだった), and UniDic reads 只者ではない's で as a particle, so it stays one too."""
+    return (len(tokens) >= 2 and tokens[1][0] in ("だ", "です")
+            and all(token[0] in COPULA_FORMS for token in tokens[2:]))
+
+
 def one_word(tokens):
     """The token a card's word IS, read alone: its only token; the first of two when the second is an
     ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ); the first of any number when
     it is a conjugated word and the rest its inflection (`_inflected`: 取り消した -> 取り消す, a card is its
-    dictionary form) — else None, a phrase or a compound being no one word. `tokens` are the analyzer's
-    `(lemma, reading, surface, orth)`."""
+    dictionary form), or when the ending is a conjugated する (`_suru_inflected`: 勉強した -> 勉強) or copula
+    (`_copula_inflected`: 静かだった -> 静か) — else None, a phrase or a compound being no one word. `tokens` are the
+    analyzer's `(lemma, reading, surface, orth)`."""
     tokens = list(tokens or ())
-    if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens):
+    if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens) or _suru_inflected(tokens):
+        tokens = tokens[:1]
+    if _copula_inflected(tokens):
         tokens = tokens[:1]
     return tokens[0] if len(tokens) == 1 else None
+
+
+def whole_word_alone(word, tokens):
+    """Is a card's word, read alone, ONE word of the dictionary — `tokens` (the analyzer's, of `word` alone) a single
+    token that is the whole word, which holds a kanji and more than one character? 逃げだす is then 逃げ出す (UniDic's
+    own lemma). A kana word alone is read wrong too often (まく -> 膜); a one-character word alone is a stem or a
+    piece as often as a word (見 is 見る's), and a one-character card is never another row's; 1人 is not 人. The one
+    test for Junban's placement (`card_key`) and the report's "In Anki" label alike."""
+    return (len(tokens) == 1 and len(word) > 1 and tokens[0][2] == word and bool(_KANJI_RE.search(word)))
 
 
 def card_key(word, rank_of, language=None, answers=None, tokenize=None):
@@ -725,7 +763,8 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
     with an ending on it or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ,
     取り消した -> 取り消す. A kana word is looked up by the letters it is written in, never by the lemma the
     tagger guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A
-    bare word that only reads as a list word alone is `suggest`'s L6 — a question, not this. Shared by
+    word with a kanji read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word read
+    alone, or one only its sentence reads as a list word, is `suggest`'s L6 — a question. Shared by
     Junban's placement and the report's label."""
     key = lookup(word, rank_of, language)
     if key:
@@ -737,6 +776,12 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
         return "", ""
     tokens = list(tokenize(word))
     token = one_word(tokens) if len(tokens) >= 2 else None
+    # A word with a kanji, read alone as ONE word, is that word (`whole_word_alone`): 逃げだす is 逃げ出す, the row the
+    # report's "In Anki" label marks for it. A kana word read alone stays `suggest`'s question (まく -> 膜), as does a
+    # word only its sentence shows as a list word.
+    alone = token is None and whole_word_alone(word, tokens)
+    if alone:
+        token = tokens[0]
     if token is None:
         return "", ""
     if _KANA_ONLY_RE.match(word):
@@ -748,7 +793,7 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
     for name in names:
         key = lookup(name, rank_of, language)
         if key and not (answer.get("answer") == "no" and answer.get("target") == key):
-            return key, "L7"
+            return key, "L6" if alone else "L7"
     return "", ""
 
 

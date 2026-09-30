@@ -520,6 +520,35 @@ def test_the_band_the_dashboard_shows_is_the_band_generate_uses(samples_env):
     assert lib["min_count"] == pytest.approx(_floor(shown, lib)), "Generate must use the band the dashboard shows"
 
 
+def test_a_word_ignored_in_the_known_words_file_leaves_the_list_and_the_rarity_preview_alike(samples_env):
+    """The user, 2026-09-29: KnownWord.json's IGNORED entries (Migaku's status — a word dismissed there) are
+    ignored words. Generate leaves one off the list, and the Rarity slider — the dashboard's preview, and so
+    automatic rarity — stops counting it too: both read the one reader of those entries."""
+    from app import token_index as ti
+    root = samples_env
+    uf = root / "User Files" / "ja"
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+
+    def listed_and_counted():
+        _run_samples(root)
+        listed = list(pd.read_csv(root / "results" / "priority_learning_list.csv")["Word"])
+        store = ti.open_store("ja")
+        try:
+            counted = {key.split("|")[0] for key in dict(ti.preview_frequencies(store, "ja", str(uf))["unknown"])}
+        finally:
+            store.close()
+        return listed, counted
+
+    listed, counted = listed_and_counted()
+    word = next(w for w in listed if len(w) > 1)
+    assert word in counted
+    (uf / "KnownWord.json").write_text(json.dumps({"words": [{"dictForm": word, "knownStatus": "IGNORED"}]},
+                                                  ensure_ascii=False), encoding="utf-8")
+    listed, counted = listed_and_counted()
+    assert word not in listed, "Generate leaves an IGNORED word off the list"
+    assert word not in counted, "and the Rarity preview no longer counts it"
+
+
 def test_without_the_token_store_automatic_rarity_decides_on_the_runs_own_counts(samples_env, capsys):
     """The store can be locked or damaged; the run then tokenizes directly, and automatic rarity
     still picks its band — from the run's own counts (no known words or lists here, so they are the

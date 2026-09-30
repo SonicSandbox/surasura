@@ -224,3 +224,61 @@ def test_chinese_full_width_latin_is_read_as_the_letter():
     # Ｔ恤 is T恤 'T-shirt' (CC-CEDICT), one word in jieba's dictionary.
     tokens = [(token[0], token[2]) for token in analyzer.ChineseTokenizer().tokenize("你要这件Ｔ恤吗？")]
     assert ("T恤", "Ｔ恤") in tokens
+
+
+# --- one character, two code points; a stretched vowel ------------------------------------------------------------ #
+# ～ (U+FF5E) is the JIS wave dash as Windows decodes it, 〜 (U+301C) as UniDic writes it; the 常用漢字表 allows 叱 for 𠮟,
+# which unidic-lite doesn't know. Inside a word a wave dash, or a run of marks, is one prolonged sound mark (ー); a mark
+# the tagger still leaves alone after hiragana or a kanji only lengthens the vowel, and the word is read without it.
+
+def test_a_wave_dash_after_a_word_is_no_particle(tokenizer, sanitized):
+    # UniDic's one entry for ～ reads it から: every such line counted a particle that was never said.
+    lemmas = [lemma for lemma, _r, _s, _o in _tokens(tokenizer, "それってなに～？")]
+    assert "何" in lemmas and "から" not in lemmas
+
+
+@pytest.mark.parametrize("line, lemma, surface", [
+    ("今日はすご～い日だ。", "凄い", "すご～い"),          # a wave dash inside a word is UniDic's すごーい
+    ("今日はすご〜〜い日だ。", "凄い", "すご〜〜い"),       # a run of marks is one
+    ("ようこそ、いらっしゃ～い！", "いらっしゃる", "いらっしゃ～い"),
+    ("外は暗～い。", "暗い", "暗～い"),                    # after a kanji
+    ("ほら、す〜ぐ終わるよ。", "直ぐ", "す〜ぐ"),           # no stretched spelling listed: read without the mark
+])
+def test_a_stretched_word_is_the_word_and_keeps_its_spelling(tokenizer, sanitized, line, lemma, surface):
+    keys = {(lemma_, surface_) for lemma_, _r, surface_, _o in _tokens(tokenizer, line)}
+    assert (lemma, surface) in keys
+    assert not {"から", "イ", "ー", "〜", "～"} & {lemma_ for lemma_, _s in keys}
+
+
+def test_a_long_vowel_in_katakana_is_part_of_the_word(tokenizer, sanitized):
+    # Katakana writes a long vowel with ー (オットー): read without it, the name would be 夫.
+    keys = {(lemma, surface) for lemma, _r, surface, _o in _tokens(tokenizer, "オットーが来た。")}
+    assert ("オットー", "オットー") in keys
+
+
+def test_a_wave_dash_between_kanji_is_a_range_not_a_stretch(tokenizer, sanitized):
+    read, at = analyzer.tagger_text("受付は月曜～金曜です。")
+    assert read == "受付は月曜〜金曜です。"
+    lemmas = [lemma for lemma, _r, _s, _o in _tokens(tokenizer, "受付は月曜～金曜です。")]
+    assert "月曜" in lemmas and "金曜" in lemmas
+
+
+def test_a_stretched_line_maps_back_onto_its_text():
+    line = "もうすご〜〜い、す〜ぐだよ！"
+    read, at = analyzer.tagger_text(line)
+    assert read == "もうすごーい、すーぐだよ！"               # each stretch read as one ー
+    _read_back(read, at, line)
+    unread = {line.index("〜", line.index("す〜ぐ"))}
+    read, at = analyzer.tagger_text(line, unread)
+    assert read == "もうすごーい、すぐだよ！"
+    _read_back(read, at, line)
+
+
+def test_katakana_words_with_a_long_vowel_take_the_fast_path():
+    # One ー between kana is how it is written — nothing to read differently.
+    assert analyzer.tagger_text("コーヒーとラーメンを頼んだ。") == ("コーヒーとラーメンを頼んだ。", None)
+
+
+def test_the_allowed_form_of_a_joyo_kanji_is_read_as_its_word(tokenizer, sanitized):
+    keys = {(lemma, surface) for lemma, _r, surface, _o in _tokens(tokenizer, "先生に𠮟られた。𠮟責を受けた。")}
+    assert ("叱る", "𠮟ら") in keys and ("叱責", "𠮟責") in keys

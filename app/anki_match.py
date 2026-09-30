@@ -543,7 +543,7 @@ def sentence_span(raw, word):
     return (text, at, at + len(word)) if at >= 0 else None
 
 
-def unknowns_beside(word, raw, tokenize, unknown):
+def unknowns_beside(word, raw, tokenize, unknown, units=None):
     """How many words of the card's sentence the learner does not know yet OUTSIDE the card's own
     word: 0 makes the card i+1 — the one new thing in its sentence is the card (a phrase made of
     known words counts, D1). `None` when there is no sentence to read or no word to find in it.
@@ -557,6 +557,9 @@ def unknowns_beside(word, raw, tokenize, unknown):
     the `(lemma, reading)` of one inside the span is never an unknown beside it, as the analyzer never
     counts its target's own key (2026-09-27): 撒け、撒け、撒くんだ！ on a 撒く card (the span is the
     first 撒く WRITTEN) had two unknowns, and an i+1 card dropped to "multi".
+
+    `units(token)`, when given, is what one token counts as for learning — the list's own rule: a compound too rare
+    for the list is its parts when all of them are free (analyzer.LearningView). Each is judged by `unknown`.
     """
     found = sentence_span(raw, word)
     if found is None:
@@ -571,8 +574,9 @@ def unknowns_beside(word, raw, tokenize, unknown):
         at = pos + len(surface)
         placed.append((token, pos < end and at > start))       # inside the card's own word?
     own = {(token[0], token[1]) for token, inside in placed if inside}
-    return sum(1 for token, inside in placed
-               if not inside and (token[0], token[1]) not in own and unknown(token))
+    return sum(1 for token, inside in placed if not inside
+               for unit in (units(token) if units else (token,))
+               if (unit[0], unit[1]) not in own and unknown(unit))
 
 
 # --- Check matches (Junban_Backlog_Spec §16): the same word, spelled another way ------------------ #
@@ -755,16 +759,33 @@ def whole_word_alone(word, tokens):
     return (len(tokens) == 1 and len(word) > 1 and tokens[0][2] == word and bool(_KANJI_RE.search(word)))
 
 
+# A sound word ending in っ said with と — バシッと, ドキッと, コトッと — is ONE token to the tokenizer: the sound
+# word's own lemma and reading, written with its と (analyzer.join_affixes). A card mined with that と is still the
+# sound word + the ending と, as when the tokenizer cut the と off, so a list that only writes バシッ places a
+# バシッと card there with no question, as it does ひょいと. Told by the token alone: written with っと while its
+# reading, the sound word's, does not end in ット — ずっと, ちょっと and はっと are と-adverbs of their own (ズット).
+def ending_apart(tokens):
+    """A card's word read alone (the analyzer's `(lemma, reading, surface, orth)`), with a sound word said with と
+    — its only token — read as the sound word + と again (above); any other tokens as they are."""
+    tokens = list(tokens or ())
+    if len(tokens) == 1:
+        lemma, reading, surface, orth = tokens[0][:4]
+        if (isinstance(orth, str) and orth.endswith(("っと", "ッと")) and isinstance(surface, str)
+                and surface.endswith("と") and reading and not reading.endswith("ット")):
+            return [(lemma, reading, surface[:-1], orth[:-1]), ("と", "ト", "と", "と")]
+    return tokens
+
+
 def card_key(word, rank_of, language=None, answers=None, tokenize=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
 
     L1–L4 (`lookup`; via "exact"); else the user's "yes" to "Same word as one on your list?" (`answers`,
     `junban_pairs.json`; via "yes"); else — Japanese, with a tokenizer — the word read alone as ONE word
-    with an ending on it or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ,
-    取り消した -> 取り消す. A kana word is looked up by the letters it is written in, never by the lemma the
-    tagger guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A
-    word with a kanji read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word read
-    alone, or one only its sentence reads as a list word, is `suggest`'s L6 — a question. Shared by
+    with an ending on it or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ
+    (`ending_apart`), 取り消した -> 取り消す. A kana word is looked up by the letters it is written in, never by
+    the lemma the tagger guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very
+    pair. A word with a kanji read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word
+    read alone, or one only its sentence reads as a list word, is `suggest`'s L6 — a question. Shared by
     Junban's placement and the report's label."""
     key = lookup(word, rank_of, language)
     if key:
@@ -774,7 +795,7 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None):
         return answer["target"], "yes"
     if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
         return "", ""
-    tokens = list(tokenize(word))
+    tokens = ending_apart(tokenize(word))
     token = one_word(tokens) if len(tokens) >= 2 else None
     # A word with a kanji, read alone as ONE word, is that word (`whole_word_alone`): 逃げだす is 逃げ出す, the row the
     # report's "In Anki" label marks for it. A kana word read alone stays `suggest`'s question (まく -> 膜), as does a

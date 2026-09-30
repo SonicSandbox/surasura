@@ -78,6 +78,12 @@ DEFAULT_SETTINGS = {
         "names_katakana": True,
         "names_recurring": True,
         "names_kanji": True,
+        # Phrases and titles as one word (Settings -> Language & Parsing), Japanese only: a dictionary compound that
+        # is a phrase pattern (予想通り, こと自体), 元 + a noun (元首相) or a title (もののけ姫) is one word; off, it counts
+        # as its parts (予想 + 通り). Other dictionary compounds are one word either way. It changes what a run
+        # counts: in the run signature (never _NON_ANALYSIS_SETTINGS); read as a file is tokenized
+        # (analyzer.join_affixes), so it is in the token store's build signature when off.
+        "phrases_and_titles": True,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,

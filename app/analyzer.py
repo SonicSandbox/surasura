@@ -17,6 +17,7 @@ import unicodedata
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter
+from operator import attrgetter
 from datetime import datetime
 import abc
 
@@ -75,7 +76,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     break joins; broadcast captions part by speaker colour; a known-word entry is cut at a space only when no
 #     Japanese follows, and KnownWord.json's IGNORED entries are ignored; a card field is its one word, a する or
 #     copula form goes to its word, a kanji card read alone as one word is placed without asking. Still 2.4.
-ENGINE_REVISION = 17
+# 18: words made of words are one word (上層部, 一生懸命, 二十歳, 走り出す) and take their affixes (同性愛者); a sound
+#     word + と is its word, shown with と (ドキッと); お守り and お帰り are words of their own; laughter in katakana
+#     stays in pieces (アッハハ). A compound you can read through words you know sits lower and is no unknown; a rare
+#     compound counts toward its parts. Still 2.4: one re-analysis with 15, 16 and 17.
+ENGINE_REVISION = 18
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -401,6 +406,7 @@ _NOMINALIZERS = frozenset(("さ", "み"))
 # UniDic files 感 as a noun, not a suffix, though it builds words the way 性 and 的 do: 違和感, 存在感,
 # 緊張感, 罪悪感.
 _NOUN_SUFFIXES = frozenset(("感",))
+_ORTH, _SURFACE = attrgetter("feature.orth"), attrgetter("surface")   # a node's text as read, as written
 # A suffix's category decides what the joined word is: 可能性 (形状詞 + 名詞的 性) is a noun, 具体的 (名詞 +
 # 形状詞的 的) a な-adjective, 子供っぽい (名詞 + 形容詞的 っぽい) an adjective, 嫌がる (形状詞 + 動詞的 がる) a verb.
 _SUFFIX_POS = {"名詞的": "名詞", "形状詞的": "形状詞", "形容詞的": "形容詞", "動詞的": "動詞"}
@@ -408,22 +414,173 @@ _SUFFIX_POS = {"名詞的": "名詞", "形状詞的": "形状詞", "形容詞的
 
 class JoinedWord:
     """A run of tokens joined into one word. Shaped like a fugashi node (`surface`, `feature`,
-    `is_unk`), so every caller reads it the same way, plus `parts`: each piece's (surface, feature).
-    Built from copies — a fugashi node is only valid until the tagger's next call."""
-    __slots__ = ("surface", "feature", "parts", "is_unk")
+    `is_unk`, `white_space` — the spaces before its first piece), so every caller reads it the same way,
+    plus `parts`: each piece's (surface, feature). Built from copies — a fugashi node is only valid until
+    the tagger's next call."""
+    __slots__ = ("surface", "feature", "parts", "is_unk", "white_space")
 
-    def __init__(self, surface, feature, parts):
+    def __init__(self, surface, feature, parts, white_space=""):
         self.surface, self.feature, self.parts, self.is_unk = surface, feature, parts, False
+        self.white_space = white_space
+
+
+_MERGED = {}   # name -> (the tables a merged table below was built from, the merged table): built once
+
+
+def _merged(name, sources, build):
+    """The table `build(*sources)` makes, built once while `sources` (each generated table, as its module
+    hands it out) stay the same objects."""
+    held = _MERGED.get(name)
+    if held is None or held[0] != sources:      # the same objects: an identity test per table (this runs per line)
+        held = _MERGED[name] = (sources, build(*sources))
+    return held[1]
+
+
+_DICTIONARY = []   # app.dictionary_data, or None where it can't be imported: looked for once per process
+
+
+def _dictionary_table(name, empty):
+    """app/dictionary_data.py's table `name` — the part of the tables distilled from the EDRDG dictionaries
+    (CC BY-SA 4.0, kept in a module of its own) — or `empty` when the module or the table can't be read. The
+    module is looked for once: a failed import searches the disk again on every call, and this runs per line."""
+    if not _DICTIONARY:
+        try:
+            from app import dictionary_data
+        except Exception:
+            dictionary_data = None
+        _DICTIONARY.append(dictionary_data)
+    if _DICTIONARY[0] is None:
+        return empty
+    try:
+        return getattr(_DICTIONARY[0], name)() or empty
+    except Exception:
+        return empty
+
+
+# join_affixes asks for its two tables on every line, and the full lookup — the import, both modules' accessors and
+# the merge's identity test — cost more than a short line's own join. So each is resolved once and held with what it
+# was resolved from: the reference module (a test can take it away), its accessor (a test can swap it) and the
+# dictionaries' module (`_DICTIONARY`, which tests swap). A change to any of them resolves the table again.
+_RESOLVED = {}   # name -> (app.reference_data, its accessor `name`, _DICTIONARY, the table)
+
+
+def _resolved(name, resolve):
+    """`resolve()`'s table — reference_data's `name`, with the dictionaries' part — held while what it came from stays
+    the same objects (§ above)."""
+    reference = sys.modules.get("app.reference_data")
+    held = _RESOLVED.get(name)
+    if (held is None or held[0] is not reference or held[1] is not getattr(reference, name, None)
+            or held[2] is not _DICTIONARY):
+        table = resolve()
+        reference = sys.modules.get("app.reference_data")       # imported by `resolve`, when it can be
+        held = _RESOLVED[name] = (reference, getattr(reference, name, None), _DICTIONARY, table)
+    return held[3]
 
 
 def affix_joins():
-    """{written form: [lemma, reading]} — the dictionary words `join_affixes` may make. Degrades to {} when
-    the generated table is absent, as `_spelling_alias` does: words stay in UniDic's pieces."""
+    """{written form: [lemma, reading]} — the dictionary words `join_affixes` may make: reference_data's
+    table, with the お / ご words the dictionary lists with a meaning of their own (お守り 'amulet', お帰り
+    'welcome home' — app/dictionary_data.py) added. Degrades to {} when the generated table is absent, as
+    `_spelling_alias` does: words stay in UniDic's pieces. Resolved once (`_resolved`)."""
+    return _resolved("affix_joins", _affix_joins)
+
+
+def _affix_joins():
     try:
         from app import reference_data
-        return getattr(reference_data, "affix_joins", dict)()
+        table = getattr(reference_data, "affix_joins", dict)()
     except Exception:
         return {}
+    extra = _dictionary_table("ogo_joins", {})
+    if not table or not extra:
+        return table
+    return _merged("affix_joins", (table, extra), lambda table, extra: dict(table, **extra))
+
+
+def compound_joins():
+    """{written form: (lemma, reading, kind, flags)} — the dictionary compounds `join_affixes` may make
+    (§ Words made of words): reference_data's table, with the dictionaries' marks OR-ed into `flags` (1: a
+    phrase or a title, joined only while logic.phrases_and_titles is on — app/dictionary_data.py) in place
+    (`_mark`). `kind` is "N" (nouns, places, な-words), "Q" (a numeral that counts nothing) or "V" (verb + verb).
+    What each is made of is `compound_parts`, a table of its own: a process that only tokenizes never decodes it.
+    Degrades to {} when the table can't be read: words then stay in UniDic's pieces. Resolved once
+    (`_resolved`)."""
+    return _resolved("compound_joins", _compound_joins)
+
+
+def _compound_joins():
+    try:
+        from app import reference_data
+        table = reference_data.compound_joins()
+    except Exception:
+        return {}
+    if not table:
+        return {}
+    _mark(table, _dictionary_table("compound_flags", {}))
+    return table
+
+
+# The dictionaries' marks go into reference_data's compound table itself — one table in memory, not a copy of it
+# (about 2 MB). What a mark replaced is kept, so other marks (a test's), or none, first put the table back as it was
+# decoded.
+_MARKED = (None, None, {})   # (the table, the marks it holds, {written form: its entry before them})
+
+
+def _mark(table, flags):
+    """OR `flags` ({written form: flags}) into `table`'s entries in place, once per table and marks (§ above)."""
+    global _MARKED
+    held_table, held_flags, was = _MARKED
+    if held_table is table and held_flags is flags:
+        return
+    if held_table is table:
+        table.update(was)
+    was = {}
+    for key, flag in flags.items():
+        entry = table.get(key)
+        if entry is not None and flag:
+            was[key] = entry
+            table[key] = (entry[0], entry[1], entry[2], entry[3] | flag)
+    _MARKED = (table, flags, was)
+
+
+def compound_parts():
+    """{(lemma, reading): ((part lemma, part reading, free), …)} — what each compound word of `compound_joins`
+    is made of (every kind, a phrase or a title too), keyed as a Japanese run keys the joined word — its lemma
+    and reading, which the table holds as the tokenizer keys them (lemmas sanitized at build time, as every
+    Japanese run sanitizes) — and each part as a run keys that part. `free`: the lists rank the part no
+    rarer than the compound (a word of its own a learner meets anyway); a bound part (理 in 理不尽) is not.
+    Where spellings share a word, the one spelled as its lemma speaks for it, else the first. No tagger call;
+    reference_data's parts table is decoded here, the first time it is asked for. {} when either table can't
+    be read."""
+    table = compound_joins()
+    try:
+        from app import reference_data
+        parts_of = reference_data.compound_parts()
+    except Exception:
+        return {}
+    if not table or not parts_of:
+        return {}
+
+    def build(table, parts_of):
+        out = {}
+        for spelling, entry in table.items():
+            lemma, reading = entry[0], entry[1]
+            key = (lemma, reading)
+            if key not in out or spelling == lemma:
+                out[key] = tuple((part[0], part[1], bool(part[2])) for part in parts_of.get(spelling, ()))
+        return out
+    return _merged("compound_parts", (table, parts_of), build)
+
+
+def _counters():
+    """The spellings the lists carry as counters though UniDic files them as plain nouns or suffixes (人, 冊,
+    軒 after a number) — reference_data's, as a set; empty when it can't be read."""
+    try:
+        from app import reference_data
+        spellings = reference_data.counters()
+    except Exception:
+        return frozenset()
+    return _merged("counters", (spellings,), frozenset)
 
 
 def _is_base(word, honorific=False):
@@ -487,10 +644,10 @@ def _joined(parts, key, pos1, entry):
         pos1=pos1, pos2="普通名詞" if pos1 == "名詞" else "一般", pos3=pos3 if pos3 else "*", pos4="*",
         cType=ctype, cForm=cform, lForm=reading, lemma=lemma, orth=read, orthBase=key,
         pron=reading, pronBase=reading, kana=reading, kanaBase=reading, form=reading, formBase=reading)
-    return JoinedWord(surface, feature, snaps)
+    return JoinedWord(surface, feature, snaps, getattr(parts[0], "white_space", ""))
 
 
-def join_affixes(words, joins=None, library=True):
+def join_affixes(words, joins=None, library=True, compounds=None):
     """`words` — one tagger call's nodes — with every prefix / suffix run that makes a dictionary word
     joined into one `JoinedWord` (§ above); every other node passes through untouched.
 
@@ -502,14 +659,42 @@ def join_affixes(words, joins=None, library=True):
     三大祭り is "the three great" festivals — 三 + 大 + 祭り, never 三 + 大祭り. `joins` defaults to
     reference_data's table.
 
+    Then a run of words that spells a dictionary compound is one word (§ Words made of words: 上層部,
+    一生懸命, 二十歳, 取り掛かる; `compounds` defaults to `compound_joins()`, {} joins none) — except a katakana
+    compound the dictionaries don't list inside a katakana name (ビルデイング) — and a compound
+    takes its own prefix and suffixes (同性愛 + 者); then a sound word + と is that word shown with と
+    (ドキッと). These depend on the text alone, so the token store caches them.
+
     Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
     list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
     the library keeps using (logic.names_recurring) and a kanji name it holds (logic.names_kanji). `library=False` is for what must not depend on one
     user's library: the token store's cached tokens (they record the candidates instead) and shared data."""
     if joins is None:
         joins = affix_joins()
-    if joins:
-        words = _join_affix_runs(words, joins)
+    pos1s = [w.feature.pos1 for w in words]     # each token's part of speech, looked at once for every step
+    # Only a line holding a prefix, a suffix or a noun that acts as one (`_NOUN_SUFFIXES`, as the tagger read it or as
+    # written) can join one: most lines hold none and pass here in C.
+    if joins and ("接頭辞" in pos1s or "接尾辞" in pos1s or not _NOUN_SUFFIXES.isdisjoint(map(_ORTH, words))
+                  or not _NOUN_SUFFIXES.isdisjoint(map(_SURFACE, words))):
+        joined = _join_affix_runs(words, joins)
+        if len(joined) != len(words):           # a run was joined: the line's parts of speech are the joined words'
+            words, pos1s = joined, [w.feature.pos1 for w in joined]
+    if compounds is None:
+        compounds = compound_joins()
+    if compounds:
+        at = []                                  # where each compound landed
+        joined = _join_compounds(words, compounds, pos1s, at)
+        if joined is not words:
+            # A katakana compound the dictionaries don't list gives way to a katakana name around it (ビルデイング):
+            # looked at only on lines where one landed.
+            if LOGIC.get("names_katakana", True) and any(compounds[joined[k].feature.orthBase][3] & 4 for k in at):
+                joined = _give_way_to_names(words, joined, at, compounds)
+            # A compound takes its affixes (同性愛 + 者): Part A again, on lines where one meets a prefix or a suffix.
+            if joins and any(_meets_an_affix(joined, k) for k in at):
+                joined = _join_affix_runs(joined, joins)
+            # Neither step makes or takes an adverb: the old list still says whether the line holds one.
+            words, pos1s = joined, (None if "副詞" in pos1s else pos1s)
+    words = _join_sokuon_to(words, pos1s)
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
     if library:
@@ -549,6 +734,253 @@ def _join_affix_runs(words, joins):
     return out
 
 
+# --- Words made of words: dictionary compounds ------------------------------------------------------ #
+# UniDic's short units cut a compound into the words it is made of — 上層部 is 上層 + 部, 秘密結社 秘密 + 結社,
+# 一生懸命 一生 + 懸命, and in a sentence 取り掛かった is 取り + 掛かっ — so the list counted 上層 and 部 and
+# never offered the word the content says. A run is joined back where its spelling is a compound headword of
+# JPDB 2024 or Jiten that the tagger reads as those words, distilled at build time into reference_data's
+# compound table with the list's reading (株式会社 カブシキガイシャ, never the parts' カイシャ) — minus the
+# spellings whose parts meet in general text no more often than chance would have them meet. Kinds:
+#   N  two or three nouns — places (日本語, 鳥取県) and な-words (自信満々) among them; a な-word last makes a
+#      な-word (一生懸命に). Never a number, a person's name, a word the dictionary lacks, or a grammar stem:
+#      バカみたい is バカ + みたい.
+#   Q  a word holding a numeral that counts nothing (up to four pieces): 十人十色, 二十歳 (はたち), 精一杯.
+#      Counts stay apart — 二日, 五分, 十円玉, 三年生 are no table words — and a run that starts with a
+#      numeral joins only a Q word, from the first numeral of its run (三 + 十八番 is never 十八番).
+#   V  a verb in its 連用形 + a verb (取り + 掛かる, 走り + 出す), keyed as the first is written and the second in
+#      its dictionary form. A second verb that also follows a verbal noun + し (勉強し始める) builds by grammar,
+#      not the dictionary: the table leaves those out, and 食べ始める stays two words.
+# The longest run from the left wins (4, then 3, then 2 pieces); never across a space; never a plural or a
+# collective (先生方 is 先生 + 方, as 子供たち is 子供 + たち); and right after a number only where that
+# number counts nothing in the word — its first part is no counter (何 + 得意気 joins, 10 + 円玉 doesn't). A
+# phrase or a title the dictionaries mark as one (予想通り, 元首相, もののけ姫) joins only while
+# logic.phrases_and_titles is on. A compound spelled in katakana alone that the dictionaries don't list (ビルデ =
+# ビル + デ: the lists' tails hold pieces of foreign names) gives way to a katakana name around it: inside a longer
+# katakana run that app/names.py would make one name from the tagger's own pieces, its pieces go back and the name
+# stays one word (ビルデイング, never ビルデ + イング); one they list keeps its join (フジテレビ + アナウンサー). A compound
+# keeps its parts: a known compound marks them known, and パターン counts them in context.
+_FIRST_POS1 = frozenset(("名詞", "形状詞", "動詞"))            # what a compound can start with (a number is a 名詞)
+_LATER_POS1 = frozenset(("名詞", "形状詞", "動詞", "接尾辞"))   # ...and go on with (a numeral word's 歳, 日)
+_NA_WORD_CLASSES = frozenset(("一般", "タリ"))                   # a な-word proper — never 助動詞語幹 (みたい, そう)
+_COUNTER_CLASSES = frozenset(("助数詞", "助数詞可能"))            # UniDic's own counters (日, 円, 階, 歳)
+# A plural or collective suffix, and how the lists read it when it is one: 先生方 is センセイガタ (the tagger
+# reads its 方 as ホウ), while 相手方 アイテカタ is a word and 上等 ジョウトウ no plural.
+_PLURAL_READINGS = {"たち": ("タチ", "ダチ"), "達": ("タチ", "ダチ"), "ら": ("ラ",), "等": ("ラ",),
+                    "ども": ("ドモ",), "共": ("ドモ",), "がた": ("ガタ",), "方": ("ガタ",)}
+
+
+def _compound_part(word, kind="N"):
+    """Can `word` be a part of a dictionary compound of `kind` (§ above)? Never a word the dictionary lacks.
+    N: a noun that can carry an affix (`_is_base` — no number, no person's name; a place can: 日本 + 語) or a
+    な-word proper (懸命, 満々 — never a grammar stem: みたい, そう). A word joined with its affixes is a part like
+    any noun (お味噌 + 汁). Q: also a number or a noun suffix (二十 + 歳, 十 + 人 + 十 + 色). V: a verb other
+    than する."""
+    if word.is_unk:
+        return False
+    f = word.feature
+    if kind == "V":
+        return f.pos1 == "動詞" and f.lemma != "為る"
+    if kind == "Q" and (f.pos2 == "数詞" or (f.pos1 == "接尾辞" and f.pos2 == "名詞的")):
+        return True
+    if f.pos1 == "形状詞":
+        return f.pos2 in _NA_WORD_CLASSES
+    return f.pos1 == "名詞" and _is_base(word)
+
+
+def _counter(word):
+    """Is `word` a counter — one UniDic files as one (日, 円, 階), or one the lists carry after many numbers
+    (人, 冊, 軒)? Right after a number, a compound starting with one is a count, never a word (10 + 円玉)."""
+    return word.feature.pos3 in _COUNTER_CLASSES or _read(word) in _counters()
+
+
+def _plural(last, reading):
+    """Does a compound whose last part is written `last` and read `reading` by the lists end in a plural or
+    collective suffix (§ above)?"""
+    return reading.endswith(_PLURAL_READINGS.get(last, ()))
+
+
+def _joins_here(words, i, run, entry, fringe):
+    """May `run` (words[i:i + len(run)], nouns, a numeral or suffixes) be joined as the table's `entry` — its
+    kind, its parts and the guards (§ above)?"""
+    kind, numbers = entry[2], [w.feature.pos2 == "数詞" for w in run]
+    if kind == "V" or (len(run) > 3 and kind != "Q") or (entry[3] & 1 and not fringe):
+        return False
+    after_number = i and words[i - 1].feature.pos2 == "数詞"
+    if numbers[0]:
+        if kind != "Q" or after_number:
+            return False
+    elif after_number and _counter(run[0]):
+        return False
+    if any(numbers):
+        if numbers[-1]:
+            return False                        # never ending in a bare number
+        test = "Q"                              # a numeral inside the word counts nothing in it (精 + 一 + 杯)
+    else:
+        test = "Q" if kind == "Q" else "N"
+    return all(_compound_part(w, test) for w in run) and not _plural(_read(run[-1]), entry[1])
+
+
+_HEADS = (None, frozenset())   # (a compound table, `_heads` of it): made once per table
+
+
+def _heads(table):
+    """Every spelling a word of `table` starts with, short of the whole (上, 上層 for 上層部), held as its hash: a
+    run whose text so far hashes to none of them can grow into no table word, so most runs are given up after one
+    lookup. Hashes, not the spellings: a third less memory, and a hash two spellings share only lets a run be read
+    further — the table itself says what is a word — so the joins are the same. Made once per table, held while it
+    is the same object (this runs per line)."""
+    global _HEADS
+    if _HEADS[0] is not table:
+        _HEADS = (table, frozenset(hash(key[:end]) for key in table for end in range(1, len(key))))
+    return _HEADS[1]
+
+
+def _compound_at(words, i, table, heads, fringe):
+    """-> (end, key, pos1, entry): the longest dictionary compound starting at words[i] (§ above), or None."""
+    first = words[i]
+    f = first.feature
+    if f.pos1 == "動詞":
+        second = words[i + 1]
+        g = second.feature
+        if (g.pos1 != "動詞" or getattr(second, "white_space", "") or not str(f.cForm).startswith("連用形")):
+            return None
+        key = _read(first) + (g.orthBase or _read(second))
+        entry = table.get(key)
+        if (entry is None or entry[2] != "V" or (entry[3] & 1 and not fringe)
+                or not (_compound_part(first, "V") and _compound_part(second, "V"))):
+            return None
+        return i + 1, key, "動詞", entry
+    key = _read(first)
+    if hash(key) not in heads:
+        return None
+    found = []                                  # (end, key, entry): the table's words from here, shortest first
+    for j in range(i + 1, min(len(words), i + 4)):
+        w = words[j]
+        if w.feature.pos1 not in _LATER_POS1 or getattr(w, "white_space", ""):
+            break
+        key += _read(w)
+        entry = table.get(key)
+        if entry is not None:
+            found.append((j, key, entry))
+        if hash(key) not in heads:
+            break
+    for end, key, entry in reversed(found):
+        if _joins_here(words, i, words[i:end + 1], entry, fringe):
+            return end, key, "形状詞" if words[end].feature.pos1 == "形状詞" else "名詞", entry
+    return None
+
+
+def _meets_an_affix(words, k):
+    """Can Part A join more at the compound words[k] — a prefix before it, a suffix after it? Only then is it run
+    over the line again: one long subtitle line holding a compound cost a whole second pass."""
+    return ((k and words[k - 1].feature.pos1 == "接頭辞")
+            or (k + 1 < len(words) and (words[k + 1].feature.pos1 == "接尾辞" or _read(words[k + 1]) in _NOUN_SUFFIXES)))
+
+
+def _join_compounds(words, table, pos1s=None, at=None):
+    """join_affixes' compound joins (§ above): `words` with every compound the table spells joined into one
+    word — the same list when none is. `pos1s`: each token's part of speech, when the caller has them; `at`, a
+    list, receives where each compound landed. Only a token of a compound's parts of speech followed by another
+    is looked at more closely, and most of those are given up after one lookup (`_heads`): the common path
+    stays in C."""
+    if pos1s is None:
+        pos1s = [w.feature.pos1 for w in words]
+    first, later = _FIRST_POS1, _LATER_POS1
+    starts = [i for i in range(len(pos1s) - 1) if pos1s[i] in first and pos1s[i + 1] in later]
+    if not starts:
+        return words
+    heads, fringe = _heads(table), LOGIC.get("phrases_and_titles", True)
+    out, last = None, 0
+    for i in starts:
+        if i < last:
+            continue
+        w = words[i]
+        if pos1s[i] != "動詞" and hash(w.feature.orth or w.surface) not in heads:
+            continue                            # no table word starts so (`_compound_at`'s first test, `_read`)
+        found = _compound_at(words, i, table, heads, fringe)
+        if found is None:
+            continue
+        end, key, pos1, entry = found
+        if out is None:
+            out = []
+        out.extend(words[last:i])
+        if at is not None:
+            at.append(len(out))
+        out.append(_joined(words[i:end + 1], key, pos1, (entry[0], entry[1])))
+        last = end + 1
+    if out is None:
+        return words
+    out.extend(words[last:])
+    return out
+
+
+def _give_way_to_names(words, joined, at, table):
+    """join_affixes' give-way (§ above): `joined` — `words` with the compounds joined, each landed at `at` — with
+    every katakana compound the dictionaries don't list (flag 4) that sits inside a longer katakana run the
+    katakana-name rule (app/names.py) would make one name from `words` put back in its pieces; that rule then makes
+    the run one word. `at` is updated to where the compounds kept landed; `words` itself comes back when every
+    compound gave way."""
+    listed = names.katakana_headwords()
+    if not listed:
+        return joined
+    runs = [(a, b) for a, b in names.katakana_runs(words) if names.katakana_kind(words[a:b], listed) == "name"]
+    if not runs:
+        return joined
+    out, kept, landed, i = [], [], set(at), 0
+    for k, word in enumerate(joined):
+        n = len(word.parts) if k in landed else 1
+        if (k in landed and table[word.feature.orthBase][3] & 4
+                and any(a <= i and i + n <= b and b - a > n for a, b in runs)):
+            out.extend(words[i:i + n])          # the name around it wins: the pieces go back
+        else:
+            if k in landed:
+                kept.append(len(out))
+            out.append(word)
+        i += n
+    if len(out) == len(joined):
+        return joined
+    at[:] = kept
+    return words if not kept else out
+
+
+# A sound word ending in っ / ッ said with と — ドキッと, ざっと, ぎゅっと. UniDic files the sound word as an
+# adverb and cuts the と off as a particle, so the list counted ドキッ and a card mined as ドキッと reached its
+# row only by dropping the ending. The adverb and its と are one token: the same word shown with と — UniDic's
+# lemma and reading kept (どき / ドキ), so it counts on the adverb's own row, shown ドキッと where the text
+# writes it so, and a known ぐっ makes ぐっと known. Only a kana adverb ending in っ directly followed by the case
+# particle と: 「バシッ」と, バシッ！と and 行っとく stay as they are; ポンと and くるりと, whose と is optional,
+# too.
+_SOKUON_ADVERB = re.compile(f"^[{KANA_LETTERS}ー]+[っッ]$")
+
+
+def _join_sokuon_to(words, pos1s=None):
+    """join_affixes' sound word + と (§ above): the same list when there is none. `pos1s`: each token's part of
+    speech, when the caller has them — most lines hold no adverb, and that test stays in C."""
+    if pos1s is None:
+        pos1s = [w.feature.pos1 for w in words]
+    if "副詞" not in pos1s:
+        return words
+    out, last, n = None, 0, len(words)
+    for i in [i for i, pos1 in enumerate(pos1s) if pos1 == "副詞"]:
+        if i < last or i + 1 >= n:
+            continue
+        w, following = words[i], words[i + 1]
+        f = w.feature
+        if (_read(following) != "と" or following.feature.pos2 != "格助詞"
+                or not _SOKUON_ADVERB.match(_read(w))):
+            continue
+        if out is None:
+            out = []
+        out.extend(words[last:i])
+        out.append(_joined(words[i:i + 2], (f.orthBase or _read(w)) + "と", "副詞",
+                           (f.lemma or w.surface, f.lForm or f.kana or "")))
+        last = i + 2
+    if out is None:
+        return words
+    out.extend(words[last:])
+    return out
+
+
 def see_through_base(lemma, reading, tagger, joins=None):
     """(lemma, reading) of the word inside a word + suffixes that make a noun — 利用 in 利用者, 可能 in 可能性,
     母 in 母さん — else None. Never a prefix word (不自然: the prefix changes the meaning) and never a
@@ -568,6 +1000,140 @@ def see_through_base(lemma, reading, tagger, joins=None):
         return None
     base_lemma = base.lemma or surface
     return (_sanitize_term(base_lemma) if SANITIZE_JA else base_lemma), base.lForm or base.kana or ""
+
+
+# --- What there is to learn in a word: one rule for the list, the Rarity slider, 例文 and 順 ------------- #
+# A compound is one word (上層部, 秘密結社, トランスジェンダー), and each of its parts is known to be a word of its own
+# or not ("free": JPDB 2024 or Jiten meets it alone at least as often as it meets the compound; 千載 and 一遇 are
+# not). Two things follow for what a learner meets:
+#   * A compound none of whose parts is an unknown — each known, ignored, read through its known word (利用者), or
+#     itself such a compound — is read already: it stays a list word with its own card (上層部 with 上層 and 部 known),
+#     sits lower (half score, as a word read through its known word does) and is no unknown in a sentence.
+#   * A compound too rare for the list (under its cut-off), which the learner neither knows nor ignores, counts
+#     toward its free parts: each use is a use of 撤回 in 前言撤回 though 前言 is bound. In a sentence it is its
+#     parts when all of them are free (トランスジェンダー: two words to learn), and one word when one is bound
+#     (千載一遇). A rare part is taken apart in turn (経済成長期 -> 経済成長 + 期 -> 経済 + 成長 + 期).
+# Which compounds are rare is fixed once, from the uses the list was cut on, before anything is credited — so a
+# word never flips across the cut-off because of what its compounds gave it. A sentence is still an example only
+# for the words that stand in it on their own, and a word is never taken apart against itself (a card for a rare
+# compound keeps its own sentences). The run (analyzer.main), the Rarity slider (token_index / word_selection),
+# the sentence dictionary and 例文 (sentence_corpus) and 順 (modules/junban) all read words through LearningView.
+
+def library_counts(path, language=None):
+    """({(lemma, reading): uses}, the list's cut-off) as the last run wrote them to library_frequency.json — every
+    word the learner didn't know then, the list's and the rarer ones — or (None, None) when there is none yet, or
+    when it is another language's (results/ holds one language's run at a time)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        settings = data.get("settings") or {}
+        if language and settings.get("language", language) != language:
+            return None, None
+        floor = settings.get("min_count")
+        words = data.get("words") or {}
+        if not isinstance(floor, (int, float)) or isinstance(floor, bool) or not isinstance(words, dict):
+            return None, None
+        counts = {}
+        for key, entry in words.items():
+            lemma, _sep, reading = key.partition("|")
+            counts[(lemma, reading)] = entry[0] if isinstance(entry, list) and entry else 0
+        return counts, floor
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None, None
+
+
+class LearningView:
+    """How the words of a sentence count for learning (§ above). `known(key)`: the learner knows or ignores the word
+    (key = (lemma, reading)), by the caller's own lists. `counts` ({key: uses}) and `floor` are what the list was
+    cut on — without them no compound is rare (before the first Generate): each word is itself. `parts` defaults to
+    the tokenizer's table; `tagger` is made when a word is first read through its known word."""
+
+    def __init__(self, counts=None, floor=0, known=None, parts=None, joins=None, tagger=None):
+        self.parts = compound_parts() if parts is None else parts
+        self.joins = affix_joins() if joins is None else joins
+        self._counts, self._floor, self._known = counts, floor, known or (lambda key: False)
+        self._tagger = tagger
+        self._rare, self._units, self._credits, self._bases, self._cycles = {}, {}, {}, {}, {}
+
+    def _on_cycle(self, key):
+        """Do `key`'s parts lead back to it — a table entry holding itself (教える = 教える + 得る), or two holding each
+        other? Such an entry is taken as one word: one unit, no credit, never read through its parts. Every other
+        entry is taken apart as it always is, and no key is ever followed round again: one that would be is on a
+        cycle, and stops there."""
+        found = self._cycles.get(key)
+        if found is None:
+            found, seen, todo = False, set(), [key]
+            while todo and not found:
+                for lemma, reading, _free in self.parts.get(todo.pop(), ()):
+                    part = (lemma, reading)
+                    if part == key:
+                        found = True
+                        break
+                    if part not in seen and part in self.parts:
+                        seen.add(part)
+                        todo.append(part)
+            self._cycles[key] = found
+        return found
+
+    def rare(self, key):
+        """Is `key` a compound under the list's cut-off that the learner neither knows nor ignores?"""
+        found = self._rare.get(key)
+        if found is None:
+            found = self._rare[key] = (self._counts is not None and key in self.parts
+                                       and self._counts.get(key, 0) < self._floor and not self._known(key))
+        return found
+
+    def units(self, key, keep=None):
+        """The words one use of `key` is in a sentence: a rare compound whose parts are all free is its parts (a rare
+        part taken apart in turn); any other word is itself. `keep` is never taken apart: the word a sentence is
+        ranked for is never counted as its own parts against it."""
+        if keep is not None:
+            if (key == keep or not self.rare(key) or not all(free for _l, _r, free in self.parts[key])
+                    or self._on_cycle(key)):
+                return (key,)
+            return tuple(unit for lemma, reading, _free in self.parts[key] for unit in self.units((lemma, reading), keep))
+        found = self._units.get(key)
+        if found is None:
+            found = (key,)
+            if self.rare(key) and all(free for _l, _r, free in self.parts[key]) and not self._on_cycle(key):
+                found = tuple(unit for lemma, reading, _free in self.parts[key]
+                              for unit in self.units((lemma, reading)))
+            self._units[key] = found
+        return found
+
+    def credits(self, key):
+        """The words one use of `key` also counts for on the list: a rare compound's free parts (a rare part's own
+        free parts in turn); nothing for any other word."""
+        found = self._credits.get(key)
+        if found is None:
+            found = ()
+            if self.rare(key) and not self._on_cycle(key):
+                found = tuple(credit for lemma, reading, free in self.parts[key] if free
+                              for credit in (self.credits((lemma, reading)) if self.rare((lemma, reading))
+                                             else ((lemma, reading),)))
+            self._credits[key] = found
+        return found
+
+    def readable(self, key, known=None):
+        """Is `key` no unknown though the learner doesn't know it — a word read through its known word (利用者 with
+        利用 known: see_through_base), or a compound none of whose parts is an unknown? `known` defaults to the
+        view's own; the report passes the words learned so far down the list."""
+        if key[0] not in self.joins and key not in self.parts:
+            return False                # neither kind of word: most of them, decided here
+        known = known or self._known
+        base = self._bases.get(key, False)
+        if base is False:
+            base = None
+            if key[0] in self.joins:
+                if self._tagger is None:
+                    self._tagger = Tagger()
+                base = see_through_base(key[0], key[1], self._tagger, self.joins)
+            self._bases[key] = base
+        if base is not None and known(base):
+            return True
+        parts = self.parts.get(key)
+        return bool(parts) and not self._on_cycle(key) and all(
+            known((lemma, reading)) or self.readable((lemma, reading), known) for lemma, reading, _free in parts)
 
 
 # --- Where a sentence ends: Unicode UAX #29 (Sentence Boundaries) ---------------------------------- #
@@ -951,11 +1517,14 @@ def _sanitize_term(term):
     
     # First strip leading/trailing whitespace
     term = term.strip()
-    
-    # Match anything before the first hyphen or space
-    # re.split returns a list, we take the first element
-    parts = re.split(r'[-\s]', term)
-    return parts[0] if parts else term
+
+    # Everything before the first hyphen or space — what re.split(r'[-\s]', term)[0] is, from one precompiled
+    # search (this runs for every token read, twice)
+    cut = _TERM_CUT_RE.search(term)
+    return term if cut is None else term[:cut.start()]
+
+
+_TERM_CUT_RE = re.compile(r'[-\s]')
 
 def _known_term(term):
     """A KnownWord.json dictForm as a known word. Migaku writes some with a gloss after the word (アイリス-iris): cut
@@ -2546,17 +3115,22 @@ def main():
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
-    # example sentences (the user's "halfway + lower", U9, Patterns_Quality_Spec.md §6.8).
+    # example sentences (the user's "halfway + lower", U9, Patterns_Quality_Spec.md §6.8). So is a compound none
+    # of whose parts is an unknown (上層部 with 上層 and 部 known); and a compound too rare for the list counts
+    # toward its parts — which compounds are rare is fixed with the list's cut-off, before the aggregation
+    # (LearningView, above).
     _joins = affix_joins() if language == 'ja' else {}
-    _see_through_memo = {}
+    _parts = compound_parts() if language == 'ja' else {}
+
+    def _known(lr):
+        """Does the learner know or ignore `lr`, as this run started?"""
+        return lr in known_words_initial or lr[0] in known_lemmas_initial or lr[0] in ignore_list
 
     def _readable(lr, known_tuples, known_lemmas):
-        """Is `lr` such a word, with its word among these known ones? (see_through_base, asked once per word)"""
-        base = _see_through_memo.get(lr, False)
-        if base is False:
-            base = _see_through_memo[lr] = (see_through_base(lr[0], lr[1], tokenizer.tagger, _joins)
-                                            if lr[0] in _joins else None)
-        return base is not None and (base in known_tuples or base[0] in known_lemmas or base[0] in ignore_list)
+        """Is `lr` read already with these known words — through its known word, or as a compound of them?"""
+        if lr[0] not in _joins and lr not in _parts:
+            return False                # neither kind of word: most of them, decided here
+        return _view.readable(lr, lambda key: key in known_tuples or key[0] in known_lemmas or key[0] in ignore_list)
 
     # Load all yomitan frequency lists (discovered above; contents read here on a real run only).
     freq_data = {}
@@ -2598,6 +3172,104 @@ def main():
                                   (1 if stype in ("subtitle", "bilibili") else 2))
         return idx
 
+    def _sentences_of(file_path):
+        """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
+        tokenized here."""
+        if _store is None:
+            return tokenizer.tokenize_sentences(extract_text(file_path, language))
+        sentences = _store.file_tokens(file_path)
+        # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
+        # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
+        # Re-tokenize directly rather than silently drop the whole file's contribution.
+        if not sentences:
+            try:
+                if os.path.getsize(file_path) > 0:
+                    sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+            except OSError:
+                pass
+        return sentences
+
+    def _floor_count(total_tokens, own_freqs):
+        """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a
+        concrete occurrence count in a library of `total_tokens`. Precedence:
+          1. explicit --min-freq override (raw count),
+          2. coverage mode (only drop one-offs; target_coverage handles the rest downstream),
+          3. density band (the default): max(min_count, band ppm -> count).
+        `own_freqs()`: this run's own distribution, for automatic rarity when the store can't be read."""
+        if MIN_FREQ > 0:
+            return MIN_FREQ
+        if args.target_coverage > 0:
+            return SELECT_MIN_COUNT
+        band, why = SELECT_BAND, ""
+        if SELECT_AUTO:
+            # Automatic rarity: the RAREST band whose list holds auto_max_words words or fewer
+            # (word_selection.auto_band), decided on the numbers the Rarity slider shows —
+            # token_index.preview_frequencies, the dashboard's own recipe, over this run's store — so
+            # the band the dashboard shows is the band this run uses. It picks the band only: the list
+            # itself keeps this run's own ignore set. Without the store, this run's own counts.
+            freqs = None
+            if _store is not None:
+                try:
+                    freqs = _token_index.preview_frequencies(_store, language, user_files_dir, script)
+                except Exception as e:
+                    # Open, but unreadable now (locked, an I/O error, a damaged table): the same as no
+                    # store. Keeping the hand-picked band instead stamped this run current on a band
+                    # the dashboard doesn't show (I3) — the band isn't in the run signature, so every
+                    # later Generate skipped.
+                    print(f"Warning: automatic rarity could not read the token store ({e}); "
+                          f"deciding on this run's own counts.")
+            try:
+                if freqs is None:
+                    freqs = own_freqs()
+                auto = word_selection.auto_band(
+                    word_selection.band_previews(freqs, SELECT_BANDS_PPM, SELECT_MIN_COUNT),
+                    SELECT_AUTO_MAX_WORDS)
+            except Exception as e:
+                print(f"Warning: automatic rarity could not pick a band ({e}); keeping '{SELECT_BAND}'.")
+                auto = None
+            if auto is not None:
+                band, why = auto, f" (automatic: the rarest band with {SELECT_AUTO_MAX_WORDS} words or fewer)"
+        floor = word_selection.band_floor_count(band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
+        print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor:.2f} "
+              f"(of {total_tokens} library tokens).")
+        return floor
+
+    # --- The floor, fixed BEFORE the aggregation --------------------------------------------------- #
+    # The library's size and each word's uses come from the token store — its totals and per-word counts, the
+    # numbers the Rarity slider shows — and decide the cut-off and which compounds are too rare for the list,
+    # once: nothing a rare compound then gives its parts can move a word across it. Without the store, a first
+    # pass counts the same sentences the aggregation then reads (Japanese, where there is a compound table);
+    # with nothing to give back, the aggregation's own totals, as always.
+    _counts, floor_count, total_tokens = None, None, 0
+    if _store is not None:
+        try:
+            _counts, total_tokens = _store.word_counts()
+        except Exception as e:
+            print(f"Warning: could not read the token store's counts ({e}); counting the library first.")
+    if _counts is None and _parts:
+        _counts, total_tokens = Counter(), 0
+        for file_path, _label, _weight, _type in found_files:
+            for _s_text, s_tokens in _sentences_of(file_path):
+                for lemma, reading, surface, _orth in s_tokens:
+                    if has_target_language(lemma, language) or has_target_language(surface, language):
+                        _counts[(lemma, reading)] += 1
+                        total_tokens += 1
+    if _counts is not None:
+        floor_count = _floor_count(total_tokens, lambda: _token_index.unknown_distribution(
+            _counts, total_tokens, known_words_initial, known_lemmas_initial, ignore_list, skip_singles, language))
+    _view = LearningView(_counts, floor_count or 0, _known, parts=_parts, joins=_joins,
+                         tagger=tokenizer.tagger if language == 'ja' else None)
+    # Every compound too rare for the list, as one set: a sentence holding none — nearly all — is passed over in C.
+    _rare = frozenset(key for key in _parts if _view.rare(key)) if _counts is not None else frozenset()
+    # The words each file met inside a rare compound, for the progressive pass (a word's row sits in the file
+    # it is first met in — inside a compound too).
+    file_credit_cache = {}
+    # The unknowns read already with the known words the run started with (利用者 with 利用 known, 上層部 with its parts
+    # known): those don't change during the aggregation, so each word is judged once — `_judged` — and a sentence's
+    # difficulty below takes a set lookup per word.
+    _judged, _read_already = set(), set()
+    _in_language = {}       # lemma -> has_target_language(lemma): the aggregation's per-token test, once per word
+
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         try:
@@ -2607,25 +3279,14 @@ def main():
         src_idx = _source_idx(file_path, source_type)
 
         # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
-        if _store is not None:
-            sentences = _store.file_tokens(file_path)
-            # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
-            # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
-            # Re-tokenize directly rather than silently drop the whole file's contribution.
-            if not sentences:
-                try:
-                    if os.path.getsize(file_path) > 0:
-                        sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
-                except OSError:
-                    pass
-        else:
-            sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+        sentences = _sentences_of(file_path)
 
         file_total_words = 0
         file_known_words = 0
         # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
         # exactly (built in first-appearance order) for the progressive pass to reuse.
         file_counter = Counter()
+        file_credits = Counter()                      # the words this file meets inside a rare compound
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
         file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
@@ -2643,8 +3304,12 @@ def main():
                 file_counter[(lemma, reading)] += 1
                 # Skip tokens that contain no Target characters (e.g. SSA/ASS tags like {\an8},
                 # timestamps, markup, or other ASCII-only tokens). These should not count
-                # toward totals or be considered unknown words.
-                if not has_target_language(lemma, language) and not has_target_language(surface, language):
+                # toward totals or be considered unknown words. Asked once per word (`_in_language`),
+                # not per token: this loop runs over every token of the library.
+                in_language = _in_language.get(lemma)
+                if in_language is None:
+                    in_language = _in_language[lemma] = has_target_language(lemma, language)
+                if not in_language and not has_target_language(surface, language):
                     continue
 
                 file_total_words += 1
@@ -2665,6 +3330,14 @@ def main():
 
             # Unique unknowns in this sentence.
             unique_lrs = set((l, r) for l, r, s, o in sentence_unknowns)
+            # The words the sentence can be an example FOR: those that stand in it on their own. A compound too
+            # rare for the list gets none (it is never listed), and nor do the parts it counts toward. How hard the
+            # sentence is: such a compound is its parts when all of them are free (LearningView.units).
+            targets = unique_lrs
+            rare = None if _rare.isdisjoint(unique_lrs) else [lr for lr in unique_lrs if lr in _rare]
+            if rare:
+                targets = unique_lrs.difference(rare)
+                unique_lrs = {unit for lr in unique_lrs for unit in _view.units(lr) if not _known(unit)}
 
             # 2. Update Stats for all unknown tokens in this sentence
             for lemma, reading, surface, orth in sentence_unknowns:
@@ -2689,6 +3362,29 @@ def main():
                 if seq_idx < entry["min_seq"]:
                     entry["min_seq"] = seq_idx
 
+            if rare:
+                # Each use of a rare compound is also a use of its free parts on the list — their count, score,
+                # tiers, sources and the file they are first met in; never an example sentence (above).
+                rare = set(rare)
+                for lemma, reading, _surface, _orth in sentence_unknowns:
+                    if (lemma, reading) not in rare:
+                        continue
+                    for part in _view.credits((lemma, reading)):
+                        file_credits[part] += 1
+                        if _known(part) or (skip_singles and len(part[0]) == 1):
+                            continue
+                        entry = word_stats[part]
+                        entry["score"] += weight
+                        entry["total_count"] += 1
+                        entry["sources"].add(file_basename)
+                        if label == "HighPriority": entry["high_count"] += 1
+                        elif label == "LowPriority": entry["low_count"] += 1
+                        elif label == "GoalContent": entry["goal_count"] += 1
+                        if file_is_spoken: entry["spoken_count"] += 1
+                        entry["series"].add(file_series)
+                        if seq_idx < entry["min_seq"]:
+                            entry["min_seq"] = seq_idx
+
             # 3. Update Best Contexts (once per unique unknown per sentence)
             min_chars = LOGIC.get("context", {}).get("min_chars", 10)
             is_too_short = 1 if len(s_text) < min_chars else 0
@@ -2702,13 +3398,17 @@ def main():
             # Running frequency of each of this sentence's unknowns (ascending) — used to score
             # each candidate by its rarer-than-target co-words (see rolling_context_cost). A word the
             # learner can read through its known word (利用者) is not one of them (U9, above).
+            if not _judged.issuperset(unique_lrs):
+                new = unique_lrs.difference(_judged)
+                _judged.update(new)
+                _read_already.update(lr for lr in new if _readable(lr, known_words_initial, known_lemmas_initial))
             unk_freqs = sorted(
                 word_stats[lr]["total_count"] if lr in word_stats else 0
                 for lr in unique_lrs
-                if not _readable(lr, known_words_initial, known_lemmas_initial)
+                if lr not in _read_already
             )
 
-            for (lemma, reading) in unique_lrs:
+            for (lemma, reading) in targets:
                 # If we skipped this word for learning, don't try to store candidate contexts for it
                 if skip_singles and len(lemma) == 1:
                     continue
@@ -2773,6 +3473,8 @@ def main():
 
         
         file_token_cache[file_path] = file_counter
+        if file_credits:
+            file_credit_cache[file_path] = file_credits
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
@@ -2783,58 +3485,20 @@ def main():
 
     # (The token store stays open until the end of the run so we can record the run-signature.)
 
-    # U9's "lower": a word the learner can read through its known word (利用者) scores half.
+    # U9's "lower": a word the learner can read through its known word (利用者) scores half — as does a compound
+    # none of whose parts is an unknown (上層部).
     for lr, entry in word_stats.items():
         if _readable(lr, known_words_initial, known_lemmas_initial):
             entry["score"] //= 2
 
-    # --- Resolve the word-selection floor (replaces the retired raw min_freq default) ---
-    # Now that aggregation is done we know the library's total token count, so a density-band
-    # ppm floor can be converted to a concrete occurrence count. Precedence:
-    #   1. explicit --min-freq override (raw count),
-    #   2. coverage mode (only drop one-offs; target_coverage handles the rest downstream),
-    #   3. density band (the default): max(min_count, band ppm -> count).
-    total_tokens = sum(s['Total Words'] for s in file_stats)
-    if MIN_FREQ > 0:
-        floor_count = MIN_FREQ
-    elif args.target_coverage > 0:
-        floor_count = SELECT_MIN_COUNT
-    else:
-        band, why = SELECT_BAND, ""
-        if SELECT_AUTO:
-            # Automatic rarity: the RAREST band whose list holds auto_max_words words or fewer
-            # (word_selection.auto_band), decided on the numbers the Rarity slider shows —
-            # token_index.preview_frequencies, the dashboard's own recipe, over this run's store — so
-            # the band the dashboard shows is the band this run uses. It picks the band only: the list
-            # itself keeps this run's own ignore set. Without the store, this run's own counts.
-            freqs = None
-            if _store is not None:
-                try:
-                    freqs = _token_index.preview_frequencies(_store, language, user_files_dir, script)
-                except Exception as e:
-                    # Open, but unreadable now (locked, an I/O error, a damaged table): the same as no
-                    # store. Keeping the hand-picked band instead stamped this run current on a band
-                    # the dashboard doesn't show (I3) — the band isn't in the run signature, so every
-                    # later Generate skipped.
-                    print(f"Warning: automatic rarity could not read the token store ({e}); "
-                          f"deciding on this run's own counts.")
-            try:
-                if freqs is None:
-                    freqs = {"total_tokens": total_tokens,
-                             "unknown": [(_token_index.make_key(l, r), e["total_count"])
-                                         for (l, r), e in word_stats.items()]}
-                auto = word_selection.auto_band(
-                    word_selection.band_previews(freqs, SELECT_BANDS_PPM, SELECT_MIN_COUNT),
-                    SELECT_AUTO_MAX_WORDS)
-            except Exception as e:
-                print(f"Warning: automatic rarity could not pick a band ({e}); keeping '{SELECT_BAND}'.")
-                auto = None
-            if auto is not None:
-                band, why = auto, f" (automatic: the rarest band with {SELECT_AUTO_MAX_WORDS} words or fewer)"
-        floor_count = word_selection.band_floor_count(
-            band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
-        print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor_count:.2f} "
-              f"(of {total_tokens} library tokens).")
+    # --- The word-selection floor, when it could not be fixed before the aggregation ---
+    # No store and no compound table (Chinese; Japanese before the table): nothing is given back, so the
+    # aggregation's own totals and counts decide it, as they always did.
+    if floor_count is None:
+        total_tokens = sum(s['Total Words'] for s in file_stats)
+        floor_count = _floor_count(total_tokens, lambda: {
+            "total_tokens": total_tokens,
+            "unknown": [(_token_index.make_key(l, r), e["total_count"]) for (l, r), e in word_stats.items()]})
 
     # Output Priority CSV
     rolling_known_tuples = set(known_words_initial)
@@ -3129,6 +3793,9 @@ def main():
         output_rows.append(r)
         
     df = pd.DataFrame(output_rows)
+    # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
+    # than tested with `in locals()`, which copies every local of this function on each test (a word, per file).
+    valid_lrs = None
     if not df.empty:
         # Drop the helper key if we added it (we need to add it to row first)
         df_display = df.drop(columns=["_MinSeq"])
@@ -3217,7 +3884,7 @@ def main():
     _debug_word_stats = bool(os.environ.get("SURASURA_DEBUG_WORD_STATS"))
     serializable_stats = {}
     for (lemma, reading), data in word_stats.items():
-        if 'valid_lrs' in locals() and (lemma, reading) not in valid_lrs:
+        if valid_lrs is not None and (lemma, reading) not in valid_lrs:
             continue
 
         key = f"{lemma}|{reading}"
@@ -3356,6 +4023,8 @@ def main():
                 # the preview reason in density terms. 'min_freq' kept for older-cache readers.
                 "min_count": floor_count,
                 "min_freq": MIN_FREQ,
+                # Whose run this is: results/ holds one language's at a time (library_counts).
+                "language": language,
                 "total_tokens": total_tokens,
                 "weights": {
                     "high": _weights.get("high", 10),
@@ -3425,13 +4094,22 @@ def main():
                 file_current_start_count += count
             else:
                 file_unknown_token_counts[(lemma, reading)] += count
+
+        # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
+        # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
+        file_credited = Counter()
+        for (lemma, reading), count in file_credit_cache.get(file_path, {}).items():
+            if not (lemma in ignore_list or (skip_singles and len(lemma) == 1)
+                    or (lemma, reading) in session_known or lemma in session_lemmas):
+                file_credited[(lemma, reading)] += count
+                file_unknown_token_counts[(lemma, reading)] += count
         
         # 2. Identify and prepare unknown words
         file_new_words = set()
         file_rows_buffer = []
         
         for (lemma, reading), count in file_unknown_token_counts.items():
-            if 'valid_lrs' in locals() and (lemma, reading) not in valid_lrs:
+            if valid_lrs is not None and (lemma, reading) not in valid_lrs:
                 continue
                 
             # It's a new word for this progressive sequence
@@ -3500,7 +4178,7 @@ def main():
                 break
 
             word_count_in_file = row["Occurrences (File)"]
-            current_known += word_count_in_file
+            current_known += word_count_in_file - file_credited[(row["Word"], row["Reading"])]
             
             end_pct = (current_known / file_total_tokens * 100) if file_total_tokens > 0 else 0
             

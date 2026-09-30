@@ -169,7 +169,7 @@ class _Word:
 
 
 def collect(files, file_tokens, language, known, window, progress=None, wanted=None, young=None,
-            phrases=None, prefer=None):
+            phrases=None, prefer=None, library=None):
     """The streaming pass. `files` are the library's paths in library order; `file_tokens(path)` returns
     that file's cached sentences [(text, [[lemma, reading, surface, orth], ...]), ...] — called once per
     file, and nothing of a file outlives its turn except the few sentences a word keeps (I7).
@@ -183,26 +183,34 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     inflected, ranked the same with their own words not counted against them; they come back under
     their name. `prefer`, {(lemma, reading): [(lemma, …), …]}, puts a sentence holding one of a word's
     runs first among equally easy ones of a good length — its top pairing or form, 啓示を受ける for 啓示
-    (Patterns_Quality_Spec.md Part D); without it every rank is exactly what it always was. Returns
+    (Patterns_Quality_Spec.md Part D); without it every rank is exactly what it always was. `library` — (uses per
+    word, the list's cut-off) as the last Generate counted them (analyzer.library_counts) — says which compounds are
+    too rare for the list: one of those counts as its parts in how hard a sentence is, as in the report, though a
+    sentence is still an example only for the words standing in it (never for a part) and a word is never taken
+    apart against itself. Without it (before the first Generate) every word is itself. Returns
     {(lemma, reading) or name: _Word}."""
-    from app.analyzer import Tagger, affix_joins, has_target_language, see_through_base
+    from app.analyzer import LearningView, affix_joins, compound_parts, has_target_language
 
     known_tuples, known_lemmas, ignore = known
     lo, hi, own_lo, own_hi = window
     words = {}
     lang_ok = {}                # memo: a string -> has target-language characters
-    known_memo = {}             # memo: (lemma, reading) -> known / ignored / read through its known word
-    joins = affix_joins() if language == "ja" else {}
-    tagger = []                 # made on the first joined word
+    known_memo = {}             # memo: (lemma, reading) -> known / ignored / read already (below)
 
-    def _readable(key):
-        """利用者 when 利用 is known: no unknown in a sentence, as in the report (U9, see_through_base)."""
-        if key[0] not in joins:
-            return False
-        if not tagger:
-            tagger.append(Tagger())
-        base = see_through_base(key[0], key[1], tagger[0], joins)
-        return base is not None and (base[0] in ignore or base[0] in known_lemmas or base in known_tuples)
+    def _known(key):
+        return key[0] in ignore or key[0] in known_lemmas or key in known_tuples
+    # 利用者 when 利用 is known, 上層部 when 上層 and 部 are: no unknown in a sentence, as in the report; the tagger is
+    # made on the first joined word (LearningView.readable).
+    japanese = language == "ja"
+    view = LearningView(*(library or (None, 0)), known=_known, parts=compound_parts() if japanese else {},
+                        joins=affix_joins() if japanese else {})
+    compounds = view.parts
+
+    def _is_known(key):
+        found = known_memo.get(key)
+        if found is None:
+            found = known_memo[key] = _known(key) or view.readable(key)
+        return found
     starts = {}                 # a phrase's first lemma -> [(name, lemmas)]
     for name, lemmas in (phrases or {}).items():
         if len(lemmas) > 1:
@@ -219,6 +227,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         for sidx, (text, tokens) in enumerate(file_tokens(path)):
             present = {}        # (lemma, reading) -> the surface it has in THIS sentence
             unknown = 0
+            rare = None         # the compounds here too rare for the list, when there are any
             for lemma, reading, surface, orth in tokens:
                 if not (_lang(lemma) or _lang(surface)):
                     continue    # markup, numbers, ASCII — never a word (the analyzer skips them too)
@@ -235,16 +244,23 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 word.orths[orth] = word.orths.get(orth, 0) + 1
                 if key not in present:
                     present[key] = surface
-                    is_known = known_memo.get(key)
-                    if is_known is None:
-                        is_known = known_memo[key] = (lemma in ignore or lemma in known_lemmas
-                                                      or key in known_tuples or _readable(key))
-                    if not is_known:
+                    if not _is_known(key):
                         unknown += 1
+                    if key in compounds and view.rare(key):
+                        rare = rare or set()
+                        rare.add(key)
 
             size = len(text)
             if not (lo <= size <= hi) or not present:
                 continue
+            unknown_units = None
+            if rare:
+                # How hard the sentence is, counted in the list's own units: a rare compound is its parts when all
+                # are free. For the compound itself it stays whole — never its own parts against it.
+                def unknowns(keep=None):
+                    return {unit for key in present for unit in view.units(key, keep) if not _is_known(unit)}
+                unknown_units = unknowns()
+                unknown = len(unknown_units)
             margin = 0 if own_lo <= size <= own_hi else 1
             fresh = sum(1 for key in present if key in young) if young else 0
             lemmas = [t[0] for t in tokens] if prefer else None
@@ -252,7 +268,10 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 word = words[key]
                 if not word.listed:
                     continue
-                others = unknown - (0 if known_memo[key] else 1)
+                if rare and key in rare:
+                    others = len(unknowns(key) - {key})
+                else:
+                    others = unknown - (0 if known_memo[key] else 1)
                 # Its own word never counts toward the young words it practises.
                 recent = fresh - (1 if young and key in young else 0)
                 if prefer:
@@ -264,7 +283,10 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
             if starts:
                 for name, span in _phrases_in(tokens, starts):
                     inside = {(t[0], t[1]) for t in span}
-                    others = unknown - sum(1 for k in inside if known_memo.get(k) is False)
+                    if unknown_units is not None:
+                        others = len(unknown_units.difference(unit for k in inside for unit in view.units(k)))
+                    else:
+                        others = unknown - sum(1 for k in inside if known_memo.get(k) is False)
                     recent = fresh - sum(1 for k in inside if young and k in young)
                     word = words.get(name)
                     if word is None:
@@ -548,6 +570,18 @@ def known_sets(language, store, settings):
     return cached[0], cached[1], ignore
 
 
+def library_counts(language):
+    """What the last Generate counted — (uses per word, the list's cut-off), analyzer.library_counts — so the
+    dictionary and 例文 read rare compounds as the report does; None before the first Generate (or when its results
+    are another language's), and for Chinese, which has no compounds to give back."""
+    if language != "ja":
+        return None
+    from app import analyzer
+    from app.path_utils import get_user_file
+    counts, floor = analyzer.library_counts(get_user_file(os.path.join("results", "library_frequency.json")), language)
+    return (counts, floor) if counts is not None else None
+
+
 def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None):
     """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
     them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
@@ -574,7 +608,7 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     try:
         words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
                         length_range(settings), progress=progress, wanted=set(wanted or ()),
-                        young=set(young or ()), phrases=phrases, prefer=prefer)
+                        young=set(young or ()), phrases=phrases, prefer=prefer, library=library_counts(language))
     finally:
         store.close()
     found = {}
@@ -624,7 +658,7 @@ def build(language, save_path, progress=print, show_source=False):
                      "added in the last few minutes may be missing.")
 
         words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
-                        window, progress=progress)
+                        window, progress=progress, library=library_counts(language))
     finally:
         store.close()
 

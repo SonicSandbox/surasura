@@ -323,6 +323,8 @@ class MasterDashboardApp:
         self.var_names_katakana = tk.BooleanVar(value=True)
         self.var_names_recurring = tk.BooleanVar(value=True)
         self.var_names_kanji = tk.BooleanVar(value=True)
+        # Phrases and titles as one word (logic.phrases_and_titles), Japanese only, on by default.
+        self.var_phrases_and_titles = tk.BooleanVar(value=True)
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
@@ -405,6 +407,7 @@ class MasterDashboardApp:
         self.zh_script_frame: Optional[ttk.Frame] = None
         self.paren_readings_frame: Optional[ttk.Frame] = None
         self.names_frame: Optional[ttk.Frame] = None
+        self.chk_phrases_and_titles: Optional[ttk.Checkbutton] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -1011,6 +1014,8 @@ class MasterDashboardApp:
                     self.paren_readings_frame.pack_forget()
                 if self.names_frame:
                     self.names_frame.pack_forget()
+                if self.chk_phrases_and_titles:
+                    self.chk_phrases_and_titles.pack_forget()
 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
@@ -1028,7 +1033,9 @@ class MasterDashboardApp:
                         self.paren_readings_frame.pack(anchor=tk.W, pady=(2, 0))
                     if self.names_frame:
                         self.names_frame.pack(anchor=tk.W, pady=(2, 0))
-    
+                    if self.chk_phrases_and_titles:
+                        self.chk_phrases_and_titles.pack(anchor=tk.W)
+
             self.save_settings()
         finally:
             self._lock_ui_updates = False
@@ -1454,7 +1461,7 @@ class MasterDashboardApp:
                 (self.var_names_katakana, "Katakana names as one word",
                  "A katakana name no dictionary lists stays one word instead of being cut into "
                  "pieces that count as other words: ミロ + ナイ → ミロナイ. Repeated sounds "
-                 "(ワンワンワン) and stutters (バッバカ) stay apart."),
+                 "(ワンワンワン), stutters (バッバカ) and laughter (アッハハ) stay apart."),
                 (self.var_names_recurring, "Names your library repeats as one word",
                  "Ordinary katakana words your content keeps using together, and hardly ever "
                  "apart, become one word — the name of a place or a person in your story. "
@@ -1466,6 +1473,15 @@ class MasterDashboardApp:
             chk = ttk.Checkbutton(self.names_frame, text=text, variable=var, command=self.save_settings)
             chk.pack(anchor=tk.W)
             ToolTip(chk, tip)
+
+        # Phrases and titles as one word (Japanese): a dictionary compound that is a phrase pattern, 元 + a noun or a
+        # title is one word, or its parts. Packed by update_ui_for_language below the names switches, Japanese only;
+        # it changes how every file is read, so flipping it re-indexes the library in the background.
+        self.chk_phrases_and_titles = ttk.Checkbutton(self.lang_options_frame, text="Phrases and titles as one word",
+                                                      variable=self.var_phrases_and_titles,
+                                                      command=self.save_settings)
+        ToolTip(self.chk_phrases_and_titles, "On: 予想通り, こと自体, 元首相 and もののけ姫 each count as one word. "
+                                             "Off: they count as their parts (予想 + 通り).")
 
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -2337,6 +2353,7 @@ class MasterDashboardApp:
             self.var_names_katakana.set(bool(self.logic_settings.get("names_katakana", True)))
             self.var_names_recurring.set(bool(self.logic_settings.get("names_recurring", True)))
             self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
+            self.var_phrases_and_titles.set(bool(self.logic_settings.get("phrases_and_titles", True)))
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
@@ -2429,6 +2446,7 @@ class MasterDashboardApp:
                     "names_katakana": self.var_names_katakana.get(),
                     "names_recurring": self.var_names_recurring.get(),
                     "names_kanji": self.var_names_kanji.get(),
+                    "phrases_and_titles": self.var_phrases_and_titles.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /
                     # auto_max_words are user-editable in settings.json, like 'weights'); the slider
                     # sets 'band', the Automatic rarity checkbox 'auto'.

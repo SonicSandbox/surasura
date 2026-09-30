@@ -47,16 +47,17 @@ def test_importing_the_matcher_is_cheap():
 
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
-    """The analyser's own 182-row output (BOM, real columns): a katakana lemma the user would never
+    """The analyser's own 199-row output (BOM, real columns): a katakana lemma the user would never
     type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
     kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
     Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
     一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
     uses and joined the list's head; 19 since a word stretched with a long mark is read as itself — いー keeps 2
-    of its 3 uses and fell below it.)"""
+    of its 3 uses and fell below it; 22 since words made of words are one word — 優先席, 家庭教師 and 社会貢献
+    joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 19
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 22
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -211,7 +212,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 19
+    assert rank_of["中野"] == rank_of["ナカノ"] == 22
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -498,8 +499,14 @@ def test_a_noun_with_suru_and_a_sound_word_with_to_suggest_the_word_on_the_list(
     assert anki_match.suggest("同行する", "私も<b>同行する</b>よ", tokenize, _LIST, "ja") == \
         anki_match.Suggestion("同行", "L7", "+ する", "どうこう")
     assert anki_match.suggest("過熱する", "議論が<b>過熱し</b>ている。", tokenize, _LIST, "ja").key == "過熱"
+    # A sound word ending in っ + と is ONE token, the sound word shown with と: a list built since holds きゅっと
+    # among its row's spellings, so the card is placed with no question. On a list without that spelling, the
+    # card read in its sentence is still the same word — and `card_key` places it there first, with no question
+    # (the sound word + と read apart: `test_a_sound_word_said_with_to_is_the_sound_word_the_list_writes_without`).
     assert anki_match.suggest("きゅっと", "手を<b>きゅっと</b>握った。", tokenize, _LIST, "ja") == \
-        anki_match.Suggestion("きゅっ", "L7", "+ と", "きゅっ")
+        anki_match.Suggestion("きゅっ", "L6", "same word, other spelling", "きゅっ")
+    assert anki_match.card_key("きゅっと", dict(_LIST, きゅっと=2210), "ja", None, tokenize) == ("きゅっと", "exact")
+    assert anki_match.card_key("きゅっと", _LIST, "ja", None, tokenize) == ("きゅっ", "L7")
 
 
 # --------------------------------------------------------------------------- #
@@ -509,14 +516,40 @@ def test_a_noun_with_suru_and_a_sound_word_with_to_suggest_the_word_on_the_list(
 def test_a_word_with_its_suru_or_to_is_that_word_with_no_question():
     """The user's 努力する and 仲良くする, a tester's バシッと and ひょいと (カラフル, mined by AnkiMiner): UniDic
     reads each as the word + する or と, and the list has the word. The user, 2026-09-26: "I'd prefer
-    them to be one word" — so it is placed as the word, not offered as a question (L7)."""
+    them to be one word" — so it is placed as the word, not offered as a question (L7). A sound word ending
+    in っ + と (バシッと) is one token itself, the sound word shown with と: a list built since holds that
+    spelling among the row's (its Forms), and the card lands there by its own spelling."""
     tokenize = _tokenizer().tokenize
-    listed = {"努力": 0, "仲良く": 1, "バシッ": 2, "ひょい": 3, "同行": 4}
-    for word, key in (("努力する", "努力"), ("仲良くする", "仲良く"), ("バシッと", "バシッ"),
-                      ("ひょいと", "ひょい"), ("同行する", "同行")):
+    listed = {"努力": 0, "仲良く": 1, "バシッ": 2, "バシッと": 2, "ひょい": 3, "同行": 4}
+    for word, key in (("努力する", "努力"), ("仲良くする", "仲良く"), ("ひょいと", "ひょい"), ("同行する", "同行")):
         assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+    assert anki_match.card_key("バシッと", listed, "ja", None, tokenize) == ("バシッと", "exact")
     assert anki_match.one_word(tokenize("努力する"))[0] == "努力"
     assert anki_match.one_word(tokenize("冒険"))[0] == "冒険"
+
+
+def test_a_sound_word_said_with_to_is_the_sound_word_the_list_writes_without():
+    """A card mined as バシッと when the content only ever writes バシッ (「バシッ」と, バシッ！): the tokenizer reads
+    バシッと as ONE token — the sound word's own lemma and reading, written with its と — so the list has no
+    バシッと among its spellings. The card is still the sound word + the ending と and lands on バシッ with no
+    question, as it did when the tokenizer cut the と off. The same for a sound word whose reading ends in ト
+    (コトッと — コト), one with a long vowel (ぎゅーっと) and half-width kana (ﾊﾞｼｯと: its dictionary spelling
+    is バシッ). ずっと, ちょっと and はっと are と-adverbs of their own — their reading holds the と — and never
+    lose it; a "no" to the pair is never overruled."""
+    tokenize = _tokenizer().tokenize
+    listed = {"バシッ": 0, "コトッ": 1, "ぎゅーっ": 2, "ずっ": 3, "ちょっ": 4, "はっ": 5}
+    for word, key in (("バシッと", "バシッ"), ("コトッと", "コトッ"), ("ぎゅーっと", "ぎゅーっ"), ("ﾊﾞｼｯと", "バシッ")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+    # the kana fold still applies to the letters the card is written in (L4): ばしっと reaches the katakana row
+    assert anki_match.card_key("ばしっと", {"ばしっ": 0}, "ja", None, tokenize) == ("ばしっ", "L7")
+    for word in ("ずっと", "ちょっと", "はっと"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+        assert len(anki_match.ending_apart(tokenize(word))) == 1, word
+    no = {"バシッと": {"target": "バシッ", "answer": "no"}}
+    assert anki_match.card_key("バシッと", listed, "ja", no, tokenize) == ("", "")
+    # read apart only when the sound word + と is the card's only token: ドキッとする stays ドキッと + する
+    assert anki_match.ending_apart(tokenize("ドキッとする")) == list(tokenize("ドキッとする"))
+    assert anki_match.ending_apart([]) == []
 
 
 def test_a_verb_of_its_own_a_phrase_or_a_bare_kana_word_is_never_read_as_a_list_word():

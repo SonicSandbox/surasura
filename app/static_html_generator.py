@@ -613,7 +613,7 @@ def _dictionary_keys(backlog, answers=None, listed=None):
         analyzer.SANITIZE_JA = True
         tokenize = analyzer.JapaneseTokenizer().tokenize
         for word in words:
-            tokens = tokenize(word)
+            tokens = anki_match.ending_apart(tokenize(word))    # バシッと: the sound word + と, as Junban reads it
             token = anki_match.one_word(tokens)
             if token is None:
                 continue

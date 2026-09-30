@@ -193,7 +193,9 @@ def test_the_polite_prefix_joins_only_where_it_is_a_usual_form_of_the_word():
     # The user (U1): お / ご words join when the prefixed form is at least 30% of the word's uses in the
     # shared corpus — お茶, お金, お菓子 are words; お名前 and お仕事 are お + a word. The set is mostly
     # written, so a word said with お at least half the time in its conversation joins too (checkpoint
-    # A: お祭り 76% there, 16% overall); お見舞い is too rare there to tell, and stays apart.
+    # A: お祭り 76% there, 16% overall); お見舞い is too rare there to tell, and the share's table leaves it apart.
+    # (What the tokenizer reads by, `analyzer.affix_joins`, adds the お / ご words the dictionary lists with a
+    # meaning of their own — app/dictionary_data.py — and お見舞い 'dealing a blow' is one: in text it is one word.)
     joins = reference_data.affix_joins()
     for word in ("お茶", "お金", "お菓子", "お願い", "お祭り", "お湯"):
         assert word in joins, word
@@ -240,7 +242,10 @@ def test_a_polite_words_bare_word_is_counted_under_every_key_the_tagger_gives_it
 def test_a_polite_word_is_weighed_against_its_bare_word_however_the_tagger_files_it():
     # お帰り's base is the verb 返る's 連用形, but the text's own 帰り (帰りが遅い) is a noun of its own. The
     # first table counted only the verb — お帰り 86% — and, with the noun, it is 20% of the word's uses:
-    # under U1's 30%, as お守り (26%: 守りを固める) is. Every spelling goes with it (おかえり, おまもり).
+    # under U1's 30%, as お守り (26%: 守りを固める) is, so the share's table leaves both apart, every spelling
+    # with them (おかえり, おまもり). The tokenizer still reads each as one word: `analyzer.affix_joins` adds the
+    # お / ご words the dictionary lists with a meaning the bare word lacks — 'welcome home', 'amulet' — every
+    # spelling with them (app/dictionary_data.py).
     joins = reference_data.affix_joins()
     for word in ("お帰り", "おかえり", "お守り", "おまもり"):
         assert word not in joins, word
@@ -256,7 +261,9 @@ def test_a_polite_word_with_a_reading_or_a_compound_of_its_own_is_one_word(token
 
 def test_a_polite_prefix_filed_as_a_noun_is_decided_with_its_word():
     # UniDic files 御 as a noun in 御内 (おうち), 御付き and 御廟: the first table let them past the share,
-    # so 御内 joined while おうち stayed お + うち.
+    # so 御内 joined while おうち stayed お + うち. Decided with their words, the share's table leaves all four
+    # apart. The dictionary's own お / ご words, which `analyzer.affix_joins` adds (app/dictionary_data.py), then
+    # make おうち and お付き one word each, every spelling together (御内 is おうち, 御付き is お付き); 御廟 stays apart.
     joins = reference_data.affix_joins()
     for word in ("御内", "おうち", "御付き", "御廟"):
         assert word not in joins, word

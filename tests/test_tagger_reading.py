@@ -137,12 +137,17 @@ def test_a_kangxi_radical_is_read_as_its_ideograph(tokenizer, sanitized):
     assert tokens[0][:3] == ("方法", "ホウホウ", "⽅法")
 
 
-def test_a_character_read_as_several_words_gives_its_spelling_to_the_first(tokenizer, sanitized):
+def test_a_character_read_as_several_words_gives_its_spelling_to_the_first(tokenizer, sanitized, monkeypatch):
     # ㍿ is 株式会社, which unidic-lite reads as 株式 + 会社: the sentence must still show ㍿ exactly once.
     line = "㍿山田の社員です。"
     sentences = list(tokenizer.tokenize_sentences(line))
     assert [s for s, _ in sentences] == [line]
+    # The two pieces spell the dictionary compound 株式会社, one word — shown as the ㍿ it was read from.
     surfaces = {lemma: surface for lemma, _r, surface, _o in sentences[0][1]}
+    assert surfaces["株式会社"] == "㍿"
+    # Left in pieces (no compound table), the first piece carries the character and the second nothing.
+    monkeypatch.setattr(analyzer, "compound_joins", dict)
+    surfaces = {lemma: surface for lemma, _r, surface, _o in list(tokenizer.tokenize_sentences(line))[0][1]}
     assert surfaces["株式"] == "㍿" and surfaces["会社"] == ""
 
 

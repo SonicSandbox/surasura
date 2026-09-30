@@ -5,7 +5,8 @@ then count as those words. analyzer.join_affixes — the one place every Japanes
 such a name one word:
 
 - katakana names (logic.names_katakana): a katakana run no JPDB 2024 / Jiten headword spells, with a piece that is no
-  common word, is one word; a compound of common listed words, a repeated sound and a stutter stay in pieces.
+  common word, is one word; a compound of common listed words, a repeated sound, a stutter and a run of nothing but
+  interjections (laughter, a cry) stay in pieces.
 - names that recur in the library (logic.names_recurring): a run of common words the rule above leaves in pieces is
   one word when the library keeps using it as one (its rarer piece mostly inside it, 3+ uses) — a table the token
   store computes after indexing, applied to its cached tokens and to live text alike; once joined, a run stays
@@ -90,9 +91,13 @@ def test_the_switch_off_leaves_the_pieces_as_today(tokenizer, monkeypatch):
 
 def test_compounds_and_listed_words_stay_the_words_they_are(tokenizer):
     """A run of common listed words the lists don't carry as one (ドラゴン + ケーキ) is a compound: it stays in pieces,
-    each a word the learner may know. A run a headword spells (トートバッグ) keeps the tagger's reading."""
+    each a word the learner may know. A run a headword spells (トートバッグ) is never a name: it is the dictionary word
+    it spells — one word, with the lists' reading (analyzer's compound joins) — and without that table, the tagger's
+    pieces."""
     assert _surfaces(tokenizer, "ドラゴンケーキを焼いた。")[:2] == ["ドラゴン", "ケーキ"]
-    assert _surfaces(tokenizer, "トートバッグを持って出かけた。")[:2] == ["トート", "バッグ"]
+    assert _tokens(tokenizer, "トートバッグを持って出かけた。")[0][:3] == ("トートバッグ", "トートバッグ", "トートバッグ")
+    with patch.object(analyzer, "compound_joins", dict):
+        assert _surfaces(tokenizer, "トートバッグを持って出かけた。")[:2] == ["トート", "バッグ"]
 
 
 def test_a_repeated_sound_and_a_stutter_stay_in_pieces(tokenizer):
@@ -105,6 +110,16 @@ def test_a_repeated_sound_and_a_stutter_stay_in_pieces(tokenizer):
     assert names.repeated(["ブンブン", "ブンブン"]) and names.repeated(["アア", "アッ"])
     assert names.stutter(["バ", "ッ", "バカ"]) and names.stutter(["ヤッ", "ヤバイ"])
     assert not names.repeated(["ハル", "ミナ"]) and not names.stutter(["ナイ", "ッ", "シュー"])
+
+
+def test_laughter_and_cries_stay_in_pieces(tokenizer):
+    """A run made only of interjections — every piece one the tagger reads as an interjection (アッ + ハハ, ウワ +
+    アア) — is laughter or a cry, not a name: it stays in pieces, each the interjection it is. A run with any other
+    piece may still be a name: ハイ + ミロ (an interjection, then a name) is one word, as before."""
+    assert _surfaces(tokenizer, "アッハハ！") == ["アッ", "ハハ"]
+    assert _surfaces(tokenizer, "ウワアア！") == ["ウワ", "アア"]
+    assert _surfaces(tokenizer, "ｱｯﾊﾊ！") == ["ｱｯ", "ﾊﾊ"], "half-width is read as katakana: the same laugh"
+    assert ("ハイミロ", "", "ハイミロ", "ハイミロ") in _tokens(tokenizer, "ハイミロが来た")
 
 
 def test_half_width_katakana_and_spaces(tokenizer):
@@ -483,6 +498,7 @@ def test_the_three_switches_in_settings_save_load_and_show_for_japanese_only(mon
                                                    "Kanji names as one word"]
         assert all(str(b) in tipped for b in boxes), "every toggle has a tooltip"
         assert "ミロ + ナイ → ミロナイ" in tipped[str(boxes[0])] and "奏 + 汰 → 奏汰" in tipped[str(boxes[2])]
+        assert "laughter (アッハハ)" in tipped[str(boxes[0])], "what stays apart: laughter too"
         assert [app.var_names_katakana.get(), app.var_names_recurring.get(), app.var_names_kanji.get()] == [True] * 3
         assert frame.master is app.lang_options_frame and "Language & Parsing" in frame.master.master.cget("text")
 

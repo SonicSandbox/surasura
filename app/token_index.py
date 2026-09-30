@@ -32,6 +32,7 @@ import json
 import zlib
 import sqlite3
 from collections import Counter
+from operator import itemgetter
 
 # Bump when the on-disk SHAPE changes — or when the tokenizer would now produce DIFFERENT sentences
 # for the same file, since the cached blobs would otherwise keep serving the old split. A mismatched
@@ -56,7 +57,10 @@ from collections import Counter
 # v10 the text a file becomes reads differently again: a word stretched with a wave dash or a long mark is read as the
 #    word (すご～い), 𠮟 as 叱, and sentences end by the quotation and caption rules — a v9 blob holds the old tokens
 #    and sentences; still 2.4, so users rebuild once.
-SCHEMA_VERSION = 10
+# v11 words made of words are one word (上層部, 二十歳, 走り出す), a sound word + と is one (ドキッと), お守り and お帰り
+#    are words of their own and laughter stays in pieces: a v10 blob holds compounds in pieces, ドキッ + と, a laugh
+#    joined as a name and those お / ご words split — still 2.4, so users rebuild once with v8, v9 and v10.
+SCHEMA_VERSION = 11
 
 
 # --------------------------------------------------------------------------- #
@@ -337,9 +341,9 @@ class Store:
     # -- known-words cache (skip re-tokenizing known terms every run) -------- #
     def _known_key(self, signature):
         """`signature` with what else decides how a Japanese known word reads: the names switches and the library's
-        name tables (a known name is one word only with them) — so either change reads the known words again. The
-        switches are read fresh, as the build signature's are: the dashboard's check must see a change as the
-        indexer it launches will."""
+        name tables (a known name is one word only with them), and the phrases switch (a known 予想通り is one word
+        or two) — so any change reads the known words again. The switches are read fresh, as the build signature's
+        are: the dashboard's check must see a change as the indexer it launches will."""
         if not signature or self.language != "ja":
             return signature
         try:
@@ -349,8 +353,9 @@ class Store:
             return signature
         switches = [bool(logic.get(k, True)) for k in ("names_katakana", "names_recurring", "names_kanji")]
         stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
-        return signature if switches == [True, True, True] and stamp is None else \
-            f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
+        if switches != [True, True, True] or stamp is not None:
+            signature = f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
+        return signature if logic.get("phrases_and_titles", True) else f"{signature}|phrases_and_titles=off"
 
     def get_cached_known(self, signature):
         """Return (known_tuples, known_lemmas) if the cache matches `signature`, else None.
@@ -481,39 +486,91 @@ class Store:
         return self
 
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
-    def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
-                            skip_singles=False):
-        """Project the aggregate into the *learnable unknown* distribution. Same shape as before:
-        {total_tokens, known_tokens, unknown:[(key,count)...], all_counts:[asc]}."""
-        known_tuples = known_tuples or set()
-        known_lemmas = known_lemmas or set()
-        ignore_set = ignore_set or set()
-
-        unknown, known_tokens, all_counts = [], 0, []
+    def word_counts(self):
+        """({(lemma, reading): uses}, total tokens) — the aggregate as a run counts the library. Japanese: with the
+        name tables' joins, so these counts are the list's (a joined name counts once, its pieces no more there)."""
         rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
-        # Japanese: the name tables' joins, so these counts are the list's (a joined name counts once, its pieces
-        # no more there).
+        counts = {(lemma, reading): n for lemma, reading, n in rows}
         adjust, total_adjust = self._names_adjustment()
         if adjust:
-            counts = {(lemma, reading): n for lemma, reading, n in rows}
             for key, delta in adjust.items():
                 counts[key] = counts.get(key, 0) + delta
-            rows = [(lemma, reading, n) for (lemma, reading), n in counts.items() if n > 0]
-        for lemma, reading, n in rows:
-            all_counts.append(n)
-            if lemma in ignore_set or (lemma, reading) in known_tuples or lemma in known_lemmas:
-                known_tokens += n
-                continue
-            if skip_singles and len(lemma) == 1:
-                # Single-char tokens are baseline noise for ja learning; still count toward total.
-                known_tokens += n
-                continue
-            unknown.append((make_key(lemma, reading), n))
+            # What no longer counts goes — deleted in place, not the whole table copied (every slider refresh reads it).
+            for key in [key for key, n in counts.items() if n <= 0]:
+                del counts[key]
+        return counts, self.total_tokens() + total_adjust
 
-        unknown.sort(key=lambda kv: (-kv[1], kv[0]))
-        all_counts.sort()
-        return {"total_tokens": self.total_tokens() + total_adjust, "known_tokens": known_tokens,
-                "unknown": unknown, "all_counts": all_counts}
+    def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
+                            skip_singles=False):
+        """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`)."""
+        counts, total = self.word_counts()
+        return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
+                                    self.language)
+
+
+def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=None, ignore_set=None,
+                         skip_singles=False, language=None):
+    """{total_tokens, known_tokens, unknown:[(key,count)...], all_counts:[asc]} from the library's per-word counts
+    ({(lemma, reading): uses}) and the learner's lists — the Rarity slider's numbers, and the analyzer's own when it
+    decides a band without the store.
+
+    Japanese, with the tokenizer's compound table: also "compounds" — ({key: uses}, {key: its parts}) for every
+    compound the learner neither knows nor ignores that the library holds, and every such compound inside one — so
+    each band can count a compound too rare for it toward its free parts, as Generate's list does
+    (analyzer.LearningView; word_selection.preview). A part is kept only when a use could reach the list through
+    it: free, and an unknown word that can be listed (a single character can't) or an unknown compound."""
+    known_tuples = known_tuples or set()
+    known_lemmas = known_lemmas or set()
+    ignore_set = ignore_set or set()
+    table = {}
+    if language == "ja":
+        from app import analyzer
+        table = analyzer.compound_parts()
+    met = []                        # the unknown compounds the library holds
+
+    unknown, known_tokens, all_counts = [], 0, []
+    for key, n in counts.items():               # key = (lemma, reading), looked up as it is (this runs per word)
+        all_counts.append(n)
+        lemma = key[0]
+        if lemma in ignore_set or key in known_tuples or lemma in known_lemmas:
+            known_tokens += n
+            continue
+        if skip_singles and len(lemma) == 1:
+            # Single-char tokens are baseline noise for ja learning; still count toward total.
+            known_tokens += n
+            continue
+        unknown.append((f"{lemma}|{key[1]}", n))       # make_key
+        if key in table:
+            met.append(key)
+
+    # Most uses first, ties by key: two stable sorts in C, not a key tuple built per word.
+    unknown.sort(key=itemgetter(0))
+    unknown.sort(key=itemgetter(1), reverse=True)
+    all_counts.sort()
+    freqs = {"total_tokens": total_tokens, "known_tokens": known_tokens, "unknown": unknown,
+             "all_counts": all_counts}
+    if table:
+        uses, parts, bases = {}, {}, {}
+        todo = met
+        while todo:
+            key = todo.pop()
+            if key in parts:
+                continue
+            uses[key] = counts.get(key, 0)
+            kept = []
+            for lemma, reading, free in table[key]:
+                part = (lemma, reading)
+                if not free or lemma in ignore_set or part in known_tuples or lemma in known_lemmas:
+                    continue
+                if part in table:
+                    todo.append(part)
+                elif skip_singles and len(lemma) == 1:
+                    continue
+                kept.append((lemma, reading, True))
+                bases[make_key(lemma, reading)] = counts.get(part, 0)
+            parts[key] = tuple(kept)
+        freqs["compounds"] = (uses, parts, bases)
+    return freqs
 
 
 def read_names_tables(language):
@@ -649,13 +706,14 @@ def build_signature(language, reinforce=False, script="asis"):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
     config change invalidates stale tokens. What varies at runtime: Chinese `reinforce`
     segmentation, `script` conversion, the sentence boundaries settings.json sets — they decide
-    where every file splits — what a Japanese book's kana in parentheses become, and whether a
-    katakana name is one word (logic.names_katakana; language is already isolated per DB; a
+    where every file splits — what a Japanese book's kana in parentheses become, whether a
+    katakana name is one word (logic.names_katakana) and whether a phrase or a title is
+    (logic.phrases_and_titles; language is already isolated per DB; a
     tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by bumping SCHEMA_VERSION, which
     rebuilds). Normalized so ja ignores a stray reinforce or script. Each suffix appears ONLY when it
     departs from the default — the script when converting, the boundaries when edited, the readings
-    when not hiragana only, the katakana names when off — so a store built as shipped keeps its exact
-    old signature and upgrading never rebuilds anyone's index (spec I2)."""
+    when not hiragana only, the katakana names or the phrases when off — so a store built as shipped
+    keeps its exact old signature and upgrading never rebuilds anyone's index (spec I2)."""
     from app.zh_script import effective
     eff_reinforce = bool(reinforce) and language == "zh"
     sig = f"{language}|reinforce={eff_reinforce}"
@@ -668,7 +726,10 @@ def build_signature(language, reinforce=False, script="asis"):
     readings = _chosen_paren_readings(language)
     if readings is not None:
         sig = f"{sig}|paren_readings={readings}"
-    return f"{sig}|names_katakana=off" if _katakana_names_off(language) else sig
+    for key in ("names_katakana", "phrases_and_titles"):
+        if _switched_off(language, key):
+            sig = f"{sig}|{key}=off"
+    return sig
 
 
 def _edited_boundaries(language):
@@ -704,14 +765,15 @@ def _chosen_paren_readings(language):
     return None if option == default else option
 
 
-def _katakana_names_off(language):
-    """Whether settings.json switches katakana names off (logic.names_katakana: app/names.py), for a Japanese store.
-    Read fresh, as the boundaries are."""
+def _switched_off(language, key):
+    """Whether settings.json switches off a Japanese reading rule applied as a file is tokenized — katakana names
+    (logic.names_katakana: app/names.py) or phrases and titles as one word (logic.phrases_and_titles) — for a
+    Japanese store. Read fresh, as the boundaries are."""
     if language != "ja":
         return False
     try:
         from app import settings_manager
-        return not settings_manager.load_settings()["logic"].get("names_katakana", True)
+        return not settings_manager.load_settings()["logic"].get(key, True)
     except Exception:
         return False
 

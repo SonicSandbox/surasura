@@ -9,8 +9,9 @@ place every Japanese caller reads words through, keeps such a name ONE word:
     pieces is ONE word when neither JPDB 2024 nor Jiten has a headword spelled like it and at least one piece is
     no common word (a name, a letter, a particle, a word the dictionary lacks: トゥー + リ, グリム + ジョー). A run
     of common words the lists don't carry as one (パーキング + スペース) stays in pieces, as a compound does; so does
-    a run that is one piece repeated (ブンブン + ブンブン, アア + アッ) and a stutter — a piece cut off with ッ, then
-    a word starting with the same sound (バッ + バカ).
+    a run that is one piece repeated (ブンブン + ブンブン, アア + アッ), a stutter — a piece cut off with ッ, then
+    a word starting with the same sound (バッ + バカ) — and a run made only of interjections, every piece one the
+    tagger reads as an interjection (アッ + ハハ, ウワ + アア): laughter and cries, not a name.
 
   Names that recur in the library (logic.names_recurring) — a run of common words the katakana rule leaves in pieces
     (リム + ハイ, ヒラ + マン) is ONE word when the library keeps using it as one: its least-used piece is, as a word,
@@ -55,6 +56,8 @@ _KATAKANA_TEXT = re.compile(r"[ァ-ヺー-ヾ]+")
 _ANY_KATAKANA = re.compile("[ァ-ヺー-ヾ\uff66-\uff9f]")
 # What stays in pieces whatever the run: the marks the tagger leaves at a run's ends (ダメーーッ is ダメ + marks).
 _MARKS = "補助記号"
+# A piece the tagger reads as an interjection (アッ, ハハ): a run of nothing else is laughter or a cry, in pieces.
+_INTERJECTION = "感動詞"
 
 _katakana_headwords = []    # [Spellings] once read; [None] when the table can't be read
 _person_names = []          # [PersonNames] once read (only where files are indexed); [None] when it can't be read
@@ -215,14 +218,15 @@ def stutter(pieces):
 
 def katakana_kind(run, listed):
     """What a katakana run is: "listed" (a headword spells it: the word it is), "common" (only common words the lists
-    don't carry as one: a compound, in pieces), "sound" (one piece repeated, or a stutter: in pieces) or "name" (one
-    word)."""
+    don't carry as one: a compound, in pieces), "sound" (one piece repeated, a stutter, or only interjections: in
+    pieces) or "name" (one word). A run with any piece that is no interjection — a name, a letter, a mark — may
+    still be a name (ハイ + ミロ)."""
     pieces = [_read(t) for t in run]
     if "".join(pieces) in listed:
         return "listed"
     if all(_common_word(t, listed) for t in run):
         return "common"
-    if repeated(pieces) or stutter(pieces):
+    if repeated(pieces) or stutter(pieces) or all(t.feature.pos1 == _INTERJECTION for t in run):
         return "sound"
     return "name"
 

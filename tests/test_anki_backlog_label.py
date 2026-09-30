@@ -167,7 +167,9 @@ def _write_pairs(pairs, language="ja"):
 def test_a_sound_word_mined_with_its_to_labels_the_word_the_list_has():
     """A tester's カラフル cards (2026-09-26): バシッと and ひょいと were waiting in Anki, yet バシッ and ひょい
     showed "Not in Anki" — the very list they mine by hand from. A kana card is read when an ending comes
-    off it, and keyed by its own letters as Junban looks it up (Anki_Match_Consistency_Scope.md item 1)."""
+    off it, and keyed by its own letters as Junban looks it up (Anki_Match_Consistency_Scope.md item 1).
+    バシッと is one token to the tokenizer — the sound word shown with と — and is read as the sound word + と
+    again, as Junban reads it (`anki_match.ending_apart`), so it keys バシッ too."""
     _write_backlog(data=_cards("バシッと", "ひょいと"))
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
         "ばしっ", "ばしっと", "ひょい", "ひょいと", "バシッ", "バシッと"]
@@ -260,11 +262,14 @@ def test_a_yes_answer_yields_to_the_cards_own_spelling_on_the_list(tmp_path):
 
 def test_a_kana_card_the_list_holds_as_spelled_keeps_no_fold(tmp_path):
     """スレ (a forum thread) is a row; すれ is a spelling of 擦れる. Junban folds a katakana card to hiragana
-    only when its spelling misses (L4) — so the スレ card never labels 擦れる too. バシッと's stem is read the
-    same way (L7)."""
+    only when its spelling misses (L4) — so the スレ card never labels 擦れる too. バシッと likewise: one token
+    (the sound word shown with と), held as spelled by the row a list built since has — no fold."""
     listed = _write_list(tmp_path, [("スレ", "スレ", "", "スレ"), ("擦れる", "擦れる", "すれ|擦れ", "スレル"),
-                                    ("ばし", "バシッ", "", "バシ")])
+                                    ("ばし", "バシッ", "バシッと", "バシ")])
     _write_backlog(data=_cards("スレ", "バシッと"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["スレ", "バシッと"]
+    # content that only writes バシッ: the card is the sound word + と, keyed by the row's own spelling (L7)
+    listed = _write_list(tmp_path, [("スレ", "スレ", "", "スレ"), ("ばし", "バシッ", "", "バシ")])
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == [
         "ばしっと", "スレ", "バシッ", "バシッと"]
     # a card the list only holds folded still reaches its row through the fold (スルリ -> するり)

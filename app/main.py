@@ -319,10 +319,11 @@ class MasterDashboardApp:
         self.var_zh_script = tk.StringVar(value="asis")  # read all Chinese as one script (asis/s/t)
         self.var_paren_readings = tk.StringVar(value="hiragana")  # 漢字(かな) in a book: hiragana/any/off
         # Names are one word, not pieces (app/names.py), Japanese only: katakana names, names the library repeats,
-        # kanji names — each its own switch (logic.names_*), on by default.
+        # kanji names, a story's own kanji terms — each its own switch (logic.names_*), on by default.
         self.var_names_katakana = tk.BooleanVar(value=True)
         self.var_names_recurring = tk.BooleanVar(value=True)
         self.var_names_kanji = tk.BooleanVar(value=True)
+        self.var_names_work_terms = tk.BooleanVar(value=True)
         # Phrases and titles as one word (logic.phrases_and_titles), Japanese only, on by default.
         self.var_phrases_and_titles = tk.BooleanVar(value=True)
         # Ignore names (logic.ignore_names), Japanese only, off by default: a learner learns names too.
@@ -1462,7 +1463,7 @@ class MasterDashboardApp:
 
         # Names as one word (Japanese): a name the tagger cuts into pieces is one word, not words it isn't. Packed by
         # update_ui_for_language for Japanese only, like the readings row above. The katakana switch changes how every
-        # file is read, so it re-indexes the library in the background; the other two use the library's own tables
+        # file is read, so it re-indexes the library in the background; the other three use the library's own tables
         # and take effect at the next Generate.
         self.names_frame = ttk.Frame(self.lang_options_frame)
         for var, text, tip in (
@@ -1477,7 +1478,12 @@ class MasterDashboardApp:
                 (self.var_names_kanji, "Kanji names as one word",
                  "A person's name cut into kanji is one word when a names dictionary "
                  "(JMnedict) lists it and your library uses it 3+ times: 奏 + 汰 → 奏汰. "
-                 "Takes effect at the next Generate.")):
+                 "Takes effect at the next Generate."),
+                (self.var_names_work_terms, "Kanji terms your library repeats as one word",
+                 "Kanji words a story makes up — its techniques, places and names — become "
+                 "one word when your library keeps using them together: 斬魄刀, 写輪眼. A word "
+                 "a dictionary lists never joins this way, and auto-generated captions don't "
+                 "count. Takes effect at the next Generate.")):
             chk = ttk.Checkbutton(self.names_frame, text=text, variable=var, command=self.save_settings)
             chk.pack(anchor=tk.W)
             ToolTip(chk, tip)
@@ -2372,6 +2378,7 @@ class MasterDashboardApp:
             self.var_names_katakana.set(bool(self.logic_settings.get("names_katakana", True)))
             self.var_names_recurring.set(bool(self.logic_settings.get("names_recurring", True)))
             self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
+            self.var_names_work_terms.set(bool(self.logic_settings.get("names_work_terms", True)))
             self.var_phrases_and_titles.set(bool(self.logic_settings.get("phrases_and_titles", True)))
             self.var_ignore_names.set(bool(self.logic_settings.get("ignore_names", False)))
             context_settings = self.logic_settings.get("context", {})
@@ -2466,6 +2473,7 @@ class MasterDashboardApp:
                     "names_katakana": self.var_names_katakana.get(),
                     "names_recurring": self.var_names_recurring.get(),
                     "names_kanji": self.var_names_kanji.get(),
+                    "names_work_terms": self.var_names_work_terms.get(),
                     "phrases_and_titles": self.var_phrases_and_titles.get(),
                     "ignore_names": self.var_ignore_names.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /

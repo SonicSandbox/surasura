@@ -85,7 +85,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     Anki" mark, パターン and 例文 read お部屋 as 部屋, 俺たち as 俺 and 優しさ as 優しい, as the list always has; an
 #     お / ご word you can read through its word (お茶 through 茶) sits lower and is no unknown. Still 2.4: one
 #     re-analysis with 15–18.
-ENGINE_REVISION = 19
+# 20: a story's own kanji words that the library keeps using as one are one word (logic.names_work_terms);
+#     auto-generated captions don't count toward them. A katakana word the lists hold but no dictionary join makes
+#     is one word, and a katakana name no longer takes the head of a word written on in hiragana. Still 2.4: one
+#     re-analysis with 15–19.
+ENGINE_REVISION = 20
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -687,7 +691,8 @@ def join_affixes(words, joins=None, library=True, compounds=None):
 
     Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
     list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
-    the library keeps using (logic.names_recurring) and a kanji name it holds (logic.names_kanji). `library=False` is for what must not depend on one
+    the library keeps using (logic.names_recurring), a kanji name it holds (logic.names_kanji) and a story's own
+    kanji term it keeps using as one (logic.names_work_terms). `library=False` is for what must not depend on one
     user's library: the token store's cached tokens (they record the candidates instead) and shared data."""
     if joins is None:
         joins = affix_joins()
@@ -718,7 +723,8 @@ def join_affixes(words, joins=None, library=True, compounds=None):
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
     if library:
-        words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True))
+        words = names.join_library(words, LOGIC.get("names_recurring", True), LOGIC.get("names_kanji", True),
+                                   LOGIC.get("names_work_terms", True))
     return words
 
 
@@ -1362,7 +1368,7 @@ class JapaneseTokenizer(Tokenizer):
             for cand in cands:
                 sentence, a, _counted = at[cand.i]
                 _s, before, counted = at[cand.j - 1]
-                names.span(sentence, cand, a, before + counted, "".join(surfaces[cand.i:cand.j]))
+                names.span(sentence, cand, a, before + counted, surfaces[cand.i:cand.j])
 
 _LEADING_DIGITS_RE = re.compile(r"^[0-9０-９]+")
 
@@ -2171,6 +2177,11 @@ def parse_ass(file_path, language='ja'):
 # text' (the time as the cue's timing line wrote it: clean_vtt_cues). 93 of 原作's 160 uses came from headers.
 _TRANSCRIPT_RULE = "-" * 60
 _TRANSCRIPT_TIME_RE = re.compile(r'^\[(?:\d+:)?\d{2}:\d{2}\] ', re.M)
+_CAPTION_KIND_RE = re.compile(r'\(([^()]*)\)$')
+# The header's caption kinds that no person wrote, as the transcript downloader names them: YouTube's own speech
+# recognition, and its machine translation of another language's captions. The recognizer misspells a word the same
+# way every time, so its text never tells the library what a story's own words are (names.Record).
+AUTO_CAPTIONS = frozenset(("native auto", "auto-translated"))
 
 # Markdown (CommonMark) marks structure and emphasis with ASCII punctuation — # headings, > quotes, - / 1. list
 # items, **strong** / *emphasis* / _emphasis_ (not inside a word), `code`, ~~strike~~, [text](url) links and
@@ -2248,6 +2259,15 @@ def transcript_body(text):
     return None
 
 
+def caption_kind(text):
+    """The kind of captions a transcript the downloader wrote names in its header — "manual", "native auto" or
+    "auto-translated" (see AUTO_CAPTIONS) — or None: any other text has no such header."""
+    if transcript_body(text) is None:
+        return None
+    kind = _CAPTION_KIND_RE.search(text.split("\n", 3)[2].strip())
+    return kind.group(1) if kind else None
+
+
 def _strip_verse_numbers(text):
     """A verse-numbered book's text without its verse numbers. The numbers count up line after line (1, 2, 3 …);
     glued to the verse they change its parse — 7わが子よ reads 7わ as a count (把 'bundles'), so わが is no 我が.
@@ -2304,10 +2324,12 @@ def strip_text_conventions(text, language='ja', ext='.txt'):
     return _strip_verse_numbers(text)
 
 
-def extract_text(file_path, language='ja'):
+def extract_text(file_path, language='ja', facts=None):
     # Every format is decoded the one way (path_utils.read_text): a BOM names the encoding, else
     # strict UTF-8, else the language's Windows encodings (CP932; GB18030, Big5) — a CP932 subtitle,
     # a UTF-16 or GBK .txt contributed nothing before, silently.
+    # `facts`, a dict, receives what the file's own format says about its text — "captions": the kind a downloaded
+    # transcript's header names (caption_kind), or None — for the token store (names.Record); the text is the same.
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
     if ext == '.srt':
@@ -2340,6 +2362,8 @@ def extract_text(file_path, language='ja'):
         text = read_text(file_path, language)
 
     if ext not in SUBTITLE_EXTENSIONS:
+        if facts is not None:
+            facts["captions"] = caption_kind(text)
         text = strip_text_conventions(text, language, ext)
     return text
 

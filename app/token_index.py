@@ -63,7 +63,11 @@ from operator import itemgetter
 # v12 each file's record also holds the words that are people's names there (app/names.py, for Settings' "Ignore
 #    names"): a v11 store's records hold none, so the switch would hide no name from a file read before — still 2.4,
 #    so users rebuild once with v8–v11.
-SCHEMA_VERSION = 12
+# v13 each file also records its runs of one-kanji pieces, how often each kanji stands alone, and whether a
+#    transcript's captions are auto-generated — a story's own kanji terms are one word; a katakana word the lists hold
+#    that no dictionary join makes is one word, and a katakana name no longer takes the head of a word written on in
+#    hiragana — still 2.4, so users rebuild once with v8–v12.
+SCHEMA_VERSION = 13
 
 
 # --------------------------------------------------------------------------- #
@@ -298,24 +302,29 @@ class Store:
         self._names = None
 
     def _names_adjust(self, cur, tables):
-        """What the name tables change in the running totals, for each way the two switches can be set. The aggregate
-        counts each file as it reads alone; the list counts its cached tokens with the tables applied (file_tokens) —
-        so the Rarity slider's numbers, and the band automatic rarity picks from them, must add each joined name and
-        take away its pieces, counted as the aggregate counts (a token with target-language characters).
-        {"11" | "10" | "01" (recurring, kanji): {"counts": [[lemma, reading, delta], ...], "total": delta}}."""
+        """What the name tables change in the running totals, for each way the three switches can be set. The
+        aggregate counts each file as it reads alone; the list counts its cached tokens with the tables applied
+        (file_tokens) — so the Rarity slider's numbers, and the band automatic rarity picks from them, must add each
+        joined name and take away its pieces, counted as the aggregate counts (a token with target-language
+        characters). {"111" | "110" | … | "001" (recurring, kanji, terms): {"counts": [[lemma, reading, delta], ...],
+        "total": delta}}."""
         from app import analyzer, names
         if not tables:
             return {}
         has_lang = analyzer.has_target_language
         spellings = {kind: set(table) for kind, table in tables.items() if isinstance(table, dict)}
-        deltas = {combo: [Counter(), 0] for combo in ("11", "10", "01")}
+        terms = spellings.get("w", ())
+        combos = [(f"{r:d}{k:d}{t:d}", (bool(r), bool(k), bool(t)))
+                  for r in (1, 0) for k in (1, 0) for t in (1, 0) if r or k or t]
+        deltas = {combo: [Counter(), 0] for combo, _switches in combos}
         for tokens_blob, names_blob in cur.execute(
                 "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
             spans = _decode_counts(names_blob).get("s", [])
-            if not any(span[6] in spellings.get(span[5], ()) for span in spans):
+            if not any(span[6] in spellings.get(span[5], ()) or (span[5] == "w" and _holds_a_term(span[6], terms))
+                       for span in spans):
                 continue                                # no joined name here: nothing to decode
             sentences = _decode_tokens(tokens_blob)
-            for combo, switches in (("11", (True, True)), ("10", (True, False)), ("01", (False, True))):
+            for combo, switches in combos:
                 delta = deltas[combo]
                 for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
                     joined = [(token, 1)] + [(piece, -1) for piece in sentences[s][1][a:b]]
@@ -328,9 +337,9 @@ class Store:
 
     def _names_adjustment(self):
         """({(lemma, reading): delta}, total delta) that the name tables make with the switches set now — ({}, 0) when
-        both are off, before the first index, or for Chinese."""
+        all are off, before the first index, or for Chinese."""
         combo = "".join("1" if on else "0" for on in _library_switches(self.language))
-        if combo == "00":
+        if "1" not in combo:
             return {}, 0
         try:
             entry = json.loads(self.get_meta("names_adjust") or "{}").get(combo) or {}
@@ -362,9 +371,10 @@ class Store:
             logic = settings_manager.load_settings()["logic"]
         except Exception:
             return signature
-        switches = [bool(logic.get(k, True)) for k in ("names_katakana", "names_recurring", "names_kanji")]
+        switches = [bool(logic.get(k, True))
+                    for k in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms")]
         stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
-        if switches != [True, True, True] or stamp is not None:
+        if switches != [True] * 4 or stamp is not None:
             signature = f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
         return signature if logic.get("phrases_and_titles", True) else f"{signature}|phrases_and_titles=off"
 
@@ -629,14 +639,23 @@ def ignored_names(language):
 
 
 def _library_switches(language):
-    """(recurring, kanji): which of the library's name tables apply — Japanese only, as the run's settings say."""
+    """(recurring, kanji, terms): which of the library's name tables apply — Japanese only, as the run's settings
+    say."""
     if language != "ja":
-        return (False, False)
+        return (False, False, False)
     try:
         from app import analyzer
-        return (bool(analyzer.LOGIC.get("names_recurring", True)), bool(analyzer.LOGIC.get("names_kanji", True)))
+        return tuple(bool(analyzer.LOGIC.get(key, True))
+                     for key in ("names_recurring", "names_kanji", "names_work_terms"))
     except Exception:
-        return (False, False)
+        return (False, False, False)
+
+
+def _holds_a_term(spelling, terms):
+    """Does a recorded run of one-kanji tokens (`spelling`) hold a stretch the terms table (`terms`) names? Any stretch
+    of 2+ of its pieces may be one, once other names have taken theirs."""
+    return bool(terms) and any(spelling[start:end] in terms for start in range(len(spelling) - 1)
+                               for end in range(start + 2, len(spelling) + 1))
 
 
 def known_signature(known_path, script="asis"):
@@ -854,8 +873,13 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     def tokenize_file(path):
         from app import names
         record = names.Record() if language == "ja" else None
-        sentences = list(tok.tokenize_sentences(extract(path, language), names=record) if record
-                         else tok.tokenize_sentences(extract(path, language)))
+        if record is not None:
+            facts = {}                     # what the file says of itself: a transcript of auto-generated captions
+            text = extract(path, language, facts)
+            record.auto = facts.get("captions") in analyzer.AUTO_CAPTIONS
+            sentences = list(tok.tokenize_sentences(text, names=record))
+        else:
+            sentences = list(tok.tokenize_sentences(extract(path, language)))
         counts = Counter()
         for _s_text, s_tokens in sentences:
             for lemma, reading, surface, _orth in s_tokens:

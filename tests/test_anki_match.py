@@ -47,17 +47,19 @@ def test_importing_the_matcher_is_cheap():
 
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
-    """The analyser's own 199-row output (BOM, real columns): a katakana lemma the user would never
+    """The analyser's own 200-row output (BOM, real columns): a katakana lemma the user would never
     type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
     kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
     Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
     一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
     uses and joined the list's head; 19 since a word stretched with a long mark is read as itself — いー keeps 2
     of its 3 uses and fell below it; 22 since words made of words are one word — 優先席, 家庭教師 and 社会貢献
-    joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower.)"""
+    joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower; 22
+    since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
+    near its head.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 21
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 22
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -212,7 +214,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 21
+    assert rank_of["中野"] == rank_of["ナカノ"] == 22
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -829,3 +831,18 @@ def test_without_the_rows_own_words_a_card_keeps_its_letters(tmp_path):
     assert anki_match.Index({}, {}, {}, {}).words is None
     assert anki_match.card_key("まく", index.rank_of, "ja", None, tokenize, index.words) == ("まく", "exact")
     assert anki_match.not_the_name("ひかり", "ひかり", index.rank_of, index.words, None) is None, "no tokenizer"
+
+
+def test_a_card_for_a_storys_own_kanji_term_meets_its_row():
+    """A story's own kanji term the library keeps using as one (app/names.py) is a list row of its own, keyed as a word
+    no dictionary has — the spelling, no reading. A card mined for it meets that row by its exact key, and a card that
+    wrote it with the copula reads through the same tables (焔魄陣 is a made-up technique, cut 焔 + 魄 + 陣)."""
+    from app import names
+    names.use_library_tables({"k": {}, "j": {}, "w": {"焔魄陣": [1.0, "焔魄陣", "", "焔魄陣"]}, "stamp": "term"},
+                             pin=True)
+    tokenize = _tokenizer().tokenize
+    listed = {"焔魄陣": 0, "炎": 1}
+    assert anki_match.card_key("焔魄陣", listed, "ja", None, tokenize) == ("焔魄陣", "exact")
+    assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("焔魄陣", "L7")
+    names.use_library_tables({"k": {}, "j": {}, "w": {}, "stamp": "none"}, pin=True)
+    assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("", ""), "no table: pieces"

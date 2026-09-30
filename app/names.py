@@ -11,7 +11,11 @@ place every Japanese caller reads words through, keeps such a name ONE word:
     of common words the lists don't carry as one (パーキング + スペース) stays in pieces, as a compound does; so does
     a run that is one piece repeated (ブンブン + ブンブン, アア + アッ), a stutter — a piece cut off with ッ, then
     a word starting with the same sound (バッ + バカ) — and a run made only of interjections, every piece one the
-    tagger reads as an interjection (アッ + ハハ, ウワ + アア): laughter and cries, not a name.
+    tagger reads as an interjection (アッ + ハハ, ウワ + アア): laughter and cries, not a name. A run a headword
+    spells is that dictionary word: the compound and affix joins make it one where their tables hold it; where they
+    don't (a word too rare for them), it is one word as an unlisted run is, when a piece is no common word (ブ, read
+    as the prefix 無, + シン: the word ブシン). A run's last piece that heads a word the text goes on writing in
+    hiragana is that word's, not the name's: サクサク + ジャ + がいも is サクサク and ジャがいも (ジャガイモ, a headword).
 
   Names that recur in the library (logic.names_recurring) — a run of common words the katakana rule leaves in pieces
     (リム + ハイ, ヒラ + マン) is ONE word when the library keeps using it as one: its least-used piece is, as a word,
@@ -27,6 +31,17 @@ place every Japanese caller reads words through, keeps such a name ONE word:
     tagger reads as such whose whole is no surname (宮崎 + 駿 is a full name, two words). JMnedict's long tail spells
     many chance meetings of two words, so the library decides too: the name joins once the library holds it 3+ times.
 
+  A work's own kanji terms (logic.names_work_terms) — a story coins kanji words no dictionary holds (斬魄刀, 霊圧,
+    写輪眼) and names the names dictionary lacks, and the tagger cuts them into single kanji (斬 + 魄 + 刀). A run of
+    two or more tokens read as one kanji each (a word, a number or a kanji the tagger reads as a symbol) that the
+    rules above leave in pieces is ONE word when the library keeps using it as one — the katakana gauge: its uses are
+    at least 70% of the uses of its least-used kanji standing alone, with 3+ uses, and once joined it stays until that
+    falls below 50% — and nothing says it is words: no piece is grammar (a name's linking 之 aside, as above), it
+    doesn't end in an honorific, a plural or a position word (谷 + 君, 前), it is not numbers alone, and no
+    dictionary lists the spelling — JMdict (鄭寧 is Sōseki's 丁寧), the compound and affix joins, a kanji name.
+    Transcripts whose captions YouTube generated count toward nothing (the captioner misspells a word the same way
+    every time), though a term joins there too.
+
 These use the whole library, not one sentence, so they are tables: at index time each file's candidates are recorded
 in the token store (`Record`); after indexing the tables are computed (`compute_tables`) and stored there; and every
 caller applies the same tables — join_affixes on live text (`join_library`), the token store on its cached tokens
@@ -40,11 +55,12 @@ as a word its dictionary lacks — the spelling as the lemma, no reading (never 
 
 Ignore names (logic.ignore_names, off by default) — a learner still learns names, unless they choose not to: then a
 name is an ignored word everywhere, off the list and never an unknown in a sentence. What is a name: a word the
-tagger's dictionary knows and tags as a person's name (固有名詞 人名), a katakana name made one word above, and a kanji
-name the library's table joins. Not a name: a spelling UniDic also lists as a common word said the same way
-(ひかり is 光 'light', 悪魔 'devil' — the tag there is the tagger's guess between two words that look and sound
-alike), a name keyed as a common word is (麻衣 is keyed マイ, as マイ 'my' is: ignoring it would hide the word), a
-single kana, a word the dictionary doesn't know at all (its tag is a guess), and the katakana runs the library
+tagger's dictionary knows and tags as a person's name (固有名詞 人名), a katakana name made one word above, and a kanji name
+the library's table joins. Not a name: a spelling UniDic also lists as a common word said the same way (ひかり is 光
+'light', 悪魔 'devil' — the tag there is the tagger's guess between two words that look and sound alike), a name keyed
+as a common word is (麻衣 is keyed マイ, as マイ 'my' is: ignoring it would hide the word), a single kana, a word the
+dictionary doesn't know at all (its tag is a guess), a katakana word the lists carry, one word above only because its
+pieces are no words (ブシン, ハアッ, コスパ — as often a word as a name), and the katakana runs and kanji terms the library
 repeats, which are as often terms, places and titles as people. The token store records each file's names as it
 indexes it (`Record`), keeps the library's after indexing (`name_words`), and token_index.ignored_names is the one
 reader every ignore set calls.
@@ -52,6 +68,7 @@ reader every ignore set calls.
 import hashlib
 import json
 import re
+import threading
 import time
 from array import array
 from bisect import bisect_left
@@ -94,7 +111,20 @@ _NOT_IN_A_NAME = frozenset(("助詞", "助動詞", "動詞", "形容詞", "連�
 _NAME_LINKS = frozenset(("ノ", "ヶ", "ケ", "之"))
 _BREAKS = ("補助記号", "空白")
 _NO_START = frozenset(_BREAKS) | _NOT_IN_A_NAME | {"接尾辞"}     # what no name starts with (kanji_name's guards)
+_HIRAGANA = re.compile(r"^[ぁ-ゖー]+$")
 _library = {"tables": None, "at": None, "pinned": False}
+
+# A work's own kanji terms.
+_TERM_LAST = frozenset("君様殿氏達等共方内中外上下前後間")   # an honorific, a plural or a position word ends no term
+_COUNTED = frozenset("cg")      # a piece's kind (term_runs): c a word, g grammar — counted; n a number, x no word
+_RIDERS = []                    # [what may ride on a kanji and read as nothing], made on first use (`_riders`)
+# What no reading makes a kanji, tested first on each one-character token: ASCII, punctuation, kana, the full-width
+# forms (々 and 〇, U+3005 and U+3007, are Han), and anything before the CJK radicals (U+2E80).
+_NO_KANJI = frozenset(map(chr, [*range(0x80), *range(0x2000, 0x2070), *range(0x3000, 0x3100),
+                                *range(0xFF00, 0xFFF0)])) - {chr(0x3005), chr(0x3007)}
+_RADICALS = chr(0x2E80)
+_jmdict_kanji = []              # [{spelling asked: does JMdict spell it}]; [None] when the list can't be read
+_JMDICT_LOCK = threading.Lock()  # one reading of the list at a time, whichever thread asks
 
 
 class Spellings:
@@ -163,15 +193,78 @@ def person_names():
     return _person_names[0]
 
 
+def jmdict_words(spellings):
+    """Which of `spellings` JMdict spells — a kanji form of one of its entries (app/jmdict_data.py) — a frozenset: a
+    run of kanji spelled as one is a dictionary word, never a work's own term. Asked only where the library's tables
+    are computed, and only of spellings that could be a term: the list is read for a spelling not asked before, and
+    only the answers are kept — never the list's 233,000 forms, for a few dozen answers. None when the list can't be
+    read (or holds nothing): then no run is a term — an unreadable list must never pass every spelling."""
+    with _JMDICT_LOCK:
+        if not _jmdict_kanji:
+            _jmdict_kanji.append({})
+        answers = _jmdict_kanji[0]
+        if answers is None:
+            return None
+        new = set(spellings).difference(answers)
+        if new:
+            found = _jmdict_find(new)
+            if found is None:
+                _jmdict_kanji[0] = None
+                return None
+            answers.update((spelling, spelling in found) for spelling in new)
+        return frozenset(spelling for spelling in spellings if answers[spelling])
+
+
+def _jmdict_find(spellings):
+    """Those of `spellings` (a set) that are a kanji form in app/jmdict_data.py's list, read now — None when the list
+    can't be read or holds nothing."""
+    try:
+        from app import jmdict_data
+        forms = jmdict_data.kanji_forms().replace("\t", "\n").split("\n")
+    except Exception:
+        return None
+    return spellings.intersection(forms) if any(forms) else None
+
+
 def _read(word):
     """A node's text as the tagger read it (analyzer._read): ﾄｩｰﾘ is read トゥーリ."""
     return word.feature.orth or word.surface
 
 
+def _katakana(text):
+    """ひらがな in カタカナ: one spelling for a headword lookup (the headwords are kept in katakana)."""
+    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in text)
+
+
+def _heads_a_kana_word(words, last):
+    """Does words[last] — a katakana run's last piece — head a word the text goes on writing in hiragana? ジャ +
+    がい + も (or ジャ + が + いも) is ジャがいも, the headword ジャガイモ written half in each script: two or more tokens
+    of the hiragana right after it, up to the next break, spell a headword with it — the tagger cutting that hiragana
+    too, as it cuts no particle or suffix that follows a name — ending where a word can end (never on a prefix: お
+    belongs to the 話 after it). Never one token alone, and never grammar alone: a name's own particle or honorific
+    (トゥーリは, ミロナイと, ダンさん) makes no word with its last piece, though リハ, ナイト and ダンサン are words."""
+    nxt = last + 1
+    if nxt >= len(words) or getattr(words[nxt], "white_space", "") or not _HIRAGANA.match(_read(words[nxt])):
+        return False
+    listed = katakana_headwords()
+    spelling, content = _read(words[last]), False
+    for k in range(nxt, len(words)):
+        w = words[k]
+        text = _read(w)
+        if not _HIRAGANA.match(text) or (k > nxt and getattr(w, "white_space", "")):
+            break
+        spelling += _katakana(text)
+        content = content or w.feature.pos1 not in _NOT_IN_A_NAME
+        if k > nxt and content and w.feature.pos1 != "接頭辞" and spelling in listed:
+            return True
+    return False
+
+
 def katakana_runs(words):
     """(start, end) of every run of two or more tokens written only in katakana with nothing between them, trimmed of
-    the marks the tagger leaves at its ends. Found in the line's text as read, then mapped back to its tokens: the
-    tokens wholly inside a stretch of katakana."""
+    the marks the tagger leaves at its ends — and of a last piece that heads a word the text goes on writing in
+    hiragana (`_heads_a_kana_word`). Found in the line's text as read, then mapped back to its tokens: the tokens
+    wholly inside a stretch of katakana."""
     texts = [w.feature.orth or w.surface for w in words]
     line = "".join(texts)
     if not _KATAKANA_TEXT.search(line):
@@ -193,6 +286,8 @@ def katakana_runs(words):
             while a < b and words[a].feature.pos1 == _MARKS:
                 a += 1
             while b > a and words[b - 1].feature.pos1 == _MARKS:
+                b -= 1
+            if b - a >= 2 and _heads_a_kana_word(words, b - 1):
                 b -= 1
             if b - a >= 2:
                 yield a, b
@@ -233,15 +328,27 @@ def stutter(pieces):
     return False
 
 
+def _joined_by_the_dictionary(spelling):
+    """Is `spelling` the compound or affix joins' own — a word their tables hold (joined there, or kept apart by their
+    guards and switches)? True too when the compound table can't be read: without it, a headword stays as the tagger
+    cuts it."""
+    from app.analyzer import affix_joins, compound_joins
+    compounds = compound_joins()
+    return not compounds or spelling in compounds or spelling in affix_joins()
+
+
 def katakana_kind(run, listed):
-    """What a katakana run is: "listed" (a headword spells it: the word it is), "common" (only common words the lists
-    don't carry as one: a compound, in pieces), "sound" (one piece repeated, a stutter, or only interjections: in
-    pieces) or "name" (one word). A run with any piece that is no interjection — a name, a letter, a mark — may
-    still be a name (ハイ + ミロ)."""
+    """What a katakana run is: "listed" (a headword spells it: the word it is, the dictionary joins' to make), "common"
+    (only common words the lists don't carry as one: a compound, in pieces), "sound" (one piece repeated, a stutter,
+    or only interjections: in pieces) or "name" (one word). A run with any piece that is no interjection — a name, a
+    letter, a mark — may still be a name (ハイ + ミロ). A headword the dictionary joins don't hold, with a piece that
+    is no common word (ブ, read as the prefix 無, + シン), is one word as an unlisted run is: its pieces are no words."""
     pieces = [_read(t) for t in run]
-    if "".join(pieces) in listed:
+    common = [_common_word(t, listed) for t in run]
+    spelling = "".join(pieces)
+    if spelling in listed and (all(common) or _joined_by_the_dictionary(spelling)):
         return "listed"
-    if all(_common_word(t, listed) for t in run):
+    if all(common):
         return "common"
     if repeated(pieces) or stutter(pieces) or all(t.feature.pos1 == _INTERJECTION for t in run):
         return "sound"
@@ -275,8 +382,9 @@ def one_word(run):
     return word
 
 
-def _has_katakana(words):
-    return _ANY_KATAKANA.search("".join([w.surface for w in words])) is not None
+def _has_katakana(words, surfaces=None):
+    """Any katakana in the line — `surfaces`, its tokens' text as written, when the caller already has it."""
+    return _ANY_KATAKANA.search("".join([w.surface for w in words] if surfaces is None else surfaces)) is not None
 
 
 def join_katakana(words):
@@ -334,7 +442,8 @@ def _common_word_listed(spelling, said=None, lemma=None, sanitize=None):
 def name_lemma(word, sanitize=None):
     """The lemma under which `word` — one of join_affixes' words, read without the library's tables, as the token store
     reads a file — is a person's name, or None (§ Ignore names). A katakana name made one word here is one, keyed as
-    a word its dictionary lacks; so is a word the tagger's dictionary knows and tags as a person's name, two characters
+    a word its dictionary lacks — unless the lists carry its spelling as a word (ブシン: one word only because its
+    pieces are no words); so is a word the tagger's dictionary knows and tags as a person's name, two characters
     or more — unless UniDic lists a common word spelled and said the same (ひかり is 光 'light') or keyed the same
     (麻衣 is keyed マイ, as マイ 'my' is). `sanitize` is the analyzer's lemma cleaning, as the tokenizer applies it."""
     f = word.feature
@@ -342,6 +451,8 @@ def name_lemma(word, sanitize=None):
         from app.analyzer import JoinedWord
         if not isinstance(word, JoinedWord) or not f.lemma:
             return None                     # a word the dictionary doesn't know: its tag is the tagger's guess
+        if f.lemma in (katakana_headwords() or ()):
+            return None                     # a word the lists carry, one word because its pieces are no words
         return sanitize(f.lemma) if sanitize else f.lemma
     if f.pos3 != "人名" or f.pos2 != _PROPER:
         return None
@@ -356,7 +467,7 @@ def name_lemma(word, sanitize=None):
 
 
 # --- Names from the whole library: the tables ----------------------------------------------------------------------- #
-Candidate = namedtuple("Candidate", "i j kind spelling pieces")     # kind: "k" katakana, "j" kanji
+Candidate = namedtuple("Candidate", "i j kind spelling pieces")     # kind: "k" katakana, "j" kanji, "w" a work's term
 
 
 def _number(word):
@@ -419,13 +530,16 @@ def kanji_candidates(words, table):
     return out
 
 
-def candidates(words, kanji=None):
+def candidates(words, kanji=None, terms=False, surfaces=None):
     """Every run in one tagger call's tokens (after the katakana rule) that a library table could make one word: each
-    katakana run of common words the rule leaves in pieces, and — with `kanji`, a names table (`kanji_candidates`) —
-    each kanji run spelled as one of its names."""
+    katakana run of common words the rule leaves in pieces, — with `kanji`, a names table (`kanji_candidates`) —
+    each kanji run spelled as one of its names, and — with `terms` — each run of one-kanji tokens (`term_runs`).
+    `surfaces`: the tokens' text as written, when the caller already has it."""
     out = []
     listed = katakana_headwords()
-    if listed and _has_katakana(words):
+    if surfaces is None:
+        surfaces = [w.surface for w in words]
+    if listed and _has_katakana(words, surfaces):
         for a, b in katakana_runs(words):
             run = words[a:b]
             if katakana_kind(run, listed) == "common":
@@ -433,6 +547,95 @@ def candidates(words, kanji=None):
                 out.append(Candidate(a, b, "k", "".join(pieces), pieces))
     if kanji:
         out.extend(kanji_candidates(words, kanji))
+    if terms:
+        out.extend(term_runs(words, surfaces=surfaces))
+    return out
+
+
+def term_runs(words, lone=None, surfaces=None):
+    """Every run of two or more tokens each read as exactly one kanji — a word, a number or a kanji the tagger reads as
+    a symbol, never a joined word — with no space inside (斬 + 魄 + 刀): a work's term may be one. As candidates of
+    kind "w", `pieces` each token's kind: "n" a number, "x" no word (a symbol), "g" grammar, "c" a word — the last
+    two counted. `lone`, a Counter, also receives every such kanji token, in a run or alone: how often each kanji
+    stands on its own. `surfaces`: the tokens' text as written, when the caller already has it."""
+    from app.analyzer import JoinedWord, word_lemma
+    if surfaces is None:
+        surfaces = [w.surface for w in words]
+    pieces, riders = [], _RIDERS[0] if _RIDERS else _riders()
+    # Most tokens are longer than one character, or kana or punctuation — no reading makes those a kanji — and pass in
+    # one sweep on their text as written (a kanji may carry what is read as nothing: a variation selector, a
+    # zero-width space); each one left is read.
+    for k in [k for k, s in enumerate(surfaces) if len(s) == 1 and s not in _NO_KANJI and s >= _RADICALS
+              or len(s) > 1 and s[1] in riders]:
+        w = words[k]
+        text = w.feature.orth or w.surface
+        if len(text) == 1 and _HAN.match(text) is not None and not isinstance(w, JoinedWord):
+            pieces.append(k)
+            if lone is not None:
+                lone[text] += 1
+    out, i, n = [], 0, len(pieces)
+    while i < n:
+        j = i + 1
+        while j < n and pieces[j] == pieces[j - 1] + 1 and not getattr(words[pieces[j]], "white_space", ""):
+            j += 1
+        if j - i >= 2:
+            run = words[pieces[i]:pieces[j - 1] + 1]
+            out.append(Candidate(pieces[i], pieces[j - 1] + 1, "w", "".join(_read(t) for t in run),
+                                 "".join(_term_kind(t, word_lemma) for t in run)))
+        i = j
+    return out
+
+
+def _riders():
+    """What may follow a kanji inside its token yet be read as nothing (analyzer.tagger_text): a default-ignorable
+    character — a variation selector, a zero-width space, a soft hyphen — or a stretched vowel's mark."""
+    if not _RIDERS:
+        from app.analyzer import _IGNORABLE
+        _RIDERS.append(frozenset([chr(p) for first, last in _IGNORABLE for p in range(first, last + 1)]
+                                 + ["\u30fc", "\u301c", "\uff5e"]))
+    return _RIDERS[0]
+
+
+def _term_kind(word, word_lemma):
+    """A one-kanji piece's kind, one letter (term_runs): a number, no word, grammar or a word."""
+    f = word.feature
+    if f.pos2 == "数詞":
+        return "n"
+    if word_lemma(word) is None:
+        return "x"
+    return "g" if f.pos1 in _NOT_IN_A_NAME else "c"
+
+
+def _term_shape(spelling, kinds):
+    """May a stretch of one-kanji pieces (`spelling`, their `kinds`) be a work's term at all? Not when a piece is
+    grammar — a name's linking 之 inside it aside (星之宮), as a kanji name's — nor numbers alone, nor ending in an
+    honorific, a plural or a position word (谷 + 君, 三 + 年 + 前)."""
+    if spelling[-1] in _TERM_LAST or all(k == "n" for k in kinds):
+        return False
+    return all(k != "g" or (0 < m < len(kinds) - 1 and spelling[m] in _NAME_LINKS) for m, k in enumerate(kinds))
+
+
+def _stretches(i, j, taken):
+    """(start, end), offsets into the run [i, j), of each stretch of it that no (a, b) in `taken` covers."""
+    out, start = [], None
+    for k in range(i, j + 1):
+        free = k < j and not any(a <= k < b for a, b in taken)
+        if free and start is None:
+            start = k
+        elif not free and start is not None:
+            out.append((start - i, k - i))
+            start = None
+    return out
+
+
+def _terms(runs, taken, table):
+    """The work's terms in `runs` (kind "w" candidates): each stretch of 2+ pieces the joins in `taken` ((start, end)
+    pairs) leave that `table` holds, as a candidate whose pieces are (the run, start, end)."""
+    out = []
+    for c in runs:
+        for start, end in _stretches(c.i, c.j, taken):
+            if end - start >= 2 and c.spelling[start:end] in table:
+                out.append(Candidate(c.i + start, c.i + end, "w", c.spelling[start:end], (c, start, end)))
     return out
 
 
@@ -448,14 +651,18 @@ def _longest_from_left(cands, taken=()):
     return out
 
 
-def choose(cands, tables, recurring=True, kanji=True):
+def choose(cands, tables, recurring=True, kanji=True, terms=True):
     """The candidates the tables make one word, in order: every katakana run the recurring table holds, then the
-    kanji runs the kanji table holds, the longest from the left, overlapping none of those."""
+    kanji runs the kanji table holds, the longest from the left, overlapping none of those, then the work's terms the
+    terms table holds in what those leave of each run of one-kanji tokens (a term is a candidate whose pieces are
+    (its run, start, end))."""
     chosen = [c for c in cands if c.kind == "k" and recurring and c.spelling in tables.get("k", ())]
     if kanji and tables.get("j"):
         chosen += _longest_from_left([c for c in cands if c.kind == "j" and c.spelling in tables["j"]],
                                      [(c.i, c.j) for c in chosen])
-    return sorted(chosen)
+    if terms and tables.get("w"):
+        chosen += _terms([c for c in cands if c.kind == "w"], [(c.i, c.j) for c in chosen], tables["w"])
+    return sorted(chosen, key=lambda c: (c.i, c.j))
 
 
 _gates = {}
@@ -474,14 +681,41 @@ def _gate(tables):
     return _gates[key]
 
 
-def join_library(words, recurring=True, kanji=True):
+_term_starts = {}
+
+
+def _term_starts_of(tables):
+    """The first two kanji of each of the terms table's words, as a pattern, and the analyzer's test for a line read
+    otherwise than it is written — made once per table."""
+    key = (tables.get("stamp"), id(tables["w"]))
+    if key not in _term_starts:
+        _term_starts.clear()
+        from app.analyzer import _reads_differently
+        starts = re.compile("|".join(sorted({re.escape(spelling[:2]) for spelling in tables["w"]})))
+        _term_starts[key] = (starts, _reads_differently)
+    return _term_starts[key]
+
+
+def _may_hold_a_term(tables, line):
+    """Can `line` (one tagger call's text as written) hold one of the terms table's words? Only where the first two
+    kanji of one stand side by side — each piece is a one-character token, its own text — or where the line reads
+    otherwise than it is written (a compatibility ideograph, a character read as nothing): then every line is looked
+    at. The same joins as looking at every line; most lines hold no term and skip the search for runs."""
+    starts, reads_differently = _term_starts_of(tables)
+    return starts.search(line) is not None or reads_differently(line)
+
+
+def join_library(words, recurring=True, kanji=True, terms=True):
     """`words` with every run the library's tables name made one word (§ above) — as they are when there is no table
-    yet, or both switches are off."""
+    yet, or every switch is off."""
     tables = library_tables()
-    if not tables or not ((recurring and tables.get("k")) or (kanji and tables.get("j"))):
+    if not tables or not ((recurring and tables.get("k")) or (kanji and tables.get("j"))
+                          or (terms and tables.get("w"))):
         return words
     gate = _gate(tables) if kanji and tables.get("j") else None
-    chosen = choose(candidates(words, gate), tables, recurring, kanji)
+    surfaces = [w.surface for w in words]
+    runs = bool(terms and tables.get("w")) and _may_hold_a_term(tables, "".join(surfaces))
+    chosen = choose(candidates(words, gate, runs, surfaces), tables, recurring, kanji, terms)
     if not chosen:
         return words
     out, last = [], 0
@@ -508,13 +742,15 @@ class Record:
     """What one file tells the library's tables, gathered as the token store tokenizes it (JapaneseTokenizer with
     `names=`): every candidate run with where it sits among its sentence's counted tokens ("s"), how often each
     katakana run is used in pieces and by which pieces ("ks") and whole ("k1"), how often each katakana word of two
-    letters or more is used as a token ("p") — a piece's uses as a word — how often each kanji name is read,
-    the longest from the left ("jc", with its lists' bits in "jb"), and how often each word is a person's name there
-    ("n", by lemma: `name_lemma`)."""
+    letters or more is used as a token ("p") — a piece's uses as a word — how often each kanji name is read, the
+    longest from the left ("jc", with its lists' bits in "jb"), how often each word is a person's name there ("n", by
+    lemma: `name_lemma`), how often each kanji stands as a token of its own ("q": the gauge of a work's terms), and
+    whether the file is a transcript of auto-generated captions ("a", set by the token store from what the file
+    says of itself: `auto`)."""
 
     def __init__(self):
         self.spans, self.ks, self.k1, self.p = [], {}, Counter(), Counter()
-        self.jc, self.jb = Counter(), {}
+        self.jc, self.jb, self.q, self.auto = Counter(), {}, Counter(), False
         self.n = Counter()
 
     def read_line(self, words):
@@ -527,7 +763,8 @@ class Record:
                 lemma = name_lemma(w, sanitize)
                 if lemma:
                     self.n[lemma] += 1
-        if _has_katakana(words):
+        surfaces = [w.surface for w in words]
+        if _has_katakana(words, surfaces):
             p, k1, katakana = self.p, self.k1, _KATAKANA.match
             for w in words:
                 text = w.feature.orth or w.surface
@@ -536,30 +773,43 @@ class Record:
                     if isinstance(w, JoinedWord):
                         k1[text] += 1
         persons = person_names()
-        cands = candidates(words, persons)
+        cands = candidates(words, persons, surfaces=surfaces)
         for c in cands:
             if c.kind == "k":
                 self.ks.setdefault(c.spelling, Counter())["|".join(c.pieces)] += 1
         for c in _longest_from_left([c for c in cands if c.kind == "j"]):
             self.jc[c.spelling] += 1
             self.jb[c.spelling] = persons.get(c.spelling)
-        return cands
+        return cands + term_runs(words, self.q, surfaces)
 
-    def span(self, sentence, cand, a, b, surface):
-        """Candidate `cand` sits in yielded sentence `sentence`, over its counted tokens [a, b), written `surface`."""
-        self.spans.append([sentence, cand.i, cand.j, a, b, cand.kind, cand.spelling,
-                           surface if surface != cand.spelling else 0])
+    def span(self, sentence, cand, a, b, surfaces):
+        """Candidate `cand` sits in yielded sentence `sentence`, over its counted tokens [a, b), written as `surfaces`
+        (each token's text as written). A run of one-kanji tokens keeps its pieces' kinds, and each piece's text
+        where the run is written otherwise than it reads (a compatibility ideograph), so any stretch of it can be
+        cut out."""
+        surface = "".join(surfaces)
+        if cand.kind == "w":
+            self.spans.append([sentence, cand.i, cand.j, a, b, "w", cand.spelling,
+                               list(surfaces) if surface != cand.spelling else 0, cand.pieces])
+        else:
+            self.spans.append([sentence, cand.i, cand.j, a, b, cand.kind, cand.spelling,
+                               surface if surface != cand.spelling else 0])
 
     def data(self):
-        return {"s": self.spans, "ks": self.ks, "k1": self.k1, "p": self.p, "jc": self.jc, "jb": self.jb,
-                "n": self.n}
+        data = {"s": self.spans, "ks": self.ks, "k1": self.k1, "p": self.p, "jc": self.jc, "jb": self.jb,
+                "n": self.n, "q": self.q}
+        if self.auto:
+            data["a"] = 1
+        return data
 
 
 def compute_tables(records, previous=None, sanitize=None):
     """The library's tables from every file's `Record` data (`records`, an iterable of dicts): {"k": {spelling:
-    [stickiness, lemma, reading, orth]}, "j": {spelling: [bits, lemma, reading, orth]}, "stamp": …} — a katakana run
-    joins at STICKY with FLOOR uses, and a run in `previous` (the last tables) stays while its stickiness is KEEP or
-    more; a kanji name joins with FLOOR uses."""
+    [stickiness, lemma, reading, orth]}, "j": {spelling: [bits, lemma, reading, orth]}, "w": {spelling: [stickiness,
+    lemma, reading, orth]}, "stamp": …} — a katakana run joins at STICKY with FLOOR uses, and a run in `previous` (the
+    last tables) stays while its stickiness is KEEP or more; a kanji name joins with FLOOR uses; a work's term as a
+    katakana run does (`_work_terms`)."""
+    records = list(records)
     uses, segs, pieces, kanji_uses, kanji_bits = Counter(), {}, Counter(), Counter(), {}
     for data in records:
         pieces.update(data.get("p", {}))
@@ -583,6 +833,7 @@ def compute_tables(records, previous=None, sanitize=None):
     kanji = {spelling: [kanji_bits.get(spelling, 0), *key_of(spelling, sanitize)]
              for spelling, n in kanji_uses.items() if n >= FLOOR}
     tables = {"k": katakana, "j": kanji}
+    tables["w"] = _work_terms(records, tables, (previous or {}).get("w", {}), sanitize)
     tables["stamp"] = hashlib.sha1(json.dumps(tables, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     return tables
 
@@ -601,26 +852,105 @@ def name_words(records, tables=None, sanitize=None):
     return sorted(words)
 
 
-def chosen(sentences, spans, tables, recurring=True, kanji=True):
-    """The joins `apply_spans` makes, without making them: (sentence, a, b, [lemma, reading, surface, orth]) for every
-    recorded span the tables choose — tokens a..b of that sentence become the one token. Each sentence's joins come in
-    order and never overlap."""
+def _cut(spans, runs=True):
+    """A record's recorded spans as candidates, by sentence ({sentence: [Candidate]}), each keeping (a, b, its text as
+    written, a run's kinds) as its pieces. `runs`: which runs of one-kanji pieces to keep — True every run, False
+    none, or a test of a run's spelling."""
     by_sentence = {}
-    for s, i, j, a, b, kind, spelling, surface in spans:
-        by_sentence.setdefault(s, []).append(Candidate(i, j, kind, spelling, (a, b, surface or spelling)))
-    for s, cands in by_sentence.items():
+    for span in spans:
+        s, i, j, a, b, kind, spelling, surface = span[:8]
+        if kind == "w" and runs is not True and not (runs and runs(spelling)):
+            continue
+        by_sentence.setdefault(s, []).append(
+            Candidate(i, j, kind, spelling, (a, b, surface or spelling, span[8] if kind == "w" else None)))
+    return by_sentence
+
+
+def _work_terms(records, tables, before, sanitize):
+    """The terms table ({spelling: [stickiness, lemma, reading, orth]}) from every record's runs of one-kanji tokens.
+    Each run is cut by what layers 2-3 take there (`tables`' katakana runs and kanji names, both applied); every stretch
+    of 2+ pieces left is a use of that spelling. Its stickiness is its uses over the lone uses ("q") of its least-used
+    kanji, less that kanji's uses inside the kanji names taken in runs. A spelling joins at STICKY with FLOOR uses, or
+    stays while KEEP when `before` (the last terms table) holds it — when its shape, as the tagger reads it in most of
+    its uses, may be a term (`_term_shape`) and no dictionary spells it (a kanji name, the compound and affix joins,
+    JMdict). A record of auto-generated captions ("a") counts toward nothing. Empty when JMdict's spellings can't be
+    read."""
+    uses, kinds, lone, gone = Counter(), {}, Counter(), Counter()
+    taken_tables = {"k": tables["k"], "j": tables["j"]}
+    for data in records:
+        if data.get("a"):
+            continue
+        lone.update(data.get("q", {}))
+        spans = data.get("s", ())
+        if not any(span[5] == "w" for span in spans):
+            continue
+        for cands in _cut(spans).values():
+            runs = [c for c in cands if c.kind == "w"]
+            if not runs:
+                continue
+            taken = [(c.i, c.j) for c in choose(cands, taken_tables, True, True, False)]
+            for c in runs:
+                run_kinds = c.pieces[3]
+                for start, end in _stretches(c.i, c.j, taken):
+                    if end - start >= 2:
+                        spelling = c.spelling[start:end]
+                        uses[spelling] += 1
+                        kinds.setdefault(spelling, Counter())[run_kinds[start:end]] += 1
+                for k in range(c.i, c.j):
+                    if any(a <= k < b for a, b in taken):
+                        gone[c.spelling[k - c.i]] += 1
+    passed = {}
+    for spelling, n in uses.items():
+        read = max(kinds[spelling].items(), key=lambda way: (way[1], way[0]))[0]     # its most common reading
+        if spelling in tables["j"] or not _term_shape(spelling, read):
+            continue
+        least = min(lone[c] - gone[c] for c in spelling)
+        if least <= 0:
+            continue
+        stick = min(1.0, n / least)
+        if (stick >= STICKY and n >= FLOOR) or (spelling in before and stick >= KEEP):
+            passed[spelling] = stick
+    if not passed:
+        return {}
+    dictionary = jmdict_words(passed)           # asked only of the spellings that got this far
+    if dictionary is None:
+        return {}
+    from app.analyzer import affix_joins, compound_joins
+    joins, compounds = affix_joins(), compound_joins()
+    return {spelling: [round(stick, 3), *key_of(spelling, sanitize)] for spelling, stick in passed.items()
+            if spelling not in dictionary and spelling not in joins and spelling not in compounds}
+
+
+def _counted(kinds):
+    """How many of a run's pieces (`kinds`, their letters) the tokenizer counts as words."""
+    return sum(k in _COUNTED for k in kinds)
+
+
+def chosen(sentences, spans, tables, recurring=True, kanji=True, terms=True):
+    """The joins `apply_spans` makes, without making them: (sentence, a, b, [lemma, reading, surface, orth]) for every
+    recorded span the tables choose — tokens a..b of that sentence become the one token (a == b: every piece was
+    dropped as no word, and the term goes in there). Each sentence's joins come in order and never overlap. A run of
+    one-kanji pieces in which no term starts is left out first: it can hold none (most runs are counts: 一度, 十番隊)."""
+    runs = _term_starts_of(tables)[0].search if terms and tables.get("w") else False
+    for s, cands in _cut(spans, runs).items():
         if s >= len(sentences):
             continue
-        for c in choose(cands, tables, recurring, kanji):
-            a, b, surface = c.pieces
+        for c in choose(cands, tables, recurring, kanji, terms):
+            if c.kind == "w":                   # a stretch of a run: its counted tokens and text, cut out of the run's
+                run, start, end = c.pieces
+                a, _b, written, run_kinds = run.pieces
+                a += _counted(run_kinds[:start])
+                b, surface = a + _counted(run_kinds[start:end]), "".join(written[start:end])
+            else:
+                a, b, surface, _kinds = c.pieces
             lemma, reading, orth = tables[c.kind][c.spelling][1:]
             yield s, a, b, [lemma, reading, surface, orth]
 
 
-def apply_spans(sentences, spans, tables, recurring=True, kanji=True):
+def apply_spans(sentences, spans, tables, recurring=True, kanji=True, terms=True):
     """The token store's cached `sentences` ([text, [[lemma, reading, surface, orth], …]], as recorded) with every
     recorded span the tables choose made one token — the same choice `join_library` makes on live text."""
-    for s, a, b, token in reversed(list(chosen(sentences, spans, tables, recurring, kanji))):
+    for s, a, b, token in reversed(list(chosen(sentences, spans, tables, recurring, kanji, terms))):
         sentences[s][1][a:b] = [token]
     return sentences
 

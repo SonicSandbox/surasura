@@ -194,7 +194,7 @@ FLAG_UNLISTED = 4                     # a katakana compound JMdict doesn't list:
 COMPOUND_REPORT = os.path.join(ROOT, "debug", "compound_joins.md")
 SAMPLE = 50
 # The switches the tokenizer's joins read (logic.*): shared data never follows the builder's own settings.json.
-PARSING_SWITCHES = ("names_katakana", "names_recurring", "names_kanji", "phrases_and_titles")
+PARSING_SWITCHES = ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles")
 
 
 def pin_parsing_defaults():

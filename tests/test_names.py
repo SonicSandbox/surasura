@@ -13,12 +13,16 @@ such a name one word:
   joined until it is clearly no longer sticky.
 - kanji names (logic.names_kanji): a run of kanji the tagger cuts, spelled as a person's name in JMnedict and no
   dictionary word, is one word where no guard says its pieces are words there — once the library holds it 3+ times.
+- a story's own kanji terms (logic.names_work_terms): a run of one-kanji tokens the rules above leave in pieces is
+  one word when the library keeps using it as one (the katakana gauge), no dictionary lists it and nothing says it
+  is words; transcripts of auto-generated captions count toward nothing.
 
-Made-up names and sentences throughout (ミロナイ, ハルミナ, メロンベンチ, 奏汰): the katakana rule is Japanese-wide;
-the library tables are built here from made-up libraries, never the user's.
+Made-up names, terms and sentences throughout (ミロナイ, ハルミナ, メロンベンチ, 奏汰, 焔魄陣, 玖崩): the katakana
+rule is Japanese-wide; the library tables are built here from made-up libraries, never the user's.
 """
 import json
 import os
+import re
 from collections import Counter
 from unittest.mock import patch
 
@@ -384,7 +388,7 @@ def test_the_kanji_switch_off_and_no_name_table(tmp_path, tokenizer, monkeypatch
     monkeypatch.setattr(names, "_person_names", [None])
     record = names.Record()
     list(analyzer.JapaneseTokenizer(library=False).tokenize_sentences(SOTA, names=record))
-    assert not record.data()["jc"] and not record.data()["s"]
+    assert not record.data()["jc"] and not [span for span in record.data()["s"] if span[5] == "j"]
 
 
 def test_a_long_lived_process_picks_up_newer_tables(tmp_path, monkeypatch):
@@ -418,6 +422,376 @@ def test_only_indexing_reads_the_name_table(tmp_path, tokenizer, monkeypatch):
     assert table.get("奏汰") == names.GIVEN and table.get("司波") & names.SURNAME and table.get("駅前") == 0
     headwords = names.katakana_headwords()
     assert "トートバッグ" in headwords and "ミロナイ" not in headwords and len(headwords) > 100000
+
+
+# --- katakana words the rule used to cut or glue ------------------------------------------------------------------ #
+def test_a_katakana_name_leaves_the_head_of_a_word_written_on_in_hiragana(tokenizer):
+    """サクサク + ジャ + がいも: the tagger cuts じゃがいも, written ジャがいも, at the script's edge, and the katakana
+    rule used to glue its head to the sound word before it (サクサクジャ, no word at all). The head and the hiragana
+    after it spell a headword (ジャガイモ), so the run ends before it — while a name's own particle never makes a
+    word with its last piece: トゥー + リ + は stays トゥーリ, though リハ is a word too."""
+    surfaces = _surfaces(tokenizer, "サクサクジャがいもが焼けた。")
+    assert "サクサクジャ" not in surfaces and surfaces[0] == "サクサク"
+    assert "トゥーリ" in _surfaces(tokenizer, "トゥーリは笑った。")
+    assert "ミロナイ" in _surfaces(tokenizer, "ミロナイと話した。")
+
+
+def test_a_katakana_headword_no_dictionary_join_makes_is_one_word(tokenizer, monkeypatch):
+    """ブシン is a headword (JPDB 2024), too rare for the compound and affix tables, and the tagger cuts it into ブ —
+    read as the prefix 無 'non-' — and シン. Its pieces are no words there, so it is one word, as an unlisted name
+    would be; a headword made only of common words the tables don't hold stays in pieces as a compound does, and
+    without the compound table a headword stays as the tagger cuts it."""
+    tokens = _tokens(tokenizer, "今年のブシン祭が始まる。")
+    assert ("ブシン", "", "ブシン", "ブシン") in tokens and "無" not in {t[0] for t in tokens}
+    with patch.object(analyzer, "compound_joins", dict):
+        assert "ブシン" not in _surfaces(tokenizer, "今年のブシン祭が始まる。")
+
+
+# --- a story's own kanji terms ------------------------------------------------------------------------------------ #
+# 焔魄陣 is a made-up technique: no dictionary holds it, and the tagger cuts it into three single kanji (焔 read as 炎).
+HOMURA = "焔魄陣を放った。\n彼の焔魄陣は強い。\n"
+JIN = "焔魄陣が光る。\n陣が崩れた。\n"
+_RULE = "-" * 60
+
+
+def _transcript(kind, body):
+    """A transcript as the YouTube downloader writes it: six header lines naming the captions' kind, then the cues."""
+    return f"技の解説\nチャンネル | 2026-09-01 | 10:00\nCaptions: ja ({kind})\nhttps://example.com/v\n\n{_RULE}\n{body}"
+
+
+def _record(runs, q, **extra):
+    """A record as the token store keeps one: `runs` [(sentence, spelling, kinds)] as spans of one-kanji runs, each a
+    sentence of its own; `q` each kanji's uses standing alone."""
+    spans = [[s, 0, len(spelling), 0, sum(k in "cg" for k in kinds), "w", spelling, 0, kinds]
+             for s, spelling, kinds in runs]
+    return dict({"s": spans, "q": q}, **extra)
+
+
+def test_a_work_term_the_library_keeps_using_is_one_word_everywhere(tmp_path, tokenizer):
+    """焔魄陣 three times and 焔 never alone: it sticks (1.0) and has its 3 uses, so the table the index computes names
+    it — keyed as a word no dictionary has, the spelling with no reading. The cached tokens every run reads and live
+    text (known words, Junban, the card matcher) both read it as one word; the cache itself still holds the pieces
+    (a new table needs no re-reading), and 陣 alone is still 陣."""
+    store, paths = _library(tmp_path / "lib", {"a.txt": HOMURA, "b.txt": JIN})
+    try:
+        tables = store.names_tables()
+        assert tables["w"]["焔魄陣"] == [1.0, "焔魄陣", "", "焔魄陣"]
+        assert _cached_surfaces(store, paths[0]) == ["焔魄陣", "を", "放っ", "た", "彼", "の", "焔魄陣", "は", "強い"]
+        assert _cached_surfaces(store, paths[1])[-4:] == ["陣", "が", "崩れ", "た"], "陣 alone is still 陣"
+        raw = ti._decode_tokens(store.conn.execute("SELECT tokens FROM files WHERE path=?",
+                                                   (ti._norm(paths[0]),)).fetchone()[0])
+        assert "焔魄陣" not in [t[2] for _s, tokens in raw for t in tokens]
+    finally:
+        store.close()
+    names.use_library_tables(tables)
+    assert ("焔魄陣", "", "焔魄陣", "焔魄陣") in _tokens(tokenizer, "昨日も焔魄陣を見た。")
+
+
+def test_work_terms_floor_stickiness_and_flip_guard():
+    """The katakana gauge: a run's uses over the lone uses of its least-used kanji. Under 3 uses or under 0.7 it stays
+    in pieces; a term the last table joined stays down to 0.5."""
+    def library(uses, lone):
+        return [_record([(s, "焔魄陣", "ccc") for s in range(uses)], {"焔": lone, "魄": 50, "陣": 50})]
+    joined_before = {"w": {"焔魄陣": [0.8, "焔魄陣", "", "焔魄陣"]}}
+    assert "焔魄陣" not in names.compute_tables(library(2, 2))["w"], "two uses: under the floor of three"
+    assert "焔魄陣" not in names.compute_tables(library(6, 10))["w"], "0.6: not enough to join"
+    assert "焔魄陣" in names.compute_tables(library(6, 10), joined_before)["w"], "0.6: enough to stay"
+    assert "焔魄陣" not in names.compute_tables(library(4, 10), joined_before)["w"], "0.4: it goes"
+    assert names.compute_tables(library(7, 10))["w"]["焔魄陣"][0] == 0.7, "0.7 joins"
+    assert names.compute_tables([])["w"] == {}, "an empty library: an empty table"
+
+
+def test_a_kanji_name_is_taken_first_and_its_kanji_uses_leave_the_gauge(tmp_path, monkeypatch):
+    """琴葉 (a given name in JMnedict) + 焔魄陣 is one run of five single kanji. The kanji name joins first (the
+    library holds it 3 times) and the term joins in what it leaves — never 琴葉焔魄陣, never the name as a term. With
+    kanji names off the whole run is one stretch no table holds: the name is never the terms' to take."""
+    files = {"a.txt": "琴葉焔魄陣！\n琴葉は笑った。\n", "b.txt": "琴葉焔魄陣が光る。\n焔魄陣を放った。\n"}
+    store, paths = _library(tmp_path / "lib", files)
+    try:
+        tables = store.names_tables()
+        assert "琴葉" in tables["j"] and set(tables["w"]) == {"焔魄陣"}
+        assert _cached_surfaces(store, paths[0])[:2] == ["琴葉", "焔魄陣"]
+        _switch(monkeypatch, "names_kanji", False)
+        assert _cached_surfaces(store, paths[0])[:5] == ["琴", "葉", "焔", "魄", "陣"]
+        assert _cached_surfaces(store, paths[1])[-4:] == ["焔魄陣", "を", "放っ", "た"], "alone, it is still a term"
+    finally:
+        store.close()
+
+
+def test_a_kanji_names_uses_leave_the_gauge():
+    """魄 stands alone 10 times, 4 of them inside the kanji name 魄斗: those are the name's, not 魄's own, so the term
+    焔魄 (5 uses) is measured against 6 — 0.83, and joins. Counted with them it would be 0.5, and stay in pieces."""
+    runs = [(s, "焔魄", "cc") for s in range(5)] + [(s, "魄斗", "cc") for s in range(5, 9)]
+    name = [[s, 0, 2, 0, 2, "j", "魄斗", 0] for s in range(5, 9)]
+    record = _record(runs, {"焔": 20, "魄": 10, "斗": 4}, jc={"魄斗": 4}, jb={"魄斗": 2})
+    record["s"] += name
+    tables = names.compute_tables([record])
+    assert "魄斗" in tables["j"] and tables["w"]["焔魄"][0] == 0.833
+    # Where the name's guards refused it (so no name span was recorded there), 魄斗 is left as a stretch of its own:
+    # still the kanji name's, never a term.
+    elsewhere = _record([(s, "魄斗", "cc") for s in range(3)], {"魄": 3, "斗": 3})
+    assert "魄斗" not in names.compute_tables([record, elsewhere])["w"]
+    record["jc"] = {}
+    assert "焔魄" not in names.compute_tables([record])["w"]
+
+
+def test_a_work_term_is_never_a_dictionary_word(tmp_path, monkeypatch):
+    """What a word is comes from Japanese as a whole: a spelling JMdict lists (鄭寧, Sōseki's 丁寧) is never the
+    library's to join, however sticky, nor is one the compound or affix tables hold (their switches decide it). An
+    unreadable JMdict list makes no term at all — it must never pass every spelling."""
+    store, paths = _library(tmp_path / "lib", {"a.txt": "彼は鄭寧に頭を下げた。\n鄭寧に礼を言った。\n鄭寧に答えた。\n"})
+    try:
+        assert "鄭寧" not in store.names_tables()["w"] and "鄭寧" not in store.names_tables()["j"]
+        assert "鄭寧" not in _cached_surfaces(store, paths[0])
+    finally:
+        store.close()
+    library = [_record([(s, "焔魄陣", "ccc") for s in range(5)], {"焔": 5, "魄": 5, "陣": 5})]
+    assert "焔魄陣" in names.compute_tables(library)["w"]
+    monkeypatch.setattr(analyzer, "compound_joins", lambda: {"焔魄陣": ("焔魄陣", "エンハクジン", "N", 1)})
+    assert "焔魄陣" not in names.compute_tables(library)["w"], "the compound table's word"
+    monkeypatch.undo()
+    monkeypatch.setattr(names, "_jmdict_kanji", [None])
+    assert names.compute_tables(library)["w"] == {}, "no JMdict list: no term"
+
+
+@pytest.mark.parametrize("spelling, kinds, joins, why", [
+    ("蒼乃牙", "cgc", False, "a grammar piece (乃 read as a particle)"),
+    ("焔之牙", "cgc", True, "a name's linking 之 inside it, as a kanji name may hold one"),
+    ("谷君", "cc", False, "an honorific last: a name and its suffix are two words"),
+    ("魄前", "cc", False, "a position word last"),
+    ("七九", "nn", False, "numbers alone are numbers"),
+    ("蒼十牙", "cnc", True, "a number inside a term"),
+    ("零魄", "nc", True, "a number first — a family name the names dictionary lacks"),
+])
+def test_work_term_guards_one_by_one(spelling, kinds, joins, why):
+    """Each run is sticky (1.0) with 5 uses, and no dictionary spells it: only its shape decides."""
+    library = [_record([(s, spelling, kinds) for s in range(5)], {c: 5 for c in spelling})]
+    assert (spelling in names.compute_tables(library)["w"]) is joins, why
+
+
+def test_auto_caption_transcripts_do_not_count(tmp_path):
+    """YouTube's speech recognition misspells a word the same way every time, so its transcripts never tell the library
+    what a story's words are: their uses count toward nothing — a term met twice in hand-written captions and five
+    times in auto-generated ones stays in pieces. A third hand-written use makes it a term, and then it is one word in
+    the auto-generated transcript too. Auto-translated captions are the machine's too."""
+    auto = _transcript("native auto", "焔魄陣が見えた 焔魄陣を放った\n焔魄陣だ 焔魄陣 焔魄陣\n")
+    manual = _transcript("manual", "焔魄陣が見えた。\n焔魄陣を放った。\n")
+    store, paths = _library(tmp_path / "lib", {"auto.txt": auto, "manual.txt": manual})
+    try:
+        assert "焔魄陣" not in store.names_tables()["w"], "two counted uses: the auto-generated five count for nothing"
+        record = ti._decode_counts(store.conn.execute("SELECT names FROM files WHERE path=?",
+                                                      (ti._norm(paths[0]),)).fetchone()[0])
+        assert record["a"] == 1 and "a" not in ti._decode_counts(store.conn.execute(
+            "SELECT names FROM files WHERE path=?", (ti._norm(paths[1]),)).fetchone()[0])
+    finally:
+        store.close()
+    more = {"auto.txt": auto, "manual.txt": manual, "more.txt": "焔魄陣が光る。\n"}
+    store, paths = _library(tmp_path / "more", more)
+    try:
+        assert "焔魄陣" in store.names_tables()["w"]
+        assert "焔魄陣" in _cached_surfaces(store, paths[0]), "a term joins in auto-generated captions too"
+    finally:
+        store.close()
+    translated = {"auto.txt": _transcript("auto-translated", "焔魄陣が見えた\n焔魄陣を放った\n焔魄陣だ\n"),
+                  "manual.txt": manual}
+    store, _paths = _library(tmp_path / "translated", translated)
+    try:
+        assert "焔魄陣" not in store.names_tables()["w"]
+    finally:
+        store.close()
+
+
+def test_the_caption_kind_a_transcript_names():
+    """The downloader's header names its captions' kind on its third line; any other text names none. extract_text
+    tells a caller that asks (the token store) and gives the same text either way."""
+    assert analyzer.caption_kind(_transcript("native auto", "こんにちは\n")) == "native auto"
+    assert analyzer.caption_kind(_transcript("auto-translated", "")) == "auto-translated"
+    assert analyzer.caption_kind(_transcript("manual", "こんにちは\n")) == "manual"
+    assert analyzer.caption_kind("Captions: ja (native auto)\n今日は晴れ。\n") is None, "no header: a line of text"
+    assert analyzer.AUTO_CAPTIONS == {"native auto", "auto-translated"}
+
+
+def test_extract_text_reports_the_caption_kind_and_changes_nothing(tmp_path):
+    path = tmp_path / "talk.txt"
+    path.write_text(_transcript("native auto", "焔魄陣が見えた\n"), encoding="utf-8")
+    facts = {}
+    assert analyzer.extract_text(str(path), "ja", facts) == analyzer.extract_text(str(path), "ja") == "焔魄陣が見えた\n"
+    assert facts == {"captions": "native auto"}
+    book = tmp_path / "book.txt"
+    book.write_text("焔魄陣が見えた。\n", encoding="utf-8")
+    facts = {}
+    analyzer.extract_text(str(book), "ja", facts)
+    assert facts == {"captions": None}
+
+
+def test_dropped_pieces_join_in_place(tmp_path, tokenizer):
+    """A number or a kanji the tagger reads as a symbol is no word alone, so a term that holds one covers fewer
+    counted tokens than it has pieces: 零魄 (零 a number) replaces 魄 alone, 蒼十三牙 its two words, and 玖崩 (both read
+    as symbols) is put in where nothing was counted. The cached tokens and live text read them the same, and the
+    Rarity slider's totals take each term's use and give back its counted pieces."""
+    files = {"a.txt": "零魄を唱えた。\n蒼十三牙を放った。\n玖崩が光る。\n",
+             "b.txt": "零魄を唱えた。\n蒼十三牙を放った。\n玖崩が光る。\n",
+             "c.txt": "零魄を唱えた。\n蒼十三牙を放った。\n玖崩が光る。\n"}
+    store, paths = _library(tmp_path / "lib", files)
+    try:
+        tables = store.names_tables()
+        assert {"零魄", "蒼十三牙", "玖崩"} <= set(tables["w"])
+        cached = [[t[2] for t in tokens] for _s, tokens in store.file_tokens(paths[0])]
+        assert cached == [["零魄", "を", "唱え", "た"], ["蒼十三牙", "を", "放っ", "た"], ["玖崩", "が", "光る"]]
+        adjust, total = store._names_adjustment()
+        assert adjust[("零魄", "")] == 3 and adjust[("魄", "ハク")] == -3
+        assert adjust[("蒼十三牙", "")] == 3 and adjust[("青", "アオ")] == -3 and adjust[("牙", "キバ")] == -3
+        assert adjust[("玖崩", "")] == 3 and total == 3 - 3 + 3 - 6 + 3
+    finally:
+        store.close()
+    names.use_library_tables(tables)
+    live = [[t[2] for t in tokens] for _s, tokens in tokenizer.tokenize_sentences(files["a.txt"])]
+    assert live == cached
+
+
+def test_the_work_terms_switch_off(tmp_path, tokenizer, monkeypatch):
+    """Off means today's behaviour — the cached tokens and live text in pieces, the Rarity slider counting the
+    pieces — and needs no re-reading of any file (not in the cache's signature); the known words are read again. Before
+    the first index there is no table: nothing joins."""
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    store, paths = _library(tmp_path / "lib", {"a.txt": HOMURA, "b.txt": JIN})
+    try:
+        assert "焔魄陣" in _cached_surfaces(store, paths[0])
+        sig = ti.known_signature(str(tmp_path / "KnownWord.json"))
+        store.set_cached_known(sig, set(), set())
+        _switch(monkeypatch, "names_work_terms", False)
+        settings.write_text('{"logic": {"names_work_terms": false}}', encoding="utf-8")
+        assert "焔魄陣" not in _cached_surfaces(store, paths[0])
+        assert ti.build_signature("ja") == "ja|reinforce=False"
+        assert store.get_cached_known(sig) is None, "the known words are read again"
+        counts, _total = store.word_counts()
+        assert ("焔魄陣", "") not in counts and counts[("炎", "ホノオ")] == 3
+        names.use_library_tables(store.names_tables())
+        assert "焔魄陣" not in _surfaces(tokenizer, "昨日も焔魄陣を見た。")
+    finally:
+        store.close()
+    monkeypatch.setitem(analyzer.LOGIC, "names_work_terms", True)
+    names.forget_library_tables()
+    assert "焔魄陣" not in _surfaces(tokenizer, "昨日も焔魄陣を見た。"), "no store yet: no table"
+
+
+def test_work_terms_edge_cases(tmp_path):
+    """An empty file records nothing; a line of kanji the tagger reads only as symbols is a run like any other; CRLF
+    reads as LF; a space inside a run makes two runs; nested folders are read like any; a kanji written as a
+    compatibility ideograph (U+FA19, read as 神) keeps its written form in the joined word."""
+    compat = "蒼" + chr(0xFA19) + "牙"         # 神 written as its compatibility ideograph
+    files = {"empty.txt": "", "crlf.txt": "焔魄陣を放った。\r\n焔魄陣だ。\r\n",
+             "deep/er/nested.txt": "焔魄陣が光る。\n焔 魄陣\n",
+             "compat.txt": f"{compat}を放った。\n{compat}だ。\n{compat}が光る。\n",
+             "symbols.txt": "玖崩\n"}
+    for name in files:
+        (tmp_path / "lib" / os.path.dirname(name)).mkdir(parents=True, exist_ok=True)
+    store, paths = _library(tmp_path / "lib", files)
+    try:
+        tables = store.names_tables()
+        assert "焔魄陣" in tables["w"] and "蒼神牙" in tables["w"] and "魄陣" not in tables["w"]
+        empty = ti._decode_counts(store.conn.execute("SELECT names FROM files WHERE path=?",
+                                                     (ti._norm(paths[0]),)).fetchone()[0])
+        assert empty["s"] == [] and not empty["q"]
+        assert _cached_surfaces(store, paths[1])[0] == "焔魄陣", "CRLF"
+        [spaced] = [span for span in ti._decode_counts(store.conn.execute(
+            "SELECT names FROM files WHERE path=?", (ti._norm(paths[2]),)).fetchone()[0])["s"] if span[6] == "魄陣"]
+        assert spaced[5] == "w", "焔, then a space: 魄陣 is a run of its own"
+        compat_tokens = [t for _s, tokens in store.file_tokens(paths[3]) for t in tokens]
+        assert compat_tokens[0] == ["蒼神牙", "", compat, "蒼神牙"], "its text as written, its word as read"
+        symbols = ti._decode_counts(store.conn.execute("SELECT names FROM files WHERE path=?",
+                                                       (ti._norm(paths[4]),)).fetchone()[0])
+        assert [span[6:] for span in symbols["s"]] == [["玖崩", 0, "xx"]]
+    finally:
+        store.close()
+
+
+def test_live_text_looks_for_terms_only_where_one_can_stand(tokenizer, monkeypatch):
+    """Live text (known words, Junban, the card matcher) looks for the runs of a line only where a term's first two
+    kanji stand side by side, or where the line reads otherwise than it is written — then always: a term written with
+    a compatibility ideograph still joins. A line with neither is passed over and reads exactly as it would have."""
+    compat = "蒼" + chr(0xFA19) + "牙"
+    names.use_library_tables({"k": {}, "j": {}, "w": {"焔魄陣": [1.0, "焔魄陣", "", "焔魄陣"],
+                                                      "蒼神牙": [1.0, "蒼神牙", "", "蒼神牙"]}, "stamp": "live"}, pin=True)
+    assert ("焔魄陣", "", "焔魄陣", "焔魄陣") in _tokens(tokenizer, "昨日も焔魄陣を見た。")
+    assert ("蒼神牙", "", compat, "蒼神牙") in _tokens(tokenizer, f"彼は{compat}を放った。")
+    before = _tokens(tokenizer, "今日は三人で公園に行った。")
+    real = names.term_runs
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("looked for runs on a line that holds no term")
+    monkeypatch.setattr(names, "term_runs", must_not_run)
+    assert _tokens(tokenizer, "今日は三人で公園に行った。") == before
+    monkeypatch.setattr(names, "term_runs", real)
+
+
+def test_the_cached_read_passes_over_runs_where_no_term_starts(monkeypatch):
+    """The token store's cached read (Store.file_tokens; the Rarity slider's numbers) leaves out a recorded run of
+    one-kanji pieces in which no term's first two kanji stand side by side — most runs are counts (一度, 十番隊) — and
+    makes the same joins: the term still joins, and with the terms switched off no run is looked at."""
+    analyzer.SANITIZE_JA = True
+    record = names.Record()
+    sentences = [[s, [list(token) for token in tokens]] for s, tokens in analyzer.JapaneseTokenizer(
+        library=False).tokenize_sentences("一度は焔魄陣を見た。", names=record)]
+    spans = record.data()["s"]
+    assert sorted(span[6] for span in spans if span[5] == "w") == ["一度", "焔魄陣"]
+    tables = {"k": {}, "j": {}, "w": {"焔魄陣": [1.0, "焔魄陣", "", "焔魄陣"]}, "stamp": "cached"}
+    looked_at, real = [], names.choose
+    monkeypatch.setattr(names, "choose", lambda cands, *rest: looked_at.extend(c.spelling for c in cands)
+                        or real(cands, *rest))
+    assert [token for _s, _a, _b, token in names.chosen(sentences, spans, tables)] == [
+        ["焔魄陣", "", "焔魄陣", "焔魄陣"]]
+    assert looked_at == ["焔魄陣"], "一度 holds no term's first two kanji: never looked at"
+    looked_at.clear()
+    assert list(names.chosen(sentences, spans, tables, terms=False)) == [] and looked_at == []
+
+
+# --- JMdict's kanji spellings ------------------------------------------------------------------------------------- #
+def test_jmdict_words_answer_from_the_shipped_kanji_forms(monkeypatch):
+    """The guard asks JMdict's kanji forms (a run of kanji the tagger cut is written in kanji alone, so only such
+    forms ever match one). Only the answers are kept, never the list's forms (a few dozen answers, not 233,000 forms
+    in memory): a spelling asked again is answered without reading the list, a new one reads it again."""
+    from app import jmdict_data
+    from app.unicode_ranges import HAN
+    real, reads = jmdict_data.kanji_forms, []
+    monkeypatch.setattr(jmdict_data, "kanji_forms", lambda: reads.append(1) or real())
+    monkeypatch.setattr(names, "_jmdict_kanji", [])
+    asked = ("鄭寧", "十二支", "起承転結", "一発", "揚げる", "写輪眼")
+    assert names.jmdict_words(asked) == {"鄭寧", "十二支", "起承転結", "一発", "揚げる"}
+    assert set(names._jmdict_kanji[0]) == set(asked), "the answers, never the list"
+    assert names.jmdict_words(["写輪眼", "鄭寧"]) == {"鄭寧"} and len(reads) == 1, "asked before: not read again"
+    assert names.jmdict_words(["斬魄刀", "卍解", "霊圧"]) == set() and len(reads) == 2
+    assert names.jmdict_words(()) == set() and len(reads) == 2
+    kanji_alone = re.compile(f"[{HAN}]{{2,}}")
+    forms = set(real().replace("\t", "\n").split("\n"))
+    assert 120000 < sum(1 for form in forms if kanji_alone.fullmatch(form)) < 150000
+
+
+@pytest.mark.parametrize("broken", [lambda: 1 / 0, lambda: "\n"], ids=["unreadable", "empty"])
+def test_a_jmdict_list_that_cannot_be_read_answers_none(monkeypatch, broken):
+    """A list that can't be read, or holds nothing, answers None — then no run is a term: an unreadable list must
+    never pass every spelling. Remembered: it isn't read again."""
+    from app import jmdict_data
+    monkeypatch.setattr(names, "_jmdict_kanji", [])
+    monkeypatch.setattr(jmdict_data, "kanji_forms", broken)
+    assert names.jmdict_words(["焔魄陣"]) is None
+    monkeypatch.setattr(jmdict_data, "kanji_forms", lambda: pytest.fail("read again"))
+    assert names.jmdict_words(["焔魄陣", "鄭寧"]) is None
+
+
+def test_the_shipped_kanji_spellings_say_which_entry_a_spelling_belongs_to():
+    """app/jmdict_data.py keeps JMdict's kanji spellings entry by entry, so a later reader can tell one dictionary word
+    from two: 生き and 活き are one entry, 集い is an entry of its own beside 集う, and 心する is no entry of 心."""
+    from app import jmdict_data
+    entries = {}
+    for number, line in enumerate(jmdict_data.kanji_forms().split("\n")):
+        for spelling in line.split("\t"):
+            entries.setdefault(spelling, set()).add(number)
+    assert entries["生き"] & entries["活き"]
+    assert not entries["集い"] & entries["集う"]
+    assert not entries["心する"] & entries["心"]
+    assert jmdict_data.CREATED and jmdict_data.REVISION
 
 
 # --- a whole run --------------------------------------------------------------------------------------------------- #
@@ -463,11 +837,11 @@ def test_a_run_lists_each_name_once_and_knows_a_known_name(tmp_path):
 
 
 # --- the Settings window ------------------------------------------------------------------------------------------ #
-def test_the_three_switches_in_settings_save_load_and_show_for_japanese_only(monkeypatch):
-    """Settings -> Language & Parsing: three checkboxes, on by default, each with a tooltip that gives an example;
+def test_the_four_switches_in_settings_save_load_and_show_for_japanese_only(monkeypatch):
+    """Settings -> Language & Parsing: four checkboxes, on by default, each with a tooltip that gives an example;
     shown for a Japanese library only. Ticking one saves it into settings.json's logic block — the dashboard rebuilds
     settings.json from scratch on every save, so an unlisted key would vanish. The katakana switch changes how every
-    file reads, so it re-indexes the library; the other two use the library's tables — no file is read again (the
+    file reads, so it re-indexes the library; the other three use the library's tables — no file is read again (the
     known words are). The next start reads them back. One dashboard for all of it (one root per file)."""
     import tkinter as tk
     from tkinter import ttk
@@ -495,11 +869,15 @@ def test_the_three_switches_in_settings_save_load_and_show_for_japanese_only(mon
         frame = app.names_frame
         boxes = [w for w in frame.winfo_children() if isinstance(w, ttk.Checkbutton)]
         assert [b.cget("text") for b in boxes] == ["Katakana names as one word", "Names your library repeats as one word",
-                                                   "Kanji names as one word"]
+                                                   "Kanji names as one word",
+                                                   "Kanji terms your library repeats as one word"]
         assert all(str(b) in tipped for b in boxes), "every toggle has a tooltip"
         assert "ミロ + ナイ → ミロナイ" in tipped[str(boxes[0])] and "奏 + 汰 → 奏汰" in tipped[str(boxes[2])]
         assert "laughter (アッハハ)" in tipped[str(boxes[0])], "what stays apart: laughter too"
-        assert [app.var_names_katakana.get(), app.var_names_recurring.get(), app.var_names_kanji.get()] == [True] * 3
+        assert "斬魄刀" in tipped[str(boxes[3])] and "写輪眼" in tipped[str(boxes[3])], "both examples"
+        assert "auto-generated captions" in tipped[str(boxes[3])]
+        assert [app.var_names_katakana.get(), app.var_names_recurring.get(), app.var_names_kanji.get(),
+                app.var_names_work_terms.get()] == [True] * 4
         assert frame.master is app.lang_options_frame and "Language & Parsing" in frame.master.master.cget("text")
 
         app.var_language.set("ja")
@@ -534,6 +912,8 @@ def test_the_three_switches_in_settings_save_load_and_show_for_japanese_only(mon
         assert saved()["names_recurring"] is False
         boxes[2].invoke()
         assert saved()["names_kanji"] is False
+        boxes[3].invoke()
+        assert saved()["names_work_terms"] is False
         assert token_index.build_signature("ja") == built, "the library's tables: no file is read again"
         boxes[0].invoke()
         logic = saved()
@@ -543,7 +923,7 @@ def test_the_three_switches_in_settings_save_load_and_show_for_japanese_only(mon
         with open(settings_file, "w", encoding="utf-8") as handle:
             json.dump({"target_language": "ja", "logic": {"names_recurring": False}}, handle)
         app.load_settings()
-        assert [app.var_names_katakana.get(), app.var_names_recurring.get(), app.var_names_kanji.get()] == \
-            [True, False, True], "a missing key reads as on"
+        assert [app.var_names_katakana.get(), app.var_names_recurring.get(), app.var_names_kanji.get(),
+                app.var_names_work_terms.get()] == [True, False, True, True], "a missing key reads as on"
     finally:
         root.destroy()

@@ -73,11 +73,14 @@ DEFAULT_SETTINGS = {
         # changes what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS). names_katakana: a
         # katakana name no dictionary list spells (トゥー + リ -> トゥーリ); read as a file is tokenized, so it is in
         # the token store's build signature when off. names_recurring: a katakana name the library keeps using
-        # (リム + ハイ -> リムハイ); names_kanji: a kanji name (JMnedict) the library holds 3+ times (一 + 護 -> 一護) —
-        # both from the library's own tables, applied as the cache is read: flipping one needs only a Generate.
+        # (リム + ハイ -> リムハイ); names_kanji: a kanji name (JMnedict) the library holds 3+ times (一 + 護 -> 一護);
+        # names_work_terms: a story's own kanji words the library keeps using as one (写 + 輪 + 眼 -> 写輪眼) —
+        # auto-generated captions don't count toward them. All three from the library's own tables, applied as the
+        # cache is read: flipping one needs only a Generate.
         "names_katakana": True,
         "names_recurring": True,
         "names_kanji": True,
+        "names_work_terms": True,
         # Phrases and titles as one word (Settings -> Language & Parsing), Japanese only: a dictionary compound that
         # is a phrase pattern (予想通り, こと自体), 元 + a noun (元首相) or a title (もののけ姫) is one word; off, it counts
         # as its parts (予想 + 通り). Other dictionary compounds are one word either way. It changes what a run

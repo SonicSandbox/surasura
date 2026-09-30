@@ -1,6 +1,7 @@
 ﻿Word,Orth,Forms,Reading,Tier,Score,Occurrences,Count (High),Count (Low),Count (Goal),Modality,Sources,Context 1,Src 1,Context 2,Src 2,Context 3,Src 3
 うう,うっ,う|ううっ|ううう,ウウ,Outside,180,18,18,0,0,,H_priority_sample,うっ！,HighPriority/H_priority_sample_2.srt,うっ…うわああっ！,HighPriority/H_priority_sample_2.srt,ううっ…,HighPriority/H_priority_sample_2.srt
 老婆,老婆,,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,「何故この私が、老婆に席を譲らなければならないんだい？,HighPriority/H_priority_sample_1.txt,君や老婆が私よりも長い人生を送っていることは一目瞭然だ。,HighPriority/H_priority_sample_1.txt
+三玖,三玖,,,Outside,150,15,15,0,0,,H_priority_sample,あれ～三玖まだいたんだ。,HighPriority/H_priority_sample_2.srt,じゃあ三玖の言うとおり中身で勝負しようじゃない。,HighPriority/H_priority_sample_2.srt,おい三玖それでいいのか？,HighPriority/H_priority_sample_2.srt
 んっ,ん,んんっ,ンッ,Outside,80,8,8,0,0,,H_priority_sample,ん？,HighPriority/H_priority_sample_2.srt,ハッそんなのやるわけ…ん？,HighPriority/H_priority_sample_2.srt,ん…,HighPriority/H_priority_sample_2.srt
 此奴,こいつ,,コイツ,Outside,80,8,8,0,0,,H_priority_sample,こいつらだって人の子。,HighPriority/H_priority_sample_2.srt,こいつ今ひどいこと言った。,HighPriority/H_priority_sample_2.srt,そういえばこいつ気にしないヤツだったな。,HighPriority/H_priority_sample_2.srt
 フータロー,フータロー,,,Outside,60,6,6,0,0,,H_priority_sample,フータロー現実を見てもうみんないない。,HighPriority/H_priority_sample_2.srt,フータローすぐに終わらせるから座って待ってて。,HighPriority/H_priority_sample_2.srt,それを考えるのがフータローの仕事でしょ？,HighPriority/H_priority_sample_2.srt

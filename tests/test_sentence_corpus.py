@@ -249,6 +249,21 @@ def test_best_for_reads_the_indexed_library_and_puts_the_easiest_sentence_first(
     assert sc.best_for("ja", set()) == {}
 
 
+def test_a_storys_own_kanji_term_finds_its_sentences(tmp_path):
+    """A story's own kanji term the library keeps using as one (app/names.py — 焔魄陣, a made-up technique the tagger
+    cuts 焔 + 魄 + 陣) is one word in the indexed library, so 例文 finds it its sentences — keyed as a word no
+    dictionary has, the spelling with no reading — with the whole term to mark on the card."""
+    lines = ["明日から焔魄陣の修行を始めよう。", "彼は昨日も焔魄陣を放った。", "焔魄陣が夜空に明るく光った。"]
+    _library(("第01話.txt", lines))
+    sc.build("ja", str(tmp_path / "corpus.zip"), progress=lambda message: None)   # indexes the library
+
+    found = sc.best_for("ja", {("焔魄陣", "")})
+
+    assert list(found) == [("焔魄陣", "")]
+    assert {text for _others, text, _surface, _file in found[("焔魄陣", "")]} == set(lines)
+    assert {surface for _others, _text, surface, _file in found[("焔魄陣", "")]} == {"焔魄陣"}
+
+
 def test_a_phrase_is_found_as_its_run_of_words_however_it_is_inflected():
     """A card's word can be several tokens — 気を取り直す, 当事者 (当事 + 者). It is found as that run of
     lemmas, in any conjugation (取り直して), its own words never count as unknown, and it comes back under

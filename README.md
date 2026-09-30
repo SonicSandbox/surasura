@@ -211,6 +211,9 @@ which お / ご words have a meaning of their own (お守り, お帰り), comes 
 of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html), used under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
 organizations. Only marks on spellings are kept; that table (`app/dictionary_data.py`) is shared under the same licence.
+JMdict's kanji spellings, entry by entry — spellings only, no readings or meanings — keep "Kanji terms your library
+repeats as one word" from ever joining a word the dictionary lists; that table (`app/jmdict_data.py`) is shared under
+the same licence too.
 Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
 

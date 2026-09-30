@@ -75,6 +75,9 @@ def test_the_names_a_file_holds_as_the_store_records_them():
     ("東京に行った。", "a place is no person's name"),
     ("ぐ、ぐぬぬ", "a single kana the tagger tags as a name is a sound or a piece"),
     ("ヌピャルガが来た。", "a word the dictionary doesn't know at all: its tag is the tagger's guess"),
+    ("ブシン祭が始まった。", "a word the lists carry (ブシン), one word only because its pieces are no words (ブ, read "
+                        "as the prefix 無, + シン): as often a word as a name, never hidden"),
+    ("コスパがいい。", "likewise a word the lists carry, cut into pieces that are no words (コ + スパ)"),
 ])
 def test_what_is_not_a_name_here(text, why):
     assert _names_of(text) == {}, why

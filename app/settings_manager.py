@@ -84,6 +84,12 @@ DEFAULT_SETTINGS = {
         # counts: in the run signature (never _NON_ANALYSIS_SETTINGS); read as a file is tokenized
         # (analyzer.join_affixes), so it is in the token store's build signature when off.
         "phrases_and_titles": True,
+        # Ignore names (Settings -> Language & Parsing), Japanese only, off: a learner learns names too. On, the
+        # library's names (app/names.py) are ignored words everywhere — off the list, never an unknown in a sentence
+        # (token_index.ignored_names). It changes what a run counts: in the run signature (never
+        # _NON_ANALYSIS_SETTINGS). The token store always records which words are names, so flipping it needs only a
+        # Generate.
+        "ignore_names": False,
         "weights": {
             "_comment": "Multipliers for word scores based on folder. Higher = more important.",
             "high": 10,

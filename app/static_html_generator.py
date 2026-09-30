@@ -522,7 +522,9 @@ def anki_backlog_keys(language, settings, list_path=None):
     dictionary's reading and the user's "yes" are for the cards the list does not hold as written —
     a 解す card is 解す's row, not also 解する's; 生き the noun's, not also 生きる's — and a kana
     spelling's fold for the cards the list does not hold as spelled (`_own_keys`: スレ, not also
-    擦れる's すれ) — Junban's ladder, `anki_match.card_key`. Without a list, every card's keys are given."""
+    擦れる's すれ) — Junban's ladder, `anki_match.card_key`. A hiragana card whose letters reach a name's
+    or a loanword's row it is not (ひかり 'light' and the name ヒカリ, だいぶ and ダイブ 'dive': `_name_cards`)
+    is labelled on its own word's row, or on none. Without a list, every card's keys are given."""
     if not (settings or {}).get("anki_backlog_on_generate", True):
         return []
     try:
@@ -537,10 +539,12 @@ def anki_backlog_keys(language, settings, list_path=None):
             from app import anki_match
             backlog = anki_sync.load_backlog(language)
             answers = _pair_answers(language)
-            listed = anki_match.build_index(list_path, language="ja").rank_of if list_path else {}
-            keys = _own_keys(backlog, listed) if listed else keys
-            keys |= _dictionary_keys(backlog, answers, listed)
-            keys |= _confirmed_keys(backlog, answers, listed)
+            index = anki_match.build_index(list_path, language="ja") if list_path else None
+            listed = index.rank_of if index else {}
+            names = _name_cards(backlog, index, answers) if listed else {}
+            keys = _own_keys(backlog, listed, names) if listed else keys
+            keys |= _dictionary_keys(backlog, answers, listed, names)
+            keys |= _confirmed_keys(backlog, answers, listed, names)
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
@@ -553,14 +557,49 @@ def anki_backlog_keys(language, settings, list_path=None):
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
 
 
-def _own_keys(backlog, listed):
+def _name_cards(backlog, index, answers=None):
+    """`{card word: the key it is labelled by, or ""}` for the waiting cards written in hiragana alone whose letters
+    reach a name's or a loanword's row they are not — ひかり ('light', 光) and the list's ヒカリ, a name read from
+    ひかりさん; だいぶ and ダイブ 'dive' — where Junban places them (`anki_match.card_key`, `not_the_name`): the
+    user's "yes", else the row of the word they are, else none. The tokenizer is built only when a card's letters
+    reach a row whose own word is those letters in katakana; one that can't be had leaves every card as before."""
+    from app import anki_match
+    notes = backlog.get("notes")
+    words = {entry["word"] for entry in (notes.values() if isinstance(notes, dict) else ())
+             if isinstance(entry, dict) and isinstance(entry.get("word"), str)}
+    made = []
+
+    def tokenize(text):
+        if not made:
+            from app import analyzer
+            analyzer.SANITIZE_JA = True         # as every Japanese run sets it (see _dictionary_keys)
+            made.append(analyzer.JapaneseTokenizer().tokenize)
+        return made[0](text)
+    found = {}
+    try:
+        for word in words:
+            key = anki_match.lookup(word, index.rank_of, "ja")
+            if key and anki_match.not_the_name(word, key, index.rank_of, index.words, tokenize) is not None:
+                found[word] = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words)[0]
+    except Exception as e:
+        print(f"Warning: could not read the Anki backlog's kana cards: {e}")
+        return {}
+    return found
+
+
+def _own_keys(backlog, listed, names=None):
     """Each card's own keys as the Anki sync wrote them — its word, and the word's hiragana fold — but the
     word alone when the list (`listed`) holds it as written: Junban tries the fold (L4) only when the
-    spelling misses, so a スレ card is スレ's row, never also the row that holds すれ (擦れる's Forms)."""
+    spelling misses, so a スレ card is スレ's row, never also the row that holds すれ (擦れる's Forms). A card
+    in `names` (`_name_cards`) holds only the key of the word it is, if any: its letters are a name's it is not."""
     keys = set()
+    names = names or {}
     notes = backlog.get("notes")
     for entry in (notes.values() if isinstance(notes, dict) else ()):
         if not isinstance(entry, dict):
+            continue
+        if entry.get("word") in names:
+            keys.update(key for key in (names[entry["word"]],) if key)
             continue
         if isinstance(entry.get("word"), str) and entry["word"] in listed:
             keys.add(entry["word"])
@@ -569,18 +608,19 @@ def _own_keys(backlog, listed):
     return keys
 
 
-def _on_the_list(word, answers, listed):
-    """Whether Junban places this card with no reading of its own: its spelling is on the list (L1–L4),
-    or the user said "yes" to a word that is (`anki_match.card_key`'s first two rungs)."""
+def _on_the_list(word, answers, listed, names=None):
+    """Whether Junban places this card with no reading of its own: its spelling is on the list (L1–L4) — for a
+    hiragana card whose letters are a name's it is not (`names`, `_name_cards`): the word it is — or the user said
+    "yes" to a word that is (`anki_match.card_key`'s first rungs)."""
     from app import anki_match
     if not listed:
         return False
     answer = (answers or {}).get(word) or {}
-    return bool(anki_match.lookup(word, listed, "ja")
-                or (answer.get("answer") == "yes" and answer.get("target") in listed))
+    spelled = bool(names[word]) if names and word in names else bool(anki_match.lookup(word, listed, "ja"))
+    return spelled or (answer.get("answer") == "yes" and answer.get("target") in listed)
 
 
-def _dictionary_keys(backlog, answers=None, listed=None):
+def _dictionary_keys(backlog, answers=None, listed=None, names=None):
     """The list words a Japanese backlog's cards ARE, read through the dictionary
     (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
     content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
@@ -606,7 +646,7 @@ def _dictionary_keys(backlog, answers=None, listed=None):
              and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS)
                   or entry["word"].startswith(anki_match.AFFIX_SPELLINGS[0])
                   or entry["word"].endswith(anki_match.AFFIX_SPELLINGS[1]))
-             and not _on_the_list(entry["word"], answers, listed)}
+             and not _on_the_list(entry["word"], answers, listed, names)}
     if not words:
         return set()
     keys = set()
@@ -653,14 +693,15 @@ def _pair_answers(language):
     return {word: pair for word, pair in pairs.items() if isinstance(pair, dict)} if isinstance(pairs, dict) else {}
 
 
-def _confirmed_keys(backlog, answers, listed=None):
+def _confirmed_keys(backlog, answers, listed=None, names=None):
     """The list words the user said a waiting card IS — their "yes" (`_pair_answers`): あおぐ is 仰ぐ.
     Junban places the card there, so the label marks it there — unless the card's own spelling is on
-    the list (`listed`): Junban's exact keys come before any answer."""
+    the list (`listed`; a name's row it is not aside, `names`): Junban's exact keys come before any answer."""
     from app import anki_match
     notes = backlog.get("notes")
     words = {entry.get("word") for entry in (notes.values() if isinstance(notes, dict) else ())
-             if isinstance(entry, dict) and not (listed and anki_match.lookup(entry.get("word"), listed, "ja"))}
+             if isinstance(entry, dict) and not (listed and entry.get("word") not in (names or {})
+                                                 and anki_match.lookup(entry.get("word"), listed, "ja"))}
     return {str(pair["target"]) for word, pair in (answers or {}).items()
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 

@@ -61,3 +61,16 @@ def test_signature_changes_when_ignore_list_changes(uf_env):
 def test_signature_changes_when_selection_changes(uf_env):
     app = _app()
     assert app._preview_signature("ja", {"band": "core"}) != app._preview_signature("ja", {"band": "rare"})
+
+
+def test_signature_changes_when_ignore_names_flips(uf_env):
+    """Ignore names makes the library's names ignored words — the slider's numbers change with no file re-read, so the
+    cached ones must not stand."""
+    app = _app()
+    sel = {"band": "occasional"}
+    app._current_settings = {"logic": {"ignore_names": False}}
+    off = app._preview_signature("ja", sel)
+    app._current_settings = {"logic": {"ignore_names": True}}
+    assert app._preview_signature("ja", sel) != off
+    app._current_settings = {"logic": {}}
+    assert app._preview_signature("ja", sel) == off, "a missing key reads as off"

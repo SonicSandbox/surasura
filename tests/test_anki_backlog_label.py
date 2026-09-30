@@ -465,3 +465,19 @@ def test_without_a_backlog_nothing_changes_in_the_report(web_html):
     """An empty set short-circuits every check — no mark, no count, no menu entry."""
     assert "if (!ANKI_BACKLOG.size || !data) return false;" in web_html
     assert "return ANKI_BACKLOG.size ? (words || []).filter(inAnkiBacklog).length : 0;" in web_html
+
+
+# --- a hiragana card that is a common word never marks a name's row ---------------------------------- #
+def test_a_hiragana_card_of_a_common_word_never_marks_a_name_spelled_the_same(tmp_path):
+    """The label marks where Junban places a card (anki_match.card_key): a hiragana ひかり card is the word 光
+    'light', not the name ヒカリ the list reads from ひかりさん — no mark on that row; with 光 on the list, 光's row is
+    marked. A katakana ヒカリ card is written the way the name is and marks it."""
+    listed = _write_list(tmp_path, [("ヒカリ", "ひかり", "光", "ヒカリ"), ("冒険", "冒険", "", "ボウケン")])
+    _write_backlog(data=_cards("ひかり"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == []
+    _write_backlog(data=_cards("ヒカリ"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["ヒカリ"]
+    listed = _write_list(tmp_path, [("ヒカリ", "ひかり", "", "ヒカリ"), ("光", "光", "", "ヒカリ")])
+    _write_backlog(data=_cards("ひかり"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["光"]
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["ひかり"], "no list: as before"

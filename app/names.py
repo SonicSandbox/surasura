@@ -37,6 +37,17 @@ text without them (join_affixes(..., library=False)).
 A joined name is keyed as the tagger keys that spelling when it reads it whole: as that word, when the tagger reads
 the spelling alone as one word it knows (so a name read whole in one sentence and cut in the next is one row); else
 as a word its dictionary lacks — the spelling as the lemma, no reading (never the pieces' readings run together).
+
+Ignore names (logic.ignore_names, off by default) — a learner still learns names, unless they choose not to: then a
+name is an ignored word everywhere, off the list and never an unknown in a sentence. What is a name: a word the
+tagger's dictionary knows and tags as a person's name (固有名詞 人名), a katakana name made one word above, and a kanji
+name the library's table joins. Not a name: a spelling UniDic also lists as a common word said the same way
+(ひかり is 光 'light', 悪魔 'devil' — the tag there is the tagger's guess between two words that look and sound
+alike), a name keyed as a common word is (麻衣 is keyed マイ, as マイ 'my' is: ignoring it would hide the word), a
+single kana, a word the dictionary doesn't know at all (its tag is a guess), and the katakana runs the library
+repeats, which are as often terms, places and titles as people. The token store records each file's names as it
+indexes it (`Record`), keeps the library's after indexing (`name_words`), and token_index.ignored_names is the one
+reader every ignore set calls.
 """
 import hashlib
 import json
@@ -62,6 +73,7 @@ _INTERJECTION = "感動詞"
 _katakana_headwords = []    # [Spellings] once read; [None] when the table can't be read
 _person_names = []          # [PersonNames] once read (only where files are indexed); [None] when it can't be read
 _whole = {}                 # spelling -> the tagger's feature for it read alone as one known word, or None
+_listed = {}                # spelling -> the features of every word UniDic lists spelled so (`_listed_as`)
 _tagger = []                # the tagger that reads a spelling alone, made on the first join
 
 # Names that recur in the library.
@@ -69,6 +81,11 @@ STICKY = 0.7        # a run joins once this share of its least-used piece's uses
 KEEP = 0.5          # ...and, joined, stays joined down to this share: a growing library doesn't flip it back and forth
 FLOOR = 3           # uses in the library before a run can join (a coincidence rarely recurs)
 REFRESH = 30.0      # seconds: how often a long-lived process (the dashboard, Junban) looks for newer tables
+
+# Ignore names: how many of the tagger's best readings of a spelling alone are looked through for the words UniDic
+# lists spelled so — a short spelling has only a handful.
+READINGS = 10
+_PROPER = "固有名詞"
 
 # Kanji names.
 SURNAME, GIVEN = 1, 2
@@ -280,6 +297,64 @@ def join_katakana(words):
     return out
 
 
+# --- Ignore names: which words are names ------------------------------------------------------------------------- #
+def _listed_as(spelling):
+    """The features of every word UniDic's dictionary lists spelled `spelling`: each reading of the spelling alone as
+    ONE word the tagger knows, among its best READINGS. Asked once per spelling."""
+    found = _listed.get(spelling)
+    if found is None:
+        from app.analyzer import Tagger
+        if not _tagger:
+            _tagger.append(Tagger())
+        found = _listed[spelling] = tuple(
+            path[0].feature for path in _tagger[0]._tagger.nbestToNodeList(spelling, READINGS)
+            if len(path) == 1 and not path[0].is_unk and path[0].feature.lemma)
+    return found
+
+
+def _said(f):
+    """How a word is said: UniDic's pronunciation of its dictionary form — シャドウ and シャドー alike are シャドー."""
+    return f.pronBase or f.lForm or f.kana or ""
+
+
+def _common_word_listed(spelling, said=None, lemma=None, sanitize=None):
+    """Does UniDic list a common word — no proper noun — spelled `spelling`, said `said` (`_said`) and with the lemma
+    `lemma` (each when given; `sanitize` cleans UniDic's lemma as the tokenizer does)?"""
+    for f in _listed_as(spelling):
+        if f.pos2 == _PROPER:
+            continue
+        if said is not None and _said(f) != said:
+            continue
+        if lemma is not None and (sanitize(f.lemma) if sanitize else f.lemma) != lemma:
+            continue
+        return True
+    return False
+
+
+def name_lemma(word, sanitize=None):
+    """The lemma under which `word` — one of join_affixes' words, read without the library's tables, as the token store
+    reads a file — is a person's name, or None (§ Ignore names). A katakana name made one word here is one, keyed as
+    a word its dictionary lacks; so is a word the tagger's dictionary knows and tags as a person's name, two characters
+    or more — unless UniDic lists a common word spelled and said the same (ひかり is 光 'light') or keyed the same
+    (麻衣 is keyed マイ, as マイ 'my' is). `sanitize` is the analyzer's lemma cleaning, as the tokenizer applies it."""
+    f = word.feature
+    if word.is_unk:
+        from app.analyzer import JoinedWord
+        if not isinstance(word, JoinedWord) or not f.lemma:
+            return None                     # a word the dictionary doesn't know: its tag is the tagger's guess
+        return sanitize(f.lemma) if sanitize else f.lemma
+    if f.pos3 != "人名" or f.pos2 != _PROPER:
+        return None
+    from app.analyzer import word_lemma
+    lemma = word_lemma(word)
+    lemma = sanitize(lemma) if sanitize and lemma else lemma
+    if (not lemma or len(lemma) < 2
+            or _common_word_listed(f.orthBase or word.surface, said=_said(f))
+            or _common_word_listed(lemma, lemma=lemma, sanitize=sanitize)):
+        return None
+    return lemma
+
+
 # --- Names from the whole library: the tables ----------------------------------------------------------------------- #
 Candidate = namedtuple("Candidate", "i j kind spelling pieces")     # kind: "k" katakana, "j" kanji
 
@@ -433,16 +508,25 @@ class Record:
     """What one file tells the library's tables, gathered as the token store tokenizes it (JapaneseTokenizer with
     `names=`): every candidate run with where it sits among its sentence's counted tokens ("s"), how often each
     katakana run is used in pieces and by which pieces ("ks") and whole ("k1"), how often each katakana word of two
-    letters or more is used as a token ("p") — a piece's uses as a word — and how often each kanji name is read,
-    the longest from the left ("jc", with its lists' bits in "jb")."""
+    letters or more is used as a token ("p") — a piece's uses as a word — how often each kanji name is read,
+    the longest from the left ("jc", with its lists' bits in "jb"), and how often each word is a person's name there
+    ("n", by lemma: `name_lemma`)."""
 
     def __init__(self):
         self.spans, self.ks, self.k1, self.p = [], {}, Counter(), Counter()
         self.jc, self.jb = Counter(), {}
+        self.n = Counter()
 
     def read_line(self, words):
         """The candidates of one tagger call's tokens (after the katakana rule), counted."""
+        from app import analyzer
         from app.analyzer import JoinedWord
+        sanitize = analyzer._sanitize_term if analyzer.SANITIZE_JA else None
+        for w in words:
+            if w.is_unk or w.feature.pos3 == "人名":
+                lemma = name_lemma(w, sanitize)
+                if lemma:
+                    self.n[lemma] += 1
         if _has_katakana(words):
             p, k1, katakana = self.p, self.k1, _KATAKANA.match
             for w in words:
@@ -467,7 +551,8 @@ class Record:
                            surface if surface != cand.spelling else 0])
 
     def data(self):
-        return {"s": self.spans, "ks": self.ks, "k1": self.k1, "p": self.p, "jc": self.jc, "jb": self.jb}
+        return {"s": self.spans, "ks": self.ks, "k1": self.k1, "p": self.p, "jc": self.jc, "jb": self.jb,
+                "n": self.n}
 
 
 def compute_tables(records, previous=None, sanitize=None):
@@ -500,6 +585,20 @@ def compute_tables(records, previous=None, sanitize=None):
     tables = {"k": katakana, "j": kanji}
     tables["stamp"] = hashlib.sha1(json.dumps(tables, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     return tables
+
+
+def name_words(records, tables=None, sanitize=None):
+    """The library's names, as the lemmas Ignore names ignores (§ Ignore names), sorted: every word the files' records
+    name ("n") and each kanji name the library's table joins — keyed as that table keys it — that no common word shares
+    (`_common_word_listed`). Never the katakana runs the library repeats: as many are terms, places and titles."""
+    words = set()
+    for data in records:
+        words.update(data.get("n", ()))
+    for entry in ((tables or {}).get("j") or {}).values():
+        lemma = entry[1]
+        if lemma and not _common_word_listed(lemma, lemma=lemma, sanitize=sanitize):
+            words.add(lemma)
+    return sorted(words)
 
 
 def chosen(sentences, spans, tables, recurring=True, kanji=True):

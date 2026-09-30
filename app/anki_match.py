@@ -291,8 +291,9 @@ def row_markers(row, thresholds=None):
 # because the file is 14 MB on a real library and reading it twice to answer two questions about the
 # same row is work for no one. `journey_of` is each key's `(file, score, total)` — the numbers the
 # journey orders by — so a word below the list's cut-off can be placed among the listed ones
-# (Junban_Backlog_Spec §11.1).
-Index = namedtuple("Index", "rank_of contexts_of marks_of journey_of")
+# (Junban_Backlog_Spec §11.1). `words` is each row's own word (its `Word`), by rank — what the row a
+# key reaches IS (`not_the_name`); None for an index built by hand.
+Index = namedtuple("Index", "rank_of contexts_of marks_of journey_of words", defaults=(None,))
 
 
 def load_rank_index(csv_path):
@@ -368,7 +369,8 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
     contexts = {}
     marks_of = {}
     journey_of = {}
-    empty = Index(index, contexts, marks_of, journey_of)
+    words = []                  # each row's own word, by rank
+    empty = Index(index, contexts, marks_of, journey_of, words)
     if not csv_path or not os.path.isfile(csv_path):
         return empty
 
@@ -401,6 +403,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
                 # list only — 0 on the priority list), its `Score`, its total occurrences.
                 numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
                 lemma = normalize_word(row.get("Word"))
+                words.append(lemma)
                 for column in ("Orth", "Word"):
                     key = normalize_word(row.get(column))
                     if not key or (japanese and len(key) == 1 and key != lemma):
@@ -431,7 +434,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
                     if key in contexts:
                         contexts[folded] = contexts[key]
 
-    return Index(index, contexts, marks_of, journey_of)
+    return Index(index, contexts, marks_of, journey_of, words)
 
 
 def lookup(word, rank_of, language=None):
@@ -811,23 +814,64 @@ def ending_apart(tokens):
     return tokens
 
 
-def card_key(word, rank_of, language=None, answers=None, tokenize=None):
+# A card written in hiragana alone reaches a list row by its letters (L1–L4). When that row's own word is those letters
+# in katakana — the lemma UniDic gives a person's name (ヒカリ, read from ひかりさん) or a loanword (ダイブ 'dive') —
+# while the card, read alone, is ONE word spelled with a kanji (ひかり is 光 'light', だいぶ 大分 'considerably'), the
+# card is that word, not the row's (the user, 2026-09-30: a hiragana ひかり card is the word 光): it lands on that
+# word's own row when the list has one, else on none, and the report marks the row it lands on. A card written in
+# katakana (ヒカリ) is written the way the name is, and still reaches it.
+_HIRAGANA_ONLY_RE = re.compile("^[ぁ-ゖゝゞー]+$")
+
+
+def _katakana(text):
+    """Hiragana to katakana, everything else as it is — `fold_kana` the other way."""
+    return "".join(chr(ord(ch) + 0x60) if "ぁ" <= ch <= "ゖ" else ch for ch in text)
+
+
+def not_the_name(word, key, rank_of, words, tokenize):
+    """For a hiragana card whose letters reach the row `key`: None when the card is that row's word; else — the row is
+    a name or a loanword the card is not (above) — the key of the word the card IS, when the list has a row of its
+    own for it, or "". `words` is each row's own word by rank (`Index.words`, or Backfill's `(Word, Reading)` pairs);
+    `tokenize` reads the card alone, asked only when that row's word is the card's letters in katakana. The one test
+    for Junban's placement (`card_key`) and the report's "In Anki" label."""
+    if not words or not tokenize or not isinstance(word, str) or not _HIRAGANA_ONLY_RE.match(word):
+        return None
+    rank = (rank_of or {}).get(key)
+    if rank is None or not 0 <= rank < len(words):
+        return None
+    row = words[rank]
+    if (row[0] if isinstance(row, (tuple, list)) else row) != _katakana(word):
+        return None
+    tokens = list(tokenize(word))
+    if len(tokens) != 1 or not _KANJI_RE.search(str(tokens[0][0] or "")):
+        return None
+    other = lookup(tokens[0][0], rank_of, "ja")
+    return other if other and rank_of[other] != rank else ""
+
+
+def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
 
-    L1–L4 (`lookup`; via "exact"); else the user's "yes" to "Same word as one on your list?" (`answers`,
-    `junban_pairs.json`; via "yes"); else — Japanese, with a tokenizer — the word read alone as ONE word
-    with an ending on it or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ
-    (`ending_apart`), 取り消した -> 取り消す. A kana word is looked up by the letters it is written in, never by
-    the lemma the tagger guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very
-    pair. A word with a kanji read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word
-    read alone, or one only its sentence reads as a list word, is `suggest`'s L6 — a question. Shared by
-    Junban's placement and the report's label."""
+    L1–L4 (`lookup`; via "exact") — but a hiragana card that is a common word never takes a name's or a loanword's
+    row by its letters (`not_the_name`, with `words`: ひかり is 光, not ヒカリ); else the user's "yes" to "Same word
+    as one on your list?" (`answers`, `junban_pairs.json`; via "yes"); else the word such a hiragana card IS, on a row
+    of its own (via "L6"); else — Japanese, with a tokenizer — the word read alone as ONE word with an ending on it
+    or in an inflected form (`one_word`; via "L7"): 努力する -> 努力, バシッと -> バシッ (`ending_apart`), 取り消した
+    -> 取り消す. A kana word is otherwise looked up by the letters it is written in, never by the lemma the tagger
+    guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A word with a kanji
+    read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word read alone, or one only its
+    sentence reads as a list word, is `suggest`'s L6 — a question. Shared by Junban's placement and the report's
+    label."""
     key = lookup(word, rank_of, language)
-    if key:
+    instead = not_the_name(word, key, rank_of, words, tokenize) if key and language == "ja" else None
+    if key and instead is None:
         return key, "exact"
     answer = (answers or {}).get(word) or {}
     if answer.get("answer") == "yes" and answer.get("target") in (rank_of or {}):
         return answer["target"], "yes"
+    if instead is not None:
+        refused = answer.get("answer") == "no" and answer.get("target") == instead
+        return (instead, "L6") if instead and not refused else ("", "")
     if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
         return "", ""
     tokens = ending_apart(tokenize(word))

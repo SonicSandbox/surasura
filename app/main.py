@@ -325,6 +325,8 @@ class MasterDashboardApp:
         self.var_names_kanji = tk.BooleanVar(value=True)
         # Phrases and titles as one word (logic.phrases_and_titles), Japanese only, on by default.
         self.var_phrases_and_titles = tk.BooleanVar(value=True)
+        # Ignore names (logic.ignore_names), Japanese only, off by default: a learner learns names too.
+        self.var_ignore_names = tk.BooleanVar(value=False)
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
         self.var_telemetry_enabled = tk.BooleanVar(value=True) # Anonymous Telemetry
         self.var_only_i_plus_one = tk.BooleanVar(value=False) # Only include i+1 sentences
@@ -408,6 +410,7 @@ class MasterDashboardApp:
         self.paren_readings_frame: Optional[ttk.Frame] = None
         self.names_frame: Optional[ttk.Frame] = None
         self.chk_phrases_and_titles: Optional[ttk.Checkbutton] = None
+        self.chk_ignore_names: Optional[ttk.Checkbutton] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -867,8 +870,8 @@ class MasterDashboardApp:
     def _preview_signature(self, lang, sel, script="asis"):
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store
         (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
-        lists, the selection settings, and the Chinese script they're all read in. Returns None if it
-        can't be computed (forces a refresh)."""
+        lists and Ignore names (the library's names become ignored words), the selection settings, and
+        the Chinese script they're all read in. Returns None if it can't be computed (forces a refresh)."""
         try:
             from app.path_utils import get_user_files_path
             uf = get_user_files_path(lang)
@@ -880,7 +883,8 @@ class MasterDashboardApp:
                 os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
                 for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
             )
-            return (lang, db_mtime, ksig, lists, json.dumps(sel, sort_keys=True), script)
+            names = bool(((getattr(self, "_current_settings", {}) or {}).get("logic") or {}).get("ignore_names"))
+            return (lang, db_mtime, ksig, lists, names, json.dumps(sel, sort_keys=True), script)
         except Exception:
             return None
 
@@ -1016,6 +1020,8 @@ class MasterDashboardApp:
                     self.names_frame.pack_forget()
                 if self.chk_phrases_and_titles:
                     self.chk_phrases_and_titles.pack_forget()
+                if self.chk_ignore_names:
+                    self.chk_ignore_names.pack_forget()
 
                 if lang == 'zh':
                     # Show Reinforce for Chinese
@@ -1035,6 +1041,8 @@ class MasterDashboardApp:
                         self.names_frame.pack(anchor=tk.W, pady=(2, 0))
                     if self.chk_phrases_and_titles:
                         self.chk_phrases_and_titles.pack(anchor=tk.W)
+                    if self.chk_ignore_names:
+                        self.chk_ignore_names.pack(anchor=tk.W)
 
             self.save_settings()
         finally:
@@ -1482,6 +1490,17 @@ class MasterDashboardApp:
                                                       command=self.save_settings)
         ToolTip(self.chk_phrases_and_titles, "On: 予想通り, こと自体, 元首相 and もののけ姫 each count as one word. "
                                              "Off: they count as their parts (予想 + 通り).")
+
+        # Ignore names (Japanese): a learner learns names too, unless they choose not to — then a name is an ignored
+        # word. Packed by update_ui_for_language below the phrases switch, Japanese only. The token store already knows
+        # which words are names, so flipping it re-reads nothing: the Rarity slider's numbers follow at once, the
+        # list at the next Generate.
+        self.chk_ignore_names = ttk.Checkbutton(self.lang_options_frame, text="Ignore names",
+                                                variable=self.var_ignore_names,
+                                                command=lambda: (self.save_settings(), self._refresh_band_preview()))
+        ToolTip(self.chk_ignore_names, "On: people's names (田中, ミロナイ) are treated as ignored words — off your "
+                                       "list, and never counted as unknown in a sentence. Takes effect at the next "
+                                       "Generate.")
 
         chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
         chk_single.pack(anchor=tk.W)
@@ -2354,6 +2373,7 @@ class MasterDashboardApp:
             self.var_names_recurring.set(bool(self.logic_settings.get("names_recurring", True)))
             self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
             self.var_phrases_and_titles.set(bool(self.logic_settings.get("phrases_and_titles", True)))
+            self.var_ignore_names.set(bool(self.logic_settings.get("ignore_names", False)))
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
             self.var_context_max_chars.set(context_settings.get("preferred_max_chars", 50))
@@ -2447,6 +2467,7 @@ class MasterDashboardApp:
                     "names_recurring": self.var_names_recurring.get(),
                     "names_kanji": self.var_names_kanji.get(),
                     "phrases_and_titles": self.var_phrases_and_titles.get(),
+                    "ignore_names": self.var_ignore_names.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /
                     # auto_max_words are user-editable in settings.json, like 'weights'); the slider
                     # sets 'band', the Automatic rarity checkbox 'auto'.

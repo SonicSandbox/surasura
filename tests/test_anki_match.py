@@ -787,3 +787,45 @@ def test_a_second_word_or_another_ending_is_not_a_tail():
         assert len(tokens) == 2 and not anki_match.is_attached_tail(tokens[1][0]), word
     for lemma in ("する", "", None):
         assert not anki_match.is_attached_tail(lemma), lemma
+
+
+# --------------------------------------------------------------------------- #
+# A hiragana card that is a common word never takes a name's (or a loanword's) row by its letters
+# --------------------------------------------------------------------------- #
+def test_a_hiragana_card_of_a_common_word_is_that_word_not_a_name_spelled_the_same(tmp_path):
+    """The user, 2026-09-30: a hiragana ひかり card is the word 光 'light'. A list can hold the name ヒカリ, read from
+    ひかりさん — its own word the card's letters in katakana, its commonest spelling ひかり — and the card's letters
+    reach that row exactly. Read alone, ひかり is 光, one word with a kanji: not the name. The card goes to 光's own
+    row when the list has one, else to none (then its sentence places it). Likewise だいぶ (大分 'considerably') is
+    not the loanword ダイブ 'dive'. A katakana ヒカリ card is written the way the name is and still reaches it."""
+    tokenize = _tokenizer().tokenize
+    index = anki_match.build_index(_write_list(tmp_path / "names.csv", [
+        ["ヒカリ", "ひかり", "光"], ["ダイブ", "ダイブ", ""], ["パン", "パン", ""]]), language="ja")
+    assert index.words == ["ヒカリ", "ダイブ", "パン"]
+    rank_of, words = index.rank_of, index.words
+    assert anki_match.card_key("ひかり", rank_of, "ja", None, tokenize, words) == ("", "")
+    assert anki_match.card_key("だいぶ", rank_of, "ja", None, tokenize, words) == ("", "")
+    assert anki_match.card_key("ヒカリ", rank_of, "ja", None, tokenize, words) == ("ヒカリ", "exact")
+    assert anki_match.card_key("ぱん", rank_of, "ja", None, tokenize, words) == ("ぱん", "exact"), \
+        "read alone it IS the katakana word: no kanji, no other word"
+    with_light = anki_match.build_index(_write_list(tmp_path / "light.csv", [
+        ["ヒカリ", "ひかり", ""], ["光", "光", ""]]), language="ja")
+    assert anki_match.card_key("ひかり", with_light.rank_of, "ja", None, tokenize, with_light.words) == ("光", "L6")
+    no = {"ひかり": {"target": "光", "answer": "no"}}
+    assert anki_match.card_key("ひかり", with_light.rank_of, "ja", no, tokenize, with_light.words) == ("", "")
+    yes = {"ひかり": {"target": "ヒカリ", "answer": "yes"}}
+    assert anki_match.card_key("ひかり", rank_of, "ja", yes, tokenize, words) == ("ヒカリ", "yes"), \
+        "the user's yes (a character called ひかり) places it"
+
+
+def test_without_the_rows_own_words_a_card_keeps_its_letters(tmp_path):
+    """An index built by hand holds no rows' words, and a caller that passes none keeps today's exact keys — never an
+    error. A kana card whose row is a kanji word (まく in 撒く's Forms) keeps it: only a row spelled as the card's
+    letters in katakana is another word's."""
+    tokenize = _tokenizer().tokenize
+    index = anki_match.build_index(_write_list(tmp_path / "list.csv", [
+        ["ヒカリ", "ひかり", ""], ["撒く", "撒く", "まく"]]), language="ja")
+    assert anki_match.card_key("ひかり", index.rank_of, "ja", None, tokenize) == ("ひかり", "exact")
+    assert anki_match.Index({}, {}, {}, {}).words is None
+    assert anki_match.card_key("まく", index.rank_of, "ja", None, tokenize, index.words) == ("まく", "exact")
+    assert anki_match.not_the_name("ひかり", "ひかり", index.rank_of, index.words, None) is None, "no tokenizer"

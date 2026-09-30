@@ -60,7 +60,10 @@ from operator import itemgetter
 # v11 words made of words are one word (上層部, 二十歳, 走り出す), a sound word + と is one (ドキッと), お守り and お帰り
 #    are words of their own and laughter stays in pieces: a v10 blob holds compounds in pieces, ドキッ + と, a laugh
 #    joined as a name and those お / ご words split — still 2.4, so users rebuild once with v8, v9 and v10.
-SCHEMA_VERSION = 11
+# v12 each file's record also holds the words that are people's names there (app/names.py, for Settings' "Ignore
+#    names"): a v11 store's records hold none, so the switch would hide no name from a file read before — still 2.4,
+#    so users rebuild once with v8–v11.
+SCHEMA_VERSION = 12
 
 
 # --------------------------------------------------------------------------- #
@@ -271,16 +274,18 @@ class Store:
 
     def _update_names_tables(self, cur):
         """Compute the library's name tables from every file's recorded candidates (and the last tables, for the
-        flip guard) and store them — after a reconcile changed something. Japanese only."""
+        flip guard) and store them, with the library's names (`names.name_words`, for Ignore names) — after a
+        reconcile changed something. Japanese only."""
         from app import analyzer, names
         row = cur.execute("SELECT value FROM meta WHERE key='names_tables'").fetchone()
         try:
             previous = json.loads(row[0]) if row else None
         except Exception:
             previous = None
-        records = (_decode_counts(blob) for (blob,) in cur.execute("SELECT names FROM files WHERE names IS NOT NULL"))
-        tables = names.compute_tables(list(records), previous, analyzer._sanitize_term)
-        for key, value in (("names_tables", tables), ("names_adjust", self._names_adjust(cur, tables))):
+        records = [_decode_counts(blob) for (blob,) in cur.execute("SELECT names FROM files WHERE names IS NOT NULL")]
+        tables = names.compute_tables(records, previous, analyzer._sanitize_term)
+        for key, value in (("names_tables", tables), ("names_adjust", self._names_adjust(cur, tables)),
+                           ("names_words", names.name_words(records, tables, analyzer._sanitize_term))):
             value = json.dumps(value, ensure_ascii=False)
             cur.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=?",
                         (key, value, value))
@@ -576,18 +581,43 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
 def read_names_tables(language):
     """The library's name tables the language's store holds (app/names.py), read without writing anything — None
     when there is no store or no tables yet."""
+    return _read_meta(language, "names_tables")
+
+
+def _read_meta(language, key):
+    """The JSON value `key` the language's store keeps in its meta table, read without writing anything — None when
+    there is no store or no such value."""
     path = store_path_for(language)
     if not os.path.exists(path):
         return None
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
         try:
-            row = conn.execute("SELECT value FROM meta WHERE key='names_tables'").fetchone()
+            row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         finally:
             conn.close()
         return json.loads(row[0]) if row else None
     except (sqlite3.Error, ValueError):
         return None
+
+
+def ignored_names(language):
+    """The library's names as ignored words — with Ignore names on (logic.ignore_names, off by default: a learner
+    learns names too, unless they choose not to): the lemmas the last index found to be people's names
+    (app/names.py `name_words`), read without writing anything. Part of `ignored_entries`, so every ignore set holds
+    them — the list, the Rarity slider and automatic rarity, Junban, 例文, the sentence dictionary, the YouTube
+    preview. [] with the switch off, for Chinese, and before the first index. The switch is read fresh, as the build
+    signature's are: the dashboard's slider must see a change as the next Generate will."""
+    if language != "ja":
+        return []
+    try:
+        from app import settings_manager
+        if not settings_manager.load_settings()["logic"].get("ignore_names", False):
+            return []
+    except Exception:
+        return []
+    words = _read_meta(language, "names_words")
+    return [str(word) for word in words if word] if isinstance(words, list) else []
 
 
 def _library_switches(language):
@@ -647,7 +677,8 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
     """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
     reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
     (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
-    chosen) — and KnownWord.json's IGNORED entries (`ignored_entries`), as the analyzer ignores them."""
+    chosen) — and KnownWord.json's IGNORED entries and, with Ignore names on, the library's names (`ignored_entries`),
+    as the analyzer ignores them."""
     from app.path_utils import read_text
     from app.zh_script import convert
     ignore = set()
@@ -665,18 +696,20 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
 
 def ignored_entries(user_files_dir, language):
     """The dictForms of KnownWord.json's IGNORED entries, as written — Migaku's status for a word the user dismissed
-    there. They are ignored words, as a line of the Ignore list is: off the list, and never an unknown in a sentence.
-    One reader for every ignore set — the analyzer's (`analyzer.load_ignored_entries`, a list's lines read the way the
-    lists are) and the Rarity preview's (`preview_ignore_set`), so the slider counts what the list counts.
-    Tokenizer-free, in the file's own encoding; a file that won't read ignores nothing."""
+    there — and, with Ignore names on, the library's names (`ignored_names`). They are ignored words, as a line of the
+    Ignore list is: off the list, and never an unknown in a sentence. One reader for every ignore set — the analyzer's
+    (`analyzer.load_ignored_entries`, a list's lines read the way the lists are) and the Rarity preview's
+    (`preview_ignore_set`), so the slider counts what the list counts. Tokenizer-free, in the file's own encoding; a
+    file that won't read ignores none of its entries."""
     from app.path_utils import read_text
     try:
         data = json.loads(read_text(os.path.join(user_files_dir, "KnownWord.json"), language))
     except Exception:
-        return []
+        data = None
     entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     return [str(e.get("dictForm") or "").strip() for e in entries
-            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()]
+            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED"
+            and str(e.get("dictForm") or "").strip()] + ignored_names(language)
 
 
 def preview_known_approx(user_files_dir, language, script="asis"):

@@ -438,9 +438,7 @@ def test_a_store_from_before_stretched_words_were_read_is_rebuilt(tmp_path):
 
 def test_a_store_from_before_compounds_were_one_word_is_rebuilt(tmp_path):
     """v10 -> v11: a word made of words is one word now — here 上層部, which the tagger cuts and a v10 store holds as
-    上層 + 部. Reusing a v10 store would keep the pieces, so it must be dropped and rebuilt. Pinned exactly: the next
-    bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 11
+    上層 + 部. Reusing a v10 store would keep the pieces, so it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "office.txt"
     _write(f, "会社の上層部が決めた。\n上層部は何も言わない。\n")
@@ -458,6 +456,31 @@ def test_a_store_from_before_compounds_were_one_word_is_rebuilt(tmp_path):
     assert s2.total_tokens() == 0, "a v10 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma = '上層部'").fetchall() == word
+    s2.close()
+
+
+def test_a_store_from_before_names_were_recorded_is_rebuilt(tmp_path):
+    """v11 -> v12: each file's record now holds the words that are people's names there, and the store keeps the
+    library's (Settings' Ignore names reads them). A v11 store's records hold none — reused, the switch would hide no
+    name from any file read before — so it must be dropped and rebuilt. Pinned exactly: the next bump updates this
+    knowingly."""
+    assert ti.SCHEMA_VERSION == 12
+    db = _db(tmp_path)
+    f = tmp_path / "village.txt"
+    _write(f, "須藤は村に来た。\n須藤は森に帰った。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert json.loads(s.get_meta("names_words")) == ["スドウ"]
+    s.close()
+    conn = sqlite3.connect(db)      # what a v11 store holds: records without names, no library names kept
+    conn.execute("DELETE FROM meta WHERE key = 'names_words'")
+    conn.execute("PRAGMA user_version = 11")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v11 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert json.loads(s2.get_meta("names_words")) == ["スドウ"]
     s2.close()
 
 

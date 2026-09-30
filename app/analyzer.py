@@ -1635,9 +1635,9 @@ def _list_words(lines, script="asis"):
 
 
 def load_ignored_entries(user_files_dir, script="asis", language=None):
-    """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) as ignored words — each
-    read as a line of the Ignore list is (`_list_words`). The one reader (`token_index.ignored_entries`) is the Rarity
-    preview's too, so the slider counts what the list counts."""
+    """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) and, with Ignore names on,
+    the library's names, as ignored words — each read as a line of the Ignore list is (`_list_words`). The one reader
+    (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts."""
     from app import token_index
     return _list_words(token_index.ignored_entries(user_files_dir, language), script)
 

@@ -38,7 +38,8 @@ LANGUAGES = ("ja", "zh")
 NAME_TABLES = ("names_recurring", "names_kanji", "names_work_terms")
 JAPANESE_ONLY = {"exclude_single": False, "logic.paren_readings": "any", "logic.names_katakana": False,
                  "logic.names_recurring": False, "logic.names_kanji": False, "logic.names_work_terms": False,
-                 "logic.phrases_and_titles": False, "logic.phrase_rows": False, "logic.ignore_names": True}
+                 "logic.phrases_and_titles": False, "logic.pronoun_bases": False, "logic.phrase_rows": False,
+                 "logic.ignore_names": True}
 OLD_ZH_ENDS = "。！？!?\n；;……｡"     # 2.3's Chinese sentence ends: …… and ； ended one
 
 
@@ -170,13 +171,13 @@ def _journey_current(lang="ja"):
 
 
 def _pre_24_settings():
-    """settings.json as 2.3's dashboard saved it: every key it knew at its default — but none of the six 2.4 added
-    (Ignore names, the work-terms switch, phrase rows, phrases and titles, Automatic rarity and its line), the old
-    Chinese sentence ends, and the retired reinforce_segmentation."""
+    """settings.json as 2.3's dashboard saved it: every key it knew at its default — but none of the seven 2.4 added
+    (Ignore names, the work-terms switch, phrase rows, phrases and titles, pronouns with a suffix, Automatic rarity and
+    its line), the old Chinese sentence ends, and the retired reinforce_segmentation."""
     settings = copy.deepcopy(settings_manager.DEFAULT_SETTINGS)
     settings["reinforce_segmentation"] = False
     logic = settings["logic"]
-    for key in ("ignore_names", "names_work_terms", "phrase_rows", "phrases_and_titles"):
+    for key in ("ignore_names", "names_work_terms", "phrase_rows", "phrases_and_titles", "pronoun_bases"):
         del logic[key]
     del logic["selection"]["auto"], logic["selection"]["auto_max_words"]
     logic["sentence_boundaries"]["zh"] = OLD_ZH_ENDS
@@ -286,12 +287,12 @@ def speech_sandbox(tmp_path, monkeypatch):
 # === 1. The settings as the run reads them ========================================================================= #
 def test_a_key_written_at_its_default_leaves_the_run_signature(library):
     """A key left out of settings.json and the same key written at its default are the same settings to the run
-    (load_settings fills the default in). They are the same to the run signature now — 2.4's first start writes six new
+    (load_settings fills the default in). They are the same to the run signature now — 2.4's first start writes seven new
     defaults into every file and the dashboard's start drops the retired key, and neither is a new analysis."""
     sparse = {"target_language": "ja", "logic": {"selection": {"band": "occasional"}}}
     written = {"target_language": "ja", "reinforce_segmentation": False,
                "logic": {"phrase_rows": True, "phrases_and_titles": True, "ignore_names": False,
-                         "names_work_terms": True,
+                         "names_work_terms": True, "pronoun_bases": True,
                          "selection": {"band": "occasional", "auto": False, "auto_max_words": 850}}}
     for lang in LANGUAGES:
         _write(sparse)
@@ -794,7 +795,8 @@ PLACED = {
     "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
     "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",
     "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",
-    "logic.phrases_and_titles": "analysis:ja", "logic.phrase_rows": "analysis:ja", "logic.ignore_names": "analysis:ja",
+    "logic.phrases_and_titles": "analysis:ja", "logic.pronoun_bases": "analysis:ja", "logic.phrase_rows": "analysis:ja",
+    "logic.ignore_names": "analysis:ja",
     "logic.weights.high": "analysis", "logic.weights.low": "analysis", "logic.weights.goal": "analysis",
     "logic.tiers.thresholds": "analysis",
     "logic.context.search_range": "neither", "logic.context.min_chars": "analysis", "logic.context.max_extra": "neither",

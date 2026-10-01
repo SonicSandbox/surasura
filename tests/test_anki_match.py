@@ -59,10 +59,11 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower; 22
     since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
     near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it; 25 since
-    one-kanji dictionary words are list words where they stand on their own — 門 joined the list above it.)"""
+    one-kanji dictionary words are list words where they stand on their own — 門 joined the list above it; 28 since the
+    words the tagger cuts at their grammar are words of their own — それで, なんで and どこにも joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 25
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 28
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -227,7 +228,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
     assert {"門", "旬", "肝"} <= {key for key in rank_of if len(key) == 1}
-    assert rank_of["中野"] == rank_of["ナカノ"] == 25
+    assert rank_of["中野"] == rank_of["ナカノ"] == 28
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -834,11 +835,11 @@ def test_a_word_conjugated_in_a_sentence_without_bold_is_still_found_and_marked(
 # Patterns_Quality_Spec §7: a word written with its tail — する, the copula's な / に, the particle に
 # --------------------------------------------------------------------------- #
 def test_a_tail_written_onto_a_word_is_known_by_its_lemma():
-    """同行する, 斬新な and 一気に read alone are the word + する (為る), the copula's な (だ) and the
-    particle に — the list has 同行, 斬新, 一気. Told apart by the lemma alone: the analyzer's tokens
-    carry no part of speech."""
+    """同行する, 斬新な and 最後に read alone are the word + する (為る), the copula's な (だ) and the
+    particle に — the list has 同行, 斬新, 最後. Told apart by the lemma alone: the analyzer's tokens
+    carry no part of speech. (一気に, which JMdict lists as an adverb of its own, is one word now.)"""
     tokenize = _tokenizer().tokenize
-    for word, lemmas in (("同行する", ["同行", "為る"]), ("斬新な", ["斬新", "だ"]), ("一気に", ["一気", "に"])):
+    for word, lemmas in (("同行する", ["同行", "為る"]), ("斬新な", ["斬新", "だ"]), ("最後に", ["最後", "に"])):
         tokens = tokenize(word)
         assert [token[0] for token in tokens] == lemmas, word
         assert anki_match.is_attached_tail(tokens[1][0]), word

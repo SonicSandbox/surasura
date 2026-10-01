@@ -116,7 +116,14 @@ ENSURE_AUDIO_EXAMPLE = False
 #     Traditional is written in Taiwan's standard characters (吃飯, 裡面); 著急 is read as 着急 where CC-CEDICT pairs
 #     them; a Chinese card's field is its one word (学习 (xuéxí) is 学习; 认真地 认真, 吃了 吃). Still 2.4: one
 #     re-analysis with 15–25.
-ENGINE_REVISION = 26
+# 27: words the tagger cuts at their grammar are the dictionary's words — a verb + its negative or causative JMdict's
+#     editors list (くだらない, つまらない, 知らせる, 思わず; すまない only in kana) and a word + particles it lists as
+#     an adverb or a conjunction (いつも, ちなみに, どうにか, a clause's でも), each counted as itself; a pronoun + a
+#     suffix the lists carry is one word (何様, 俺様, お前さん — logic.pronoun_bases); a katakana word stretched inside
+#     that is no word with its one ー is read without the stretch where that is a word (バイバ～イ is バイバイ); a
+#     pre-noun phrase usually written in kana counts only written in kana (そういった). Still 2.4: one re-analysis
+#     with 15–26.
+ENGINE_REVISION = 27
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -322,6 +329,10 @@ def _odd_characters(text, unread):
 # word goes on after a ッ, a small kana or ン, none of which begins a word (ザ─────ック, read ザーック as ザ～ック
 # is). A ッ that ends the word is the catch of a shout (待て──ッ; read as a stretch, 何──ッ became 何 + つ), and a
 # hiragana っ or ん that goes on starts the next word (──って, ──んだ): there the dash stays a dash.
+# A katakana word stretched so (two marks or more, a wave dash, a dash run) that is no word with its one ー is read
+# without it when that is a word — a headword of the lists, or one the tagger reads alone as one word it knows:
+# バイバ～イ is バイバイ, スト～ップ ストップ, ジャ─────ック ジャック. One ー as written is the word's own (オットー), and a
+# stretched spelling that is a word with one ー keeps it (スーーパー is スーパー).
 _STRETCH_MARKS = frozenset("ー〜─━―—")
 _DASHES = frozenset("─━―—")
 _DASH_RUN = "[ー〜─━―—]*[─━―—][ー〜─━―—]*"
@@ -382,6 +393,36 @@ def _lone_marks(read, at, nodes):
     return lone
 
 
+_KATAKANA_LETTER = re.compile("[\u30a1-\u30fa\u30fd-\u30ff]")
+_KATAKANA_IN_A_WORD = re.compile("[\u30a1-\u30fa\u30fc-\u30ff]")
+
+
+def _known_katakana(spelling):
+    """Is `spelling` a katakana word the dictionaries know as one word — a headword of the lists, or one the tagger
+    reads alone as one word it knows?"""
+    listed = names.katakana_headwords()
+    return (listed is not None and spelling in listed) or names._read_whole(spelling) is not None
+
+
+def _katakana_stretches(text, read, at):
+    """The indices of `text` holding the marks of a katakana word's stretch to read as nothing (§ A stretched vowel):
+    a stretch tagger_text read as one ー — never one ー as written — between two katakana letters, in a word that is
+    no word the dictionaries know with that ー and is one without it."""
+    drop = set()
+    for k in range(1, len(read) - 1):
+        if (read[k] != "ー" or text[at[k]:at[k + 1]] == "ー" or not _KATAKANA_LETTER.match(read[k - 1])
+                or not _KATAKANA_LETTER.match(read[k + 1])):
+            continue
+        a, b = k, k + 1
+        while a and _KATAKANA_IN_A_WORD.match(read[a - 1]):
+            a -= 1
+        while b < len(read) and _KATAKANA_IN_A_WORD.match(read[b]):
+            b += 1
+        if not _known_katakana(read[a:b]) and _known_katakana(read[a:k] + read[k + 1:b]):
+            drop.update(range(at[k], at[k + 1]))
+    return drop
+
+
 class ReadNode:
     """A tagger's node for text it read in another form (`tagger_text`): fugashi's feature, is_unk and white_space
     (the spaces before it), with the text's own spelling as its surface."""
@@ -411,9 +452,13 @@ class Tagger:
     def __call__(self, text, unread=()):
         read, at = tagger_text(text, unread)
         nodes = self._tagger(read)
-        if not unread and "ー" in read and _STRETCH_DROPPED_RE.search(read):
-            lone = _lone_marks(read, at, nodes)
-            if lone:             # a stretch UniDic lists no spelling for: read the word without it (§ above)
+        if not unread and "ー" in read:
+            # a stretch UniDic lists no spelling for, or a stretched katakana word no dictionary has with its one ー
+            # where it has the word without it: read the word without the stretch (§ A stretched vowel)
+            lone = _lone_marks(read, at, nodes) if _STRETCH_DROPPED_RE.search(read) else set()
+            if at is not None:
+                lone |= _katakana_stretches(text, read, at)
+            if lone:
                 return self(text, lone)
         out, end = [], 0
         for node in nodes:
@@ -479,10 +524,15 @@ def word_lemma(word):
 # Never joined onto a word: plural / collective suffixes (私たち, 子供たち, 先生方). An honorific joins
 # only where the dictionary has the word (母さん, 皆さん, 神様, お客様 — the user, checkpoint A); never
 # after a name, since a name is no base (田中さん).
+# A pronoun carries the suffixes after it too — 何様, 俺様, お前さん, それなり, これっぽっち: words of their own the
+# lists carry — while Settings -> "Pronouns with a suffix as one word" is on (logic.pronoun_bases, the default); off,
+# they count as their parts (何 + 様). Never a plural: the table's build reads 方 by the lists' reading, so あなた方
+# (アナタガタ) is never a word here, though the tagger reads its 方 カタ.
 _NEVER_JOINED = frozenset(("たち", "達", "ら", "等", "ども", "共", "がた"))
 # A nominalizer after a な-word stays a token of its own: 不自然さ counts toward 不自然 (the user, U2). UniDic
 # files most な-words as nouns that can be one (複雑, 便利: 形状詞可能) — 複雑さ and 便利さ stay apart too, while
-# 人間味 and よそみ, whose み is 味 and 見, still join.
+# 人間味 and よそみ, whose み is 味 and 見, still join. After a pronoun it is never one: これ + さ is これ and the
+# particle さ.
 _NOMINALIZERS = frozenset(("さ", "み"))
 # UniDic files 感 as a noun, not a suffix, though it builds words the way 性 and 的 do: 違和感, 存在感,
 # 緊張感, 罪悪感.
@@ -538,10 +588,11 @@ def _dictionary_table(name, empty):
         return empty
 
 
-# join_affixes asks for its two tables on every line, and the full lookup — the import, both modules' accessors and
-# the merge's identity test — cost more than a short line's own join. So each is resolved once and held with what it
-# was resolved from: the reference module (a test can take it away), its accessor (a test can swap it) and the
-# dictionaries' module (`_DICTIONARY`, which tests swap). A change to any of them resolves the table again.
+# join_affixes asks for its tables on every line (the affix joins, the compounds, the words the tagger cuts), and the
+# full lookup — the import, both modules' accessors and the merge's identity test — cost more than a short line's own
+# join. So each is resolved once and held with what it was resolved from: the reference module (a test can take it
+# away), its accessor (a test can swap it) and the dictionaries' module (`_DICTIONARY`, which tests swap). A change to
+# any of them resolves the table again.
 _RESOLVED = {}   # name -> (app.reference_data, its accessor `name`, _DICTIONARY, the table)
 
 
@@ -700,7 +751,8 @@ def _suffixed(words, end, key, pos1, joins):
             break
         if (category is None or _read(s) in _NEVER_JOINED or f.lemma in _NEVER_JOINED
                 or (f.lemma == "方" and f.lForm == "ガタ")
-                or (_read(s) in _NOMINALIZERS and (pos1 == "形状詞" or words[end].feature.pos3 == "形状詞可能"))):
+                or (_read(s) in _NOMINALIZERS
+                    and (pos1 in ("形状詞", "代名詞") or words[end].feature.pos3 == "形状詞可能"))):
             break
         key, pos1, end = key + spelled, category, end + 1
         if key in joins:
@@ -728,7 +780,7 @@ def _joined(parts, key, pos1, entry):
     return JoinedWord(surface, feature, snaps, getattr(parts[0], "white_space", ""))
 
 
-def join_affixes(words, joins=None, library=True, compounds=None):
+def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None):
     """`words` — one tagger call's nodes — with every prefix / suffix run that makes a dictionary word
     joined into one `JoinedWord` (§ above); every other node passes through untouched.
 
@@ -745,8 +797,9 @@ def join_affixes(words, joins=None, library=True, compounds=None):
     compound the dictionaries don't list inside a katakana name (ビルデイング) — and a compound
     takes its own prefix and suffixes (同性愛 + 者); then two fillers cut out of one interjection are that word (ま +
     あ = まあ) and a sound said over and over that the dictionary doesn't know is its sound word (ハァハァハァ is はあはあ);
-    then a sound word + と is that word shown with と (ドキッと). These depend on the text alone, so the token store
-    caches them.
+    then a sound word + と is that word shown with と (ドキッと); then a word the dictionary lists that the tagger cuts
+    at its grammar is that word (§ Words the tagger cuts: くだらない, 知らせる, いつも, ちなみに; `cut_words` defaults to
+    `cut_word_tables()`, ({}, {}) joins none). These depend on the text alone, so the token store caches them.
 
     Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
     list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
@@ -784,6 +837,10 @@ def join_affixes(words, joins=None, library=True, compounds=None):
         if sounds is not words:
             words, pos1s = sounds, None             # a sound word may be an adverb: _join_sokuon_to looks again
     words = _join_sokuon_to(words, pos1s)
+    if cut_words is None:
+        cut_words = cut_word_tables()
+    if cut_words[0] or cut_words[1]:
+        words = _join_cut_words(words, cut_words[0], cut_words[1])
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
     if library:
@@ -795,6 +852,7 @@ def join_affixes(words, joins=None, library=True, compounds=None):
 def _join_affix_runs(words, joins):
     """join_affixes' prefix / suffix joins (§ above)."""
     out, i, n = [], 0, len(words)
+    pronouns = LOGIC.get("pronoun_bases", True)
     while i < n:
         w = words[i]
         f = w.feature
@@ -812,7 +870,8 @@ def _join_affix_runs(words, joins):
                     if own and own[0] > found[0]:
                         found = None
         elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or _read(words[i + 1]) in _NOUN_SUFFIXES)
-                and _is_base(w) and not (i and words[i - 1].feature.pos2 == "数詞")):
+                and (_is_base(w) or (pronouns and f.pos1 == "代名詞" and not w.is_unk))
+                and not (i and words[i - 1].feature.pos2 == "数詞")):
             found = _suffixed(words, i, _read(w), f.pos1, joins)
         if found and found[0] > i:
             end, key, pos1 = found
@@ -1174,6 +1233,150 @@ def _join_sokuon_to(words, pos1s=None):
         out.append(_joined(words[i:i + 2], (f.orthBase or _read(w)) + "と", "副詞",
                            (f.lemma or w.surface, f.lForm or f.kana or "")))
         last = i + 2
+    if out is None:
+        return words
+    out.extend(words[last:])
+    return out
+
+
+# --- Words the tagger cuts at their grammar: the dictionary's words -------------------------------------------- #
+# UniDic's short units read some words as a word + its grammar: くだらない 'trivial' is 下る 'descend' + the negative
+# ない, つまらない 'boring' 詰まる 'be packed' + ない, 思わず 'involuntarily' 思う + ず, 知らせる 'inform' 知る + the
+# causative せる — so the list counted another verb for each use; いつも 'always' is いつ 'when' + も, ちなみに 'by the
+# way' 因み + に, どうにか 'somehow' どう + に + か, and a clause's opening でも 'but' two particles. JMdict lists each as
+# a word of its own, and such a run is that word (app/dictionary_data.py, built by scripts/build_reference_data.py):
+#   A verb + its negative or causative (ない; ず, ぬ, ん; せる, させる) — never only tense, politeness or aspect
+#     (変わった, すみません), never after a light verb (される is する's passive) — where JMdict's editors list the whole
+#     as a word: a priority tag of a curated list (ichi, spec). 変わらない 'constant', marked only as frequent in the
+#     news, is 変わる's negative in nearly every use; 知らない and 足りない carry no tag. A word JMdict says is usually
+#     written in kana counts only as written in kana: すまない 'sorry', never 済まない (済む's negative: では済まない).
+#     Keyed by its dictionary form when it conjugates (くだら + なかっ is くだらない's past: くだらなかっ + た), else as
+#     written (思わず, 絶えず).
+#   A word + particles JMdict lists as an adverb or a conjunction (never only as an expression: those stay pieces, and
+#     the phrase rows carry them) — a curated word that JPDB 2024 and Jiten each rank about as often as general text
+#     holds the run — whose first word is a closed-class word: particles opening a clause (でも; never after a word, a
+#     closing bracket or a quote: 『題』でも is the title + で + も), a pronoun (いつも, それとも), an adverb with more
+#     than an optional と / に after it (どうにか; すぐに is すぐ's) — or a noun the lists rank rarer alone than the
+#     whole (因み in ちなみに; 本当に stays 本当 + に). A run inside a longer dictionary spelling is that spelling's
+#     pieces (か + どう + か is かどうか, それに + し + て + も それにしても).
+# The longest match from the left wins. Each is a word of its own: it counts as itself, never as known through its
+# parts (knowing それ, と and も is no knowing それとも).
+_CUT_CONTENT = frozenset(("名詞", "代名詞", "副詞", "形状詞", "連体詞", "接続詞", "感動詞"))
+_CLOSERS = frozenset("」』）)】〕〉》］]｝}’”〟")      # a closing bracket or quote: a quoted name takes a particle
+_CUT_HEADS = (None, None, frozenset(), frozenset(), frozenset())   # (aux, particles, their first words, either)
+
+
+def cut_word_tables():
+    """(verb + auxiliary words, word + particle words): app/dictionary_data.py's tables (§ above) — {key: [lemma,
+    reading, pos1, first word as read, …]} — resolved once; ({}, {}) when the module or a table can't be read: such
+    words stay in UniDic's pieces."""
+    return _resolved("cut_word_tables", _cut_word_tables)
+
+
+def _cut_word_tables():
+    return _dictionary_table("aux_words", {}), _dictionary_table("particle_words", {})
+
+
+def _cut_heads(aux, particles):
+    """The first words, as read, of `aux`'s and `particles`' words, and both together — made once per tables: a line
+    holding none of them holds no such word, and that test runs in C."""
+    global _CUT_HEADS
+    if _CUT_HEADS[0] is not aux or _CUT_HEADS[1] is not particles:
+        a, p = frozenset(e[3] for e in aux.values()), frozenset(e[3] for e in particles.values())
+        _CUT_HEADS = (aux, particles, a, p, a | p)
+    return _CUT_HEADS[2:]
+
+
+def _clause_start(words, i):
+    """Nothing before words[i] on the line but punctuation that opens or separates: a case particle needs a word
+    before it, so particles there open a clause (え、でも). Never after a closing bracket or quote (『題』でも)."""
+    if not i:
+        return True
+    before = words[i - 1]
+    return before.feature.pos1 in ("補助記号", "空白") and not (before.surface and before.surface[-1] in _CLOSERS)
+
+
+def _aux_word(words, i, aux):
+    """(end, key) of the longest verb + auxiliaries at words[i] that `aux` holds — keyed by its dictionary form (the
+    last auxiliary's) when it conjugates, else as written — or None."""
+    w = words[i]
+    if w.is_unk or w.feature.pos1 != "動詞":
+        return None
+    j, n = i + 1, len(words)
+    while j < n and words[j].feature.pos1 == "助動詞" and not getattr(words[j], "white_space", ""):
+        j += 1
+    for end in range(j, i + 1, -1):
+        written, last = "".join(map(_read, words[i:end - 1])), words[end - 1]
+        key = written + _read(last)
+        entry = aux.get(key)
+        if entry is not None and not entry[4]:
+            return end, key
+        key = written + (last.feature.orthBase or _read(last))
+        entry = aux.get(key)
+        if entry is not None and entry[4]:
+            return end, key
+    return None
+
+
+def _blocked(words, i, end, longer):
+    """Does one of `longer` (longer dictionary spellings) hold words[i:end] here — on the tokens' bounds, reaching
+    before it or after it?"""
+    n = len(words)
+    for a in range(max(0, i - 3), i + 1):
+        for b in range(end, min(n, end + 4) + 1):
+            if (a < i or b > end) and "".join(map(_read, words[a:b])) in longer:
+                return True
+    return False
+
+
+def _particle_word(words, i, particles):
+    """(end, key) of the longest word + particles (or particles opening a clause) at words[i] that `particles`
+    holds, unless a longer dictionary spelling holds it here — or None."""
+    w = words[i]
+    first = w.feature.pos1
+    if w.is_unk or not (first in _CUT_CONTENT or (first == "助詞" and _clause_start(words, i))):
+        return None
+    j, n = i + 1, len(words)
+    while j < n and j - i <= 3 and words[j].feature.pos1 == "助詞" and not getattr(words[j], "white_space", ""):
+        j += 1
+    for end in range(j, i + 1, -1):
+        key = "".join(map(_read, words[i:end]))
+        entry = particles.get(key)
+        if entry is not None:
+            if bool(entry[4]) != (first == "助詞") or (entry[5] and _blocked(words, i, end, entry[5])):
+                return None
+            return end, key
+    return None
+
+
+def _join_cut_words(words, aux, particles):
+    """join_affixes' words the tagger cuts at their grammar (§ above): `words` with each joined into one word — the
+    same list when there is none. Only a token whose text heads such a word is looked at, found in C."""
+    heads_aux, heads_particles, heads = _cut_heads(aux, particles)
+    hits = list(compress(range(len(words) - 1), map(heads.__contains__, map(_ORTH, words))))
+    if not hits:
+        return words
+    out, last = None, 0
+    for i in hits:
+        if i < last:
+            continue
+        head, found, table = _ORTH(words[i]), None, None
+        if head in heads_aux:
+            found, table = _aux_word(words, i, aux), aux
+        if found is None and head in heads_particles:
+            found, table = _particle_word(words, i, particles), particles
+        if found is None:
+            continue
+        end, key = found
+        entry = table[key]
+        word = _joined(words[i:end], key, entry[2], (entry[0], entry[1]))
+        if entry[2] == "形容詞":
+            word.feature = word.feature._replace(cType="形容詞")    # ない conjugates as an adjective does
+        if out is None:
+            out = []
+        out.extend(words[last:i])
+        out.append(word)
+        last = end
     if out is None:
         return words
     out.extend(words[last:])
@@ -3353,7 +3556,8 @@ def compute_run_signature(language, found_files, args):
         # Read by a Japanese run only (measured: flipping any of them leaves every output of a Chinese
         # run byte for byte the same; the one-character rule's --include-single-chars too, in the args).
         _JAPANESE_ONLY_LOGIC = {"paren_readings", "names_katakana", "names_recurring", "names_kanji",
-                                "names_work_terms", "phrases_and_titles", "phrase_rows", "ignore_names"}
+                                "names_work_terms", "phrases_and_titles", "pronoun_bases", "phrase_rows",
+                                "ignore_names"}
         _settings_for_sig = ""
         try:
             # The settings as the run reads them (load_settings: the defaults filled in, a saved value

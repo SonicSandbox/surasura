@@ -82,7 +82,7 @@ def _dashboard(monkeypatch):
 
 
 def test_the_checkbox_saves_loads_and_shows_for_japanese_only(monkeypatch):
-    """One checkbox right below "Phrases and titles as one word", on by default, with its tooltip; Japanese only.
+    """One checkbox right below "Pronouns with a suffix as one word", on by default, with its tooltip; Japanese only.
     Unticking saves it into settings.json's logic block (the rest of the block kept); the next start reads it back,
     and a settings.json without it reads as on."""
     from tkinter import ttk
@@ -95,7 +95,7 @@ def test_the_checkbox_saves_loads_and_shows_for_japanese_only(monkeypatch):
         assert box.master is app.lang_options_frame and app.var_phrase_rows.get() is True
         app.var_language.set("ja")
         shown = app.lang_options_frame.pack_slaves()
-        assert shown.index(box) == shown.index(app.chk_phrases_and_titles) + 1, "right below phrases and titles"
+        assert shown.index(box) == shown.index(app.chk_pronoun_bases) + 1, "right below the pronouns switch"
         app.var_language.set("zh")
         assert box.winfo_manager() == "", "Chinese has no such rows"
         app.var_language.set("ja")

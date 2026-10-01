@@ -82,7 +82,11 @@ from operator import itemgetter
 #    forms at their word, Traditional through Simplified — with the new sentence ends: a v16 blob holds Chinese cut by
 #    jieba's guesses and phrases, numbers as words and …… / ；ending sentences — still 2.4, so users rebuild once
 #    with v8–v16.
-SCHEMA_VERSION = 17
+# v18 a verb + its negative or causative and a word + particles the dictionary lists are one word (くだらない, 知らせる,
+#    いつも, ちなみに), a pronoun + a suffix the lists carry is one (何様, お前さん), and a katakana word stretched
+#    inside is read without the stretch where that is a word (バイバ～イ): a v17 blob holds them in pieces — still 2.4,
+#    so users rebuild once with v8–v17.
+SCHEMA_VERSION = 18
 
 
 # --------------------------------------------------------------------------- #
@@ -431,9 +435,9 @@ class Store:
     # -- known-words cache (skip re-tokenizing known terms every run) -------- #
     def _known_key(self, signature):
         """`signature` with what else decides how a Japanese known word reads: the names switches and the library's
-        name tables (a known name is one word only with them), and the phrases switch (a known 予想通り is one word
-        or two) — so any change reads the known words again. The switches are read fresh, as the build signature's
-        are: the dashboard's check must see a change as the indexer it launches will."""
+        name tables (a known name is one word only with them), and the phrases and pronouns switches (a known 予想通り
+        or 何様 is one word or two) — so any change reads the known words again. The switches are read fresh, as the
+        build signature's are: the dashboard's check must see a change as the indexer it launches will."""
         if not signature or self.language != "ja":
             return signature
         try:
@@ -446,8 +450,9 @@ class Store:
         stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
         if switches != [True] * 4 or stamp is not None:
             signature = f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
-        if not logic.get("phrases_and_titles", True):
-            signature = f"{signature}|phrases_and_titles=off"
+        for key in ("phrases_and_titles", "pronoun_bases"):
+            if not logic.get(key, True):
+                signature = f"{signature}|{key}=off"
         # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined — the phrases' own, so the
         # phrase data's revision too (analyzer.load_known_words).
         if not logic.get("phrase_rows", True):
@@ -1071,14 +1076,15 @@ def build_signature(language, reinforce=False, script="asis"):
     config change invalidates stale tokens. What varies at runtime: Chinese `script`
     conversion, the sentence boundaries settings.json sets — they decide
     where every file splits — what a Japanese book's kana in parentheses become, whether a
-    katakana name is one word (logic.names_katakana) and whether a phrase or a title is
-    (logic.phrases_and_titles; language is already isolated per DB; a
-    tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by bumping SCHEMA_VERSION, which
-    rebuilds). Normalized so ja ignores a stray script. Chinese `reinforce` is retired: every store reads
-    "reinforce=False", the string a store built as shipped already holds. Each suffix appears ONLY when it
-    departs from the default — the script when converting, the boundaries when edited, the readings
-    when not hiragana only, the katakana names or the phrases when off — so a store built as shipped
-    keeps its exact old signature and upgrading never rebuilds anyone's index (spec I2)."""
+    katakana name is one word (logic.names_katakana), whether a phrase or a title is
+    (logic.phrases_and_titles) and whether a pronoun + a suffix is (logic.pronoun_bases; language is
+    already isolated per DB; a tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by
+    bumping SCHEMA_VERSION, which rebuilds). Normalized so ja ignores a stray script. Chinese
+    `reinforce` is retired: every store reads "reinforce=False", the string a store built as shipped
+    already holds. Each suffix appears ONLY when it departs from the default — the script when
+    converting, the boundaries when edited, the readings when not hiragana only, the katakana names,
+    the phrases or the pronouns when off — so a store built as shipped keeps its exact old signature
+    and upgrading never rebuilds anyone's index (spec I2)."""
     from app.zh_script import effective
     sig = f"{language}|reinforce=False"
     eff_script = effective(language, script)
@@ -1090,7 +1096,7 @@ def build_signature(language, reinforce=False, script="asis"):
     readings = _chosen_paren_readings(language)
     if readings is not None:
         sig = f"{sig}|paren_readings={readings}"
-    for key in ("names_katakana", "phrases_and_titles"):
+    for key in ("names_katakana", "phrases_and_titles", "pronoun_bases"):
         if _switched_off(language, key):
             sig = f"{sig}|{key}=off"
     return sig
@@ -1131,8 +1137,8 @@ def _chosen_paren_readings(language):
 
 def _switched_off(language, key):
     """Whether settings.json switches off a Japanese reading rule applied as a file is tokenized — katakana names
-    (logic.names_katakana: app/names.py) or phrases and titles as one word (logic.phrases_and_titles) — for a
-    Japanese store. Read fresh, as the boundaries are."""
+    (logic.names_katakana: app/names.py), phrases and titles as one word (logic.phrases_and_titles) or pronouns with
+    a suffix (logic.pronoun_bases) — for a Japanese store. Read fresh, as the boundaries are."""
     if language != "ja":
         return False
     try:

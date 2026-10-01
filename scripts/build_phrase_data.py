@@ -79,6 +79,7 @@ RARE_KANA = frozenset(("ik", "ok", "rk", "sk"))
 COMMON = frozenset(("news1", "ichi1", "spec1", "spec2", "gai1"))
 _LATIN = re.compile(r"[A-Za-z0-9Ａ-Ｚａ-ｚ０-９]")
 _JAPANESE = re.compile(f"[{KANA}{HAN}]")
+_KANJI = re.compile(f"[{HAN}]")
 # What can't start a phrase, as its first word is read alone: grammar, a conjunction (でまた) or a filler (あの子 —
 # the tagger reads あの alone as one).
 _NEVER_FIRST = frozenset(("助詞", "助動詞", "接尾辞", "接続詞"))
@@ -136,6 +137,21 @@ def pre_noun(entry, idx=None):
             if not any(pre_noun(target) for target in by_kanji.get(spelling, []) + by_kana.get(spelling, [])):
                 return False
     return True
+
+
+def usually_kana(entry):
+    """Does JMdict say the entry is usually written in kana — "uk" on every sense (そういった, ああいう, どういう)? A
+    pre-noun adjectival that only such entries give is found only as written in kana (phrases.before_a_noun): with the
+    verb's kanji, そう言ったのは is 'that he said so'."""
+    return bool(entry["senses"]) and all("uk" in s["misc"] for s in entry["senses"])
+
+
+def pre_noun_mark(c):
+    """The data's sixth field for candidate `c`: 1 a pre-noun adjectival (`pre_noun`), 2 one usually written in kana
+    too (`usually_kana`) that has a spelling in kana to be found in, else 0 — every entry behind the key, or none."""
+    if not c["prenoun"]:
+        return 0
+    return 2 if c["kana"] and any(not _KANJI.search(s) for s in c["spellings"]) else 1
 
 
 def entry_flags(entry):
@@ -259,13 +275,15 @@ def candidates(entries, compounds, log):
         if item is None:
             item = by_key[key] = {"key": key, "readings": tuple(t[1] for t in tokens), "roles": role,
                                   "spellings": [], "readings_jm": [], "orths": [set() for _ in tokens],
-                                  "spelled": {}, "flags": Counter(), "seqs": set(), "prenoun": True}
+                                  "spelled": {}, "flags": Counter(), "seqs": set(), "prenoun": True,
+                                  "kana": True}
         item["spellings"].append(spelling)
         for k, t in enumerate(tokens):
             item["orths"][k].add(t[3])
         for i, readings in found:
             item["seqs"].add(entries[i]["seq"])
             item["prenoun"] = item["prenoun"] and pre_noun(entries[i], idx)     # every entry behind it, or none
+            item["kana"] = item["kana"] and usually_kana(entries[i])
             item["flags"].update(k for k, v in entry_flags(entries[i]).items() if v)
             for reading in readings:
                 kana = _katakana(reading)
@@ -430,9 +448,10 @@ def display(c, jpdb, jiten):
 def rows_of(kept):
     """[lemmas, readings, roles, spelling, its reading, pre-noun] per phrase: the row's Reading is the dictionary's
     reading of the spelling shown (モシカシタラ for もしかしたら, not the words' own readings run together), else theirs;
-    pre-noun 1 when JMdict classes the phrase only as a pre-noun adjectival (`pre_noun`)."""
+    pre-noun 1 when JMdict classes the phrase only as a pre-noun adjectival, 2 when it is usually written in kana too
+    (`pre_noun_mark`)."""
     return sorted([["|".join(c["key"]), "|".join(c["readings"]), c["bound"], c["display"],
-                    c["spelled"].get(c["display"]) or "".join(c["readings"]), int(c["prenoun"])] for c in kept])
+                    c["spelled"].get(c["display"]) or "".join(c["readings"]), pre_noun_mark(c)] for c in kept])
 
 
 def blob(obj):
@@ -444,13 +463,13 @@ def write_module(rows, created, path=OUTPUT):
     for key, readings, role, shown, reading, prenoun in rows:
         lemmas = key.split("|")
         assert 2 <= len(lemmas) <= 5 and all(lemmas) and " " not in key, key
-        assert len(readings.split("|")) == len(lemmas) == len(role) and shown and reading and prenoun in (0, 1), key
+        assert len(readings.split("|")) == len(lemmas) == len(role) and shown and reading and prenoun in (0, 1, 2), key
     body = blob(rows)
     revision = f"{date.today().isoformat()}-{hashlib.sha1(body.encode('ascii')).hexdigest()[:8]}"
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(TEMPLATE.format(revision=revision, created=created or "", count=len(rows),
-                                n_bound=sum(1 for r in rows if "b" in r[2]), n_prenoun=sum(r[5] for r in rows),
-                                body=body))
+                                n_bound=sum(1 for r in rows if "b" in r[2]), n_prenoun=sum(1 for r in rows if r[5]),
+                                n_kana=sum(1 for r in rows if r[5] == 2), body=body))
     return revision
 
 
@@ -484,7 +503,7 @@ def main(argv=None):
         # Before the corpus pass: a phrase with a form of its own (もしかしたら) is found only in that form
         # (phrases.fixed_form), so the matcher needs the spelling it shows.
         c["display"] = display(c, jpdb, jiten)
-    rows = [["|".join(c["key"]), "|".join(c["readings"]), c["roles"], c["display"], "", int(c["prenoun"])]
+    rows = [["|".join(c["key"]), "|".join(c["readings"]), c["roles"], c["display"], "", pre_noun_mark(c)]
             for c in cands]
     log(f"R7: the shared set's text, {args.workers} workers...")
     t1 = time.time()
@@ -545,9 +564,11 @@ def write_report(cands, kept, dropped, folded, steps, examples, words, lines, cr
     for c, k in rng.sample(bound, min(50, len(bound))):
         out.append(f"- {c['key'][k]} in {c['display']} (the phrase JPDB #{c['jpdb']:,})")
     pre = sorted(c["display"] for c in kept if c["prenoun"])
+    kana = sorted(c["display"] for c in kept if c["prenoun"] and c["kana"])
     out += ["", f"## Pre-noun adjectivals (JMdict: adj-pn in every sense, nothing beside it but exp — or an expression "
             f"it sends to one): {len(pre):,} — "
-            "found only uninflected, straight before a word of its own", "", ", ".join(pre)]
+            "found only uninflected, straight before a word of its own", "", ", ".join(pre), "",
+            f"Usually written in kana (JMdict's uk on every sense), found only so: {len(kana):,} — " + ", ".join(kana)]
     differ = [c for c in kept if c["spelled"].get(c["display"]) != "".join(c["readings"])]
     out += ["", f"## Readings: {len(differ):,} phrases shown in a spelling whose dictionary reading is not their words' "
             "own readings run together (a conjugated end, a voiced sound — or a word the tagger misreads alone)", "",
@@ -570,8 +591,9 @@ Revision: {revision}
            as the tokenizer reads them (UniDic lemmas and readings, `|`-joined), each word's role — "c" a real word,
            "b" a real word that lives only inside the phrase ({n_bound:,} phrases hold one), "l" a light verb or
            adjective, "g" grammar — the dictionary's commonest spelling with its reading, and 1 when JMdict classes
-           the phrase only as a pre-noun adjectival ({n_prenoun:,} phrases). app/phrases.py finds them in a sentence's
-           words; Settings -> "Idioms and set phrases on your list" lists the ones a library meets often enough.
+           the phrase only as a pre-noun adjectival ({n_prenoun:,} phrases), 2 when it also says it is usually
+           written in kana ({n_kana:,} of them, found only so). app/phrases.py finds them in a sentence's words;
+           Settings -> "Idioms and set phrases on your list" lists the ones a library meets often enough.
 
 Derived from JMdict (JMdict created {created}), a dictionary of the JMdict/EDICT project, property of the Electronic
 Dictionary Research and Development Group (EDRDG), used in conformance with the Group's licence: Creative Commons
@@ -598,8 +620,8 @@ _PHRASES_B64 = (
 
 
 def phrases():
-    """[[lemmas, readings, roles, spelling, reading], ...] — every phrase, decoded on each call (app/phrases.py keeps
-    one decoded set per process); [] when unreadable."""
+    """[[lemmas, readings, roles, spelling, reading, pre-noun], ...] — every phrase, decoded on each call
+    (app/phrases.py keeps one decoded set per process); [] when unreadable."""
     try:
         return json.loads(zlib.decompress(base64.b64decode(_PHRASES_B64)).decode("utf-8"))
     except Exception:

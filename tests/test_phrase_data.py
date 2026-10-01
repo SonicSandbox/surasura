@@ -36,7 +36,7 @@ def test_every_phrase_is_two_to_five_words_in_the_matchers_shape(rows):
         assert 2 <= len(lemmas) <= 5 and all(lemmas) and " " not in key, key
         assert len(readings.split("|")) == len(lemmas) == len(roles), key
         assert set(roles) <= set("cblg") and set(roles) & set("cb"), key
-        assert shown and reading and prenoun in (0, 1), key
+        assert shown and reading and prenoun in (0, 1, 2), key
     assert len({row[0] for row in rows}) == len(rows), "one row per phrase"
 
 
@@ -46,7 +46,8 @@ def test_the_drift_guard_real_phrases_read_to_their_stored_words(rows):
     by_shown = {row[3]: row for row in rows}
     analyzer.SANITIZE_JA = True
     defaults = settings_manager.DEFAULT_SETTINGS["logic"]
-    for name in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles"):
+    for name in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles",
+                 "pronoun_bases"):
         analyzer.LOGIC[name] = defaults.get(name, True)
     tagger, joins = analyzer.Tagger(), analyzer.affix_joins()
     for spelling in SAMPLE:
@@ -71,11 +72,16 @@ def test_the_rules_hold_on_the_table(rows):
 def test_the_pre_noun_adjectivals_are_jmdicts(rows):
     """The phrases JMdict classes only as pre-noun adjectivals carry the mark — ああいう, こういう, そういう, どういう,
     罪なき — and so do the expressions it sends to one (そういった 'like that', 'see そういう'; こういった): each
-    stands only before a noun, so そう言った。 'said so' is no use of そういった. 気がする is none of them."""
+    stands only before a noun, so そう言った。 'said so' is no use of そういった. 気がする is none of them. Those JMdict
+    says are usually written in kana carry 2 — found only so, as そういった, never そう言ったのは — and 罪なき,
+    written with its kanji, is not one."""
     marked = {row[3] for row in rows if row[5]}
     assert {"ああいう", "こういう", "そういう", "どういう", "罪なき", "そう言った", "こういった"} <= marked
     assert "気がする" not in marked and "よく言う" not in marked
     assert 20 <= len(marked) <= 60
+    kana = {row[3] for row in rows if row[5] == 2}
+    assert {"ああいう", "こういう", "そういう", "どういう", "そう言った", "こういった"} <= kana <= marked
+    assert "罪なき" not in kana and len(kana) <= 20
 
 
 def test_the_matcher_reads_the_table(rows):

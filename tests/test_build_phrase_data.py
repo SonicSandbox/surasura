@@ -36,7 +36,8 @@ def read(bpd):
     """A headword read as the build reads it: every parsing switch at its default, shared data's tokenizer."""
     analyzer.SANITIZE_JA = True
     defaults = settings_manager.DEFAULT_SETTINGS["logic"]
-    for name in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles"):
+    for name in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles",
+                 "pronoun_bases"):
         analyzer.LOGIC[name] = defaults.get(name, True)
     tagger, joins, compounds = analyzer.Tagger(), analyzer.affix_joins(), analyzer.compound_joins()
 
@@ -147,14 +148,16 @@ def test_the_spelling_shown_reads_as_the_phrase_does(bpd, tmp_path, monkeypatch)
 def test_the_module_is_written_with_its_attribution(bpd, tmp_path):
     """The generated module decodes to the rows written, with JMdict's date, a revision and the EDRDG's licence."""
     path = tmp_path / "phrase_data.py"
-    rows = [["気|が|為る", "キ|ガ|スル", "cgl", "気がする", "キガスル", 0], ["ああ|言う", "アア|イウ", "cc", "ああいう", "アアイウ", 1]]
+    rows = [["気|が|為る", "キ|ガ|スル", "cgl", "気がする", "キガスル", 0], ["罪|無い", "ツミ|ナイ", "cl", "罪なき", "ツミナキ", 1],
+            ["ああ|言う", "アア|イウ", "cc", "ああいう", "アアイウ", 2]]
     revision = bpd.write_module(rows, "2026-09-28", str(path))
     spec = importlib.util.spec_from_file_location("toy_phrase_data", str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.phrases() == rows and module.COUNT == 2 and module.REVISION == revision
+    assert module.phrases() == rows and module.COUNT == 3 and module.REVISION == revision
     assert module.JMDICT_CREATED == "2026-09-28" and "CC BY-SA 4.0" in module.__doc__
-    assert "pre-noun adjectival (1 phrases)" in " ".join(module.__doc__.split())
+    doc = " ".join(module.__doc__.split())
+    assert "pre-noun adjectival (2 phrases), 2 when it also says it is usually written in kana (1 of them" in doc
     with pytest.raises(AssertionError):
         bpd.write_module([["気", "キ", "c", "気", "キ", 0]], "", str(path))      # one word is no phrase
 
@@ -182,3 +185,19 @@ def test_a_phrase_is_marked_pre_noun_only_when_jmdict_classes_it_so_and_nothing_
     assert not bpd.pre_noun(entry(("exp",), xref=("そういう",)))           # no index to look it up in
     assert not bpd.pre_noun(entry(("exp",), xref=("言う",)), idx)          # sent to a verb
     assert not bpd.pre_noun(entry(("exp",), xref=("どこにもない",)), idx)  # sent nowhere it can find
+
+
+def test_a_pre_noun_adjectival_usually_written_in_kana_is_marked_2(bpd):
+    """JMdict's "uk" on every sense of every entry behind a pre-noun phrase (そういった, ああいう, どういう) makes the mark
+    2 — found only as written in kana — when the phrase has a spelling in kana to be found in; one sense without it,
+    or no kana spelling, leaves it 1; a phrase that is no pre-noun adjectival is 0 whatever its tags."""
+    assert bpd.usually_kana({"senses": [{"misc": ("uk",)}, {"misc": ("uk", "form")}]})
+    assert not bpd.usually_kana({"senses": [{"misc": ("uk",)}, {"misc": ()}]})
+    assert not bpd.usually_kana({"senses": []})
+
+    def cand(prenoun, kana, spellings):
+        return {"prenoun": prenoun, "kana": kana, "spellings": spellings}
+    assert bpd.pre_noun_mark(cand(True, True, ["そう言った", "そういった"])) == 2
+    assert bpd.pre_noun_mark(cand(True, True, ["有り得べき"])) == 1           # no spelling in kana to be found in
+    assert bpd.pre_noun_mark(cand(True, False, ["罪なき", "罪無き"])) == 1
+    assert bpd.pre_noun_mark(cand(False, True, ["もったいない"])) == 0

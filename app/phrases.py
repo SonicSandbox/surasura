@@ -13,9 +13,11 @@ and 目を輝かせて is 目を輝かせる. But a phrase that ends in grammar 
 そういうことなら's なら, never the dictionary form た or だ — is that form only: そういうことだ is another expression
 (`fixed_form`). A phrase JMdict classes only as a pre-noun adjectival (ああいう, こういう, ひどすぎる — adj-pn) stands
 only before a word of its own (ああいう人, ああいうの), never inflected: ああ言って is the words 'say so'
-(`before_a_noun`). At each place in a sentence the longest phrase wins and the search goes on after it (no overlaps).
-A phrase whose words stand on both sides of a comma or any other mark the tokenizer dropped (気が、付いた), or that
-ends in another form than its own, is no phrase there: the next shorter one at that place is tried instead.
+(`before_a_noun`) — and one JMdict says is usually written in kana (そういった, どういう) only as written in kana:
+with the verb's kanji, そう言ったのは is 'that he said so'. At each place in a sentence the longest phrase wins and the
+search goes on after it (no overlaps). A phrase whose words stand on both sides of a comma or any other mark the
+tokenizer dropped (気が、付いた), or that ends in another form than its own, is no phrase there: the next shorter one at
+that place is tried instead.
 
 Each word of a phrase has a role: grammar (a particle, an ending, a prefix or suffix, an auxiliary verb after て), a
 light verb or adjective (する, なる, ある, いる, できる, ない, いい), or a real word — and a real word that lives only
@@ -28,24 +30,32 @@ switch is off.
 """
 
 import functools
+import re
 from collections import namedtuple
+
+from app.unicode_ranges import HAN
 
 # Each word's role in its phrase: a real word ("c"), a real word that lives only inside the phrase ("b", learned with
 # it), a light verb or adjective ("l") or grammar ("g").
 CONTENT, BOUND, LIGHT, GRAMMAR = "c", "b", "l", "g"
 
-Phrase = namedtuple("Phrase", "key readings roles display word reading prenoun", defaults=(False,))
+Phrase = namedtuple("Phrase", "key readings roles display word reading prenoun", defaults=(0,))
 Phrase.__doc__ = """One set phrase: `key` its words' lemmas, `readings` theirs (UniDic lForm), `roles` one letter per
 word (above), `display` the dictionary's commonest spelling; `word` and `reading` are the list row's Word and Reading —
 the lemmas joined (気が付く, 若しか為るた) and the dictionary's reading of the spelling shown (キガツク, モシカシタラ);
-`prenoun`: JMdict classes it only as a pre-noun adjectival (`before_a_noun`)."""
+`prenoun`: 1 when JMdict classes it only as a pre-noun adjectival, 2 when it also says it is usually written in kana
+(`before_a_noun`), else 0."""
 
 # What `find` finds: bump it whenever a change here finds other phrases in the same words — the token store then counts
 # every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data.
-MATCHER_VERSION = 3
+MATCHER_VERSION = 4
+
+# Phrase.prenoun: a pre-noun adjectival JMdict says is usually written in kana (its "uk" on every sense).
+KANA_ONLY = 2
 
 _END = None          # the trie's mark for "a phrase ends here" (a lemma is never None)
 _HIRAGANA = {code: code - 0x60 for code in range(0x30A1, 0x30F7)}      # katakana -> hiragana, for str.translate
+_KANJI = re.compile(f"[{HAN}]")             # Unicode's Han (app/unicode_ranges.py)
 
 
 def before_a_noun(phrase, tokens, start, end, text):
@@ -54,8 +64,13 @@ def before_a_noun(phrase, tokens, start, end, text):
     before a word of its own (ああいう人, どう言う意味) or the 'one' の (ああいうの), a space between at most (ああいう
     毛色)? Never at the end of a sentence or before grammar (ああいうよ), never inflected (ああ言って). A word of its
     own: a lemma not in hiragana alone — UniDic spells every particle's and ending's lemma in hiragana, a noun's,
-    adjective's or verb's almost always with a kanji or katakana."""
+    adjective's or verb's almost always with a kanji or katakana. One JMdict says is usually written in kana
+    (`prenoun` 2: そういった, ああいう, どういう) is the phrase only as written in kana: with the verb's kanji, そう言ったのは
+    and そう言ったはず are nearly always 'said so', a relative clause — and the rarer kanji-written どう言う意味 is
+    given up with them."""
     if end == len(tokens):
+        return False
+    if phrase.prenoun == KANA_ONLY and _KANJI.search("".join(token[2] for token in tokens[start:end])):
         return False
     last = tokens[end - 1]
     if not (phrase.display.endswith(last[2]) or last[2] == last[3]):
@@ -80,7 +95,7 @@ class PhraseSet:
     def __init__(self, entries):
         """`entries`: [key, readings, roles, display, reading, prenoun] per phrase — key and readings `|`-joined, as
         app/phrase_data.py stores them; `reading` (the row's, the display's own) defaults to the words' readings run
-        together, `prenoun` to 0 — or Phrase tuples."""
+        together, `prenoun` (0, 1 or 2) to 0 — or Phrase tuples."""
         self.entries = []
         self._by_word = {}
         self._trie = self.firsts = self._fixed = None   # made on the first search (Generate mostly reads the store's)
@@ -92,7 +107,7 @@ class PhraseSet:
                 readings = tuple([same.setdefault(s, s) for s in readings.split("|")])
                 reading = entry[4] if len(entry) > 4 and entry[4] else "".join(readings)
                 entry = Phrase(key, readings, same.setdefault(roles, roles), display, "".join(key), reading,
-                               bool(entry[5]) if len(entry) > 5 else False)
+                               int(entry[5] or 0) if len(entry) > 5 else 0)
             self._by_word.setdefault(entry.word, len(self.entries))
             self.entries.append(entry)
 
@@ -124,10 +139,10 @@ class PhraseSet:
     def find(self, tokens, text):
         """[(start, end, index)] — the phrases in one sentence: `tokens` are the analyzer's (lemma, reading, surface,
         orth), `text` the sentence they were read from. Longest first at each place, then on after it; a match that
-        ends in another form than the phrase's own (`fixed_form`), a pre-noun adjectival standing before no noun
-        (`before_a_noun`), or a match whose surfaces are not one run of `text` (it stood across a mark the tokenizer
-        dropped), is none, and the next shorter phrase at that place is tried. Most sentences hold no phrase's first
-        word and are passed over in C."""
+        ends in another form than the phrase's own (`fixed_form`), a pre-noun adjectival standing before no noun or
+        written with a kanji where it is usually written in kana (`before_a_noun`), or a match whose surfaces are
+        not one run of `text` (it stood across a mark the tokenizer dropped), is none, and the next shorter phrase at
+        that place is tried. Most sentences hold no phrase's first word and are passed over in C."""
         trie = self._trie if self._trie is not None else self._search()
         lemmas = [token[0] for token in tokens]
         firsts = self.firsts

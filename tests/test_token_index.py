@@ -686,8 +686,7 @@ def test_a_store_from_before_one_kanji_pieces_were_recorded_is_rebuilt(tmp_path)
 def test_a_store_from_before_chinese_was_cut_by_the_dictionary_is_rebuilt(tmp_path):
     """v16 -> v17: Chinese is cut by analyzer.chinese_cut — jieba's guesses off, CC-CEDICT's words, numbers no words,
     doubled forms at their word, the new sentence ends. A v16 store holds the old pieces (他来 as one word): it must be
-    dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 17
+    dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "trip.txt"
     _write(f, "他来了，我们一起吃了一碗饭。\n大家都开开心心的。\n")
@@ -703,6 +702,31 @@ def test_a_store_from_before_chinese_was_cut_by_the_dictionary_is_rebuilt(tmp_pa
     s2 = ti.open_store("zh", path=db)
     assert s2.total_tokens() == 0, "a v16 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("zh"))
+    assert {lemma for (lemma, _reading) in s2.word_counts()[0]} == words
+    s2.close()
+
+
+def test_a_store_from_before_the_dictionary_words_the_tagger_cuts_is_rebuilt(tmp_path):
+    """v17 -> v18: a verb + its negative or causative and a word + particles the dictionary lists are one word, a
+    pronoun + a suffix the lists carry is one, a katakana word stretched inside is read without the stretch where that
+    is a word. A v17 store holds them in pieces (いつ + も): it must be dropped and rebuilt. Pinned exactly: the next
+    bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 18
+    db = _db(tmp_path)
+    f = tmp_path / "late.txt"
+    _write(f, "彼はいつも遅れてくる。\nそんなくだらない話はやめろ。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    words = {lemma for (lemma, _reading) in s.word_counts()[0]}
+    s.close()
+    assert {"いつも", "くだらない"} <= words and not {"何時", "下る"} & words
+    conn = sqlite3.connect(db)      # what a v17 store is: the version it was written with
+    conn.execute("PRAGMA user_version = 17")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v17 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert {lemma for (lemma, _reading) in s2.word_counts()[0]} == words
     s2.close()
 

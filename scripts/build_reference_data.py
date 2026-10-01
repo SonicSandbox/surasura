@@ -40,7 +40,9 @@ These tables come out of it:
 What the dictionaries themselves say about the compounds — a title of a work, a product or an
 organization (JMnedict), and JMdict's word when its file is here (a phrase, a katakana word it doesn't
 list, a noun a verb's stem may stand in) — goes to app/dictionary_data.py: its licence (CC BY-SA 4.0)
-is not this module's.
+is not this module's. So do the words JMdict lists that the tagger cuts at their grammar — a verb + its
+negative or causative (くだらない = 下る + ない, 知らせる = 知る + せる) and a word + particles that is an
+adverb or a conjunction (いつも = いつ + も, ちなみに = 因み + に): see "Words the tagger cuts" below.
 
 Inputs live in docs/assets/reference_lists/ — gitignored, and deliberately NOT under scripts/,
 which packaging/Surasura.spec bundles wholesale: left there they would add ~78 MB of dead
@@ -198,7 +200,8 @@ FLAG_STEMS = 8                        # a noun a verb's stem may stand in (出�
 COMPOUND_REPORT = os.path.join(ROOT, "debug", "compound_joins.md")
 SAMPLE = 50
 # The switches the tokenizer's joins read (logic.*): shared data never follows the builder's own settings.json.
-PARSING_SWITCHES = ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles")
+PARSING_SWITCHES = ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles",
+                    "pronoun_bases")
 
 
 def pin_parsing_defaults():
@@ -316,14 +319,17 @@ class _Every(dict):
 def build_joins(tagger, headwords):
     """written form -> [lemma, reading]: each headword that the join, allowed everything, rebuilds from
     its own tokens into exactly one word of that spelling — so the table and `join_affixes` agree by
-    construction (a prefix + a word, a word + suffixes; never after a number, never a name's honorific)."""
+    construction (a prefix + a word, a word + suffixes, a pronoun + suffixes while logic.pronoun_bases is on — the
+    build pins it on; never after a number, never a name's honorific) — and never a plural by the lists' reading:
+    あなた方 is アナタガタ, though the tagger reads its 方 カタ (as the compounds' `plural` reads it)."""
     every, joins = _Every(), {}
     for word, (reading, _rank) in headwords.items():
         tokens = tagger(word)
         if len(tokens) < 2:
             continue
         joined = _join_affix_runs(tokens, every)
-        if len(joined) == 1 and isinstance(joined[0], JoinedWord) and joined[0].feature.orthBase == word:
+        if (len(joined) == 1 and isinstance(joined[0], JoinedWord) and joined[0].feature.orthBase == word
+                and not plural(tokens, reading)):
             joins[word] = [word, reading]
     return joins
 
@@ -464,10 +470,11 @@ def subkind(kind, words):
     return "plain"
 
 
-def read_words(tagger, text, affix, compounds=None):
+def read_words(tagger, text, affix, compounds=None, cut=None):
     """`text` as the app reads it from these tables (analyzer.join_affixes: the affix joins, the compounds, a
-    compound's own affixes, a sound word + と, a katakana name) — without the library's names."""
-    return join_affixes(tagger(text), affix, library=False, compounds=compounds or {})
+    compound's own affixes, a sound word + と, the words the tagger cuts at their grammar — `cut`, (aux words, particle
+    words), none unless given —, a katakana name) — without the library's names, and never the installed tables."""
+    return join_affixes(tagger(text), affix, library=False, compounds=compounds or {}, cut_words=cut or ({}, {}))
 
 
 # --- Numbers: which words holding one join --------------------------------------------------------------------- #
@@ -894,7 +901,8 @@ def _in_text_file(path):
                         if kind:
                             if joined is None:
                                 at = _spans(words)
-                                joined = _spans(join_affixes(raw, affix, library=False, compounds=compounds))
+                                joined = _spans(join_affixes(raw, affix, library=False, compounds=compounds,
+                                                             cut_words=({}, {})))
                             a, b = at[i][0], at[j][1]
                             if not any(x0 <= a and b <= x1 or x0 < a < x1 or x0 < b < x1 for x0, x1 in joined):
                                 shape = _run_shape(words[i:j + 1])
@@ -1512,7 +1520,7 @@ def stretched(tagger, word):
     return bool(_STRETCH_DROPPED_RE.search(read)) and bool(_lone_marks(read, at, tagger._tagger(read)))
 
 
-def build_aliases(tagger, vocabularies, joins=None, compounds=None):
+def build_aliases(tagger, vocabularies, joins=None, compounds=None, cut=None):
     """lemma -> the best-ranked spelling that produces it.
 
     Collisions are the subtle part: many spellings collapse to one lemma (する, し, しぃ all
@@ -1526,7 +1534,7 @@ def build_aliases(tagger, vocabularies, joins=None, compounds=None):
         for word, rank in ranks.items():
             if stretched(tagger, word):
                 continue               # read as its word said longer: シリ〜ズ would become シリーズ's spelling
-            tokens = read_words(tagger, word, joins or {}, compounds)
+            tokens = read_words(tagger, word, joins or {}, compounds, cut)
             if len(tokens) != 1:
                 continue               # multi-token entries would key on a misleading lemma
             lemma = tokens[0].feature.lemma or word
@@ -1643,6 +1651,256 @@ def build_compounds(tagger, headwords, affix, lists, workers=WORKERS, in_text=No
             "stems": stems, "reparted": reparted}
 
 
+# --- Words the tagger cuts at their grammar (app/dictionary_data.py) ------------------------------------------- #
+# UniDic's short units read some words JMdict lists as a word + its grammar (analyzer § Words the tagger cuts):
+# くだらない = 下る + ない, 知らせる = 知る + せる, いつも = いつ + も, ちなみに = 因み + に. Every JMdict spelling of a verb,
+# an adjective, an adverb, a conjunction or an interjection is read alone as the tables just made read it; one read as
+# a verb + auxiliaries, or (an adverb's or a conjunction's) as a word + particles or particles alone, is a candidate.
+# A kana spelling counts only for an entry usually written in kana (uk) or with no kanji form: いたい, 痛い's kana,
+# reads 居る + たい. Where entries share a key, a common one (a priority tag), else the one Jiten ranks best, speaks.
+#   AUX_WORDS       a verb + its negative or causative (UniDic's ない; ず, which is ず / ぬ / ん; せる; させる) — never
+#                   tense, politeness, aspect or the passive (思われる is mostly 思う's own passive), never after a
+#                   light verb (させる is する's causative) — whose spelling JMdict's editors list as a word: a priority
+#                   tag of a curated list (ichi, spec; news / nf only count a string in the news: 変わらない). An entry
+#                   usually written in kana only in kana (すまない; 済まない is 済む's negative). Keyed by its
+#                   dictionary form when it conjugates (知ら + せる), else as written (思わず).
+#   PARTICLE_WORDS  a word + particles JMdict lists as an adverb or a conjunction (never only an expression: those
+#                   stay pieces — the phrase rows carry them), curated as above, that JPDB 2024 and Jiten EACH rank at
+#                   most UNIT_RATIO times rarer than the rank its runs have among the words of the shared set's text —
+#                   the phrase rows' R7, on both lists (Jiten's parser takes それを and 何を whole) —, whose first word is
+#                   particles (joined only opening a clause), a pronoun, an adverb with more than an optional と / に
+#                   after it (どうにか; never すぐに, ちらと), or a noun JPDB ranks rarer alone than the whole (因み; never
+#                   本当); with JMdict's longer spellings that hold it (かどうか around どうか), where it stays a piece.
+# One lemma per entry: the spelling of its kept keys the lists rank best (いつも, not 何時も), as Part A's spellings.
+CUT_NOT_A_VERB = frozenset(("vs", "vt", "vi", "vs-c"))       # a noun taking する, and transitivity marks
+CUT_POS1 = {"adj-i": "形容詞", "adj-ix": "形容詞", "adj-na": "形状詞", "adj-pn": "連体詞", "adv": "副詞",
+            "adv-to": "副詞", "conj": "接続詞", "int": "感動詞"}
+CUT_AUXILIARIES = frozenset(("ない", "ず", "せる", "させる"))
+CUT_LIGHT = frozenset(("為る", "成る", "有る", "居る", "出来る", "為さる", "致す", "御座る"))
+CUT_CURATED = ("ichi", "spec")
+CUT_NEVER_FIRST = frozenset(("助動詞", "動詞", "形容詞", "接頭辞", "接尾辞", "補助記号", "記号", "空白"))
+CUT_LONGEST = 10                    # characters: the longer spellings that may hold a word + particles
+UNIT_RATIO = 8                      # R7's (scripts/build_phrase_data.py)
+
+
+def _cut_kinds(entry):
+    """The kinds of word an entry's senses name, of verb, adj, adv, conj, int."""
+    kinds = set()
+    for sense in entry["senses"]:
+        for p in sense["pos"]:
+            if p.startswith("v") and p not in CUT_NOT_A_VERB:
+                kinds.add("verb")
+            elif p.startswith("adj") and p != "adj-no":
+                kinds.add("adj")
+            elif p in ("adv", "adv-to"):
+                kinds.add("adv")
+            elif p in ("conj", "int"):
+                kinds.add(p)
+    return kinds
+
+
+def _cut_pos1(entry):
+    """The word class the joined word takes: the first part of speech of its senses the tagger has a class for."""
+    for sense in entry["senses"]:
+        for p in sense["pos"]:
+            if p in CUT_POS1:
+                return CUT_POS1[p]
+            if p.startswith("v") and p not in CUT_NOT_A_VERB:
+                return "動詞"
+    return "名詞"
+
+
+def _cut_rank(ranks, spelling, readings):
+    """A list's best rank for `spelling` under any of its readings, or None."""
+    return min(filter(None, (ranks.rank([spelling], r) for r in readings)), default=None)
+
+
+def cut_candidates(tagger, entries, joins, compounds, lists):
+    """-> ({key: candidate} read as a verb + auxiliaries, {key: candidate} read as a word + particles), see "Words the
+    tagger cuts": each JMdict spelling read alone as these tables read it."""
+    jpdb, jiten = lists
+    aux, particles = {}, {}
+    for entry in entries:
+        kinds = _cut_kinds(entry)
+        if not kinds:
+            continue
+        uk, pos1 = any("uk" in sense["misc"] for sense in entry["senses"]), _cut_pos1(entry)
+        spellings = [(keb, [_katakana(reb) for reb, _p, restr, nokanji, _i in entry["kana"]
+                            if not nokanji and (not restr or keb in restr)], pri, False)
+                     for keb, pri, _inf in entry["kanji"]]
+        spellings += [(reb, [_katakana(reb)], pri, True) for reb, pri, _restr, _nokanji, _inf in entry["kana"]]
+        for spelling, readings, pri, kana in spellings:
+            if len(spelling) < 2 or (kana and entry["kanji"] and not uk):
+                continue
+            words = read_words(tagger, spelling, joins, compounds)
+            if len(words) < 2 or words[0].is_unk or "".join(map(_read, words)) != spelling:
+                continue
+            classes = [w.feature.pos1 for w in words]
+            if classes[0] == "動詞" and all(x == "助動詞" for x in classes[1:]):
+                table, base = aux, pos1 in ("動詞", "形容詞")
+            elif (("adv" in kinds or "conj" in kinds) and classes[0] not in CUT_NEVER_FIRST
+                  and all(x == "助詞" for x in classes[1:])):
+                table, base = particles, False
+            else:
+                continue
+            first = words[0].feature
+            key = spelling
+            if base:
+                key = "".join(map(_read, words[:-1])) + (words[-1].feature.orthBase or _read(words[-1]))
+            c = {"spelling": spelling, "seq": entry["seq"], "reading": readings[0] if readings else _katakana(spelling),
+                 "pos1": pos1, "uk": uk, "kana": kana, "base": int(base), "head": _read(words[0]),
+                 "first": (words[0].surface, first.lemma, first.lForm or "", first.pos1),
+                 "rest": [w.feature.lemma for w in words[1:]],
+                 "common": any(p.startswith(PRIORITY_TAGS) for p in pri),
+                 "curated": any(p.startswith(CUT_CURATED) for p in pri),
+                 "jpdb": _cut_rank(jpdb, spelling, readings), "jiten": _cut_rank(jiten, spelling, readings)}
+            held = table.get(key)
+            if held is None or (c["common"], -(c["jiten"] or 10 ** 7)) > (held["common"], -(held["jiten"] or 10 ** 7)):
+                table[key] = c
+    return aux, particles
+
+
+def _cut_aux_why(c):
+    """Why a verb + auxiliaries candidate is left out — "" when it is kept (see "Words the tagger cuts")."""
+    if not c["curated"]:
+        return "no curated tag"
+    if not set(c["rest"]) <= CUT_AUXILIARIES:
+        return "tense, politeness, aspect or the passive"
+    if c["first"][1] in CUT_LIGHT:
+        return "a light verb"
+    if c["uk"] and not c["kana"]:
+        return "usually written in kana"
+    return ""
+
+
+def _cut_particle_why(c, jpdb):
+    """Why a word + particles candidate is left out — "" when it is kept (see "Words the tagger cuts"); `c` holds its
+    uses' rank in the text."""
+    if not c["curated"]:
+        return "no curated tag"
+    if c["jpdb"] is None or c["jiten"] is None or max(c["jpdb"], c["jiten"]) / c["rank"] > UNIT_RATIO:
+        return "R7"
+    surface, lemma, reading, pos1 = c["first"]
+    if pos1 in ("助詞", "代名詞"):
+        return ""
+    if pos1 == "副詞":
+        return "an adverb + an optional と / に" if c["rest"] in (["と"], ["に"]) else ""
+    alone = jpdb.rank([x for x in (surface, lemma) if x], _katakana(reading))
+    return "" if alone is None or alone > c["jpdb"] else "a free word + a particle"
+
+
+_CUT = {}
+
+
+def _cut_init(joins, compounds, counters, table):
+    from app.analyzer import Tagger
+    pin_parsing_defaults()
+    use_counters(counters)
+    _CUT.update(tagger=Tagger(), joins=joins, compounds=compounds, table=table, none={})
+
+
+def _cut_count(path):
+    """-> (path, {(lemma, reading): uses}, {key: runs}) for one text file of the shared set: every word it counts, and
+    the runs of the word + particles candidates — found as the tokenizer finds them (analyzer._join_cut_words: the
+    longest from the left, particles only opening a clause), no longer spelling holding them back."""
+    from app import analyzer
+    c = _CUT
+    tagger, joins, compounds, table, none = c["tagger"], c["joins"], c["compounds"], c["table"], c["none"]
+    counts, runs = Counter(), Counter()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            words = read_words(tagger, line, joins, compounds)
+            for w in words:
+                lemma = analyzer.word_lemma(w)
+                if lemma is None:
+                    continue
+                lemma = _sanitize_term(lemma)
+                if analyzer.has_target_language(lemma, "ja") or analyzer.has_target_language(w.surface, "ja"):
+                    counts[(lemma, w.feature.lForm or w.feature.kana or "")] += 1
+            held = {id(w) for w in words}
+            for w in analyzer._join_cut_words(words, none, table):
+                if id(w) not in held:
+                    runs[w.feature.orthBase] += 1
+    return path, counts, runs
+
+
+def cut_text_counts(joins, compounds, counters, table, workers=WORKERS):
+    """One pass over the shared set's text (`_cut_count`) with the tables `joins` and `compounds`, finding the runs of
+    `table`'s words -> ({(lemma, reading): uses}, {key: runs}, files, seconds)."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    paths = sorted(_corpus_texts(), key=lambda p: -os.path.getsize(p))
+    counts, runs, t0 = Counter(), Counter(), time.time()
+    with ProcessPoolExecutor(workers, multiprocessing.get_context("spawn"), _cut_init,
+                             (joins, compounds, counters, table)) as pool:
+        for done, (path, c, r) in enumerate(pool.map(_cut_count, paths), 1):
+            counts.update(c)
+            runs.update(r)
+            print(f"    {done}/{len(paths)} {os.path.relpath(path, CORPUS_TEXT)} ({time.time() - t0:.0f} s)",
+                  flush=True)
+    return counts, runs, len(paths), time.time() - t0
+
+
+def cut_word_tables(tagger, joins, compounds, counters, lists, workers=WORKERS):
+    """AUX_WORDS and PARTICLE_WORDS (see "Words the tagger cuts"), with what decided them for the report -> dict. Both
+    empty when JMdict or its reader isn't here."""
+    out = {"aux": {}, "particles": {}, "aux_candidates": {}, "particle_candidates": {}, "files": 0, "seconds": 0.0}
+    try:
+        import jmdict_flags
+    except ImportError:
+        print("  (scripts/jmdict_flags.py is not here: no words cut at their grammar are joined)")
+        return out
+    if not os.path.isfile(JMDICT):
+        print(f"  ({os.path.relpath(JMDICT, ROOT)} is not here: no words cut at their grammar are joined)")
+        return out
+    t0 = time.time()
+    entries = jmdict_flags.load(JMDICT)
+    aux_c, particle_c = cut_candidates(tagger, entries, joins, compounds, lists)
+    print(f"  read alone: {len(aux_c):,} as a verb + auxiliaries, {len(particle_c):,} as a word + particles "
+          f"({time.time() - t0:.0f} s)")
+
+    every = {k: [k, c["reading"], c["pos1"], c["head"], int(c["first"][3] == "助詞"), []] for k, c in particle_c.items()}
+    counts, runs, files, seconds = cut_text_counts(joins, compounds, frozenset(counters), every, workers)
+    negated = [-n for n in sorted((n for n in counts.values() if n >= 2), reverse=True)]
+
+    jpdb, jiten = lists
+    for key, c in particle_c.items():
+        c["uses"] = runs.get(key, 0)
+        c["rank"] = bisect.bisect_left(negated, -c["uses"]) + 1
+        c["why"] = _cut_particle_why(c, jpdb)
+    for c in aux_c.values():
+        c["why"] = _cut_aux_why(c)
+
+    def words(kept):
+        """key -> (lemma, reading): its entry's one word, the spelling of the entry's kept keys the lists rank best, with
+        that spelling's reading (それじゃあ is それじゃ's)."""
+        by_entry = defaultdict(list)
+        for key, c in kept.items():
+            by_entry[c["seq"]].append(key)
+        word = {}
+        for keys in by_entry.values():
+            best = kept[min(keys, key=lambda k: (kept[k]["jpdb"] or 10 ** 7, kept[k]["jiten"] or 10 ** 7, k))]
+            word.update((k, (_sanitize_term(best["spelling"]), best["reading"])) for k in keys)
+        return word
+
+    kept_aux = {k: c for k, c in aux_c.items() if not c["why"]}
+    kept_particles = {k: c for k, c in particle_c.items() if not c["why"]}
+    aux_word, particle_word = words(kept_aux), words(kept_particles)
+    longer = {s for e in entries for s in [k[0] for k in e["kanji"]] + [r[0] for r in e["kana"]]
+              if len(s) <= CUT_LONGEST}
+    out.update(
+        aux={k: [*aux_word[k], c["pos1"], c["head"], c["base"]] for k, c in sorted(kept_aux.items())},
+        particles={k: [*particle_word[k], c["pos1"], c["head"], int(c["first"][3] == "助詞"),
+                       sorted(s for s in longer if k in s and s != k)] for k, c in sorted(kept_particles.items())},
+        aux_candidates=aux_c, particle_candidates=particle_c, files=files, seconds=seconds)
+    print(f"  kept {len(out['aux']):,} verbs + auxiliaries, {len(out['particles']):,} words + particles (the text: "
+          f"{files} files, {seconds:.0f} s)")
+    return out
+
+
 def main():
     from app.analyzer import Tagger
     t_start = time.time()
@@ -1676,8 +1934,13 @@ def main():
     built = compound_tables(tagger, headwords, affix, ogo_split, lists, in_text)
     table, joins, compounds = built["table"], built["joins"], built["compounds"]
 
+    print("\nWords JMdict lists that the tagger cuts at their grammar...")
+    cut = cut_word_tables(tagger, joins, compounds, built["named"], lists)
+    built.update(cut_words=cut)
+    cut_tables = (cut["aux"], cut["particles"])
+
     print("\nBuilding alias map (tokenizing reference vocabulary)...")
-    aliases = build_aliases(tagger, spoken + [written], joins, compounds)
+    aliases = build_aliases(tagger, spoken + [written], joins, compounds, cut_tables)
     print(f"  {len(aliases):,} aliases")
 
     print("\nBuilding spoken-rank table...")
@@ -1701,7 +1964,7 @@ def main():
                 dropped["veto"] += 1
                 continue
 
-        tokens = read_words(tagger, word, joins, compounds)
+        tokens = read_words(tagger, word, joins, compounds, cut_tables)
         if len(tokens) != 1:
             dropped["multi"] += 1
             continue
@@ -1745,7 +2008,7 @@ def main():
             counters_b64=b64["counters"],
         ))
     print(f"\nWrote {OUTPUT} ({os.path.getsize(OUTPUT)/1024:,.0f} KB)")
-    write_dictionary_data(built["flags"], built["ogo"], built["created"])
+    write_dictionary_data(built["flags"], built["ogo"], built["created"], cut)
     built.update(affix=affix, aliases=aliases, spoken_rank=spoken_rank, headwords=headwords,
                  seconds=time.time() - t_start, sizes={k: len(v) for k, v in b64.items()})
     write_report(built, COMPOUND_REPORT)
@@ -1820,15 +2083,17 @@ def compact_parts(table):
     return {"parts": unique, "of": of}
 
 
-def write_dictionary_data(flags, ogo, created):
+def write_dictionary_data(flags, ogo, created, cut=None):
     sources = "JMnedict" + (f" and JMdict (JMdict created {created})" if created else "")
+    aux, particles = (cut or {}).get("aux", {}), (cut or {}).get("particles", {})
     with open(DICTIONARY_OUTPUT, "w", encoding="utf-8") as f:
         f.write(DICTIONARY_TEMPLATE.format(
             revision=date.today().isoformat(), created=created or "", sources=sources, n_flags=len(flags),
             n_titles=sum(1 for b in flags.values() if b & FLAG_TITLE == FLAG_TITLE),
             n_unlisted=sum(1 for b in flags.values() if b & FLAG_UNLISTED),
-            n_stems=sum(1 for b in flags.values() if b & FLAG_STEMS), n_ogo=len(ogo),
-            flags_b64=blob(flags), ogo_b64=blob(ogo)))
+            n_stems=sum(1 for b in flags.values() if b & FLAG_STEMS), n_ogo=len(ogo), n_aux=len(aux),
+            n_particles=len(particles), flags_b64=blob(flags), ogo_b64=blob(ogo), aux_b64=blob(aux),
+            particles_b64=blob(particles)))
     print(f"Wrote {DICTIONARY_OUTPUT} ({os.path.getsize(DICTIONARY_OUTPUT)/1024:,.0f} KB)")
 
 
@@ -1932,6 +2197,29 @@ def write_report(built, path):
                     f"{w} = " + " + ".join(p[0] for p in table[w][4]) for w in sorted(built["reparted"]))]
         for why, words in in_text["refused"].items():
             out += ["", f"Kept out, {why} ({len(words):,}): " + " · ".join(sorted(words)[:60])]
+    cut = built.get("cut_words")
+    if cut:
+        out += ["", "## Words the tagger cuts at their grammar", "",
+                f"JMdict spellings read alone as a verb + auxiliaries: {len(cut['aux_candidates']):,}; kept "
+                f"{len(cut['aux']):,} (a curated tag, the negative or the causative, never after a light verb):", ""]
+        out += [f"- {k} → {e[0]} {e[1]} ({e[2]})" for k, e in sorted(cut["aux"].items())]
+        out += ["", f"Read alone as a word + particles (adverbs, conjunctions): {len(cut['particle_candidates']):,}; "
+                f"the shared set's text ({cut['files']} files, {cut['seconds']:.0f} s); kept {len(cut['particles']):,} "
+                "(curated, R7 on both lists, a closed-class or bound first word):", "",
+                "| key | lemma | pos | uses | text rank | JPDB | Jiten | first word | longer spellings |",
+                "| :-- | :-- | :-- | --: | --: | --: | --: | :-- | --: |"]
+        for k in sorted(cut["particles"], key=lambda k: -cut["particle_candidates"][k]["uses"]):
+            e, c = cut["particles"][k], cut["particle_candidates"][k]
+            out.append(f"| {k} | {e[0]} | {e[2]} | {c['uses']:,} | {c['rank']:,} | {c['jpdb'] or ''} | "
+                       f"{c['jiten'] or ''} | {c['first'][3]} | {len(e[5])} |")
+        refused = sorted((k for k, c in cut["particle_candidates"].items() if c["why"] and c["uses"]),
+                         key=lambda k: -cut["particle_candidates"][k]["uses"])
+        candidates = cut["particle_candidates"]
+        out += ["", "Refused, most met first: " + " · ".join(
+            f"{k} {candidates[k]['uses']:,} ({candidates[k]['why']})" for k in refused[:150])]
+        refused = sorted((k for k, c in cut["aux_candidates"].items() if c["why"]), key=lambda k: k)
+        out += ["", "Verbs + auxiliaries refused: " + " · ".join(
+            f"{k} ({cut['aux_candidates'][k]['why']})" for k in refused)]
     free = Counter(p[2] for e in table.values() for p in e[4])
     bound = sum(1 for e in table.values() if not all(p[2] for p in e[4]))
     out += ["", "## Parts", "", f"Parts free {free[1]:,}, bound {free[0]:,}; compounds with a bound part {bound:,}."]
@@ -2129,7 +2417,7 @@ def counters():
 '''
 
 
-DICTIONARY_TEMPLATE = '''"""The dictionaries' word on the compounds — GENERATED, DO NOT EDIT BY HAND.
+DICTIONARY_TEMPLATE = '''"""The dictionaries' word on the compounds and on the words the tagger cuts — GENERATED, DO NOT EDIT BY HAND.
 
 Regenerate with:  python scripts/build_reference_data.py
 
@@ -2144,14 +2432,21 @@ Revision: {revision}
                   of nouns and verb stems spelling it is joined too.
   OGO_JOINS       {n_ogo:,} お / ご words that are words of their own, with a meaning the bare word lacks ->
                   [lemma, reading]: joined as affix words whatever their share.
+  AUX_WORDS       {n_aux:,} words JMdict's editors list that the tagger reads as a verb + its negative or causative
+                  (くだらない = 下る + ない, 知らせる = 知る + せる) -> [lemma, reading, word class, the verb as read, 1
+                  when keyed by its dictionary form]: one word wherever the run stands.
+  PARTICLE_WORDS  {n_particles:,} adverbs and conjunctions JMdict lists that the tagger reads as a word + particles
+                  (いつも = いつ + も, ちなみに = 因み + に, でも = で + も) -> [lemma, reading, word class, the first word as
+                  read, 1 when it is particles that open a clause, the longer spellings that hold it]: one word
+                  where it stands, unless a longer spelling holds it there (かどうか).
 
 Derived from {sources}, dictionaries of the JMdict/EDICT project, property of the Electronic
 Dictionary Research and Development Group (EDRDG), used in conformance with the Group's licence: Creative
 Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0),
 https://creativecommons.org/licenses/by-sa/4.0/ — https://www.edrdg.org/edrdg/licence.html,
 https://www.edrdg.org/jmdict/j_jmdict.html, https://www.edrdg.org/enamdict/enamdict_doc.html. Changes: only
-spellings and flags are kept (no glosses), matched to the compound and affix tables of
-app/reference_data.py. This table is shared under the same licence.
+spellings, readings and flags are kept (no glosses), matched to the compound and affix tables of
+app/reference_data.py and to how the tokenizer reads JMdict's spellings. This table is shared under the same licence.
 
 Stored compressed and decoded lazily; each table is empty when it cannot be read, never an exception.
 """
@@ -2171,8 +2466,18 @@ _OGO_JOINS_B64 = (
     "{ogo_b64}"
 )
 
+_AUX_WORDS_B64 = (
+    "{aux_b64}"
+)
+
+_PARTICLE_WORDS_B64 = (
+    "{particles_b64}"
+)
+
 _flags = None
 _ogo = None
+_aux = None
+_particles = None
 
 
 def _decode(b64):
@@ -2202,6 +2507,31 @@ def ogo_joins():
         except Exception:
             _ogo = {{}}
     return _ogo
+
+
+def aux_words():
+    """key -> [lemma, reading, word class, the verb as read, 1 when keyed by its dictionary form]: a verb + its
+    negative or causative that is a word of its own (analyzer § Words the tagger cuts). Empty when unreadable."""
+    global _aux
+    if _aux is None:
+        try:
+            _aux = _decode(_AUX_WORDS_B64)
+        except Exception:
+            _aux = {{}}
+    return _aux
+
+
+def particle_words():
+    """key -> [lemma, reading, word class, the first word as read, 1 when it is particles opening a clause, the
+    longer spellings that hold it]: a word + particles that is an adverb or a conjunction (analyzer § Words the tagger
+    cuts). Empty when unreadable."""
+    global _particles
+    if _particles is None:
+        try:
+            _particles = _decode(_PARTICLE_WORDS_B64)
+        except Exception:
+            _particles = {{}}
+    return _particles
 '''
 
 

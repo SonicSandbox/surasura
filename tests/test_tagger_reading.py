@@ -306,7 +306,7 @@ def test_a_stretched_line_maps_back_onto_its_text():
 # a small kana or ン — none of which begins a word.
 
 @pytest.mark.parametrize("line, lemma, surface", [
-    ("観客が「ザ─────ック！」と叫んだ。", "ザーック", "ザ─────ック"),       # one word, as ザ～ック is: no ザ + ック
+    ("観客が「ザ─────ック！」と叫んだ。", "ざっく", "ザ─────ック"),         # one word: ザーック is none, the sound ザック is
     ("お母さ───ん！ご飯まだ？", "さん", "さ───ん"),                         # no さ + ん read as an interjection
     ("ド────ン！と音がした。", "どーん", "ド────ン"),                       # no ン read as the auxiliary ず
 ])
@@ -328,6 +328,33 @@ def test_a_dash_drawn_out_inside_a_word_is_a_stretch(tokenizer, sanitized, line,
 def test_a_dash_between_words_stays_a_dash(tokenizer, sanitized, line, words):
     assert analyzer.tagger_text(line) == (line, None)
     assert [lemma for lemma, _r, _s, _o in _tokens(tokenizer, line)] == words
+
+
+# A katakana word stretched inside — two marks or more, a wave dash, a dash run — that is no word with its one ー is
+# read without it where that is a word the dictionaries know (a headword of the lists, or one the tagger reads whole):
+# ジャ～ック is the name ジャック. A stretched spelling that is a word with one ー keeps it, and one ー as written is the
+# word's own.
+
+@pytest.mark.parametrize("line, lemma, surface", [
+    ("ジャ～ック、こっちだ！", "ジャック", "ジャ～ック"),
+    ("バイバ～イ、またね。", "バイバイ", "バイバ～イ"),
+    ("スト～ップ！止まって！", "ストップ", "スト～ップ"),
+    ("ジャーーーック、待って！", "ジャック", "ジャーーーック"),       # a run of marks: one stretch
+])
+def test_a_stretched_katakana_word_no_dictionary_has_is_read_without_the_stretch(tokenizer, sanitized, line, lemma,
+                                                                                surface):
+    keys = {(lemma_, surface_) for lemma_, _r, surface_, _o in _tokens(tokenizer, line)}
+    assert (lemma, surface) in keys
+
+
+@pytest.mark.parametrize("line, lemma, surface", [
+    ("近くのスーーパーで買った。", "スーパー", "スーーパー"),     # a word with one ー: the ー stays
+    ("オットーが来た。", "オットー", "オットー"),                 # one ー as written is the word's own
+])
+def test_a_stretched_katakana_word_that_is_a_word_with_its_long_vowel_keeps_it(tokenizer, sanitized, line, lemma,
+                                                                               surface):
+    keys = {(lemma_, surface_) for lemma_, _r, surface_, _o in _tokens(tokenizer, line)}
+    assert (lemma, surface) in keys
 
 
 def test_katakana_words_with_a_long_vowel_take_the_fast_path():

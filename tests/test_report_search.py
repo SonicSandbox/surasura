@@ -183,8 +183,11 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     dictionary words where they stand on their own (手, 顔, こと) and lets no one-character word the list can't offer
     keep a sentence from i+1; 26 reads Chinese like Chinese — only the dictionary makes a word (他来 is 他 + 来), a
     phrase entry with grammar in it is its words, a number is no word, a doubled form is its word, Traditional is
-    written in Taiwan's standard characters, …… and ；no longer end a sentence, and a Chinese card is its one word.)"""
-    assert analyzer.ENGINE_REVISION == 26
+    written in Taiwan's standard characters, …… and ；no longer end a sentence, and a Chinese card is its one word; 27
+    makes the words the tagger cuts at their grammar the dictionary's words (くだらない, 知らせる, いつも, ちなみに), a
+    pronoun + a suffix the lists carry one word (何様, お前さん), reads a katakana word stretched inside without the
+    stretch where that is a word (バイバ～イ), and counts a pre-noun phrase usually written in kana only in kana.)"""
+    assert analyzer.ENGINE_REVISION == 27
 
 
 # --------------------------------------------------------------------------- #

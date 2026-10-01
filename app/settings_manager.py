@@ -86,6 +86,12 @@ DEFAULT_SETTINGS = {
         # counts: in the run signature (never _NON_ANALYSIS_SETTINGS); read as a file is tokenized
         # (analyzer.join_affixes), so it is in the token store's build signature when off.
         "phrases_and_titles": True,
+        # Pronouns with a suffix as one word (Settings -> Language & Parsing), Japanese only: a pronoun + a suffix the
+        # lists carry as a word of its own (何様, 俺様, お前さん, それなり) is one word; off, it counts as its parts
+        # (何 + 様). It changes what a run counts: in the run signature (never _NON_ANALYSIS_SETTINGS); read as a file
+        # is tokenized (analyzer.join_affixes), so it is in the token store's build signature and the known-words
+        # cache's key when off.
+        "pronoun_bases": True,
         # Idioms and set phrases on your list (Settings -> Language & Parsing), Japanese only, on: JMdict's set phrases
         # the library meets as often as the cut-off asks of a word get rows of their own (気がする, 腑に落ちる,
         # もしかしたら — app/phrases.py); their words keep their rows. It changes what a run lists: in the run signature

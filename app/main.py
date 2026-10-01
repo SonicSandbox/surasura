@@ -128,7 +128,7 @@ def csv_has_data_rows(path):
 DATA_CREDITS = """Data credits — what Surasura ships or is built from
 
 Dictionaries
-• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
+• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, the words the tokenizer cuts at their grammar (くだらない, いつも), kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
 • UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
 • jieba — MIT licence: how Chinese is split into words.
 • OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese, Traditional in Taiwan's standard characters.
@@ -136,7 +136,7 @@ Dictionaries
 • Universal Dependencies Chinese treebanks (GSDSimp, HK, CFL) — CC BY-SA 4.0: which Chinese counts are a number and a measure word (一个 is 一 + 个).
 
 Frequency lists (ranks only)
-• JPDB 2024 and Jiten: which compounds, affixed words, set phrases and one-kanji words are words, and which words live only inside a phrase.
+• JPDB 2024 and Jiten: which compounds, affixed words, set phrases, adverbs cut at their particles and one-kanji words are words, and which words live only inside a phrase.
 • TMW Netflix, Anime & J-drama, Novels and VN lists: the 文 reading-word badge.
 
 Text, counted into statistics only (never a sentence)
@@ -367,6 +367,8 @@ class MasterDashboardApp:
         self.var_names_work_terms = tk.BooleanVar(value=True)
         # Phrases and titles as one word (logic.phrases_and_titles), Japanese only, on by default.
         self.var_phrases_and_titles = tk.BooleanVar(value=True)
+        # Pronouns with a suffix as one word (logic.pronoun_bases), Japanese only, on by default.
+        self.var_pronoun_bases = tk.BooleanVar(value=True)
         # Idioms and set phrases on your list (logic.phrase_rows), Japanese only, on by default.
         self.var_phrase_rows = tk.BooleanVar(value=True)
         # Ignore names (logic.ignore_names), Japanese only, off by default: a learner learns names too.
@@ -453,6 +455,7 @@ class MasterDashboardApp:
         self.paren_readings_frame: Optional[ttk.Frame] = None
         self.names_frame: Optional[ttk.Frame] = None
         self.chk_phrases_and_titles: Optional[ttk.Checkbutton] = None
+        self.chk_pronoun_bases: Optional[ttk.Checkbutton] = None
         self.chk_phrase_rows: Optional[ttk.Checkbutton] = None
         self.chk_ignore_names: Optional[ttk.Checkbutton] = None
         self.lbl_credits: Optional[ttk.Label] = None
@@ -1081,6 +1084,8 @@ class MasterDashboardApp:
                     self.names_frame.pack_forget()
                 if self.chk_phrases_and_titles:
                     self.chk_phrases_and_titles.pack_forget()
+                if self.chk_pronoun_bases:
+                    self.chk_pronoun_bases.pack_forget()
                 if self.chk_phrase_rows:
                     self.chk_phrase_rows.pack_forget()
                 if self.chk_ignore_names:
@@ -1099,6 +1104,8 @@ class MasterDashboardApp:
                         self.names_frame.pack(anchor=tk.W, pady=(2, 0))
                     if self.chk_phrases_and_titles:
                         self.chk_phrases_and_titles.pack(anchor=tk.W)
+                    if self.chk_pronoun_bases:
+                        self.chk_pronoun_bases.pack(anchor=tk.W)
                     if self.chk_phrase_rows:
                         self.chk_phrase_rows.pack(anchor=tk.W)
                     if self.chk_ignore_names:
@@ -1554,10 +1561,18 @@ class MasterDashboardApp:
         ToolTip(self.chk_phrases_and_titles, "On: 予想通り, こと自体, 元首相 and もののけ姫 each count as one word. "
                                              "Off: they count as their parts (予想 + 通り).")
 
+        # Pronouns with a suffix as one word (Japanese): a pronoun + a suffix the lists carry as a word of its own is
+        # one word, or its parts. Packed by update_ui_for_language right below the phrases-and-titles switch, Japanese
+        # only; it changes how every file is read, so flipping it re-indexes the library in the background.
+        self.chk_pronoun_bases = ttk.Checkbutton(self.lang_options_frame, text="Pronouns with a suffix as one word",
+                                                 variable=self.var_pronoun_bases, command=self.save_settings)
+        ToolTip(self.chk_pronoun_bases, "On: 何様, 俺様, お前さん and それなり each count as one word. "
+                                        "Off: they count as their parts (何 + 様).")
+
         # Idioms and set phrases on your list (Japanese): the dictionary's set phrases the library meets often enough
         # get rows of their own; nothing is joined in the text, so flipping it re-reads no file — the next Generate
         # lists them, and the Rarity slider counts them once the library's phrases are counted (in the background).
-        # Packed by update_ui_for_language right below the phrases-and-titles switch, Japanese only.
+        # Packed by update_ui_for_language right below the pronouns switch, Japanese only.
         self.chk_phrase_rows = ttk.Checkbutton(self.lang_options_frame, text="Idioms and set phrases on your list",
                                                variable=self.var_phrase_rows,
                                                command=lambda: (self.save_settings(), self._refresh_band_preview()))
@@ -2458,6 +2473,7 @@ class MasterDashboardApp:
             self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
             self.var_names_work_terms.set(bool(self.logic_settings.get("names_work_terms", True)))
             self.var_phrases_and_titles.set(bool(self.logic_settings.get("phrases_and_titles", True)))
+            self.var_pronoun_bases.set(bool(self.logic_settings.get("pronoun_bases", True)))
             self.var_phrase_rows.set(bool(self.logic_settings.get("phrase_rows", True)))
             self.var_ignore_names.set(bool(self.logic_settings.get("ignore_names", False)))
             context_settings = self.logic_settings.get("context", {})
@@ -2553,6 +2569,7 @@ class MasterDashboardApp:
                     "names_kanji": self.var_names_kanji.get(),
                     "names_work_terms": self.var_names_work_terms.get(),
                     "phrases_and_titles": self.var_phrases_and_titles.get(),
+                    "pronoun_bases": self.var_pronoun_bases.get(),
                     "phrase_rows": self.var_phrase_rows.get(),
                     "ignore_names": self.var_ignore_names.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /

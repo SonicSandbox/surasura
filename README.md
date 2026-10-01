@@ -205,12 +205,14 @@ used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — b
 [anki_miner](https://github.com/0xzerolight/anki_miner). Only the spellings of surnames and given names are kept; that
 table (`app/name_data.py`) is shared under the same licence.
 
-Which compounds are set phrases or titles (Settings → Language & Parsing → "Phrases and titles as one word"), and
-which お / ご words have a meaning of their own (お守り, お帰り), comes from
+Which compounds are set phrases or titles (Settings → Language & Parsing → "Phrases and titles as one word"),
+which お / ご words have a meaning of their own (お守り, お帰り), and which words the tokenizer cuts at their grammar are
+words of their own (くだらない, 知らせる, いつも, ちなみに) comes from
 [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html), the Japanese–multilingual dictionary of the same project, property
 of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html), used under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
-organizations. Only marks on spellings are kept; that table (`app/dictionary_data.py`) is shared under the same licence.
+organizations. Only marks on spellings, and those words' spellings and readings, are kept (no meanings); that table
+(`app/dictionary_data.py`) is shared under the same licence.
 JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "Kanji
 terms your library repeats as one word" from ever joining a word the dictionary lists, and tell which word an Anki card
 is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence

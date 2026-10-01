@@ -117,6 +117,25 @@ def test_a_pre_noun_adjectival_stands_only_before_a_word_of_its_own(tokenizer):
     assert _found(found_in, tokenizer, "やっと気がついた。") == [("気が付く", "気がつい")]
 
 
+def test_a_pre_noun_adjectival_usually_written_in_kana_is_found_only_so(tokenizer):
+    """そういった and どういう are pre-noun adjectivals JMdict says are usually written in kana (the sixth field 2):
+    found only as written in kana. With the verb's kanji, そう言ったのは and そう言った途端 are 'said so' — the words,
+    never そういった 'such' — and the rarer kanji-written どう言う意味 is given up with them. A mark-1 phrase (罪なき)
+    is found in kanji as before, and the noun rule holds for both."""
+    found_in = phrases.PhraseSet([
+        ["そう|言う|た", "ソウ|イウ|タ", "ccg", "そう言った", "ソウイッタ", 2],
+        ["どう|言う", "ドウ|イウ", "cc", "どういう", "ドウイウ", 2],
+        ["罪|無い", "ツミ|ナイ", "cl", "罪なき", "ツミナキ", 1]])
+    assert found_in.entry(0).prenoun == phrases.KANA_ONLY and found_in.entry(2).prenoun == 1
+    assert _found(found_in, tokenizer, "そういった問題はよくある。") == [("そう言うた", "そういった")]
+    assert _found(found_in, tokenizer, "君がそう言ったのは覚えている。") == []
+    assert _found(found_in, tokenizer, "そう言った途端、彼は笑った。") == []
+    assert _found(found_in, tokenizer, "それはどういう意味ですか。") == [("どう言う", "どういう")]
+    assert _found(found_in, tokenizer, "それはどう言う意味ですか。") == []
+    assert _found(found_in, tokenizer, "罪なき人々を守る。") == [("罪無い", "罪なき")]
+    assert _found(found_in, tokenizer, "彼は確かにそういった。") == []
+
+
 def test_conjugated_and_folded_uses(found_in, tokenizer):
     """もしかしたら ends in grammar and is found as written; 気をつけて is 気をつける + て — the phrase, then an ending."""
     assert _found(found_in, tokenizer, "もしかしたら雨かも。") == [("若しか為るた", "もしかしたら")]

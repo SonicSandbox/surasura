@@ -1,20 +1,23 @@
 ﻿Word,Orth,Forms,Reading,Tier,Score,Occurrences,Count (High),Count (Low),Count (Goal),Modality,Sources,Context 1,Src 1,Context 2,Src 2,Context 3,Src 3
 うう,うっ,う|ううっ|ううう,ウウ,Outside,180,18,18,0,0,,H_priority_sample,うっ！,HighPriority/H_priority_sample_2.srt,うっ…うわああっ！,HighPriority/H_priority_sample_2.srt,ううっ…,HighPriority/H_priority_sample_2.srt
 老婆,老婆,,ロウバ,Outside,160,16,16,0,0,,H_priority_sample,オレの少し前に立つ老婆なんて、今にも転びそうなほどに足元がフラフラしていて危なっかしい。,HighPriority/H_priority_sample_1.txt,その老婆の隣にはＯＬ風の女性が立っている。,HighPriority/H_priority_sample_1.txt,君や老婆が私よりも長い人生を送っていることは一目瞭然だ。,HighPriority/H_priority_sample_1.txt
-三玖,三玖,,,Outside,150,15,15,0,0,,H_priority_sample,えっ…三玖！,HighPriority/H_priority_sample_2.srt,あれ～三玖まだいたんだ。,HighPriority/H_priority_sample_2.srt,おい三玖それでいいのか？,HighPriority/H_priority_sample_2.srt
+三玖,三玖,,,Outside,150,15,15,0,0,,H_priority_sample,えっ…三玖！,HighPriority/H_priority_sample_2.srt,あれ～三玖まだいたんだ。,HighPriority/H_priority_sample_2.srt,三玖は被告への個人的感情でかばってま～す。,HighPriority/H_priority_sample_2.srt
 んっ,ん,んんっ,ンッ,Outside,80,8,8,0,0,,H_priority_sample,ん？,HighPriority/H_priority_sample_2.srt,ハッそんなのやるわけ…ん？,HighPriority/H_priority_sample_2.srt,ん…,HighPriority/H_priority_sample_2.srt
 此奴,こいつ,,コイツ,Outside,80,8,8,0,0,,H_priority_sample,こいつらだって人の子。,HighPriority/H_priority_sample_2.srt,こいつ今ひどいこと言った。,HighPriority/H_priority_sample_2.srt,こいつの今後の出入り禁止を要求します。,HighPriority/H_priority_sample_2.srt
 席を譲る,席を譲る,席を譲っ|席を譲ら|席を譲ろう,セキヲユズル,Outside,65,13,13,0,0,,H_priority_sample,「席を譲ってあげようって思わないの？」,HighPriority/H_priority_sample_1.txt,「何故この私が、老婆に席を譲らなければならないんだい？,HighPriority/H_priority_sample_1.txt,若者だから席を譲る？,HighPriority/H_priority_sample_1.txt
 フータロー,フータロー,,,Outside,60,6,6,0,0,,H_priority_sample,フータロー現実を見てもうみんないない。,HighPriority/H_priority_sample_2.srt,フータローすぐに終わらせるから座って待ってて。,HighPriority/H_priority_sample_2.srt,それを考えるのがフータローの仕事でしょ？,HighPriority/H_priority_sample_2.srt
+それで,それで,,ソレデ,Outside,50,5,5,0,0,,H_priority_sample (2),私はただ自分が満足できればそれでいいと思っている。,HighPriority/H_priority_sample_1.txt,おい三玖それでいいのか？,HighPriority/H_priority_sample_2.srt,たとえそれであの子たちに嫌われようとも。,HighPriority/H_priority_sample_2.srt
 優先席,優先席,,ユウセンセキ,Outside,45,9,9,0,0,,H_priority_sample,優先席にドッカリと腰を下ろしたガタイの良い若い金髪の男。,HighPriority/H_priority_sample_1.txt,オレは優先席じゃないが老婆の近くの席に座っていた。,HighPriority/H_priority_sample_1.txt,「君が座っている席は優先席よ。,HighPriority/H_priority_sample_1.txt
 混雑,混雑,,コンザツ,Outside,40,4,4,0,0,reading,H_priority_sample,そして気が付くと、仕事に追われフラストレーションを溜めたサラリーマンが、ついうっかり痴漢しちゃおっかな？と間違いを覚えてしまいそうなほどに車内は混雑している。,HighPriority/H_priority_sample_1.txt,運よく席を確保できたオレにとっては、混雑などどこ吹く風。,HighPriority/H_priority_sample_1.txt,このように混雑した車内で、優先席に座っている私をやり玉にあげているが、他にも我関せずと居座り黙り込んでいる者たちは放っておいていいのかい？,HighPriority/H_priority_sample_1.txt
 誠実,誠実,,セイジツ,Outside,40,4,4,0,0,,H_priority_sample,誠実に向き合えば分かってくれるよ。,HighPriority/H_priority_sample_2.srt,“誠実に”ってどうすりゃいいんだよ。,HighPriority/H_priority_sample_2.srt,誠実に向き合う…誠実に…,HighPriority/H_priority_sample_2.srt
 嫌い,嫌い,,キライ,Outside,40,4,4,0,0,,H_priority_sample,みんなバカばっかりで嫌いよ。,HighPriority/H_priority_sample_2.srt,嫌いって姉妹のこともか？,HighPriority/H_priority_sample_2.srt,姉妹のことが嫌い？,HighPriority/H_priority_sample_2.srt
 車内,車内,,シャナイ,Outside,30,3,3,0,0,,H_priority_sample,そして気が付くと、仕事に追われフラストレーションを溜めたサラリーマンが、ついうっかり痴漢しちゃおっかな？と間違いを覚えてしまいそうなほどに車内は混雑している。,HighPriority/H_priority_sample_1.txt,静かな車内でＯＬの声は良く通り、周囲の人たちから自然と注目が集まる。,HighPriority/H_priority_sample_1.txt,このように混雑した車内で、優先席に座っている私をやり玉にあげているが、他にも我関せずと居座り黙り込んでいる者たちは放っておいていいのかい？,HighPriority/H_priority_sample_1.txt
-高校生,高校生,,コウコウセイ,Outside,25,5,5,0,0,,H_priority_sample,というか高校生。,HighPriority/H_priority_sample_1.txt,何とも高校生らしくない喋り方だ。,HighPriority/H_priority_sample_1.txt,あなたは高校生でしょう!?,HighPriority/H_priority_sample_1.txt
+なんで,何で,,ナンデ,Outside,30,3,3,0,0,,H_priority_sample,何で昼過ぎまで寝てんだよ。,HighPriority/H_priority_sample_2.srt,何で私が落ち込まなきゃいけないの？,HighPriority/H_priority_sample_2.srt,な…何で？,HighPriority/H_priority_sample_2.srt
+高校生,高校生,,コウコウセイ,Outside,25,5,5,0,0,,H_priority_sample,というか高校生。,HighPriority/H_priority_sample_1.txt,あなたは高校生でしょう!?,HighPriority/H_priority_sample_1.txt,何とも高校生らしくない喋り方だ。,HighPriority/H_priority_sample_1.txt
 家庭教師,家庭教師,,カテイキョウシ,Outside,25,5,5,0,0,,H_priority_sample,30階の中野さんの家庭教師をしている。,HighPriority/H_priority_sample_2.srt,家庭教師するんでしょ？,HighPriority/H_priority_sample_2.srt,また懲りずに家庭教師するんだ？,HighPriority/H_priority_sample_2.srt
 裁判長,裁判長,,サイバンチョウ,Outside,25,5,5,0,0,,H_priority_sample,裁判長これをご覧ください。,HighPriority/H_priority_sample_2.srt,うっうう…裁判長！,HighPriority/H_priority_sample_2.srt,裁判長。,HighPriority/H_priority_sample_2.srt
 真横,真横,,マヨコ,Outside,20,2,2,0,0,,H_priority_sample,彼の真横にはさっきの年老いた老婆。,HighPriority/H_priority_sample_1.txt,勇みの一歩を踏み出そうとした瞬間、真横から話しかけられ出鼻を挫かれた。,HighPriority/H_priority_sample_1.txt,,
+どこにも,どこにも,,ドコニモ,Outside,20,2,2,0,0,,H_priority_sample,どこにも理由はないが」,HighPriority/H_priority_sample_1.txt,優先席は優先席であって、法的な義務はどこにも存在しない。,HighPriority/H_priority_sample_1.txt,,
 お年寄り,お年寄り,,オトシヨリ,Outside,20,4,4,0,0,,H_priority_sample,お年寄りに譲るのは当然でしょう？」,HighPriority/H_priority_sample_1.txt,確かにお年寄りに席を譲ることは、社会貢献の一環かも知れない。,HighPriority/H_priority_sample_1.txt,お年寄りを大切に思う心があるのなら、そこには優先席、優先席でないなど、些細な問題でしかないと思うのだがね」,HighPriority/H_priority_sample_1.txt
 極まりない,極まりない,,キワマリナイ,Outside,20,2,2,0,0,,H_priority_sample (2),歳の差があるとしても、生意気極まりない実にふてぶてしい態度ではないか」,HighPriority/H_priority_sample_1.txt,悪質極まりない犯行に。,HighPriority/H_priority_sample_2.srt,,
 言い返す,言い返す,言い返さ,イイカエス,Outside,20,2,2,0,0,,H_priority_sample,それでも言い返さなかったのは、少年の言い分にも納得せざるを得なかったからだ。,HighPriority/H_priority_sample_1.txt,ちょっと意見を交わしたかっただけなのに、こう言い返されて良い気分はしない。,HighPriority/H_priority_sample_1.txt,,
@@ -58,15 +61,18 @@
 年老いる,年老いる,年老い,トシオイル,Outside,10,1,1,0,0,,H_priority_sample,彼の真横にはさっきの年老いた老婆。,HighPriority/H_priority_sample_1.txt,,,,
 クレージー,クレイジー,,クレージー,Outside,10,1,1,0,0,,H_priority_sample,「実にクレイジーな質問だね、レディー」,HighPriority/H_priority_sample_1.txt,,,,
 レディー,レディー,,レディー,Outside,10,1,1,0,0,,H_priority_sample,「実にクレイジーな質問だね、レディー」,HighPriority/H_priority_sample_1.txt,,,,
+どれでも,どれでも,,ドレデモ,Outside,10,1,1,0,0,,H_priority_sample,少年は怒りや無視、あるいは素直に従うのかと思ったが、そのどれでもなくニヤリと笑って足を組み直した。,HighPriority/H_priority_sample_1.txt,,,,
 にやり,ニヤリ,,ニヤリ,Outside,10,1,1,0,0,,H_priority_sample,少年は怒りや無視、あるいは素直に従うのかと思ったが、そのどれでもなくニヤリと笑って足を組み直した。,HighPriority/H_priority_sample_1.txt,,,,
 組み直す,組み直す,組み直し,クミナオス,Outside,10,1,1,0,0,,H_priority_sample,少年は怒りや無視、あるいは素直に従うのかと思ったが、そのどれでもなくニヤリと笑って足を組み直した。,HighPriority/H_priority_sample_1.txt,,,,
 法的,法的,,ホウテキ,Outside,10,1,1,0,0,,H_priority_sample,優先席は優先席であって、法的な義務はどこにも存在しない。,HighPriority/H_priority_sample_1.txt,,,,
 有する,有する,有し,ユウスル,Outside,10,1,1,0,0,,H_priority_sample,この場を動くかどうか、それは今現在この席を有している私が判断することなのだよ。,HighPriority/H_priority_sample_1.txt,,,,
 ナンセンス,ナンセンス,,ナンセンス,Outside,10,1,1,0,0,,H_priority_sample,ははは、実にナンセンスな考え方だ」,HighPriority/H_priority_sample_1.txt,,,,
+何とも,何とも,,ナントモ,Outside,10,1,1,0,0,,H_priority_sample,何とも高校生らしくない喋り方だ。,HighPriority/H_priority_sample_1.txt,,,,
 場違い,場違い,,バチガイ,Outside,10,1,1,0,0,,H_priority_sample,髪も金髪に染められていて、場違い感がある。,HighPriority/H_priority_sample_1.txt,,,,
 不自由,不自由,,フジユウ,Outside,10,1,1,0,0,,H_priority_sample,確かに、立つことに然程の不自由は感じない。,HighPriority/H_priority_sample_1.txt,,,,
 無益,無益,,ムエキ,Outside,10,1,1,0,0,,H_priority_sample,意味もなく無益なことをするつもりにはなれないねぇ。,HighPriority/H_priority_sample_1.txt,,,,
 チップ,チップ,,チップ,Outside,10,1,1,0,0,,H_priority_sample,それとも、チップを弾んでくれるとでも言うのかな？」,HighPriority/H_priority_sample_1.txt,,,,
+それに,それに,,ソレニ,Outside,10,1,1,0,0,,H_priority_sample,それに君にも問題がある。,HighPriority/H_priority_sample_1.txt,,,,
 ふてぶてしい,ふてぶてしい,,フテブテシイ,Outside,10,1,1,0,0,,H_priority_sample,歳の差があるとしても、生意気極まりない実にふてぶてしい態度ではないか」,HighPriority/H_priority_sample_1.txt,,,,
 宥める,なだめる,,ナダメル,Outside,10,1,1,0,0,,H_priority_sample,手ぶりでＯＬをなだめるが、高校生に侮辱され彼女は怒り心頭のようだ。,HighPriority/H_priority_sample_1.txt,,,,
 侮辱,侮辱,,ブジョク,Outside,10,1,1,0,0,,H_priority_sample,手ぶりでＯＬをなだめるが、高校生に侮辱され彼女は怒り心頭のようだ。,HighPriority/H_priority_sample_1.txt,,,,
@@ -82,7 +88,7 @@
 言い包める,言いくるめる,言いくるめ,イイクルメル,Outside,10,1,1,0,0,,H_priority_sample,年下に半ば強引に言いくるめられた上、偉そうな態度は癪に障るだろう。,HighPriority/H_priority_sample_1.txt,,,,
 道徳的,道徳的,,ドウトクテキ,Outside,10,1,1,0,0,,H_priority_sample,道徳的な問題を除いてしまえば、席を譲る義務は事実どこにもない。,HighPriority/H_priority_sample_1.txt,,,,
 ハプニング,ハプニング,,ハプニング,Outside,10,1,1,0,0,,H_priority_sample,バスの中で起きたちょっとしたハプニング。,HighPriority/H_priority_sample_1.txt,,,,
-思い掛ける,思いがける,思いがけ,オモイガケル,Outside,10,1,1,0,0,,H_priority_sample,思いがけない救いの手が差し伸べられた。,HighPriority/H_priority_sample_1.txt,,,,
+思いがけない,思いがけない,,オモイガケナイ,Outside,10,1,1,0,0,,H_priority_sample,思いがけない救いの手が差し伸べられた。,HighPriority/H_priority_sample_1.txt,,,,
 差し伸べる,差し伸べる,差し伸べ,サシノベル,Outside,10,1,1,0,0,,H_priority_sample,思いがけない救いの手が差し伸べられた。,HighPriority/H_priority_sample_1.txt,,,,
 プリティー,プリティー,,プリティー,Outside,10,1,1,0,0,,H_priority_sample,「今度はプリティーガールか。,HighPriority/H_priority_sample_1.txt,,,,
 ガール,ガール,,ガール,Outside,10,1,1,0,0,,H_priority_sample,「今度はプリティーガールか。,HighPriority/H_priority_sample_1.txt,,,,
@@ -114,6 +120,7 @@
 深呼吸,深呼吸,,シンコキュウ,Outside,10,1,1,0,0,,H_priority_sample,一度立ち止まり、深呼吸。,HighPriority/H_priority_sample_1.txt,,,,
 挫く,挫く,挫か,クジク,Outside,10,1,1,0,0,,H_priority_sample,勇みの一歩を踏み出そうとした瞬間、真横から話しかけられ出鼻を挫かれた。,HighPriority/H_priority_sample_1.txt,,,,
 呼び止める,呼び止める,呼び止め,ヨビトメル,Outside,10,1,1,0,0,,H_priority_sample,オレは先ほど隣に座っていた少女に呼び止められたのだ。,HighPriority/H_priority_sample_1.txt,,,,
+互いに,互いに,,タガイニ,Outside,10,1,1,0,0,,H_priority_sample,オレたちは互いにわざとため息をついて同じ方角へと歩き出した。,HighPriority/H_priority_sample_1.txt,,,,
 腰を下ろす,腰を下ろす,腰を下ろし,コシヲオロス,Outside,10,2,2,0,0,,H_priority_sample,優先席にドッカリと腰を下ろしたガタイの良い若い金髪の男。,HighPriority/H_priority_sample_1.txt,老人は何度も感謝しながら、ゆっくりとその席に腰を下ろす。,HighPriority/H_priority_sample_1.txt,,
 がたいの良い,ガタイの良い,,ガタイノイイ,Outside,10,1,1,0,0,,H_priority_sample,優先席にドッカリと腰を下ろしたガタイの良い若い金髪の男。,HighPriority/H_priority_sample_1.txt,,,,
 もう良い,もういい,,モウヨイ,Outside,10,2,2,0,0,,H_priority_sample (2),「も、もういいですから……」,HighPriority/H_priority_sample_1.txt,もういい黙って！,HighPriority/H_priority_sample_2.srt,,
@@ -131,7 +138,9 @@
 準備万端,準備万端,,ジュンビバンタン,Outside,10,1,1,0,0,,H_priority_sample,さあ準備万端です勉強を始めましょう！,HighPriority/H_priority_sample_2.srt,,,,
 自習,自習,,ジシュウ,Outside,10,1,1,0,0,,H_priority_sample,私はここで自習してるだけなので。,HighPriority/H_priority_sample_2.srt,,,,
 おっと,おっと,,オット,Outside,10,1,1,0,0,,H_priority_sample,おっといけない優しく優しく。,HighPriority/H_priority_sample_2.srt,,,,
+一緒に,一緒に,,イッショニ,Outside,10,1,1,0,0,,H_priority_sample,二乃も一緒に。,HighPriority/H_priority_sample_2.srt,,,,
 はは,ハハ,,ハハ,Outside,10,1,1,0,0,,H_priority_sample,アッハハそれじゃあ今日は俺たちだけでやるか。,HighPriority/H_priority_sample_2.srt,,,,
+それじゃ,それじゃあ,,ソレジャ,Outside,10,1,1,0,0,,H_priority_sample,アッハハそれじゃあ今日は俺たちだけでやるか。,HighPriority/H_priority_sample_2.srt,,,,
 バスケ部,バスケ部,,バスケブ,Outside,10,2,2,0,0,,H_priority_sample,バスケ部の知り合いが大会の臨時メンバーを探してるんだけど。,HighPriority/H_priority_sample_2.srt,このまま正式にバスケ部入らない？,HighPriority/H_priority_sample_2.srt,,
 いっけ,いっけ,,イッケ,Outside,10,1,1,0,0,,H_priority_sample,うわっいっけない！,HighPriority/H_priority_sample_2.srt,,,,
 やがる,やがる,やがっ,ヤガル,Outside,10,1,1,0,0,,H_priority_sample,二乃のヤツ毎度邪魔しやがって。,HighPriority/H_priority_sample_2.srt,,,,
@@ -147,7 +156,9 @@
 生ハム,生ハム,,ナマハム,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
 ダッチ,ダッチ,,ダッチ,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
 ジャッジ,ジャッジ,,ジャッジ,Outside,10,1,1,0,0,,H_priority_sample,さあどっちがおいしいかジャッジしてよね。,HighPriority/H_priority_sample_2.srt,,,,
+つまんない,つまんない,,ツマンナイ,Outside,10,1,1,0,0,,H_priority_sample,何それつまんない！,HighPriority/H_priority_sample_2.srt,,,,
 出直す,出直す,,デナオス,Outside,10,1,1,0,0,,H_priority_sample,今回は出直すとするわ。,HighPriority/H_priority_sample_2.srt,,,,
+なぜか,なぜか,,ナゼカ,Outside,10,1,1,0,0,,H_priority_sample,なぜか分からんが二乃は俺に特別な悪意を持っている。,HighPriority/H_priority_sample_2.srt,,,,
 分かり合う,分かり合える,,ワカリアウ,Outside,10,1,1,0,0,,H_priority_sample,二乃のヤツあいつと分かり合える日が来るとは思えん。,HighPriority/H_priority_sample_2.srt,,,,
 ヤベッ,ヤベッ,,,Outside,10,1,1,0,0,,H_priority_sample,あっヤベッ。,HighPriority/H_priority_sample_2.srt,,,,
 不誠実,不誠実,,フセイジツ,Outside,10,1,1,0,0,,H_priority_sample,こんな不誠実バレたらおしまいだ。,HighPriority/H_priority_sample_2.srt,,,,
@@ -176,6 +187,7 @@
 仲良し,仲よし,,ナカヨシ,Outside,10,1,1,0,0,,H_priority_sample,私たち昔は仲よし５姉妹だったじゃん？,HighPriority/H_priority_sample_2.srt,,,,
 不注意,不注意,,フチュウイ,Outside,10,1,1,0,0,,H_priority_sample,とはいえ俺の不注意が招いた事故だ。,HighPriority/H_priority_sample_2.srt,,,,
 漸と,やっと,,ヤット,Outside,10,1,1,0,0,,H_priority_sample,やっと家に帰って勉強できる…,HighPriority/H_priority_sample_2.srt,,,,
+なんと,なんと,,ナント,Outside,10,1,1,0,0,,H_priority_sample,〝今日はなんと―〞。,HighPriority/H_priority_sample_2.srt,,,,
 手助け,手助け,,テダスケ,Outside,10,1,1,0,0,,H_priority_sample,手助けなんてしたら怒りそうだしな。,HighPriority/H_priority_sample_2.srt,,,,
 招き入れる,招き入れる,,マネキイレル,Outside,10,1,1,0,0,,H_priority_sample,あんたみたいなえたいの知れない男を招き入れるなんてどうかしてるわ私たちの…,HighPriority/H_priority_sample_2.srt,,,,
 異分子,異分子,,イブンシ,Outside,10,1,1,0,0,,H_priority_sample,だから異分子の俺が気に入らないんだ。,HighPriority/H_priority_sample_2.srt,,,,

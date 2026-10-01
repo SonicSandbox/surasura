@@ -78,8 +78,8 @@ def test_a_number_is_never_a_word(tokenizer, sanitized, line, number):
 
 def test_words_that_only_look_like_numbers_stay_words(tokenizer, sanitized):
     # Only UniDic's 数詞 is a number: 一人 and 一緒 are nouns, 一番 an adverb, 十分 a な-word, and 何 'what' a
-    # pronoun — all still words.
-    lemmas = _lemmas(tokenizer, "一人で来た。一緒に行こう。これが一番好き。それで十分だ。何が起きたの？")
+    # pronoun — all still words. (一緒に, a JMdict adverb, is one word of its own: 一緒 stands alone here.)
+    lemmas = _lemmas(tokenizer, "一人で来た。みんな一緒だ。これが一番好き。これで十分だ。何が起きたの？")
     for word in ("一人", "一緒", "一番", "十分", "何"):
         assert word in lemmas, word
 

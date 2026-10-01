@@ -532,6 +532,116 @@ def test_an_alias_never_takes_a_stretched_spelling_the_tagger_reads_as_its_word(
     assert brd.build_aliases(tagger, [{}]) == {}
 
 
+# --- Words the tagger cuts at their grammar ------------------------------------------------------------------------ #
+# Abridged JMdict entries (by the EDRDG, CC BY-SA 4.0), each its own entry number: the build reads every spelling of a
+# verb, an adjective, an adverb, a conjunction or an interjection alone and keeps what the gates allow.
+
+def _cut_entry(seq, kanji, kana, pos, misc=()):
+    entry = _entry(kanji, kana, [(misc, "gloss")], pos)
+    entry["seq"] = seq
+    return entry
+
+
+CUT_ENTRIES = [
+    _cut_entry(1, [("下らない", ("ichi1",))], [("くだらない", ("ichi1",), ())], ("adj-i",), ("uk",)),
+    _cut_entry(2, [("知らせる", ("ichi1",))], [("しらせる", ("ichi1",), ())], ("v1", "vt")),
+    _cut_entry(3, [("変わらない", ("news1",))], [("かわらない", ("news1",), ())], ("adj-i",)),
+    _cut_entry(4, [("思われる", ("ichi1",))], [("おもわれる", ("ichi1",), ())], ("v1",)),
+    _cut_entry(5, [], [("しない", ("ichi1",), ())], ("adj-i",)),
+    _cut_entry(6, [("思わず", ("ichi1",))], [("おもわず", ("ichi1",), ())], ("adv",)),
+    _cut_entry(7, [("何時も", ("ichi1",))], [("いつも", ("ichi1",), ())], ("adv",), ("uk",)),
+    _cut_entry(8, [("本当に", ("ichi1",))], [("ほんとうに", ("ichi1",), ())], ("adv",)),
+    _cut_entry(9, [("直ぐに", ("ichi1",))], [("すぐに", ("ichi1",), ())], ("adv",), ("uk",)),
+    _cut_entry(10, [("因みに", ("ichi1",))], [("ちなみに", ("ichi1",), ())], ("conj",), ("uk",)),
+    _cut_entry(11, [], [("でも", ("ichi1",), ())], ("conj",)),
+    _cut_entry(12, [("如何か", ())], [("どうか", ("ichi1",), ())], ("adv",), ("uk",)),
+    _cut_entry(13, [], [("かどうか", (), ())], ("exp",)),
+]
+# JPDB 2024 and Jiten, abridged: 本当 alone ranks better than 本当に; 因み alone not at all, nor 因みに.
+CUT_LISTS = ([["でも", "でも"], ["本当", "ほんとう"], ["それに", "それに"], ["いつも", "いつも"], ["すぐに", "すぐに"],
+              ["本当に", "ほんとうに"], ["どうか", "どうか"], ["ちなみに", "ちなみに"], ["何時も", "いつも"]],
+             [["でも", "でも"], ["それに", "それに"], ["いつも", "いつも"], ["本当に", "ほんとうに"], ["すぐに", "すぐに"],
+              ["どうか", "どうか"], ["ちなみに", "ちなみに"], ["何時も", "いつも"]])
+
+
+def _cut_text(brd, tmp_path, monkeypatch, lines):
+    """The text pass on `lines`, read in this process (no pool), as `cut_text_counts` returns it. A worker sets the
+    counters the build is making on reference_data: put back after the test."""
+    path = tmp_path / "cut_text.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(reference_data, "_counters", reference_data._counters)
+
+    def counts(joins, compounds, counters, table, workers=1):
+        brd._cut_init(joins, compounds, counters, table)
+        _path, words, runs = brd._cut_count(str(path))
+        return words, runs, 1, 0.0
+    monkeypatch.setattr(brd, "cut_text_counts", counts)
+
+
+CUT_TEXT = ["彼はいつも遅れてくる。", "いつも同じ道を通る。", "いつもの店に行く。", "でも、まだ早い。", "子供でも分かる。",
+            "ちなみに、明日は休みだ。", "どうか許してください。", "行くかどうか迷う。", "本当に寒い。", "すぐに戻る。"] * 3
+
+
+def test_the_words_the_tagger_cuts_at_their_grammar_and_the_gates_that_keep_them(brd, tagger, tmp_path, monkeypatch):
+    _jmdict_of(brd, CUT_ENTRIES, tmp_path, monkeypatch)
+    lists = _lists(brd, tmp_path, monkeypatch, *CUT_LISTS)
+    _cut_text(brd, tmp_path, monkeypatch, CUT_TEXT)
+    cut = brd.cut_word_tables(tagger, {}, {}, frozenset(), lists)
+    aux, why = cut["aux"], {k: c["why"] for k, c in cut["aux_candidates"].items()}
+    # a verb + its negative or causative a curated list names; a usually-kana word only in kana; keyed by its
+    # dictionary form when it conjugates, else as written
+    assert aux == {"くだらない": ["くだらない", "クダラナイ", "形容詞", "くだら", 1],
+                   "知らせる": ["知らせる", "シラセル", "動詞", "知ら", 1],
+                   "思わず": ["思わず", "オモワズ", "副詞", "思わ", 0]}
+    assert why["下らない"] == "usually written in kana" and why["変わらない"] == "no curated tag"
+    assert why["思われる"] == "tense, politeness, aspect or the passive" and why["しない"] == "a light verb"
+    assert "しらせる" not in cut["aux_candidates"], "a kana spelling of a word written in kanji is never read"
+    particles, why = cut["particles"], {k: c["why"] for k, c in cut["particle_candidates"].items()}
+    assert set(particles) == {"いつも", "何時も", "ちなみに", "でも", "どうか"}
+    assert why["本当に"] == "a free word + a particle" and why["すぐに"] == "an adverb + an optional と / に"
+    assert why["因みに"] == "R7", "both lists must rank it"
+    assert why["如何か"] == "no curated tag"
+    # one lemma per entry, the spelling the lists rank best; the clause flag; the longer spellings that hold one
+    assert particles["何時も"][0] == particles["いつも"][0] == "いつも"
+    assert particles["でも"][4] == 1 and particles["いつも"][4] == 0
+    assert particles["どうか"][5] == ["かどうか"] and particles["いつも"][5] == []
+    # the uses read from the text: a clause's でも, never 子供 + で + も
+    assert cut["particle_candidates"]["でも"]["uses"] == 3 and cut["particle_candidates"]["いつも"]["uses"] == 9
+
+    out = tmp_path / "dictionary_data.py"
+    monkeypatch.setattr(brd, "DICTIONARY_OUTPUT", str(out))
+    brd.write_dictionary_data({}, {}, "2026-09-28", cut)
+    spec = importlib.util.spec_from_file_location("written_dictionary_data_cut", str(out))
+    written = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(written)
+    assert written.aux_words() == aux and written.particle_words() == particles
+    assert "AUX_WORDS       3 words" in written.__doc__ and "PARTICLE_WORDS  5 adverbs" in written.__doc__
+
+
+def test_r7_refuses_a_run_the_lists_rank_far_better_than_the_text_holds_it(brd):
+    # The phrase rows' unit test, on both lists: JPDB 2024 and Jiten each within 8 times the rank the run's uses have
+    # among the text's words (Jiten's parser takes それを and 何を whole: one list alone vouches for strings).
+    c = {"curated": True, "jpdb": 400, "jiten": 500, "rank": 50, "first": ("それ", "其れ", "ソレ", "代名詞"), "rest": ["に"]}
+    assert brd._cut_particle_why(c, None) == "R7"                  # 500 / 50 = 10
+    c["rank"] = 70
+    assert brd._cut_particle_why(c, None) == ""                    # 500 / 70: about 7
+    c["jiten"] = None
+    assert brd._cut_particle_why(c, None) == "R7"
+
+
+def test_without_jmdict_no_word_cut_at_its_grammar_is_joined(brd, tagger, tmp_path, monkeypatch):
+    monkeypatch.setattr(brd, "JMDICT", str(tmp_path / "missing.gz"))
+    cut = brd.cut_word_tables(tagger, {}, {}, frozenset(), [None, None])
+    assert cut["aux"] == {} and cut["particles"] == {}
+
+
+def test_the_build_reads_text_with_its_own_tables_never_the_installed_cut_words(brd, tagger):
+    # read_words joins only the cut words it is handed: a build is a function of its inputs, not of the last build.
+    assert [w.surface for w in brd.read_words(tagger, "いつも遅れる。", {}, {})][:2] == ["いつ", "も"]
+    particles = {"いつも": ["いつも", "イツモ", "副詞", "いつ", 0, []]}
+    assert brd.read_words(tagger, "いつも遅れる。", {}, {}, ({}, particles))[0].surface == "いつも"
+
+
 # --- The shipped tables ---------------------------------------------------------------------------------------------- #
 
 def test_the_shipped_compound_table_names_each_word_its_kind_and_its_parts():

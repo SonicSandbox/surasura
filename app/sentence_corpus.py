@@ -182,7 +182,9 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     "even better if the words are NOT mature"); without it the order is as it always was. `phrases`,
     {name: (lemma, …)}, finds several-word targets (当事者, 気を取り直す) as that run of lemmas, however
     inflected, ranked the same with their own words not counted against them; they come back under
-    their name. `prefer`, {(lemma, reading): [(lemma, …), …]}, puts a sentence holding one of a word's
+    their name. A one-word target is found as its name is written — a word whose lemma or dictionary
+    spelling IS the name: 揚げる 'deep-fry', which UniDic files under 上げる, in the sentences that write it
+    揚げる, never those of 上げる. `prefer`, {(lemma, reading): [(lemma, …), …]}, puts a sentence holding one of a word's
     runs first among equally easy ones of a good length — its top pairing or form, 啓示を受ける for 啓示
     (Patterns_Quality_Spec.md Part D); without it every rank is exactly what it always was. `library` — (uses per
     word, the list's cut-off) as the last Generate counted them (analyzer.library_counts) — says which compounds are
@@ -213,9 +215,12 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
             found = known_memo[key] = _known(key) or view.readable(key)
         return found
     starts = {}                 # a phrase's first lemma -> [(name, lemmas)]
+    written = {}                # a one-word target, found as written: its name -> itself
     for name, lemmas in (phrases or {}).items():
         if len(lemmas) > 1:
             starts.setdefault(lemmas[0], []).append((name, tuple(lemmas)))
+        elif lemmas:
+            written[name] = name
 
     def _lang(text):
         ok = lang_ok.get(text)
@@ -227,12 +232,17 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     for fidx, path in enumerate(files):
         for sidx, (text, tokens) in enumerate(file_tokens(path)):
             present = {}        # (lemma, reading) -> the surface it has in THIS sentence
+            shown = {}          # a one-word target written here -> (its key, its surface)
             unknown = 0
             rare = None         # the compounds here too rare for the list, when there are any
             for lemma, reading, surface, orth in tokens:
                 if not (_lang(lemma) or _lang(surface)):
                     continue    # markup, numbers, ASCII — never a word (the analyzer skips them too)
                 key = (lemma, reading)
+                if written:
+                    name = written.get(lemma) or written.get(orth)
+                    if name is not None and name not in shown:
+                        shown[name] = (key, surface)
                 word = words.get(key)
                 if word is None:
                     # One-character kana in Japanese are particles and endings — never an entry, but
@@ -281,6 +291,17 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 else:
                     rank = (others, margin, -recent, fidx, sidx)
                 word.best.offer((rank, text, fidx, surface))
+            for name, (key, surface) in shown.items():
+                # Ranked as the word's own key is (above): its own use never counts against it.
+                if rare and key in rare:
+                    others = len(unknowns(key) - {key})
+                else:
+                    others = unknown - (0 if known_memo[key] else 1)
+                recent = fresh - (1 if young and key in young else 0)
+                word = words.get(name)
+                if word is None:
+                    word = words[name] = _Word(True)
+                word.best.offer(((others, margin, -recent, fidx, sidx), text, fidx, surface))
             if starts:
                 for name, span in _phrases_in(tokens, starts):
                     inside = {(t[0], t[1]) for t in span}

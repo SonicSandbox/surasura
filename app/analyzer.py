@@ -92,7 +92,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 21: a word general text writes as words, though the tagger reads it otherwise alone, is one word (出来損ない, 通行止め,
 #     郵便受け), and a verb's stem may stand in a noun the dictionaries mark (立ち位置, 待ち時間, 見間違い) — so a card's
 #     word alone is that noun too (出来損ない, not 出来る + 損なう). Still 2.4: one re-analysis with 15–20.
-ENGINE_REVISION = 21
+# 22: the dictionary decides whether a card is the word it is read as — a card JMdict gives an entry of its own (心する,
+#     一気に, 揚げる, the noun 集い in the verb 集う's spellings) is a word of its own in 順, the "In Anki" mark, パターン
+#     and 例文, never that word's row, known status, lines or sentences. Still 2.4: one re-analysis with 15–21.
+ENGINE_REVISION = 22
 
 # Load Logic Settings from settings.json
 LOGIC = {

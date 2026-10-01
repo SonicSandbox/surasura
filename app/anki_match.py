@@ -37,7 +37,10 @@ import html
 import json
 import os
 import re
+import threading
 import unicodedata
+from array import array
+from bisect import bisect_left
 from collections import namedtuple
 
 from app.unicode_ranges import HAN, KANA
@@ -292,8 +295,9 @@ def row_markers(row, thresholds=None):
 # same row is work for no one. `journey_of` is each key's `(file, score, total)` — the numbers the
 # journey orders by — so a word below the list's cut-off can be placed among the listed ones
 # (Junban_Backlog_Spec §11.1). `words` is each row's own word (its `Word`), by rank — what the row a
-# key reaches IS (`not_the_name`); None for an index built by hand.
-Index = namedtuple("Index", "rank_of contexts_of marks_of journey_of words", defaults=(None,))
+# key reaches IS (`not_the_name`, `another_word`); `orths` each row's own spelling (its `Orth`), by
+# rank — a card written so is that row's own (`another_word`). None for an index built by hand.
+Index = namedtuple("Index", "rank_of contexts_of marks_of journey_of words orths", defaults=(None, None))
 
 
 def load_rank_index(csv_path):
@@ -370,7 +374,8 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
     marks_of = {}
     journey_of = {}
     words = []                  # each row's own word, by rank
-    empty = Index(index, contexts, marks_of, journey_of, words)
+    orths = []                  # each row's own spelling, by rank
+    empty = Index(index, contexts, marks_of, journey_of, words, orths)
     if not csv_path or not os.path.isfile(csv_path):
         return empty
 
@@ -404,6 +409,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
                 numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
                 lemma = normalize_word(row.get("Word"))
                 words.append(lemma)
+                orths.append(normalize_word(row.get("Orth")))
                 for column in ("Orth", "Word"):
                     key = normalize_word(row.get(column))
                     if not key or (japanese and len(key) == 1 and key != lemma):
@@ -434,7 +440,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
                     if key in contexts:
                         contexts[folded] = contexts[key]
 
-    return Index(index, contexts, marks_of, journey_of, words)
+    return Index(index, contexts, marks_of, journey_of, words, orths)
 
 
 def lookup(word, rank_of, language=None):
@@ -605,7 +611,8 @@ def suggest(word, raw_sentence, tokenize, rank_of, language):
     Japanese only; nothing for a word the list already has. `tokenize(text)` yields the analyzer's
     `(lemma, reading, surface, orth)`. `reading` is the matched word's, in hiragana, for the user to
     check at a glance. Deliberately absent (§4.4, §16.1): reading-only matches, containment either
-    way, and a compound's parts (伊勢海老 is not 伊勢).
+    way, a compound's parts (伊勢海老 is not 伊勢), and a word the dictionary keeps apart from the card's
+    (`two_words`: 揚げる is no 上げる, 心する no 心 + する — the dictionary has answered that question).
     """
     if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
         return None
@@ -617,14 +624,14 @@ def suggest(word, raw_sentence, tokenize, rank_of, language):
         alone = list(tokenize(word))
         if len(alone) == 1 and word in (alone[0][3], alone[0][2]):
             token = alone[0]
-    if token is not None:
+    if token is not None and not two_words(word, token[0]):
         for name in (token[3], token[0]):      # the dictionary spelling, then the lemma
             key = lookup(name, rank_of, language)
             if key and key != word:
                 return Suggestion(key, "L6", "same word, other spelling", fold_kana(token[1] or ""))
     for ending, evidence in (("する", "+ する"), ("と", "+ と")):
         stem = word[:-len(ending)]
-        if word.endswith(ending) and stem:
+        if word.endswith(ending) and stem and not two_words(word, stem):
             key = lookup(stem, rank_of, language)
             if key:
                 alone = list(tokenize(stem))
@@ -756,6 +763,17 @@ def affixes_off(tokens, kana=False):
     return tokens
 
 
+def _in_kana(tokens):
+    """Is a card's word, read alone into `tokens`, written in kana alone (`affixes_off`'s `kana`)?"""
+    return bool(tokens) and all(isinstance(t[2], str) and _KANA_ONLY_RE.match(t[2]) for t in tokens)
+
+
+def _grammar_off(tokens):
+    """Does the word's own grammar come off a card read alone into `tokens` (`affixes_off`: お部屋, 俺たち, 優しさ)?"""
+    tokens = list(tokens or ())
+    return len(affixes_off(tokens, kana=_in_kana(tokens))) < len(tokens)
+
+
 def _nominalized(tokens, token):
     """Did a さ / み come off after `token`, the word `one_word` found in `tokens`?"""
     return len(tokens) >= 2 and token is tokens[-2] and tuple(tokens[-1][:2]) in NOMINALIZERS
@@ -779,8 +797,7 @@ def one_word(tokens):
     grammar comes off first (`affixes_off`: お部屋 -> 部屋, 俺たち -> 俺, 優しさ -> 優しい). `tokens` are the analyzer's
     `(lemma, reading, surface, orth)`."""
     tokens = list(tokens or ())
-    tokens = affixes_off(tokens, kana=bool(tokens) and all(
-        isinstance(t[2], str) and _KANA_ONLY_RE.match(t[2]) for t in tokens))
+    tokens = affixes_off(tokens, kana=_in_kana(tokens))
     if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens) or _suru_inflected(tokens):
         tokens = tokens[:1]
     if _copula_inflected(tokens):
@@ -812,6 +829,123 @@ def ending_apart(tokens):
                 and surface.endswith("と") and reading and not reading.endswith("ット")):
             return [(lemma, reading, surface[:-1], orth[:-1]), ("と", "ト", "と", "と")]
     return tokens
+
+
+# --- one word or two: the dictionary decides ---------------------------------------------------- #
+# A card holds a dictionary word — anki_miner and Yomitan mine JMdict's headwords — and the tokenizer reads it as
+# UniDic's: 揚げる 'deep-fry' as 上げる, 心する 'take heed' as 心 + する, ことに 'especially' (殊に) as 事 + に, and a list
+# whose 集う row was written 集い in the library holds 集い 'a gathering' among that verb's spellings. Where JMdict gives
+# the card's word an entry of its own, apart from the word it is read as, the card is a word of its own (the user,
+# 2026-09-30: "I would let the dictionary decide"): never that word's row, known status, パターン or 例文. Where JMdict
+# files it in that word's entry (逃げだす in 逃げ出す's), it is that word, as before. app/jmdict_data.py holds the
+# entries: every kanji spelling, and the readings a card written in kana alone can end in.
+_dictionary = []                # [(kanji spellings, {kana reading: entries})] once read; [None] when it can't be
+_DICTIONARY_LOCK = threading.Lock()     # one reading at a time, whichever thread asks (Junban's preview has its own)
+
+
+class _KanjiEntries:
+    """JMdict's kanji spellings, each with the entries it is a form of (their app/jmdict_data.py ids), kept as the
+    sorted hashes of their text beside those ids: a few MB for 233,000 spellings, where a dict of strings takes tens.
+    The hashes are this process's own (made as the table is read), so nothing is stored but the spellings. Spellings
+    are compared in NFKC, as a card's word is read (`card_word`): JMdict's ２０世紀 is a 20世紀 card's."""
+    __slots__ = ("_keys", "_ids")
+
+    def __init__(self, text):
+        keys, ids = array("q"), array("l")
+        nfkc = unicodedata.normalize
+        for number, line in enumerate(text.split("\n")):
+            for spelling in line.split("\t"):
+                if spelling:
+                    keys.append(hash(nfkc("NFKC", spelling)))
+                    ids.append(number)
+        order = sorted(range(len(keys)), key=keys.__getitem__)
+        self._keys = array("q", (keys[at] for at in order))
+        self._ids = array("l", (ids[at] for at in order))
+
+    def get(self, spelling):
+        keys, key = self._keys, hash(unicodedata.normalize("NFKC", spelling))
+        at, found = bisect_left(keys, key), set()
+        while at < len(keys) and keys[at] == key:
+            found.add(self._ids[at])
+            at += 1
+        return frozenset(found)
+
+
+def _dictionary_entries():
+    """(kanji spellings, {reading: (entry id, …)}) from app/jmdict_data.py, read once — or None when it can't be
+    read (or holds nothing): then no card is set apart, and every card matches as it did before."""
+    with _DICTIONARY_LOCK:
+        if not _dictionary:
+            try:
+                from app import jmdict_data
+                kanji = _KanjiEntries(jmdict_data.kanji_forms())
+                readings = {}
+                for line in jmdict_data.readings().split("\n"):
+                    reading, _, ids = line.partition("\t")
+                    if reading and ids:
+                        readings[reading] = tuple(int(number) for number in ids.split(","))
+                _dictionary.append((kanji, readings) if len(kanji._keys) else None)
+            except Exception:
+                _dictionary.append(None)
+        return _dictionary[0]
+
+
+def two_words(word, lexeme):
+    """Are a card's word and `lexeme` — the word the tokenizer or the list reads it as (UniDic's lemma, a row's Word)
+    — two words of the dictionary? True when JMdict has an entry for each and none holds both: 揚げる and 上げる, 心する
+    and 心, 集い and 集う, 堪らない and 堪る, ことに (the reading of 殊に) and 事. The card's word is looked up by its
+    kanji spelling, or — written in kana alone — among the readings a kana card can end in; `lexeme` by a kanji
+    spelling only: a kana word matches too many by its sound alone (UniDic's すっ of すっと is no 素っ 'very'), so it
+    is never set apart. A じる verb and its ずる form are one verb, conjugated two ways: UniDic files 信じる under
+    信ずる, and JMdict gives each form an entry of its own with the same meanings. False — one word, as before — when
+    either has no entry (努力する, バシッと's ばし), when one entry holds both (逃げだす, 逃げ出す), or when the
+    dictionary can't be read."""
+    if not isinstance(word, str) or not isinstance(lexeme, str) or not word or word == lexeme:
+        return False
+    if not _KANJI_RE.search(lexeme):
+        return False
+    if word[:-2] == lexeme[:-2] and {word[-2:], lexeme[-2:]} == {"じる", "ずる"}:
+        return False
+    entries = _dictionary_entries()
+    if entries is None:
+        return False
+    kanji, readings = entries
+    if _KANJI_RE.search(word):
+        own = kanji.get(word)
+    elif _KANA_ONLY_RE.match(word):
+        own = readings.get(fold_kana(word), ())
+    else:
+        return False
+    other = kanji.get(lexeme) if own else frozenset()
+    return bool(other) and other.isdisjoint(own)
+
+
+def word_of_its_own(word, tokens, token):
+    """Is a card's word a dictionary word of its own, apart from `token` — the word it is read as alone (`tokens`, the
+    analyzer's `(lemma, reading, …)` of the card read alone; `token`, the one `one_word` found or its only token)?
+    `two_words` of the card's word and the token's lemma — but never when the word's own grammar came off it
+    (`affixes_off`): お部屋, 俺たち and 優しさ are 部屋, 俺 and 優しい, whatever entries JMdict gives them (the user,
+    2026-09-29: known through each other)."""
+    if token is None or _grammar_off(tokens):
+        return False
+    return two_words(word, token[0])
+
+
+def another_word(word, key, rank_of, words=None, orths=None):
+    """Does a card's word reach the list row `key` only as a spelling of another dictionary word — the row's own
+    word (its Word) and the card's two words (`two_words`), and the card not written as the row itself is (its Word
+    or Orth: a row carrying the card's own spelling is its row)? 生き in 生きる's Forms, 集い in 集う's. `words` and
+    `orths` are each row's Word and Orth by rank (`Index`; Backfill's words are `(Word, Reading)` pairs); without
+    them — a hand-made index, the library map — the key itself is the row's word."""
+    rank = (rank_of or {}).get(key)
+    own = []
+    if isinstance(rank, int) and not isinstance(rank, bool):
+        for table in (words, orths):
+            if table and 0 <= rank < len(table):
+                row = table[rank]
+                own.append(row[0] if isinstance(row, (tuple, list)) else row)
+    own = [name for name in own if name] or [key]
+    return word not in own and two_words(word, own[0])
 
 
 # A card written in hiragana alone reaches a list row by its letters (L1–L4). When that row's own word is those letters
@@ -849,7 +983,7 @@ def not_the_name(word, key, rank_of, words, tokenize):
     return other if other and rank_of[other] != rank else ""
 
 
-def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None):
+def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
 
     L1–L4 (`lookup`; via "exact") — but a hiragana card that is a common word never takes a name's or a loanword's
@@ -861,8 +995,15 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A word with a kanji
     read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word read alone, or one only its
     sentence reads as a list word, is `suggest`'s L6 — a question. Shared by Junban's placement and the report's
-    label."""
+    label.
+
+    The dictionary decides whether the card is that word at all (`two_words`): a Japanese card whose word JMdict
+    gives an entry of its own, apart from the row's word (`another_word`, with `words` and `orths`: 生き in 生きる's
+    Forms) or from the word it is read as (`word_of_its_own`: 心する is no 心 + する, 揚げる no 上げる), lands on no row
+    of that word — unless a row carries the card's own spelling, or the user said "yes"."""
     key = lookup(word, rank_of, language)
+    if key and language == "ja" and another_word(word, key, rank_of, words, orths):
+        key = ""                # its spelling is another dictionary word's there: not that row
     instead = not_the_name(word, key, rank_of, words, tokenize) if key and language == "ja" else None
     if key and instead is None:
         return key, "exact"
@@ -882,7 +1023,7 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     alone = token is None and whole_word_alone(word, tokens)
     if alone:
         token = tokens[0]
-    if token is None:
+    if token is None or word_of_its_own(word, tokens, token):
         return "", ""
     if _KANA_ONLY_RE.match(word):
         names = (token[2],)
@@ -890,9 +1031,11 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
         names = (token[3], token[0])   # the stem 考え of 考えた is the verb's, never the noun 考え; 優し of 優しさ 優しい's
     else:
         names = (token[3], token[0], token[2])
+    sensed = not _grammar_off(tokens)   # お部屋, 俺たち, 優しさ: their word, whatever the dictionary lists
     for name in names:
         key = lookup(name, rank_of, language)
-        if key and not (answer.get("answer") == "no" and answer.get("target") == key):
+        if (key and not (answer.get("answer") == "no" and answer.get("target") == key)
+                and not (sensed and another_word(word, key, rank_of, words, orths))):
             return key, "L6" if alone else "L7"
     return "", ""
 

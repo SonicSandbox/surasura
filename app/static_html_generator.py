@@ -578,7 +578,9 @@ def anki_backlog_keys(language, settings, list_path=None):
     spelling's fold for the cards the list does not hold as spelled (`_own_keys`: スレ, not also
     擦れる's すれ) — Junban's ladder, `anki_match.card_key`. A hiragana card whose letters reach a name's
     or a loanword's row it is not (ひかり 'light' and the name ヒカリ, だいぶ and ダイブ 'dive': `_name_cards`)
-    is labelled on its own word's row, or on none. Without a list, every card's keys are given."""
+    is labelled on its own word's row, or on none; nor is a card the dictionary keeps apart from the row its
+    spelling reaches or the word it is read as (`anki_match.another_word`, `word_of_its_own`: 生き is not 生きる's
+    row, 心する not 心's). Without a list, every card's keys are given."""
     if not (settings or {}).get("anki_backlog_on_generate", True):
         return []
     try:
@@ -596,8 +598,8 @@ def anki_backlog_keys(language, settings, list_path=None):
             index = anki_match.build_index(list_path, language="ja") if list_path else None
             listed = index.rank_of if index else {}
             names = _name_cards(backlog, index, answers) if listed else {}
-            keys = _own_keys(backlog, listed, names) if listed else keys
-            keys |= _dictionary_keys(backlog, answers, listed, names)
+            keys = _own_keys(backlog, listed, names, index) if listed else keys
+            keys |= _dictionary_keys(backlog, answers, listed, names, index)
             keys |= _confirmed_keys(backlog, answers, listed, names)
         return sorted(keys)
     except Exception as e:
@@ -634,26 +636,35 @@ def _name_cards(backlog, index, answers=None):
         for word in words:
             key = anki_match.lookup(word, index.rank_of, "ja")
             if key and anki_match.not_the_name(word, key, index.rank_of, index.words, tokenize) is not None:
-                found[word] = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words)[0]
+                found[word] = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words,
+                                                  index.orths)[0]
     except Exception as e:
         print(f"Warning: could not read the Anki backlog's kana cards: {e}")
         return {}
     return found
 
 
-def _own_keys(backlog, listed, names=None):
+def _own_keys(backlog, listed, names=None, index=None):
     """Each card's own keys as the Anki sync wrote them — its word, and the word's hiragana fold — but the
     word alone when the list (`listed`) holds it as written: Junban tries the fold (L4) only when the
     spelling misses, so a スレ card is スレ's row, never also the row that holds すれ (擦れる's Forms). A card
-    in `names` (`_name_cards`) holds only the key of the word it is, if any: its letters are a name's it is not."""
+    in `names` (`_name_cards`) holds only the key of the word it is, if any: its letters are a name's it is not.
+    A card whose spelling reaches its row only as another dictionary word's (`anki_match.another_word`, with the
+    list's `index`: 生き in 生きる's Forms) holds none: Junban places it by its own sentence."""
+    from app import anki_match
     keys = set()
     names = names or {}
+    words, orths = (index.words, index.orths) if index else (None, None)
     notes = backlog.get("notes")
     for entry in (notes.values() if isinstance(notes, dict) else ()):
         if not isinstance(entry, dict):
             continue
         if entry.get("word") in names:
             keys.update(key for key in (names[entry["word"]],) if key)
+            continue
+        word = entry.get("word")
+        key = anki_match.lookup(word, listed, "ja") if isinstance(word, str) else ""
+        if key and anki_match.another_word(word, key, listed, words, orths):
             continue
         if isinstance(entry.get("word"), str) and entry["word"] in listed:
             keys.add(entry["word"])
@@ -662,19 +673,25 @@ def _own_keys(backlog, listed, names=None):
     return keys
 
 
-def _on_the_list(word, answers, listed, names=None):
+def _on_the_list(word, answers, listed, names=None, index=None):
     """Whether Junban places this card with no reading of its own: its spelling is on the list (L1–L4) — for a
-    hiragana card whose letters are a name's it is not (`names`, `_name_cards`): the word it is — or the user said
-    "yes" to a word that is (`anki_match.card_key`'s first rungs)."""
+    hiragana card whose letters are a name's it is not (`names`, `_name_cards`): the word it is; never a spelling of
+    another dictionary word's (`anki_match.another_word`) — or the user said "yes" to a word that is
+    (`anki_match.card_key`'s first rungs)."""
     from app import anki_match
     if not listed:
         return False
     answer = (answers or {}).get(word) or {}
-    spelled = bool(names[word]) if names and word in names else bool(anki_match.lookup(word, listed, "ja"))
+    if names and word in names:
+        spelled = bool(names[word])
+    else:
+        key = anki_match.lookup(word, listed, "ja")
+        words, orths = (index.words, index.orths) if index else (None, None)
+        spelled = bool(key) and not anki_match.another_word(word, key, listed, words, orths)
     return spelled or (answer.get("answer") == "yes" and answer.get("target") in listed)
 
 
-def _dictionary_keys(backlog, answers=None, listed=None, names=None):
+def _dictionary_keys(backlog, answers=None, listed=None, names=None, index=None):
     """The list words a Japanese backlog's cards ARE, read through the dictionary
     (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
     content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
@@ -688,7 +705,9 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None):
     and then keyed by the letters it is written in, as Junban looks it up (`anki_match.card_key`). The
     user's "no" to a card's word being that list word (`answers`) keeps it from being labelled, as it
     keeps Junban from placing it there. A card the list (`listed`, its `rank_of`) holds as written, or
-    by a "yes", is not read at all (`_on_the_list`): alone, 解す reads 解する and 生き 生きる.
+    by a "yes", is not read at all (`_on_the_list`): alone, 解す reads 解する and 生き 生きる. Nor is a card the
+    dictionary keeps apart from the word it is read as, or from the row that word's spelling reaches
+    (`anki_match.word_of_its_own`, `another_word` with the list's `index`): 心する is no 心, 揚げる no 上げる.
 
     The tokenizer is built only when a card needs it, here where the report renders — never in the
     dashboard (Anki_Known_Sync_Spec I6). One that cannot be had leaves the cards' own keys, as
@@ -700,9 +719,10 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None):
              and (anki_match._KANJI_RE.search(entry["word"]) or entry["word"].endswith(_ENDING_SPELLINGS)
                   or entry["word"].startswith(anki_match.AFFIX_SPELLINGS[0])
                   or entry["word"].endswith(anki_match.AFFIX_SPELLINGS[1]))
-             and not _on_the_list(entry["word"], answers, listed, names)}
+             and not _on_the_list(entry["word"], answers, listed, names, index)}
     if not words:
         return set()
+    rows, orths = (index.words, index.orths) if index else (None, None)
     keys = set()
     try:
         from app import analyzer
@@ -713,8 +733,8 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None):
         for word in words:
             tokens = anki_match.ending_apart(tokenize(word))    # バシッと: the sound word + と, as Junban reads it
             token = anki_match.one_word(tokens)
-            if token is None:
-                continue
+            if token is None or anki_match.word_of_its_own(word, tokens, token):
+                continue                # none, or a word of its own the dictionary keeps apart: 心する is no 心
             if len(tokens) == 1 and not anki_match.whole_word_alone(word, tokens):
                 continue                # 見 alone is 見る's stem, 1人 is not 人 — Junban places neither
             if anki_match._KANJI_RE.search(word):
@@ -727,6 +747,8 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None):
             answer = (answers or {}).get(word) or {}
             if answer.get("answer") == "no" and answer.get("target") in found | {token[0], token[3]}:
                 continue
+            if listed and not anki_match._grammar_off(tokens):
+                found = {key for key in found if not anki_match.another_word(word, key, listed, rows, orths)}
             keys |= found
     except Exception as e:
         print(f"Warning: could not read the Anki backlog through the dictionary: {e}")

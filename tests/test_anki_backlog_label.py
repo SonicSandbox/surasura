@@ -136,14 +136,27 @@ def test_a_one_character_card_or_a_card_read_as_only_part_of_itself_labels_nothi
 
 
 def test_a_word_written_with_its_suru_na_or_ni_labels_the_word_itself(monkeypatch):
-    """同行する is 同行 + する to the dictionary, and the list's row is 同行 (#773); 斬新な and 一気に
+    """同行する is 同行 + する to the dictionary, and the list's row is 同行 (#773); 斬新な and 最後に
     carry the copula's な and the particle に the same way. The report can render in a process of its
     own (`static_generator`), where no run has switched SANITIZE_JA on — and there UniDic's lemma is
     同行-連れ立つ, which is no row's Word."""
     monkeypatch.setattr(analyzer, "SANITIZE_JA", False)
-    _write_backlog(data=_cards("同行する", "斬新な", "一気に"))
+    _write_backlog(data=_cards("同行する", "斬新な", "最後に"))
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == [
-        "一気", "一気に", "同行", "同行する", "斬新", "斬新な"]
+        "同行", "同行する", "斬新", "斬新な", "最後", "最後に"]
+
+
+def test_a_card_the_dictionary_keeps_apart_labels_no_other_words_row(tmp_path):
+    """The dictionary decides (the user, 2026-09-30): 一気に 'in one go', 心する 'take heed' and 揚げる 'deep-fry'
+    are JMdict entries of their own, apart from 一気, 心 and 上げる (the word UniDic files 揚げる under), so each card
+    keys only itself. On a list whose 生きる and 集う rows hold 生き and 集い among their spellings, the nouns' cards
+    mark neither row — while 信じる, one verb with UniDic's 信ずる, still marks the row whose spellings hold it."""
+    _write_backlog(data=_cards("一気に", "心する", "揚げる"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["一気に", "心する", "揚げる"]
+    listed = _write_list(tmp_path, [("生きる", "生きる", "生き|生きれ", "イキル"), ("集う", "集う", "集い|集っ", "ツドウ"),
+                                    ("信ずる", "信ずる", "信じ|信じる", "シンズル")])
+    _write_backlog(data=_cards("生き", "集い", "生きる", "信じる"))
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["信じる", "生きる"]
 
 
 def test_a_kana_only_card_is_never_read_alone(monkeypatch):

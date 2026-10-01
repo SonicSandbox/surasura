@@ -3,8 +3,9 @@
 The build distils the dictionaries into three generated modules: the katakana headwords, JMnedict's person names and
 JMdict's kanji spellings entry by entry (app/jmdict_data.py). The last one keeps a story's own kanji terms apart from
 the words any dictionary lists (鄭寧 is Sōseki's 丁寧), and — kept by entry — says which dictionary word a spelling
-belongs to. The dictionary below is real: entries quoted from JMdict (the EDRDG's Japanese-English dictionary, CC BY-SA
-4.0), cut to what these tests need.
+belongs to; beside them, the readings a card written in kana can end in (ことに is 殊に's), so a card's word and the
+word it is read as can be told apart. The dictionary below is real: entries quoted from JMdict (the EDRDG's
+Japanese-English dictionary, CC BY-SA 4.0), cut to what these tests need.
 """
 
 import gzip
@@ -30,6 +31,9 @@ _JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
 <entry><ent_seq>1333540</ent_seq><k_ele><keb>集う</keb></k_ele><r_ele><reb>つどう</reb></r_ele><sense><pos>&v5u;</pos><gloss>to meet</gloss></sense></entry>
 <entry><ent_seq>1427360</ent_seq><k_ele><keb>丁寧</keb></k_ele><k_ele><keb>叮嚀</keb><ke_inf>&rK;</ke_inf></k_ele><k_ele><keb>鄭寧</keb><ke_inf>&sK;</ke_inf></k_ele><r_ele><reb>ていねい</reb></r_ele><sense><pos>&n;</pos><gloss>polite</gloss></sense></entry>
 <entry><ent_seq>2085080</ent_seq><r_ele><reb>ああ</reb></r_ele><sense><pos>&adv;</pos><gloss>like that</gloss></sense></entry>
+<entry><ent_seq>1328650</ent_seq><k_ele><keb>殊に</keb></k_ele><k_ele><keb>異に</keb></k_ele><r_ele><reb>ことに</reb></r_ele><sense><pos>&adv;</pos><gloss>especially</gloss></sense></entry>
+<entry><ent_seq>1010610</ent_seq><r_ele><reb>ひょいと</reb></r_ele><sense><pos>&adv;</pos><gloss>suddenly</gloss></sense></entry>
+<entry><ent_seq>2645150</ent_seq><r_ele><reb>バシッと</reb></r_ele><r_ele><reb>ばしっと</reb></r_ele><sense><pos>&adv;</pos><gloss>with a whack</gloss></sense></entry>
 </JMdict>
 """
 
@@ -61,8 +65,18 @@ def test_jmdict_kanji_forms_keep_every_kanji_spelling_entry_by_entry(bnd, tmp_pa
     """One line per entry that has a kanji form, its forms in JMdict's order — search-only and rare forms too (鄭寧 is
     a search-only form of 丁寧) — and the lines sorted; an entry written in kana alone has none."""
     lines, created, forms = bnd.jmdict_kanji_forms(str(_lists(tmp_path)))
-    assert lines == ["丁寧\t叮嚀\t鄭寧", "生き\t活き", "集い", "集う"]
-    assert created == "2026-09-28" and forms == 7
+    assert lines == ["丁寧\t叮嚀\t鄭寧", "殊に\t異に", "生き\t活き", "集い", "集う"]
+    assert created == "2026-09-28" and forms == 9
+
+
+def test_jmdict_readings_keep_what_a_kana_card_can_end_in_with_the_entries_they_read(bnd, tmp_path):
+    """A card written in kana alone is read as another word only with something written onto it (CARD_TAILS: an
+    ending, the copula or する in a form), so only a reading that ends so is kept — in hiragana, with the entries it
+    reads: ことに is 殊に's (its KANJI_FORMS line, 1), ひょいと and バシッと entries written in kana alone, numbered past
+    the kanji entries in JMdict's order (ああ is 5, and ends in nothing a card is read through: not kept)."""
+    lines, entries = bnd.jmdict_readings(str(_lists(tmp_path)))
+    assert lines == ["ことに\t1", "ばしっと\t7", "ひょいと\t6"]
+    assert entries == 3
 
 
 def test_a_missing_jmdict_is_an_error_never_an_empty_table(bnd, tmp_path):
@@ -84,7 +98,8 @@ def test_the_build_writes_the_tables_and_keeps_one_whose_inputs_did_not_change(b
         spec.loader.exec_module(module)
         return module
     jmdict = load("jmdict_data")
-    assert jmdict.kanji_forms().split("\n") == ["丁寧\t叮嚀\t鄭寧", "生き\t活き", "集い", "集う"]
+    assert jmdict.kanji_forms().split("\n") == ["丁寧\t叮嚀\t鄭寧", "殊に\t異に", "生き\t活き", "集い", "集う"]
+    assert jmdict.readings().split("\n") == ["ことに\t1", "ばしっと\t7", "ひょいと\t6"]
     assert jmdict.CREATED == "2026-09-28" and "CC BY-SA 4.0" in jmdict.__doc__
     assert load("name_data").surnames() == ["司波"], "冬月 is a word too (JPDB 2024)"
     assert "ドキドキ" in load("katakana_data").katakana_headwords()

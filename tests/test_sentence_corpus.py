@@ -286,6 +286,24 @@ def test_a_phrase_is_found_as_its_run_of_words_however_it_is_inflected():
     assert not [k for k, w in words.items() if w.best is not None and k != "気を取り直す"]
 
 
+def test_a_one_word_target_is_found_as_it_is_written():
+    """A card's word the dictionary keeps apart from the word UniDic files it under — 揚げる 'deep-fry', which UniDic
+    reads as 上げる 'raise' — has no key of its own in the library. It is found as it is written: a word whose
+    dictionary spelling (or lemma) IS the card's word, in any conjugation. So the sentences that write 揚げる are its
+    examples and those of 上げる never are; its own word never counts against it."""
+    fry, fried, raised = "毎朝、天ぷらを揚げる。", "油で揚げた魚を食べた。", "手を上げて質問した。"
+    cache = {"第01話.txt": _tokenized([fry, fried, raised])}
+    known = (_lemmas(fry) | _lemmas(fried) | _lemmas(raised)) - {"上げる"}
+
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), set(known), set()), WINDOW,
+                       wanted=set(), phrases={"揚げる": ("上げる",)})
+
+    best = words["揚げる"].best.result()
+    assert [c[1] for c in best] == [fry, fried]
+    assert [c[0][0] for c in best] == [0, 0]
+    assert [c[3] for c in best] == ["揚げる", "揚げ"]
+
+
 def test_chinese_keeps_single_characters_and_has_no_readings(tmp_path):
     """I5: Jieba's most common words are single characters, and Chinese has no reading to fill."""
     lines = ["我今天去图书馆看书。", "我们明天一起去公园散步吧。"]

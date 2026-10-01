@@ -846,3 +846,107 @@ def test_a_card_for_a_storys_own_kanji_term_meets_its_row():
     assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("焔魄陣", "L7")
     names.use_library_tables({"k": {}, "j": {}, "w": {}, "stamp": "none"}, pin=True)
     assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("", ""), "no table: pieces"
+
+
+# --------------------------------------------------------------------------- #
+# One word or two: the dictionary decides (the user, 2026-09-30: "I would let the dictionary decide")
+# --------------------------------------------------------------------------- #
+def test_two_words_are_two_entries_of_the_dictionary():
+    """A card's word and the word it is read as are two words when JMdict gives each an entry and none holds both:
+    揚げる 'deep-fry' (its own entry) and 上げる 'raise', 心する 'take heed' and 心, the noun 集い 'a gathering' and the
+    verb 集う, 一気に 'in one go' and 一気 'one breath', ことに 'especially' (a reading of 殊に) and 事. One word when an
+    entry holds both (逃げだす is a spelling of 逃げ出す's), when the card's word has no entry (努力する: 努力 takes
+    する), when the word it is read as is kana (ひょい, and すっ — the sound word of すっと, never the prefix 素っ that
+    shares its sound), and for a じる verb and its ずる form (UniDic files 信じる under 信ずる)."""
+    for word, lexeme in (("揚げる", "上げる"), ("心する", "心"), ("集い", "集う"), ("一気に", "一気"),
+                         ("ことに", "事"), ("堪らない", "堪る"), ("20世紀", "世紀")):
+        assert anki_match.two_words(word, lexeme), (word, lexeme)
+    for word, lexeme in (("逃げだす", "逃げ出す"), ("努力する", "努力"), ("ひょいと", "ひょい"), ("すっと", "すっ"),
+                         ("信じる", "信ずる"), ("感じる", "感ずる"), ("最後に", "最後"), ("部屋", "部屋"),
+                         ("", "心"), ("心する", ""), ("Ｘする", "心")):
+        assert not anki_match.two_words(word, lexeme), (word, lexeme)
+
+
+def test_a_dictionary_that_cannot_be_read_sets_no_card_apart(monkeypatch):
+    """A broken install costs the rule, never a card's place: with no dictionary every card matches as before."""
+    monkeypatch.setattr(anki_match, "_dictionary", [None])
+    assert not anki_match.two_words("揚げる", "上げる")
+    assert anki_match.card_key("心する", {"心": 0}, "ja", None, _tokenizer().tokenize) == ("心", "L7")
+
+
+def test_a_card_the_dictionary_lists_whole_lands_on_no_other_words_row():
+    """心する, 一気に, 堪らない and 揚げる are words of their own in JMdict — the list's 心, 一気, 堪る and 上げる are
+    other words — so Junban places each by its own sentence, and the mark marks none of those rows. Read alone, so
+    is ことに (殊に's reading), never 事 + に. The user's "yes" to a pair still places the card there."""
+    tokenize = _tokenizer().tokenize
+    listed = {"心": 0, "一気": 1, "堪る": 2, "上げる": 3, "こと": 4}
+    for word in ("心する", "一気に", "堪らない", "揚げる", "ことに"):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
+    yes = {"心する": {"target": "心", "answer": "yes"}}
+    assert anki_match.card_key("心する", listed, "ja", yes, tokenize) == ("心", "yes")
+    assert anki_match.word_of_its_own("心する", tokenize("心する"), anki_match.one_word(tokenize("心する")))
+
+
+def test_one_dictionary_word_still_lands_on_its_row():
+    """Where the dictionary does not tell the card from the list's word, nothing changes: 努力する and お茶する are
+    the noun + する (JMdict lists no entry for either whole), 最後に the noun + に, ひょいと the sound word + と,
+    逃げだす a spelling of 逃げ出す, and 信じる UniDic's 信ずる — one verb in two conjugations."""
+    tokenize = _tokenizer().tokenize
+    listed = {"努力": 0, "お茶": 1, "最後": 2, "ひょい": 3, "逃げ出す": 4, "信ずる": 5}
+    for word, key, via in (("努力する", "努力", "L7"), ("お茶する", "お茶", "L7"), ("最後に", "最後", "L7"),
+                           ("ひょいと", "ひょい", "L7"), ("逃げだす", "逃げ出す", "L6"), ("信じる", "信ずる", "L6")):
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, via), word
+
+
+def test_a_spelling_in_another_words_forms_is_not_that_row_unless_the_row_writes_it(tmp_path):
+    """A list row's Forms hold every spelling its word was met in, and a verb's stem is spelled like the noun the
+    dictionary makes of it: 生き (the noun 'living') in 生きる's, 集い in 集う's. The card is that noun, a word of its
+    own, and lands on neither row. A row whose own spelling (its Orth) is the card's is the card's row, whatever word
+    UniDic files it under: the content writes 治める, UniDic's 収める."""
+    tokenize = _tokenizer().tokenize
+    index = anki_match.build_index(_write_list(tmp_path / "list.csv", [
+        ("生きる", "生きる", "生き|生きれ"), ("集う", "集う", "集い|集っ"), ("収める", "治める", "収め")]), language="ja")
+    assert index.orths == ["生きる", "集う", "治める"]
+    for word in ("生き", "集い"):
+        assert anki_match.card_key(word, index.rank_of, "ja", None, tokenize, index.words,
+                                   index.orths) == ("", ""), word
+    for word in ("治める", "収める", "生きれ"):
+        assert anki_match.card_key(word, index.rank_of, "ja", None, tokenize, index.words, index.orths) == (
+            word, "exact"), word
+    assert anki_match.another_word("生き", "生き", index.rank_of, index.words, index.orths)
+    assert not anki_match.another_word("治める", "治める", index.rank_of, index.words, index.orths)
+
+
+def test_a_cards_own_grammar_comes_off_whatever_entries_the_dictionary_gives_it():
+    """JMdict lists お部屋, 俺たち and 暑さ as entries — yet a polite お, a plural and a さ are the word's own grammar,
+    and the user decided those cards are their word, known through each other (2026-09-29). So they stay 部屋, 俺
+    and 暑い."""
+    tokenize = _tokenizer().tokenize
+    listed = {"部屋": 0, "俺": 1, "暑い": 2}
+    for word, key in (("お部屋", "部屋"), ("俺たち", "俺"), ("暑さ", "暑い")):
+        assert anki_match.two_words(word, key), word
+        assert anki_match.card_key(word, listed, "ja", None, tokenize) == (key, "L7"), word
+        assert not anki_match.word_of_its_own(word, tokenize(word), anki_match.one_word(tokenize(word))), word
+
+
+def test_a_question_is_never_asked_across_two_dictionary_words():
+    """"Same word as one on your list?" asks nothing the dictionary has answered: 対する is a verb of its own (not
+    the list's one-character 対 + する), and 揚げる in its sentence is no 上げる. A noun + する the dictionary does
+    not list whole is still asked."""
+    tokenize = _tokenizer().tokenize
+    assert anki_match.suggest("対する", "彼に<b>対する</b>態度", tokenize, {"対": 0}, "ja") is None
+    assert anki_match.suggest("揚げる", "天ぷらを<b>揚げた</b>。", tokenize, {"上げる": 0}, "ja") is None
+    assert anki_match.suggest("同行する", "", tokenize, {"同行": 0}, "ja").key == "同行"
+
+
+def test_the_shipped_dictionary_reads_a_kana_card_by_the_entries_its_reading_names():
+    """app/jmdict_data.py's readings are kept only where a card in kana can be read as another word + something
+    written onto it: ことに reads 殊に's entry, and ひょいと an entry written in kana alone (numbered past the kanji
+    entries) — まく ends in nothing a card is read through, so it is not kept."""
+    from app import jmdict_data
+    kanji, readings = anki_match._dictionary_entries()
+    lines = jmdict_data.kanji_forms().split("\n")
+    assert [lines[number] for number in readings["ことに"]] == ["殊に\t異に"]
+    assert all(number >= len(lines) for number in readings["ひょいと"])
+    assert "まく" not in readings
+    assert kanji.get("２０世紀") == kanji.get("20世紀") != frozenset()

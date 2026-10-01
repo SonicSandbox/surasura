@@ -123,7 +123,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     that is no word with its one ー is read without the stretch where that is a word (バイバ～イ is バイバイ); a
 #     pre-noun phrase usually written in kana counts only written in kana (そういった). Still 2.4: one re-analysis
 #     with 15–26.
-ENGINE_REVISION = 27
+# 28: a sound word said with と and without (one row) shows its と form when JMdict lists the word with its と
+#     (ドキッと, ぐっと, はっと — _display_orth), so the list and the cards made from it write it as dictionaries do.
+#     Still 2.4: one re-analysis with 15–27.
+ENGINE_REVISION = 28
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2335,6 +2338,39 @@ def _known_term(term):
     cut = _sanitize_term(term)
     return term.strip() if _JA_TARGET_RE.search(term.strip()[len(cut) + 1:]) else cut
 
+# JMdict's readings that end in と (app/jmdict_data.py's READINGS: どきっと, ぐっと, はっと), read once — which sound words a
+# dictionary writes with their と. Empty when the table can't be read: then every row shows its commonest spelling.
+_TO_READINGS = []
+
+
+def _jmdict_to_readings():
+    if not _TO_READINGS:
+        try:
+            from app import jmdict_data
+            readings = (line.partition("\t")[0] for line in jmdict_data.readings().split("\n"))
+            _TO_READINGS.append(frozenset(reading for reading in readings if reading.endswith("と")))
+        except Exception:
+            _TO_READINGS.append(frozenset())
+    return _TO_READINGS[0]
+
+
+def _hiragana(text):
+    """Katakana to hiragana, everything else as it is (anki_match.fold_kana): ドキッと -> どきっと."""
+    return "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in text)
+
+
+def _said_with_to(orths):
+    """{spelling: count} of a sound word said with と (ドキッと) on a row that holds it bare too (ドキッ — one row:
+    join_affixes' sound word + と), when JMdict lists the word with its と (どきっと); {} for every other row — a word
+    whose kana ends in と is no sound word (弟 beside おとうと keeps its commonest spelling)."""
+    with_to = [orth for orth in orths if orth and orth.endswith("と") and _SOKUON_ADVERB.match(orth[:-1])]
+    if not with_to:
+        return {}
+    bare = {_hiragana(orth) for orth in orths}
+    listed = _jmdict_to_readings()
+    return {orth: orths[orth] for orth in with_to if _hiragana(orth[:-1]) in bare and _hiragana(orth) in listed}
+
+
 def _display_orth(lemma, orths):
     """The spelling to SHOW for a word: the commonest orthBase seen for it, else the lemma.
 
@@ -2347,11 +2383,15 @@ def _display_orth(lemma, orths):
     Measured on the live library: 23.7% of listed words that appear in the user's own content were
     being named with a spelling that content never uses. So `Word` stays the identity and this is
     the label. Ties fall back to the lemma rather than picking arbitrarily.
+
+    A sound word said with と and without is one row; it shows its と form whenever JMdict lists the word with its と —
+    ドキッと, ぐっと, はっと, as dictionaries and the cards made from the list write it — even where the library says it
+    bare more often (the user, 2026-10-01: "I want them on my cards with the と").
     """
     if not orths:
         return lemma
     best, best_n = None, 0
-    for orth, n in orths.items():
+    for orth, n in (_said_with_to(orths) or orths).items():
         if orth and (n > best_n):
             best, best_n = orth, n
     return best or lemma

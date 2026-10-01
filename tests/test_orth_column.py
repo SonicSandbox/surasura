@@ -93,6 +93,31 @@ def test_blank_orths_are_never_chosen():
     assert analyzer._display_orth("食べる", Counter({"": 99, "食べる": 2})) == "食べる"
 
 
+def test_a_sound_word_said_with_to_shows_its_to_form_where_the_dictionary_lists_it():
+    """ぐっ and ぐっと are one row (the sound word said with と). JMdict lists the word with its と, so the list — and a
+    card made from it — writes ぐっと, though the library says ぐっ more often; the katakana spelling too (ドキッと)."""
+    assert "ぐっと" in analyzer._jmdict_to_readings() and "どきっと" in analyzer._jmdict_to_readings()
+    assert analyzer._display_orth("ぐっ", Counter({"ぐっ": 9, "ぐっと": 3})) == "ぐっと"
+    assert analyzer._display_orth("どきっ", Counter({"ドキッ": 5, "ドキッと": 2, "どきっ": 1})) == "ドキッと"
+
+
+def test_a_sound_word_no_dictionary_lists_with_to_keeps_its_commonest_spelling():
+    # ヌポッ is made up: no entry reads ぬぽっと, so the commoner bare spelling stays the label.
+    assert analyzer._display_orth("ぬぽっ", Counter({"ヌポッ": 5, "ヌポッと": 2})) == "ヌポッ"
+
+
+def test_a_word_whose_kana_ends_in_to_is_no_sound_word():
+    """おとうと is 弟 in kana, not a sound word + と: the rule never reaches it, and the commonest spelling wins as
+    for any word."""
+    assert analyzer._display_orth("弟", Counter({"弟": 2, "おとうと": 5})) == "おとうと"
+    assert analyzer._display_orth("弟", Counter({"弟": 5, "おとうと": 2})) == "弟"
+
+
+def test_with_the_dictionary_table_unreadable_the_commonest_spelling_wins(monkeypatch):
+    monkeypatch.setattr(analyzer, "_TO_READINGS", [frozenset()])
+    assert analyzer._display_orth("ぐっ", Counter({"ぐっ": 9, "ぐっと": 3})) == "ぐっ"
+
+
 def test_the_lemma_still_merges_spellings_that_orth_would_split():
     """The reason `Word` is NOT switched to orthBase. Keying on the spelling would split this one
     verb into three entries holding a third of the frequency each, and a word sitting just above a

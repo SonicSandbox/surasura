@@ -172,8 +172,10 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     word + と its word (ドキッと), and lists a compound you can already read lower; 19 reads a card's polite お / ご,
     plural or さ as its word's grammar, and lists an お / ご word you can read through its word lower; 20 makes a
     story's own kanji terms the library keeps using one word, a katakana headword no dictionary join makes one word,
-    and keeps a katakana name off the head of a word written on in hiragana.)"""
-    assert analyzer.ENGINE_REVISION == 20
+    and keeps a katakana name off the head of a word written on in hiragana; 21 makes a word general text writes as
+    words one word though the tagger reads it otherwise alone (出来損ない), and lets a verb's stem stand in a noun the
+    dictionaries mark (立ち位置, 待ち時間).)"""
+    assert analyzer.ENGINE_REVISION == 21
 
 
 # --------------------------------------------------------------------------- #

@@ -25,8 +25,11 @@ Three kinds of joined word need a dictionary's judgement that the frequency list
                    hold pieces of foreign names). Inside a longer katakana run that is a name as a whole (ビルデイング,
                    an old spelling of 'building'), such a compound gives way and the name stays one word; one JMdict
                    lists (フジテレビ) is a word and keeps its join (フジテレビ + アナウンサー).
+  Nouns            that the text writes with a verb's stem (立ち[立つ] + 位置, 待ち[待つ] + 時間), or that a card's word
+                   read alone gives as verbs (出来る + 損なう): a noun compound JMdict lists as a noun may have a
+                   verb's stem stand in it, and the tokenizer joins such a run too.
 
-scripts/build_reference_data.py calls `fringe`, `unlisted` and `ogo_exceptions` when JMdict_e.gz is in
+scripts/build_reference_data.py calls `fringe`, `unlisted`, `ogo_exceptions` and `lists_as_noun` when JMdict_e.gz is in
 docs/assets/reference_lists/ (gitignored) and writes their result to app/dictionary_data.py, which carries the
 EDRDG's attribution (CC BY-SA 4.0). Only the spellings these functions pick ship; JMdict itself never does.
 
@@ -57,6 +60,7 @@ PHRASE_TAGS = frozenset(("exp", "adv", "adv-to", "int", "adj-no", "adj-na"))
 UNIT_TAGS = frozenset(("yoji", "id", "proverb", "on-mim"))
 PREFIX_TAGS = frozenset(("pref", "n-pref"))
 POLITE_TAGS = frozenset(("pol", "hon", "hum"))
+NOUN_POS = frozenset(("n", "n-adv", "n-t", "n-suf"))     # a noun: common, adverbial, temporal, or used as a suffix
 OGO_PREFIXES = {"お": ("お",), "ご": ("ご",), "御": ("お", "ご", "ぎょ", "おん", "み")}
 
 _ENTITY = re.compile(r'<!ENTITY\s+(\S+)\s+"([^"]*)">')
@@ -242,6 +246,16 @@ def unlisted(entries, compounds):
     by_kanji, by_kana = index(entries)
     listed = {form.replace("・", "") for form in list(by_kanji) + list(by_kana)}
     return {spelling: UNLISTED for spelling in compounds if _KATAKANA.match(spelling) and spelling not in listed}
+
+
+# --- A noun a verb's stem may stand in --------------------------------------------------------------------- #
+
+def lists_as_noun(idx, spelling, reading):
+    """Does JMdict list `spelling` read `reading` as a noun — some sense a common noun, an adverbial or temporal one,
+    or one used as a suffix (出来損ない, 待ち時間, 思い通り)? The build lets a verb's stem stand in such a compound
+    where the text writes one there (立ち[立つ] + 位置)."""
+    return any(NOUN_POS.intersection(sense["pos"]) for entry in lookup(idx, spelling, reading)
+               for sense in entry["senses"])
 
 
 # --- お / ご words ------------------------------------------------------------------------------------ #

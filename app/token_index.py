@@ -67,7 +67,10 @@ from operator import itemgetter
 #    transcript's captions are auto-generated — a story's own kanji terms are one word; a katakana word the lists hold
 #    that no dictionary join makes is one word, and a katakana name no longer takes the head of a word written on in
 #    hiragana — still 2.4, so users rebuild once with v8–v12.
-SCHEMA_VERSION = 13
+# v14 a word general text writes as words though the tagger reads it otherwise alone is one word (出来損ない: 出来 +
+#    損ない in a sentence), and a verb's stem may stand in a noun the dictionaries mark (待ち + 時間, 立ち + 位置): a v13
+#    blob holds those words in pieces — still 2.4, so users rebuild once with v8–v13.
+SCHEMA_VERSION = 14
 
 
 # --------------------------------------------------------------------------- #

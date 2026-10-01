@@ -23,8 +23,9 @@ These tables come out of it:
 
   COMPOUND_JOINS  written form -> [lemma, reading, kind, 0]: the dictionary words UniDic cuts into words
                of their own (上層部 = 上層 + 部, 一生懸命, 二十歳, 取り掛かる), which the tokenizer joins back
-               — see "Compounds" below; COMPOUND_PARTS, apart, each one's parts. COUNTERS: the words the
-               lists count with that UniDic doesn't always file as counters (人, 冊).
+               — see "Compounds" below — read alone, and as the reference text writes them (出来損ない is
+               出来 + 損ない there: "The in-text pass"); COMPOUND_PARTS, apart, each one's parts. COUNTERS: the
+               words the lists count with that UniDic doesn't always file as counters (人, 冊).
 
   ALIASES      lemma -> the spelling frequency lists actually use.
                Unidic hands the analyzer orthographic lemmas (為る, 矢張り, 其れ); every
@@ -37,8 +38,9 @@ These tables come out of it:
                encounters" and compares that to the user's threshold.
 
 What the dictionaries themselves say about the compounds — a title of a work, a product or an
-organization (JMnedict), and JMdict's word when its file is here — goes to app/dictionary_data.py:
-its licence (CC BY-SA 4.0) is not this module's.
+organization (JMnedict), and JMdict's word when its file is here (a phrase, a katakana word it doesn't
+list, a noun a verb's stem may stand in) — goes to app/dictionary_data.py: its licence (CC BY-SA 4.0)
+is not this module's.
 
 Inputs live in docs/assets/reference_lists/ — gitignored, and deliberately NOT under scripts/,
 which packaging/Surasura.spec bundles wholesale: left there they would add ~78 MB of dead
@@ -71,6 +73,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.analyzer import (_SAME_CHARACTER, _STRETCH_DROPPED_RE, JoinedWord, ReadNode, _compound_part,  # noqa: E402
                           _join_affix_runs, _join_compounds, _lone_marks, _plural, _read, _sanitize_term, _stretched,
                           join_affixes, tagger_text)
+from app.analyzer import _stem as _plain_stem  # noqa: E402  (a verb's plain 連用形: 出来, 損ない, 待ち)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LISTS_DIR = os.path.join(ROOT, "docs", "assets", "reference_lists")
@@ -191,6 +194,7 @@ TITLES = os.path.join(LISTS_DIR, "anki_miner_wordsets", "org-product.txt")
 JMDICT = os.path.join(LISTS_DIR, "JMdict_e.gz")
 FLAG_FRINGE, FLAG_TITLE = 1, 3        # a title is fringe too: the switch's one test (flags & 1) hides both
 FLAG_UNLISTED = 4                     # a katakana compound JMdict doesn't list: gives way to a katakana name around it
+FLAG_STEMS = 8                        # a noun a verb's stem may stand in (出来 + 損ない, 待ち + 時間: the in-text pass)
 COMPOUND_REPORT = os.path.join(ROOT, "debug", "compound_joins.md")
 SAMPLE = 50
 # The switches the tokenizer's joins read (logic.*): shared data never follows the builder's own settings.json.
@@ -796,6 +800,228 @@ def corpus_pass(affix, candidates, counters, split_verbs, workers=WORKERS):
     return out
 
 
+# --- The in-text pass: words the text writes as words ---------------------------------------------------------- #
+# The compounds above come from each headword read ALONE, and some headwords read otherwise in a sentence: 出来損ない
+# alone is two verbs, 出来る + 損なう (no compound: a verb + 〜損なう is left apart, like 言い損なう), and in text two
+# nouns, 出来 + 損ない — so the list offered 損ない 'harm' where the text says 出来損ない 'a failure'; 通行止め alone is
+# 通行 + 止める, in text 通行 + 止め. So the build also reads its reference text (the shared set's slices and the rest of
+# FORM_SOURCES) as the app would with the tables made from the headwords alone, and a headword those tables leave
+# apart that the text writes as a run of 2-3 nouns spelling it is a noun candidate too, its parts that run's words
+# (its commonest), from there through every gate above. Every part is a run the text holds: nothing is made up. A run
+# inside a longer word those tables join, or across one (情報 + 保護 in 個人情報 + 保護), is no evidence. Kept out:
+#   a word the tagger reads whole alone (年代, 夜更け, 取り掛かる) — its key would be the key of the word read whole;
+#   a word whose alone reading is already a compound's shape — the build decided it (the even odds, a count, grammar);
+#   a word the text reads whole with the lists' reading (村会: one word there too);
+#   a word spelled in katakana alone — the katakana-name rule (app/names.py) keeps such a run whole (ダンボール), and a
+#      compound entry would take it from that rule while refusing a name's piece (ダン), so nobody would join it.
+# A verb's stem in such a word (FLAG_STEMS, the dictionaries' mark 8): the tagger often writes a noun's first part as a
+# verb's stem — 立ち位置 is 立ち[立つ] + 位置 in most of its uses, 待ち時間 待ち[待つ] + 時間 — and a card holding the word
+# alone reads it as verbs (出来る + 損なう). A noun compound, new or already in the table, that JMdict lists as a noun
+# and that the text, or the word read alone, writes with a verb's stem (its plain 連用形, never する's) carries the
+# mark; the tokenizer then joins a run of nouns and stems that spells it too (analyzer._joins_with_stems). A new such
+# word's parts are those of its commonest reading in the text: 立ち位置 is 立つ + 位置 (the verb a learner knows), not
+# the rare noun 立ち its noun reading shows.
+IN_TEXT_EXAMPLES = 3                    # lines kept per word and reading (a window around the run), to read it from
+IN_TEXT_WINDOW = 40                     # characters kept on each side of the run
+_NOT_IN_A_RUN = frozenset(("補助記号", "空白", "助詞", "助動詞"))
+_KATAKANA_ONLY = re.compile(r"^[゠-ヿー]+$")
+_IN_TEXT = {}
+
+
+def _in_text_init(targets, affix, compounds, counters):
+    from app.analyzer import Tagger
+    pin_parsing_defaults()
+    use_counters(counters)
+    _IN_TEXT.update(tagger=Tagger(), affix=affix, compounds=compounds, targets=targets,
+                    heads=frozenset(w[:k] for w in targets for k in range(1, len(w))))
+
+
+def _spans(words):
+    """Where each of a line's words stands in it: (start, end), the spaces before each counted."""
+    out, at = [], 0
+    for w in words:
+        at += len(getattr(w, "white_space", "") or "")
+        out.append((at, at + len(w.surface)))
+        at += len(w.surface)
+    return out
+
+
+def _run_shape(words):
+    """A run's words as the in-text pass tells readings apart: each one's class, conjugation, key and spelling."""
+    return tuple((w.feature.pos1, w.feature.pos2, w.feature.pos3, str(w.feature.cForm), w.feature.lemma or w.surface,
+                  w.feature.lForm or w.feature.kana or "", w.feature.orth or w.surface, w.feature.orthBase or "",
+                  bool(w.is_unk), isinstance(w, JoinedWord)) for w in words)
+
+
+def _run_kind(words):
+    """"N" for a run of nouns (the compound part test), "S" for nouns and at least one verb's stem, else None."""
+    stems = [_plain_stem(w) for w in words]
+    if not all(s or _compound_part(w, "N") for s, w in zip(stems, words)):
+        return None
+    return "S" if any(stems) else "N"
+
+
+def _in_text_file(path):
+    """-> the in-text pass's counts of one text file: (headword, "N" or "S", the words of a run of 2-3 spelling it
+    that the tables leave apart — neither joined, nor inside or across a word they join) -> uses, with the first lines
+    that show each (a window around the run); and (headword, reading) -> the uses the text reads as one word."""
+    c = _IN_TEXT
+    tagger, affix, compounds, targets, heads = c["tagger"], c["affix"], c["compounds"], c["targets"], c["heads"]
+    runs, examples, whole = Counter(), defaultdict(list), Counter()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            raw = tagger(line)
+            words = _join_affix_runs(raw, affix)
+            joined = None
+            for i, w in enumerate(words):
+                if w.feature.pos1 in ("補助記号", "空白"):
+                    continue
+                s = _read(w)
+                if s in targets and not isinstance(w, JoinedWord):
+                    whole[(s, w.feature.lForm or w.feature.kana or "")] += 1
+                if s not in heads or w.feature.pos1 in _NOT_IN_A_RUN:
+                    continue
+                for j in range(i + 1, min(len(words), i + 3)):
+                    x = words[j]
+                    if x.feature.pos1 in _NOT_IN_A_RUN or _spaced(x):
+                        break
+                    s += _read(x)
+                    if s in targets:
+                        kind = _run_kind(words[i:j + 1])
+                        if kind:
+                            if joined is None:
+                                at = _spans(words)
+                                joined = _spans(join_affixes(raw, affix, library=False, compounds=compounds))
+                            a, b = at[i][0], at[j][1]
+                            if not any(x0 <= a and b <= x1 or x0 < a < x1 or x0 < b < x1 for x0, x1 in joined):
+                                shape = _run_shape(words[i:j + 1])
+                                runs[(s, kind, shape)] += 1
+                                if len(examples[(s, shape)]) < IN_TEXT_EXAMPLES:
+                                    examples[(s, shape)].append(line[max(0, a - IN_TEXT_WINDOW):b + IN_TEXT_WINDOW])
+                    if s not in heads:
+                        break
+    return runs, dict(examples), whole
+
+
+def in_text_readings(affix, compounds, targets, counters, workers=WORKERS):
+    """One pass over the reference text (`_in_text_file`, the shared set's slices and the rest of FORM_SOURCES), read
+    with the affix joins `affix` and the compounds `compounds`. -> {"runs", "examples", "whole", "files", "seconds"},
+    each file's counts summed in order (the largest first)."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    paths = _corpus_texts() + _corpus_texts(rest=True)
+    paths.sort(key=lambda p: -os.path.getsize(p))
+    runs, examples, whole = Counter(), {}, Counter()
+    t0 = time.time()
+    with ProcessPoolExecutor(workers, multiprocessing.get_context("spawn"), _in_text_init,
+                             (targets, affix, compounds, frozenset(counters))) as pool:
+        for done, (path, (r, ex, wh)) in enumerate(zip(paths, pool.map(_in_text_file, paths)), 1):
+            runs.update(r)
+            whole.update(wh)
+            for key, lines in ex.items():
+                have = examples.setdefault(key, [])
+                have.extend(lines[:IN_TEXT_EXAMPLES - len(have)])
+            print(f"    {done}/{len(paths)} {os.path.relpath(path, CORPUS_TEXT)} ({time.time() - t0:.0f} s)", flush=True)
+    return {"runs": runs, "examples": examples, "whole": whole, "files": len(paths), "seconds": time.time() - t0}
+
+
+def _run_in(tagger, affix, word, lines, shape=None):
+    """The first run of 2-3 words spelling `word` in `lines` read with `affix`: one of exactly `shape`, or else of nouns
+    (the part test) — the words and the line, or (None, None)."""
+    for line in lines:
+        words = [_snap(w) for w in _join_affix_runs(tagger(line), affix)]
+        for i in range(len(words)):
+            for n in ((len(shape),) if shape else (2, 3)):
+                run = words[i:i + n]
+                if len(run) == n and "".join(_read(w) for w in run) == word and (
+                        _run_shape(run) == shape if shape else all(_compound_part(w, "N") for w in run)):
+                    return run, line
+    return None, None
+
+
+def in_text_words(tagger, headwords, affix, alone, workers=WORKERS):
+    """The in-text pass (§ above), with `alone` — the tables made from the headwords read alone (`compound_tables`).
+    -> {"nouns": {headword: its words}, in order, read as `affix` reads them — the new noun candidates; "stems":
+    {headword: None, or the words of its commonest reading when that holds a verb's stem} — the words the mark 8 goes
+    on if the table keeps them (a new one takes those words for its parts); "refused": {guard: [headwords]}; and the
+    pass's counts, for the report}."""
+    full = dict(alone["joins"])                 # the affix joins the app reads: the table's and the dictionaries'
+    full.update(alone["ogo"])
+    table = alone["table"]
+    targets = frozenset(w for w in headwords if len(w) >= 2 and w not in full)
+    print(f"\nReading the reference text for the words it writes as words ({len(targets):,} headwords, {workers} "
+          "processes)...")
+    read = in_text_readings(full, alone["compounds"], targets, alone["named"], workers)
+    print(f"  {len(read['runs']):,} runs of nouns or verb stems the tables leave apart, in {read['files']} files, "
+          f"{read['seconds']:.0f} s")
+    index = None                        # JMdict's, to ask whether a word is a noun: without it, none takes the mark
+    try:
+        import jmdict_flags
+    except ImportError:
+        jmdict_flags = None
+        print("  (scripts/jmdict_flags.py is not here: no verb's stem stands in any word)")
+    if jmdict_flags is not None and not os.path.isfile(JMDICT):
+        print(f"  ({os.path.relpath(JMDICT, ROOT)} is not here: no verb's stem stands in any word)")
+    elif jmdict_flags is not None:
+        index = jmdict_flags.index(jmdict_flags.load(JMDICT))
+
+    def noun(word, reading):
+        return index is not None and jmdict_flags.lists_as_noun(index, word, reading)
+
+    by_word = defaultdict(dict)                 # headword -> {its words' shape: [kind, uses]}, first seen first
+    for (word, kind, shape), n in read["runs"].items():
+        by_word[word].setdefault(shape, [kind, 0])[1] += n
+    nouns, stems, refused, uses = {}, {}, defaultdict(list), {}
+    for word, shapes in by_word.items():
+        reading = headwords[word][0]
+        words = [_snap(w) for w in _join_affix_runs(tagger(word), full)]
+        with_stems = [s for s, (kind, _n) in shapes.items() if kind == "S"]
+        if len(words) == 1:
+            refused["read whole alone"].append(word)
+            continue
+        if read["whole"][(word, reading)]:
+            refused["read whole in the text"].append(word)
+            continue
+        if word in table:
+            if with_stems and table[word][2] == "N" and noun(word, reading):
+                stems[word] = None
+            continue
+        if compound_shape(words, word) is not None:
+            refused["a compound's shape alone"].append(word)
+            continue
+        if _KATAKANA_ONLY.match(word):
+            refused["katakana alone"].append(word)
+            continue
+        of_nouns = [s for s, (kind, _n) in shapes.items() if kind == "N"]
+        if not of_nouns:
+            continue                            # a verb's stem + a noun only (居場所): another rule's
+        best = max(of_nouns, key=lambda s: shapes[s][1])
+        _run, line = _run_in(tagger, full, word, read["examples"].get((word, best), ()), best)
+        run = _run_in(tagger, affix, word, [line])[0] if line else None
+        if run is None:
+            refused["its run not read again"].append(word)
+            continue
+        nouns[word] = run
+        uses[word] = sum(shapes[s][1] for s in of_nouns)
+        alone_stem = 2 <= len(words) <= 3 and _run_kind(words) == "S"
+        if (with_stems or alone_stem) and noun(word, reading):
+            common = max(shapes, key=lambda s: (shapes[s][1], s))
+            stems[word] = None
+            if shapes[common][0] == "S":
+                stems[word] = _run_in(tagger, full, word, read["examples"].get((word, common), ()), common)[0]
+                if stems[word] is None:
+                    print(f"  !! {word}: its commonest reading, with a verb's stem, not read again: parted as nouns")
+    nouns = {w: nouns[w] for w in sorted(nouns)}
+    print(f"  {len(nouns):,} words the text writes as nouns ({sum(uses.values()):,} runs); a verb's stem stands in "
+          f"{len(stems):,} ({sum(1 for w in stems if w in nouns):,} of them new); kept out: "
+          + ", ".join(f"{why} {len(words):,}" for why, words in refused.items()))
+    return {"nouns": nouns, "stems": stems, "refused": dict(refused), "uses": uses,
+            "runs": len(read["runs"]), "files": read["files"], "seconds": read["seconds"]}
+
+
 # --- The even-odds test (noun compounds) ------------------------------------------------------------------------- #
 
 class Calibration:
@@ -1235,11 +1461,11 @@ def titles(compounds):
     return {word: FLAG_TITLE for word in compounds if word in names and not _KATAKANA.match(word)}
 
 
-def dictionary_flags(compounds, ogo_split):
+def dictionary_flags(compounds, ogo_split, stems=()):
     """-> (flags {spelling: int}, お / ご words JMdict makes words of their own {spelling: [lemma, reading]},
     JMdict's date or None, what was skipped): JMnedict's titles; and JMdict's phrases, the katakana compounds it
-    doesn't list and the お / ご words of their own when both its file and its reader (scripts/jmdict_flags.py) are
-    here."""
+    doesn't list, the お / ご words of their own and the nouns a verb's stem may stand in (`stems`: the in-text pass
+    asked JMdict) when both its file and its reader (scripts/jmdict_flags.py) are here."""
     flags, ogo, created, skipped = titles(compounds), {}, None, []
     try:
         import jmdict_flags
@@ -1264,9 +1490,14 @@ def dictionary_flags(compounds, ogo_split):
         flags[word] = flags.get(word, 0) | bits
     for word, bits in jmdict_flags.unlisted(entries, compounds).items():
         flags[word] = flags.get(word, 0) | bits
+    stems = set(stems)
+    for word in compounds:
+        if word in stems:
+            flags[word] = flags.get(word, 0) | FLAG_STEMS
     ogo = dict(jmdict_flags.ogo_exceptions(entries, ogo_split))
     print(f"  JMdict ({created}): {sum(1 for b in flags.values() if b & FLAG_FRINGE):,} behind the switch, "
           f"{sum(1 for b in flags.values() if b & FLAG_UNLISTED):,} katakana compounds it doesn't list, "
+          f"{sum(1 for b in flags.values() if b & FLAG_STEMS):,} nouns a verb's stem may stand in, "
           f"{len(ogo):,} お / ご words of their own")
     return flags, ogo, created, skipped
 
@@ -1317,10 +1548,22 @@ def blob(obj):
     ).decode("ascii")
 
 
-def build_compounds(tagger, headwords, affix, lists, workers=WORKERS):
-    """The compound table (see "Compounds") before its parts, and how it was decided (for the report). -> dict."""
-    print("\nFinding the compounds (reading the headwords alone)...")
+def build_compounds(tagger, headwords, affix, lists, workers=WORKERS, in_text=None):
+    """The compound table (see "Compounds") before its parts, and how it was decided (for the report) — from the
+    headwords read alone and, with `in_text` (`in_text_words`), the words the text writes as words. -> dict."""
+    print("\nFinding the compounds (reading the headwords alone" + (", and as the text writes them" if in_text else "")
+          + ")...")
     candidates, verbs, shapes, plurals = compound_candidates(tagger, headwords, affix)
+    added = {}
+    for word, words in (in_text or {}).get("nouns", {}).items():
+        if word in candidates or word in affix:
+            continue                        # (none: such a word reads otherwise alone)
+        if plural(words, headwords[word][0]):
+            plurals.append(word)
+            continue
+        candidates[word] = ("N", words)
+        added[word] = words
+        shapes["N in text " + subkind("N", words)] += 1
     for shape, n in sorted(shapes.items()):
         print(f"  {shape:<28} {n:>8,}")
     print(f"  plurals kept out: {len(plurals):,}")
@@ -1382,11 +1625,22 @@ def build_compounds(tagger, headwords, affix, lists, workers=WORKERS):
                                                    for k in COMPOUND_KINDS)
           + f"); {len(own):,} kept out as words UniDic reads whole; {len(in_context):,} such verbs a sentence shows "
             f"split, not joined; {len(fixed):,} fixed counts")
+    # The words a verb's stem may stand in (§ The in-text pass): a new one takes its commonest reading's words
+    stems, reparted = [w for w in table if w in (in_text or {}).get("stems", {}) and table[w][2] == "N"], []
+    for word in stems:
+        if word in added and in_text["stems"][word] is not None:
+            words_of[word] = in_text["stems"][word]
+            reparted.append(word)
+    if in_text:
+        print(f"  from the text: {sum(1 for w in added if w in table):,} of {len(added):,} words it writes as nouns "
+              f"kept; a verb's stem may stand in {len(stems):,} words ({sum(1 for w in stems if w in added):,} new, "
+              f"{len(reparted):,} of those parted as the text mostly writes them)")
     return {"table": table, "candidates": candidates, "verbs": verbs, "shapes": shapes, "plurals": plurals,
             "counters": counters, "named": named, "counts": counts, "refused": refused, "evidence": evidence,
             "clauses": clauses, "fixed": fixed, "grammar": grammar, "cut": cut, "verb_table": verb_table,
             "gap": gap, "split": split, "in_context": in_context, "words_of": words_of, "own": own,
-            "jmdict_apart": jmdict_apart, "not_verbs": not_verbs}
+            "jmdict_apart": jmdict_apart, "not_verbs": not_verbs, "in_text": in_text, "added": added,
+            "stems": stems, "reparted": reparted}
 
 
 def main():
@@ -1415,36 +1669,12 @@ def main():
     print(f"  {len(headwords):,} headwords, {len(affix):,} joins")
 
     lists = [ListReadings(name) for name in JOIN_LISTS]
-    built = build_compounds(tagger, headwords, affix, lists)
-    table, counters = built["table"], built["counters"]
-    use_counters(built["named"])
-    compound_parts(table, built["words_of"], lists)
-    for word in own_parts(table):
-        print(f"  !! {word} holds itself among its parts: kept out")
-        del table[word]
-    compounds = table
-
-    print("\nA compound's affixes (the affix joins' second pass)...")
-    second = affix_pass_two(tagger, headwords, affix, compounds)
-    # one lemma per spelling among the new words only: the first pass's words already have theirs, and the お / ご
-    # words theirs across UniDic's tags (おやすみ with お休み), which grouping by the tagger's lemmas again would undo
-    one_lemma_per_spelling(tagger, second, headwords)
-    union = {w: list(e) for w, e in affix.items()}
-    union.update(second)
-    decided, split_two = ogo_filter(tagger, {w: union[w] for w in second}, headwords, affix=union,
-                                    compounds=compounds, counters=built["named"],
-                                    report=OGO_REPORT.replace(".md", "_compounds.md"))
-    joins = {w: e for w, e in union.items() if w not in second}
-    joins.update(decided)
-    ogo_split.update(split_two)
-    print(f"  {len(second):,} words a compound makes with its affixes, {len(decided):,} of them kept; "
-          f"{len(joins):,} joins")
-
-    print("\nThe dictionaries' flags...")
-    flags, ogo, created, skipped = dictionary_flags(table, ogo_split)
-    # From here words are read with the flags merged in, as the app merges them (analyzer.compound_joins): a katakana
-    # compound JMdict doesn't list gives way to a katakana name around it. The table as stored keeps its 0s.
-    compounds = {w: e[:3] + [e[3] | flags.get(w, 0)] for w, e in table.items()}
+    print("\n--- The compounds of the headwords read alone ---")
+    alone = compound_tables(tagger, headwords, affix, ogo_split, lists)
+    in_text = in_text_words(tagger, headwords, affix, alone)
+    print("\n--- The compounds, with the words the text writes as words ---")
+    built = compound_tables(tagger, headwords, affix, ogo_split, lists, in_text)
+    table, joins, compounds = built["table"], built["joins"], built["compounds"]
 
     print("\nBuilding alias map (tokenizing reference vocabulary)...")
     aliases = build_aliases(tagger, spoken + [written], joins, compounds)
@@ -1515,12 +1745,52 @@ def main():
             counters_b64=b64["counters"],
         ))
     print(f"\nWrote {OUTPUT} ({os.path.getsize(OUTPUT)/1024:,.0f} KB)")
-    write_dictionary_data(flags, ogo, created)
-    built.update(affix=affix, second=second, decided=decided, flags=flags, ogo=ogo, created=created,
-                 skipped=skipped, joins=joins, aliases=aliases, spoken_rank=spoken_rank, headwords=headwords,
+    write_dictionary_data(built["flags"], built["ogo"], built["created"])
+    built.update(affix=affix, aliases=aliases, spoken_rank=spoken_rank, headwords=headwords,
                  seconds=time.time() - t_start, sizes={k: len(v) for k, v in b64.items()})
     write_report(built, COMPOUND_REPORT)
     print(f"\nDone in {time.time() - t_start:.0f} s")
+    return built
+
+
+def compound_tables(tagger, headwords, affix, ogo_split, lists, in_text=None):
+    """The compound table (`build_compounds`) and what follows from it: its parts, the words a compound makes with its
+    affixes (the affix joins' second pass) and the dictionaries' flags — from the headwords read alone, and with
+    `in_text` (`in_text_words`) from the words the text writes as words too. `ogo_split`: the お / ご words the first
+    pass left split (not changed here). -> build_compounds' dict, with "second", "decided", "joins", "flags", "ogo",
+    "created", "skipped" and "compounds" (the table as the app reads it: the flags merged in)."""
+    built = build_compounds(tagger, headwords, affix, lists, in_text=in_text)
+    table = built["table"]
+    use_counters(built["named"])
+    compound_parts(table, built["words_of"], lists)
+    for word in own_parts(table):
+        print(f"  !! {word} holds itself among its parts: kept out")
+        del table[word]
+
+    print("\nA compound's affixes (the affix joins' second pass)...")
+    second = affix_pass_two(tagger, headwords, affix, table)
+    # one lemma per spelling among the new words only: the first pass's words already have theirs, and the お / ご
+    # words theirs across UniDic's tags (おやすみ with お休み), which grouping by the tagger's lemmas again would undo
+    one_lemma_per_spelling(tagger, second, headwords)
+    union = {w: list(e) for w, e in affix.items()}
+    union.update(second)
+    decided, split_two = ogo_filter(tagger, {w: union[w] for w in second}, headwords, affix=union,
+                                    compounds=table, counters=built["named"],
+                                    report=OGO_REPORT.replace(".md", "_compounds.md"))
+    joins = {w: e for w, e in union.items() if w not in second}
+    joins.update(decided)
+    ogo_split = dict(ogo_split)
+    ogo_split.update(split_two)
+    print(f"  {len(second):,} words a compound makes with its affixes, {len(decided):,} of them kept; "
+          f"{len(joins):,} joins")
+
+    print("\nThe dictionaries' flags...")
+    flags, ogo, created, skipped = dictionary_flags(table, ogo_split, built["stems"])
+    # From here words are read with the flags merged in, as the app merges them (analyzer.compound_joins): a katakana
+    # compound JMdict doesn't list gives way to a katakana name around it, and a verb's stem stands in a word marked
+    # so. The table as stored keeps its 0s.
+    built.update(second=second, decided=decided, joins=joins, flags=flags, ogo=ogo, created=created, skipped=skipped,
+                 compounds={w: e[:3] + [e[3] | flags.get(w, 0)] for w, e in table.items()})
     return built
 
 
@@ -1556,7 +1826,8 @@ def write_dictionary_data(flags, ogo, created):
         f.write(DICTIONARY_TEMPLATE.format(
             revision=date.today().isoformat(), created=created or "", sources=sources, n_flags=len(flags),
             n_titles=sum(1 for b in flags.values() if b & FLAG_TITLE == FLAG_TITLE),
-            n_unlisted=sum(1 for b in flags.values() if b & FLAG_UNLISTED), n_ogo=len(ogo),
+            n_unlisted=sum(1 for b in flags.values() if b & FLAG_UNLISTED),
+            n_stems=sum(1 for b in flags.values() if b & FLAG_STEMS), n_ogo=len(ogo),
             flags_b64=blob(flags), ogo_b64=blob(ogo)))
     print(f"Wrote {DICTIONARY_OUTPUT} ({os.path.getsize(DICTIONARY_OUTPUT)/1024:,.0f} KB)")
 
@@ -1638,6 +1909,29 @@ def write_report(built, path):
             "Verbs UniDic reads whole that a sentence shows cut (not joined; most met first): " + " · ".join(
                 f"{w} {n}" for w, n in sorted(built["in_context"].items(), key=lambda x: -x[1])[:80])]
 
+    in_text = built.get("in_text")
+    if in_text:
+        added, stems = built["added"], built["stems"]
+        kept = [w for w in added if w in table]
+        new_stems = [w for w in stems if w in added]
+        out += ["", "## Words the text writes as words (the in-text pass)", "",
+                f"The reference text read with the tables of the headwords read alone ({in_text['files']} files, "
+                f"{in_text['seconds']:.0f} s): {in_text['runs']:,} runs of nouns or verb stems those tables leave "
+                f"apart. {len(in_text['nouns']):,} headwords the text writes as nouns became candidates "
+                f"({sum(in_text['uses'].values()):,} runs); {len(kept):,} are in the table — "
+                f"{sum(1 for w in added if w in built['refused']):,} refused by the even odds, "
+                f"{sum(1 for w in in_text['nouns'] if w in built['plurals']):,} plurals, the rest lost to a later step "
+                f"({len(added) - len(kept) - sum(1 for w in added if w in built['refused']):,}). Kept out first: "
+                + ", ".join(f"{why} {len(words):,}" for why, words in in_text["refused"].items()) + ".", "",
+                f"A verb's stem may stand in {len(stems):,} words (the mark 8): {len(new_stems):,} new, "
+                f"{len(stems) - len(new_stems):,} already in the table; {len(built['reparted']):,} new ones take the "
+                "parts of their commonest reading.", "",
+                f"New words, random {min(SAMPLE, len(kept))}: " + show(sample(kept)), "",
+                f"Marked words, random {min(SAMPLE, len(stems))}: " + show(sample(stems)), "",
+                "Parted as the text mostly writes them: " + " · ".join(
+                    f"{w} = " + " + ".join(p[0] for p in table[w][4]) for w in sorted(built["reparted"]))]
+        for why, words in in_text["refused"].items():
+            out += ["", f"Kept out, {why} ({len(words):,}): " + " · ".join(sorted(words)[:60])]
     free = Counter(p[2] for e in table.values() for p in e[4])
     bound = sum(1 for e in table.values() if not all(p[2] for p in e[4]))
     out += ["", "## Parts", "", f"Parts free {free[1]:,}, bound {free[0]:,}; compounds with a bound part {bound:,}."]
@@ -1845,7 +2139,9 @@ Revision: {revision}
                   only while "Phrases and titles as one word" is on. Never a loanword spelled in katakana
                   alone: one word either way. 4 a word spelled in katakana alone that JMdict doesn't list
                   ({n_unlisted:,}; ビルデ = ビル + デ): joined, but inside a longer katakana name (ビルデイング)
-                  it gives way and the name stays one word.
+                  it gives way and the name stays one word. 8 a noun JMdict lists that the text, or the
+                  word alone, writes with a verb's stem ({n_stems:,}; 待ち + 時間, 出来る + 損なう): a run
+                  of nouns and verb stems spelling it is joined too.
   OGO_JOINS       {n_ogo:,} お / ご words that are words of their own, with a meaning the bare word lacks ->
                   [lemma, reading]: joined as affix words whatever their share.
 
@@ -1885,7 +2181,8 @@ def _decode(b64):
 
 def compound_flags():
     """compound spelling -> flags (1 a phrase, 3 a title: both behind the switch; 4 a katakana word JMdict doesn't
-    list, which gives way to a katakana name around it). Empty when unreadable."""
+    list, which gives way to a katakana name around it; 8 a noun a verb's stem may stand in). Empty when
+    unreadable."""
     global _flags
     if _flags is None:
         try:

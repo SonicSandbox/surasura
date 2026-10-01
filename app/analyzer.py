@@ -89,7 +89,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     auto-generated captions don't count toward them. A katakana word the lists hold but no dictionary join makes
 #     is one word, and a katakana name no longer takes the head of a word written on in hiragana. Still 2.4: one
 #     re-analysis with 15–19.
-ENGINE_REVISION = 20
+# 21: a word general text writes as words, though the tagger reads it otherwise alone, is one word (出来損ない, 通行止め,
+#     郵便受け), and a verb's stem may stand in a noun the dictionaries mark (立ち位置, 待ち時間, 見間違い) — so a card's
+#     word alone is that noun too (出来損ない, not 出来る + 損なう). Still 2.4: one re-analysis with 15–20.
+ENGINE_REVISION = 21
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -769,7 +772,13 @@ def _join_affix_runs(words, joins):
 # spellings whose parts meet in general text no more often than chance would have them meet. Kinds:
 #   N  two or three nouns — places (日本語, 鳥取県) and な-words (自信満々) among them; a な-word last makes a
 #      な-word (一生懸命に). Never a number, a person's name, a word the dictionary lacks, or a grammar stem:
-#      バカみたい is バカ + みたい.
+#      バカみたい is バカ + みたい. Also a headword the tagger reads otherwise alone that general text writes as
+#      nouns (出来損ない: 出来 + 損ない in a sentence, 出来る + 損なう alone).
+#      A verb's stem may stand in a noun compound JMdict lists as a noun that the text, or the word alone, writes
+#      with one (the dictionaries' mark 8): 立ち[立つ] + 位置, 待ち[待つ] + 時間, a card's 出来る + 損なう. A run of
+#      nouns and stems (a verb's plain 連用形, never する's) spelling it joins as the noun — anywhere when it ends
+#      in a noun, but when it ends in a stem only where nothing but closing punctuation follows on the line (a
+#      card, a known word, a line that is the word): in a sentence 位置づけ + て is the verb.
 #   Q  a word holding a numeral that counts nothing (up to four pieces): 十人十色, 二十歳 (はたち), 精一杯.
 #      Counts stay apart — 二日, 五分, 十円玉, 三年生 are no table words — and a run that starts with a
 #      numeral joins only a Q word, from the first numeral of its run (三 + 十八番 is never 十八番).
@@ -846,6 +855,34 @@ def _joins_here(words, i, run, entry, fringe):
     return all(_compound_part(w, test) for w in run) and not _plural(_read(run[-1]), entry[1])
 
 
+_STEMS = 8                      # the dictionaries' mark: a verb's stem may stand in this noun compound (§ above)
+_CLOSING = frozenset("。．.！？!?」』）)】〕…‥―ー～〜")   # what may follow a stem that ends the line's word
+
+
+def _stem(word):
+    """A verb's stem as a noun is written (出来, 損ない, 待ち): its 連用形 in the plain form — never する's, never a sound
+    change (損なっ comes only before た / て)."""
+    f = word.feature
+    return f.pos1 == "動詞" and not word.is_unk and f.lemma != "為る" and str(f.cForm) == "連用形-一般"
+
+
+def _joins_with_stems(words, i, run, entry, fringe):
+    """May `run` (words[i:i + len(run)]), nouns and at least one verb's stem, be joined as the noun compound `entry`
+    — one a verb's stem may stand in (the mark 8, § above)? A run ending in a noun joins anywhere (待ち + 時間); one
+    ending in a stem only when nothing but closing punctuation follows it on the line — a card, a known word, a line
+    that is the word (出来る + 損なう) — never in a sentence, where 位置づけ + て is the verb. The guards of any compound
+    hold: never after a number that counts its first part, never a plural."""
+    if (entry[2] != "N" or not entry[3] & _STEMS or (entry[3] & 1 and not fringe) or len(run) > 3
+            or not any(_stem(w) for w in run) or not all(_stem(w) or _compound_part(w, "N") for w in run)):
+        return False
+    if i and words[i - 1].feature.pos2 == "数詞" and _counter(run[0]):
+        return False
+    if _plural(_read(run[-1]), entry[1]):
+        return False
+    return not _stem(run[-1]) or all(w.feature.pos1 in ("補助記号", "空白") and _CLOSING.issuperset(w.surface)
+                                     for w in words[i + len(run):])
+
+
 _HEADS = (None, frozenset())   # (a compound table, `_heads` of it): made once per table
 
 
@@ -868,14 +905,14 @@ def _compound_at(words, i, table, heads, fringe):
     if f.pos1 == "動詞":
         second = words[i + 1]
         g = second.feature
-        if (g.pos1 != "動詞" or getattr(second, "white_space", "") or not str(f.cForm).startswith("連用形")):
-            return None
-        key = _read(first) + (g.orthBase or _read(second))
-        entry = table.get(key)
-        if (entry is None or entry[2] != "V" or (entry[3] & 1 and not fringe)
-                or not (_compound_part(first, "V") and _compound_part(second, "V"))):
-            return None
-        return i + 1, key, "動詞", entry
+        if g.pos1 == "動詞" and not getattr(second, "white_space", "") and str(f.cForm).startswith("連用形"):
+            key = _read(first) + (g.orthBase or _read(second))
+            entry = table.get(key)
+            if (entry is not None and entry[2] == "V" and not (entry[3] & 1 and not fringe)
+                    and _compound_part(first, "V") and _compound_part(second, "V")):
+                return i + 1, key, "動詞", entry
+        if not _stem(first):
+            return None                         # a verb starts no other compound, save as a noun's stem (待ち + 時間)
     key = _read(first)
     if hash(key) not in heads:
         return None
@@ -891,8 +928,11 @@ def _compound_at(words, i, table, heads, fringe):
         if hash(key) not in heads:
             break
     for end, key, entry in reversed(found):
-        if _joins_here(words, i, words[i:end + 1], entry, fringe):
+        run = words[i:end + 1]
+        if f.pos1 != "動詞" and _joins_here(words, i, run, entry, fringe):
             return end, key, "形状詞" if words[end].feature.pos1 == "形状詞" else "名詞", entry
+        if _joins_with_stems(words, i, run, entry, fringe):
+            return end, key, "名詞", entry
     return None
 
 
@@ -2234,7 +2274,8 @@ _LEADING_NUMBER_RE = re.compile(r'[0-9０-９]+[ \u3000]?')
 # What the reader removes from INSIDE a line. The report's source anchor lets these sit between a sentence's
 # characters when it looks the sentence up in its file (static_html_generator.AnchorFinder._loose). A reading in
 # parentheses is listed as any kana — what every paren_readings option removes, so a sentence is found whichever
-# the learner chose (and one that kept its group simply matches it as written).
+# the learner chose (and one that kept its group simply matches it as written). Each piece must fit in one way at
+# a place (end at its first closing mark), as each does: the anchor steps over them one piece at a time.
 REMOVED_INLINE = '|'.join((rf'《[{_RUBY_KANA}]+》', rf'[(（][{_RUBY_KANA}]+[)）]', r'[|｜]', _AOZORA_NOTE_RE.pattern,
                            _CIRCLED_NUMBER_RE.pattern, _SOUND_CUE_RE.pattern, _SUBRIP_TAG_RE.pattern,
                            _ASS_BLOCK_RE.pattern))

@@ -574,9 +574,7 @@ def test_a_store_from_before_names_were_recorded_is_rebuilt(tmp_path):
 def test_a_store_from_before_kanji_terms_were_recorded_is_rebuilt(tmp_path):
     """v12 -> v13: each Japanese file also records its runs of one-kanji tokens (a story's own kanji terms may be one),
     how often each kanji stands alone, and whether it is a transcript of auto-generated captions. A v12 store's records
-    lack them, so no term could ever join: it must be dropped and rebuilt. Pinned exactly: the next bump updates this
-    knowingly."""
-    assert ti.SCHEMA_VERSION == 13
+    lack them, so no term could ever join: it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "technique.txt"
     _write(f, "焔魄陣を放った。\n彼の焔魄陣は強い。\n")
@@ -596,6 +594,34 @@ def test_a_store_from_before_kanji_terms_were_recorded_is_rebuilt(tmp_path):
     assert s2.total_tokens() == 0, "a v12 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert ti._decode_counts(s2.conn.execute("SELECT names FROM files").fetchone()[0]) == record
+    s2.close()
+
+
+def test_a_store_from_before_words_the_text_writes_as_words_is_rebuilt(tmp_path):
+    """v13 -> v14: a word general text writes as words, though the tagger reads it otherwise alone, is one word — here
+    出来損ない, which a sentence cuts into 出来 + 損ない and a v13 store holds as those two — and a verb's stem may stand
+    in a noun the dictionaries mark (待ち + 時間). Reusing a v13 store would keep the pieces, so it must be dropped and
+    rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 14
+    db = _db(tmp_path)
+    f = tmp_path / "plans.txt"
+    _write(f, "この出来損ないの計画はもう捨てよう。\n駅での待ち時間はいつも長い。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    words = s.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('出来損ない', '待ち時間') "
+                           "ORDER BY lemma").fetchall()
+    s.close()
+    assert words == [("出来損ない", "デキソコナイ", 1), ("待ち時間", "マチジカン", 1)]
+    conn = sqlite3.connect(db)      # what a v13 store holds: the pieces, never the words
+    conn.execute("DELETE FROM aggregate WHERE lemma IN ('出来損ない', '待ち時間')")
+    conn.execute("PRAGMA user_version = 13")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v13 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('出来損ない', '待ち時間') "
+                           "ORDER BY lemma").fetchall() == words
     s2.close()
 
 

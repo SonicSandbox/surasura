@@ -202,6 +202,113 @@ def test_phrases_and_titles_join_only_while_the_switch_is_on(tokenizer, monkeypa
     assert _surfaces(tokenizer, "上層部の決定。", table)[0] == "上層部"
 
 
+# --- words the text writes as words; a verb's stem inside a noun (the mark 8) ------------------------------------ #
+# The table also holds headwords the tagger reads otherwise alone, as general text writes them: 出来損ない 'a failure'
+# is 出来 + 損ない (two nouns) in a sentence and 出来る + 損なう (two verbs) alone. A noun compound JMdict lists as a noun
+# that the text, or the word alone, writes with a verb's stem carries the mark 8, and a run of nouns and stems that
+# spells it joins too: anywhere when it ends in a noun, but when it ends in a stem only at the end of its line.
+_FAILURE = "出来損ない"
+
+
+def test_a_word_the_text_writes_as_nouns_is_one_word_there(tokenizer):
+    # No mark needed: in a sentence 出来 and 損ない are nouns, a run the compound join takes as it is.
+    table = {_FAILURE: _entry(_FAILURE, "デキソコナイ")}
+    word = _word(tokenizer, "この出来損ないの計画はもう捨てよう。", _FAILURE, table)
+    assert (word.feature.pos1, word.feature.lemma, word.feature.lForm) == ("名詞", _FAILURE, "デキソコナイ")
+    assert [s for s, _ in word.parts] == ["出来", "損ない"]
+
+
+def test_the_word_alone_is_one_word_with_the_mark_and_two_verbs_without_it(tokenizer):
+    # A card or a known word holds the word alone, which the tagger reads as two verbs: one word only with the mark.
+    assert _surfaces(tokenizer, _FAILURE, {_FAILURE: _entry(_FAILURE, "デキソコナイ", flags=8)}) == [_FAILURE]
+    assert _surfaces(tokenizer, _FAILURE, {_FAILURE: _entry(_FAILURE, "デキソコナイ")}) == ["出来", "損ない"]
+    word = _word(tokenizer, _FAILURE, _FAILURE, {_FAILURE: _entry(_FAILURE, "デキソコナイ", flags=8)})
+    assert (word.feature.pos1, word.feature.lemma) == ("名詞", _FAILURE)   # the noun, never a verb's conjugation
+    # closing punctuation after it is still the end of the line (「出来損ない」 on a card, 出来損ない。)
+    assert _surfaces(tokenizer, "「出来損ない」", {_FAILURE: _entry(_FAILURE, "デキソコナイ", flags=8)}) == \
+        ["「", _FAILURE, "」"]
+
+
+def test_a_run_starting_with_a_stem_joins_anywhere(tokenizer):
+    # 待ち here is 待つ's stem, 立ち 立つ's: the run ends in a noun, so it is the noun wherever it stands.
+    table = {"待ち時間": _entry("待ち時間", "マチジカン", flags=8), "立ち位置": _entry("立ち位置", "タチイチ", flags=8)}
+    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3] == "待ち時間"
+    assert _surfaces(tokenizer, "自分の立ち位置を考える。", table)[2] == "立ち位置"
+    # without the mark the stem stays the verb's
+    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", {"待ち時間": _entry("待ち時間", "マチジカン")})[3:5] == \
+        ["待ち", "時間"]
+
+
+def test_a_run_ending_in_a_stem_joins_only_at_the_end_of_its_line(tokenizer):
+    # 拍子抜け alone on a line (a card, a known word) is the noun; before した it is the verb's stem, and 位置づけ before
+    # て is the verb 位置付ける — a sentence never joins a run that ends in a stem.
+    table = {"拍子抜け": _entry("拍子抜け", "ヒョウシヌケ", flags=8), "位置づけ": _entry("位置付け", "イチヅケ", flags=8)}
+    assert _surfaces(tokenizer, "拍子抜け。", table) == ["拍子抜け", "。"]
+    assert _surfaces(tokenizer, "拍子抜けした。", table)[:2] == ["拍子", "抜け"]
+    assert _surfaces(tokenizer, "彼を中心に位置づけて考える。", table)[4:7] == ["位置", "づけ", "て"]
+
+
+def test_a_stem_is_a_verbs_plain_stem_never_suru_or_a_sound_change(tokenizer):
+    def node(text, surface):
+        return next(w for w in tokenizer.tagger(text) if w.surface == surface)
+    assert analyzer._stem(node("駅での待ち時間は長い。", "待ち"))
+    assert not analyzer._stem(node("勉強した。", "し"))            # する's 連用形: never a noun's part
+    assert not analyzer._stem(node("健康を損なった。", "損なっ"))    # a sound change comes only before た / て
+    assert not analyzer._stem(node("この先は通行止めです。", "止め"))  # read as the noun here: a noun part, no stem
+
+
+def test_a_stem_run_keeps_the_guards_of_any_compound(tokenizer, monkeypatch):
+    # The phrases-and-titles switch: a marked phrase (flags 1 | 8) stays apart with the switch off, whichever path.
+    table = {"待ち時間": _entry("待ち時間", "マチジカン", flags=9)}
+    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3] == "待ち時間"
+    monkeypatch.setitem(analyzer.LOGIC, "phrases_and_titles", False)
+    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3:5] == ["待ち", "時間"]
+    monkeypatch.undo()
+    # Right after a number that counts its first part, never (10 + 円玉); a plural, never. The run below is 時間 + a
+    # verb's stem, so only the stem path could join it.
+    three, hours = tokenizer.tagger("三時間")
+    stem = next(w for w in tokenizer.tagger("駅での待ち時間は長い。") if w.surface == "待ち")
+    stop = tokenizer.tagger("。")[0]
+    entry = ("時間待ち", "ジカンマチ", "N", 8)
+    assert analyzer._joins_with_stems([hours, stem, stop], 0, [hours, stem], entry, True)
+    assert not analyzer._joins_with_stems([three, hours, stem, stop], 1, [hours, stem], entry, True)
+    assert not analyzer._joins_with_stems([hours, stem, stop], 0, [hours, stem], ("時間待ち", "ジカンマチ", "N", 0), True)
+    # never a verb + verb or a numeral word, whatever its mark; never more than three words
+    assert not analyzer._joins_with_stems([hours, stem, stop], 0, [hours, stem], ("時間待ち", "ジカンマチ", "V", 8), True)
+
+
+def test_the_shipped_tables_read_the_word_the_text_writes_as_words(tokenizer, sanitized):
+    # 出来損ない is in the shipped table with the mark: one word in a sentence, alone (a card), and at a line's end;
+    # its parts are 出来 + 損ない, and 損ない is bound (no word of its own a learner meets outside it).
+    assert analyzer.compound_joins()[_FAILURE][:3] == (_FAILURE, "デキソコナイ", "N")
+    assert analyzer.compound_joins()[_FAILURE][3] & 8
+    for text in ("この出来損ないの計画はもう捨てよう。", _FAILURE, "「出来損ない」"):
+        assert (_FAILURE, "デキソコナイ") in _keys(tokenizer, text), text
+    assert [(p[0], p[2]) for p in analyzer.compound_parts()[(_FAILURE, "デキソコナイ")]] == [("出来", True),
+                                                                                         ("損ない", False)]
+    # 立ち位置 is written 立ち[立つ] + 位置 far more often than as two nouns: its parts are that reading's, the verb a
+    # learner knows (立つ), never the rare noun 立ち
+    assert analyzer.compound_parts()[("立ち位置", "タチイチ")][0][:2] == ("立つ", "タツ")
+    # the verb 損なう on its own stays itself
+    assert ("損なう", "ソコナウ") in _keys(tokenizer, "健康を損なう。")
+
+
+def test_a_katakana_word_is_left_to_the_katakana_name_rule(tokenizer):
+    # ダンボール (ダン, read as a name, + ボール) is kept whole by the katakana rule (app/names.py); a compound entry
+    # would take the spelling from that rule and then refuse the name's piece, so the table holds no katakana-only word
+    # the text alone vouched for.
+    assert "ダンボール" not in analyzer.compound_joins()
+    assert _surfaces(tokenizer, "ダンボール箱を運んだ。")[0] == "ダンボール"
+
+
+def test_without_the_dictionaries_table_the_word_alone_stays_in_pieces(tokenizer, monkeypatch):
+    # The mark is app/dictionary_data.py's: without that module a sentence's noun run still joins (the table holds the
+    # word), and the word alone is two verbs as before — never an error.
+    monkeypatch.setattr(analyzer, "_DICTIONARY", [None])
+    assert _surfaces(tokenizer, _FAILURE) == ["出来", "損ない"]
+    assert _surfaces(tokenizer, "この出来損ないの計画はもう捨てよう。")[1] == _FAILURE
+
+
 # --- known words ------------------------------------------------------------------------------------------------- #
 def _known(folder, *words):
     import json

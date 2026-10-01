@@ -328,6 +328,141 @@ def test_a_compound_and_its_affixes_make_a_word_of_the_affix_table(brd, tagger):
     assert brd.affix_pass_two(tagger, headwords, {}, {}) == {}          # no compound: no word
 
 
+# --- The in-text pass: words the text writes as words ------------------------------------------------------------ #
+# Made-up lines, read the way the pass reads its reference text. Each tests one piece: the runs kept, the guards, the
+# words a verb's stem may stand in, and a new such word's parts.
+IN_TEXT_LINES = [
+    "この出来損ないの計画はもう捨てよう。",       # 出来 + 損ない: two nouns, apart
+    "駅での待ち時間はいつも長い。",              # 待ち (待つ's stem) + 時間
+    "上層部の決定に従う。",                      # joined by the tables: no evidence
+    "経済成長期の日本。",                        # 成長 + 期 inside a word the tables join
+    "個人情報保護の法律。",                      # 情報 + 保護 across one
+    "昨日は夜更けまで起きていた。",              # 夜更け read as one word
+    "藩の中屋敷に住む。",                        # 中 + 屋敷 — but 中屋敷 alone is one word
+    "今頭が痛い。",                              # 今 + 頭: a compound's shape alone, which the build decided
+    "大事なマイルストーンだ。",                  # マイル + ストーン: katakana alone
+    "この先は通行止めです。",                    # 通行 + 止め (nouns); alone 通行 + 止める (a stem)
+    "ただの見間違いだった。",                    # 見 + 間違い as nouns once...
+    "それは見間違いだ。", "見間違いかもしれない。", "見間違いでした。",   # ...and three times 見る's stem + 間違い
+]
+IN_TEXT_WORDS = {"出来損ない": "デキソコナイ", "待ち時間": "マチジカン", "上層部": "ジョウソウブ", "成長期": "セイチョウキ",
+                 "情報保護": "ジョウホウホゴ", "夜更け": "ヨフケ", "中屋敷": "ナカヤシキ", "今頭": "イマガシラ",
+                 "マイルストーン": "マイルストーン", "通行止め": "ツウコウドメ", "見間違い": "ミマチガイ"}
+
+
+def _in_text_tables(brd):
+    """The tables the pass reads with (those of the headwords read alone): 上層部, 経済成長期, 個人情報 and 待ち時間."""
+    table = {w: [w, r, "N", 0, []] for w, r in (("上層部", "ジョウソウブ"), ("経済成長期", "ケイザイセイチョウキ"),
+                                               ("個人情報", "コジンジョウホウ"), ("待ち時間", "マチジカン"))}
+    return {"table": table, "compounds": {w: e[:4] for w, e in table.items()}, "joins": {}, "ogo": {},
+            "named": frozenset()}
+
+
+def _read_in_text(brd, tmp_path, monkeypatch, alone, targets, lines=IN_TEXT_LINES):
+    """What `in_text_readings` returns for `lines`, read in this process (no pool). A worker sets the counters the
+    build is making on reference_data: put back after the test."""
+    path = tmp_path / "text.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(reference_data, "_counters", reference_data._counters)
+    brd._in_text_init(frozenset(targets), alone["joins"], alone["compounds"], alone["named"])
+    runs, examples, whole = brd._in_text_file(str(path))
+    return {"runs": runs, "examples": examples, "whole": whole, "files": 1, "seconds": 0.0}
+
+
+def test_the_in_text_pass_keeps_only_the_runs_the_tables_leave_apart(brd, tmp_path, monkeypatch):
+    alone = _in_text_tables(brd)
+    read = _read_in_text(brd, tmp_path, monkeypatch, alone, IN_TEXT_WORDS)
+    runs = {(word, kind): n for (word, kind, _shape), n in read["runs"].items()}
+    assert runs[("出来損ない", "N")] == 1 and runs[("待ち時間", "S")] == 1
+    assert runs[("通行止め", "N")] == 1 and runs[("見間違い", "N")] == 1 and runs[("見間違い", "S")] == 3
+    # a run the tables join, one inside a word they join, one across one: no evidence
+    assert not {w for w, _k in runs} & {"上層部", "成長期", "情報保護"}
+    # the words of each run as the text reads them, and the line they came from (a window around them)
+    shape = next(s for (w, k, s) in read["runs"] if w == "出来損ない")
+    assert [t[4] for t in shape] == ["出来", "損ない"] and [t[0] for t in shape] == ["名詞", "名詞"]
+    assert read["examples"][("出来損ない", shape)] == [IN_TEXT_LINES[0]]
+    # a word the text reads as one word, with its reading
+    assert read["whole"][("夜更け", "ヨフケ")] == 1
+
+
+def test_the_in_text_words_their_guards_and_the_words_a_stem_may_stand_in(brd, tagger, tmp_path, monkeypatch):
+    alone = _in_text_tables(brd)
+    words = dict(IN_TEXT_WORDS, 郵便受け="ユウビンウケ")
+    headwords = {w: (r, n) for n, (w, r) in enumerate(words.items(), 1)}
+    # 郵便 + 受け: two nouns here, and read as one word elsewhere (as 夜更け is in the test above)
+    read = _read_in_text(brd, tmp_path, monkeypatch, alone, words, IN_TEXT_LINES + ["郵便受けの中。"])
+    read["whole"][("郵便受け", "ユウビンウケ")] += 1
+    monkeypatch.setattr(brd, "in_text_readings", lambda *args, **kwargs: read)
+    # JMdict lists these as nouns (待ち時間, already in the table, too); 郵便受け is never asked
+    nouns = {"出来損ない": "できそこない", "通行止め": "つうこうどめ", "見間違い": "みまちがい", "待ち時間": "まちじかん"}
+    _jmdict_of(brd, [_entry([(w, ())], [(r, (), ())], [((), "a noun")]) for w, r in nouns.items()], tmp_path, monkeypatch)
+    found = brd.in_text_words(tagger, headwords, {}, alone)
+    # the words the text writes as nouns, each with the words of its commonest run of nouns for its parts
+    assert list(found["nouns"]) == sorted(["出来損ない", "通行止め", "見間違い"])
+    assert [(brd._read(w), w.feature.pos1) for w in found["nouns"]["出来損ない"]] == [("出来", "名詞"), ("損ない", "名詞")]
+    assert [brd._read(w) for w in found["nouns"]["見間違い"]] == ["見", "間違い"]
+    # kept out: read whole alone (中屋敷), read whole in the text (郵便受け), a compound's shape alone (今頭 — the even
+    # odds decide it), katakana alone (マイルストーン — the katakana-name rule's)
+    assert found["refused"] == {"read whole alone": ["中屋敷"], "read whole in the text": ["郵便受け"],
+                                "a compound's shape alone": ["今頭"], "katakana alone": ["マイルストーン"]}
+    # a verb's stem may stand in 待ち時間 (in the table, written with 待つ's stem), 出来損ない and 通行止め (alone 出来る
+    # + 損なう, 通行 + 止める: a card's word) and 見間違い (見る's stem, its commonest reading — whose words it takes: 見,
+    # read as the verb, + 間違い); the others keep the parts they have
+    assert set(found["stems"]) == {"待ち時間", "出来損ない", "通行止め", "見間違い"}
+    assert found["stems"]["待ち時間"] is found["stems"]["出来損ない"] is found["stems"]["通行止め"] is None
+    assert [(w.surface, w.feature.pos1, w.feature.lemma) for w in found["stems"]["見間違い"]] == \
+        [("見", "動詞", "見る"), ("間違い", "名詞", "間違い")]
+    # without JMdict no word takes the mark; the nouns are found all the same
+    monkeypatch.setattr(brd, "JMDICT", str(tmp_path / "missing.gz"))
+    found = brd.in_text_words(tagger, headwords, {}, alone)
+    assert found["stems"] == {} and len(found["nouns"]) == 3
+
+
+def test_jmdict_says_which_words_are_nouns(brd, tmp_path, monkeypatch):
+    # A noun: a sense that is a common noun, an adverbial or temporal one, or one used as a suffix (出来損ない n, 思い通り
+    # adj-na and n). 予想通り is listed only as an adverb: no noun. (Entries abridged from JMdict, EDRDG, CC BY-SA 4.0.)
+    entries = [_entry([("出来損ない", ())], [("できそこない", (), ())], [((), "failure")]),
+               _entry([("思い通り", ())], [("おもいどおり", (), ())], [((), "as one likes")], ("adj-na", "n")),
+               _entry([("予想通り", ())], [("よそうどおり", (), ())], [((), "as expected")], ("adv",))]
+    _jmdict_of(brd, entries, tmp_path, monkeypatch)
+    jmdict_flags = sys.modules["jmdict_flags"]
+    index = jmdict_flags.index(entries)
+    assert jmdict_flags.lists_as_noun(index, "出来損ない", "デキソコナイ")
+    assert jmdict_flags.lists_as_noun(index, "思い通り", "オモイドオリ")
+    assert not jmdict_flags.lists_as_noun(index, "予想通り", "ヨソウドオリ")
+    assert not jmdict_flags.lists_as_noun(index, "出来損ない", "デキゾコナイ")       # another reading: not this word
+
+
+def test_the_mark_goes_on_the_table_words_it_was_found_for_and_into_the_dictionary_table(brd, tmp_path, monkeypatch):
+    table = {"待ち時間": ["待ち時間", "マチジカン", "N", 0, [["待ち", "マチ", 1], ["時間", "ジカン", 1]]],
+             "上層部": ["上層部", "ジョウソウブ", "N", 0, [["上層", "ジョウソウ", 1], ["部", "ブ", 1]]]}
+    _jmdict_of(brd, [], tmp_path, monkeypatch)
+    monkeypatch.setattr(brd, "TITLES", str(tmp_path / "no-titles.txt"))
+    flags, _ogo, _created, _skipped = brd.dictionary_flags(table, {}, ["待ち時間", "出来損ない"])
+    assert flags == {"待ち時間": 8}                      # 出来損ない isn't in this table: nothing to mark
+    out = tmp_path / "dictionary_data.py"
+    monkeypatch.setattr(brd, "DICTIONARY_OUTPUT", str(out))
+    brd.write_dictionary_data(flags, {}, "2026-09-28")
+    spec = importlib.util.spec_from_file_location("written_dictionary_data_stems", str(out))
+    written = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(written)
+    assert written.compound_flags() == {"待ち時間": 8}
+    assert "8 a noun JMdict lists that the text" in written.__doc__
+
+
+def test_a_new_marked_word_is_parted_as_the_text_mostly_writes_it(brd, tagger, tmp_path, monkeypatch):
+    # 立ち位置 is mostly 立ち (立つ's stem) + 位置 in text: its parts are the verb a learner knows and 位置 — never the
+    # rare noun 立ち that a reading as two nouns shows.
+    lists = _lists(brd, tmp_path, monkeypatch, [["立つ", "タツ"], ["位置", "イチ"], ["立ち位置", "タチイチ"]])
+    table = {"立ち位置": ["立ち位置", "タチイチ", "N", 0, []]}
+    words = [w for w in tagger("自分の立ち位置を考える。") if w.surface in ("立ち", "位置")]
+    brd.compound_parts(table, {"立ち位置": words}, lists)
+    assert table["立ち位置"][4] == [["立つ", "タツ", 1], ["位置", "イチ", 1]]
+
+
+# --- What the build reads ------------------------------------------------------------------------------------------ #
+
+
 # --- What the build reads ------------------------------------------------------------------------------------------ #
 
 def test_the_build_reads_with_the_default_switches_whatever_settings_json_says(brd, tagger, monkeypatch):

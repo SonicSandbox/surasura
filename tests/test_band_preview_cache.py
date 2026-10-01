@@ -58,6 +58,19 @@ def test_signature_changes_when_ignore_list_changes(uf_env):
     assert app._preview_signature("ja", sel) != before
 
 
+def test_an_ignore_list_edit_within_one_clock_tick_still_changes_it(uf_env):
+    # Windows moves a file's time in steps: two writes close together can share an mtime, so the size tells them apart
+    # (here the old time is put back on purpose, so the test never depends on how fast the machine is).
+    app = _app()
+    sel = {"band": "occasional"}
+    path = uf_env / "IgnoreList.txt"
+    before = app._preview_signature("ja", sel)
+    stamp = os.stat(path).st_mtime
+    path.write_text("する\n", encoding="utf-8")
+    os.utime(path, (stamp, stamp))
+    assert app._preview_signature("ja", sel) != before
+
+
 def test_signature_changes_when_selection_changes(uf_env):
     app = _app()
     assert app._preview_signature("ja", {"band": "core"}) != app._preview_signature("ja", {"band": "rare"})

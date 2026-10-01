@@ -940,9 +940,10 @@ class MasterDashboardApp:
             db_mtime = os.path.getmtime(db) if os.path.exists(db) else 0
             known_path = os.path.join(uf, "KnownWord.json")
             ksig = token_index.known_signature(known_path, script)
+            # mtime and size, as known_signature: two writes within one clock tick share an mtime.
             lists = tuple(
-                os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
-                for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
+                (os.path.getmtime(p), os.path.getsize(p)) if os.path.exists(p) else 0
+                for p in (os.path.join(uf, n) for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"))
             )
             current = getattr(self, "_current_settings", {}) or {}
             logic = current.get("logic") or {}
@@ -1501,9 +1502,9 @@ class MasterDashboardApp:
                           lambda e: (self.var_zh_script.set(self._zh_script_key(combo_script.get())),
                                      self.save_settings()))
         ToolTip(combo_script, "Read all Chinese content and known words in one script, so 学习 and "
-                              "學習 count as one word. Your files are not changed. Simplified→"
-                              "Traditional can occasionally pick the wrong character, and uses "
-                              "standard forms (爲, 裏) rather than Taiwan's (為, 裡).")
+                              "學習 count as one word. Your files are not changed. Traditional is "
+                              "written in Taiwan's standard characters (為, 裡); Simplified→"
+                              "Traditional can occasionally pick the wrong character.")
 
         # Readings in parentheses (Japanese): kana right after kanji in a book is that kanji's reading,
         # a stand-in for ruby, not more words. Packed by update_ui_for_language for Japanese only;
@@ -1600,6 +1601,14 @@ class MasterDashboardApp:
         chk_single.pack(anchor=tk.W)
         ToolTip(chk_single, "Particles and endings (は, た) and pieces of names or made-up terms stay off your list. "
                             "Words like 手, 目 and 顔 are listed.")
+
+        # How parsing works: the one-page guide (docs/How Parsing Works.md, opened on GitHub like the Tutorial) — what
+        # counts as one word, what each switch above changes, with examples. Shown for both languages.
+        self.lbl_parsing_guide = ttk.Label(group_lang, text="How parsing works", style="Link.TLabel", cursor="hand2")
+        self.lbl_parsing_guide.pack(anchor=tk.W, pady=(4, 0))
+        self.lbl_parsing_guide.bind("<Button-1>", lambda e: self.open_parsing_guide())
+        ToolTip(self.lbl_parsing_guide, "Opens a one-page guide in your browser: what Surasura counts as one word and "
+                                        "what each switch here changes, with examples.")
 
         # Split Length Setting
         split_frame = ttk.Frame(group_lang)
@@ -2709,6 +2718,12 @@ class MasterDashboardApp:
             webbrowser.open("https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md")
         except Exception as e:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
+
+    def open_parsing_guide(self):
+        try:
+            webbrowser.open("https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open the parsing guide: {e}")
             
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
                           clear_log=True, on_exit=None):

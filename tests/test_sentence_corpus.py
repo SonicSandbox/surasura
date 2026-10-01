@@ -304,6 +304,25 @@ def test_a_one_word_target_is_found_as_it_is_written():
     assert [c[3] for c in best] == ["揚げる", "揚げ"]
 
 
+def test_a_set_phrase_waiting_for_a_new_word_counts_it_and_no_phrase_is_found_across_a_comma():
+    """With set phrases on the list (the default), a phrase card's own words are not against it — except a word a set
+    phrase waits for (本題 in 本題に入る, while 本題 is new): the phrase and 本題 are two new things in the sentence, as
+    the list reads it. A run whose words stand on both sides of a comma the tokenizer dropped (気が、ついたら) is no use
+    of 気がつく."""
+    lines = ["では本題に入ろう。", "気が、ついたら朝だった。", "やっと気がついた。"]
+    cache = {"第01話.txt": _tokenized(lines)}
+    subject = tuple(t[0] for _t, tokens in _tokenized(["本題に入る"]) for t in tokens)
+    notice = tuple(t[0] for _t, tokens in _tokenized(["気がつく"]) for t in tokens)
+    known = (_lemmas(lines[0]) | _lemmas(lines[1]) | _lemmas(lines[2])) - {"本題"}
+
+    words = sc.collect(list(cache), cache.__getitem__, "ja", (set(), known, set()), WINDOW,
+                       wanted=set(), phrases={"本題に入る": subject, "気がつく": notice})
+
+    [(rank, text, _file, surface)] = words["本題に入る"].best.result()
+    assert rank[0] == 1 and surface == "本題に入ろう", "本題 is new: the phrase waits for it"
+    assert [c[1] for c in words["気がつく"].best.result()] == ["やっと気がついた。"]
+
+
 def test_chinese_keeps_single_characters_and_has_no_readings(tmp_path):
     """I5: Jieba's most common words are single characters, and Chinese has no reading to fill."""
     lines = ["我今天去图书馆看书。", "我们明天一起去公园散步吧。"]

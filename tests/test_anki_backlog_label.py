@@ -209,11 +209,28 @@ def test_a_polite_or_plural_card_marks_its_words_row():
     assert "守り" not in keys and "やさしい" not in keys
 
 
-def test_a_phrase_or_a_compound_on_a_card_adds_no_key():
-    """気がつく and 恩を売る are phrases, 伊勢海老 a compound of two words: none is ONE row, so none adds
-    a key (Junban places phrases, L9). Only a card that is one word, its tail aside, is a row's Word."""
+def test_a_phrase_or_a_compound_on_a_card_adds_no_key_without_phrase_rows():
+    """With "Idioms and set phrases on your list" off, 気がつく and 恩を売る are phrases and 伊勢海老 a compound of two
+    words: none is ONE row, so none adds a key (Junban places phrases, L9). Only a card that is one word, its tail
+    aside, is a row's Word."""
     _write_backlog(data=_cards("気がつく", "恩を売る", "伊勢海老"))
-    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["伊勢海老", "恩を売る", "気がつく"]
+    off = {"anki_backlog_on_generate": True, "logic": {"phrase_rows": False}}
+    assert anki_backlog_keys("ja", off) == ["伊勢海老", "恩を売る", "気がつく"]
+
+
+def test_a_phrase_card_marks_its_phrase_row(monkeypatch):
+    """With set phrases on the list (the default), a phrase row's Word is its words' lemmas joined, and a card read
+    alone as those words is a key for it: 興味をもつ marks the row 興味を持つ, 気がつく the row 気が付く (Junban places
+    them there, anki_match.card_key). The user's "no" to that row keeps it unmarked; a kana-only card is still never
+    read alone (no tokenizer for it)."""
+    _write_backlog(data=_cards("興味をもつ", "気がつく", "目をそらす"))
+    _write_pairs({"目をそらす": {"target": "目を逸らす", "answer": "no"}})
+    keys = anki_backlog_keys("ja", {"anki_backlog_on_generate": True})
+    assert {"興味を持つ", "気が付く"} <= set(keys) and "目を逸らす" not in keys
+    _write_backlog(data=_cards("なんだかんだ", "あっというま"))
+    built = _count_tokenizers(monkeypatch)
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["あっというま", "なんだかんだ"]
+    assert built == [], "a bare kana card is matched by its own letters against the rows' spellings"
 
 
 def test_a_chinese_backlog_is_unchanged_and_never_meets_the_japanese_dictionary(monkeypatch):

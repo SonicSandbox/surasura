@@ -69,6 +69,15 @@ def test_a_closing_bracket_stays_with_the_sentence_it_closes(ja):
         "an opening bracket after it starts the next sentence"
 
 
+def test_an_opening_bracket_glued_to_a_full_stop_opens_the_next_sentence(ja):
+    # The tagger reads a full stop and the next line's opening bracket as one symbol when it knows neither as written
+    # — half-width ｡｢ (JIS X 0201), ｡(( , 。〝 — and the bracket went with the sentence before it.
+    assert ja("今日は帰るね｡｢またね｣") == ["今日は帰るね｡", "｢またね｣"]
+    assert ja("もう寝る｡((眠い…))") == ["もう寝る｡", "((眠い…))"]
+    assert ja("そう言った〞。〝次だ〞") == ["そう言った〞。", "〝次だ〞"]
+    assert ja("帰るね。｢") == ["帰るね。"], "a bracket alone at the end of the line opens no sentence"
+
+
 def test_a_full_width_full_stop_ends_a_sentence_but_not_a_number_or_an_abbreviation(ja):
     # ． is the full stop of horizontal official writing; UAX #29 SB6–SB8: a digit or a Latin letter right
     # after it makes it a decimal point or an abbreviation's.

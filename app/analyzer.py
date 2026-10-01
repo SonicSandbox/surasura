@@ -17,7 +17,8 @@ import unicodedata
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter
-from operator import attrgetter, itemgetter
+from itertools import compress, repeat
+from operator import attrgetter, eq, itemgetter
 from datetime import datetime
 import abc
 
@@ -95,7 +96,16 @@ ENSURE_AUDIO_EXAMPLE = False
 # 22: the dictionary decides whether a card is the word it is read as — a card JMdict gives an entry of its own (心する,
 #     一気に, 揚げる, the noun 集い in the verb 集う's spellings) is a word of its own in 順, the "In Anki" mark, パターン
 #     and 例文, never that word's row, known status, lines or sentences. Still 2.4: one re-analysis with 15–21.
-ENGINE_REVISION = 22
+# 23: sounds and dashes — two fillers the tagger cut out of one interjection are that word (まあ, ああ～, いえ), a sound
+#     said three times or more that the dictionary doesn't know is the sound word said twice (ハァハァハァ is はあはあ),
+#     a dash drawn out inside a word is a stretch (ザ─────ック, お母さ───ん), a dash is never a word (－ read as から),
+#     and the next line's opening bracket glued to a full stop opens the next sentence (｡｢). Still 2.4: one re-analysis
+#     with 15–22.
+# 24: idioms and set phrases get rows of their own (logic.phrase_rows: 気がする, 腑に落ちる, もしかしたら) — a phrase whose
+#     words you know sits lower, one waiting for a new word sorts after it; a word that lives only inside a phrase
+#     (手っ取り) gives it its uses; a word's example sentences without a new phrase come first. Still 2.4: one
+#     re-analysis with 15–23.
+ENGINE_REVISION = 24
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -267,7 +277,7 @@ def tagger_text(text, unread=()):
     return "".join(read), at
 
 
-_MARKS_RE = re.compile("[ー〜]")
+_MARKS_RE = re.compile("[ー〜─━―—]")
 _ATTACHING_RE = []  # the pattern of the combining marks up to U+FFFF, which ride with the character before them
 
 
@@ -295,7 +305,18 @@ def _odd_characters(text, unread):
 # 暗ーい 暗 + ー + い — and after hiragana or a kanji the mark only lengthens the vowel before it: the word is read
 # without it (ふるい, 暗い). Hiragana writes a long vowel with a vowel letter (現代仮名遣い: おかあさん), so a ー there is
 # a stretch; katakana writes it with ー (外来語の表記: オットー, ゼニー), part of the word, so a mark after katakana stays.
-_STRETCH_MARKS = frozenset("ー〜")
+# A dash drawn out — ─ ━ (box drawing, which web text writes for a dash), ― (the horizontal bar), — (an em dash) — is a
+# stretch too, but only where it can't be the dash Japanese writes between two words far more often (それは──あなたの,
+# メイド──ラム): before a ん / ン that ends the word (お母さ───ん, う────ん, ド────ン), and between katakana where the
+# word goes on after a ッ, a small kana or ン, none of which begins a word (ザ─────ック, read ザーック as ザ～ック
+# is). A ッ that ends the word is the catch of a shout (待て──ッ; read as a stretch, 何──ッ became 何 + つ), and a
+# hiragana っ or ん that goes on starts the next word (──って, ──んだ): there the dash stays a dash.
+_STRETCH_MARKS = frozenset("ー〜─━―—")
+_DASHES = frozenset("─━―—")
+_DASH_RUN = "[ー〜─━―—]*[─━―—][ー〜─━―—]*"
+_DASH_STRETCH_RE = re.compile(
+    f"(?<=[{KANA_LETTERS}{HAN}]){_DASH_RUN}(?=[んン](?![{KANA_LETTERS}]))"
+    f"|(?<=[\u30a1-\u30fa\u30fd-\u30ff]){_DASH_RUN}(?=[ァィゥェォッャュョヮヵヶン][\u30a1-\u30fa\u30fd-\u30ff])")
 _STRETCH_BEFORE = re.compile(f"[{KANA_LETTERS}{HAN}]")
 _STRETCH_DROPPED_AFTER = re.compile(f"[\u3041-\u3096\u309d-\u309f{HAN}]")    # hiragana or a kanji
 _STRETCH_DROPPED_RE = re.compile(f"[\u3041-\u3096\u309d-\u309f{HAN}]ー[{KANA_LETTERS}]")
@@ -304,9 +325,11 @@ _STRETCH_RE = re.compile(f"(?<=[{KANA_LETTERS}{HAN}])[ー〜]+(?=[{KANA_LETTERS}
 
 
 def _stretched(text):
-    """Does `text` hold a stretched vowel that is read otherwise than as written — a wave dash, or two or more marks?
-    (A text with a ～ is read differently anyway.)"""
-    return ("〜" in text or "ーー" in text) and any(m.group() != "ー" for m in _STRETCH_RE.finditer(text))
+    """Does `text` hold a stretched vowel that is read otherwise than as written — a wave dash, two or more marks, or a
+    dash inside a word? (A text with a ～ is read differently anyway.)"""
+    return ((("〜" in text or "ーー" in text) and any(m.group() != "ー" for m in _STRETCH_RE.finditer(text)))
+            or (("─" in text or "━" in text or "―" in text or "—" in text)
+                and _DASH_STRETCH_RE.search(text) is not None))
 
 
 def _stretches(groups):
@@ -316,13 +339,23 @@ def _stretches(groups):
         j = i
         while j < n and groups[j][2] in _STRETCH_MARKS:
             j += 1
-        if i < j < n and out and _STRETCH_BEFORE.match(out[-1][2][-1]) and _STRETCH_AFTER.match(groups[j][2]):
+        if i < j < n and out and _STRETCH_BEFORE.match(out[-1][2][-1]) and _inside_a_word(out[-1][2][-1], groups, i, j):
             out.append([groups[i][0], groups[j - 1][1], "ー"])
             i = j
         else:
             out.append(groups[i])
             i += 1
     return out
+
+
+def _inside_a_word(before, groups, i, j):
+    """Do the marks groups[i:j], after the letter `before`, stretch a vowel inside a word (§ above)? A wave dash or ー
+    does before any kana; a run holding a dash only where _DASH_STRETCH_RE finds it."""
+    run = "".join(group[2] for group in groups[i:j])
+    if _DASHES.isdisjoint(run):
+        return _STRETCH_AFTER.match(groups[j][2]) is not None
+    after = "".join(group[2] for group in groups[j:j + 2])[:2]
+    return _DASH_STRETCH_RE.match(before + run + after, 1) is not None
 
 
 def _lone_marks(read, at, nodes):
@@ -402,8 +435,13 @@ class Tagger:
 # lForm, so アルファー is アルファ — and not under the symbol UniDic makes its lemma (δ, α-alpha); a letter written
 # as the symbol itself (ω in a kaomoji) is no word. Nor is a number (the user's call, 2026-09-27):
 # UniDic's 数詞 — 二十, 百, 〇, Ⅲ, 50, and 何 / 数 / 幾 counting (何人, 数十) — is never a list word and never an
-# unknown in a sentence (二十 was row #28, 五十 #102). Every caller that reads words off the tagger keys through
+# unknown in a sentence (二十 was row #28, 五十 #102). Nor is a dash, though UniDic reads one as a word by context — the
+# full-width hyphen-minus － as から, 対, マイナス or 引く, the wave dash 〜 as から: Unicode's dash punctuation (Pd, and
+# ～, which the tagger reads as the wave dash) is punctuation — between a heading's two parts (祈り－心からの願い), in a
+# range, for a minus — never a word the text says. Every caller that reads words off the tagger keys through
 # `word_lemma`: the tokenizer (so the token store, the known words, 例文 and card matching) and 順's sentences.
+_DASH = frozenset(chr(point) for point in range(0x10000) if unicodedata.category(chr(point)) == "Pd") | {"\uff5e"}
+
 
 def word_lemma(word):
     """The lemma a tagger's node counts under (§ above), before sanitizing — or None when it is no word."""
@@ -412,6 +450,8 @@ def word_lemma(word):
         return None
     if f.pos1 == "記号":
         return f.lForm if f.pos2 == "文字" and f.lForm and has_target_language(word.surface, "ja") else None
+    if word.surface in _DASH:                           # one lookup: this runs for every token
+        return None
     return f.lemma or word.surface
 
 
@@ -692,8 +732,10 @@ def join_affixes(words, joins=None, library=True, compounds=None):
     Then a run of words that spells a dictionary compound is one word (§ Words made of words: 上層部,
     一生懸命, 二十歳, 取り掛かる; `compounds` defaults to `compound_joins()`, {} joins none) — except a katakana
     compound the dictionaries don't list inside a katakana name (ビルデイング) — and a compound
-    takes its own prefix and suffixes (同性愛 + 者); then a sound word + と is that word shown with と
-    (ドキッと). These depend on the text alone, so the token store caches them.
+    takes its own prefix and suffixes (同性愛 + 者); then two fillers cut out of one interjection are that word (ま +
+    あ = まあ) and a sound said over and over that the dictionary doesn't know is its sound word (ハァハァハァ is はあはあ);
+    then a sound word + と is that word shown with と (ドキッと). These depend on the text alone, so the token store
+    caches them.
 
     Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
     list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
@@ -703,6 +745,7 @@ def join_affixes(words, joins=None, library=True, compounds=None):
     if joins is None:
         joins = affix_joins()
     pos1s = [w.feature.pos1 for w in words]     # each token's part of speech, looked at once for every step
+    fillers = "感動詞" in pos1s                  # a filler is an interjection (§ Sounds), and no join makes one
     # Only a line holding a prefix, a suffix or a noun that acts as one (`_NOUN_SUFFIXES`, as the tagger read it or as
     # written) can join one: most lines hold none and pass here in C.
     if joins and ("接頭辞" in pos1s or "接尾辞" in pos1s or not _NOUN_SUFFIXES.isdisjoint(map(_ORTH, words))
@@ -725,6 +768,10 @@ def join_affixes(words, joins=None, library=True, compounds=None):
                 joined = _join_affix_runs(joined, joins)
             # Neither step makes or takes an adverb: the old list still says whether the line holds one.
             words, pos1s = joined, (None if "副詞" in pos1s else pos1s)
+    if fillers or any(map(_UNKNOWN, words)):
+        sounds = _sounds(words, fillers)
+        if sounds is not words:
+            words, pos1s = sounds, None             # a sound word may be an adverb: _join_sokuon_to looks again
     words = _join_sokuon_to(words, pos1s)
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
@@ -1012,6 +1059,78 @@ def _give_way_to_names(words, joined, at, table):
     return words if not kept else out
 
 
+# --- Sounds the tagger cut or left unknown ------------------------------------------------------------------------ #
+# Two fillers cut out of one interjection: in speech without punctuation the tagger may prefer a chain of one-kana
+# fillers — ま + あ for まあ, read まー + あー, or あ + あ～ for ああ～ — to the word it lists, and it reads the pair alone
+# as that word. Two fillers in a row, each one kana (a stretch mark aside), are the interjection or adverb the pair
+# reads as alone: まあ, ああ, いえ, ええ, うん. Only where the pair reads alone as ONE such word: ま + え (したまえ) and
+# う + え (うえ～ん) stay as they are, as do two whole interjections (あー + あー, each ああ).
+# A sound said over and over: the dictionary lists a sound word said twice (はあはあ, ふふ, だらだら), and the tagger
+# leaves the same sound said three times or more as a katakana word it doesn't know (ハァハァハァ, ﾌﾌﾌﾌﾌ), counted as an
+# unknown word of its own. Such a word is the sound word the tagger reads that sound said twice as, alone, when it is
+# one — an interjection or an adverb — shown as written: ハァハァハァ is はあはあ's. A sound whose double is no such word
+# stays as it was (ヘヘヘ: ヘヘ reads as two words; ゼロゼロゼロ).
+_UNKNOWN, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos2")
+_ONE_KANA = re.compile(f"^[{KANA_LETTERS}][ー〜]*$")      # UniDic spells some fillers with 〜 (え〜)
+_KATAKANA_WORD = re.compile("^[\u30a1-\u30fa\u30fc-\u30ff]+$")
+_SOUND_POS1 = frozenset(("感動詞", "副詞"))
+_FILLER_MARKS = re.compile("[ー〜]")
+
+
+def _sound_word(spelling):
+    """The tagger's feature for `spelling` read alone, when it reads it as ONE interjection or adverb it knows — else
+    None (asked once per spelling: app/names.py keeps the answers)."""
+    whole = names._read_whole(spelling)
+    return whole if whole is not None and whole.pos1 in _SOUND_POS1 else None
+
+
+def _repeated_unit(text):
+    """The sound a katakana word says three times or more, less a final ッ or ー (ハァ in ハァハァハァ, フ in フフフフッ) —
+    else None."""
+    if not _KATAKANA_WORD.match(text):
+        return None
+    spelling = text.rstrip("ッー")
+    n = len(spelling)
+    for k in range(1, n // 3 + 1):
+        if n % k == 0 and spelling == spelling[:k] * (n // k):
+            return spelling[:k]
+    return None
+
+
+def _sounds(words, fillers):
+    """join_affixes' sounds (§ above): `words` with each unknown sound said three times or more read as its sound word
+    and — on a line holding an interjection (`fillers`) — each pair of fillers that reads alone as one word joined into
+    it; the same list when there is none. Only the unknown words and the fillers are looked at, each found in C."""
+    n, found = len(words), {}           # where a sound word goes -> (the word, how many tokens it takes the place of)
+    for i in compress(range(n), map(_UNKNOWN, words)):
+        unit = _repeated_unit(_read(words[i]))
+        whole = _sound_word(unit * 2) if unit else None
+        if whole is not None:
+            found[i] = (ReadNode(words[i].surface, whole, False, getattr(words[i], "white_space", "")), 1)
+    if fillers:
+        free = 0                        # the first token no pair has taken yet
+        for i in compress(range(n - 1), map(eq, map(_POS2, words), repeat("フィラー"))):
+            w, v = words[i], words[i + 1]
+            if (i >= free and v.feature.pos2 == "フィラー" and not getattr(v, "white_space", "")
+                    and _ONE_KANA.match(_read(w)) and _ONE_KANA.match(_read(v))):
+                spelling = _read(w) + _read(v)
+                whole = _sound_word(spelling) or _sound_word(_FILLER_MARKS.sub("", spelling))
+                if whole is not None:
+                    parts = ((w.surface, w.feature), (v.surface, v.feature))
+                    found[i] = (JoinedWord(w.surface + v.surface, whole, parts, getattr(w, "white_space", "")), 2)
+                    free = i + 2
+    if not found:
+        return words
+    out, last = [], 0
+    for i in sorted(found):
+        word, width = found[i]
+        out.extend(words[last:i])
+        out.append(word)
+        last = i + width
+    out.extend(words[last:])
+    return out
+
+
 # A sound word ending in っ / ッ said with と — ドキッと, ざっと, ぎゅっと. UniDic files the sound word as an
 # adverb and cuts the と off as a particle, so the list counted ドキッ and a card mined as ドキッと reached its
 # row only by dropping the ending. The adverb and its と are one token: the same word shown with と — UniDic's
@@ -1265,6 +1384,16 @@ def _takes_quotation(word, bracketed=False):
     return f.pos1 == "助詞" and f.lemma in ("と", "って")
 
 
+def _opening(surface, boundaries):
+    """Where the next sentence begins inside `surface`, the token a sentence ends with: an opening bracket or quote
+    after its terminator, which the tagger read as one symbol with it (｡｢, 。〝 and ｡(( are one token each) — else 0.
+    An opening mark never ends a sentence (_closes): it opens the next one."""
+    for k in range(1, len(surface)):
+        if unicodedata.category(surface[k]) in ("Ps", "Pi") and not boundaries.isdisjoint(surface[:k]):
+            return k
+    return 0
+
+
 def _sentence_ends(words, surfaces, boundaries):
     """The indices of the tokens of one line (fugashi nodes or JoinedWords, and their surfaces) that a
     Japanese sentence ends after (§ above). Only the tokens holding a boundary character are looked at
@@ -1392,6 +1521,10 @@ class JapaneseTokenizer(Tokenizer):
                     current_sentence_tokens.append((lemma, reading, word.surface, orth))
 
                 if i in ends:
+                    # The next sentence's bracket, glued to this end — a token of one character holds none.
+                    opening = _opening(surface, boundaries) if len(surface) > 1 else 0
+                    if opening:
+                        current_sentence_surface[-1] = surface[:opening]
                     s_text = "".join(current_sentence_surface).lstrip("」』”'\" ").strip()
                     # A fragment with no Japanese in it is punctuation debris — a line that is
                     # only 「…………」, a list number's １． Never a usable example sentence.
@@ -1399,7 +1532,7 @@ class JapaneseTokenizer(Tokenizer):
                         yield s_text, current_sentence_tokens
                         yielded += 1
                     current_sentence_tokens = []
-                    current_sentence_surface = []
+                    current_sentence_surface = [surface[opening:]] if opening else []
 
             # End of a line is itself a hard sentence boundary — flush any remainder.
             if current_sentence_surface:
@@ -1822,6 +1955,17 @@ def load_known_words(json_path, tokenizer):
     # raw term trusted below must be read in that same script or it can never match. Converted
     # separately from the ORIGINAL term, exactly as the tokenizer converts it, so the two can't drift.
     script = getattr(tokenizer, "script", "asis")
+    # Idioms and set phrases on the list (logic.phrase_rows, Japanese): a phrase row is its words' lemmas joined
+    # (気が付く), so a known phrase is known however its sentences spell it — a 気がつく card synced from Anki makes
+    # the row 気が付く known. Only a set phrase's run: 努力する's words joined name nothing. Off, nothing is added (the
+    # known-words cache is keyed on the switch and the phrases: token_index).
+    phrase_set = None
+    if isinstance(tokenizer, JapaneseTokenizer) and LOGIC.get("phrase_rows", True):
+        try:
+            from app import phrases as _phrases
+            phrase_set = _phrases.load()
+        except Exception:
+            phrase_set = None
     # Handle both Dict (list in 'words') and List formats
     if isinstance(data, dict):
          word_list = data.get("words", [])
@@ -1868,7 +2012,9 @@ def load_known_words(json_path, tokenizer):
                         full_reading = "".join([t[1] for t in tokens if t[1]]) # Concat readings
                         known_tuples.add((term, full_reading))
                         known_lemmas.add(term)
-                        
+                        if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
+                            known_lemmas.add("".join(t[0] for t in tokens))
+
                 except Exception:
                     # Fallback if tokenization fails
                     pass
@@ -3214,6 +3360,15 @@ def main():
     # (LearningView, above).
     _joins = affix_joins() if language == 'ja' else {}
     _parts = compound_parts() if language == 'ja' else {}
+    # Idioms and set phrases on the list (logic.phrase_rows, Japanese; app/phrases.py and below). Off, the phrases are
+    # never read and every output is what it was without them.
+    _phrase_set = None
+    if language == 'ja' and LOGIC.get("phrase_rows", True):
+        try:
+            from app import phrases as _phrases
+            _phrase_set = _phrases.load()
+        except Exception as e:
+            print(f"Warning: the set phrases could not be read ({e}); the list holds words only.")
 
     def _known(lr):
         """Does the learner know or ignore `lr`, as this run started?"""
@@ -3334,6 +3489,8 @@ def main():
     # pass counts the same sentences the aggregation then reads (Japanese, where there is a compound table);
     # with nothing to give back, the aggregation's own totals, as always.
     _counts, floor_count, total_tokens = None, None, 0
+    _phrase_table = None        # the set phrases, counted as the store counts them, when the store can't be read
+    _phrases_found = {}         # file path -> its set phrases as that first pass found them (Store.phrase_matches)
     if _store is not None:
         try:
             _counts, total_tokens = _store.word_counts()
@@ -3341,15 +3498,24 @@ def main():
             print(f"Warning: could not read the token store's counts ({e}); counting the library first.")
     if _counts is None and _parts:
         _counts, total_tokens = Counter(), 0
+        tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
-            for _s_text, s_tokens in _sentences_of(file_path):
+            sentences = _sentences_of(file_path)
+            if tallies is not None:
+                sentences, flat = list(sentences), []
+                tallies.append(_phrases.tally(sentences, _phrase_set, flat))
+                _phrases_found[file_path] = (len(sentences), flat)
+            for _s_text, s_tokens in sentences:
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _counts[(lemma, reading)] += 1
                         total_tokens += 1
+        if tallies is not None:
+            _phrase_table = _phrases.table(tallies, _phrase_set)
     if _counts is not None:
         floor_count = _floor_count(total_tokens, lambda: _token_index.unknown_distribution(
-            _counts, total_tokens, known_words_initial, known_lemmas_initial, ignore_list, skip_singles, language))
+            _counts, total_tokens, known_words_initial, known_lemmas_initial, ignore_list, skip_singles, language,
+            _phrase_table))
     _view = LearningView(_counts, floor_count or 0, _known, parts=_parts, joins=_joins,
                          tagger=tokenizer.tagger if language == 'ja' else None)
     # Every compound too rare for the list, as one set: a sentence holding none — nearly all — is passed over in C.
@@ -3367,6 +3533,119 @@ def main():
     min_chars = LOGIC.get("context", {}).get("min_chars", 10)
     preferred_max_chars = LOGIC.get("context", {}).get("preferred_max_chars", 50)
     max_chars = LOGIC.get("context", {}).get("max_chars", 150)
+
+    # --- Idioms and set phrases on the list (logic.phrase_rows, Japanese; app/phrases.py) ------------------------- #
+    # The tokenizer never joins a phrase, so the dictionary's set phrases are found in each sentence's words, and one the
+    # library meets as often as the cut-off asks of a word is a row of its own (気がする, 腑に落ちる, もしかしたら) — its
+    # Word the lemmas joined (気が付く), its Orth the commonest spelling. Additive: every word keeps its uses, coverage
+    # and the cut-off stay the tokens', and a phrase adds no unknown to another word's sentence — it only puts that
+    # sentence after cleaner ones among the word's examples — except that a word living only inside its phrase (腑 in
+    # 腑に落ちる) gives the phrase its uses there. A phrase is ready once every other real word in it is known
+    # (phrases.waiting): one made of known words sits lower, as 利用者 does; one waiting for a new word counts that word
+    # as an unknown in its own sentences, and sorts after it. Off (and for Chinese) nothing here runs (`_phrase_set`,
+    # read before the cut-off).
+    phrase_stats = {}           # phrase index -> its entry, shaped as a word's in word_stats
+    _phrase_known = {}          # phrase index -> known or ignored as a whole (phrases.known_whole)
+    _phrase_waits = {}          # phrase index -> (the words it waits for, every real word in it known)
+    _phrase_bound = {}          # phrase index -> the positions of the words that live only inside it
+    file_phrase_cache = {}      # file path -> {phrase index: uses}, for the progressive pass
+    file_bound_cache = {}       # file path -> {(lemma, reading): uses given to a phrase}, likewise
+
+    def _readable_now(lr):
+        """Known, ignored or read already with the known words the run started with — a phrase's word, for readiness."""
+        return _known(lr) or _readable(lr, known_words_initial, known_lemmas_initial)
+
+    def _phrase_facts(index):
+        """(the phrase, what it waits for, the positions of its bound words) — worked out once per phrase."""
+        phrase = _phrase_set.entry(index)
+        waits = _phrase_waits.get(index)
+        if waits is None:
+            waits = _phrase_waits[index] = _phrases.waiting(phrase, _readable_now)
+            _phrase_bound[index] = _phrases.bound_at(phrase)
+        return phrase, waits, _phrase_bound[index]
+
+    # Each file's set phrases as the token store's last index found them (or this run's first pass, above), so its
+    # sentences are not searched for them again — each file's let go once read.
+    if _phrase_set is not None and _store is not None and not _phrases_found:
+        _phrases_found = _store.phrase_matches([file_path for file_path, _l, _w, _t in found_files])
+
+    def _phrases_at(file_path, sentences):
+        """{sentence number: [(start, end, index)]} — a file's set phrases as they were found before in these very
+        tokens; None when they weren't or don't fit the tokens (the file changed since): they are searched for here
+        (PhraseSet.find)."""
+        held = _phrases_found.pop(file_path, None)
+        if held is None or held[0] != len(sentences):
+            return None
+        at, entries, numbers = {}, _phrase_set.entries, iter(held[1])
+        try:
+            for number, start, end, index in zip(numbers, numbers, numbers, numbers):
+                tokens, key = sentences[number][1], entries[index].key
+                if end - start != len(key) or tokens[start][0] != key[0] or tokens[end - 1][0] != key[-1]:
+                    return None
+                found = at.get(number)
+                if found is None:
+                    at[number] = [(start, end, index)]
+                else:
+                    found.append((start, end, index))
+        except (IndexError, TypeError):
+            return None
+        return at
+
+    # How often each phrase is met, when every file's phrases were found before (above): one met less often than the
+    # cut-off is never a row, so its sentences are never weighed as its examples.
+    _phrase_uses = None
+    if _phrase_set is not None and floor_count is not None and all(
+            file_path in _phrases_found for file_path, _l, _w, _t in found_files):
+        _phrase_uses = Counter()
+        for _sentences, flat in _phrases_found.values():
+            _phrase_uses.update(flat[3::4])
+
+    def _unknown_counts(lrs):
+        """The running counts, ascending, of the words in `lrs` not read already — what a candidate example's cost is
+        weighed on (rolling_context_cost), as a word's are below."""
+        fresh = lrs.difference(_judged)
+        if fresh:
+            _judged.update(fresh)
+            _read_already.update(lr for lr in fresh if _readable(lr, known_words_initial, known_lemmas_initial))
+        return sorted([word_stats[lr]["total_count"] if lr in word_stats else 0
+                       for lr in lrs if lr not in _read_already])
+
+    def _could_take(entry, short, long, src_idx, file_is_spoken, is_over_hard_max):
+        """Could a sentence of these lengths join a phrase's examples (`_offer_context`) at any cost? Not when both
+        pools are full of sentences at least as good as its best case (no unknown) — then its cost isn't worked out."""
+        candidates = entry["candidate_contexts"]
+        if len(candidates) < 30 or (short, long, 0) < _CONTEXT_RANK(candidates[-1]):
+            return True
+        if not (ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max):
+            return False
+        audio_pool = entry["audio_contexts"]
+        if len(audio_pool) < 12:
+            return True
+        worst = audio_pool[-1]
+        return (src_audio_rank[src_idx], short, long, 0) < (src_audio_rank[worst[5]], worst[0], worst[1], worst[2])
+
+    def _offer_context(entry, new_ctx, file_is_spoken, is_over_hard_max):
+        """A candidate example sentence for a phrase row, kept as a word's are (below): the audio pool, then the best
+        30 by length and cost, the phrase's first sentence as its fallback."""
+        s_text = new_ctx[4]
+        if ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max:
+            audio_pool = entry["audio_contexts"]
+            if not any(c[4] == s_text for c in audio_pool):
+                audio_pool.append(new_ctx)
+                audio_pool.sort(key=lambda x: (src_audio_rank[x[5]], x[0], x[1], x[2]))
+                del audio_pool[12:]
+        candidates = entry["candidate_contexts"]
+        if len(candidates) >= 30 and (new_ctx[0], new_ctx[1], new_ctx[2]) >= _CONTEXT_RANK(candidates[-1]):
+            return
+        if s_text in [c[4] for c in candidates]:
+            return
+        if not entry["first_context"]:
+            entry["first_context"] = new_ctx
+        if is_over_hard_max:
+            return
+        candidates.append(new_ctx)
+        candidates.sort(key=_CONTEXT_RANK)
+        del candidates[30:]
 
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
@@ -3386,6 +3665,7 @@ def main():
         file_counter = Counter()
         file_count = file_counter.get
         file_credits = Counter()                      # the words this file meets inside a rare compound
+        file_phrases, file_bound = Counter(), Counter()   # its set phrases, and the uses its bound words give them
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
         file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
@@ -3393,8 +3673,13 @@ def main():
         library_series.add(file_series)
         if file_is_spoken:
             spoken_file_count += 1
+        # The set phrases of each sentence, as they were found before (above) — else searched for below.
+        found_at = None
+        if _phrase_set is not None:
+            sentences = list(sentences)
+            found_at = _phrases_at(file_path, sentences)
 
-        for s_text, s_tokens in sentences:
+        for s_no, (s_text, s_tokens) in enumerate(sentences):
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             unknown_keys = []
@@ -3438,12 +3723,62 @@ def main():
                 targets = unique_lrs.difference(rare)
                 unique_lrs = {unit for lr in unique_lrs for unit in _view.units(lr) if not _known(unit)}
 
+            # The set phrases here (above): each one counted for its row as a word is; a word living only inside its
+            # phrase gives the phrase that use (no count, score or example of its own from it — it still makes the
+            # sentence harder), so a sentence holding it only there is no example for it either.
+            if found_at is not None:
+                found = found_at.get(s_no, ())
+            else:
+                found = _phrase_set.find(s_tokens, s_text) if _phrase_set is not None else ()
+            taken = None
+            if found:
+                for start, end, index in found:
+                    phrase, _waits, bound = _phrase_facts(index)
+                    if bound:
+                        if taken is None:
+                            taken = Counter()
+                        for k in bound:
+                            taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
+                    orth, written = _phrases.spellings(s_tokens, start, end, phrase)
+                    entry = phrase_stats.get(index)
+                    if entry is None:
+                        entry = phrase_stats[index] = word_stats.default_factory()
+                    entry["score"] += weight
+                    entry["total_count"] += 1
+                    entry["sources"].add(file_basename)
+                    entry["surface"] = written
+                    orths, surfaces = entry["orths"], entry["surfaces"]
+                    spelled_anew = orth not in orths or written not in surfaces
+                    orths[orth] += 1
+                    surfaces[written] += 1
+                    if label == "HighPriority": entry["high_count"] += 1
+                    elif label == "LowPriority": entry["low_count"] += 1
+                    elif label == "GoalContent": entry["goal_count"] += 1
+                    if file_is_spoken: entry["spoken_count"] += 1
+                    entry["series"].add(file_series)
+                    if seq_idx < entry["min_seq"]:
+                        entry["min_seq"] = seq_idx
+                    file_phrases[index] += 1
+                    # Known as a whole? Asked again only for a spelling not met before.
+                    if spelled_anew and not _phrase_known.get(index):
+                        _phrase_known[index] = _phrases.known_whole(phrase, (orth, written), known_words_initial,
+                                                                    known_lemmas_initial, ignore_list)
+                if taken:
+                    file_bound.update(taken)
+                    uses = Counter((t[0], t[1]) for t in sentence_unknowns if (t[0], t[1]) in taken)
+                    gone = {key for key, n in uses.items() if n <= taken[key]}
+                    if gone:
+                        targets = targets - gone
+
             # 2. Update Stats for all unknown tokens in this sentence
             for lemma, reading, surface, orth in sentence_unknowns:
                 # If we are skipping single characters for learning, do not add it to word_stats
                 if skip_singles and len(lemma) == 1:
                     continue
-                    
+                if taken and taken.get((lemma, reading)):
+                    taken[(lemma, reading)] -= 1      # a use its phrase has taken (above)
+                    continue
+
                 entry = word_stats[(lemma, reading)]
                 entry["score"] += weight
                 entry["total_count"] += 1
@@ -3484,6 +3819,46 @@ def main():
                         if seq_idx < entry["min_seq"]:
                             entry["min_seq"] = seq_idx
 
+            # Each phrase the learner doesn't know as a whole takes the sentence as a candidate example. Its unknowns
+            # are the sentence's unknown words outside it, and the words it waits for (never the i+1 of a phrase whose
+            # own word is still new: 本題に入る while 本題 is); a word's examples keep their own unknowns (above).
+            marks = unk_freqs = None
+            if found:
+                marks = tuple(index for _start, _end, index in found)
+                unknown_uses = None         # the sentence's unknown words, each with its uses here
+                is_too_short = 1 if len(s_text) < min_chars else 0
+                is_too_long = 1 if len(s_text) > preferred_max_chars else 0
+                is_over_hard_max = len(s_text) > max_chars
+                for start, end, index in found:
+                    if _phrase_known.get(index) or (_phrase_uses is not None and _phrase_uses[index] < floor_count):
+                        continue
+                    entry = phrase_stats[index]
+                    if not _could_take(entry, is_too_short, is_too_long, src_idx, file_is_spoken, is_over_hard_max):
+                        continue
+                    if unknown_uses is None:
+                        unknown_uses = Counter(unknown_keys)
+                    waits = _phrase_waits[index][0]
+                    inside = [(t[0], t[1]) for t in s_tokens[start:end]]
+                    if not waits and unknown_uses.keys().isdisjoint(inside):
+                        # No new word inside it and none waited for: the sentence's unknowns are its words' own (3.).
+                        if unk_freqs is None:
+                            unk_freqs = _unknown_counts(unique_lrs)
+                        lrs, freqs = unique_lrs, unk_freqs
+                    else:
+                        # The unknowns outside the phrase: a word met only inside it is the phrase's own.
+                        lrs = set(unknown_uses)
+                        for lr in inside:
+                            if lr in lrs and unknown_uses[lr] <= inside.count(lr):
+                                lrs.discard(lr)
+                        lrs.update(waits)
+                        if rare:
+                            lrs = ((lrs - rare)
+                                   | {unit for lr in lrs & rare for unit in _view.units(lr) if not _known(unit)})
+                        freqs = _unknown_counts(lrs)
+                    _offer_context(entry, (is_too_short, is_too_long, rolling_context_cost(entry["total_count"], freqs),
+                                           lrs, s_text, src_idx, marks),
+                                   file_is_spoken, is_over_hard_max)
+
             # 3. Update Best Contexts (once per unique unknown per sentence)
             if not targets:
                 continue        # an example for no word (most sentences, once most words are known)
@@ -3497,15 +3872,16 @@ def main():
             # Running frequency of each of this sentence's unknowns (ascending) — used to score
             # each candidate by its rarer-than-target co-words (see rolling_context_cost). A word the
             # learner can read through its known word (利用者) is not one of them (U9, above).
-            if not _judged.issuperset(unique_lrs):
-                new = unique_lrs.difference(_judged)
-                _judged.update(new)
-                _read_already.update(lr for lr in new if _readable(lr, known_words_initial, known_lemmas_initial))
-            unk_freqs = sorted(
-                word_stats[lr]["total_count"] if lr in word_stats else 0
-                for lr in unique_lrs
-                if lr not in _read_already
-            )
+            if unk_freqs is None:           # (worked out already when a set phrase here needed it, above)
+                if not _judged.issuperset(unique_lrs):
+                    new = unique_lrs.difference(_judged)
+                    _judged.update(new)
+                    _read_already.update(lr for lr in new if _readable(lr, known_words_initial, known_lemmas_initial))
+                unk_freqs = sorted(
+                    word_stats[lr]["total_count"] if lr in word_stats else 0
+                    for lr in unique_lrs
+                    if lr not in _read_already
+                )
 
             for (lemma, reading) in targets:
                 # If we skipped this word for learning, don't try to store candidate contexts for it
@@ -3519,6 +3895,8 @@ def main():
                 # reaches it (common co-words are learned first). Same buffer / fast-exit.
                 cost = rolling_context_cost(entry["total_count"], unk_freqs)
                 new_ctx = (is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx)
+                if marks:
+                    new_ctx += (marks,)     # the phrases here: a new one puts the sentence after cleaner ones
 
                 # The audio pool is filled FIRST, before any of the main pool's early-outs below.
                 # Those exist to keep the best 30 sentences overall, and every one of them —
@@ -3575,6 +3953,10 @@ def main():
         file_token_cache[file_path] = file_counter
         if file_credits:
             file_credit_cache[file_path] = file_credits
+        if file_phrases:
+            file_phrase_cache[file_path] = file_phrases
+        if file_bound:
+            file_bound_cache[file_path] = file_bound
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
@@ -3590,6 +3972,23 @@ def main():
     for lr, entry in word_stats.items():
         if _readable(lr, known_words_initial, known_lemmas_initial):
             entry["score"] //= 2
+
+    # The set phrases met join the words, keyed as a word is — (Word, Reading): their lemmas and readings joined — so
+    # every output below lists them the same way. No row for a phrase known or ignored as a whole, nor for one whose
+    # lemmas joined are a word the library holds (the word keeps its row). A ready phrase whose real words are all
+    # known scores half, as a word read through its known word does (利用者).
+    phrase_keys = {}                # (Word, Reading) -> phrase index: the phrases this run may list
+    if phrase_stats:
+        lemmas = ({key[0] for key in _counts} if _counts is not None
+                  else {key[0] for counts in file_token_cache.values() for key in counts})
+        for index, entry in phrase_stats.items():
+            phrase = _phrase_set.entry(index)
+            if _phrase_known.get(index) or phrase.word in lemmas:
+                continue
+            if _phrase_waits[index][1]:
+                entry["score"] //= 2
+            phrase_keys[(phrase.word, phrase.reading)] = index
+            word_stats[(phrase.word, phrase.reading)] = entry
 
     # --- The word-selection floor, when it could not be fixed before the aggregation ---
     # No store and no compound table (Chinese; Japanese before the table): nothing is given back, so the
@@ -3674,7 +4073,9 @@ def main():
         if data["total_count"] < floor_count:
             continue
 
-        tier_labels = get_tier_label(lemma, freq_data)
+        # A phrase is looked up in the frequency lists as it is written (気がする), not as its lemmas joined.
+        tier_labels = get_tier_label(_display_orth(lemma, data["orths"]) if (lemma, reading) in phrase_keys else lemma,
+                                     freq_data)
         # Format tiers as "Source1:Tier1;Source2:Tier2" or "Outside" if not in any list
         tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
         source_display = group_sources(data["sources"])
@@ -3702,14 +4103,22 @@ def main():
         }
         preliminary_rows.append(row)
         
-    # Sort Logic: Primary = Score (Desc), Secondary = First Appearance (Asc)
-    preliminary_rows.sort(key=lambda x: (-x["Score"], x["_MinSeq"]))
-    
+    # Sort Logic: Primary = Score (Desc), Secondary = First Appearance (Asc) — and a phrase after the words it ties
+    # with, so one waiting for a word never comes before it.
+    preliminary_rows.sort(key=lambda x: (-x["Score"], x["_MinSeq"], (x["Word"], x["Reading"]) in phrase_keys))
+
+    # The phrases listed so far down the list, for a sentence's new phrases (below). A phrase row adds only itself —
+    # never its words, which keep their own places on the list.
+    phrase_rows = {phrase_keys[(r["Word"], r["Reading"])] for r in preliminary_rows
+                   if (r["Word"], r["Reading"]) in phrase_keys}
+    rolling_known_phrases = set()
+
     output_rows = []
     for r in preliminary_rows:
         target_lr = (r["Word"], r["Reading"])
         target_lemma = r["Word"]
         target_seq = r["_MinSeq"]       # the file where the learner first meets THIS word
+        target_phrase = phrase_keys.get(target_lr)
 
         # Evaluate candidate contexts against rolling knowns
         evaluated_candidates = []
@@ -3750,16 +4159,25 @@ def main():
             if ONLY_I_PLUS_ONE and unknown_count > 0:
                 continue
 
+            # A set phrase of the sentence still new at this point of the list (a phrase row further down, never this
+            # row's own) makes it a less clean example: it goes after the sentences with as many unknowns and none.
+            # Never an unknown of its own — an i+1 sentence stays i+1, so no word loses its last one.
+            crowd = 0
+            if len(ctx) > 6:
+                crowd = sum(1 for index in set(ctx[6]) if index in phrase_rows and index != target_phrase
+                            and index not in rolling_known_phrases)
+
             evaluated_candidates.append(
-                (ctx[0], ctx[1], unknown_count, sentence_text, recent_hits, ctx[5]))
+                (ctx[0], ctx[1], unknown_count, sentence_text, recent_hits, ctx[5], crowd))
 
             # Optimization 2: Early Exit
             # If we found enough "perfect" contexts (0 unknowns AND perfectly sized) we can stop evaluating.
             # With recency on we look at twice as many before stopping: the tiebreaker can only choose
             # among candidates we actually evaluated, so stopping at exactly max_contexts would leave
             # it nothing to choose between. Still bounded (candidate_contexts caps at 30).
-            if unknown_count == 0 and ctx[0] == 0 and ctx[1] == 0:
-                perfect_count = sum(1 for c in evaluated_candidates if c[2] == 0 and c[0] == 0 and c[1] == 0)
+            if unknown_count == 0 and not crowd and ctx[0] == 0 and ctx[1] == 0:
+                perfect_count = sum(1 for c in evaluated_candidates
+                                    if c[2] == 0 and not c[6] and c[0] == 0 and c[1] == 0)
                 if perfect_count >= (args.max_contexts * 2 if _recency_on else args.max_contexts):
                      # Stop scanning constraints - we already have max perfect i+1s ready
                      break
@@ -3784,22 +4202,23 @@ def main():
             # (-x[4]: recency reinforcement, last so it only breaks exact ties)
             # With the audio option on, prefer a hearable sentence among candidates that are
             # ALREADY equally good — never in place of quality. Every candidate here is i+1
-            # already, so audio rank leads; length still breaks its ties.
+            # already, so audio rank leads; length still breaks its ties. (x[6]: a new set phrase, above — first.)
             if ENSURE_AUDIO_EXAMPLE:
                 i_plus_one_candidates.sort(
-                    key=lambda x: (src_audio_rank[x[5]], x[0], x[1], -x[4]))
+                    key=lambda x: (x[6], src_audio_rank[x[5]], x[0], x[1], -x[4]))
             else:
-                i_plus_one_candidates.sort(key=lambda x: (x[0], x[1], -x[4]))
+                i_plus_one_candidates.sort(key=lambda x: (x[6], x[0], x[1], -x[4]))
             selected_contexts = i_plus_one_candidates[:args.max_contexts]
         else:
             # Sort by: Fewest Unknowns, then Not Too Short, then Not Too Long, then recency
             # i+1 cost stays the first key with the option on, so quality is never traded for
-            # convenience; audio only decides between sentences of equal difficulty.
+            # convenience; audio only decides between sentences of equal difficulty. A new set phrase
+            # (x[6], above) comes right after the unknowns.
             if ENSURE_AUDIO_EXAMPLE:
                 evaluated_candidates.sort(
-                    key=lambda x: (x[2], src_audio_rank[x[5]], x[0], x[1], -x[4]))
+                    key=lambda x: (x[2], x[6], src_audio_rank[x[5]], x[0], x[1], -x[4]))
             else:
-                evaluated_candidates.sort(key=lambda x: (x[2], x[0], x[1], -x[4]))
+                evaluated_candidates.sort(key=lambda x: (x[2], x[6], x[0], x[1], -x[4]))
             
             selected_contexts = []
             if first_evaluated:
@@ -3882,10 +4301,13 @@ def main():
             data[f"final_context_{i+1}"] = context_val
             data[f"final_src_{i+1}"] = src_val
         # Add to rolling known list and output
-        rolling_known_tuples.add(target_lr)
-        rolling_known_lemmas.add(target_lemma)
-        # Record WHERE it was learned, so later words can prefer sentences that reuse it.
-        learned_at_file[target_lr] = target_seq
+        if target_phrase is not None:
+            rolling_known_phrases.add(target_phrase)     # the phrase alone, never its words (above)
+        else:
+            rolling_known_tuples.add(target_lr)
+            rolling_known_lemmas.add(target_lemma)
+            # Record WHERE it was learned, so later words can prefer sentences that reuse it.
+            learned_at_file[target_lr] = target_seq
         
         del r["_CandidateContexts"] # Cleanup
         if "_FirstContext" in r:
@@ -3920,7 +4342,9 @@ def main():
                     
                     for index, row in df.iterrows():
                         needed_rows.append(row)
-                        running_known += row['Occurrences']
+                        # A phrase row makes no more of the text known than its words do: coverage is the tokens'.
+                        if (row['Word'], row['Reading']) not in phrase_keys:
+                            running_known += row['Occurrences']
                         if running_known >= target_tokens:
                             break
                     
@@ -4177,6 +4601,8 @@ def main():
         file_current_start_count = 0      # Baseline + Learned in previous files
 
         file_unknown_token_counts = Counter() # Count of each (lemma, reading) in THIS file
+        # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
+        file_bound = file_bound_cache.get(file_path)
 
         for key, count in file_counter.items():
             lemma = key[0]
@@ -4190,7 +4616,7 @@ def main():
             # Check against cumulative session known (includes previous files)
             elif key in session_known or lemma in session_lemmas:
                 file_current_start_count += count
-            else:
+            elif file_bound is None or file_bound.get(key, 0) < count:
                 file_unknown_token_counts[key] += count
 
         # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
@@ -4201,6 +4627,15 @@ def main():
                     or (lemma, reading) in session_known or lemma in session_lemmas):
                 file_credited[(lemma, reading)] += count
                 file_unknown_token_counts[(lemma, reading)] += count
+        # So is a set phrase met here — a row of its own, in the file it is first met in — which makes none of the
+        # file's tokens known either: learning 気がする adds nothing to what 気 and する already cover.
+        if phrase_keys:
+            for index, count in file_phrase_cache.get(file_path, {}).items():
+                phrase = _phrase_set.entry(index)
+                key = (phrase.word, phrase.reading)
+                if key in phrase_keys and key not in session_known:
+                    file_credited[key] += count
+                    file_unknown_token_counts[key] += count
         
         # 2. Identify and prepare unknown words
         file_new_words = set()

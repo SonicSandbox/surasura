@@ -181,8 +181,10 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     sentence with more of them first among equally easy ones of a good length (the user, 2026-09-24:
     "even better if the words are NOT mature"); without it the order is as it always was. `phrases`,
     {name: (lemma, …)}, finds several-word targets (当事者, 気を取り直す) as that run of lemmas, however
-    inflected, ranked the same with their own words not counted against them; they come back under
-    their name. A one-word target is found as its name is written — a word whose lemma or dictionary
+    inflected — never across a mark the tokenizer dropped (気が、付いた) — ranked the same with their own words
+    not counted against them, except, with Settings' "Idioms and set phrases on your list" on, the words a set
+    phrase waits for (本題 in 本題に入る, app/phrases.py): they are as new as any; they come back under their
+    name. A one-word target is found as its name is written — a word whose lemma or dictionary
     spelling IS the name: 揚げる 'deep-fry', which UniDic files under 上げる, in the sentences that write it
     揚げる, never those of 上げる. `prefer`, {(lemma, reading): [(lemma, …), …]}, puts a sentence holding one of a word's
     runs first among equally easy ones of a good length — its top pairing or form, 啓示を受ける for 啓示
@@ -221,6 +223,16 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
             starts.setdefault(lemmas[0], []).append((name, tuple(lemmas)))
         elif lemmas:
             written[name] = name
+    waits = {}                  # a set phrase's name -> the words it waits for (the list's rule, app/phrases.py)
+    if starts and japanese:
+        from app import token_index
+        if token_index.phrase_rows_on(language):
+            from app import phrases as phrase_rules
+            found = phrase_rules.load()
+            for name, lemmas in (phrases or {}).items():
+                index = found.of_word("".join(lemmas)) if found is not None and len(lemmas) > 1 else None
+                if index is not None:
+                    waits[name] = {lemma for lemma, _reading in phrase_rules.waiting(found.entry(index), _is_known)[0]}
 
     def _lang(text):
         ok = lang_ok.get(text)
@@ -303,8 +315,10 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                     word = words[name] = _Word(True)
                 word.best.offer(((others, margin, -recent, fidx, sidx), text, fidx, surface))
             if starts:
-                for name, span in _phrases_in(tokens, starts):
-                    inside = {(t[0], t[1]) for t in span}
+                for name, span in _phrases_in(tokens, starts, text):
+                    # Its own words are not against it — but the words a set phrase waits for are new ones.
+                    waiting = waits.get(name, ())
+                    inside = {(t[0], t[1]) for t in span if t[0] not in waiting}
                     if unknown_units is not None:
                         others = len(unknown_units.difference(unit for k in inside for unit in view.units(k)))
                     else:
@@ -327,12 +341,14 @@ def _has_run(lemmas, run):
     return bool(n) and any(lemmas[i:i + n] == list(run) for i, lemma in enumerate(lemmas) if lemma == run[0])
 
 
-def _phrases_in(tokens, starts):
-    """Each phrase of `starts` found in a sentence's tokens, once: (name, its tokens there)."""
+def _phrases_in(tokens, starts, text=None):
+    """Each phrase of `starts` found in a sentence's tokens, once: (name, its tokens there) — never words that
+    stand on both sides of a mark the tokenizer dropped (their surfaces are no one run of `text`)."""
     found = set()
     for i, token in enumerate(tokens):
         for name, lemmas in starts.get(token[0], ()):
-            if name not in found and tuple(t[0] for t in tokens[i:i + len(lemmas)]) == lemmas:
+            if name not in found and tuple(t[0] for t in tokens[i:i + len(lemmas)]) == lemmas and (
+                    text is None or "".join(t[2] for t in tokens[i:i + len(lemmas)]) in text):
                 found.add(name)
                 yield name, tokens[i:i + len(lemmas)]
 

@@ -29,6 +29,7 @@ Design invariants (do not break)
 
 import os
 import json
+import hashlib
 import zlib
 import sqlite3
 from collections import Counter
@@ -70,7 +71,11 @@ from operator import itemgetter
 # v14 a word general text writes as words though the tagger reads it otherwise alone is one word (出来損ない: 出来 +
 #    損ない in a sentence), and a verb's stem may stand in a noun the dictionaries mark (待ち + 時間, 立ち + 位置): a v13
 #    blob holds those words in pieces — still 2.4, so users rebuild once with v8–v13.
-SCHEMA_VERSION = 14
+# v15 two fillers cut out of one interjection are that word (まあ, not ま + あ), a sound said three times or more that
+#    the dictionary doesn't know is the sound word said twice (ハァハァハァ is はあはあ), a dash drawn out inside a word is
+#    a stretch (ザ─────ック), a dash is never a word, and the next line's opening bracket glued to a full stop opens
+#    the next sentence: a v14 blob holds the pieces and the old sentences — still 2.4, so users rebuild once with v8–v14.
+SCHEMA_VERSION = 15
 
 
 # --------------------------------------------------------------------------- #
@@ -379,7 +384,17 @@ class Store:
         stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
         if switches != [True] * 4 or stamp is not None:
             signature = f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
-        return signature if logic.get("phrases_and_titles", True) else f"{signature}|phrases_and_titles=off"
+        if not logic.get("phrases_and_titles", True):
+            signature = f"{signature}|phrases_and_titles=off"
+        # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined — the phrases' own, so the
+        # phrase data's revision too (analyzer.load_known_words).
+        if not logic.get("phrase_rows", True):
+            return signature
+        try:
+            from app import phrase_data
+            return f"{signature}|phrase_rows={phrase_data.REVISION}"
+        except Exception:
+            return f"{signature}|phrase_rows=on"
 
     def get_cached_known(self, signature):
         """Return (known_tuples, known_lemmas) if the cache matches `signature`, else None.
@@ -509,7 +524,104 @@ class Store:
         except Exception:
             self.conn.rollback()
             raise
+        self._update_phrases(changed)
         return self
+
+    # -- the phrase table (idioms and set phrases on the list, app/phrases.py) --------------------------------- #
+    def _phrases_basis(self, revision):
+        """What the set phrases are found in — (what every file's count shares: the phrase data and the matcher, the
+        tokenizer's identity and the name tables' switches; what the name tables make of the words they join
+        (`_names_reads`), and a digest of it). `file_tokens` reads the cached words through both."""
+        from app import phrases
+        reads = _names_reads(self.names_tables())
+        base = json.dumps([revision, phrases.MATCHER_VERSION, self.get_meta("build_sig"),
+                           list(_library_switches(self.language))])
+        return base, reads, _digest(reads)
+
+    def _update_phrases(self, changed):
+        """Count the set phrases in the cached tokens — as a run reads them, the name tables applied — so the Rarity
+        slider and automatic rarity count phrase rows as Generate lists them: each phrase's uses and spellings, and the
+        uses its words that live only inside it give it (token_index.unknown_distribution). One tally per file, kept
+        while the file reads the same: its (mtime, size), and what the name tables make of its name candidates
+        (`_names_read_in`, looked at again only when what the tables join changed — not as their evidence grows) — so
+        a change re-reads only the files it touched; all of them again when the phrase data, the tokenizer's identity
+        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`). After the
+        reconcile's own transaction: it reads what that wrote. Japanese with the switch on only; a failure leaves the
+        last table (never fatal)."""
+        if self.language != "ja" or not phrase_rows_on(self.language):
+            return
+        try:
+            from app import phrase_data, phrases
+            found = phrases.load()
+            if found is None:
+                return
+            base, reads, names = self._phrases_basis(phrase_data.REVISION)
+            state = json.dumps([base, names])
+            if not changed and self.get_meta("phrases_state") == state:
+                return                                  # nothing read differently since the last table
+            held, held_matches, names_moved = {}, {}, True
+            try:
+                kept = json.loads(self.get_meta("phrase_files") or "{}")
+                kept_matches = json.loads(self.get_meta("phrase_matches") or "{}")
+                if kept.get("state") == base and kept_matches.get("state") == base:
+                    held, held_matches = kept.get("files", {}), kept_matches.get("files", {})
+                    names_moved = kept.get("names") != names or kept_matches.get("names") != names
+            except ValueError:
+                pass
+            switches = _library_switches(self.language)
+            files, matches = {}, {}
+            for path, mtime, size, blob in self.conn.execute("SELECT path, mtime, size, names FROM files").fetchall():
+                entry, met = held.get(path), held_matches.get(path)
+                same = (entry is not None and met is not None and entry[:2] == [mtime, size]
+                        and met[:2] == [mtime, size])
+                if same and names_moved:
+                    same = entry[2] == _names_read_in(blob, reads, switches)
+                if not same:
+                    sentences, flat = self.file_tokens(path), []
+                    entry = [mtime, size, _names_read_in(blob, reads, switches), *phrases.tally(sentences, found, flat)]
+                    met = [mtime, size, len(sentences), flat]
+                files[path], matches[path] = entry, met
+            summed = phrases.table(((entry[3], entry[4]) for entry in files.values()), found)
+            for key, value in (("phrase_files", {"state": base, "names": names, "files": files}),
+                               ("phrase_matches", {"state": base, "names": names, "files": matches}),
+                               ("phrases", summed), ("phrases_state", state)):
+                self.set_meta(key, value if isinstance(value, str) else
+                              json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        except Exception as e:
+            print(f"Warning: could not count the set phrases for the Rarity slider: {e}")
+
+    def phrase_matches(self, paths):
+        """{path: (its sentences, [sentence, start, end, index, ...])} — the set phrases the last index found in each
+        of `paths`' cached tokens, read as `file_tokens` reads them (`_update_phrases`), for the files whose count is
+        current — none when the phrase data, the name tables' words or a switch changed since. Generate reads these
+        instead of searching every sentence again (analyzer.main checks them against its tokens too)."""
+        if self.language != "ja":
+            return {}
+        try:
+            from app import phrase_data
+            kept = json.loads(self.get_meta("phrase_matches") or "{}")
+            base, _reads, names = self._phrases_basis(phrase_data.REVISION)
+            if kept.get("state") != base or kept.get("names") != names:
+                return {}
+            rows = {path: [mtime, size] for path, mtime, size in self.conn.execute("SELECT path, mtime, size FROM files")}
+            files, out = kept.get("files", {}), {}
+            for path in paths:
+                met = files.get(_norm(path))
+                if met is not None and rows.get(_norm(path)) == met[:2]:
+                    out[path] = (met[2], met[3])
+            return out
+        except Exception:
+            return {}
+
+    def phrase_table(self):
+        """The phrase table the last index counted ({"rows", "taken"}, `_update_phrases`), or None — none with the
+        switch off, for Chinese, or before the first index."""
+        if self.language != "ja" or not phrase_rows_on(self.language):
+            return None
+        try:
+            return json.loads(self.get_meta("phrases") or "null")
+        except Exception:
+            return None
 
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
     def word_counts(self):
@@ -528,14 +640,15 @@ class Store:
 
     def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
                             skip_singles=False):
-        """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`)."""
+        """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`), the set
+        phrases' rows included when the switch is on (`phrase_table`)."""
         counts, total = self.word_counts()
         return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
-                                    self.language)
+                                    self.language, self.phrase_table())
 
 
 def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=None, ignore_set=None,
-                         skip_singles=False, language=None):
+                         skip_singles=False, language=None, phrases=None):
     """{total_tokens, known_tokens, unknown:[(key,count)...], all_counts:[asc]} from the library's per-word counts
     ({(lemma, reading): uses}) and the learner's lists — the Rarity slider's numbers, and the analyzer's own when it
     decides a band without the store.
@@ -544,7 +657,12 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
     compound the learner neither knows nor ignores that the library holds, and every such compound inside one — so
     each band can count a compound too rare for it toward its free parts, as Generate's list does
     (analyzer.LearningView; word_selection.preview). A part is kept only when a use could reach the list through
-    it: free, and an unknown word that can be listed (a single character can't) or an unknown compound."""
+    it: free, and an unknown word that can be listed (a single character can't) or an unknown compound.
+
+    `phrases`, the store's phrase table (`Store.phrase_table`), adds the set phrases as Generate lists them: each one
+    the learner neither knows nor ignores as a whole (its Word, its reading, or a spelling on the lists) is an unknown
+    of its own uses — unless its lemmas joined are a word the library holds — and a word that lives only inside its
+    phrase counts without the uses it gives the phrase. Coverage and the known share stay the tokens'."""
     known_tuples = known_tuples or set()
     known_lemmas = known_lemmas or set()
     ignore_set = ignore_set or set()
@@ -553,6 +671,7 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
         from app import analyzer
         table = analyzer.compound_parts()
     met = []                        # the unknown compounds the library holds
+    taken = (phrases or {}).get("taken") or {}
 
     unknown, known_tokens, all_counts = [], 0, []
     for key, n in counts.items():               # key = (lemma, reading), looked up as it is (this runs per word)
@@ -565,9 +684,19 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
             # Single-char tokens are baseline noise for ja learning; still count toward total.
             known_tokens += n
             continue
-        unknown.append((f"{lemma}|{key[1]}", n))       # make_key
+        name = f"{lemma}|{key[1]}"                      # make_key
+        unknown.append((name, n - taken[name] if name in taken else n))
         if key in table:
             met.append(key)
+    rows = (phrases or {}).get("rows") or {}
+    if rows:
+        lemmas = {key[0] for key in counts}
+        for name, (n, spelled) in rows.items():
+            word, _sep, reading = name.partition("|")
+            if not n or word in lemmas or (word, reading) in known_tuples \
+                    or any(s in known_lemmas or s in ignore_set for s in (word, *spelled)):
+                continue
+            unknown.append((name, n))
 
     # Most uses first, ties by key: two stable sorts in C, not a key tuple built per word.
     unknown.sort(key=itemgetter(0))
@@ -593,10 +722,22 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
                 elif skip_singles and len(lemma) == 1:
                     continue
                 kept.append((lemma, reading, True))
-                bases[make_key(lemma, reading)] = counts.get(part, 0)
+                bases[make_key(lemma, reading)] = counts.get(part, 0) - taken.get(make_key(lemma, reading), 0)
             parts[key] = tuple(kept)
         freqs["compounds"] = (uses, parts, bases)
     return freqs
+
+
+def phrase_rows_on(language):
+    """Settings -> "Idioms and set phrases on your list" (logic.phrase_rows, on by default), Japanese only — read fresh,
+    as the build signature's switches are: the dashboard's slider must see a change as the next Generate will."""
+    if language != "ja":
+        return False
+    try:
+        from app import settings_manager
+        return bool(settings_manager.load_settings()["logic"].get("phrase_rows", True))
+    except Exception:
+        return False
 
 
 def read_names_tables(language):
@@ -659,6 +800,39 @@ def _holds_a_term(spelling, terms):
     of 2+ of its pieces may be one, once other names have taken theirs."""
     return bool(terms) and any(spelling[start:end] in terms for start in range(len(spelling) - 1)
                                for end in range(start + 2, len(spelling) + 1))
+
+
+def _names_reads(tables):
+    """What the library's name tables make of the runs they join: {kind: {spelling: [lemma, reading, orth]}} — without
+    their stickiness and evidence, which move with nearly every new file and change no word (names.choose asks only
+    whether a table holds a spelling)."""
+    return {kind: {spelling: entry[1:] for spelling, entry in table.items()}
+            for kind, table in (tables or {}).items() if kind in ("k", "j", "w") and isinstance(table, dict)}
+
+
+def _names_read_in(blob, reads, switches):
+    """What the name tables (`_names_reads`) make of one file's recorded name candidates (its `names` column), as a
+    short digest — each one a table holds, a term inside a run of one-kanji words included, with the word it becomes:
+    the file's cached words read differently only when this does. "" when none is held."""
+    recurring, kanji, terms = switches
+    if not blob or not (recurring or kanji or terms):
+        return ""
+    held = set()
+    for span in _decode_counts(blob).get("s", []):
+        kind, spelling = span[5], span[6]
+        if kind == "w":
+            if terms:
+                table = reads.get("w", {})
+                held.update(("w", spelling[a:b]) for a in range(len(spelling) - 1)
+                            for b in range(a + 2, len(spelling) + 1) if spelling[a:b] in table)
+        elif ((kind == "k" and recurring) or (kind == "j" and kanji)) and spelling in reads.get(kind, {}):
+            held.add((kind, spelling))
+    return _digest(sorted([kind, spelling, reads[kind][spelling]] for kind, spelling in held)) if held else ""
+
+
+def _digest(value):
+    """A short fingerprint of a JSON-able `value`."""
+    return hashlib.sha1(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
 
 def known_signature(known_path, script="asis"):

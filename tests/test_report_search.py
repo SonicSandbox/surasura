@@ -175,8 +175,12 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     and keeps a katakana name off the head of a word written on in hiragana; 21 makes a word general text writes as
     words one word though the tagger reads it otherwise alone (出来損ない), and lets a verb's stem stand in a noun the
     dictionaries mark (立ち位置, 待ち時間); 22 lets the dictionary decide whether a card is the word it is read as —
-    心する, 一気に and 揚げる are words of their own, never 心's, 一気's or 上げる's row in the "In Anki" mark.)"""
-    assert analyzer.ENGINE_REVISION == 22
+    心する, 一気に and 揚げる are words of their own, never 心's, 一気's or 上げる's row in the "In Anki" mark; 23 reads two
+    fillers cut out of one interjection as that word (まあ), an unknown sound said over and over as its sound word
+    (ハァハァハァ is はあはあ), a dash drawn out inside a word as a stretch, a dash as no word, and lets the next line's
+    opening bracket glued to a full stop open the next sentence; 24 gives idioms and set phrases rows of their
+    own — 気がする, 腑に落ちる — and puts a word's example sentences without a new phrase first.)"""
+    assert analyzer.ENGINE_REVISION == 24
 
 
 # --------------------------------------------------------------------------- #

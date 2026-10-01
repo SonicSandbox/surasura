@@ -122,11 +122,48 @@ def csv_has_data_rows(path):
         return False
 
 
+# Settings -> Data & System -> Credits (a hover): every data source Surasura ships or is built from — the licences ask
+# for it wherever the data goes, and an in-place update carries only the app, never README. Keep it with README's Data
+# Credits, and with the generated modules that name their source (app/*_data.py). {jmdict} is JMdict's own date.
+DATA_CREDITS = """Data credits — what Surasura ships or is built from
+
+Dictionaries
+• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, kanji spellings, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
+• UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
+• jieba — MIT licence: how Chinese is split into words.
+• OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese.
+• CC-CEDICT — CC BY-SA 4.0: checked against for the Chinese measure words.
+
+Frequency lists (ranks only)
+• JPDB 2024 and Jiten: which compounds, affixed words and set phrases are words, and which words live only inside a phrase.
+• TMW Netflix, Anime & J-drama, Novels and VN lists: the 文 reading-word badge.
+
+Text, counted into statistics only (never a sentence)
+• RealPersonaChat — Yamashita et al. (2023), CC BY-SA 4.0.
+• Aozora Bunko — public-domain works, via aozorabunko-clean (CC BY 4.0).
+• Japanese and Chinese Wikipedia — Wikipedia contributors, CC BY-SA 4.0.
+• Leipzig Corpora Collection — Universität Leipzig, CC BY 4.0: Japanese news and web text, Chinese news.
+• Tatoeba — CC BY 2.0 FR. KdConv — Zhou et al. (2020), Apache License 2.0. Chinese Wikinews — CC BY 4.0.
+
+The shared パターン data is shared under CC BY-SA 4.0."""
+
+
+def data_credits():
+    """DATA_CREDITS with JMdict's date, as the shipped dictionary table records it ("unknown" when it can't be read)."""
+    try:
+        from app import dictionary_data
+        created = dictionary_data.JMDICT_CREATED
+    except Exception:
+        created = ""
+    return DATA_CREDITS.replace("{jmdict}", created or "unknown")
+
+
 class ToolTip:
-    def __init__(self, widget, text, above=False):
+    def __init__(self, widget, text, above=False, wrap=300):
         self.widget = widget
         self.text = text          # str, or a zero-arg callable returning the current text
         self.above = above        # show above the widget (e.g. so a slider's preview stays visible)
+        self.wrap = wrap          # the width a long tip wraps at (px): wider for a list (Settings' Credits)
         self.tip_window: tk.Toplevel | None = None
         self.id = None
         self.widget.bind("<Enter>", self.schedule_tip)
@@ -185,7 +222,7 @@ class ToolTip:
 
         # Wrap long tooltips onto multiple lines (per GUI guidelines); manual \n still break where
         # intended. Short tips (<=50 chars) stay single-line.
-        wrap = 300 if len(text) > 50 else 0
+        wrap = self.wrap if len(text) > 50 else 0
         label = tk.Label(tw, text=text, justify=tk.LEFT, wraplength=wrap,
                       background=SURFACE_COLOR, foreground=TEXT_COLOR,
                       relief=tk.FLAT, borderwidth=0,
@@ -199,6 +236,10 @@ class ToolTip:
         if self.above:
             tw.update_idletasks()
             y = root_y - tw.winfo_height() - 4
+        elif self.wrap != 300:
+            # A tall tip (Settings' Credits) stays on the screen instead of running off its bottom.
+            tw.update_idletasks()
+            y = max(0, min(y, tw.winfo_screenheight() - tw.winfo_height() - 40))
         tw.wm_geometry(f"+{x}+{y}")
 
     def hide_tip(self, event=None):
@@ -326,6 +367,8 @@ class MasterDashboardApp:
         self.var_names_work_terms = tk.BooleanVar(value=True)
         # Phrases and titles as one word (logic.phrases_and_titles), Japanese only, on by default.
         self.var_phrases_and_titles = tk.BooleanVar(value=True)
+        # Idioms and set phrases on your list (logic.phrase_rows), Japanese only, on by default.
+        self.var_phrase_rows = tk.BooleanVar(value=True)
         # Ignore names (logic.ignore_names), Japanese only, off by default: a learner learns names too.
         self.var_ignore_names = tk.BooleanVar(value=False)
         self.var_inline_completed = tk.BooleanVar(value=False) # Show completed files inline
@@ -411,7 +454,9 @@ class MasterDashboardApp:
         self.paren_readings_frame: Optional[ttk.Frame] = None
         self.names_frame: Optional[ttk.Frame] = None
         self.chk_phrases_and_titles: Optional[ttk.Checkbutton] = None
+        self.chk_phrase_rows: Optional[ttk.Checkbutton] = None
         self.chk_ignore_names: Optional[ttk.Checkbutton] = None
+        self.lbl_credits: Optional[ttk.Label] = None
         self.max_contexts_frame: Optional[ttk.Frame] = None
         self.context_range_frame: Optional[ttk.Frame] = None
         self.wpd_frame: Optional[ttk.Frame] = None
@@ -871,8 +916,9 @@ class MasterDashboardApp:
     def _preview_signature(self, lang, sel, script="asis"):
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store
         (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
-        lists and Ignore names (the library's names become ignored words), the selection settings, and
-        the Chinese script they're all read in. Returns None if it can't be computed (forces a refresh)."""
+        lists and Ignore names (the library's names become ignored words), the set phrases switch (their rows
+        count), the selection settings, and the Chinese script they're all read in. Returns None if it can't be
+        computed (forces a refresh)."""
         try:
             from app.path_utils import get_user_files_path
             uf = get_user_files_path(lang)
@@ -884,8 +930,10 @@ class MasterDashboardApp:
                 os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
                 for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
             )
-            names = bool(((getattr(self, "_current_settings", {}) or {}).get("logic") or {}).get("ignore_names"))
-            return (lang, db_mtime, ksig, lists, names, json.dumps(sel, sort_keys=True), script)
+            logic = (getattr(self, "_current_settings", {}) or {}).get("logic") or {}
+            names = bool(logic.get("ignore_names"))
+            phrases = bool(logic.get("phrase_rows", True))
+            return (lang, db_mtime, ksig, lists, names, phrases, json.dumps(sel, sort_keys=True), script)
         except Exception:
             return None
 
@@ -1021,6 +1069,8 @@ class MasterDashboardApp:
                     self.names_frame.pack_forget()
                 if self.chk_phrases_and_titles:
                     self.chk_phrases_and_titles.pack_forget()
+                if self.chk_phrase_rows:
+                    self.chk_phrase_rows.pack_forget()
                 if self.chk_ignore_names:
                     self.chk_ignore_names.pack_forget()
 
@@ -1042,6 +1092,8 @@ class MasterDashboardApp:
                         self.names_frame.pack(anchor=tk.W, pady=(2, 0))
                     if self.chk_phrases_and_titles:
                         self.chk_phrases_and_titles.pack(anchor=tk.W)
+                    if self.chk_phrase_rows:
+                        self.chk_phrase_rows.pack(anchor=tk.W)
                     if self.chk_ignore_names:
                         self.chk_ignore_names.pack(anchor=tk.W)
 
@@ -1497,6 +1549,17 @@ class MasterDashboardApp:
         ToolTip(self.chk_phrases_and_titles, "On: 予想通り, こと自体, 元首相 and もののけ姫 each count as one word. "
                                              "Off: they count as their parts (予想 + 通り).")
 
+        # Idioms and set phrases on your list (Japanese): the dictionary's set phrases the library meets often enough
+        # get rows of their own; nothing is joined in the text, so flipping it re-reads no file — the next Generate
+        # lists them, and the Rarity slider counts them once the library's phrases are counted (in the background).
+        # Packed by update_ui_for_language right below the phrases-and-titles switch, Japanese only.
+        self.chk_phrase_rows = ttk.Checkbutton(self.lang_options_frame, text="Idioms and set phrases on your list",
+                                               variable=self.var_phrase_rows,
+                                               command=lambda: (self.save_settings(), self._refresh_band_preview()))
+        ToolTip(self.chk_phrase_rows, "Adds dictionary phrases your library uses often — 気がする, 腑に落ちる, "
+                                      "もしかしたら — as rows of their own, each ready once you know the words in it. "
+                                      "Their words keep their own rows.")
+
         # Ignore names (Japanese): a learner learns names too, unless they choose not to — then a name is an ignored
         # word. Packed by update_ui_for_language below the phrases switch, Japanese only. The token store already knows
         # which words are names, so flipping it re-reads nothing: the Rarity slider's numbers follow at once, the
@@ -1760,6 +1823,11 @@ class MasterDashboardApp:
         btn_sentence_dictionary = ttk.Button(group_data, text="Export Sentence Dictionary", command=self.export_sentence_dictionary, width=20)
         btn_sentence_dictionary.pack(fill=tk.X)
         ToolTip(btn_sentence_dictionary, "A Yomitan dictionary of up to 8 of the best sentences for every word in your library — hover a word in your browser to see them.")
+
+        # Credits: hover to read every data source Surasura ships or is built from, with its licence (DATA_CREDITS).
+        self.lbl_credits = ttk.Label(group_data, text="ⓘ Data credits", cursor="question_arrow")
+        self.lbl_credits.pack(anchor=tk.W, pady=(8, 0))
+        ToolTip(self.lbl_credits, data_credits, wrap=520)
 
         # 5. 📜 Processing Log (Right Side)
         log_frame = ttk.LabelFrame(right_col, text=" 📜 Processing Log", padding="10")
@@ -2380,6 +2448,7 @@ class MasterDashboardApp:
             self.var_names_kanji.set(bool(self.logic_settings.get("names_kanji", True)))
             self.var_names_work_terms.set(bool(self.logic_settings.get("names_work_terms", True)))
             self.var_phrases_and_titles.set(bool(self.logic_settings.get("phrases_and_titles", True)))
+            self.var_phrase_rows.set(bool(self.logic_settings.get("phrase_rows", True)))
             self.var_ignore_names.set(bool(self.logic_settings.get("ignore_names", False)))
             context_settings = self.logic_settings.get("context", {})
             self.var_context_min_chars.set(context_settings.get("min_chars", 10))
@@ -2475,6 +2544,7 @@ class MasterDashboardApp:
                     "names_kanji": self.var_names_kanji.get(),
                     "names_work_terms": self.var_names_work_terms.get(),
                     "phrases_and_titles": self.var_phrases_and_titles.get(),
+                    "phrase_rows": self.var_phrase_rows.get(),
                     "ignore_names": self.var_ignore_names.get(),
                     # Persist the whole selection block (bands_ppm / min_count / minutes_per_file /
                     # auto_max_words are user-editable in settings.json, like 'weights'); the slider

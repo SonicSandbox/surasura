@@ -99,6 +99,17 @@ def test_a_known_word_is_read_the_same_way(tokenizer, sanitized):
     assert _lemmas(tokenizer, "二十") == []
 
 
+def test_a_dash_is_no_word_though_the_tagger_reads_one(tokenizer, sanitized):
+    # Between a heading's two parts UniDic reads the full-width hyphen-minus as the particle から — punctuation
+    # (Unicode's dash punctuation), never a word the text says. The から of 心から is a word and stays.
+    line = "「祈り－心からの願い」"
+    nodes = {node.surface: node for node in analyzer.join_affixes(tokenizer.tagger(line))}
+    assert nodes["－"].feature.pos1 not in ("補助記号", "記号")          # the tagger reads it as a word
+    assert analyzer.word_lemma(nodes["－"]) is None
+    assert _lemmas(tokenizer, line) == ["祈り", "心", "から", "の", "願い"]
+    assert [s for s, _ in tokenizer.tokenize_sentences(line)] == [line]   # the sentence keeps its dash
+
+
 def test_word_lemma_reads_a_node_as_every_caller_does(tokenizer):
     # One rule for every caller that reads words off the tagger (the tokenizer, 順's sentence words).
     nodes = {node.surface: node for node in analyzer.join_affixes(tokenizer.tagger("デルタと二十人で玖渚に行く。"))}

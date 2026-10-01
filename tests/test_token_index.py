@@ -601,8 +601,7 @@ def test_a_store_from_before_words_the_text_writes_as_words_is_rebuilt(tmp_path)
     """v13 -> v14: a word general text writes as words, though the tagger reads it otherwise alone, is one word — here
     出来損ない, which a sentence cuts into 出来 + 損ない and a v13 store holds as those two — and a verb's stem may stand
     in a noun the dictionaries mark (待ち + 時間). Reusing a v13 store would keep the pieces, so it must be dropped and
-    rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 14
+    rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "plans.txt"
     _write(f, "この出来損ないの計画はもう捨てよう。\n駅での待ち時間はいつも長い。\n")
@@ -621,6 +620,34 @@ def test_a_store_from_before_words_the_text_writes_as_words_is_rebuilt(tmp_path)
     assert s2.total_tokens() == 0, "a v13 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('出来損ない', '待ち時間') "
+                           "ORDER BY lemma").fetchall() == words
+    s2.close()
+
+
+def test_a_store_from_before_sounds_were_words_is_rebuilt(tmp_path):
+    """v14 -> v15: two fillers the tagger cut out of one interjection are that word — まあ, which a v14 store holds as
+    the fillers ま + あ — and a sound said three times or more that the dictionary doesn't know is the sound word said
+    twice (ハァハァハァ is はあはあ, a word of its own before). Reusing a v14 store would keep the pieces, so it must be
+    dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 15
+    db = _db(tmp_path)
+    f = tmp_path / "trip.txt"
+    _write(f, "旅行は大変だったんですけどまあやっぱり楽しかったです。\nハァハァハァ…もう走れない。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    words = s.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('まあ', 'はあはあ') "
+                           "ORDER BY lemma").fetchall()
+    s.close()
+    assert words == [("はあはあ", "ハアハア", 1), ("まあ", "マア", 1)]
+    conn = sqlite3.connect(db)      # what a v14 store holds: the fillers and the unknown sound, never the words
+    conn.execute("DELETE FROM aggregate WHERE lemma IN ('まあ', 'はあはあ')")
+    conn.execute("PRAGMA user_version = 14")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v14 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('まあ', 'はあはあ') "
                            "ORDER BY lemma").fetchall() == words
     s2.close()
 

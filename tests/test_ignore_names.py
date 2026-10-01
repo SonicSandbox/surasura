@@ -268,7 +268,8 @@ def test_the_checkbox_saves_loads_shows_for_japanese_only_and_refreshes_the_slid
 
         app.var_language.set("ja")
         shown = app.lang_options_frame.pack_slaves()
-        assert box in shown and shown.index(box) == shown.index(app.chk_phrases_and_titles) + 1
+        # Below the phrase switches: "Phrases and titles as one word", then "Idioms and set phrases on your list".
+        assert box in shown and shown.index(box) == shown.index(app.chk_phrase_rows) + 1
         app.var_language.set("zh")
         assert box.winfo_manager() == "", "the names are Japanese only"
         app.var_language.set("ja")

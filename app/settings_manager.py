@@ -87,6 +87,13 @@ DEFAULT_SETTINGS = {
         # counts: in the run signature (never _NON_ANALYSIS_SETTINGS); read as a file is tokenized
         # (analyzer.join_affixes), so it is in the token store's build signature when off.
         "phrases_and_titles": True,
+        # Idioms and set phrases on your list (Settings -> Language & Parsing), Japanese only, on: JMdict's set phrases
+        # the library meets as often as the cut-off asks of a word get rows of their own (気がする, 腑に落ちる,
+        # もしかしたら — app/phrases.py); their words keep their rows. It changes what a run lists: in the run signature
+        # (never _NON_ANALYSIS_SETTINGS), and in the known-words cache's key (a known phrase is also known as its
+        # lemmas joined); not in the token store's build signature — tokenizing doesn't change, so flipping it needs
+        # only a Generate. Off, every output is what it was without it.
+        "phrase_rows": True,
         # Ignore names (Settings -> Language & Parsing), Japanese only, off: a learner learns names too. On, the
         # library's names (app/names.py) are ignored words everywhere — off the list, never an unknown in a sentence
         # (token_index.ignored_names). It changes what a run counts: in the run signature (never

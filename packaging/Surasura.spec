@@ -111,11 +111,12 @@ binaries = []
 # the frequency-list orthography bridge stops working. A silent loss is exactly what a
 # hiddenimport is for. app.zh_script_data is the same case: without it the Chinese Script setting
 # silently reads everything as written; so are app.katakana_data, app.name_data and app.jmdict_data (app/names.py:
-# without them names and a story's own kanji terms stay in pieces).
+# without them names and a story's own kanji terms stay in pieces), and app.phrases / app.phrase_data (without them
+# the list silently holds no set phrases).
 hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data',
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
-                 'app.jmdict_data']
+                 'app.jmdict_data', 'app.phrases', 'app.phrase_data']
 
 # --- Optional-module payloads: only when that module is actually being bundled ---------------
 # Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is

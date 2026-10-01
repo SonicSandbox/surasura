@@ -214,9 +214,16 @@ organizations. Only marks on spellings are kept; that table (`app/dictionary_dat
 JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "Kanji
 terms your library repeats as one word" from ever joining a word the dictionary lists, and tell which word an Anki card
 is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
-too.
+too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms and set phrases on
+your list"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
+which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
+statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
+the same licence.
 Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
+
+The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
+Settings → Data & System → Data credits.
 
 ## 📜License
 

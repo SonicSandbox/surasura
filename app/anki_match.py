@@ -983,7 +983,7 @@ def not_the_name(word, key, rank_of, words, tokenize):
     return other if other and rank_of[other] != rank else ""
 
 
-def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None):
+def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
 
     L1–L4 (`lookup`; via "exact") — but a hiragana card that is a common word never takes a name's or a loanword's
@@ -994,8 +994,10 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     -> 取り消す. A kana word is otherwise looked up by the letters it is written in, never by the lemma the tagger
     guesses for it (まく -> 膜), and nothing is taken against the user's "no" to that very pair. A word with a kanji
     read alone as ONE word is placed too (via "L6": 逃げだす -> 逃げ出す); a kana word read alone, or one only its
-    sentence reads as a list word, is `suggest`'s L6 — a question. Shared by Junban's placement and the report's
-    label.
+    sentence reads as a list word, is `suggest`'s L6 — a question. With `phrases` (Settings' "Idioms and set phrases
+    on your list"), a card read alone as several words that are no one word is looked up by those words' lemmas
+    joined — a set phrase's row is its lemmas joined, so 興味をもつ lands on the row 興味を持つ however either is
+    spelled (via "phrase"). Shared by Junban's placement and the report's label.
 
     The dictionary decides whether the card is that word at all (`two_words`): a Japanese card whose word JMdict
     gives an entry of its own, apart from the row's word (`another_word`, with `words` and `orths`: 生き in 生きる's
@@ -1024,6 +1026,10 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     if alone:
         token = tokens[0]
     if token is None or word_of_its_own(word, tokens, token):
+        if token is None and phrases and len(tokens) >= 2:
+            key = lookup("".join(t[0] for t in tokens), rank_of, language)
+            if key and not (answer.get("answer") == "no" and answer.get("target") == key):
+                return key, "phrase"
         return "", ""
     if _KANA_ONLY_RE.match(word):
         names = (token[2],)
@@ -1067,9 +1073,11 @@ def find_phrases(phrases, files, file_tokens, progress=None):
     """`{word: (file, score, total)}` for the phrases met in the library — the journey's own key,
     from one pass over `files` (`[(path, weight)]` in study order) with every phrase checked at once.
 
-    `file_tokens(path)` returns a file's cached sentences `[(text, [[lemma, ...], ...])]`, as the
-    token store keeps them. `file` is 1-based like the progressive list's `Sequence`; `score` adds the
-    file's weight per occurrence, as the analyzer's does. A phrase never met is simply absent.
+    `file_tokens(path)` returns a file's cached sentences `[(text, [[lemma, lemma reading, surface, ...], ...])]`,
+    as the token store keeps them. `file` is 1-based like the progressive list's `Sequence`; `score` adds the
+    file's weight per occurrence, as the analyzer's does. A phrase never met is simply absent. A run whose words
+    stand on both sides of a mark the tokenizer dropped (気が、付いた — its surfaces are no one run of the sentence)
+    is no use of the phrase.
     """
     by_first = {}
     for word, lemmas in phrases.items():
@@ -1077,11 +1085,12 @@ def find_phrases(phrases, files, file_tokens, progress=None):
     found = {}
     total_files = len(files)
     for number, (path, weight) in enumerate(files, 1):
-        for _text, tokens in file_tokens(path):
+        for text, tokens in file_tokens(path):
             lemmas = [token[0] for token in tokens]
             for start, lemma in enumerate(lemmas):
                 for word, sequence in by_first.get(lemma, ()):
-                    if tuple(lemmas[start:start + len(sequence)]) == sequence:
+                    if tuple(lemmas[start:start + len(sequence)]) == sequence and "".join(
+                            token[2] for token in tokens[start:start + len(sequence)]) in text:
                         entry = found.setdefault(word, [number, 0, 0])
                         entry[1] += weight
                         entry[2] += 1

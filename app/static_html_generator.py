@@ -599,7 +599,8 @@ def anki_backlog_keys(language, settings, list_path=None):
             listed = index.rank_of if index else {}
             names = _name_cards(backlog, index, answers) if listed else {}
             keys = _own_keys(backlog, listed, names, index) if listed else keys
-            keys |= _dictionary_keys(backlog, answers, listed, names, index)
+            phrases = bool(((settings or {}).get("logic") or {}).get("phrase_rows", True))
+            keys |= _dictionary_keys(backlog, answers, listed, names, index, phrases)
             keys |= _confirmed_keys(backlog, answers, listed, names)
         return sorted(keys)
     except Exception as e:
@@ -691,13 +692,15 @@ def _on_the_list(word, answers, listed, names=None, index=None):
     return spelled or (answer.get("answer") == "yes" and answer.get("target") in listed)
 
 
-def _dictionary_keys(backlog, answers=None, listed=None, names=None, index=None):
+def _dictionary_keys(backlog, answers=None, listed=None, names=None, index=None, phrases=False):
     """The list words a Japanese backlog's cards ARE, read through the dictionary
     (Patterns_Quality_Spec §7). Each card word holding a kanji is tokenized alone, as the list's
     content was, and when it is one word its lemma — the list row's `Word` — is a key too: 逃げだす
     labels 逃げ出す and 引き伸ばす 引き延ばす, spellings the card's own keys never meet. An ending written
     onto the word is dropped first (`anki_match.one_word`: 同行する labels 同行); anything longer is a
-    phrase or a compound, not one row.
+    phrase or a compound, not one row — unless `phrases` (Settings' "Idioms and set phrases on your list")
+    lists set phrases as rows: then its words' lemmas joined are a key, the row's `Word` (興味をもつ labels
+    興味を持つ), as Junban places it (`anki_match.card_key`).
 
     A kana-only word alone is read wrong too often (まく -> 膜, Junban_Backlog_Spec §8 gotcha 2), so it is
     read only when an ending or the word's own grammar comes off it — バシッと, ひょいと (Anki_Match_Consistency_Scope.md
@@ -730,10 +733,20 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None, index=None)
         # still off, and a glossed lemma (同行-連れ立つ, 私-代名詞) is no row's Word.
         analyzer.SANITIZE_JA = True
         tokenize = analyzer.JapaneseTokenizer().tokenize
+        phrase_set = None
+        if phrases:
+            from app import phrases as phrase_rules     # a set phrase's row is its words' lemmas joined
+            phrase_set = phrase_rules.load()
         for word in words:
             tokens = anki_match.ending_apart(tokenize(word))    # バシッと: the sound word + と, as Junban reads it
             token = anki_match.one_word(tokens)
             if token is None or anki_match.word_of_its_own(word, tokens, token):
+                if token is None and phrase_set is not None and len(tokens) >= 2 and anki_match._KANJI_RE.search(word):
+                    run = "".join(t[0] for t in tokens)
+                    answer = (answers or {}).get(word) or {}
+                    if phrase_set.of_word(run) is not None and not (answer.get("answer") == "no"
+                                                                    and answer.get("target") == run):
+                        keys.add(run)
                 continue                # none, or a word of its own the dictionary keeps apart: 心する is no 心
             if len(tokens) == 1 and not anki_match.whole_word_alone(word, tokens):
                 continue                # 見 alone is 見る's stem, 1人 is not 人 — Junban places neither

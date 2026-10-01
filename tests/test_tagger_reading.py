@@ -301,6 +301,35 @@ def test_a_stretched_line_maps_back_onto_its_text():
     _read_back(read, at, line)
 
 
+# A dash drawn out (─ ━ ― —) is far more often the dash between two words than a stretch, so it is read as one ー only
+# where it can't be that dash: before a ん that ends the word, or between katakana where the word goes on after a ッ,
+# a small kana or ン — none of which begins a word.
+
+@pytest.mark.parametrize("line, lemma, surface", [
+    ("観客が「ザ─────ック！」と叫んだ。", "ザーック", "ザ─────ック"),       # one word, as ザ～ック is: no ザ + ック
+    ("お母さ───ん！ご飯まだ？", "さん", "さ───ん"),                         # no さ + ん read as an interjection
+    ("ド────ン！と音がした。", "どーん", "ド────ン"),                       # no ン read as the auxiliary ず
+])
+def test_a_dash_drawn_out_inside_a_word_is_a_stretch(tokenizer, sanitized, line, lemma, surface):
+    keys = {(lemma_, surface_) for lemma_, _r, surface_, _o in _tokens(tokenizer, line)}
+    assert (lemma, surface) in keys
+    assert not {"ザ", "ック", "んっ", "ず"} & {lemma_ for lemma_, _s in keys}
+    read, at = analyzer.tagger_text(line)
+    assert not set("─━―—") & set(read)
+    _read_back(read, at, line)
+
+
+@pytest.mark.parametrize("line, words", [
+    ("それは──あなたのせいだ。", ["其れ", "は", "貴方", "の", "所為", "だ"]),   # the dash between two words
+    ("店員──ミカが答えた。", ["店員", "ミカ", "が", "答える", "た"]),           # katakana after it can begin a word
+    ("無理かも──って思った。", ["無理", "か", "も", "って", "思う", "た"]),     # a hiragana っ that goes on: って
+    ("待て──ッ！", ["待つ"]),                                                 # a ッ that ends it: a shout's catch
+])
+def test_a_dash_between_words_stays_a_dash(tokenizer, sanitized, line, words):
+    assert analyzer.tagger_text(line) == (line, None)
+    assert [lemma for lemma, _r, _s, _o in _tokens(tokenizer, line)] == words
+
+
 def test_katakana_words_with_a_long_vowel_take_the_fast_path():
     # One ー between kana is how it is written — nothing to read differently.
     assert analyzer.tagger_text("コーヒーとラーメンを頼んだ。") == ("コーヒーとラーメンを頼んだ。", None)

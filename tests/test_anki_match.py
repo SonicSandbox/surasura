@@ -56,10 +56,10 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     of its 3 uses and fell below it; 22 since words made of words are one word — 優先席, 家庭教師 and 社会貢献
     joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower; 22
     since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
-    near its head.)"""
+    near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 22
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 24
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -214,7 +214,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 22
+    assert rank_of["中野"] == rank_of["ナカノ"] == 24
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -846,6 +846,32 @@ def test_a_card_for_a_storys_own_kanji_term_meets_its_row():
     assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("焔魄陣", "L7")
     names.use_library_tables({"k": {}, "j": {}, "w": {}, "stamp": "none"}, pin=True)
     assert anki_match.card_key("焔魄陣だった", listed, "ja", None, tokenize) == ("", ""), "no table: pieces"
+
+
+def test_a_phrase_card_lands_on_its_phrase_row_by_its_words():
+    """With set phrases on the list (Settings' "Idioms and set phrases on your list"), a phrase row's Word is its words'
+    lemmas joined — so a card read alone as those words lands there however either is spelled: 興味をもつ on the row
+    興味を持つ, 気がついた on 気が付く (via "phrase"). The user's "no" to that row wins; a card that is one word + an
+    ending is still that word (努力する -> 努力); without the switch, a phrase card lands nowhere by its words."""
+    tokenize = _tokenizer().tokenize
+    listed = {"努力": 0, "気がつく": 1, "気が付く": 1, "興味を持つ": 2}
+    assert anki_match.card_key("興味をもつ", listed, "ja", None, tokenize, phrases=True) == ("興味を持つ", "phrase")
+    assert anki_match.card_key("気が付く", listed, "ja", None, tokenize, phrases=True) == ("気が付く", "exact")
+    assert anki_match.card_key("興味をもつ", listed, "ja", None, tokenize) == ("", ""), "switch off"
+    no = {"興味をもつ": {"target": "興味を持つ", "answer": "no"}}
+    assert anki_match.card_key("興味をもつ", listed, "ja", no, tokenize, phrases=True) == ("", "")
+    assert anki_match.card_key("努力する", listed, "ja", None, tokenize, phrases=True) == ("努力", "L7")
+
+
+def test_a_phrase_card_is_never_found_across_a_dropped_comma():
+    """L9 finds a phrase card as its run of words in the library — but a run whose words stand on both sides of a comma
+    the tokenizer dropped (気が、ついた) is no use of it: only the whole run of the sentence counts."""
+    tok = _tokenizer()
+    lines = ["やっと気がついた。", "気が、ついたら朝だった。"]
+    cache = {"第01話": [(text, [list(t) for t in tokens])
+                       for line in lines for text, tokens in tok.tokenize_sentences(line)]}
+    phrases = anki_match.phrase_lemmas(["気がつく"], tok.tokenize)
+    assert anki_match.find_phrases(phrases, [("第01話", 10)], cache.__getitem__) == {"気がつく": (1, 10, 1)}
 
 
 # --------------------------------------------------------------------------- #

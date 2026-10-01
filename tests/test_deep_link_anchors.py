@@ -228,10 +228,9 @@ def test_a_sentence_the_reader_cleaned_still_anchors(tmp_path, name, content):
 
 
 # --- whitespace alone first ------------------------------------------------------------------------ #
-# A pattern that lets the reader's removals sit between every character of a sentence is slow to
-# build (about 15 ms for 40 characters), so the loose search tries whitespace alone first and builds
-# it only for a sentence the plain search doesn't place exactly once. The answer must be the one a
-# single search allowing both gives — the reference below.
+# The loose search tries whitespace alone first, and allows the reader's removals too only for a
+# sentence that doesn't place exactly once. For these the answer is the one a single search allowing
+# both gives — the reference below.
 
 def _one_search(raw, needle):
     """The loose search as one pattern: whitespace or a removal between every character."""
@@ -268,17 +267,135 @@ def test_the_loose_search_answers_as_one_search_allowing_both(raw, needle, expec
     assert AnchorFinder._loose(raw, needle) == expected
 
 
-def test_a_sentence_placed_by_whitespace_alone_never_builds_the_slow_pattern(tmp_path):
-    """The anchor pass runs over every sentence of a report and the plain search places most of the
-    ones that need a loose search — they must not pay for the pattern that allows the removals."""
-    f = tmp_path / "ep01.srt"
-    f.write_text(SRT, encoding="utf-8")
-    with patch.object(re, "finditer", wraps=re.finditer) as finditer:
-        anchor = AnchorFinder().anchor(str(f), "そうだ女｡お前に話がある。")
-    assert anchor and SRT.count(anchor) == 1
-    patterns = [call.args[0] for call in finditer.call_args_list]
-    assert patterns, "the loose search should have run"
-    assert not any(analyzer.REMOVED_INLINE in pattern for pattern in patterns)
+# --- no pattern built per sentence ---------------------------------------------------------------- #
+# A pattern with a gap between every character of a sentence took about 10 ms to build — 10 s of a
+# report's first render on a large library. The loose search now walks the file with two small
+# patterns built once (one gap piece each: whitespace; whitespace or a removal), and must answer
+# exactly as the pattern search did: the same place, the same text, the same "none" and the same
+# "more than one". The reference below is that search, as it was.
+
+def _pattern_search(raw, needle):
+    """The loose search as it was: whitespace alone between every character, then whitespace or a removal."""
+    for gap in (r"\s*", rf"(?:\s|{analyzer.REMOVED_INLINE})*"):
+        found = None
+        for match in re.finditer(gap.join(re.escape(ch) for ch in needle), raw):
+            if found is not None:
+                found = ""      # more than one place
+                break
+            found = match.group(0)
+        if found:
+            return found
+    return ""
+
+
+@pytest.mark.parametrize("raw, needle, expected", [
+    # a book's ruby, its ｜ base mark, an editor's note, a footnote mark, a reading in brackets
+    ("兄は静《しず》かに窓《まど》を閉めた。\n", "兄は静かに窓を閉めた", "兄は静《しず》かに窓《まど》を閉めた"),
+    ("あの｜白い塔《しろいとう》が見える\n", "あの白い塔が見える", "あの｜白い塔《しろいとう》が見える"),
+    ("雨が降る［＃「降る」に傍点］夜だった\n", "雨が降る夜だった", "雨が降る［＃「降る」に傍点］夜だった"),
+    ("この規則①は古い②\n", "この規則は古い", "この規則①は古い"),        # nothing after the last character
+    ("森田(もりた)先生が来た\n", "森田先生が来た", "森田(もりた)先生が来た"),
+    # subtitle markup: SubRip tags with a full-width space, ASS overrides, a sound cue across a line break
+    ("1\n00:00:01,000 --> 00:00:02,000\n<i>明日は</i>　雨が降るでしょう\n", "明日は雨が降るでしょう",
+     "明日は</i>　雨が降るでしょう"),
+    ("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,{\\an8}駅の前で{\\i1}待って{\\i0}いる\n", "駅の前で待っている",
+     "駅の前で{\\i1}待って{\\i0}いる"),
+    ("[拍手]港の猫[笑い]\nに会いたい\n", "港の猫に会いたい", "港の猫[笑い]\nに会いたい"),
+    ("［ドアの音］誰か来た　みたい\n", "誰か来たみたい", "誰か来た　みたい"),
+    # a mark holding the sentence's next character: the gap gives the mark back only if it must
+    ("答えは[右]右だ\n", "答えは右だ", "答えは[右]右だ"),
+    # a group the sentence keeps as it ends, written twice: every gap is as long as it can be, so the
+    # first group is a gap and the second the sentence's own (a shortest gap would stop at the first)
+    ("兄《あに》は森田(もりた)(もりた)\n", "兄は森田(もりた)", "兄《あに》は森田(もりた)(もりた)"),
+    # a group the reader kept (not after kanji) is part of the sentence, spaces around it
+    ("ねえ （えー） どうしよう\n", "ねえ（えー）どうしよう", "ねえ （えー） どうしよう"),
+    # a place overlapping the one found is not a second place: the search goes on where a match ended
+    ("ねえねえねえ\n", "ねえねえ", "ねえねえ"),
+    # the file's last line, with no line break after it
+    ("一行目です\n最後の一行 です", "最後の一行です", "最後の一行 です"),
+    # twice (once inside a sound cue): no anchor
+    ("また明日 会おう\nまた明日　会おう\n", "また明日会おう", ""),
+    ("[あの日の夢]\nあの日の 夢\n", "あの日の夢", ""),
+    # once with whitespace alone: that one, though allowing the removals too would find a second
+    ("また明日 会おう\nまた明日[音楽]会おう\n", "また明日会おう", "また明日 会おう"),
+    # not in the file
+    ("兄は静《しず》かに窓を閉めた。\n", "姉は本を読んだ", ""),
+    # Chinese: a subtitle's spaces, a tag, a sound cue, twice
+    ("我们 走吧\n快点 出发\n", "我们走吧", "我们 走吧"),
+    ("<i>他说</i> 明天见\n", "他说明天见", "他说</i> 明天见"),
+    ("我[笑]回来了\n", "我回来了", "我[笑]回来了"),
+    ("你好 世界\n你好　世界\n", "你好世界", ""),
+])
+def test_the_loose_search_answers_as_the_pattern_search_did(raw, needle, expected):
+    assert _pattern_search(raw, needle) == expected, "the reference itself"
+    assert AnchorFinder._loose(raw, needle) == expected
+
+
+# Lines built from pieces: kana, kanji, hanzi, and every kind of mark whole, unclosed, one inside another.
+_PIECES = ["あ", "い", "う", "た", "ア", "漢", "字", "我", "们", "。", "｡", "、", "《あい》", "《漢》", "（いい）",
+           "(アイ)", "（漢）", "｜", "|", "［＃注］", "［＃", "［音］", "［", "］", "[音]", "[", "]", "<i>", "</i>", "<",
+           ">", "{\\an8}", "{", "}", "①", "㉑", " ", "　", "\n", "\t"]
+
+
+def test_the_loose_search_answers_as_the_pattern_search_did_on_mixed_marks():
+    """Seeded, so every run checks the same 800 lines. Needles are cut from each line as the reader
+    leaves it (whitespace and removals taken out), with only its whitespace taken out (marks kept in
+    the sentence), or made of loose pieces."""
+    import random
+    rng = random.Random(20260930)
+    strip_all = re.compile(rf"\s|{analyzer.REMOVED_INLINE}")
+    found = missing = 0
+    for _ in range(800):
+        raw = "".join(rng.choice(_PIECES) for _ in range(rng.randint(0, 16)))
+        i = rng.randint(0, len(raw))
+        j = rng.randint(i, len(raw))
+        kind = rng.random()
+        if kind < 0.6:
+            needle = strip_all.sub("", raw[i:j])[:8]
+        elif kind < 0.8:
+            needle = re.sub(r"\s", "", raw[i:j])[:8]
+        else:
+            needle = "".join(rng.choice(_PIECES) for _ in range(rng.randint(1, 4)))[:8]
+        if not needle:
+            continue
+        expected = _pattern_search(raw, needle)
+        assert AnchorFinder._loose(raw, needle) == expected, (raw, needle)
+        found += bool(expected)
+        missing += not expected
+    assert found > 300 and missing > 100, (found, missing)    # both answers are really exercised
+
+
+def test_the_loose_search_leaves_no_reference_cycles():
+    """A Generate runs with the cycle collector paused (app/batch_gc.py): anything a search left in a
+    reference cycle would stay in memory until the run ends, for every sentence of the report."""
+    import gc
+    raw = "兄は静《しず》かに窓《まど》を閉めた。\n[拍手]港の猫[笑い]\nに会いたい\n" * 20
+    AnchorFinder._loose(raw, "兄は静かに窓を閉めた")        # the gap patterns, built once
+    was_on = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        for needle in ("兄は静かに窓を閉めた", "港の猫に会いたい", "姉は本を読んだ"):
+            AnchorFinder._loose(raw, needle)
+        assert gc.collect() == 0, "the search left objects in a reference cycle"
+    finally:
+        if was_on:
+            gc.enable()
+
+
+def test_the_loose_search_builds_no_pattern_per_sentence(tmp_path):
+    """The anchor pass runs over every sentence of a report: none may build (or look up) a pattern of
+    its own — the two gap patterns are built once, on first use."""
+    f = tmp_path / "chapter.txt"
+    f.write_text("兄は静《しず》かに窓《まど》を閉めた。\n", encoding="utf-8")
+    finder = AnchorFinder()
+    finder._raw(str(f))                 # the file's own read, before counting
+    AnchorFinder._loose("", "あ")       # the gap patterns, built once
+    with patch.object(re, "compile", wraps=re.compile) as compile_, \
+         patch.object(re, "finditer", wraps=re.finditer) as finditer:
+        anchor = finder.anchor(str(f), "兄は静かに窓を閉めた。")
+    assert anchor == "兄は静《しず》かに窓《まど》を閉めた"
+    assert not compile_.called and not finditer.called
 
 
 # --- subtitle cue timestamps --------------------------------------------------------------------- #

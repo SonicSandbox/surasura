@@ -194,26 +194,80 @@ class AnchorFinder:
             self._pos[(path, needle)] = first
         return True
 
+    # What the loose search lets sit between two of a sentence's characters, one piece at a time: whitespace alone,
+    # then whitespace or one of the reader's removals. Built once — a pattern with a gap between every character of
+    # the sentence took about 10 ms to build, for each sentence (10 s of a report's first render).
+    _GAPS = None
+
     @staticmethod
     def _loose(raw, needle):
         """The file's own wording for `needle`, allowing whitespace the tokenizer dropped — and what the
         reader removed from inside a line (a footnote mark ①, a ruby reading 《かんじ》, a caption's
         [音楽]: analyzer.REMOVED_INLINE), which the sentence no longer holds. Empty if absent or
         ambiguous."""
-        from app.analyzer import REMOVED_INLINE
-        # Whitespace alone first: the pattern that allows the removals too takes about 15 ms to build
-        # for a 40-character sentence (40 s over a library's anchor pass, against 1 s), so only a
-        # sentence the plain search doesn't place exactly once pays for it.
-        for gap in (r"\s*", rf"(?:\s|{REMOVED_INLINE})*"):
-            found = None
-            for match in re.finditer(gap.join(re.escape(ch) for ch in needle), raw):
-                if found is not None:
-                    found = ""      # more than one place it could be
-                    break
-                found = match.group(0)
+        if AnchorFinder._GAPS is None:
+            from app.analyzer import REMOVED_INLINE
+            AnchorFinder._GAPS = (re.compile(r"\s"), re.compile(rf"\s|{REMOVED_INLINE}"))
+        # Whitespace alone first; the removals too only when that doesn't place the sentence exactly once.
+        for gap in AnchorFinder._GAPS:
+            found = AnchorFinder._only_match(raw, needle, gap)
             if found:
                 return found
         return ""
+
+    @staticmethod
+    def _only_match(raw, needle, gap):
+        """The text in `raw` spelling `needle` with any run of `gap` pieces between two of its characters, if there
+        is exactly one such place; "" if none or more than one.
+
+        The same answer as searching with the pattern needle[0] (gap)* needle[1] (gap)* ... needle[-1] and Python's
+        re.finditer, found the way that search finds it: starts are tried left to right; from a start, each gap takes
+        as many pieces as it can and gives them back one at a time until the rest of the sentence fits, the earlier
+        gap first; the next start is looked for where a match ended. It gives the same text because a gap piece
+        fits in one way at a place — every mark ends at its first closing mark, and the two that can both fit at one
+        place (an editor's note ［＃…］ and a full-width sound cue ［…］) end at the same one — so a gap is a single
+        chain of pieces, and the pattern's own backtracking tries exactly these ends, in this order."""
+        if not needle:
+            return ""
+        dead = set()        # (index in the needle, position) already known not to lead to a match
+        found = None
+        start = raw.find(needle[0])
+        while start != -1:
+            # Most starts fail at once — the next character is neither the sentence's next one nor a gap piece.
+            if len(needle) > 1 and not raw.startswith(needle[1], start + 1) and not gap.match(raw, start + 1):
+                end = -1
+            else:
+                end = AnchorFinder._match_end(raw, needle, gap, 1, start + 1, dead)
+            if end == -1:
+                start = raw.find(needle[0], start + 1)
+                continue
+            if found is not None:
+                return ""       # more than one place it could be
+            found = raw[start:end]
+            start = raw.find(needle[0], end)
+        return found or ""
+
+    @staticmethod
+    def _match_end(raw, needle, gap, i, pos, dead):
+        """Where a match of needle[i:] ends when the gap before it starts at `pos` — the gap's longest end tried first
+        — or -1. A static method rather than a closure calling itself: that would be a reference cycle on every
+        search, left until the run ends, since a Generate runs with the cycle collector paused (app/batch_gc.py)."""
+        if i == len(needle):
+            return pos
+        if (i, pos) in dead:
+            return -1
+        ends = [pos]
+        piece = gap.match(raw, pos)
+        while piece and piece.end() > ends[-1]:
+            ends.append(piece.end())
+            piece = gap.match(raw, piece.end())
+        for end in reversed(ends):
+            if raw.startswith(needle[i], end):
+                found = AnchorFinder._match_end(raw, needle, gap, i + 1, end + 1, dead)
+                if found != -1:
+                    return found
+        dead.add((i, pos))
+        return -1
 
     # -- on-disk memo ------------------------------------------------------------------------- #
     # A re-render (theme, Zen limit, Words Per Day) reruns this whole pass over unchanged files for

@@ -7,6 +7,7 @@ piece is tested here on made-up counts and tiny word lists, with real Japanese w
 unidic-lite — never the reference corpora, which the build alone reads.
 """
 
+import copy
 import importlib.util
 import json
 import os
@@ -15,7 +16,7 @@ from collections import Counter
 
 import pytest
 
-from app import analyzer, dictionary_data, reference_data
+from app import analyzer, dictionary_data, reference_data, settings_manager
 
 
 @pytest.fixture(scope="module")
@@ -462,12 +463,10 @@ def test_a_new_marked_word_is_parted_as_the_text_mostly_writes_it(brd, tagger, t
 
 # --- What the build reads ------------------------------------------------------------------------------------------ #
 
-
-# --- What the build reads ------------------------------------------------------------------------------------------ #
-
 def test_the_build_reads_with_the_default_switches_whatever_settings_json_says(brd, tagger, monkeypatch):
     # Shared data never follows the builder's own settings: with the phrases-and-titles switch off in LOGIC, a
     # flagged compound would stay in pieces — pinned to the defaults, the build reads it joined.
+    monkeypatch.setattr(analyzer, "LOGIC", copy.deepcopy(analyzer.LOGIC))
     table = {"予想通り": ["予想通り", "ヨソウドオリ", "N", 1, []]}
     monkeypatch.setitem(analyzer.LOGIC, "phrases_and_titles", False)
     monkeypatch.setitem(analyzer.LOGIC, "names_katakana", False)
@@ -475,6 +474,20 @@ def test_the_build_reads_with_the_default_switches_whatever_settings_json_says(b
     brd.pin_parsing_defaults()
     assert analyzer.LOGIC["names_katakana"] is True
     assert [w.surface for w in brd.read_words(tagger, "予想通りだ", {}, table)][0] == "予想通り"
+
+
+def test_the_build_pins_every_parsing_setting_not_only_the_switches(brd, monkeypatch):
+    # The readings in ( ) and the sentence ends are read while the build reads its text, as the switches are, and a
+    # setting added later will be too: the whole logic block goes back to its defaults — a copy, so the build's own
+    # edits never reach settings_manager's defaults.
+    monkeypatch.setattr(analyzer, "LOGIC", copy.deepcopy(analyzer.LOGIC))
+    analyzer.LOGIC.update({"paren_readings": "off", "pronoun_bases": False,
+                           "sentence_boundaries": {"ja": "。", "zh": "。"}})
+    brd.pin_parsing_defaults()
+    defaults = settings_manager.DEFAULT_SETTINGS["logic"]
+    assert {key: analyzer.LOGIC[key] for key in defaults} == defaults
+    analyzer.LOGIC["sentence_boundaries"]["ja"] = "。"
+    assert defaults["sentence_boundaries"]["ja"] != "。"
 
 
 def test_a_katakana_loanword_is_never_a_title(brd, tmp_path, monkeypatch):

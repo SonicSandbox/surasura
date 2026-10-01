@@ -74,7 +74,7 @@ def test_a_nominalizer_after_a_pronoun_is_never_one(tagger, monkeypatch):
     assert ("これさ", True) not in _read(tagger, "これさ、いいよね。")
 
 
-def test_the_build_keeps_a_plural_by_the_lists_reading_out_of_the_table(tagger):
+def test_the_build_keeps_a_plural_by_the_lists_reading_out_of_the_table(tagger, monkeypatch):
     # あなた方 アナタガタ is a plural (the lists' reading), though the tagger reads its 方 alone as the suffix カタ, not
     # the plural ガタ: never a word of the table. 何様 and お前さん are.
     import importlib.util
@@ -86,7 +86,9 @@ def test_the_build_keeps_a_plural_by_the_lists_reading_out_of_the_table(tagger):
     headwords = {"何様": ("ナニサマ", 1), "お前さん": ("オマエサン", 2), "あなた方": ("アナタガタ", 3)}
     joins = brd.build_joins(tagger, headwords)
     assert set(joins) == {"何様", "お前さん"}
-    assert "pronoun_bases" in brd.PARSING_SWITCHES, "shared data never follows the builder's own switch"
+    monkeypatch.setattr(analyzer, "LOGIC", dict(analyzer.LOGIC, pronoun_bases=False))
+    brd.pin_parsing_defaults()
+    assert analyzer.LOGIC["pronoun_bases"] is True, "shared data never follows the builder's own switch"
 
 
 # --- The plumbing --------------------------------------------------------------------------------------------------- #

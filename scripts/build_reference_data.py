@@ -59,6 +59,7 @@ Usage:  python scripts/build_reference_data.py
 
 import base64
 import bisect
+import copy
 import json
 import math
 import os
@@ -199,16 +200,14 @@ FLAG_UNLISTED = 4                     # a katakana compound JMdict doesn't list:
 FLAG_STEMS = 8                        # a noun a verb's stem may stand in (出来 + 損ない, 待ち + 時間: the in-text pass)
 COMPOUND_REPORT = os.path.join(ROOT, "debug", "compound_joins.md")
 SAMPLE = 50
-# The switches the tokenizer's joins read (logic.*): shared data never follows the builder's own settings.json.
-PARSING_SWITCHES = ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles",
-                    "pronoun_bases")
 
 
 def pin_parsing_defaults():
-    """Every switch the joins read at its default (all on): the tables are the same whoever builds them."""
+    """Every parsing setting at its default — the switches the joins read, the readings in ( ), the sentence ends and
+    any setting added later: the whole logic block, copied (shared data never follows the builder's own settings.json,
+    and the build never edits the defaults). The tables are the same whoever builds them."""
     from app import analyzer, settings_manager
-    defaults = settings_manager.DEFAULT_SETTINGS.get("logic", {})
-    analyzer.LOGIC.update({name: defaults.get(name, True) for name in PARSING_SWITCHES})
+    analyzer.LOGIC.update(copy.deepcopy(settings_manager.DEFAULT_SETTINGS.get("logic", {})))
 
 
 def use_counters(counters):

@@ -226,6 +226,14 @@ only spellings and readings.
 Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
 
+The Chinese words Surasura reads as one — the numbers and doubled forms it counts as their word, the names it keeps
+by their surnames, and the Traditional spellings it reads as their Simplified pair (睡著 as 睡着) — come from
+[CC-CEDICT](https://cc-cedict.org/wiki/) (MDBG,
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) and the
+[Universal Dependencies](https://universaldependencies.org/) Chinese treebanks (GSDSimp, HK and CFL, CC BY-SA 4.0);
+only spellings are kept, in `app/cedict_data.py` and among `app/zh_script_data.py`'s phrases, shared under the same
+licence.
+
 The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
 Settings → Data & System → Data credits.
 

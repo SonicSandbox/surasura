@@ -30,24 +30,26 @@ class TestFlagUI(unittest.TestCase):
         self.assertEqual(self.app.var_language.get(), "ja")
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
         
-        # In 'ja', chk_reinforce_widget should be hidden (it is a Chinese-only option).
+        # In 'ja', the Script selector should be hidden (it is a Chinese-only option). The retired
+        # "Reinforce Chinese Seg" checkbox is gone for good.
         # winfo_manager() returns 'pack' if managed by pack, '' if not.
-        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
+        self.assertEqual(self.app.zh_script_frame.winfo_manager(), "")
+        self.assertFalse(hasattr(self.app, "chk_reinforce_widget"))
         
         # Switch to Chinese
         self.app.var_language.set("zh")
         # Trace handles update_ui_for_language()
         
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇨🇳")
-        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "pack")
+        self.assertEqual(self.app.zh_script_frame.winfo_manager(), "pack")
 
         # Verify container nesting
-        self.assertEqual(self.app.chk_reinforce_widget.master, self.app.lang_options_frame)
+        self.assertEqual(self.app.zh_script_frame.master, self.app.lang_options_frame)
         
         # Switch back to Japanese
         self.app.var_language.set("ja")
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
-        self.assertEqual(self.app.chk_reinforce_widget.winfo_manager(), "")
+        self.assertEqual(self.app.zh_script_frame.winfo_manager(), "")
 
     def test_zen_slider_shown_only_for_zen_theme(self):
         """The Zen Limit slider appears only when the Zen Mode theme is selected. Real-root test so

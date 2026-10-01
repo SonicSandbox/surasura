@@ -17,7 +17,7 @@ import unicodedata
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter
-from itertools import compress, repeat
+from itertools import accumulate, compress, repeat
 from operator import attrgetter, eq, itemgetter
 from datetime import datetime
 import abc
@@ -109,7 +109,14 @@ ENSURE_AUDIO_EXAMPLE = False
 #     stand on their own (not 斬 in 斬魄刀, not 年 in 三年); a one-character word the list can never offer (は, スバル
 #     read as 昴) keeps no sentence from i+1 and counts as nothing to learn in a file; each file names its one-kanji
 #     words the list can't offer. Still 2.4: one re-analysis with 15–24.
-ENGINE_REVISION = 25
+# 26: Chinese reads like Chinese — …… and ；no longer end a sentence; Traditional text read as-is is cut through
+#     Simplified (為什麼 one word, spelled as written); only jieba's dictionary makes a word (他来 is 他 + 来; a guessed
+#     name led by a surname is kept); a jieba phrase CC-CEDICT doesn't list is its words (吃了饭 is 吃 + 了 + 饭, a count
+#     its number and measure word: 一个 is 一 + 个); a number is no word; a doubled form is its word (开开心心 is 开心);
+#     Traditional is written in Taiwan's standard characters (吃飯, 裡面); 著急 is read as 着急 where CC-CEDICT pairs
+#     them; a Chinese card's field is its one word (学习 (xuéxí) is 学习; 认真地 认真, 吃了 吃). Still 2.4: one
+#     re-analysis with 15–25.
+ENGINE_REVISION = 26
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -118,7 +125,7 @@ LOGIC = {
     "context": {"search_range": 20, "min_words": 4, "max_extra": 2, "preferred_max_chars": 50},
     "sentence_boundaries": {
         "ja": "。｡．！？!?\n",
-        "zh": "。！？!?\n；;……"
+        "zh": "。｡！？!?\n"
     },
     "priority_markers": {
         "priority_threshold": 0.5,
@@ -1758,6 +1765,212 @@ def strip_verse_number(sentence, tagger):
     return sentence[len(first.surface):].lstrip() or sentence
 
 
+# --- Chinese: one cut and one word test for every caller ------------------------------------------------- #
+# The tokenizer, the パターン builder and its card lookups all cut Chinese here and count a word by chinese_word, so
+# a word is keyed alike everywhere (a builder that cut differently would silently miss every lookup).
+_CEDICT = {}   # name -> a table of app/cedict_data.py, decoded on the first Chinese cut
+
+
+def _cedict_table(name):
+    """app/cedict_data.py's table `name` (CC-CEDICT, CC BY-SA 4.0 — a module of its own), decoded once, or an empty
+    table when the module can't be read: the cut is then jieba's dictionary words alone, never a crash."""
+    table = _CEDICT.get(name)
+    if table is None:
+        try:
+            from app import cedict_data
+            table = getattr(cedict_data, name)() or {}
+        except Exception:
+            table = {}
+        _CEDICT[name] = table
+    return table
+
+
+def chinese_cut(text):
+    """The pieces of `text` — read already (tagger_text) and in Simplified, the only script jieba's dictionary
+    holds — in order: together they spell the text.
+
+    Only jieba's dictionary makes a word: its statistical guesses glue neighbours into non-words (他来, 我要, 这是),
+    so they are off — but a name it guesses is kept (_guessed_names). jieba's dictionary holds phrases no dictionary
+    lists as words (吃了饭, 一碗, 电影吧, 很多): an entry CC-CEDICT doesn't list whose words hold grammar is read as
+    those words, and a count CC-CEDICT lists is read as its number and its measure word (一个 is 一 + 个) — the table
+    scripts/build_cedict_data.py builds (app/cedict_data.py). Pieces that say one word doubled are one piece
+    (_join_doubled); chinese_base reads its word."""
+    import jieba   # lazy (cached after first use): only a Chinese run loads jieba
+    pieces = list(jieba.cut(text, cut_all=False, HMM=False))
+    splits = _cedict_table("splits")
+    if not splits:
+        return pieces
+    return _join_doubled(_guessed_names(pieces, splits), text)
+
+
+_CHINESE_CHAR = {}      # one character -> whether it is Chinese (_ZH_TARGET_RE, asked once per character)
+
+
+def _guessed_names(pieces, splits):
+    """`pieces` — jieba's dictionary cut — with the names jieba's model would guess kept whole, and each entry of
+    `splits` (the CC-CEDICT table) read as its words. Only a run of single characters the dictionary left is
+    guessed at, by jieba's own model (finalseg), as its cut with the guesses on would; a guess stays whole when it is
+    2-3 characters led by a character CC-CEDICT gives a surname, no word of jieba's dictionary, with no character
+    jieba's tags file as grammar and, at 3, no verb last — 李明, 王芳; else its first two characters are tried (龙仁用 is
+    龙仁 + 用), and any other guess stays in characters (我要 is 我 + 要)."""
+    import jieba
+    from jieba import finalseg
+    freq, family = jieba.dt.FREQ, _cedict_table("surnames")
+    grammar, verbs = _cedict_table("grammar_chars"), _cedict_table("verb_chars")
+
+    def named(run):
+        return (2 <= len(run) <= 3 and run[0] in family and not freq.get(run) and grammar.isdisjoint(run)
+                and not (len(run) == 3 and run[-1] in verbs))
+
+    def guessed(run):
+        text = "".join(run)
+        if len(run) < 2 or not family or freq.get(text):
+            out.extend(run)         # jieba guesses only where the run is no word of its own
+            return
+        for guess in finalseg.cut(text):
+            if named(guess):
+                out.append(guess)
+            elif len(guess) == 3 and named(guess[:2]):
+                out.extend((guess[:2], guess[2]))
+            else:
+                out.extend(guess)
+
+    out, run = [], []
+    chinese = _CHINESE_CHAR
+    for piece in pieces:
+        if len(piece) == 1:
+            single = chinese.get(piece)
+            if single is None:
+                single = chinese[piece] = bool(_ZH_TARGET_RE.match(piece))
+            if single:
+                run.append(piece)
+                continue
+        if run:
+            guessed(run)
+            run = []
+        cuts = splits.get(piece)
+        if cuts is None:
+            out.append(piece)
+            continue
+        pos = 0
+        for n in cuts:
+            out.append(piece[pos:pos + n])
+            pos += n
+    if run:
+        guessed(run)
+    return out
+
+
+# Where a word can be said doubled in a text: a run of one character (哈哈哈), or two said twice (休息休息).
+_DOUBLINGS = re.compile(r"(.)\1\1|(..)\2")
+
+
+def _join_doubled(pieces, text):
+    """Pieces that touch in the text and say one word doubled are one piece, where chinese_base reads the whole as
+    its word: a word of two characters said twice (休息 + 休息), a run of one character jieba cut by length (哈哈哈 +
+    哈哈). Punctuation and spaces are pieces of their own, so nothing joins across them. Only the pieces where `text`
+    (which they spell) doubles something are looked at."""
+    windows, ends = [], None
+    for found in _DOUBLINGS.finditer(text):
+        if ends is None:
+            ends = list(accumulate(map(len, pieces)))
+        first, last = bisect.bisect_right(ends, found.start()), bisect.bisect_right(ends, found.end() - 1)
+        if windows and first <= windows[-1][1] + 1:
+            windows[-1][1] = max(windows[-1][1], last)
+        else:
+            windows.append([first, last])
+    if not windows:
+        return pieces
+    out = []
+    i, n = 0, len(pieces)
+    for first, last in windows:
+        if i < first:
+            out.extend(pieces[i:first])
+            i = first
+        while i <= last and i < n:
+            piece, j = pieces[i], i + 1
+            if j < n and (pieces[j] == piece or pieces[j][:1] == piece[-1:]):
+                if len(piece) == 2 and pieces[j] == piece and piece[0] != piece[1]:
+                    j += 1
+                elif piece == piece[0] * len(piece):
+                    while j < n and pieces[j] == piece[0] * len(pieces[j]):
+                        j += 1
+                whole = "".join(pieces[i:j])
+                if j > i + 1 and chinese_base(whole):
+                    out.append(whole)
+                    i = j
+                    continue
+            out.append(piece)
+            i += 1
+    out.extend(pieces[i:])
+    return out
+
+
+def chinese_base(piece, form=None):
+    """The word a doubled form counts as, or None — read on chinese_cut's piece (Simplified), spelled as `form`, the
+    same stretch in the text's own script (conversion is length-preserving), spells it:
+      开开心心 is 开心: a doubled form whose word CC-CEDICT lists, unless the form has a meaning of its own (马马虎虎
+        'so-so', 形形色色 'all kinds of' stay whole) — app/cedict_data.py's FOLDS;
+      休息休息 is 休息: a word of two characters said twice;
+      哈哈哈哈哈 is 哈哈: a run of one character, when the shortest run CC-CEDICT lists is a sound or a laugh (SOUNDS) —
+        好好好 stays as it is cut.
+    Two characters (人人, 看看, 慢慢) are never folded, nor anything with the table unreadable."""
+    n = len(piece)
+    if n < 3:
+        return None
+    folds = _cedict_table("folds")
+    if not folds:
+        return None
+    form = form or piece
+    if n == 4:
+        if piece[:2] == piece[2:] and piece[0] != piece[1]:
+            return form[:2] if chinese_word(piece[:2]) else None
+        if piece in folds:
+            return form[0] + form[2]
+    if piece == piece[0] * n:
+        sounds = _cedict_table("sounds")
+        for size in range(2, n):
+            if piece[:size] in sounds:
+                return form[:size]
+    return None
+
+
+# The numerals of Chinese running text (GB/T 15835-2011: 〇 零 一 … 九 十 百 千 万 亿, with the Traditional 萬 億) and
+# 两 / 兩, the numeral a count takes. Unicode's numeric property is no test: it numbers 拾 'pick up' and 陆 'land' (their
+# financial forms) and gives 两 no value.
+_ZH_NUMERALS = "〇零一二三四五六七八九十百千万亿萬億两兩"
+
+
+def chinese_word(word):
+    """Whether a piece is a Chinese word: it holds a Chinese character (Unicode's own ranges, app/unicode_ranges.py —
+    〇 and Extension A / B included), no kana letter (a Japanese line in a Chinese library is no Chinese), and is no
+    number — a number said (三千五百, 二十五, 一) is never a list word nor an unknown in a sentence, as in Japanese.
+    A word made only of numerals that counts nothing stays a word (千万 'by all means', 万一 'just in case' —
+    app/cedict_data.py's NOT_COUNTS); with that table unreadable, no number is dropped."""
+    if not _ZH_TARGET_RE.search(word) or _KANA_LETTER_RE.search(word):
+        return False
+    if word.strip(_ZH_NUMERALS):
+        return True
+    spared = _cedict_table("not_counts")
+    return not spared or zh_script.to_simplified(word) in spared
+
+
+_ZH_TAGS = []      # jieba's own tag table (jieba.posseg's word_tag_tab), read on the first ask
+
+
+def chinese_verb(word):
+    """Is `word` (in either script) a verb to jieba's own tag table — v, vn, vd, vi … (jieba.posseg's word_tag_tab,
+    read once: about 0.3 s, only when a card asks)? A card's 了 / 过 / 着 comes off only after a verb
+    (anki_match.one_word)."""
+    if not _ZH_TAGS:
+        try:
+            import jieba.posseg as posseg
+            _ZH_TAGS.append(posseg.dt.word_tag_tab)
+        except Exception:
+            _ZH_TAGS.append({})
+    return str(_ZH_TAGS[0].get(zh_script.to_simplified(word)) or "").startswith("v")
+
+
 class ChineseTokenizer(Tokenizer):
     def __init__(self, reinforce_segmentation=False, script="asis"):
         # Which script every token and sentence comes out in (the `zh_script` setting): "asis" is
@@ -1765,18 +1978,8 @@ class ChineseTokenizer(Tokenizer):
         self.script = script if script in ("s", "t") else "asis"
         if self.script != "asis":
             print(f"Configuration: Chinese read as {'Simplified' if self.script == 's' else 'Traditional'}.")
-        # Force separation of common collocations that users prefer to see split
-        # e.g. "就把" -> "就", "把" instead of "就把"
-        if reinforce_segmentation:
-            import jieba   # lazy: only a Chinese run pays this ~0.17s import
-            jieba.suggest_freq(('就', '把'), tune=True)
-            jieba.suggest_freq(('您', '不'), tune=True)
-            print("Configuration: Chinese segmentation reinforcement ENABLED.")
-        else:
-            # We can't easily "undo" suggest_freq cleanly without reloading jieba or messing with internal dicts
-            # but since strictness is usually preferred, we can just leave it or rely on script restart.
-            # In this architecture, analyzer.py is run as a subprocess, so it starts fresh each time.
-            pass
+        # `reinforce_segmentation` is retired and ignored: it was a hand list of two pairs (就把, 您不) that the
+        # dictionary's own cut already splits; an old settings.json or command line still passes it.
 
     def tokenize(self, text):
         """Returns a list of (lemma, pinyin_placeholder, original_surface, orth) tuples."""
@@ -1787,8 +1990,7 @@ class ChineseTokenizer(Tokenizer):
 
     def tokenize_sentences(self, text):
         """Yields (sentence_string, list_of_filtered_tokens)"""
-        import jieba   # lazy (cached after first use): only a Chinese run loads jieba
-        # jieba.cut returns a generator
+        # The text is cut by chinese_cut, the one Chinese cut every caller reads
         # We need to manually handle sentence splitting because jieba just streams tokens
         
         # 1. Split text into blocks by punctuation (broadly) to avoid feeding massive text to jieba if needed,
@@ -1801,14 +2003,15 @@ class ChineseTokenizer(Tokenizer):
         # dictionary form, keyed and listed — and the text's own spelling, for the sentence and the boundary
         # test. They differ only where the text was read in another form.
         read, at = tagger_text(text)
+        # Segment in SIMPLIFIED whichever script is wanted: jieba's dictionary is Simplified only
+        # (學習/這個 aren't in it, 学习/这个 are), so a Traditional text cut as written came out in
+        # pieces (為 / 什麼, 經濟關 / 係). As-is keeps every word as the text writes it; "s" / "t" convert.
+        # Every conversion is length-preserving (zh_script, I3), so each piece's offsets in `cut` are
+        # its offsets in the output text too — slice there.
+        cut = zh_script.to_simplified(read)
         if self.script == "asis":
-            cut, words, shown = read, read, text
+            words, shown = read, text
         else:
-            # Segment in SIMPLIFIED whichever script is wanted: jieba's dictionary is Simplified
-            # only (學習/這個 aren't in it, 学习/这个 are), so this is also what makes Traditional
-            # text segment well. Every conversion is length-preserving (zh_script, I3), so each
-            # jieba token's offsets in `cut` are its offsets in the output text too — slice there.
-            cut = zh_script.to_simplified(read)
             words = cut if self.script == "s" else zh_script.to_traditional(cut)
             shown = words if at is None else (zh_script.to_simplified(text) if self.script == "s"
                                               else zh_script.to_traditional(zh_script.to_simplified(text)))
@@ -1816,21 +2019,21 @@ class ChineseTokenizer(Tokenizer):
         def _aligned(pieces, pos=0):
             for w in pieces:
                 end = pos + len(w)
-                yield words[pos:end], (shown[pos:end] if at is None else shown[at[pos]:at[end]])
+                yield w, words[pos:end], (shown[pos:end] if at is None else shown[at[pos]:at[end]])
                 pos = end
 
-        seg_list = _aligned(jieba.cut(cut, cut_all=False))
+        seg_list = _aligned(chinese_cut(cut))
         
         current_sentence_tokens = []
         current_sentence_surface = []
         
-        punctuation_str = LOGIC.get("sentence_boundaries", {}).get("zh", "。！?！？!\n；;……")
+        punctuation_str = LOGIC.get("sentence_boundaries", {}).get("zh", "。｡！？!?\n")
         punctuation = set(list(punctuation_str))
         # Common particles/punctuation to skip in "meaningful token" list might be needed,
         # but for now we include everything that isn't strict punctuation/space.
         
         ended = line_end = False
-        for word, surface in seg_list:
+        for piece, word, surface in seg_list:
             # What closes a sentence stays with it (UAX #29 SB8a / SB9, § above JapaneseTokenizer):
             # ？？ and ？！ end together, and a closing quote joins the sentence it closes — “是黑车吗？”
             # — where it used to open the next one. A line end ends the sentence where it stands.
@@ -1848,13 +2051,12 @@ class ChineseTokenizer(Tokenizer):
             # per-token test in C.
             is_boundary = not punctuation.isdisjoint(surface) or line_end
             
-            # Strict filtering: Must contain at least one CJK character.
-            # AND must NOT contain any Japanese Hiragana/Katakana (to avoid mixed JA text noise).
-            # Unicode's own ranges (app/unicode_ranges.py): 〇 and Extension A / B are CJK too.
-            has_cjk = _ZH_TARGET_RE.search(word)
-            has_kana = _KANA_LETTER_RE.search(word)
-            
-            is_skippable = (not has_cjk) or (has_kana is not None) 
+            # A doubled form counts as its word (chinese_base): 开开心心 is 开心, the text's own stretch its surface.
+            if len(piece) > 2:
+                word = chinese_base(piece, word) or word
+            # Strict filtering: a Chinese word holds a Chinese character and no kana letter (chinese_word,
+            # the builder's test too).
+            is_skippable = not chinese_word(word)
             
             # For Chinese, "lemma" is just the word. "Reading" (Pinyin) requires pypinyin, 
             # but user didn't ask for Pinyin injection yet, and existing data might not have it.
@@ -2252,8 +2454,9 @@ _CUE_TERMINATORS = '。｡．！？!?！？'
 _CUE_CONTINUATIONS = '➡➨→⇒➔►―—'
 
 # A comma is a pause INSIDE a sentence (UAX #29 SContinue; 逗号 / 読点): a cue ending in one runs on into
-# the next, the comma kept as text — 我觉得， + 他不会来 read 我觉得，。 before.
-_CUE_COMMAS = '、，,､'
+# the next, the comma kept as text — 我觉得， + 他不会来 read 我觉得，。 before. A semicolon too: it joins the clauses
+# of one sentence (UAX #29 SContinue; 分号, GB/T 15834-2011) — 我买了书； + 他买了笔。 read 我买了书；。 before.
+_CUE_COMMAS = '、，,､；;'
 
 # A cue that ends in an ellipsis has ended — the subtitle's own mark of speech trailing off — but … is
 # no sentence end inside running text (it is as often a pause), so the cue gains no 。: its end is marked with a
@@ -2944,7 +3147,7 @@ def _build_analysis_parser():
     parser.add_argument("--include-single-chars", action="store_true", help="Include 1-character words (overrides default skip)")
     parser.add_argument("--exclude-freq-one", action="store_true", help="Backward compat: Exclude words with frequency of 1")
     parser.add_argument("--min-freq", type=int, default=0, help="Hide words with frequency < this value (default 0)")
-    parser.add_argument("--reinforce", action="store_true", help="Force strict segmentation for Chinese (e.g. split common collocations like 'jiu ba')")
+    parser.add_argument("--reinforce", action="store_true", help="Retired: ignored (an old command line may pass it)")
     parser.add_argument("--zh-script", choices=zh_script.SCRIPTS, default="asis", help="Read all Chinese as Simplified (s) or Traditional (t); asis = as written")
     parser.add_argument("--visualize-only", action="store_true", help="Launch visualizer server")
     parser.add_argument("--static-only", action="store_true", help="Generate static HTML")

@@ -181,8 +181,10 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     opening bracket glued to a full stop open the next sentence; 24 gives idioms and set phrases rows of their
     own — 気がする, 腑に落ちる — and puts a word's example sentences without a new phrase first; 25 lists one-kanji
     dictionary words where they stand on their own (手, 顔, こと) and lets no one-character word the list can't offer
-    keep a sentence from i+1.)"""
-    assert analyzer.ENGINE_REVISION == 25
+    keep a sentence from i+1; 26 reads Chinese like Chinese — only the dictionary makes a word (他来 is 他 + 来), a
+    phrase entry with grammar in it is its words, a number is no word, a doubled form is its word, Traditional is
+    written in Taiwan's standard characters, …… and ；no longer end a sentence, and a Chinese card is its one word.)"""
+    assert analyzer.ENGINE_REVISION == 26
 
 
 # --------------------------------------------------------------------------- #

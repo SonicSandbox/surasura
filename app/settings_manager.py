@@ -121,9 +121,9 @@ DEFAULT_SETTINGS = {
             "recency_files": 1
         },
         "sentence_boundaries": {
-            "_comment": "Characters that trigger a sentence split for each language. Includes the HALFWIDTH ideographic full stop \uff61, which anime subtitles use throughout (alongside halfwidth katakana) \u2014 without it their sentences never end and run together into one huge block \u2014 and, for Japanese, the FULLWIDTH full stop \uff0e of horizontal technical and official writing (a decimal point or an abbreviation's is told apart in code: \uff13\uff0e\uff11\uff14).",
+            "_comment": "Characters that trigger a sentence split for each language. Includes the HALFWIDTH ideographic full stop \uff61, which anime subtitles use throughout (alongside halfwidth katakana) \u2014 without it their sentences never end and run together into one huge block \u2014 and, for Japanese, the FULLWIDTH full stop \uff0e of horizontal technical and official writing (a decimal point or an abbreviation's is told apart in code: \uff13\uff0e\uff11\uff14). Chinese ends a sentence at its full stops, ! and ? and a line end, never at \u2026\u2026 or \uff1b (GB/T 15834-2011: an ellipsis is a pause or an omission, a semicolon joins the clauses of one sentence).",
             "ja": "\u3002\uff61\uff0e\uff01\uff1f!?\n",
-            "zh": "\u3002\uff61\uff01\uff1f!?\n\uff1b;\u2026\u2026"
+            "zh": "\u3002\uff61\uff01\uff1f!?\n"
         },
         "gui": {
             "_comment": "tooltip_delay: ms before tooltip appears.",
@@ -180,6 +180,12 @@ def _optional_module_defaults() -> Dict[str, Any]:
     return merged
 
 
+# The Chinese sentence ends before 2.4, when …… and ； / ; ended a sentence too. A saved
+# settings.json only ever gains characters (the union in load_settings), so the old default would live on in every
+# saved file: naming it lets load_settings read it as the default it was, and leave a hand-edited set alone.
+_OLD_ZH_BOUNDARIES = "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
+
+
 def load_settings() -> Dict[str, Any]:
     """Loads settings from disk and merges with defaults (plus any present optional modules)."""
     settings_path = get_user_file("settings.json")
@@ -221,6 +227,11 @@ def load_settings() -> Dict[str, Any]:
     # kept, the essentials can't be lost.
     try:
         _boundaries = settings.setdefault("logic", {}).setdefault("sentence_boundaries", {})
+        # A saved Chinese set that is still the old default — with or without the halfwidth full stop 2.1 added —
+        # was never a choice: it reads as today's default. A set the user edited keeps its own characters.
+        _zh = _boundaries.get("zh")
+        if isinstance(_zh, str) and set(_zh) - {"\uff61"} == set(_OLD_ZH_BOUNDARIES):
+            _boundaries["zh"] = DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
         for _lang, _required in DEFAULT_SETTINGS["logic"]["sentence_boundaries"].items():
             if _lang.startswith("_"):
                 continue

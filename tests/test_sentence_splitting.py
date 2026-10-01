@@ -178,3 +178,26 @@ def test_chinese_line_end_ends_the_sentence_where_it_stands(zh):
     assert zh("你好！\n”我问他。") == ["你好！", "”我问他。"]
     assert zh("第一句。\r\n第二句。") == ["第一句。", "第二句。"], "Windows line ends"
     assert zh("") == []
+
+
+def test_a_chinese_ellipsis_and_semicolon_are_pauses_inside_a_sentence(zh):
+    # GB/T 15834-2011: 省略号 marks a pause or an omission, 分号 joins the clauses of one sentence — whole examples,
+    # not two broken halves.
+    assert zh("「唔……也对，你会误解也是应该的。」") == ["「唔……也对，你会误解也是应该的。」"]
+    assert zh("《红楼梦》是一本书；我很喜欢。") == ["《红楼梦》是一本书；我很喜欢。"]
+    assert zh("我买了书;他买了笔。") == ["我买了书;他买了笔。"], "the half-width semicolon too"
+    assert zh("他走了……我们也走吧。") == ["他走了……我们也走吧。"], "the price: a novel's …… runs on"
+
+
+def test_a_chinese_line_end_and_full_stop_still_end_a_sentence(zh):
+    # A line end ends a sentence (a wrapped line stays cut, as in Japanese); ． is a name's dot, never an end.
+    assert zh("我今天\n很高兴。") == ["我今天", "很高兴。"]
+    assert zh("英國作家達爾文．庫克出版了新書。") == ["英國作家達爾文．庫克出版了新書。"]
+    assert zh("你好！我叫小明。") == ["你好！", "我叫小明。"]
+
+
+def test_the_chinese_sample_reads_its_semicolon_line_as_one_sentence(zh):
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "zh", "patterns_zh_sample.txt")
+    text = analyzer.extract_text(path, "zh")
+    assert "《红楼梦》是一本书；我很喜欢。" in zh(text)

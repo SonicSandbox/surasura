@@ -78,7 +78,11 @@ from operator import itemgetter
 # v16 each file also records how often each one-kanji word stands there as a piece of something else (年 in 三年, 斬 in
 #    斬魄刀 — analyzer.bound_uses), kept summed in the `bound` table: the Rarity slider counts a one-kanji list word by
 #    the uses Generate counts, where it stands on its own — still 2.4, so users rebuild once with v8–v15.
-SCHEMA_VERSION = 16
+# v17 Chinese is cut by analyzer.chinese_cut — jieba's dictionary only, CC-CEDICT's words, numbers no words, doubled
+#    forms at their word, Traditional through Simplified — with the new sentence ends: a v16 blob holds Chinese cut by
+#    jieba's guesses and phrases, numbers as words and …… / ；ending sentences — still 2.4, so users rebuild once
+#    with v8–v16.
+SCHEMA_VERSION = 17
 
 
 # --------------------------------------------------------------------------- #
@@ -513,8 +517,8 @@ class Store:
         a change the library's name tables are computed again. Runs in a single BEGIN IMMEDIATE
         transaction (atomic; serialized against other writers).
 
-        `build_signature` (optional) fingerprints the TOKENIZER IDENTITY (e.g. Chinese `reinforce`
-        segmentation). Reconcile keys "unchanged" on (mtime, size) only, so a tokenizer-config
+        `build_signature` (optional) fingerprints the TOKENIZER IDENTITY (e.g. the Chinese `script`
+        conversion). Reconcile keys "unchanged" on (mtime, size) only, so a tokenizer-config
         change wouldn't otherwise refresh cached tokens. If the stored signature differs, every
         cached tokenization is stale -> drop it all and rebuild. (Callers MUST pass a CONSISTENT
         signature — the analyzer and the background indexer both derive it from the same setting —
@@ -1064,19 +1068,19 @@ def preview_known_approx(user_files_dir, language, script="asis"):
 # --------------------------------------------------------------------------- #
 def build_signature(language, reinforce=False, script="asis"):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
-    config change invalidates stale tokens. What varies at runtime: Chinese `reinforce`
-    segmentation, `script` conversion, the sentence boundaries settings.json sets — they decide
+    config change invalidates stale tokens. What varies at runtime: Chinese `script`
+    conversion, the sentence boundaries settings.json sets — they decide
     where every file splits — what a Japanese book's kana in parentheses become, whether a
     katakana name is one word (logic.names_katakana) and whether a phrase or a title is
     (logic.phrases_and_titles; language is already isolated per DB; a
     tokenizer-LIBRARY change, or a change of a DEFAULT, is handled by bumping SCHEMA_VERSION, which
-    rebuilds). Normalized so ja ignores a stray reinforce or script. Each suffix appears ONLY when it
+    rebuilds). Normalized so ja ignores a stray script. Chinese `reinforce` is retired: every store reads
+    "reinforce=False", the string a store built as shipped already holds. Each suffix appears ONLY when it
     departs from the default — the script when converting, the boundaries when edited, the readings
     when not hiragana only, the katakana names or the phrases when off — so a store built as shipped
     keeps its exact old signature and upgrading never rebuilds anyone's index (spec I2)."""
     from app.zh_script import effective
-    eff_reinforce = bool(reinforce) and language == "zh"
-    sig = f"{language}|reinforce={eff_reinforce}"
+    sig = f"{language}|reinforce=False"
     eff_script = effective(language, script)
     if eff_script != "asis":
         sig = f"{sig}|script={eff_script}"

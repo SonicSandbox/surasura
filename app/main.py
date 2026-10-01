@@ -131,8 +131,9 @@ Dictionaries
 • JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
 • UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
 • jieba — MIT licence: how Chinese is split into words.
-• OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese.
-• CC-CEDICT — CC BY-SA 4.0: checked against for the Chinese measure words.
+• OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese, Traditional in Taiwan's standard characters.
+• CC-CEDICT — MDBG, CC BY-SA 4.0: which of jieba's phrases are words, the numbers and doubled forms Chinese counts as their word, the Traditional spellings read as their Simplified pair, the surnames a name jieba guesses starts with, and the Chinese measure words. Those tables (app/cedict_data.py, and those phrases of app/zh_script_data.py) are shared under the same licence.
+• Universal Dependencies Chinese treebanks (GSDSimp, HK, CFL) — CC BY-SA 4.0: which Chinese counts are a number and a measure word (一个 is 一 + 个).
 
 Frequency lists (ranks only)
 • JPDB 2024 and Jiten: which compounds, affixed words, set phrases and one-kanji words are words, and which words live only inside a phrase.
@@ -356,7 +357,6 @@ class MasterDashboardApp:
         self.var_target_coverage = tk.IntVar(value=90)
         self.var_split_length = tk.IntVar(value=3000)
         self.var_language = tk.StringVar(value="ja")
-        self.var_reinforce = tk.BooleanVar(value=False) # For Chinese forced segmentation
         self.var_zh_script = tk.StringVar(value="asis")  # read all Chinese as one script (asis/s/t)
         self.var_paren_readings = tk.StringVar(value="hiragana")  # 漢字(かな) in a book: hiragana/any/off
         # Names are one word, not pieces (app/names.py), Japanese only: katakana names, names the library repeats,
@@ -449,7 +449,6 @@ class MasterDashboardApp:
         self.btn_junban: Optional[ttk.Button] = None
         self.lang_frame: Optional[ttk.Frame] = None
         self.lang_options_frame: Optional[ttk.Frame] = None
-        self.chk_reinforce_widget: Optional[ttk.Checkbutton] = None
         self.zh_script_frame: Optional[ttk.Frame] = None
         self.paren_readings_frame: Optional[ttk.Frame] = None
         self.names_frame: Optional[ttk.Frame] = None
@@ -1008,11 +1007,10 @@ class MasterDashboardApp:
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
-                # needs_reconcile is stat-only, so a tokenizer change (Chinese reinforce / script)
+                # needs_reconcile is stat-only, so a tokenizer change (the Chinese script)
                 # alone would never re-index: compare the identity the store was built with too.
                 need = (store.needs_reconcile(files)
-                        or store.get_meta("build_sig") != token_index.build_signature(
-                            lang, self.var_reinforce.get(), script)
+                        or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
                         or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:
                 store.close()
@@ -1061,8 +1059,6 @@ class MasterDashboardApp:
 
             # 3. Update Settings Toggles (if window created)
             if self.settings_window and self.settings_window.winfo_exists():
-                if self.chk_reinforce_widget:
-                    self.chk_reinforce_widget.pack_forget()
                 if self.zh_script_frame:
                     self.zh_script_frame.pack_forget()
                 if self.paren_readings_frame:
@@ -1077,14 +1073,9 @@ class MasterDashboardApp:
                     self.chk_ignore_names.pack_forget()
 
                 if lang == 'zh':
-                    # Show Reinforce for Chinese
-                    if self.chk_reinforce_widget:
-                        self.chk_reinforce_widget.pack(anchor=tk.W)
-                        self.chk_reinforce_widget.configure(state='normal')
                     if self.zh_script_frame:
                         self.zh_script_frame.pack(anchor=tk.W, pady=(2, 0))
                 else:
-                    self.var_reinforce.set(False)
                     # zh_script is deliberately NOT reset: it belongs to the Chinese library, and
                     # a trip to Japanese and back must not silently change how Chinese is read.
                     # (Nor is paren_readings on the way to Chinese: it belongs to the Japanese one.)
@@ -1477,12 +1468,8 @@ class MasterDashboardApp:
         self.lang_options_frame = ttk.Frame(group_lang)
         self.lang_options_frame.pack(fill=tk.X, padx=(10, 0), pady=(0, 5))
 
-        # Reinforce Segmentation (Chinese)
-        self.chk_reinforce_widget = ttk.Checkbutton(self.lang_options_frame, text="Reinforce Chinese Seg", variable=self.var_reinforce, command=self.save_settings)
-        ToolTip(self.chk_reinforce_widget, "Forces splitting of common collocations like '就把' -> '就', '把'.")
-
-        # Script (Chinese): read the whole library in one script. Packed by update_ui_for_language,
-        # like Reinforce above. Changing it re-indexes the library in the background.
+        # Script (Chinese): read the whole library in one script. Packed by update_ui_for_language.
+        # Changing it re-indexes the library in the background.
         self.zh_script_frame = ttk.Frame(self.lang_options_frame)
         ttk.Label(self.zh_script_frame, text="Script:").pack(side=tk.LEFT)
         combo_script = ttk.Combobox(self.zh_script_frame, values=list(self.ZH_SCRIPT_LABELS.values()),
@@ -2399,7 +2386,6 @@ class MasterDashboardApp:
             if not lang: lang = "ja"
             self.var_language.set(lang)
 
-            self.var_reinforce.set(settings.get("reinforce_segmentation", False))
             zh_mode = settings.get("zh_script", "asis")
             self.var_zh_script.set(zh_mode if zh_mode in self.ZH_SCRIPT_LABELS else "asis")
             src_mode = settings.get("source_display", "off")
@@ -2520,7 +2506,6 @@ class MasterDashboardApp:
                 "target_coverage": self._iv(self.var_target_coverage, cur.get("target_coverage", 90)),
                 "split_length": self._iv(self.var_split_length, cur.get("split_length", 3000)),
                 "target_language": self.var_language.get(),
-                "reinforce_segmentation": self.var_reinforce.get(),
                 "zh_script": self.var_zh_script.get(),
                 "source_display": self.var_source_display.get(),
                 "word_search_enabled": self.var_word_search.get(),
@@ -3334,10 +3319,6 @@ class MasterDashboardApp:
         # Add Language
         args.append(f'--language={self.var_language.get()}')
         
-        # Add Reinforce Flag if applicable
-        if self.var_language.get() == 'zh' and self.var_reinforce.get():
-            args.append('--reinforce')
-
         # Chinese script: only when one is chosen, so an as-is run passes exactly the old args.
         zh_mode = self._effective_zh_script(self.var_language.get())
         if zh_mode != "asis":

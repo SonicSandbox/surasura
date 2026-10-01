@@ -401,3 +401,84 @@ def test_a_chinese_captions_lines_join_as_running_text(tmp_path, cue, sentence):
 def test_a_chinese_ass_line_break_joins_the_same_way(tmp_path):
     text = _broadcast(tmp_path, "我觉得\\N他不会来", language="zh")
     assert [s for s, _t in analyzer.ChineseTokenizer().tokenize_sentences(text)] == ["我觉得他不会来。"]
+
+
+# --- Chinese: …… and ；are pauses inside a sentence (GB/T 15834-2011) -------------------------------------- #
+OLD_ZH = "\\u3002\\uff01\\uff1f!?\\n\\uff1b;\\u2026\\u2026"          # the Chinese set before 2.4, as settings.json spells it
+
+
+def _load(tmp_path, body, bom=False):
+    path = tmp_path / "settings.json"
+    path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + body.encode("utf-8"))
+    with patch("app.settings_manager.get_user_file", return_value=str(path)):
+        return load_settings()
+
+
+@pytest.mark.parametrize("saved", [OLD_ZH, OLD_ZH + "\\uff61", "\\u3002\\uff01\\uff1f!?\\n\\uff1b;\\u2026\\u2026\\uff61"])
+def test_a_saved_old_chinese_default_reads_as_todays(tmp_path, saved):
+    # The old default — as 2.0 saved it, and with the ｡ 2.1 added (the shipped settings.json's own spelling) —
+    # was never a choice: it loads as today's set, so …… and ；stop ending sentences for everyone who never edited it.
+    merged = _load(tmp_path, '{"logic": {"sentence_boundaries": {"zh": "%s"}}}' % saved)
+    assert merged["logic"]["sentence_boundaries"]["zh"] == DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
+    assert "；" not in merged["logic"]["sentence_boundaries"]["zh"]
+    assert "…" not in merged["logic"]["sentence_boundaries"]["zh"]
+
+
+def test_a_saved_old_chinese_default_with_a_bom_reads_as_todays(tmp_path):
+    # Notepad saves a BOM; the file is read in its own encoding, so the migration still sees the old set.
+    merged = _load(tmp_path, '{"logic": {"sentence_boundaries": {"zh": "%s"}}}' % OLD_ZH, bom=True)
+    assert merged["logic"]["sentence_boundaries"]["zh"] == DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
+
+
+def test_a_hand_edited_chinese_set_keeps_its_own_characters(tmp_path):
+    # The old set plus ．: a choice the user made — kept whole (；included), and nothing is taken away.
+    edited = OLD_ZH + "\\uff61\\uff0e"
+    zh = _load(tmp_path, '{"logic": {"sentence_boundaries": {"zh": "%s"}}}' % edited)["logic"]["sentence_boundaries"]["zh"]
+    assert set(zh) == set("。！？!?\n；;……｡．"), zh
+    assert zh.startswith("。！？!?\n；;……"), "the user's own order is kept"
+
+
+def test_the_japanese_set_is_untouched_by_the_chinese_migration(tmp_path):
+    merged = _load(tmp_path, '{"logic": {"sentence_boundaries": {"ja": "\\u3002\\uff01\\uff1f!?\\n\\uff61\\u2026", '
+                             '"zh": "%s"}}}' % OLD_ZH)
+    assert merged["logic"]["sentence_boundaries"]["ja"].startswith("。！？!?\n｡…"), "a Japanese edit is the user's"
+    assert "…" in merged["logic"]["sentence_boundaries"]["ja"]
+
+
+def test_a_save_and_load_round_trip_never_brings_the_semicolon_back(tmp_path):
+    # The dashboard writes back what load_settings gave it: once migrated, the old set is gone for good.
+    from app.settings_manager import save_settings
+    path = tmp_path / "settings.json"
+    path.write_text('{"logic": {"sentence_boundaries": {"zh": "%s"}}}' % OLD_ZH, encoding="utf-8")
+    with patch("app.settings_manager.get_user_file", return_value=str(path)):
+        save_settings(load_settings())
+        again = load_settings()
+    assert again["logic"]["sentence_boundaries"]["zh"] == DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
+    import json
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["logic"]["sentence_boundaries"]["zh"] == DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]
+
+
+def test_the_tokenizer_reads_the_default_chinese_set_when_settings_hold_none(monkeypatch):
+    # The analyzer's own default and the tokenizer's fallback are the settings' default: with no set at all, ；and
+    # …… still end nothing and 。 still ends a sentence.
+    monkeypatch.setattr(analyzer, "LOGIC", {k: v for k, v in analyzer.LOGIC.items() if k != "sentence_boundaries"})
+    tok = analyzer.ChineseTokenizer()
+    assert [s for s, _t in tok.tokenize_sentences("我买了书；他买了笔。好吧……走吧。")] == \
+        ["我买了书；他买了笔。", "好吧……走吧。"]
+
+
+def test_a_cue_ending_in_a_semicolon_runs_on_into_the_next():
+    """A semicolon joins the clauses of one sentence (UAX #29 SContinue; 分号): the cue stays open, the mark kept —
+    it read 我买了书；。"""
+    assert analyzer.close_cue("我买了书；") == "我买了书；"
+    assert analyzer.close_cue("我买了书;") == "我买了书;"
+    assert analyzer.close_cue("我买了书。") == "我买了书。"
+
+
+def test_a_chinese_subtitle_cue_ending_in_a_semicolon_is_one_sentence_with_the_next(tmp_path):
+    path = tmp_path / "zh_semicolon.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:02,500\n我买了书；\n\n"
+                    "2\n00:00:02,500 --> 00:00:04,000\n他买了笔。\n", encoding="utf-8")
+    text = analyzer.extract_text(str(path), "zh")
+    assert [s for s, _t in analyzer.ChineseTokenizer().tokenize_sentences(text)] == ["我买了书；他买了笔。"]

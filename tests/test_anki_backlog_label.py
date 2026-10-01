@@ -244,6 +244,26 @@ def test_a_chinese_backlog_is_unchanged_and_never_meets_the_japanese_dictionary(
     assert built == []
 
 
+def test_a_chinese_card_with_its_ending_is_labelled_on_its_word(tmp_path, monkeypatch):
+    """认真地 on a card is 认真 on the list (anki_match.card_key, L7): the label marks 认真 where Junban places the
+    card. A backlog whose cards the list holds as written builds no tokenizer."""
+    built = []
+    real = analyzer.ChineseTokenizer
+
+    def build(*args, **kwargs):
+        built.append(1)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(analyzer, "ChineseTokenizer", build)
+    listed = _write_list(tmp_path, [("认真", "认真", "", ""), ("学习", "学习", "", "")])
+    _write_backlog("zh", {"version": 1, "notes": {"1": {"word": "学习", "keys": ["学习"]}}})
+    assert anki_backlog_keys("zh", {"anki_backlog_on_generate": True}, listed) == ["学习"]
+    assert built == []
+    _write_backlog("zh", {"version": 1, "notes": {"1": {"word": "认真地", "keys": ["认真地"]},
+                                                  "2": {"word": "目的", "keys": ["目的"]}}})
+    assert anki_backlog_keys("zh", {"anki_backlog_on_generate": True}, listed) == ["目的", "认真", "认真地"]
+    assert built == [1]
+
+
 def test_without_the_dictionary_the_cards_keep_their_own_keys(monkeypatch):
     """A dictionary that cannot be loaded (a broken install) costs the new spellings, never the label:
     the cards' own keys are injected as before (testing.md: missing dependencies)."""

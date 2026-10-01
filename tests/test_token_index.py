@@ -660,8 +660,7 @@ def test_a_store_from_before_one_kanji_pieces_were_recorded_is_rebuilt(tmp_path)
     """v15 -> v16: each Japanese file also records how often each one-kanji word stands there as a piece of something
     else (年 in 三年, 前 in 三年前 — analyzer.bound_uses), summed in the `bound` table, so the Rarity slider counts a
     one-kanji list word by its uses on its own, as the list does. A v15 store records none: it must be dropped and
-    rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 16
+    rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "town.txt"
     _write(f, "三年前にこの町へ来た。\n年が明けて、雪が降った。\n")
@@ -681,6 +680,30 @@ def test_a_store_from_before_one_kanji_pieces_were_recorded_is_rebuilt(tmp_path)
     assert s2.total_tokens() == 0, "a v15 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.bound_counts() == pieces
+    s2.close()
+
+
+def test_a_store_from_before_chinese_was_cut_by_the_dictionary_is_rebuilt(tmp_path):
+    """v16 -> v17: Chinese is cut by analyzer.chinese_cut — jieba's guesses off, CC-CEDICT's words, numbers no words,
+    doubled forms at their word, the new sentence ends. A v16 store holds the old pieces (他来 as one word): it must be
+    dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 17
+    db = _db(tmp_path)
+    f = tmp_path / "trip.txt"
+    _write(f, "他来了，我们一起吃了一碗饭。\n大家都开开心心的。\n")
+    s = ti.open_store("zh", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("zh"))
+    words = {lemma for (lemma, _reading) in s.word_counts()[0]}
+    s.close()
+    assert {"他", "来", "碗", "开心"} <= words and not {"他来", "一碗", "一", "开开心心"} & words
+    conn = sqlite3.connect(db)      # what a v16 store is: the version it was written with
+    conn.execute("PRAGMA user_version = 16")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("zh", path=db)
+    assert s2.total_tokens() == 0, "a v16 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("zh"))
+    assert {lemma for (lemma, _reading) in s2.word_counts()[0]} == words
     s2.close()
 
 
@@ -773,16 +796,16 @@ def test_concurrent_writers_serialize_without_double_apply(tmp_path):
         final.close()
 
 
-def test_build_signature_normalizes_ja_and_reflects_zh_reinforce():
-    """ja tokenization is fixed, so its build signature must IGNORE reinforce (else the analyzer and
-    the background indexer, deriving it slightly differently, would thrash the ja store). zh must
-    reflect reinforce so a toggle invalidates."""
-    assert ti.build_signature("ja", True) == ti.build_signature("ja", False)
-    assert ti.build_signature("zh", True) != ti.build_signature("zh", False)
+def test_build_signature_reads_the_retired_reinforce_as_off():
+    """Chinese `reinforce` is retired (a hand list of two pairs the dictionary's cut already splits): a store
+    reads "reinforce=False" whatever an old settings.json says — the string a store built as shipped holds —
+    in either language."""
+    assert ti.build_signature("ja", True) == ti.build_signature("ja", False) == "ja|reinforce=False"
+    assert ti.build_signature("zh", True) == ti.build_signature("zh", False) == "zh|reinforce=False"
 
 
 def test_reconcile_rebuilds_when_build_signature_changes(tmp_path):
-    """A tokenizer-config change (Chinese `reinforce`) must invalidate the WHOLE cache: the files
+    """A tokenizer-config change (the Chinese script) must invalidate the WHOLE cache: the files
     are unchanged on disk, so the (mtime,size) delta sees nothing — but their cached tokenization is
     stale. A changed build signature forces every file to be re-tokenized."""
     db = _db(tmp_path)
@@ -798,11 +821,11 @@ def test_reconcile_rebuilds_when_build_signature_changes(tmp_path):
     store.reconcile(files, tok, build_signature=ti.build_signature("zh", False))
     assert tok.calls == [], "same build signature + unchanged files must not re-tokenize"
 
-    # reinforce flips -> different signature -> ALL files re-tokenized despite no disk change.
+    # the script flips -> different signature -> ALL files re-tokenized despite no disk change.
     tok2 = _counting_tokenizer("zh")
-    store.reconcile(files, tok2, build_signature=ti.build_signature("zh", True))
+    store.reconcile(files, tok2, build_signature=ti.build_signature("zh", False, "s"))
     assert set(tok2.calls) == {ti._norm(str(f1)), ti._norm(str(f2))}, \
-        "a reinforce toggle must re-tokenize every file (stale segmentation)"
+        "a script switch must re-tokenize every file (stale tokens)"
     assert store.total_tokens() > 0
     store.close()
 
@@ -867,7 +890,7 @@ def test_a_settings_file_that_cannot_be_read_keeps_the_old_signature(monkeypatch
 
     monkeypatch.setattr(settings_manager, "load_settings", broken)
     assert ti.build_signature("ja") == "ja|reinforce=False"
-    assert ti.build_signature("zh", True, "t") == "zh|reinforce=True|script=t"
+    assert ti.build_signature("zh", True, "t") == "zh|reinforce=False|script=t"     # reinforce is retired
 
 
 def test_known_words_cache_reuse_and_invalidation(tmp_path):
@@ -901,3 +924,16 @@ def test_ppm_and_coverage_helpers():
     assert ti.to_ppm(5, 0) == 0.0
     assert ti.coverage_percent(95, 100) == 95.0
     assert ti.coverage_percent(0, 0) == 0.0
+
+
+def test_a_migrated_chinese_set_keeps_the_default_signature():
+    """A saved settings.json still holding the old Chinese set (…… and ；ending sentences) loads as today's default
+    (settings_manager), so its store's signature carries no boundaries suffix: the upgrade's SCHEMA bump rebuilds it
+    once, and nothing rebuilds it again."""
+    from app.path_utils import get_user_file
+    with open(get_user_file("settings.json"), "w", encoding="utf-8") as handle:
+        json.dump({"logic": {"sentence_boundaries": {"zh": "。！？!?\n；;……｡"}}}, handle, ensure_ascii=False)
+    assert ti.build_signature("zh") == "zh|reinforce=False"
+    with open(get_user_file("settings.json"), "w", encoding="utf-8") as handle:
+        json.dump({"logic": {"sentence_boundaries": {"zh": "。！？!?\n；;……｡．"}}}, handle, ensure_ascii=False)
+    assert ti.build_signature("zh").startswith("zh|reinforce=False|boundaries="), "a hand edit is the user's own set"

@@ -53,10 +53,10 @@ class TestTokenizerEdgeCases:
         # 〇 (二〇一六年, Tatoeba), 䶮 (刘䶮, a Southern Han emperor - CC-CEDICT, CJK Extension A) and 𨋢
         # (Hong Kong 'lift', Extension B) are Chinese characters: counted, never dropped as "no CJK"
         # (app/unicode_ranges.py; the old test was [一-鿿]). jieba's own Han range still cuts each off
-        # as a character of its own - 刘 / 䶮.
+        # as a character of its own - 刘 / 䶮. 〇 is a numeral: Chinese, but a number is no word.
         text = "今天是二〇一六年十一月二十三日。刘䶮是南汉的开国皇帝。我哋搭𨋢上去。"
         lemmas = [t[0] for t in self.zh_tokenizer.tokenize(text)]
-        assert {"〇", "䶮", "𨋢"} <= set(lemmas)
+        assert {"䶮", "𨋢"} <= set(lemmas) and "〇" not in lemmas
         assert "今天" in lemmas and "皇帝" in lemmas
 
     def test_zh_punctuation(self):

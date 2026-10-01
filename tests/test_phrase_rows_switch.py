@@ -135,7 +135,8 @@ def test_the_credits_hover_lists_every_data_source(monkeypatch):
     from app import dictionary_data
     assert f"JMdict created {dictionary_data.JMDICT_CREATED}" in credits
     for source in ("JMdict", "JMnedict", "EDRDG", "CC BY-SA 4.0", "UniDic", "unidic-lite", "MeCab", "fugashi", "jieba",
-                   "OpenCC", "Apache License 2.0", "CC-CEDICT", "JPDB 2024", "Jiten", "TMW", "RealPersonaChat",
+                   "OpenCC", "Apache License 2.0", "CC-CEDICT", "Universal Dependencies", "JPDB 2024", "Jiten", "TMW",
+                   "RealPersonaChat",
                    "Aozora Bunko", "Wikipedia", "Leipzig Corpora Collection", "CC BY 4.0", "Tatoeba", "CC BY 2.0 FR",
                    "KdConv", "Wikinews"):
         assert source in credits, source

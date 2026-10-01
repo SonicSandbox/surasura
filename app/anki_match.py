@@ -115,6 +115,9 @@ _NOTE_RE = re.compile(r'[（(【［〔][^（）()【】［］〔〕]*[）)】］
 # 、，, ／/ ；; and spaces part the words of a list. So does ・ — except between katakana, where it parts
 # the pieces of one foreign name or word (ジョン・スミス: the 中黒 convention).
 _SEPARATOR_RE = re.compile(r'[、，,／/；;\s]|(?<![ァ-ヺー])・|・(?![ァ-ヺー])')
+# A Chinese field's words are parted the same way, but never at a dot: Chinese writes ・ or · between the parts of one
+# foreign name (约翰・列侬, 哈利·波特 — the 间隔号), never between two words.
+_ZH_SEPARATOR_RE = re.compile(r'[、，,／/；;\s]')
 
 
 def _bare(text):
@@ -132,19 +135,20 @@ def card_word(raw, language=None):
 
     Japanese: `normalize_word` of the field's first line, its annotations in brackets dropped, its first
     word when a separator parts several, the punctuation around it gone — 撒く<br>まく, 「撒く」, 撒く。 and
-    撒く・巻く are all 撒く; 仰ぐ（あおぐ） is 仰ぐ. Any other language: `normalize_word` as it stands — what
-    of a Chinese field is its word is an open question (学习 (xuéxí), 学习 / 學習).
+    撒く・巻く are all 撒く; 仰ぐ（あおぐ） is 仰ぐ. Chinese: the same reading, never parted at a name's dot
+    (`_ZH_SEPARATOR_RE`) — 学习 (xuéxí), 学习 xuéxí, 学习 / 學習, 「学习」 and 学习<br>xuéxí are all 学习; 约翰・列侬 is
+    one name. Any other language: `normalize_word` as it stands.
 
     The Japanese line is read in NFKC, as the tagger reads text (`analyzer.tagger_text`): a half-width field is the
     word in full width — ﾊﾞｼｯと is バシッと, ｼﾞｮﾝ･ｽﾐｽ is ジョン・スミス — the spelling the list's keys carry."""
-    if language != "ja":
+    if language not in ("ja", "zh"):
         return normalize_word(raw)
     if not isinstance(raw, str):
         return ""
     line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
     line = unicodedata.normalize("NFKC", line)
     line = _NOTE_RE.sub("", line) or line
-    for piece in _SEPARATOR_RE.split(line):
+    for piece in (_SEPARATOR_RE if language == "ja" else _ZH_SEPARATOR_RE).split(line):
         word = _bare(piece)
         if word:
             return word
@@ -709,6 +713,13 @@ def is_attached_tail(lemma):
 # meets this). ONE ending, never two: 楽しみにする and クビにする stay phrases, their meaning moves.
 # Junban places such a card as the word, and the report labels the word (Anki_Match_Consistency_Scope.md).
 CARD_ENDINGS = ATTACHED_TAILS | {"と"}
+# A Chinese card's word ending: 的 after a word does な's job (漂亮的 'pretty'), 地 does に's (认真地 'seriously'). ONE
+# ending, as for Japanese; a word that ends in either character is one token to the tokenizer (目的, 土地) and keeps it.
+ZH_CARD_ENDINGS = frozenset(("的", "地"))
+# And an aspect marker after ONE verb — 吃了, 去过, 看着: the verb's paradigm, no word of its own (as 取り消した is 取り消す).
+# Told by jieba's tag, handed in (`verb`, analyzer.chinese_verb: this file stays pure); a word CC-CEDICT lists whole (为了,
+# 不过, 接着, 睡着) is one token to the tokenizer and never meets this.
+ZH_ASPECTS = frozenset(("了", "过", "着"))
 
 # A word's paradigm, which no dictionary lists as words of their own (JMdict's headword is the dictionary
 # form): the past た (だ, たら), the polite ます, the negatives ない / ず (ぬ, ん) / まい, the desire たい,
@@ -794,14 +805,22 @@ def _copula_inflected(tokens):
             and all(token[0] in COPULA_FORMS for token in tokens[2:]))
 
 
-def one_word(tokens):
+def one_word(tokens, language="ja", verb=None):
     """The token a card's word IS, read alone: its only token; the first of two when the second is an
     ending written onto it (`CARD_ENDINGS`: 努力する -> 努力, バシッと -> バシッ); the first of any number when
     it is a conjugated word and the rest its inflection (`_inflected`: 取り消した -> 取り消す, a card is its
     dictionary form), or when the ending is a conjugated する (`_suru_inflected`: 勉強した -> 勉強) or copula
     (`_copula_inflected`: 静かだった -> 静か) — else None, a phrase or a compound being no one word. The word's own
     grammar comes off first (`affixes_off`: お部屋 -> 部屋, 俺たち -> 俺, 優しさ -> 優しい). `tokens` are the analyzer's
-    `(lemma, reading, surface, orth)`."""
+    `(lemma, reading, surface, orth)`. Chinese ("zh"): its only token, or the first of two when the second is 的
+    or 地 (`ZH_CARD_ENDINGS`: 认真地 -> 认真, 漂亮的 -> 漂亮), or 了 / 过 / 着 after a verb (`ZH_ASPECTS`, with `verb`:
+    吃了 -> 吃)."""
+    if language == "zh":
+        tokens = list(tokens or ())
+        if len(tokens) == 2 and (tokens[1][0] in ZH_CARD_ENDINGS
+                                 or (tokens[1][0] in ZH_ASPECTS and verb is not None and verb(tokens[0][0]))):
+            tokens = tokens[:1]
+        return tokens[0] if len(tokens) == 1 else None
     tokens = list(tokens or ())
     tokens = affixes_off(tokens, kana=_in_kana(tokens))
     if (len(tokens) == 2 and tokens[1][0] in CARD_ENDINGS) or _inflected(tokens) or _suru_inflected(tokens):
@@ -989,7 +1008,8 @@ def not_the_name(word, key, rank_of, words, tokenize):
     return other if other and rank_of[other] != rank else ""
 
 
-def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False):
+def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False,
+             verb=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.
 
     L1–L4 (`lookup`; via "exact") — but a hiragana card that is a common word never takes a name's or a loanword's
@@ -1008,7 +1028,12 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     The dictionary decides whether the card is that word at all (`two_words`): a Japanese card whose word JMdict
     gives an entry of its own, apart from the row's word (`another_word`, with `words` and `orths`: 生き in 生きる's
     Forms) or from the word it is read as (`word_of_its_own`: 心する is no 心 + する, 揚げる no 上げる), lands on no row
-    of that word — unless a row carries the card's own spelling, or the user said "yes"."""
+    of that word — unless a row carries the card's own spelling, or the user said "yes".
+
+    Chinese, with a tokenizer (the analyzer's Chinese one, in the list's script): after the exact keys and the
+    user's "yes", the card read alone as ONE word, a 的 or 地 written on it taken off (`one_word`: 认真地 -> 认真) — or
+    a 了 / 过 / 着 after a verb, with `verb` (analyzer.chinese_verb: 吃了 -> 吃) — or a doubled form at its word
+    (开开心心 -> 开心) — via "L7", never against the user's "no"."""
     key = lookup(word, rank_of, language)
     if key and language == "ja" and another_word(word, key, rank_of, words, orths):
         key = ""                # its spelling is another dictionary word's there: not that row
@@ -1021,6 +1046,12 @@ def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=No
     if instead is not None:
         refused = answer.get("answer") == "no" and answer.get("target") == instead
         return (instead, "L6") if instead and not refused else ("", "")
+    if language == "zh" and tokenize and isinstance(word, str) and word and rank_of:
+        token = one_word(tokenize(word), "zh", verb)
+        key = lookup(token[0], rank_of, language) if token else ""
+        if key and not (answer.get("answer") == "no" and answer.get("target") == key):
+            return key, "L7"
+        return "", ""
     if language != "ja" or not tokenize or not isinstance(word, str) or not word or not rank_of:
         return "", ""
     tokens = ending_apart(tokenize(word))

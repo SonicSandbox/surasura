@@ -2,10 +2,11 @@
 
 Spec: docs/agent instructions/Chinese_Script_Conversion_Spec.md (§5.3, §7, gotchas 2-5).
 
-- As-is must be byte-for-byte what the tokenizer produced BEFORE this feature (I2). It is compared
-  against a golden file generated from the committed analyzer, not against a re-implementation.
-- `s` / `t` emit single-script tokens, segment in Simplified (which is what repairs Traditional
-  segmentation: 經濟關|係 as-is, 經濟|關係 under `t`), and merge a word across scripts.
+- As-is reads the text through Simplified too (jieba's dictionary is Simplified only) and keeps every word
+  as the text writes it: 為什麼 is one word, still spelled 為什麼. Its full output is pinned by a golden
+  file generated from the committed analyzer, not against a re-implementation (2.4 retired the old rule
+  that as-is be byte-for-byte the pre-feature tokenizer: it cut Traditional text into pieces).
+- `s` / `t` emit single-script tokens, segment in Simplified, and merge a word across scripts.
 - The token store's build signature and the known-words signature change on a switch and ONLY on a
   switch. An as-is store keeps its exact old signature, or every Chinese user would rebuild their
   whole index on upgrade (gotcha 5).
@@ -35,9 +36,9 @@ def _words(text, script):
 
 # ---- the tokenizer ---------------------------------------------------------------------------- #
 
-def test_asis_tokenization_is_byte_identical_to_before_the_feature(zh_resources_dir, monkeypatch):
-    """I2. The golden holds the pre-feature tokenizer's full output (sentences AND token tuples) for
-    both files, under the sentence boundaries it was generated with."""
+def test_asis_tokenization_matches_its_golden(zh_resources_dir, monkeypatch):
+    """The golden holds the as-is tokenizer's full output (sentences AND token tuples) for both files, under
+    the sentence boundaries it was generated with: any change to it is deliberate, and regenerates it."""
     with open(os.path.join(zh_resources_dir, "asis_tokens_golden.json"), encoding="utf-8") as f:
         golden = json.load(f)
     monkeypatch.setitem(analyzer.LOGIC, "sentence_boundaries", {"zh": golden["boundaries"]})
@@ -79,12 +80,30 @@ def test_t_reads_simplified_content_as_traditional(zh_resources_dir):
     assert all(t[1] == "" and t[0] == t[2] == t[3] for t in toks)
 
 
-def test_t_segments_traditional_text_better_than_as_is():
-    """jieba's dictionary is Simplified only, so Traditional text as-is splits 經濟關係 into 經濟關|係.
-    Segmenting the Simplified copy fixes that for free (spec §5.3)."""
+def test_asis_cuts_traditional_text_through_simplified_and_keeps_its_spelling():
+    """jieba's dictionary is Simplified only: cut as written, Traditional text came out in pieces (為 / 什麼,
+    頭 / 髮, 我覺 / 得, 臺 / 灣旅遊, 經濟關 / 係). As-is now cuts the Simplified copy, as `t` always has, and every
+    word is the text's own stretch — the script is kept, only the cut is shared."""
+    assert _words("為什麼你不學中文？", "asis")[0] == "為什麼"
+    assert "頭髮" in _words("她的頭髮很長。", "asis")
+    assert _words("我覺得臺灣旅遊很好。", "asis")[:4] == ["我", "覺得", "臺灣", "旅遊"]
+    assert _words("經濟關係的發展很重要。", "asis")[:2] == ["經濟", "關係"] == _words("經濟關係的發展很重要。", "t")[:2]
+
+
+def test_the_simplified_fixtures_cut_alike_as_is_and_as_simplified(zh_resources_dir):
+    """For text already in Simplified the Simplified pass changes nothing: as-is and `s` give the same tokens,
+    sentence for sentence (the as-is change reaches Traditional text only)."""
+    for name in ("context_test.txt", "patterns_zh_sample.txt"):
+        text = _read(zh_resources_dir, name)
+        asis = list(analyzer.ChineseTokenizer().tokenize_sentences(text))
+        assert asis == list(analyzer.ChineseTokenizer(script="s").tokenize_sentences(text)), name
+
+
+def test_t_segments_traditional_text_as_well_as_as_is():
+    """Both cut the Simplified copy (spec §5.3); `t` writes every word in Traditional, as-is as written."""
     text = "經濟關係的發展很重要。"
-    assert "關係" not in _words(text, "asis")
-    assert _words(text, "t")[:2] == ["經濟", "關係"]
+    assert _words(text, "t")[:2] == ["經濟", "關係"] == _words(text, "asis")[:2]
+    assert _words("经济关系很重要。", "t")[:2] == ["經濟", "關係"] and _words("经济关系很重要。", "asis")[:2] == ["经济", "关系"]
 
 
 def test_a_mixed_library_counts_each_word_once():
@@ -100,10 +119,10 @@ def test_a_mixed_library_counts_each_word_once():
 
 @pytest.mark.parametrize("args, expected", [
     (("zh",), "zh|reinforce=False"),                        # exactly the pre-feature strings (I2)
-    (("zh", True), "zh|reinforce=True"),
+    (("zh", True), "zh|reinforce=False"),                    # reinforce is retired: read as off
     (("zh", False, "asis"), "zh|reinforce=False"),
     (("zh", False, "s"), "zh|reinforce=False|script=s"),
-    (("zh", True, "t"), "zh|reinforce=True|script=t"),
+    (("zh", True, "t"), "zh|reinforce=False|script=t"),
     (("zh", False, "tw"), "zh|reinforce=False"),           # unknown value = as-is
     (("ja", True, "t"), "ja|reinforce=False"),             # Japanese ignores both
 ])
@@ -206,7 +225,7 @@ def test_indexer_builds_the_same_tokenizer_a_run_does(zh_library):
 
     store = ti.open_store("zh")
     try:
-        assert store.get_meta("build_sig") == "zh|reinforce=True|script=t"
+        assert store.get_meta("build_sig") == "zh|reinforce=False|script=t"    # reinforce is retired
         assert store.get_cached_known(ti.known_signature(str(zh_library["known"]), "t")) is not None
     finally:
         store.close()

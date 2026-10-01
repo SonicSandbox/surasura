@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from app import anki_match
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,14 +109,23 @@ def test_a_half_width_field_is_read_as_the_word_in_full_width():
     tokenize = _tokenizer().tokenize
     word = anki_match.card_word("ﾊﾞｼｯと", "ja")
     assert anki_match.card_key(word, {"バシッ": 0, "冒険": 1}, "ja", None, tokenize) == ("バシッ", "L7")
-    assert anki_match.card_word("ｶﾞｯｺｳ", "zh") == anki_match.normalize_word("ｶﾞｯｺｳ"), "Chinese as before"
+    assert anki_match.card_word("ｶﾞｯｺｳ", "zh") == "ガッコウ", "a Chinese field is read in NFKC too"
 
 
-def test_a_chinese_field_and_a_field_of_no_language_are_read_as_before():
-    """What of a Chinese field is its word is an open question (学习 (xuéxí),
-    学习 / 學習) — untouched; and with no language, a card is read exactly as `normalize_word` reads it."""
-    for raw in ("学习 (xuéxí)", "学习 / 學習", "「学习」", "学习<br>xuéxí"):
-        assert anki_match.card_word(raw, "zh") == anki_match.normalize_word(raw), raw
+@pytest.mark.parametrize("raw", ["学习 (xuéxí)", "学习（xuéxí）", "学习 xuéxí", "学习 / 學習", "「学习」",
+                                 "学习<br>xuéxí", "学习[xue2 xi2]", "<ruby>学<rt>xué</rt></ruby><ruby>习<rt>xí</rt></ruby>",
+                                 '<span class="tone2">学</span><span class="tone2">习</span>'])
+def test_a_chinese_field_is_read_as_its_one_word(raw):
+    """The shapes Chinese decks write a word in — pinyin after it, in brackets or not, both scripts, a second line,
+    corner brackets — are all the word 学习, read as a Japanese field is."""
+    assert anki_match.card_word(raw, "zh") == "学习"
+
+
+def test_a_chinese_name_is_never_parted_at_its_dot_and_no_language_reads_as_before():
+    """Chinese writes ・ or · between the parts of one foreign name (the 间隔号): 约翰・列侬 and 哈利·波特 are one
+    name each. With no language, a card is read exactly as `normalize_word` reads it."""
+    assert anki_match.card_word("约翰・列侬", "zh") == "约翰・列侬"
+    assert anki_match.card_word("哈利·波特 (Hālì Bōtè)", "zh") == "哈利·波特"
     assert anki_match.card_word("「撒く」") == "「撒く」"
     assert anki_match.card_word("撒く<br>まく") == anki_match.normalize_word("撒く<br>まく") == "撒くまく"
 
@@ -580,11 +591,64 @@ def test_the_users_answers_come_before_the_ending_and_a_no_is_never_overruled():
     assert anki_match.card_key("冒険", listed, "ja", answers, tokenize) == ("冒険", "exact")
 
 
-def test_chinese_and_a_missing_tokenizer_keep_exact_keys_and_answers_only():
-    tokenize = _tokenizer().tokenize
-    assert anki_match.card_key("学习", {"学习": 0}, "zh", None, tokenize) == ("学习", "exact")
+def test_a_missing_tokenizer_keeps_exact_keys_and_answers_only():
+    assert anki_match.card_key("学习", {"学习": 0}, "zh", None, None) == ("学习", "exact")
+    assert anki_match.card_key("认真地", {"认真": 0}, "zh", None, None) == ("", "")
     assert anki_match.card_key("努力する", {"努力": 0}, "ja", None, None) == ("", "")
-    assert anki_match.card_key("努力する", {"努力": 0}, "zh", None, tokenize) == ("", "")
+    assert anki_match.card_key("努力する", {"努力": 0}, "zh", None, _tokenizer().tokenize) == ("", "")
+
+
+def _chinese():
+    from app import analyzer
+    return analyzer.ChineseTokenizer().tokenize
+
+
+@pytest.mark.parametrize("word, listed, key", [
+    ("认真地", ["他", "认真", "地", "学习"], "认真"),      # 地 does に's job: the adverb's word
+    ("漂亮的", ["漂亮", "的"], "漂亮"),                   # 的 does な's
+    ("我的", ["我", "的"], "我"),
+    ("开开心心", ["开心"], "开心"),                       # a doubled form is its word
+])
+def test_a_chinese_card_read_alone_as_one_word_lands_on_it(word, listed, key):
+    rank_of = {name: rank for rank, name in enumerate(listed)}
+    assert anki_match.card_key(word, rank_of, "zh", None, _chinese()) == (key, "L7")
+    no = {word: {"answer": "no", "target": key}}
+    assert anki_match.card_key(word, rank_of, "zh", no, _chinese()) == ("", ""), "the user's no wins"
+
+
+def test_a_chinese_word_ending_in_de_or_di_is_its_own_word():
+    """目的 'purpose' and 土地 'land' are one token each: never 目 or 土."""
+    rank_of = {"目": 0, "的": 1, "土": 2, "地": 3}
+    for word in ("目的", "土地"):
+        assert anki_match.card_key(word, rank_of, "zh", None, _chinese()) == ("", ""), word
+        assert anki_match.one_word(_chinese()(word), "zh")[0] == word
+
+
+@pytest.mark.parametrize("word, key", [("吃了", "吃"), ("去过", "去"), ("看着", "看")])
+def test_a_chinese_card_with_its_aspect_after_a_verb_is_that_verb(word, key):
+    """了 / 过 / 着 after ONE verb are its paradigm, no word of their own (as 取り消した is 取り消す): placed on the verb,
+    told by jieba's own tags (analyzer.chinese_verb, handed in). Without the test, nothing comes off."""
+    from app import analyzer
+    rank_of = {"吃": 0, "去": 1, "看": 2, "人": 3, "好": 4}
+    assert anki_match.card_key(word, rank_of, "zh", None, _chinese(), verb=analyzer.chinese_verb) == (key, "L7")
+    assert anki_match.card_key(word, rank_of, "zh", None, _chinese()) == ("", "")
+
+
+def test_an_aspect_comes_off_a_verb_only_and_never_a_word_listed_whole():
+    """人了 has no verb before its 了; 好了 an adjective; 为了 'in order to' and 睡着 'asleep' are CC-CEDICT words the
+    tokenizer keeps whole."""
+    from app import analyzer
+    rank_of = {"人": 0, "好": 1, "为": 2, "睡": 3}
+    for word in ("人了", "好了", "为了", "睡着"):
+        assert anki_match.card_key(word, rank_of, "zh", None, _chinese(), verb=analyzer.chinese_verb) == ("", ""), word
+
+
+def test_one_chinese_word_takes_one_ending_only():
+    tokens = [("认真", "", "认真", "认真"), ("地", "", "地", "地")]
+    assert anki_match.one_word(tokens, "zh") == tokens[0]
+    assert anki_match.one_word(tokens + [("学习", "", "学习", "学习")], "zh") is None
+    assert anki_match.one_word([("学习", "", "学习", "学习"), ("中文", "", "中文", "中文")], "zh") is None
+    assert anki_match.one_word([], "zh") is None
 
 
 def test_a_word_in_its_inflected_form_is_its_dictionary_form():

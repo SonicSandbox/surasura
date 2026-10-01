@@ -567,7 +567,9 @@ def anki_backlog_keys(language, settings, list_path=None):
     Anki words" (`anki_backlog_on_generate`; Junban_Backlog_Spec WP-B8). Keys only, never card
     content: each card's word and its hiragana fold, as the Anki sync wrote them
     (`User Files/<lang>/anki_backlog.json`), and for Japanese the word the dictionary reads each card
-    as (`_dictionary_keys`). Chinese keys are read in the script the report is in, as the list is.
+    as (`_dictionary_keys`). Chinese keys are read in the script the report is in, as the list is, and a Chinese
+    card whose word is no key of the list as written is labelled where Junban places it (`_chinese_keys`: 认真地 on
+    认真).
     `[]` when switched off, with no backlog file, or on any error — the report then has no label, no
     filter entry and no count: a user without Anki sees nothing different.
 
@@ -591,6 +593,8 @@ def anki_backlog_keys(language, settings, list_path=None):
             script = effective(language, (settings or {}).get("zh_script"))
             if script != "asis":
                 keys = {convert(key, script) for key in keys}
+            if list_path:
+                keys |= _chinese_keys(keys, script, list_path, _pair_answers(language))
         if keys and language == "ja":
             from app import anki_match
             backlog = anki_sync.load_backlog(language)
@@ -767,6 +771,27 @@ def _dictionary_keys(backlog, answers=None, listed=None, names=None, index=None,
         print(f"Warning: could not read the Anki backlog through the dictionary: {e}")
         return set()
     return keys
+
+
+def _chinese_keys(words, script, list_path, answers=None):
+    """The list words Chinese backlog cards ARE when their word is no list key as written: the card read alone as ONE
+    word, a 的 or 地 written on it taken off (认真地 is 认真), a 了 / 过 / 着 after a verb (吃了 is 吃) or a doubled form
+    at its word — where Junban places it
+    (`anki_match.card_key`, L7), the user's "no" kept. The tokenizer, in the report's script, is built only when a
+    card needs it; one that can't be had leaves the cards' own keys, as before."""
+    from app import anki_match
+    listed = anki_match.build_index(list_path, language="zh").rank_of
+    wanted = [word for word in words if word not in listed]
+    if not listed or not wanted:
+        return set()
+    try:
+        from app import analyzer
+        tokenize = analyzer.ChineseTokenizer(script=script).tokenize
+        return {key for key in (anki_match.card_key(word, listed, "zh", answers, tokenize, verb=analyzer.chinese_verb)[0]
+                                for word in wanted) if key}
+    except Exception as e:
+        print(f"Warning: could not read the Chinese backlog's cards: {e}")
+        return set()
 
 
 def _pair_answers(language):

@@ -218,7 +218,11 @@ too. So are the set phrases Surasura can add to your list (Settings → Language
 your list"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
 which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
 statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
-the same licence.
+the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
+words only when they're dictionary words": 手, 顔, こと): the one-character words that JMdict lists with their reading
+and calls common — or that JPDB 2024 and Jiten both rank among their top 20,000 — and that general text (the same
+shared set's Japanese text, as statistics only) uses as words of their own; that table (`app/one_kanji_data.py`) keeps
+only spellings and readings.
 Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
 

@@ -893,7 +893,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                     "filename": filename,
                     "words": compressed_words,
                     "total_words": total_words,
-                    "is_goal_content": filename in goal_files
+                    "is_goal_content": filename in goal_files,
+                    # The file's one-kanji words the list can't offer, most used first ([spelling, lemma, uses]) —
+                    # "Also in this file, not on your list" (analyzer § One-character words).
+                    "unlisted": stats_map.get(filename, {}).get("Not On List", []),
                 })
         except Exception as e:
             print(f"Error loading progressive CSV: {e}")

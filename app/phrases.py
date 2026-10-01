@@ -161,18 +161,20 @@ class PhraseSet:
         return found
 
 
-def waiting(phrase, known):
+def waiting(phrase, known, offered=None):
     """(the words `phrase` waits for, whether every real word in it is known) — `known((lemma, reading))` is the
     caller's test: known, ignored, or read through known words. A phrase is ready once it waits for nothing: grammar and
     light words never count, and neither does a word that lives only inside the phrase (it is learned with it) or a
-    one-character word (never a list row of its own, so it would wait forever). A ready phrase whose real words are all
-    known sits lower on the list, as a word read through known words does."""
+    one-character word the list can never offer (it would wait forever). `offered((lemma, reading))` says whether the
+    list offers a one-character word (analyzer.single_kind: a one-kanji dictionary word — 手に入れる waits for 手 while
+    手 is new); None, none is. A ready phrase whose real words are all known sits lower on the list, as a word read
+    through known words does."""
     words, all_known = [], True
     for role, key in zip(phrase.roles, zip(phrase.key, phrase.readings)):
         if role not in (CONTENT, BOUND) or known(key):
             continue
         all_known = False
-        if role == CONTENT and len(key[0]) > 1:
+        if role == CONTENT and (len(key[0]) > 1 or (offered is not None and offered(key))):
             words.append(key)
     return tuple(words), all_known
 

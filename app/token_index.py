@@ -75,7 +75,10 @@ from operator import itemgetter
 #    the dictionary doesn't know is the sound word said twice (ハァハァハァ is はあはあ), a dash drawn out inside a word is
 #    a stretch (ザ─────ック), a dash is never a word, and the next line's opening bracket glued to a full stop opens
 #    the next sentence: a v14 blob holds the pieces and the old sentences — still 2.4, so users rebuild once with v8–v14.
-SCHEMA_VERSION = 15
+# v16 each file also records how often each one-kanji word stands there as a piece of something else (年 in 三年, 斬 in
+#    斬魄刀 — analyzer.bound_uses), kept summed in the `bound` table: the Rarity slider counts a one-kanji list word by
+#    the uses Generate counts, where it stands on its own — still 2.4, so users rebuild once with v8–v15.
+SCHEMA_VERSION = 16
 
 
 # --------------------------------------------------------------------------- #
@@ -170,13 +173,18 @@ CREATE TABLE IF NOT EXISTS files (
     total  INTEGER,            -- token count for this file
     counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
     tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
-    names  BLOB                -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
+    names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
+    bound  BLOB                -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
     PRIMARY KEY (lemma, reading)
 );
 CREATE INDEX IF NOT EXISTS idx_aggregate_count ON aggregate(count DESC);
+CREATE TABLE IF NOT EXISTS bound (      -- maintained rollup of the files' `bound`: the preview reads this too
+    lemma TEXT, reading TEXT, count INTEGER,
+    PRIMARY KEY (lemma, reading)
+);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
@@ -185,13 +193,15 @@ def _ensure_schema(conn):
     ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if ver == SCHEMA_VERSION:
         try:  # verify tables actually exist (guard a half-built DB)
-            conn.execute("SELECT names FROM files LIMIT 1")
+            conn.execute("SELECT names, bound FROM files LIMIT 1")
             conn.execute("SELECT 1 FROM aggregate LIMIT 1")
+            conn.execute("SELECT 1 FROM bound LIMIT 1")
             return
         except sqlite3.DatabaseError:
             pass  # fall through to rebuild
     conn.executescript(
-        "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS aggregate; DROP TABLE IF EXISTS meta;"
+        "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS aggregate; DROP TABLE IF EXISTS bound; "
+        "DROP TABLE IF EXISTS meta;"
         + _SCHEMA
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -240,6 +250,7 @@ class Store:
         self.conn = conn
         self.language = language
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
+        self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
 
     def close(self):
         try:
@@ -314,8 +325,10 @@ class Store:
         aggregate counts each file as it reads alone; the list counts its cached tokens with the tables applied
         (file_tokens) — so the Rarity slider's numbers, and the band automatic rarity picks from them, must add each
         joined name and take away its pieces, counted as the aggregate counts (a token with target-language
-        characters). {"111" | "110" | … | "001" (recurring, kanji, terms): {"counts": [[lemma, reading, delta], ...],
-        "total": delta}}."""
+        characters) — and the one-kanji words a join makes or unmakes pieces of something else (`bound`: 斬 + 魄 + 刀
+        joined as a term are no pieces any more; a word beside them no longer stands glued to them). {"111" | "110" |
+        … | "001" (recurring, kanji, terms): {"counts": [[lemma, reading, delta], ...], "total": delta, "bound":
+        [[lemma, reading, delta], ...]}}."""
         from app import analyzer, names
         if not tables:
             return {}
@@ -324,7 +337,7 @@ class Store:
         terms = spellings.get("w", ())
         combos = [(f"{r:d}{k:d}{t:d}", (bool(r), bool(k), bool(t)))
                   for r in (1, 0) for k in (1, 0) for t in (1, 0) if r or k or t]
-        deltas = {combo: [Counter(), 0] for combo, _switches in combos}
+        deltas = {combo: [Counter(), 0, Counter()] for combo, _switches in combos}
         for tokens_blob, names_blob in cur.execute(
                 "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
             spans = _decode_counts(names_blob).get("s", [])
@@ -332,28 +345,73 @@ class Store:
                        for span in spans):
                 continue                                # no joined name here: nothing to decode
             sentences = _decode_tokens(tokens_blob)
+            alone = {}                                  # sentence -> its pieces as the file reads alone (every combo's)
             for combo, switches in combos:
                 delta = deltas[combo]
+                cuts = {}                               # sentence -> its joins, in order
                 for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
+                    cuts.setdefault(s, []).append((a, b, token))
                     joined = [(token, 1)] + [(piece, -1) for piece in sentences[s][1][a:b]]
                     for (lemma, reading, surface, *_rest), sign in joined:
                         if has_lang(lemma, self.language) or has_lang(surface, self.language):
                             delta[0][(lemma, reading)] += sign
                             delta[1] += sign
-        return {combo: {"counts": [[l, r, n] for (l, r), n in counts.items() if n], "total": total}
-                for combo, (counts, total) in deltas.items()}
+                # A join takes its pieces away and gives each word beside it a new neighbour; no other word's place
+                # changes, so only those are asked again (a word's piece-ness is decided by its neighbours).
+                for s, joins in cuts.items():
+                    text, tokens = sentences[s]
+                    pieces = alone.get(s)
+                    if pieces is None:
+                        pieces = alone[s] = analyzer.bound_uses(text, tokens)
+                    joined, gone, beside, shift = list(tokens), set(), set(), 0
+                    for a, b, _token in joins:
+                        gone.update(range(max(a - 1, 0), min(b + 1, len(tokens))))
+                        if a:
+                            beside.add(a - 1 - shift)
+                        if b < len(tokens):
+                            beside.add(a - shift + 1)
+                        shift += b - a - 1
+                    for a, b, token in reversed(joins):
+                        joined[a:b] = [token]
+                    for i in gone & pieces:
+                        delta[2][(tokens[i][0], tokens[i][1])] -= 1
+                    for i in analyzer.bound_uses(text, joined, only=sorted(beside)):
+                        delta[2][(joined[i][0], joined[i][1])] += 1
+        return {combo: {"counts": [[l, r, n] for (l, r), n in counts.items() if n], "total": total,
+                        "bound": [[l, r, n] for (l, r), n in pieces.items() if n]}
+                for combo, (counts, total, pieces) in deltas.items()}
+
+    def _names_entry(self):
+        """What the name tables change with the switches set now (`_names_adjust`, one switch combination) — {} when all
+        are off, before the first index, or for Chinese. Parsed once while the stored value stays the same: a slider
+        refresh reads it twice (`word_counts`, `bound_counts`)."""
+        combo = "".join("1" if on else "0" for on in _library_switches(self.language))
+        if "1" not in combo:
+            return {}
+        try:
+            raw = self.get_meta("names_adjust") or "{}"
+            if self._adjust is None or self._adjust[0] != raw:
+                self._adjust = (raw, json.loads(raw))
+            return self._adjust[1].get(combo) or {}
+        except Exception:
+            return {}
 
     def _names_adjustment(self):
         """({(lemma, reading): delta}, total delta) that the name tables make with the switches set now — ({}, 0) when
         all are off, before the first index, or for Chinese."""
-        combo = "".join("1" if on else "0" for on in _library_switches(self.language))
-        if "1" not in combo:
-            return {}, 0
         try:
-            entry = json.loads(self.get_meta("names_adjust") or "{}").get(combo) or {}
+            entry = self._names_entry()
             return {(l, r): n for l, r, n in entry.get("counts", ())}, int(entry.get("total", 0))
         except Exception:
             return {}, 0
+
+    def _names_bound(self):
+        """{(lemma, reading): delta} — how the name tables' joins change the one-kanji words' uses as pieces of
+        something else, with the switches set now ({} as `_names_adjustment`)."""
+        try:
+            return {(l, r): n for l, r, n in self._names_entry().get("bound", ())}
+        except Exception:
+            return {}
 
     # -- meta key/value (run-signature, known-words cache) ------------------- #
     def get_meta(self, key, default=None):
@@ -439,9 +497,9 @@ class Store:
         return False
 
     # -- reconcile (delta, one transaction) ---------------------------------- #
-    def _apply(self, cur, counts):
+    def _apply(self, cur, counts, table="aggregate"):
         cur.executemany(
-            "INSERT INTO aggregate(lemma, reading, count) VALUES(?,?,?) "
+            f"INSERT INTO {table}(lemma, reading, count) VALUES(?,?,?) "
             "ON CONFLICT(lemma, reading) DO UPDATE SET count = count + ?",
             [(*split_key(key), n, n) for key, n in counts.items()],
         )
@@ -450,7 +508,8 @@ class Store:
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
-        name candidates). Sequences are cached (for Generate reuse); counts maintain the aggregate; after
+        name candidates, and "bound", its one-kanji words' uses as pieces of something else). Sequences are
+        cached (for Generate reuse); counts maintain the aggregate, and "bound" the bound table; after
         a change the library's name tables are computed again. Runs in a single BEGIN IMMEDIATE
         transaction (atomic; serialized against other writers).
 
@@ -470,21 +529,24 @@ class Store:
                 if _row is not None and _row[0] != build_signature:
                     cur.execute("DELETE FROM files")      # tokenizer identity changed -> full rebuild
                     cur.execute("DELETE FROM aggregate")
+                    cur.execute("DELETE FROM bound")
                     changed = True
             existing = {
-                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4]}
-                for r in cur.execute("SELECT path, mtime, size, total, counts FROM files")
+                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4], "bound": r[5]}
+                for r in cur.execute("SELECT path, mtime, size, total, counts, bound FROM files")
             }
             current = {_norm(p): p for p in files}
             # What the files change in the aggregate, summed over the whole pass and written once at the end: a full
             # rebuild wrote a million rows (every word of every file) where the library has some 50,000 words.
             # Keys stay in the order they are first met, so new words are added in the same order as file by file.
-            delta = Counter()
+            # Likewise the one-kanji words' uses as pieces (`pieces`, the bound table).
+            delta, pieces = Counter(), Counter()
 
             # Removals — subtract vanished files.
             for key in list(existing):
                 if key not in current:
                     delta.subtract(_decode_counts(existing[key]["counts"]))
+                    pieces.subtract(_decode_counts(existing[key]["bound"]))
                     cur.execute("DELETE FROM files WHERE path=?", (key,))
                     changed = True
 
@@ -499,21 +561,27 @@ class Store:
                     continue  # unchanged — no tokenization
                 result = tokenize_file(realpath)   # {"sentences": [...], "counts": Counter}
                 counts = {k: n for k, n in result["counts"].items() if n > 0}
+                bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
                 total = sum(counts.values())
                 if row is not None:  # changed: subtract the stale contribution first
                     delta.subtract(_decode_counts(row["counts"]))
+                    pieces.subtract(_decode_counts(row["bound"]))
                 delta.update(counts)
+                pieces.update(bound)
                 names = result.get("names")
                 cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names) "
-                    "VALUES(?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (key, mtime, size, total, _encode_counts(counts),
-                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None),
+                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
+                     _encode_counts(bound) if bound else None),
                 )
                 changed = True
 
             self._apply(cur, delta)
             cur.execute("DELETE FROM aggregate WHERE count <= 0")  # prune emptied words
+            self._apply(cur, pieces, "bound")
+            cur.execute("DELETE FROM bound WHERE count <= 0")
             if self.language == "ja" and (changed or cur.execute(
                     "SELECT 1 FROM meta WHERE key='names_tables'").fetchone() is None):
                 self._update_names_tables(cur)
@@ -638,17 +706,29 @@ class Store:
                 del counts[key]
         return counts, self.total_tokens() + total_adjust
 
+    def bound_counts(self):
+        """{(lemma, reading): uses} — how often each one-kanji word stands as a piece of something else (年 in 三年,
+        斬 in 斬魄刀: analyzer.bound_uses), counted as `word_counts` counts: with the name tables' joins. A one-kanji
+        list word's uses on the list are its count less these."""
+        rows = self.conn.execute("SELECT lemma, reading, count FROM bound").fetchall()
+        bound = {(lemma, reading): n for lemma, reading, n in rows}
+        for key, delta in self._names_bound().items():
+            bound[key] = bound.get(key, 0) + delta
+        return bound
+
     def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
                             skip_singles=False):
         """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`), the set
-        phrases' rows included when the switch is on (`phrase_table`)."""
+        phrases' rows included when the switch is on (`phrase_table`), the one-kanji list words by their uses where
+        they stand on their own (`bound_counts`)."""
         counts, total = self.word_counts()
         return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
-                                    self.language, self.phrase_table())
+                                    self.language, self.phrase_table(),
+                                    self.bound_counts() if skip_singles and self.language == "ja" else None)
 
 
 def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=None, ignore_set=None,
-                         skip_singles=False, language=None, phrases=None):
+                         skip_singles=False, language=None, phrases=None, bound=None):
     """{total_tokens, known_tokens, unknown:[(key,count)...], all_counts:[asc]} from the library's per-word counts
     ({(lemma, reading): uses}) and the learner's lists — the Rarity slider's numbers, and the analyzer's own when it
     decides a band without the store.
@@ -662,14 +742,22 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
     `phrases`, the store's phrase table (`Store.phrase_table`), adds the set phrases as Generate lists them: each one
     the learner neither knows nor ignores as a whole (its Word, its reading, or a spelling on the lists) is an unknown
     of its own uses — unless its lemmas joined are a word the library holds — and a word that lives only inside its
-    phrase counts without the uses it gives the phrase. Coverage and the known share stay the tokens'."""
+    phrase counts without the uses it gives the phrase. Coverage and the known share stay the tokens'.
+
+    `skip_singles` (Japanese, Settings' "List one-kanji words only when they're dictionary words" on): a one-character
+    word counts as the list counts it (analyzer § One-character words) — a one-kanji dictionary word by its uses where
+    it stands on its own, less `bound` ({(lemma, reading): uses as pieces of something else}, `Store.bound_counts`);
+    any other one-character word, and those pieces, are nothing to learn (known tokens)."""
     known_tuples = known_tuples or set()
     known_lemmas = known_lemmas or set()
     ignore_set = ignore_set or set()
+    bound = bound or {}
     table = {}
+    single_kind = None
     if language == "ja":
         from app import analyzer
         table = analyzer.compound_parts()
+        single_kind = analyzer.single_kind
     met = []                        # the unknown compounds the library holds
     taken = (phrases or {}).get("taken") or {}
 
@@ -681,9 +769,17 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
             known_tokens += n
             continue
         if skip_singles and len(lemma) == 1:
-            # Single-char tokens are baseline noise for ja learning; still count toward total.
-            known_tokens += n
-            continue
+            # Only a one-kanji dictionary word is learnable, where it stands on its own; the rest still count toward
+            # the total.
+            if single_kind is None or single_kind(key) != 2:
+                known_tokens += n
+                continue
+            pieces = bound.get(key, 0)
+            if pieces:
+                known_tokens += min(pieces, n)
+                n -= pieces
+                if n <= 0:
+                    continue
         name = f"{lemma}|{key[1]}"                      # make_key
         unknown.append((name, n - taken[name] if name in taken else n))
         if key in table:
@@ -719,10 +815,11 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
                     continue
                 if part in table:
                     todo.append(part)
-                elif skip_singles and len(lemma) == 1:
+                elif skip_singles and len(lemma) == 1 and (single_kind is None or single_kind(part) != 2):
                     continue
                 kept.append((lemma, reading, True))
-                bases[make_key(lemma, reading)] = counts.get(part, 0) - taken.get(make_key(lemma, reading), 0)
+                bases[make_key(lemma, reading)] = (counts.get(part, 0) - taken.get(make_key(lemma, reading), 0)
+                                                   - (bound.get(part, 0) if skip_singles else 0))
             parts[key] = tuple(kept)
         freqs["compounds"] = (uses, parts, bases)
     return freqs
@@ -864,7 +961,8 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
     are the store's normalized known cache when it matches KnownWord.json, else the dictForm
     approximation; the three lists are their plain lines (the analyzer's own ignore set also reads a
     hiragana line through the tokenizer, する -> 為る, and still decides the list itself — this one
-    only the band); single characters never count in Japanese. None for an empty store."""
+    only the band); Japanese one-character words count as the list counts them, by Settings' "List one-kanji
+    words only when they're dictionary words" (`singles_rule`). None for an empty store."""
     if not store.total_tokens():
         return None
     cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
@@ -874,7 +972,20 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
         known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
     return store.unknown_frequencies(
         known_tuples=known_tuples, known_lemmas=known_lemmas,
-        ignore_set=preview_ignore_set(user_files_dir, language, script), skip_singles=(language == "ja"))
+        ignore_set=preview_ignore_set(user_files_dir, language, script),
+        skip_singles=(language == "ja" and singles_rule()))
+
+
+def singles_rule():
+    """Settings -> "List one-kanji words only when they're dictionary words" (exclude_single, on by default): the
+    analyzer's rule for Japanese one-character words (analyzer § One-character words) — off lists every one. Read
+    fresh, as the build signature's switches are: the dashboard's slider must see a change as the next Generate
+    will."""
+    try:
+        from app import settings_manager
+        return bool(settings_manager.load_settings().get("exclude_single", True))
+    except Exception:
+        return True
 
 
 def preview_ignore_set(user_files_dir, language, script="asis"):
@@ -1035,6 +1146,8 @@ def make_tokenizer(language, reinforce=False, script="asis"):
       (every token, so Generate's aggregation can reuse it verbatim).
     - `counts`: Counter('lemma|reading' -> n) over tokens whose lemma OR surface has target-language
       chars (mirrors the analyzer's file_total_words accounting) — the aggregate the preview reads.
+    - Japanese, `bound`: Counter('lemma|reading' -> n) of the one-kanji words' uses that are pieces of something
+      else as the file reads alone (analyzer.bound_uses) — the bound table the preview reads.
     """
     from app import analyzer
 
@@ -1044,7 +1157,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     # tables are applied as the cache is read (`Store.file_tokens`), so a new table needs no re-tokenizing.
     tok = analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script) \
         if language == "zh" else analyzer.JapaneseTokenizer(library=False)
-    has_lang, extract = analyzer.has_target_language, analyzer.extract_text
+    has_lang, extract, bound_uses = analyzer.has_target_language, analyzer.extract_text, analyzer.bound_uses
     lemma_in_language = {}      # lemma -> has_lang(lemma), asked once per word: the count below runs on every token
 
     def tokenize_file(path):
@@ -1057,17 +1170,21 @@ def make_tokenizer(language, reinforce=False, script="asis"):
             sentences = list(tok.tokenize_sentences(text, names=record))
         else:
             sentences = list(tok.tokenize_sentences(extract(path, language)))
-        counts = Counter()
-        for _s_text, s_tokens in sentences:
+        counts, bound = Counter(), Counter()
+        for s_text, s_tokens in sentences:
             for lemma, reading, surface, _orth in s_tokens:
                 in_language = lemma_in_language.get(lemma)
                 if in_language is None:
                     in_language = lemma_in_language[lemma] = has_lang(lemma, language)
                 if in_language or has_lang(surface, language):
                     counts[make_key(lemma, reading)] += 1
+            if record is not None:
+                for i in bound_uses(s_text, s_tokens):
+                    bound[make_key(s_tokens[i][0], s_tokens[i][1])] += 1
         result = {"sentences": sentences, "counts": counts}
         if record is not None:
             result["names"] = record.data()
+            result["bound"] = bound
         return result
 
     return tokenize_file

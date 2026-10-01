@@ -21,6 +21,7 @@
 社会貢献,社会貢献,,シャカイコウケン,Outside,20,4,4,0,0,,H_priority_sample,その、余計なお世話かもしれないけれど、社会貢献にもなると思うの」,HighPriority/H_priority_sample_1.txt,確かにお年寄りに席を譲ることは、社会貢献の一環かも知れない。,HighPriority/H_priority_sample_1.txt,しかし残念ながら私は社会貢献に興味がないんだ。,HighPriority/H_priority_sample_1.txt
 丸で,まるで,,マルデ,Outside,20,2,2,0,0,,H_priority_sample,しかし───オレの隣に座っていた少女はまるで違っていた。,HighPriority/H_priority_sample_1.txt,この喧騒の中、まるで場に流されることなく無表情で過ごしている。,HighPriority/H_priority_sample_1.txt,,
 彼の,あの,,アノ,Outside,20,2,2,0,0,,H_priority_sample (2),「あ、あの、どうぞっ」,HighPriority/H_priority_sample_1.txt,あのさお願いがあるんだけど。,HighPriority/H_priority_sample_2.srt,,
+門,門,,モン,Outside,20,2,2,0,0,,H_priority_sample,バスを降りると、そこには天然石を連結加工した作りの門がオレを待ち構えていた。,HighPriority/H_priority_sample_1.txt,バスから降りた、制服に身を包んだ少年少女たちは全員この門をくぐり抜けていく。,HighPriority/H_priority_sample_1.txt,,
 此の侭,このまま,,コノママ,Outside,20,4,4,0,0,,H_priority_sample (2),今日は雲一つない晴天で本当に清々しいなぁ、このまま寝てしまいそうだ。,HighPriority/H_priority_sample_1.txt,このままだと大会に出られないらしいよ。,HighPriority/H_priority_sample_2.srt,このまま正式にバスケ部入らない？,HighPriority/H_priority_sample_2.srt
 くっ,くっ,,クッ,Outside,20,2,2,0,0,,H_priority_sample,くっ…,HighPriority/H_priority_sample_2.srt,,,,
 ナカノ,中野,,ナカノ,Outside,20,2,2,0,0,,H_priority_sample,30階の中野さんの家庭教師をしている。,HighPriority/H_priority_sample_2.srt,ホントありがとう中野さん上手で頼もしいよ。,HighPriority/H_priority_sample_2.srt,,
@@ -142,6 +143,7 @@
 家庭的,家庭的,,カテイテキ,Outside,10,1,1,0,0,,H_priority_sample,どっちが家庭的か料理対決！,HighPriority/H_priority_sample_2.srt,,,,
 無し,なし,,ナシ,Outside,10,1,1,0,0,,H_priority_sample,私が勝ったら今日は勉強なし！,HighPriority/H_priority_sample_2.srt,,,,
 じゃーん,ジャーン,,ジャーン,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
+旬,旬,,シュン,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
 生ハム,生ハム,,ナマハム,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
 ダッチ,ダッチ,,ダッチ,Outside,10,1,1,0,0,,H_priority_sample,ジャーン旬の野菜と生ハムのダッチベイビー！,HighPriority/H_priority_sample_2.srt,,,,
 ジャッジ,ジャッジ,,ジャッジ,Outside,10,1,1,0,0,,H_priority_sample,さあどっちがおいしいかジャッジしてよね。,HighPriority/H_priority_sample_2.srt,,,,
@@ -178,6 +180,7 @@
 招き入れる,招き入れる,,マネキイレル,Outside,10,1,1,0,0,,H_priority_sample,あんたみたいなえたいの知れない男を招き入れるなんてどうかしてるわ私たちの…,HighPriority/H_priority_sample_2.srt,,,,
 異分子,異分子,,イブンシ,Outside,10,1,1,0,0,,H_priority_sample,だから異分子の俺が気に入らないんだ。,HighPriority/H_priority_sample_2.srt,,,,
 見当違い,見当違い,,ケントウチガイ,Outside,10,1,1,0,0,,H_priority_sample,何それ見当違いも甚だしいわ。,HighPriority/H_priority_sample_2.srt,,,,
+肝,キモ,,キモ,Outside,10,1,1,0,0,,H_priority_sample,そんなのあり得ないわキモッ。,HighPriority/H_priority_sample_2.srt,,,,
 おいで,おいで,,オイデ,Outside,10,1,1,0,0,,H_priority_sample,早くおいで。,HighPriority/H_priority_sample_2.srt,,,,
 ベーヤ,ベー,,ベーヤ,Outside,10,1,1,0,0,,H_priority_sample,ベー！,HighPriority/H_priority_sample_2.srt,,,,
 っ子,つ子,,ッコ,Outside,10,1,1,0,0,,H_priority_sample,５つ子豆知識！,HighPriority/H_priority_sample_2.srt,,,,

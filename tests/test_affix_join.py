@@ -422,10 +422,10 @@ def test_a_polite_word_is_read_through_its_word_and_sits_lower(tmp_path):
 
 def test_a_busy_word_keeps_the_sentence_it_can_read_among_its_thirty_candidates(tmp_path):
     # A word keeps its 30 best sentences as the library streams past, ranked by how many rarer new words
-    # each holds. 公園's first 30 each hold 猫 (a one-character word: never learned, always new); the
-    # 31st holds only 利用者. Counted as new, 利用者 would tie with the worst and never get in; read
-    # through 利用 (U9), it is the one sentence strict i+1 can give 公園.
-    busy = "".join(f"公園で猫を{n}回見た。\n" for n in range(1, 31)) + "公園の利用者が増えた。\n"
+    # each holds. 公園's first 30 each hold one of 猫, 犬 and 鳥 in turn (one-kanji words, new and on the list;
+    # each rarer than 公園 after its first sentence); the 31st holds only 利用者. Counted as new, 利用者 would tie
+    # with the worst and never get in; read through 利用 (U9), it is the one sentence strict i+1 can give 公園.
+    busy = "".join(f"公園で{animal}を{n}回見た。\n" for n, animal in zip(range(1, 31), "猫犬鳥" * 10)) + "公園の利用者が増えた。\n"
     listed = _generate(tmp_path, busy, known=("で", "を", "回", "見る", "た", "の", "が", "増える", "利用"),
                        args=["--only-i-plus-one"])
     rows = {row["Word"]: row for row in listed.to_dict("records")}

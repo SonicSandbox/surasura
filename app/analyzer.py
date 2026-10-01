@@ -105,7 +105,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     words you know sits lower, one waiting for a new word sorts after it; a word that lives only inside a phrase
 #     (手っ取り) gives it its uses; a word's example sentences without a new phrase come first. Still 2.4: one
 #     re-analysis with 15–23.
-ENGINE_REVISION = 24
+# 25: one-kanji dictionary words are list words (手, 目, 顔, こと, もの — app/one_kanji_data.py), counted where they
+#     stand on their own (not 斬 in 斬魄刀, not 年 in 三年); a one-character word the list can never offer (は, スバル
+#     read as 昴) keeps no sentence from i+1 and counts as nothing to learn in a file; each file names its one-kanji
+#     words the list can't offer. Still 2.4: one re-analysis with 15–24.
+ENGINE_REVISION = 25
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -1327,6 +1331,186 @@ class LearningView:
         parts = self.parts.get(key)
         return bool(parts) and not self._on_cycle(key) and all(
             known((lemma, reading)) or self.readable((lemma, reading), known) for lemma, reading, _free in parts)
+
+
+# --- One-character words: the ones the list can offer ------------------------------------------------------------ #
+# About half of what a Japanese text says is words UniDic files under a one-character lemma, and most of those uses
+# are grammar (の, は, た, て). With Settings -> "List one-kanji words only when they're dictionary words" on
+# (exclude_single, the default), a one-character word is a list word only when the language says it is a word: a
+# one-kanji word general text uses as a word of its own that JMdict lists, and that JMdict or both frequency lists call
+# common — 手, 目, 顔, 私, and こと 事, もの 物, ため 為, しばしば 屡 written in kana (app/one_kanji_data.py, built by
+# scripts/build_one_kanji_data.py from the language, never from a library). Each reading is its own word: (時, とき) is
+# one, 中 read ちゅう and 様 read さま are suffixes and never are. And it counts only where it stands on its own
+# (`bound_uses`): glued to another one-kanji piece (斬 + 魄 + 刀, 狛 + 村) or right after a number (三 + 年), a use is a
+# piece of something else — not a use of the word, not an example of it, not an unknown in its sentence.
+# A one-character word the list can never offer — grammar, a name the tagger reads as a common noun (スバル as 昴), a
+# rare kanji (簪), a piece of a term — never keeps a sentence from i+1 either, and counts as nothing to learn in a
+# file's coverage: the list, the report's examples, the progressive list, 例文, the sentence dictionary, 順 and the
+# YouTube preview all count exactly what the list can offer (`single_kind`, `unoffered`). The report names those words
+# per file ("Also in this file, not on your list", `not_on_list`) so a learner can still make a card for one.
+# Off, every one-character word is listed and every use counts, as it always was. Chinese keeps every word: most of
+# its common words are one character.
+
+_ONE_KANJI = []         # [(words, their lemmas, pieces)] once read: app/one_kanji_data.py; empty sets when unreadable
+UNLISTED_SHOWN = 12     # the one-kanji words a file names as "not on your list" (file_statistics.json), most used first
+
+
+def _one_kanji():
+    """(the one-kanji words the list can offer, their lemmas, the one-kanji words general text uses as grammar) —
+    {(lemma, reading)}, {lemma}, {(lemma, reading)}; empty when the table can't be read."""
+    if not _ONE_KANJI:
+        try:
+            from app import one_kanji_data
+            words, pieces = one_kanji_data.words(), one_kanji_data.pieces()
+        except Exception:
+            words, pieces = frozenset(), frozenset()
+        _ONE_KANJI.append((words, frozenset(lemma for lemma, _reading in words), pieces))
+    return _ONE_KANJI[0]
+
+
+def single_kind(key, rule=True):
+    """How the list treats `key` (lemma, reading): 0 — any word (two characters or more, or `rule` off: Settings'
+    "List one-kanji words only when they're dictionary words", whose off lists every one-character word; Chinese
+    callers pass False); 1 — a one-character word the list can never offer; 2 — a one-kanji word it offers where it
+    stands on its own (`bound_uses`)."""
+    if not rule or len(key[0]) != 1:
+        return 0
+    return 2 if key in _one_kanji()[0] else 1
+
+
+def not_on_list(key):
+    """Does the report name `key` per file as "also in this file, not on your list" (the rule on)? A one-kanji word
+    none of whose readings the list can offer, that general text never uses as grammar (a prefix, a suffix, a particle,
+    an auxiliary — never お, たち, 様 さま): a name the tagger reads as a common noun (スバル, 昴), a rare word (簪), a
+    term's piece standing on its own. A word the list offers in some reading (私: わたし) is on it, and grammar never
+    shows. The analyzer counts its uses where it stands on its own (`bound_uses`)."""
+    words, lemmas, pieces = _one_kanji()
+    return (len(key[0]) == 1 and _KANJI_RE.match(key[0]) is not None and key[0] not in lemmas
+            and key not in pieces)
+
+
+def _numberish(ch):
+    """A character a number ends in, or a one-kanji piece is: a digit or numeral (Ⅲ, 〇), or a kanji."""
+    return ch.isnumeric() or _KANJI_RE.match(ch) is not None
+
+
+def _may_be_bound(text, surface):
+    """Could a one-kanji word written `surface` be bound anywhere in `text` — after a digit, a numeral or a kanji, or,
+    written as one kanji, before a kanji? Most uses stand beside kana (手を, 私は) and are passed over without locating
+    a word. Every token of a library's one-kanji words is asked as the token store indexes it, so the tests are
+    written out: kana and Latin sort below U+3400, where Han begins but for 々 and 〇."""
+    kanji = _KANJI_RE.match
+    one = len(surface) == 1 and kanji(surface) is not None
+    size, length = len(surface), len(text)
+    at = text.find(surface)
+    while at >= 0:
+        if at:
+            ch = text[at - 1]
+            if ch.isnumeric() or ((ch >= "\u3400" or ch == "\u3005") and kanji(ch) is not None):
+                return True
+        end = at + size
+        if one and end < length:
+            ch = text[end]
+            if (ch >= "\u3400" or ch in "\u3005\u3007") and kanji(ch) is not None:
+                return True
+        at = text.find(surface, end)
+    return False
+
+
+def word_spans(text, tokens, upto=None):
+    """[(start, end) or None] — where each of `tokens` (in order, (lemma, reading, surface, …)) is in `text`, found by
+    its surface after the one before it; None for one not found (the tokenizer drops punctuation, numbers and symbols,
+    which leave gaps). `upto`: only the first that many (a paragraph read as one sentence can hold hundreds)."""
+    spans, at = [], 0
+    for token in (tokens if upto is None else tokens[:upto]):
+        surface = token[2]
+        found = text.find(surface, at) if surface else -1
+        if found < 0:
+            spans.append(None)
+            continue
+        at = found + len(surface)
+        spans.append((found, at))
+    return spans
+
+
+def _beside(spans, i, step):
+    """The span of the nearest located word before (`step` -1) or after (+1) word `i`, or None."""
+    j = i + step
+    while 0 <= j < len(spans):
+        if spans[j] is not None:
+            return spans[j]
+        j += step
+    return None
+
+
+def _bound_at(text, spans, i):
+    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, or after a number?"""
+    span = spans[i]
+    if span is None:
+        return False                    # not found: taken as standing on its own
+    start, end = span
+    one = end - start == 1 and _KANJI_RE.match(text[start]) is not None
+    if start:
+        before = _beside(spans, i, -1)
+        if before is not None and before[1] == start:
+            # a counted word ends right before it — never a number (numbers are no words): glued when it is one kanji
+            if one and before[1] - before[0] == 1 and _KANJI_RE.match(text[before[0]]) is not None:
+                return True
+        elif _numberish(text[start - 1]):
+            return True                 # after a number, or a kanji no word covers (a numeral, a symbol's kanji)
+    if one and end < len(text):
+        after = _beside(spans, i, 1)
+        if after is not None and after[0] == end:
+            if after[1] - after[0] == 1 and _KANJI_RE.match(text[end]) is not None:
+                return True             # a word written as one kanji right after it
+        elif _KANJI_RE.match(text[end]) is not None:
+            return True                 # a kanji no word covers
+    return False
+
+
+def bound_uses(text, tokens, spans=None, only=None):
+    """The indices of `tokens` — one sentence's counted words in order, (lemma, reading, surface, …) as
+    tokenize_sentences yields them with its `text` — that are one-kanji words standing there as pieces of something
+    else (§ above): written as one kanji right beside another one-kanji piece, or right after a number. A one-kanji
+    piece is a word written as one kanji, or a kanji no counted word covers (a numeral, a kanji the tagger reads as a
+    symbol); a number before it is a digit or such a kanji. A sentence's text holds no spaces between its words, so
+    私 今 reads as 私今. `spans` (`word_spans`), when the caller has located the words already; `only`, the indices
+    to judge, when the caller asks of a few. Pure: the token store counts each file's with it as it indexes, the
+    analyzer each sentence it reads."""
+    kanji = _KANJI_RE.match
+    # A one-kanji lemma sorts at or past U+3400 (kana and grammar below it: most of a sentence's one-character words).
+    risky = [i for i, token in (enumerate(tokens) if only is None else ((i, tokens[i]) for i in only))
+             if len(token[0]) == 1 and token[0] >= "\u3400" and kanji(token[0]) is not None
+             and token[2] and _may_be_bound(text, token[2])]
+    if not risky:
+        return set()
+    if spans is None:
+        # Located only as far as the last word asked about needs: its neighbour after it, or the next one found.
+        last, upto = max(risky), max(risky) + 2
+        spans = word_spans(text, tokens, upto)
+        while upto < len(tokens) and all(span is None for span in spans[last + 1:]):
+            upto = min(len(tokens), upto * 2)
+            spans = word_spans(text, tokens, upto)
+    return {i for i in risky if _bound_at(text, spans, i)}
+
+
+def unoffered(text, tokens, rule=True, spans=None):
+    """The indices of `tokens` (one sentence's, as tokenize_sentences yields them with `text`) whose one-character word
+    the list can't offer there: one it never offers (`single_kind` 1), or a one-kanji word that is a piece of something
+    else there (`bound_uses`). None of them is a use, an example or an unknown of the sentence. Empty with `rule` off
+    (Settings' "List one-kanji words only when they're dictionary words"; Chinese callers pass False)."""
+    if not rule:
+        return set()
+    out, offered = set(), []
+    for i, token in enumerate(tokens):
+        kind = single_kind((token[0], token[1])) if len(token[0]) == 1 else 0
+        if kind == 1:
+            out.add(i)
+        elif kind == 2:
+            offered.append(i)
+    if offered:
+        out |= bound_uses(text, tokens, spans, offered)
+    return out
 
 
 # --- Where a sentence ends: Unicode UAX #29 (Sentence Boundaries) ---------------------------------- #
@@ -3171,9 +3355,14 @@ def main():
     # this ONE script. "asis" for Japanese and for anyone who never set it — today's exact behaviour.
     script = zh_script.effective(language, args.zh_script)
 
-    # Single-char tokens are skippable noise in Japanese (particles), but in Chinese most
+    # Japanese one-character words follow the dictionary rule (§ One-character words, above): only one-kanji dictionary
+    # words are listed, where they stand on their own, and nothing else of one character counts. In Chinese most
     # high-frequency words ARE single characters — never skip them for zh.
     skip_singles = SKIP_SINGLE_CHARS and language == 'ja'
+
+    def _never(lr):
+        """A one-character word the list can never offer (the rule on): no use, example or unknown anywhere."""
+        return skip_singles and single_kind(lr) == 1
 
     print(f"\nLoading resources...")
     
@@ -3489,15 +3678,18 @@ def main():
     # pass counts the same sentences the aggregation then reads (Japanese, where there is a compound table);
     # with nothing to give back, the aggregation's own totals, as always.
     _counts, floor_count, total_tokens = None, None, 0
+    _bound_counts = None        # {(lemma, reading): uses that are pieces of something else} — one-kanji words (above)
     _phrase_table = None        # the set phrases, counted as the store counts them, when the store can't be read
     _phrases_found = {}         # file path -> its set phrases as that first pass found them (Store.phrase_matches)
     if _store is not None:
         try:
             _counts, total_tokens = _store.word_counts()
+            _bound_counts = _store.bound_counts()
         except Exception as e:
             print(f"Warning: could not read the token store's counts ({e}); counting the library first.")
+            _counts = _bound_counts = None
     if _counts is None and _parts:
-        _counts, total_tokens = Counter(), 0
+        _counts, total_tokens, _bound_counts = Counter(), 0, Counter()
         tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
             sentences = _sentences_of(file_path)
@@ -3505,17 +3697,20 @@ def main():
                 sentences, flat = list(sentences), []
                 tallies.append(_phrases.tally(sentences, _phrase_set, flat))
                 _phrases_found[file_path] = (len(sentences), flat)
-            for _s_text, s_tokens in sentences:
+            for s_text, s_tokens in sentences:
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _counts[(lemma, reading)] += 1
                         total_tokens += 1
+                if language == 'ja':
+                    for i in bound_uses(s_text, s_tokens):
+                        _bound_counts[(s_tokens[i][0], s_tokens[i][1])] += 1
         if tallies is not None:
             _phrase_table = _phrases.table(tallies, _phrase_set)
     if _counts is not None:
         floor_count = _floor_count(total_tokens, lambda: _token_index.unknown_distribution(
             _counts, total_tokens, known_words_initial, known_lemmas_initial, ignore_list, skip_singles, language,
-            _phrase_table))
+            _phrase_table, _bound_counts))
     _view = LearningView(_counts, floor_count or 0, _known, parts=_parts, joins=_joins,
                          tagger=tokenizer.tagger if language == 'ja' else None)
     # Every compound too rare for the list, as one set: a sentence holding none — nearly all — is passed over in C.
@@ -3523,6 +3718,9 @@ def main():
     # The words each file met inside a rare compound, for the progressive pass (a word's row sits in the file
     # it is first met in — inside a compound too).
     file_credit_cache = {}
+    # Each file's uses of one-kanji list words that are pieces of something else there (三年's 年), likewise: they are
+    # nothing to learn in that file.
+    file_piece_cache = {}
     # The unknowns read already with the known words the run started with (利用者 with 利用 known, 上層部 with its parts
     # known): those don't change during the aggregation, so each word is judged once — `_judged` — and a sentence's
     # difficulty below takes a set lookup per word.
@@ -3560,7 +3758,9 @@ def main():
         phrase = _phrase_set.entry(index)
         waits = _phrase_waits.get(index)
         if waits is None:
-            waits = _phrase_waits[index] = _phrases.waiting(phrase, _readable_now)
+            # A one-kanji word the list offers is waited for like any word (手に入れる waits for 手); one it never offers
+            # never is.
+            waits = _phrase_waits[index] = _phrases.waiting(phrase, _readable_now, lambda lr: not _never(lr))
             _phrase_bound[index] = _phrases.bound_at(phrase)
         return phrase, waits, _phrase_bound[index]
 
@@ -3666,6 +3866,8 @@ def main():
         file_count = file_counter.get
         file_credits = Counter()                      # the words this file meets inside a rare compound
         file_phrases, file_bound = Counter(), Counter()   # its set phrases, and the uses its bound words give them
+        file_pieces = Counter()     # one-kanji list words' uses here that are pieces of something else (三年's 年)
+        file_unlisted = {}          # (lemma, reading) -> {spelling: uses}: one-kanji words the list can't offer
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
         file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
@@ -3683,32 +3885,53 @@ def main():
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             unknown_keys = []
-            for lemma, reading, surface, orth in s_tokens:
+            named = None        # [(token number, key, spelling)]: this sentence's words for the file's line (below)
+            for t_no, (lemma, reading, surface, orth) in enumerate(s_tokens):
                 key = (lemma, reading)
                 # Cache EVERY token (before the target-language filter below) so the cached
                 # multiset matches what tokenizer.tokenize() yields for the progressive pass.
                 file_counter[key] = file_count(key, 0) + 1
                 # What the word is, asked once per word (`_word_state`), not per token: this loop runs over every
-                # token of the library. 0: an unknown; 1: known (KnownWord.json) or ignored; 2 and 3: the same, for
-                # a lemma with no Target characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other
-                # ASCII-only tokens) — such a token counts toward the totals, or as an unknown, only when its
-                # surface has some.
+                # token of the library. Bit 1: known (KnownWord.json) or ignored; bit 2: a lemma with no Target
+                # characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other ASCII-only tokens) — such a
+                # token counts toward the totals, or as an unknown, only when its surface has some. With the
+                # one-character rule on (§ One-character words): bit 4, a one-character word the list never offers
+                # (bit 16: one the report names for its file); bit 8, a one-kanji word it offers where it stands free.
                 state = _word_state.get(key)
                 if state is None:
-                    state = _word_state[key] = ((0 if has_target_language(lemma, language) else 2)
-                                                + (1 if (lemma in ignore_list or key in known_words_initial
-                                                         or lemma in known_lemmas_initial) else 0))
-                if state >= 2 and not has_target_language(surface, language):
+                    state = ((0 if has_target_language(lemma, language) else 2)
+                             + (1 if (lemma in ignore_list or key in known_words_initial
+                                      or lemma in known_lemmas_initial) else 0))
+                    kind = single_kind(key, skip_singles)
+                    if kind:
+                        state += 8 if kind == 2 else 4 + (16 if not_on_list(key) else 0)
+                    _word_state[key] = state
+                if state & 2 and not has_target_language(surface, language):
                     continue
 
                 file_total_words += 1
                 if state & 1:
                     file_known_words += 1
                     continue
+                if state & 12:
+                    # A one-character word counts only where the list can offer it: never one it doesn't list, never
+                    # a one-kanji word standing as a piece of something else. Neither is a use, an example or an
+                    # unknown here — nothing to learn, so known to the file's coverage, as in the progressive pass.
+                    if state & 4:
+                        file_known_words += 1
+                        # Named for the file where it stands on its own (never 卍 in a term's run, 条 after 第一) —
+                        # once this sentence's set phrases are known (below).
+                        if state & 16 and not bound_uses(s_text, s_tokens, only=(t_no,)):
+                            if named is None:
+                                named = []
+                            named.append((t_no, key, orth))
+                        continue
+                    if bound_uses(s_text, s_tokens, only=(t_no,)):     # asked of this word alone
+                        file_known_words += 1
+                        file_pieces[key] += 1
+                        continue
 
                 # It's an unknown word!
-                # Even if we skip learning it (e.g. single chars), it makes the sentence harder,
-                # so it must be part of `sentence_unknowns`.
                 sentence_unknowns.append((lemma, reading, surface, orth))
                 unknown_keys.append(key)
 
@@ -3721,7 +3944,8 @@ def main():
             rare = None if _rare.isdisjoint(unique_lrs) else [lr for lr in unique_lrs if lr in _rare]
             if rare:
                 targets = unique_lrs.difference(rare)
-                unique_lrs = {unit for lr in unique_lrs for unit in _view.units(lr) if not _known(unit)}
+                unique_lrs = {unit for lr in unique_lrs for unit in _view.units(lr)
+                              if not (_known(unit) or _never(unit))}
 
             # The set phrases here (above): each one counted for its row as a word is; a word living only inside its
             # phrase gives the phrase that use (no count, score or example of its own from it — it still makes the
@@ -3769,12 +3993,21 @@ def main():
                     gone = {key for key, n in uses.items() if n <= taken[key]}
                     if gone:
                         targets = targets - gone
+            if named:
+                # The file's line names a word the list can't offer — never where it lives only inside a set phrase
+                # that takes the use (腑 in 腑に落ちる): it is learned with the phrase, as on the list.
+                inside = {start + k for start, _end, index in found for k in _phrase_facts(index)[2]} if found else ()
+                for t_no, key, orth in named:
+                    if t_no in inside:
+                        continue
+                    spelled = file_unlisted.get(key)
+                    if spelled is None:
+                        spelled = file_unlisted[key] = Counter()
+                    spelled[orth] += 1
 
-            # 2. Update Stats for all unknown tokens in this sentence
+            # 2. Update Stats for all unknown tokens in this sentence (a one-character word only where the list can
+            # offer it — above)
             for lemma, reading, surface, orth in sentence_unknowns:
-                # If we are skipping single characters for learning, do not add it to word_stats
-                if skip_singles and len(lemma) == 1:
-                    continue
                 if taken and taken.get((lemma, reading)):
                     taken[(lemma, reading)] -= 1      # a use its phrase has taken (above)
                     continue
@@ -3805,7 +4038,7 @@ def main():
                         continue
                     for part in _view.credits((lemma, reading)):
                         file_credits[part] += 1
-                        if _known(part) or (skip_singles and len(part[0]) == 1):
+                        if _known(part) or _never(part):
                             continue
                         entry = word_stats[part]
                         entry["score"] += weight
@@ -3884,10 +4117,6 @@ def main():
                 )
 
             for (lemma, reading) in targets:
-                # If we skipped this word for learning, don't try to store candidate contexts for it
-                if skip_singles and len(lemma) == 1:
-                    continue
-                    
                 entry = word_stats[(lemma, reading)]
 
                 # Rank this candidate by how many of the sentence's OTHER unknown words are
@@ -3957,6 +4186,8 @@ def main():
             file_phrase_cache[file_path] = file_phrases
         if file_bound:
             file_bound_cache[file_path] = file_bound
+        if file_pieces:
+            file_piece_cache[file_path] = file_pieces
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
@@ -3964,6 +4195,19 @@ def main():
             "Known Count": file_known_words,
             "Coverage (%)": round(coverage, 2)
         })
+        if file_unlisted:
+            # The one-kanji words here the list can't offer (§ One-character words) — a name read as a common noun
+            # (スバル), a rare word (簪) — for the report to name, most used first: [spelling, lemma, uses where it stands
+            # on its own], by lemma.
+            by_lemma = {}
+            for (lemma, _reading), spelled in file_unlisted.items():
+                found = by_lemma.get(lemma)
+                if found is None:
+                    found = by_lemma[lemma] = Counter()
+                found.update(spelled)
+            file_stats[-1]["Not On List"] = sorted(
+                ([max(spelled.items(), key=lambda item: (item[1], item[0]))[0], lemma, sum(spelled.values())]
+                 for lemma, spelled in by_lemma.items()), key=lambda row: (-row[2], row[1]))[:UNLISTED_SHOWN]
 
     # (The token store stays open until the end of the run so we can record the run-signature.)
 
@@ -4584,7 +4828,8 @@ def main():
     
     # Start with initial known
     session_known = set(known_words_initial)
-    session_lemmas = set(known_lemmas_initial) 
+    session_lemmas = set(known_lemmas_initial)
+    word_state = _word_state.get
     
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
@@ -4603,18 +4848,32 @@ def main():
         file_unknown_token_counts = Counter() # Count of each (lemma, reading) in THIS file
         # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
         file_bound = file_bound_cache.get(file_path)
+        # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
+        file_pieces = file_piece_cache.get(file_path)
 
         for key, count in file_counter.items():
             lemma = key[0]
             file_total_tokens += count
 
-            # Check strictly against initial known list — known then in the session too (it starts from that list)
-            if (lemma in ignore_list or (skip_singles and len(lemma) == 1) or key in known_words_initial
-                    or lemma in known_lemmas_initial):
+            # Check strictly against initial known list — known then in the session too (it starts from that list) —
+            # and a one-character word the list never offers: nothing to learn either (§ One-character words). The
+            # aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read here again asks.
+            state = word_state(key)
+            if state is None:
+                state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
+                          else 0) + (4 if _never(key) else 0))
+            if state & 5:
                 file_baseline_known_count += count
                 file_current_start_count += count
+                continue
+            if file_pieces and key in file_pieces:
+                file_baseline_known_count += file_pieces[key]
+                file_current_start_count += file_pieces[key]
+                count -= file_pieces[key]
+                if count <= 0:
+                    continue
             # Check against cumulative session known (includes previous files)
-            elif key in session_known or lemma in session_lemmas:
+            if key in session_known or lemma in session_lemmas:
                 file_current_start_count += count
             elif file_bound is None or file_bound.get(key, 0) < count:
                 file_unknown_token_counts[key] += count
@@ -4623,7 +4882,7 @@ def main():
         # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
         file_credited = Counter()
         for (lemma, reading), count in file_credit_cache.get(file_path, {}).items():
-            if not (lemma in ignore_list or (skip_singles and len(lemma) == 1)
+            if not (lemma in ignore_list or _never((lemma, reading))
                     or (lemma, reading) in session_known or lemma in session_lemmas):
                 file_credited[(lemma, reading)] += count
                 file_unknown_token_counts[(lemma, reading)] += count

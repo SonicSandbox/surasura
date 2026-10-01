@@ -179,8 +179,10 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     fillers cut out of one interjection as that word (まあ), an unknown sound said over and over as its sound word
     (ハァハァハァ is はあはあ), a dash drawn out inside a word as a stretch, a dash as no word, and lets the next line's
     opening bracket glued to a full stop open the next sentence; 24 gives idioms and set phrases rows of their
-    own — 気がする, 腑に落ちる — and puts a word's example sentences without a new phrase first.)"""
-    assert analyzer.ENGINE_REVISION == 24
+    own — 気がする, 腑に落ちる — and puts a word's example sentences without a new phrase first; 25 lists one-kanji
+    dictionary words where they stand on their own (手, 顔, こと) and lets no one-character word the list can't offer
+    keep a sentence from i+1.)"""
+    assert analyzer.ENGINE_REVISION == 25
 
 
 # --------------------------------------------------------------------------- #

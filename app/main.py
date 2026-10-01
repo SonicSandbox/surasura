@@ -128,14 +128,14 @@ def csv_has_data_rows(path):
 DATA_CREDITS = """Data credits — what Surasura ships or is built from
 
 Dictionaries
-• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, kanji spellings, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
+• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
 • UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
 • jieba — MIT licence: how Chinese is split into words.
 • OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese.
 • CC-CEDICT — CC BY-SA 4.0: checked against for the Chinese measure words.
 
 Frequency lists (ranks only)
-• JPDB 2024 and Jiten: which compounds, affixed words and set phrases are words, and which words live only inside a phrase.
+• JPDB 2024 and Jiten: which compounds, affixed words, set phrases and one-kanji words are words, and which words live only inside a phrase.
 • TMW Netflix, Anime & J-drama, Novels and VN lists: the 文 reading-word badge.
 
 Text, counted into statistics only (never a sentence)
@@ -917,8 +917,8 @@ class MasterDashboardApp:
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store
         (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
         lists and Ignore names (the library's names become ignored words), the set phrases switch (their rows
-        count), the selection settings, and the Chinese script they're all read in. Returns None if it can't be
-        computed (forces a refresh)."""
+        count), which one-character words count (exclude_single), the selection settings, and the Chinese script
+        they're all read in. Returns None if it can't be computed (forces a refresh)."""
         try:
             from app.path_utils import get_user_files_path
             uf = get_user_files_path(lang)
@@ -930,10 +930,12 @@ class MasterDashboardApp:
                 os.path.getmtime(os.path.join(uf, n)) if os.path.exists(os.path.join(uf, n)) else 0
                 for n in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")
             )
-            logic = (getattr(self, "_current_settings", {}) or {}).get("logic") or {}
+            current = getattr(self, "_current_settings", {}) or {}
+            logic = current.get("logic") or {}
             names = bool(logic.get("ignore_names"))
             phrases = bool(logic.get("phrase_rows", True))
-            return (lang, db_mtime, ksig, lists, names, phrases, json.dumps(sel, sort_keys=True), script)
+            singles = bool(current.get("exclude_single", True))     # which one-character words count
+            return (lang, db_mtime, ksig, lists, names, phrases, singles, json.dumps(sel, sort_keys=True), script)
         except Exception:
             return None
 
@@ -1571,9 +1573,15 @@ class MasterDashboardApp:
                                        "list, and never counted as unknown in a sentence. Takes effect at the next "
                                        "Generate.")
 
-        chk_single = ttk.Checkbutton(group_lang, text="Exclude 1-character words", variable=self.var_exclude_single)
+        # Japanese one-character words (exclude_single, the key kept): on, only one-kanji dictionary words are listed,
+        # where they stand on their own, and nothing else of one character counts in a sentence; off, every one is
+        # listed. It moves the Rarity slider's numbers too (token_index.singles_rule), so the preview follows at once.
+        chk_single = ttk.Checkbutton(group_lang, text="List one-kanji words only when they're dictionary words",
+                                     variable=self.var_exclude_single,
+                                     command=lambda: self._refresh_band_preview())
         chk_single.pack(anchor=tk.W)
-        ToolTip(chk_single, "Ignore 1-char words (Recommended)")
+        ToolTip(chk_single, "Particles and endings (は, た) and pieces of names or made-up terms stay off your list. "
+                            "Words like 手, 目 and 顔 are listed.")
 
         # Split Length Setting
         split_frame = ttk.Frame(group_lang)

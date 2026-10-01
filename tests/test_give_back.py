@@ -379,10 +379,10 @@ BANDS_PPM = {"core": 60000, "common": 45000, "occasional": 30000, "uncommon": 20
 
 
 def test_the_slider_keeps_only_the_parts_a_use_can_reach_the_list_through(compounds):
-    """token_index.unknown_distribution, the slider's input: a bound part (前言), a known one (トランス) and a single
-    character (期) are dropped; a compound part (経済成長 — never met alone, 0 uses) is kept with its own parts, so a
-    band can take it apart in turn. At a floor of 3 撤回 reaches the list; at 2 前言撤回 itself is listed and
-    gives nothing."""
+    """token_index.unknown_distribution, the slider's input: a bound part (前言) and a known one (トランス) are
+    dropped; a one-kanji dictionary word (期) is kept, as the list keeps it (a one-character part the list can never
+    offer is dropped); a compound part (経済成長 — never met alone, 0 uses) is kept with its own parts, so a band can
+    take it apart in turn. At a floor of 3 撤回 reaches the list; at 2 前言撤回 itself is listed and gives nothing."""
     from app import token_index
     counts = {("前言撤回", "ゼンゲンテッカイ"): 2, ("撤回", "テッカイ"): 1, ("トランスジェンダー", "トランスジェンダー"): 2,
               ("経済成長期", "ケイザイセイチョウキ"): 1, ("経済", "ケイザイ"): 2}
@@ -390,11 +390,12 @@ def test_the_slider_keeps_only_the_parts_a_use_can_reach_the_list_through(compou
     uses, parts, bases = freqs["compounds"]
     assert parts[("前言撤回", "ゼンゲンテッカイ")] == (("撤回", "テッカイ", True),)
     assert parts[("トランスジェンダー", "トランスジェンダー")] == (("ジェンダー", "ジェンダー", True),)
-    assert parts[("経済成長期", "ケイザイセイチョウキ")] == (("経済成長", "ケイザイセイチョウ", True),)
+    assert parts[("経済成長期", "ケイザイセイチョウキ")] == (("経済成長", "ケイザイセイチョウ", True), ("期", "キ", True))
     assert uses[("経済成長", "ケイザイセイチョウ")] == 0
     assert bases["撤回|テッカイ"] == 1 and bases["経済|ケイザイ"] == 2
     given = word_selection._given_back(freqs["compounds"], (2, 3))
-    assert given[3] == {"撤回|テッカイ": 2, "ジェンダー|ジェンダー": 2, "経済|ケイザイ": 1, "成長|セイチョウ": 1}
+    assert given[3] == {"撤回|テッカイ": 2, "ジェンダー|ジェンダー": 2, "経済|ケイザイ": 1, "成長|セイチョウ": 1,
+                        "期|キ": 1}
     assert "撤回|テッカイ" not in given[2]
     # one band alone gives what the sweep gives it
     assert word_selection._given_back(freqs["compounds"], (3,))[3] == given[3]

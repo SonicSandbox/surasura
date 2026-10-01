@@ -170,7 +170,7 @@ class _Word:
 
 
 def collect(files, file_tokens, language, known, window, progress=None, wanted=None, young=None,
-            phrases=None, prefer=None, library=None):
+            phrases=None, prefer=None, library=None, singles=True):
     """The streaming pass. `files` are the library's paths in library order; `file_tokens(path)` returns
     that file's cached sentences [(text, [[lemma, reading, surface, orth], ...]), ...] — called once per
     file, and nothing of a file outlives its turn except the few sentences a word keeps (I7).
@@ -192,9 +192,14 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     word, the list's cut-off) as the last Generate counted them (analyzer.library_counts) — says which compounds are
     too rare for the list: one of those counts as its parts in how hard a sentence is, as in the report, though a
     sentence is still an example only for the words standing in it (never for a part) and a word is never taken
-    apart against itself. Without it (before the first Generate) every word is itself. Returns
-    {(lemma, reading) or name: _Word}."""
-    from app.analyzer import LearningView, affix_joins, compound_parts, has_target_language
+    apart against itself. Without it (before the first Generate) every word is itself. `singles` is Settings' "List
+    one-kanji words only when they're dictionary words" (exclude_single): on, a Japanese one-character word counts as
+    the list counts it (analyzer § One-character words) — a one-kanji dictionary word is an entry, its sentences only
+    those where it stands on its own, and nothing else of one character is an entry or an unknown in a sentence (a
+    card that wants one the list never offers — 簪, 例文 — still gets the sentences it stands on its own in); off,
+    every one-character word counts, as it always has. Returns {(lemma, reading) or name: _Word}."""
+    from app.analyzer import (LearningView, affix_joins, bound_uses, compound_parts, has_target_language, single_kind,
+                              unoffered)
 
     known_tuples, known_lemmas, ignore = known
     lo, hi, own_lo, own_hi = window
@@ -207,9 +212,14 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     # 利用者 when 利用 is known, 上層部 when 上層 and 部 are: no unknown in a sentence, as in the report; the tagger is
     # made on the first joined word (LearningView.readable).
     japanese = language == "ja"
+    rule = japanese and singles             # the list's rule for one-character words (above)
     view = LearningView(*(library or (None, 0)), known=_known, parts=compound_parts() if japanese else {},
                         joins=affix_joins() if japanese else {})
     compounds = view.parts
+
+    def _offered(key):
+        """Can the list offer `key` — any word, or a one-character word under the rule (analyzer.single_kind)?"""
+        return single_kind(key, rule) != 1
 
     def _is_known(key):
         found = known_memo.get(key)
@@ -232,7 +242,8 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
             for name, lemmas in (phrases or {}).items():
                 index = found.of_word("".join(lemmas)) if found is not None and len(lemmas) > 1 else None
                 if index is not None:
-                    waits[name] = {lemma for lemma, _reading in phrase_rules.waiting(found.entry(index), _is_known)[0]}
+                    waits[name] = {lemma for lemma, _reading
+                                   in phrase_rules.waiting(found.entry(index), _is_known, _offered)[0]}
 
     def _lang(text):
         ok = lang_ok.get(text)
@@ -245,21 +256,37 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         for sidx, (text, tokens) in enumerate(file_tokens(path)):
             present = {}        # (lemma, reading) -> the surface it has in THIS sentence
             shown = {}          # a one-word target written here -> (its key, its surface)
+            alone = {}          # a wanted word the list never offers, standing on its own here -> its surface
             unknown = 0
             rare = None         # the compounds here too rare for the list, when there are any
-            for lemma, reading, surface, orth in tokens:
+            # The one-character words the list can't offer here — no entry of their own, no unknown (above).
+            skip = unoffered(text, tokens) if rule else ()
+            pieces = None       # those standing as pieces of something else, asked only for a card that wants one
+            for t_no, (lemma, reading, surface, orth) in enumerate(tokens):
                 if not (_lang(lemma) or _lang(surface)):
                     continue    # markup, numbers, ASCII — never a word (the analyzer skips them too)
                 key = (lemma, reading)
+                if t_no in skip:
+                    # Still the sentence of a card that wants it where it stands on its own (a 簪 card's 例文).
+                    if wanted is not None or written:
+                        if pieces is None:
+                            pieces = bound_uses(text, tokens)
+                        if t_no not in pieces:
+                            name = (written.get(lemma) or written.get(orth)) if written else None
+                            if name is not None and name not in shown:
+                                shown[name] = (key, surface)
+                            if wanted is not None and key in wanted and key not in alone:
+                                alone[key] = surface
+                    continue
                 if written:
                     name = written.get(lemma) or written.get(orth)
                     if name is not None and name not in shown:
                         shown[name] = (key, surface)
                 word = words.get(key)
                 if word is None:
-                    # One-character kana in Japanese are particles and endings — never an entry, but
-                    # still words a sentence can be hard for. Chinese keeps single characters, as the
-                    # analyzer does (most of its common words are one character).
+                    # With the rule off, one-character kana in Japanese are particles and endings — never an
+                    # entry, but still words a sentence can be hard for (on, they never get here). Chinese keeps
+                    # single characters, as the analyzer does (most of its common words are one character).
                     listed = not (language == "ja" and len(lemma) == 1 and _KANA_ONLY.match(lemma)) \
                         and (wanted is None or key in wanted)
                     word = words[key] = _Word(listed)
@@ -274,27 +301,35 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                         rare.add(key)
 
             size = len(text)
-            if not (lo <= size <= hi) or not present:
+            if not (lo <= size <= hi) or not (present or alone or shown):
                 continue
             unknown_units = None
             if rare:
                 # How hard the sentence is, counted in the list's own units: a rare compound is its parts when all
                 # are free. For the compound itself it stays whole — never its own parts against it.
                 def unknowns(keep=None):
-                    return {unit for key in present for unit in view.units(key, keep) if not _is_known(unit)}
+                    return {unit for key in present for unit in view.units(key, keep)
+                            if not _is_known(unit) and _offered(unit)}
                 unknown_units = unknowns()
                 unknown = len(unknown_units)
             margin = 0 if own_lo <= size <= own_hi else 1
             fresh = sum(1 for key in present if key in young) if young else 0
             lemmas = [t[0] for t in tokens] if prefer else None
-            for key, surface in present.items():
+            for key, surface in alone.items():
+                word = words.get(key)
+                if word is None:
+                    word = words[key] = _Word(True)
+                word.count += 1
+                word.orths[surface] = word.orths.get(surface, 0) + 1
+            for key, surface in (*present.items(), *alone.items()):
                 word = words[key]
                 if not word.listed:
                     continue
                 if rare and key in rare:
                     others = len(unknowns(key) - {key})
                 else:
-                    others = unknown - (0 if known_memo[key] else 1)
+                    # Its own use never counts against it (and one the list never offers never counted).
+                    others = unknown - (0 if known_memo.get(key, True) else 1)
                 # Its own word never counts toward the young words it practises.
                 recent = fresh - (1 if young and key in young else 0)
                 if prefer:
@@ -308,7 +343,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 if rare and key in rare:
                     others = len(unknowns(key) - {key})
                 else:
-                    others = unknown - (0 if known_memo[key] else 1)
+                    others = unknown - (0 if known_memo.get(key, True) else 1)
                 recent = fresh - (1 if young and key in young else 0)
                 word = words.get(name)
                 if word is None:
@@ -646,7 +681,8 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     try:
         words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
                         length_range(settings), progress=progress, wanted=set(wanted or ()),
-                        young=set(young or ()), phrases=phrases, prefer=prefer, library=library_counts(language))
+                        young=set(young or ()), phrases=phrases, prefer=prefer, library=library_counts(language),
+                        singles=bool(settings.get("exclude_single", True)))
     finally:
         store.close()
     found = {}
@@ -696,7 +732,8 @@ def build(language, save_path, progress=print, show_source=False):
                      "added in the last few minutes may be missing.")
 
         words = collect(files, store.file_tokens, language, known_sets(language, store, settings),
-                        window, progress=progress, library=library_counts(language))
+                        window, progress=progress, library=library_counts(language),
+                        singles=bool(settings.get("exclude_single", True)))
     finally:
         store.close()
 

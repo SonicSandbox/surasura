@@ -56,10 +56,11 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     of its 3 uses and fell below it; 22 since words made of words are one word — 優先席, 家庭教師 and 社会貢献
     joined the list above it; 21 since a polite お word is read through its known word — おばあさん sits lower; 22
     since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
-    near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it.)"""
+    near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it; 25 since
+    one-kanji dictionary words are list words where they stand on their own — 門 joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 24
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 25
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -208,13 +209,14 @@ def test_the_kana_fold_is_japanese_only_and_leaves_kanji_words_alone(tmp_path):
 
 def test_the_real_golden_list_has_no_borrowed_one_character_key():
     """On the analyser's own output, with the Japanese rules on: every one-character key left is
-    some row's own word."""
+    some row's own word — the one-kanji rows (門, 旬, 肝) included, each its own word."""
     with open(GOLDEN_LIST, encoding="utf-8-sig", newline="") as handle:
         lemmas = {anki_match.normalize_word(row.get("Word")) for row in csv.DictReader(handle)}
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert rank_of["中野"] == rank_of["ナカノ"] == 24
+    assert {"門", "旬", "肝"} <= {key for key in rank_of if len(key) == 1}
+    assert rank_of["中野"] == rank_of["ナカノ"] == 25
 
 
 def test_lookup_answers_nothing_rather_than_guessing():

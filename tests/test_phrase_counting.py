@@ -155,8 +155,8 @@ def test_a_phrase_of_known_words_sits_lower_and_one_waiting_for_a_word_sorts_aft
 
 def test_a_waiting_phrases_own_new_word_counts_in_its_sentences(library, monkeypatch):
     """A phrase row's example sentences count the words outside it — and the words it waits for (本題 in 本題に入る,
-    付く in 気が付く with nothing known): never an i+1 sentence for a phrase whose own word is still new. A
-    one-character word is never waited for (気)."""
+    付く and 気 in 気が付く with nothing known): never an i+1 sentence for a phrase whose own word is still new. A
+    one-kanji dictionary word is waited for like any word (気 is on the list where it stands on its own)."""
     monkeypatch.setenv("SURASURA_DEBUG_WORD_STATS", "1")
     _switch(library, True)
     _run(library)
@@ -165,8 +165,8 @@ def test_a_waiting_phrases_own_new_word_counts_in_its_sentences(library, monkeyp
     for context in subject["candidate_contexts"]:
         assert ["本題", "ホンダイ"] in context[3], context
     notice = stats["気が付く|キガツク"]
-    assert all(["気", "キ"] not in context[3] and ["付く", "ツク"] in context[3]
-               for context in notice["candidate_contexts"]), "it waits for 付く, never for 気 (one character)"
+    assert all(["気", "キ"] in context[3] and ["付く", "ツク"] in context[3]
+               for context in notice["candidate_contexts"]), "it waits for 付く and for 気 (a one-kanji list word)"
 
 
 def test_known_or_ignored_as_a_whole_is_no_row(library):

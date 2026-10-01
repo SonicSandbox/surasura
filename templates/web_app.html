@@ -1370,6 +1370,27 @@
             margin: 4px 0 10px;
         }
 
+        /* "Also in this file, not on your list: スバル ×120 · 簪 ×3" — one-kanji words the list can't offer.
+           The words are plain text a dictionary extension can read; the label, counts and dots are drawn by CSS. */
+        .unlisted-line {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 2px 6px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin: 4px 0 10px;
+        }
+
+        .unlisted-line .unlisted-word {
+            color: var(--on-surface);
+        }
+
+        .unlisted-line .unlisted-count {
+            opacity: 0.6;
+            font-size: 0.9em;
+        }
+
         .sort-menu {
             display: none;
             position: fixed;
@@ -2052,7 +2073,8 @@
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
-                    await renderFileWords(fileData.words, fileData.is_goal_content, fileData.cumulativeWords, fileData.filename);
+                    await renderFileWords(fileData.words, fileData.is_goal_content, fileData.cumulativeWords, fileData.filename,
+                                          fileData.unlisted);
                 }
             } else {
                 const fileData = item.data;
@@ -2101,6 +2123,27 @@
                 </div>
             `;
             listContainer.innerHTML = content;
+            const unlistedLine = createUnlistedLine(stats["Not On List"]);
+            if (unlistedLine) listContainer.appendChild(unlistedLine);
+        }
+
+        // "Also in this file, not on your list: スバル ×120 · 簪 ×3" — the one-kanji words of this file the list can't
+        // offer (a name read as a common word, a rare kanji, a piece of a made-up term): they never count against a
+        // sentence, so they are named here, most used first, for a card you may still want. Never grammar.
+        function createUnlistedLine(unlisted) {
+            if (!Array.isArray(unlisted) || !unlisted.length) return null;
+            const line = document.createElement('div');
+            line.className = 'unlisted-line';
+            line.title = "One-kanji words in this file that your list can't offer: a name read as a word, a rare kanji, " +
+                "a piece of a made-up term. They never count against a sentence. Make a card for one if you want it.";
+            const dot = '<span class="hidden-content" data-content="·" migaku_ignore data-yomichan-ignore></span>';
+            const words = unlisted.map(([spelled, lemma, uses]) =>
+                `<span class="unlisted-word"${lemma && lemma !== spelled ? ` title="${escapeHtml(String(lemma))}"` : ''}>` +
+                `${escapeHtml(String(spelled))}</span><span class="hidden-content unlisted-count" ` +
+                `data-content="×${Number(uses) || 0}" migaku_ignore data-yomichan-ignore></span>`);
+            line.innerHTML = '<span class="hidden-content" data-content="Also in this file, not on your list:" ' +
+                'migaku_ignore data-yomichan-ignore></span>' + words.join(dot);
+            return line;
         }
 
         // --- Infinite Scroll Helper ---
@@ -2158,7 +2201,7 @@
             loadNextChunk();
         }
 
-        async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null) {
+        async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null, unlisted = null) {
             const listContainer = document.getElementById('progressive-list');
             listContainer.innerHTML = "";
 
@@ -2170,6 +2213,8 @@
 
             if (!words || words.length === 0) {
                 listContainer.innerHTML = "<p style='padding:20px; color:#aaa'>No new words in this file.</p>";
+                const emptyUnlisted = createUnlistedLine(unlisted);
+                if (emptyUnlisted) listContainer.appendChild(emptyUnlisted);
                 return;
             }
 
@@ -2191,6 +2236,9 @@
                 line.innerHTML = `<span class="priority-marker marker-anki"></span><span>${words.length} new · ${inAnkiCount} already in Anki</span>`;
                 listContainer.appendChild(line);
             }
+
+            const unlistedLine = createUnlistedLine(unlisted);
+            if (unlistedLine) listContainer.appendChild(unlistedLine);
 
             const chunkSize = (typeof globalLogic !== 'undefined' && globalLogic.chunk_size) ? globalLogic.chunk_size : 50;
 

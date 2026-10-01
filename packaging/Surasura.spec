@@ -116,7 +116,7 @@ binaries = []
 hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data',
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
-                 'app.jmdict_data', 'app.phrases', 'app.phrase_data']
+                 'app.jmdict_data', 'app.phrases', 'app.phrase_data', 'app.one_kanji_data']
 
 # --- Optional-module payloads: only when that module is actually being bundled ---------------
 # Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is

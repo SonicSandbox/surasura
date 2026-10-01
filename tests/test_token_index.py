@@ -208,14 +208,19 @@ def test_known_word_change_refilters_without_retokenizing(tmp_path):
 
 
 def test_skip_singles_moves_single_chars_to_baseline_ja(tmp_path):
+    """The one-character rule (analyzer.single_kind): off, every one-character word is a band word; on, only a
+    one-kanji dictionary word is (彼, 私 — here), and grammar (は, だ, に) is baseline. The library's size is the same
+    either way."""
+    from app import analyzer
     f = tmp_path / "adv.txt"; _write(f, JA_ADVENTURE)
     store = ti.open_store("ja", path=_db(tmp_path))
     store.reconcile([str(f)], ti.make_tokenizer("ja"))
 
     with_s = store.unknown_frequencies(skip_singles=False)
     without = store.unknown_frequencies(skip_singles=True)
-    assert any(len(ti.split_key(k)[0]) == 1 for k, _ in with_s["unknown"])
-    assert all(len(ti.split_key(k)[0]) > 1 for k, _ in without["unknown"])
+    assert any(ti.split_key(k)[0] == "は" for k, _ in with_s["unknown"])
+    singles = {ti.split_key(k) for k, _ in without["unknown"] if len(ti.split_key(k)[0]) == 1}
+    assert singles == {("彼", "カレ")} and all(analyzer.single_kind(key) == 2 for key in singles)
     assert without["total_tokens"] == with_s["total_tokens"]
     store.close()
 
@@ -628,8 +633,7 @@ def test_a_store_from_before_sounds_were_words_is_rebuilt(tmp_path):
     """v14 -> v15: two fillers the tagger cut out of one interjection are that word — まあ, which a v14 store holds as
     the fillers ま + あ — and a sound said three times or more that the dictionary doesn't know is the sound word said
     twice (ハァハァハァ is はあはあ, a word of its own before). Reusing a v14 store would keep the pieces, so it must be
-    dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 15
+    dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "trip.txt"
     _write(f, "旅行は大変だったんですけどまあやっぱり楽しかったです。\nハァハァハァ…もう走れない。\n")
@@ -650,6 +654,54 @@ def test_a_store_from_before_sounds_were_words_is_rebuilt(tmp_path):
     assert s2.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN ('まあ', 'はあはあ') "
                            "ORDER BY lemma").fetchall() == words
     s2.close()
+
+
+def test_a_store_from_before_one_kanji_pieces_were_recorded_is_rebuilt(tmp_path):
+    """v15 -> v16: each Japanese file also records how often each one-kanji word stands there as a piece of something
+    else (年 in 三年, 前 in 三年前 — analyzer.bound_uses), summed in the `bound` table, so the Rarity slider counts a
+    one-kanji list word by its uses on its own, as the list does. A v15 store records none: it must be dropped and
+    rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 16
+    db = _db(tmp_path)
+    f = tmp_path / "town.txt"
+    _write(f, "三年前にこの町へ来た。\n年が明けて、雪が降った。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    pieces = s.bound_counts()
+    record = ti._decode_counts(s.conn.execute("SELECT bound FROM files").fetchone()[0])
+    s.close()
+    assert pieces == {("年", "ネン"): 1, ("前", "マエ"): 1} and record == {"年|ネン": 1, "前|マエ": 1}
+    conn = sqlite3.connect(db)      # what a v15 store holds: no pieces recorded
+    conn.execute("UPDATE files SET bound = NULL")
+    conn.execute("DELETE FROM bound")
+    conn.execute("PRAGMA user_version = 15")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v15 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.bound_counts() == pieces
+    s2.close()
+
+
+def test_a_files_pieces_leave_the_store_with_it(tmp_path):
+    """The bound table is kept as the aggregate is: a changed file's old pieces are taken off before its new ones go
+    on, and a removed file's go with it — never summed again over the whole library."""
+    db = _db(tmp_path)
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    _write(a, "三年前にこの町へ来た。\n")
+    _write(b, "十年ぶりに兄と会った。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(a), str(b)], ti.make_tokenizer("ja"))
+    assert s.bound_counts() == {("年", "ネン"): 2, ("前", "マエ"): 1}
+    _write(a, "年が明けて、雪が降った。\n")
+    _bump_mtime(a)
+    s.reconcile([str(a), str(b)], ti.make_tokenizer("ja"))
+    assert s.bound_counts() == {("年", "ネン"): 1}
+    s.reconcile([str(a)], ti.make_tokenizer("ja"))
+    assert s.bound_counts() == {}
+    assert s.conn.execute("SELECT COUNT(*) FROM bound").fetchone()[0] == 0
+    s.close()
 
 
 def test_concurrent_reader_sees_committed_writes(tmp_path):

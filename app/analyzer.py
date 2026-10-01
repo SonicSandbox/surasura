@@ -3330,18 +3330,56 @@ def compute_run_signature(language, found_files, args):
             # library_frequency.json it used to switch on.)
             "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
             "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
+            # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
+            # EPUB importer's part size, the Content Manager's "Add Words on 'Graduate'". No run reads them.
+            "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length",
+            "add_graduated_words",
+            # Rarity or coverage: a run reads neither key, only the --target-coverage the dashboard
+            # passes in coverage mode — in the args below.
+            "strategy", "target_coverage",
+            # Retired: ChineseTokenizer ignores it. A window that saved every default kept writing it
+            # back, and each such save cost a full re-analysis.
+            "reinforce_segmentation",
         }
         # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
         # on every change, and hashing them made each of those clicks cost a full re-analysis.
         _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
+        # The logic keys no run reads: the tooltip delay and the EPUB importer's split; and the report's
+        # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
+        # which compute_render_signature holds instead (a re-render, never a re-analysis).
+        _NON_ANALYSIS_LOGIC = {"gui", "importer",
+                               "inline_completed_files", "hide_audio_button", "chunk_size", "priority_markers"}
+        _UNREAD_CONTEXT = {"search_range", "max_extra", "min_words"}   # no code reads them
+        # Read by a Japanese run only (measured: flipping any of them leaves every output of a Chinese
+        # run byte for byte the same; the one-character rule's --include-single-chars too, in the args).
+        _JAPANESE_ONLY_LOGIC = {"paren_readings", "names_katakana", "names_recurring", "names_kanji",
+                                "names_work_terms", "phrases_and_titles", "phrase_rows", "ignore_names"}
         _settings_for_sig = ""
         try:
-            _sj = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
+            # The settings as the run reads them (load_settings: the defaults filled in, a saved value
+            # always winning). A key written at its default and one left out are then the same
+            # settings, as they are to the run: an update's first start, which writes the new defaults
+            # into the file, and a window that saves every default re-analyze nothing.
+            _sj = settings_manager.load_settings()
             for _k in _NON_ANALYSIS_SETTINGS:
                 _sj.pop(_k, None)
             for _k in [k for k in _sj if k.startswith(_NON_ANALYSIS_PREFIXES)]:
                 _sj.pop(_k, None)
-            _settings_for_sig = json.dumps(_sj, sort_keys=True, ensure_ascii=False)
+            _logic = {k: v for k, v in _sj.get("logic", {}).items() if k not in _NON_ANALYSIS_LOGIC}
+            if isinstance(_logic.get("context"), dict):
+                _logic["context"] = {k: v for k, v in _logic["context"].items() if k not in _UNREAD_CONTEXT}
+            # Each language's own: its sentence ends, never the other's; the Chinese script only for
+            # Chinese (a Japanese run's args carry no script), the Japanese-only switches only for Japanese.
+            if isinstance(_logic.get("sentence_boundaries"), dict):
+                _logic["sentence_boundaries"] = {language: _logic["sentence_boundaries"].get(language)}
+            if language == "zh":
+                _sj.pop("exclude_single", None)
+                for _k in _JAPANESE_ONLY_LOGIC:
+                    _logic.pop(_k, None)
+            else:
+                _sj.pop("zh_script", None)
+            _sj["logic"] = _logic
+            _settings_for_sig = json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
         except Exception:
             pass
 
@@ -3354,7 +3392,8 @@ def compute_run_signature(language, found_files, args):
             "settings": _settings_for_sig,
             "args": [args.language, args.min_freq, args.target_coverage, args.only_i_plus_one,
                      args.ensure_audio_example,
-                     args.include_single_chars, args.exclude_freq_one, args.reinforce,
+                     # The one-character rule is Japanese only (skip_singles in main()).
+                     args.include_single_chars and language != "zh", args.exclude_freq_one, args.reinforce,
                      args.context_min, args.context_max, args.max_contexts, script],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
@@ -3365,6 +3404,13 @@ def compute_run_signature(language, found_files, args):
     except Exception as e:
         print(f"Warning: could not compute run signature: {e}")
         return None
+
+
+def _without_comments(value):
+    """`value` without its "_comment" keys, at any depth: notes to the reader of settings.json, which no code reads."""
+    if isinstance(value, dict):
+        return {k: _without_comments(v) for k, v in value.items() if k != "_comment"}
+    return value
 
 
 def compute_render_signature(args):
@@ -3382,6 +3428,8 @@ def compute_render_signature(args):
         _s = settings_manager.load_settings()
     except Exception:
         _s = {}
+    _logic = _s.get("logic") if isinstance(_s.get("logic"), dict) else {}
+    _markers = _logic.get("priority_markers")
     return json.dumps([
         args.theme,
         int(args.zen_limit or 0),
@@ -3409,6 +3457,17 @@ def compute_render_signature(args):
         # (Anki_Match_Consistency_Scope.md item 1).
         _backlog_fingerprint(getattr(args, "language", "ja"), "junban_pairs.json")
         if _s.get("anki_backlog_on_generate", True) else None,
+        # The report's own logic keys, which the templates read from the logic block they embed
+        # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
+        # thresholds. No run reads them, so compute_run_signature leaves them out: changing one
+        # re-renders, never re-analyzes. The report embeds the whole block, so a template that starts
+        # reading another logic key adds it here.
+        bool(_logic.get("inline_completed_files", False)),
+        bool(_logic.get("hide_audio_button", False)),
+        _logic.get("chunk_size", 50),
+        {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers,
+        # Speech's port: the report embeds it to reach the helper, but only while Speech is on.
+        _s.get("koe_port") if _s.get("enable_koe", False) else None,
         # The templates themselves. Without this a template-only change (a new report tab, a CSS
         # fix) was invisible to both fast paths: they reopened the old HTML until something else
         # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.

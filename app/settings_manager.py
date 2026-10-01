@@ -14,7 +14,6 @@ DEFAULT_SETTINGS = {
     "target_coverage": 90,
     "split_length": 3000,
     "target_language": "ja",
-    "reinforce_segmentation": False,
     # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
     # every file's script as written. Files are never converted on disk (app/zh_script.py).
     "zh_script": "asis",
@@ -293,6 +292,22 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
             json.dump(to_save, f, indent=4)
     except Exception as e:
         print(f"Error: Could not save settings: {e}")
+
+def save_keys(changes: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
+    and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
+    so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
+    Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
+    settings. The Anki window's own save works the same way (anki_sync_gui.AnkiSyncGui._save)."""
+    try:
+        settings = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
+        if not isinstance(settings, dict):
+            raise ValueError("settings.json is not an object")
+    except (OSError, ValueError):
+        settings = load_settings()
+    settings.update(changes)
+    save_settings(settings)
+    return settings
 
 def get_default_settings() -> Dict[str, Any]:
     """Returns a fresh copy of default settings."""

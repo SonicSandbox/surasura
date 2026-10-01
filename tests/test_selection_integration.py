@@ -43,8 +43,11 @@ def _run(env, extra_args, clear=True):
     csv = results / "priority_learning_list.csv"
     if clear and csv.exists():
         csv.unlink()
-    # (The SQLite token store is isolated to a temp dir by the autouse conftest fixture.)
+    # (The SQLite token store is isolated to a temp dir by the autouse conftest fixture.) The env's
+    # settings.json is the one the run reads (settings_manager.load_settings) — and so the one its run
+    # signature hashes, which reads the settings as the run does.
     with patch("app.analyzer.get_user_file", side_effect=env["guf"]), \
+         patch("app.settings_manager.get_user_file", side_effect=env["guf"]), \
          patch("app.analyzer.get_data_path", side_effect=env["gdp"]), \
          patch("app.analyzer.get_user_files_path", side_effect=env["gufp"]), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \
@@ -140,6 +143,29 @@ def test_render_signature_covers_everything_injected_into_the_report(env):
         "changing the source badge must force a re-render"
     assert sig(words_per_day=5, show_words_per_day=True, source_display="off") == base, \
         "identical presentation must NOT re-render"
+
+    # The report's own logic keys: the templates read them from the logic block the report embeds, and no run reads
+    # them, so the run signature leaves them out — each must re-render instead ("Show 'Target Met' inline", "Hide
+    # Audio Button", the page size, the ✦ / ⚖ thresholds).
+    import copy
+    from app import settings_manager
+
+    def logic(**over):
+        block = copy.deepcopy(settings_manager.DEFAULT_SETTINGS["logic"])
+        for key, value in over.items():
+            block[key] = dict(block[key], **value) if isinstance(block.get(key), dict) else value
+        return block
+
+    shown = dict(words_per_day=5, show_words_per_day=True, source_display="off")
+    as_shipped = sig(**shown, logic=logic())
+    for over in ({"inline_completed_files": True}, {"hide_audio_button": True}, {"chunk_size": 100},
+                 {"priority_markers": {"priority_threshold": 0.6}}, {"priority_markers": {"priority_min": 4}},
+                 {"priority_markers": {"lopsided_threshold": 0.9}}):
+        assert sig(**shown, logic=logic(**over)) != as_shipped, f"{over} must re-render"
+    assert sig(**shown, logic=logic(priority_markers={"_comment": "edited"})) == as_shipped, \
+        "a note to the reader of settings.json is no change to the report"
+    assert sig(**shown, logic=logic(hide_audio_button=False)) == as_shipped, \
+        "Hide Audio Button written at its default, as the dashboard saves it, is the same report as left out"
 
 
 def test_run_signature_reruns_on_settings_change(env):

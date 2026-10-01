@@ -135,11 +135,9 @@ class OnboardingGuide:
         confirm_btn.pack(fill=tk.X)
 
     def complete(self):
-        # Save Language Code
+        # Save Language Code — only it, onto settings.json as it is (the dashboard saves the rest)
         try:
-            settings = settings_manager.load_settings()
-            settings["target_language"] = self.language_var.get()
-            settings_manager.save_settings(settings)
+            settings_manager.save_keys({"target_language": self.language_var.get()})
         except Exception as e:
             print(f"Error saving settings: {e}")
 

@@ -891,8 +891,19 @@ class MasterDashboardApp:
         its .db mtime may not have moved yet, so we must recompute rather than trust the signature."""
         import threading
         lang = self.var_language.get() or "ja"
-        sel = (getattr(self, "_current_settings", {}) or {}).get("logic", {}).get("selection", {})
+        current = getattr(self, "_current_settings", {}) or {}
+        sel = current.get("logic", {}).get("selection", {})
         script = self._effective_zh_script(lang)     # read here: the worker must not touch Tk vars
+        # Which of the library's name tables the counts take: the store reads the three switches from
+        # analyzer.LOGIC (token_index._library_switches), which this process loaded once, at its first
+        # import — so a switch flipped in Settings kept counting the old way until a restart. Set them
+        # from the settings now, as a run reads its own (the YouTube preview updates LOGIC the same way).
+        try:
+            from app import analyzer
+            for key in ("names_recurring", "names_kanji", "names_work_terms"):
+                analyzer.LOGIC[key] = bool((current.get("logic") or {}).get(key, True))
+        except Exception:
+            pass
 
         # Cache hit: same inputs as the last good compute -> reuse the cached previews, no worker.
         sig = self._preview_signature(lang, sel, script)
@@ -916,8 +927,9 @@ class MasterDashboardApp:
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store
         (its mtime moves whenever a run/indexer rewrites it), the known-words file, the ignore
         lists and Ignore names (the library's names become ignored words), the set phrases switch (their rows
-        count), which one-character words count (exclude_single), the selection settings, and the Chinese script
-        they're all read in. Returns None if it can't be computed (forces a refresh)."""
+        count), which one-character words count (exclude_single), which of the library's name tables apply (they
+        join words, so they change the counts), the selection settings, and the Chinese script they're all read in.
+        Returns None if it can't be computed (forces a refresh)."""
         try:
             from app.path_utils import get_user_files_path
             uf = get_user_files_path(lang)
@@ -934,7 +946,9 @@ class MasterDashboardApp:
             names = bool(logic.get("ignore_names"))
             phrases = bool(logic.get("phrase_rows", True))
             singles = bool(current.get("exclude_single", True))     # which one-character words count
-            return (lang, db_mtime, ksig, lists, names, phrases, singles, json.dumps(sel, sort_keys=True), script)
+            tables = tuple(bool(logic.get(key, True)) for key in ("names_recurring", "names_kanji", "names_work_terms"))
+            return (lang, db_mtime, ksig, lists, names, phrases, singles, tables, json.dumps(sel, sort_keys=True),
+                    script)
         except Exception:
             return None
 
@@ -1525,7 +1539,9 @@ class MasterDashboardApp:
                  "one word when your library keeps using them together: 斬魄刀, 写輪眼. A word "
                  "a dictionary lists never joins this way, and auto-generated captions don't "
                  "count. Takes effect at the next Generate.")):
-            chk = ttk.Checkbutton(self.names_frame, text=text, variable=var, command=self.save_settings)
+            # The Rarity slider counts with the library's name tables too: it follows at once.
+            chk = ttk.Checkbutton(self.names_frame, text=text, variable=var,
+                                  command=lambda: (self.save_settings(), self._refresh_band_preview()))
             chk.pack(anchor=tk.W)
             ToolTip(chk, tip)
 

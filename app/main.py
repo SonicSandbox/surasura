@@ -328,9 +328,16 @@ class MasterDashboardApp:
         self.root.resizable(True, True)
         self.root.minsize(520, 520)
         self.root.configure(bg=BG_COLOR)
-        
 
-        
+        # The Rarity slider's first refresh decodes tables before it can count — the compound table, the one-kanji
+        # words, KnownWord.json's ignored entries: about a quarter of a second on a large library. Decoded here, in
+        # the background while the window is built, the refresh reads only the store (token_index.prepare_preview).
+        # Skipped under test, as the deferred startup timers are: no background work racing a test's patches.
+        self._preview_prepared = None
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self._preview_prepared = threading.Thread(target=self._prepare_preview, daemon=True)
+            self._preview_prepared.start()
+
         self.style = ttk.Style()
         self.apply_dark_theme()
         
@@ -921,10 +928,25 @@ class MasterDashboardApp:
         self.var_band_coverage.set("Calculating…")
 
         def _work():
+            prepared = getattr(self, "_preview_prepared", None)
+            if prepared is not None:
+                prepared.join()             # the tables the window's opening decodes (never on the window's thread)
+            if gen != self._preview_gen:
+                return                      # a newer refresh started meanwhile: only its numbers are ever shown
             previews = self._compute_band_previews(lang, sel, script)
             self.gui_queue.put(lambda: self._apply_preview_result(gen, previews, sig))
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _prepare_preview(self):
+        """(On a background thread, as the window opens — never touches Tk.) Decode what the Rarity slider's first
+        refresh reads besides the store, for the language the settings open in (token_index.prepare_preview)."""
+        try:
+            from app.path_utils import get_user_files_path
+            lang = settings_manager.load_settings().get("target_language", "ja")
+            token_index.prepare_preview(lang, get_user_files_path(lang))
+        except Exception:
+            pass
 
     def _preview_signature(self, lang, sel, script="asis"):
         """Cheap stat-only fingerprint of everything the band preview depends on: the token store

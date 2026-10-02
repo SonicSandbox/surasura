@@ -630,3 +630,32 @@ def test_a_hand_edited_line_that_is_not_a_number_keeps_your_band_and_generate_st
     assert "Warning: automatic rarity could not pick a band" in log
     assert "Selection band 'very_rare' ->" in log
     assert lib["min_count"] == pytest.approx(_floor("very_rare", lib))
+
+
+def test_every_files_counts_share_each_words_one_key(samples_env, monkeypatch):
+    """A Generate reads each file's tokens anew from the token store, so each file's counts (kept for the progressive
+    pass) held a copy of its own of every word's key — and of the word's text — until the run ended: some 150 MB on a
+    large library. Every file's counts now hold the one key each word was first met with. The same lists: only where
+    the key lives changes."""
+    from collections import Counter
+
+    made = []
+
+    class Recorded(Counter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(analyzer, "Counter", Recorded)
+    _run_samples(samples_env)
+    # Each file's counts: every token of the file, so the particle の too (never an unknown, so in no other count).
+    files = [counts for counts in made if ("の", "ノ") in counts]
+    assert len(files) >= 4, "the four sample files' counts (and the progressive pass's re-reads, if any)"
+    first = {}
+    shared = 0
+    for counts in files:
+        for key in counts:
+            held = first.setdefault(key, key)
+            assert held is key, f"{key}: one key object for every file"
+            shared += held is key and counts is not files[0]
+    assert shared, "words met in more than one file"

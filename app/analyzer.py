@@ -216,23 +216,32 @@ _ASTRAL_RE = re.compile(r'[\U00010000-\U0010ffff]')
 
 def _read_pattern():
     """The pattern of every character up to U+FFFF that `tagger_text` reads differently, and the set of those above it
-    (_READ_ASTRAL) — once per process, on first use: a pass over Unicode's decompositions (about 0.2 s), so a line with
+    (_READ_ASTRAL) — once per process, on first use: a pass over Unicode's decompositions (about 0.07 s), so a line with
     none of them is read as written at regex speed. The ones above U+FFFF (about 6,000: invisible tags and variation
     selectors, compatibility ideographs, mathematical letters) stay out of the pattern: as about 90 more ranges in its
     class, `re` compared every character of every line with each of them in turn — measured on a 1,987-file library,
     0.92 s for the test instead of 0.13 s."""
     if not _READ_RE:
-        for point in range(sys.maxunicode + 1):
-            ch = chr(point)
-            decomposition = unicodedata.decomposition(ch)
-            if not decomposition:
+        # Only a character with a decomposition is read otherwise, and a run of characters none of which has one is
+        # its own NFKD form (a decomposition always changes the text) — so each run of 4,096, then of 64, that NFKD
+        # leaves as it is is passed over in C: about 23,000 characters are looked at one by one, not 1.1 million.
+        for first in range(0, sys.maxunicode + 1, 4096):
+            if unicodedata.is_normalized("NFKD", "".join(map(chr, range(first, first + 4096)))):
                 continue
-            parts = decomposition.split()
-            if len(parts) == 2 and not decomposition.startswith("<"):
-                _COMBINES.add(chr(int(parts[1], 16)))
-            form = unicodedata.normalize("NFKC", ch)
-            if form != ch and all(unicodedata.category(c)[0] in "LMN" for c in form):
-                _READ_AS[ch] = form
+            for start in range(first, first + 4096, 64):
+                if unicodedata.is_normalized("NFKD", "".join(map(chr, range(start, start + 64)))):
+                    continue
+                for point in range(start, start + 64):
+                    ch = chr(point)
+                    decomposition = unicodedata.decomposition(ch)
+                    if not decomposition:
+                        continue
+                    parts = decomposition.split()
+                    if len(parts) == 2 and not decomposition.startswith("<"):
+                        _COMBINES.add(chr(int(parts[1], 16)))
+                    form = unicodedata.normalize("NFKC", ch)
+                    if form != ch and all(unicodedata.category(c)[0] in "LMN" for c in form):
+                        _READ_AS[ch] = form
         _READ_AS.update(_SAME_CHARACTER)
         for first, last in _IGNORABLE:
             _READ_AS.update((chr(point), "") for point in range(first, last + 1))
@@ -1877,6 +1886,7 @@ class JapaneseTokenizer(Tokenizer):
         # ~11% slower across the whole tokenization pass.
         boundaries = frozenset(LOGIC.get("sentence_boundaries", {}).get("ja", "。｡．！？!?\n"))
         joins = affix_joins()
+        sanitized = _SANITIZED.get      # a term met before, cleaned (_sanitize_term): looked up for every token
         yielded = 0                  # sentences yielded so far: the index of the one being built
 
         for line in text.split("\n"):
@@ -1904,7 +1914,7 @@ class JapaneseTokenizer(Tokenizer):
 
                 lemma = word_lemma(word)     # None: no word — a symbol, a space, a number (§ above)
                 if SANITIZE_JA and lemma is not None:
-                    lemma = _sanitize_term(lemma)
+                    lemma = sanitized(lemma) or _sanitize_term(lemma)
                 # The reading of the LEMMA (UniDic lForm), not of this conjugated surface (`kana`):
                 # a word is keyed on (lemma, reading), so the surface reading split a verb into one
                 # row per conjugation — 辿り着く sat on four rows (タドリツイ 102, タドリツク 40,
@@ -1922,7 +1932,7 @@ class JapaneseTokenizer(Tokenizer):
                 # orth rides along purely as the name to SHOW. Never key anything on it.
                 orth = word.feature.orthBase if word.feature.orthBase else word.surface
                 if SANITIZE_JA:
-                    orth = _sanitize_term(orth)
+                    orth = sanitized(orth) or _sanitize_term(orth)
 
                 current_sentence_surface.append(surface)
                 if at is not None:
@@ -2331,16 +2341,28 @@ def _sanitize_term(term):
     # Actually, let's keep _sanitize_term as a raw helper and have the CALLERS decide.
     # No, wait. The user wants the toggle to affect analysis AND loading.
     
+    # A term met before is looked up: this runs for every token read, twice (its lemma and its spelling), and a
+    # library's tokens are a few tens of thousands of terms (_SANITIZED).
+    done = _SANITIZED.get(term)
+    if done is not None:
+        return done
+
     # First strip leading/trailing whitespace
-    term = term.strip()
+    stripped = term.strip()
 
     # Everything before the first hyphen or space — what re.split(r'[-\s]', term)[0] is, from one precompiled
-    # search (this runs for every token read, twice)
-    cut = _TERM_CUT_RE.search(term)
-    return term if cut is None else term[:cut.start()]
+    # search
+    cut = _TERM_CUT_RE.search(stripped)
+    done = stripped if cut is None else stripped[:cut.start()]
+    if len(_SANITIZED) >= _SANITIZED_KEPT:
+        _SANITIZED.clear()
+    _SANITIZED[term] = done
+    return done
 
 
 _TERM_CUT_RE = re.compile(r'[-\s]')
+_SANITIZED = {}             # term -> _sanitize_term(term), for the terms met lately: the same text, looked up
+_SANITIZED_KEPT = 100000    # terms, about 15 MB — a large library's lemmas and spellings; when full it starts again
 
 def _known_term(term):
     """A KnownWord.json dictForm as a known word. Migaku writes some with a gloss after the word (アイリス-iris): cut
@@ -4244,7 +4266,8 @@ def main():
     # known): those don't change during the aggregation, so each word is judged once — `_judged` — and a sentence's
     # difficulty below takes a set lookup per word.
     _judged, _read_already = set(), set()
-    # (lemma, reading) -> what the aggregation's per-token tests say of the word, asked once per word (below).
+    # (lemma, reading) -> (what the aggregation's per-token tests say of the word, its key as first met), asked once per
+    # word (below).
     _word_state = {}
     # An example sentence's lengths, the same for every sentence of the run.
     min_chars = LOGIC.get("context", {}).get("min_chars", 10)
@@ -4406,25 +4429,29 @@ def main():
             unknown_keys = []
             named = None        # [(token number, key, spelling)]: this sentence's words for the file's line (below)
             for t_no, (lemma, reading, surface, orth) in enumerate(s_tokens):
-                key = (lemma, reading)
-                # Cache EVERY token (before the target-language filter below) so the cached
-                # multiset matches what tokenizer.tokenize() yields for the progressive pass.
-                file_counter[key] = file_count(key, 0) + 1
                 # What the word is, asked once per word (`_word_state`), not per token: this loop runs over every
                 # token of the library. Bit 1: known (KnownWord.json) or ignored; bit 2: a lemma with no Target
                 # characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other ASCII-only tokens) — such a
                 # token counts toward the totals, or as an unknown, only when its surface has some. With the
                 # one-character rule on (§ One-character words): bit 4, a one-character word the list never offers
                 # (bit 16: one the report names for its file); bit 8, a one-kanji word it offers where it stands free.
-                state = _word_state.get(key)
-                if state is None:
+                # Kept with the word's key as first met, which every file's counts and sentences then share: each file's
+                # tokens are read anew from the store, and its own copy of each key (and of its text) stayed in memory
+                # with the file's counts until the run ended — some 150 MB on a large library.
+                known = _word_state.get((lemma, reading))
+                if known is None:
+                    key = (lemma, reading)
                     state = ((0 if has_target_language(lemma, language) else 2)
                              + (1 if (lemma in ignore_list or key in known_words_initial
                                       or lemma in known_lemmas_initial) else 0))
                     kind = single_kind(key, skip_singles)
                     if kind:
                         state += 8 if kind == 2 else 4 + (16 if not_on_list(key) else 0)
-                    _word_state[key] = state
+                    known = _word_state[key] = (state, key)
+                state, key = known
+                # Cache EVERY token (before the target-language filter below) so the cached
+                # multiset matches what tokenizer.tokenize() yields for the progressive pass.
+                file_counter[key] = file_count(key, 0) + 1
                 if state & 2 and not has_target_language(surface, language):
                     continue
 
@@ -5377,10 +5404,12 @@ def main():
             # Check strictly against initial known list — known then in the session too (it starts from that list) —
             # and a one-character word the list never offers: nothing to learn either (§ One-character words). The
             # aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read here again asks.
-            state = word_state(key)
-            if state is None:
+            known = word_state(key)
+            if known is None:
                 state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
                           else 0) + (4 if _never(key) else 0))
+            else:
+                state = known[0]
             if state & 5:
                 file_baseline_known_count += count
                 file_current_start_count += count

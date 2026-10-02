@@ -87,3 +87,70 @@ def test_signature_changes_when_ignore_names_flips(uf_env):
     assert app._preview_signature("ja", sel) != off
     app._current_settings = {"logic": {}}
     assert app._preview_signature("ja", sel) == off, "a missing key reads as off"
+
+
+class _Var:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+def test_a_refresh_waits_for_the_tables_the_window_decodes_and_a_superseded_one_never_counts(uf_env, monkeypatch):
+    """As the dashboard opens, what the slider's first refresh reads besides the store is decoded in the background
+    while the window is built (token_index.prepare_preview). A refresh's worker waits for that — the window's thread
+    never does — and a refresh a newer one replaced before it began counting does not count at all: only the newest
+    numbers were ever shown, now without the work of the ones before (two refreshes start as the window opens)."""
+    import queue
+    import threading
+    from unittest.mock import MagicMock
+
+    started = []
+    real_thread = threading.Thread
+
+    class Recording(real_thread):
+        def start(self):
+            started.append(self)
+            return super().start()
+
+    monkeypatch.setattr(threading, "Thread", Recording)
+    app = _app()
+    ready = threading.Event()
+    app._preview_prepared = real_thread(target=ready.wait, daemon=True)
+    app._preview_prepared.start()
+    counted = []
+
+    def compute(lang, sel, script):
+        counted.append(sel["band"])
+        return {"rare": {"word_count": 3}}
+
+    app._compute_band_previews = compute
+    app.var_language, app.var_zh_script = _Var("ja"), _Var("asis")
+    app.var_band_coverage, app.gui_queue = MagicMock(), queue.Queue()
+    app._current_settings = {"logic": {"selection": {"band": "core"}}}
+    app._refresh_band_preview()
+    app._current_settings = {"logic": {"selection": {"band": "rare"}}}
+    app._refresh_band_preview()
+    assert len(started) == 2 and counted == [], "both wait for the window's tables"
+    ready.set()
+    for worker in started:
+        worker.join(10)
+    assert counted == ["rare"], "the first was replaced before it began: only the newest counts"
+    assert app.gui_queue.qsize() == 1, "one result goes to the window"
+
+
+def test_with_nothing_to_wait_for_a_refresh_counts_at_once(uf_env):
+    """Under test (and before the window's own decode is started) there is nothing to wait for: the worker counts."""
+    import queue
+    import threading
+    from unittest.mock import MagicMock
+
+    app = _app()
+    done = threading.Event()
+    app._compute_band_previews = lambda lang, sel, script: done.set() or {}
+    app.var_language, app.var_zh_script = _Var("ja"), _Var("asis")
+    app.var_band_coverage, app.gui_queue = MagicMock(), queue.Queue()
+    app._current_settings = {"logic": {}}
+    app._refresh_band_preview()
+    assert done.wait(10)

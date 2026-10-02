@@ -91,6 +91,10 @@ from operator import itemgetter
 #    once with v8–v18.
 SCHEMA_VERSION = 19
 
+# The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
+# Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
+_NAMES_SHARES = 1
+
 
 # --------------------------------------------------------------------------- #
 # Keys, paths, signatures
@@ -280,6 +284,11 @@ class Store:
         r = self.conn.execute("SELECT COALESCE(SUM(total), 0) FROM files").fetchone()
         return int(r[0]) if r else 0
 
+    def has_tokens(self):
+        """Does any file hold a token — `total_tokens()` > 0 (a file's total is never negative), without summing
+        every file."""
+        return self.conn.execute("SELECT 1 FROM files WHERE total > 0 LIMIT 1").fetchone() is not None
+
     def file_count(self):
         return int(self.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
 
@@ -312,26 +321,30 @@ class Store:
         except Exception:
             return None
 
-    def _update_names_tables(self, cur):
+    def _update_names_tables(self, cur, build_signature=None):
         """Compute the library's name tables from every file's recorded candidates (and the last tables, for the
         flip guard) and store them, with the library's names (`names.name_words`, for Ignore names) — after a
-        reconcile changed something. Japanese only."""
+        reconcile changed something. Japanese only. `build_signature`: the tokenizer identity the files were just
+        read with (reconcile's), for `_names_adjust`'s per-file memory."""
         from app import analyzer, names
         row = cur.execute("SELECT value FROM meta WHERE key='names_tables'").fetchone()
         try:
             previous = json.loads(row[0]) if row else None
         except Exception:
             previous = None
-        records = [_decode_counts(blob) for (blob,) in cur.execute("SELECT names FROM files WHERE names IS NOT NULL")]
+        # In the table's own order (rowid, as a scan reads it): the tables and the adjustments sum the files in it.
+        files = cur.execute("SELECT path, mtime, size, names FROM files WHERE names IS NOT NULL ORDER BY rowid").fetchall()
+        records = [_decode_counts(blob) for _path, _mtime, _size, blob in files]
         tables = names.compute_tables(records, previous, analyzer._sanitize_term)
-        for key, value in (("names_tables", tables), ("names_adjust", self._names_adjust(cur, tables)),
+        adjust = self._names_adjust(cur, tables, files, records, build_signature)
+        for key, value in (("names_tables", tables), ("names_adjust", adjust),
                            ("names_words", names.name_words(records, tables, analyzer._sanitize_term))):
             value = json.dumps(value, ensure_ascii=False)
             cur.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=?",
                         (key, value, value))
         self._names = None
 
-    def _names_adjust(self, cur, tables):
+    def _names_adjust(self, cur, tables, files, records, build_signature=None):
         """What the name tables change in the running totals, for each way the three switches can be set. The
         aggregate counts each file as it reads alone; the list counts its cached tokens with the tables applied
         (file_tokens) — so the Rarity slider's numbers, and the band automatic rarity picks from them, must add each
@@ -339,58 +352,101 @@ class Store:
         characters) — and the one-kanji words a join makes or unmakes pieces of something else (`bound`: 斬 + 魄 + 刀
         joined as a term are no pieces any more; a word beside them no longer stands glued to them). {"111" | "110" |
         … | "001" (recurring, kanji, terms): {"counts": [[lemma, reading, delta], ...], "total": delta, "bound":
-        [[lemma, reading, delta], ...]}}."""
-        from app import analyzer, names
+        [[lemma, reading, delta], ...]}}.
+
+        `files` ((path, mtime, size, names blob), in the table's order) and their decoded `records`. Each file's
+        share is remembered (meta names_adjust_files) with what decides it — the file as read ((mtime, size), under
+        the same tokenizer identity and engine) and what the tables make of its name candidates (`_names_held`) — so
+        a change reads again only the files it touched or whose names the tables now read otherwise; every file's
+        share is then summed in the table's order, exactly as one pass over every file sums them."""
+        from app import analyzer
         if not tables:
             return {}
-        has_lang = analyzer.has_target_language
         spellings = {kind: set(table) for kind, table in tables.items() if isinstance(table, dict)}
         terms = spellings.get("w", ())
         combos = [(f"{r:d}{k:d}{t:d}", (bool(r), bool(k), bool(t)))
                   for r in (1, 0) for k in (1, 0) for t in (1, 0) if r or k or t]
         deltas = {combo: [Counter(), 0, Counter()] for combo, _switches in combos}
-        for tokens_blob, names_blob in cur.execute(
-                "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
-            spans = _decode_counts(names_blob).get("s", [])
+        if build_signature is None:
+            row = cur.execute("SELECT value FROM meta WHERE key='build_sig'").fetchone()
+            build_signature = row[0] if row else None
+        state = [_NAMES_SHARES, SCHEMA_VERSION, analyzer.ENGINE_REVISION, build_signature]
+        row = cur.execute("SELECT value FROM meta WHERE key='names_adjust_files'").fetchone()
+        try:
+            kept = json.loads(row[0]) if row else {}
+            kept = kept.get("files", {}) if kept.get("state") == state else {}
+        except (ValueError, AttributeError):
+            kept = {}
+        reads = _names_reads(tables)
+        shares = {}
+        for (path, mtime, size, _blob), record in zip(files, records):
+            spans = record.get("s", [])
             if not any(span[6] in spellings.get(span[5], ()) or (span[5] == "w" and _holds_a_term(span[6], terms))
                        for span in spans):
                 continue                                # no joined name here: nothing to decode
-            sentences = _decode_tokens(tokens_blob)
-            alone = {}                                  # sentence -> its pieces as the file reads alone (every combo's)
-            for combo, switches in combos:
+            held = _names_held(spans, reads, (True, True, True))
+            entry = kept.get(path)
+            if entry is None or entry[0] != mtime or entry[1] != size or entry[2] != held:
+                blob = cur.execute("SELECT tokens FROM files WHERE path=?", (path,)).fetchone()[0]
+                entry = [mtime, size, held, self._names_share(_decode_tokens(blob), spans, tables, combos)]
+            shares[path] = entry
+            for combo, (counts, total, pieces) in entry[3].items():
                 delta = deltas[combo]
-                cuts = {}                               # sentence -> its joins, in order
-                for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
-                    cuts.setdefault(s, []).append((a, b, token))
-                    joined = [(token, 1)] + [(piece, -1) for piece in sentences[s][1][a:b]]
-                    for (lemma, reading, surface, *_rest), sign in joined:
-                        if has_lang(lemma, self.language) or has_lang(surface, self.language):
-                            delta[0][(lemma, reading)] += sign
-                            delta[1] += sign
-                # A join takes its pieces away and gives each word beside it a new neighbour; no other word's place
-                # changes, so only those are asked again (a word's piece-ness is decided by its neighbours).
-                for s, joins in cuts.items():
-                    text, tokens = sentences[s]
-                    pieces = alone.get(s)
-                    if pieces is None:
-                        pieces = alone[s] = analyzer.bound_uses(text, tokens)
-                    joined, gone, beside, shift = list(tokens), set(), set(), 0
-                    for a, b, _token in joins:
-                        gone.update(range(max(a - 1, 0), min(b + 1, len(tokens))))
-                        if a:
-                            beside.add(a - 1 - shift)
-                        if b < len(tokens):
-                            beside.add(a - shift + 1)
-                        shift += b - a - 1
-                    for a, b, token in reversed(joins):
-                        joined[a:b] = [token]
-                    for i in gone & pieces:
-                        delta[2][(tokens[i][0], tokens[i][1])] -= 1
-                    for i in analyzer.bound_uses(text, joined, only=sorted(beside)):
-                        delta[2][(joined[i][0], joined[i][1])] += 1
+                for lemma, reading, n in counts:
+                    delta[0][(lemma, reading)] += n
+                delta[1] += total
+                for lemma, reading, n in pieces:
+                    delta[2][(lemma, reading)] += n
+        value = json.dumps({"state": state, "files": shares}, ensure_ascii=False, separators=(",", ":"))
+        cur.execute("INSERT INTO meta(key, value) VALUES('names_adjust_files', ?) ON CONFLICT(key) DO UPDATE SET value=?",
+                    (value, value))
         return {combo: {"counts": [[l, r, n] for (l, r), n in counts.items() if n], "total": total,
                         "bound": [[l, r, n] for (l, r), n in pieces.items() if n]}
                 for combo, (counts, total, pieces) in deltas.items()}
+
+    def _names_share(self, sentences, spans, tables, combos):
+        """One file's share of `_names_adjust`, for each switch combination: {combo: [[[lemma, reading, delta], ...],
+        total delta, [[lemma, reading, delta], ...] (bound)]} — every word it touches, in the order first touched, a
+        delta that nets to nothing included: summed file by file in the table's order, the words come in the order a
+        single pass meets them."""
+        from app import analyzer, names
+        has_lang = analyzer.has_target_language
+        share = {}
+        alone = {}                                      # sentence -> its pieces as the file reads alone (every combo's)
+        for combo, switches in combos:
+            counts, total, bound = Counter(), 0, Counter()
+            cuts = {}                                   # sentence -> its joins, in order
+            for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
+                cuts.setdefault(s, []).append((a, b, token))
+                joined = [(token, 1)] + [(piece, -1) for piece in sentences[s][1][a:b]]
+                for (lemma, reading, surface, *_rest), sign in joined:
+                    if has_lang(lemma, self.language) or has_lang(surface, self.language):
+                        counts[(lemma, reading)] += sign
+                        total += sign
+            # A join takes its pieces away and gives each word beside it a new neighbour; no other word's place
+            # changes, so only those are asked again (a word's piece-ness is decided by its neighbours).
+            for s, joins in cuts.items():
+                text, tokens = sentences[s]
+                pieces = alone.get(s)
+                if pieces is None:
+                    pieces = alone[s] = analyzer.bound_uses(text, tokens)
+                joined, gone, beside, shift = list(tokens), set(), set(), 0
+                for a, b, _token in joins:
+                    gone.update(range(max(a - 1, 0), min(b + 1, len(tokens))))
+                    if a:
+                        beside.add(a - 1 - shift)
+                    if b < len(tokens):
+                        beside.add(a - shift + 1)
+                    shift += b - a - 1
+                for a, b, token in reversed(joins):
+                    joined[a:b] = [token]
+                for i in gone & pieces:
+                    bound[(tokens[i][0], tokens[i][1])] -= 1
+                for i in analyzer.bound_uses(text, joined, only=sorted(beside)):
+                    bound[(joined[i][0], joined[i][1])] += 1
+            share[combo] = [[[l, r, n] for (l, r), n in counts.items()], total,
+                            [[l, r, n] for (l, r), n in bound.items()]]
+        return share
 
     def _names_entry(self):
         """What the name tables change with the switches set now (`_names_adjust`, one switch combination) — {} when all
@@ -468,14 +524,19 @@ class Store:
 
     def get_cached_known(self, signature):
         """Return (known_tuples, known_lemmas) if the cache matches `signature`, else None.
-        `signature` encodes KnownWord.json's (exists, mtime, size) — so any edit/delete/add misses."""
+        `signature` encodes KnownWord.json's (exists, mtime, size) — so any edit/delete/add misses.
+
+        Parsed again only when the cached values change (`_KNOWN_READ`): every Rarity slider refresh, and the
+        dashboard's check before launching the indexer, asked — each caller gets sets of its own."""
         signature = self._known_key(signature)
         if not signature or self.get_meta("known_sig") != signature:
             return None
         try:
-            tuples = {(l, r) for l, r in json.loads(self.get_meta("known_tuples") or "[]")}
-            lemmas = set(json.loads(self.get_meta("known_lemmas") or "[]"))
-            return tuples, lemmas
+            raw = (self.get_meta("known_tuples") or "[]", self.get_meta("known_lemmas") or "[]")
+            kept = _KNOWN_READ[0]
+            if kept is None or kept[0] != raw:
+                kept = _KNOWN_READ[0] = (raw, {(l, r) for l, r in json.loads(raw[0])}, set(json.loads(raw[1])))
+            return set(kept[1]), set(kept[2])
         except Exception:
             return None
 
@@ -596,7 +657,7 @@ class Store:
             cur.execute("DELETE FROM bound WHERE count <= 0")
             if self.language == "ja" and (changed or cur.execute(
                     "SELECT 1 FROM meta WHERE key='names_tables'").fetchone() is None):
-                self._update_names_tables(cur)
+                self._update_names_tables(cur, build_signature)
             if build_signature is not None:
                 cur.execute("INSERT INTO meta(key, value) VALUES('build_sig', ?) "
                             "ON CONFLICT(key) DO UPDATE SET value=?", (build_signature, build_signature))
@@ -773,9 +834,8 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
     met = []                        # the unknown compounds the library holds
     taken = (phrases or {}).get("taken") or {}
 
-    unknown, known_tokens, all_counts = [], 0, []
+    unknown, known_tokens = [], 0
     for key, n in counts.items():               # key = (lemma, reading), looked up as it is (this runs per word)
-        all_counts.append(n)
         lemma = key[0]
         if lemma in ignore_set or key in known_tuples or lemma in known_lemmas:
             known_tokens += n
@@ -809,7 +869,7 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
     # Most uses first, ties by key: two stable sorts in C, not a key tuple built per word.
     unknown.sort(key=itemgetter(0))
     unknown.sort(key=itemgetter(1), reverse=True)
-    all_counts.sort()
+    all_counts = sorted(counts.values())         # every word's uses, ascending (one sort, in C)
     freqs = {"total_tokens": total_tokens, "known_tokens": known_tokens, "unknown": unknown,
              "all_counts": all_counts}
     if table:
@@ -926,8 +986,18 @@ def _names_read_in(blob, reads, switches):
     recurring, kanji, terms = switches
     if not blob or not (recurring or kanji or terms):
         return ""
+    held = _names_held(_decode_counts(blob).get("s", []), reads, switches)
+    return _digest(held) if held else ""
+
+
+def _names_held(spans, reads, switches):
+    """What the name tables (`_names_reads`) make of one file's recorded name candidates (`spans`, its record's "s"),
+    with the switches (recurring, kanji, terms) set so: [[kind, spelling, [lemma, reading, orth]], ...], sorted — each
+    one a table holds, a term inside a run of one-kanji words included, with the word it becomes. All that the tables
+    decide of the file's joins: `names.choose` asks only whether a table holds a spelling, and makes it that word."""
+    recurring, kanji, terms = switches
     held = set()
-    for span in _decode_counts(blob).get("s", []):
+    for span in spans:
         kind, spelling = span[5], span[6]
         if kind == "w":
             if terms:
@@ -936,7 +1006,7 @@ def _names_read_in(blob, reads, switches):
                             for b in range(a + 2, len(spelling) + 1) if spelling[a:b] in table)
         elif ((kind == "k" and recurring) or (kind == "j" and kanji)) and spelling in reads.get(kind, {}):
             held.add((kind, spelling))
-    return _digest(sorted([kind, spelling, reads[kind][spelling]] for kind, spelling in held)) if held else ""
+    return sorted([kind, spelling, reads[kind][spelling]] for kind, spelling in held)
 
 
 def _digest(value):
@@ -975,7 +1045,7 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
     hiragana line through the tokenizer, する -> 為る, and still decides the list itself — this one
     only the band); Japanese one-character words count as the list counts them, by Settings' "List one-kanji
     words only when they're dictionary words" (`singles_rule`). None for an empty store."""
-    if not store.total_tokens():
+    if not store.has_tokens():
         return None
     cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
     if cached is not None:
@@ -986,6 +1056,22 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
         known_tuples=known_tuples, known_lemmas=known_lemmas,
         ignore_set=preview_ignore_set(user_files_dir, language, script),
         skip_singles=(language == "ja" and singles_rule()))
+
+
+def prepare_preview(language, user_files_dir):
+    """Decode, ahead of the Rarity slider's first refresh, what that refresh would otherwise decode before it counts:
+    the analyzer's compound table (`unknown_distribution`'s compounds) and one-kanji words, and KnownWord.json's
+    IGNORED entries (`ignored_entries`). Each is decoded once per process, by whichever caller asks first, and kept as
+    decoded — so nothing here changes a number. The dashboard calls it on a background thread as its window opens
+    (MasterDashboardApp._prepare_preview). Never fatal."""
+    try:
+        if language == "ja":
+            from app import analyzer
+            analyzer.compound_parts()
+            analyzer.single_kind(("手", "テ"))      # a one-kanji word: its table is read on the first one asked
+        ignored_entries(user_files_dir, language)
+    except Exception:
+        pass
 
 
 def singles_rule():
@@ -1049,6 +1135,7 @@ def ignored_entries(user_files_dir, language):
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries
+_KNOWN_READ = [None]    # ((the known cache's two values as stored), their tuples, their lemmas): Store.get_cached_known
 
 
 def preview_known_approx(user_files_dir, language, script="asis"):

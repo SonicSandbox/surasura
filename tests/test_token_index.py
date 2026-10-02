@@ -983,3 +983,80 @@ def test_a_migrated_chinese_set_keeps_the_default_signature():
     with open(get_user_file("settings.json"), "w", encoding="utf-8") as handle:
         json.dump({"logic": {"sentence_boundaries": {"zh": "。！？!?\n；;……｡．"}}}, handle, ensure_ascii=False)
     assert ti.build_signature("zh").startswith("zh|reinforce=False|boundaries="), "a hand edit is the user's own set"
+
+
+def test_has_tokens_is_total_tokens_above_zero(tmp_path):
+    """The Rarity slider asks only whether the store holds a token before it counts (`preview_frequencies`): the same
+    answer as summing every file's total — none for an empty store or one holding only empty files."""
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        assert store.has_tokens() is False and store.total_tokens() == 0
+        empty, words = tmp_path / "empty.txt", tmp_path / "adventure.txt"
+        _write(empty, "")
+        store.reconcile([str(empty)], ti.make_tokenizer("ja"))
+        assert store.file_count() == 1 and store.has_tokens() is False and store.total_tokens() == 0
+        assert ti.preview_frequencies(store, "ja", str(tmp_path)) is None, "no token: no numbers"
+        _write(words, JA_ADVENTURE)
+        store.reconcile([str(empty), str(words)], ti.make_tokenizer("ja"))
+        assert store.has_tokens() is True and store.total_tokens() > 0
+    finally:
+        store.close()
+
+
+def test_the_known_cache_is_parsed_once_and_each_caller_gets_sets_of_its_own(tmp_path, monkeypatch):
+    """Every slider refresh, and the dashboard's check before it launches the indexer, read the cached known words:
+    they are parsed again only when the cached values change. A caller changing the sets it got changes nothing for
+    the next caller."""
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        signature = ti.known_signature(str(tmp_path / "KnownWord.json"))
+        store.set_cached_known(signature, {("学校", "ガッコウ"), ("先生", "センセイ")}, {"学校", "先生"})
+        first = store.get_cached_known(signature)
+        assert first == ({("学校", "ガッコウ"), ("先生", "センセイ")}, {"学校", "先生"})
+        first[0].add(("冒険", "ボウケン"))
+        first[1].clear()
+        parsed = []
+        real_loads = ti.json.loads
+        known = (store.get_meta("known_tuples"), store.get_meta("known_lemmas"))
+        monkeypatch.setattr(ti.json, "loads", lambda text, *a, **k: parsed.append(text) or real_loads(text, *a, **k))
+        assert store.get_cached_known(signature) == ({("学校", "ガッコウ"), ("先生", "センセイ")}, {"学校", "先生"})
+        assert not set(known) & set(parsed), "the same values: not parsed again"
+        store.set_cached_known(signature, {("冒険", "ボウケン")}, {"冒険"})
+        assert store.get_cached_known(signature) == ({("冒険", "ボウケン")}, {"冒険"}), "new values are read"
+        assert {store.get_meta("known_tuples"), store.get_meta("known_lemmas")} <= set(parsed)
+        _write(tmp_path / "KnownWord.json", json.dumps({"words": []}))
+        changed = ti.known_signature(str(tmp_path / "KnownWord.json"))
+        assert store.get_cached_known(changed) is None, "the file changed: no cache"
+        store.set_meta("known_tuples", "not json")
+        assert store.get_cached_known(signature) is None, "a value that won't read: no cache, as before"
+    finally:
+        store.close()
+
+
+def test_prepare_preview_decodes_ahead_and_changes_no_number(tmp_path, monkeypatch):
+    """The dashboard decodes, in the background as its window opens, what the slider's first refresh reads besides the
+    store — the compound table, the one-kanji words, KnownWord.json's ignored entries (`prepare_preview`). The numbers
+    are the same with it or without; it never raises (no user files, Chinese, a table that won't read)."""
+    from app import analyzer
+    uf = tmp_path / "User Files" / "ja"
+    uf.mkdir(parents=True)
+    (uf / "KnownWord.json").write_text(json.dumps({"words": [
+        {"dictForm": "冒険", "knownStatus": "IGNORED"}, {"dictForm": "今夜", "knownStatus": "KNOWN"}]},
+        ensure_ascii=False), encoding="utf-8")
+    path = tmp_path / "adventure.txt"
+    _write(path, JA_ADVENTURE + JA_OTHER)
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        store.reconcile([str(path)], ti.make_tokenizer("ja"))
+        before = ti.preview_frequencies(store, "ja", str(uf))
+        ti._IGNORED_ENTRIES.clear()
+        ti.prepare_preview("ja", str(uf))
+        assert ti._IGNORED_ENTRIES[os.path.join(str(uf), "KnownWord.json")][1] == ["冒険"], "read ahead"
+        assert "compound_parts" in analyzer._MERGED, "the compound table decoded"
+        assert ti.preview_frequencies(store, "ja", str(uf)) == before
+    finally:
+        store.close()
+    ti.prepare_preview("ja", str(tmp_path / "missing"))
+    ti.prepare_preview("zh", str(tmp_path / "missing"))
+    monkeypatch.setattr(analyzer, "compound_parts", lambda: 1 / 0)
+    ti.prepare_preview("ja", str(uf))

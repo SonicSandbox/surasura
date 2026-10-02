@@ -181,3 +181,42 @@ if __name__ == "__main__":
     test_load_simple_list_toggle()
     test_load_yomitan_frequency_list_respects_sanitize_toggle()
     print("Sanitization tests for analyzer.py PASSED.")
+
+
+def test_a_term_met_again_is_looked_up_and_cleaned_the_same(monkeypatch):
+    """Every token read asks for its lemma and spelling cleaned, twice per token: a term met before is looked up
+    (analyzer._SANITIZED) — the same text as cleaning it afresh, met once or many times, whatever its hyphens, spaces
+    (full width too), CRLF or emptiness; the memory is bounded (it starts again when full); a non-text passes
+    through."""
+    import re
+
+    def afresh(term):
+        stripped = term.strip()
+        return re.split(r"[-\s]", stripped)[0]
+
+    terms = ["アイリス-iris", " 精霊 ", "冒険", "　学校　", "x-y-z", "-", " ", "", "a b", "先生\r\n", "ﾅｲﾌ",
+             "食べる-食う", "彼-他称", "精霊\t-spirit"]
+    monkeypatch.setattr(analyzer, "_SANITIZED_KEPT", 5)
+    analyzer._SANITIZED.clear()
+    for _ in range(3):
+        for term in terms:
+            assert _sanitize_term(term) == afresh(term), repr(term)
+            assert len(analyzer._SANITIZED) <= 5
+    assert _sanitize_term(None) is None and _sanitize_term(3) == 3
+
+
+def test_the_tokenizer_reads_the_same_words_with_the_terms_looked_up(monkeypatch):
+    """The tokenizer looks a cleaned term up where it reads each token: the same tokens as cleaning every term afresh,
+    the memory full or empty."""
+    from app.analyzer import JapaneseTokenizer
+    text = "アイリスが冒険に出かけた。\n彼は精霊を見た。食べるのが好きだ。\r\n"
+    analyzer.SANITIZE_JA = True
+    tok = JapaneseTokenizer()
+    analyzer._SANITIZED.clear()
+    first = list(tok.tokenize_sentences(text))
+    again = list(tok.tokenize_sentences(text))
+    monkeypatch.setattr(analyzer, "_SANITIZED_KEPT", 1)
+    analyzer._SANITIZED.clear()
+    tight = list(tok.tokenize_sentences(text))
+    assert first == again == tight
+    assert any(token[0] == "アイリス" for _s, tokens in first for token in tokens), "the gloss is cut"

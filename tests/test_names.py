@@ -649,6 +649,152 @@ def test_dropped_pieces_join_in_place(tmp_path, tokenizer):
     assert live == cached
 
 
+def _names_adjust_in_one_pass(store):
+    """The name tables' adjustments summed afresh over every file in one pass — what the store computed before it
+    kept each file's share (Store._names_adjust) — the reference the kept shares are checked against."""
+    tables = store.names_tables()
+    if not tables:
+        return {}
+    spellings = {kind: set(table) for kind, table in tables.items() if isinstance(table, dict)}
+    terms = spellings.get("w", ())
+    combos = [(f"{r:d}{k:d}{t:d}", (bool(r), bool(k), bool(t)))
+              for r in (1, 0) for k in (1, 0) for t in (1, 0) if r or k or t]
+    deltas = {combo: [Counter(), 0, Counter()] for combo, _switches in combos}
+    for tokens_blob, names_blob in store.conn.execute(
+            "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
+        spans = ti._decode_counts(names_blob).get("s", [])
+        if not any(span[6] in spellings.get(span[5], ()) or (span[5] == "w" and ti._holds_a_term(span[6], terms))
+                   for span in spans):
+            continue
+        sentences = ti._decode_tokens(tokens_blob)
+        alone = {}
+        for combo, switches in combos:
+            delta = deltas[combo]
+            cuts = {}
+            for s, a, b, token in names.chosen(sentences, spans, tables, *switches):
+                cuts.setdefault(s, []).append((a, b, token))
+                for (lemma, reading, surface, *_rest), sign in [(token, 1)] + [(p, -1) for p in sentences[s][1][a:b]]:
+                    if analyzer.has_target_language(lemma, "ja") or analyzer.has_target_language(surface, "ja"):
+                        delta[0][(lemma, reading)] += sign
+                        delta[1] += sign
+            for s, joins in cuts.items():
+                text, tokens = sentences[s]
+                pieces = alone.get(s)
+                if pieces is None:
+                    pieces = alone[s] = analyzer.bound_uses(text, tokens)
+                joined, gone, beside, shift = list(tokens), set(), set(), 0
+                for a, b, _token in joins:
+                    gone.update(range(max(a - 1, 0), min(b + 1, len(tokens))))
+                    if a:
+                        beside.add(a - 1 - shift)
+                    if b < len(tokens):
+                        beside.add(a - shift + 1)
+                    shift += b - a - 1
+                for a, b, token in reversed(joins):
+                    joined[a:b] = [token]
+                for i in gone & pieces:
+                    delta[2][(tokens[i][0], tokens[i][1])] -= 1
+                for i in analyzer.bound_uses(text, joined, only=sorted(beside)):
+                    delta[2][(joined[i][0], joined[i][1])] += 1
+    return {combo: {"counts": [[l, r, n] for (l, r), n in counts.items() if n], "total": total,
+                    "bound": [[l, r, n] for (l, r), n in pieces.items() if n]}
+            for combo, (counts, total, pieces) in deltas.items()}
+
+
+def test_the_name_adjustments_kept_per_file_equal_a_full_recompute(tmp_path, monkeypatch):
+    """The Rarity slider's name-table adjustments remember each file's share, so a Generate after one file changed
+    reads that file again — not every file holding a name. The stored adjustments stay byte for byte what summing
+    every file afresh gives, after every kind of change: a file edited (holding a name, or none), removed and added
+    back (a kanji name leaving the tables and joining them again: the files still holding it read otherwise), edited
+    to the same size, a new file, the tokenizer's identity changing and a newer engine (every file read again), and a
+    kept share that won't read. Katakana runs, kanji names and a work's terms together; a word glued to a name that is
+    a piece before the join and after it (年 after a number: its share nets to nothing in one file, yet the summed
+    words keep the order a single pass meets them); a nested folder, CRLF, an empty file."""
+    folder = tmp_path / "lib"
+    (folder / "deep" / "er").mkdir(parents=True)
+    terms = "零魄を唱えた。\n蒼十三牙を放った。\n玖崩が光る。\n"
+    files = {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK, "a.txt": SOTA,
+             "deep/er/b.txt": "奏汰は笑った。\r\n" + HOMURA, "c.txt": JIN, "d.txt": terms * 3, "empty.txt": "",
+             "g.txt": "三年奏汰が来た。\n父奏汰が笑った。\n", "h.txt": "年奏汰と話した。\n"}
+    store, paths = _library(folder, files)
+    by_name = dict(zip(files, paths))
+    signature = ti.build_signature("ja")
+    shares = []
+    real_share = store._names_share
+    monkeypatch.setattr(store, "_names_share", lambda sentences, *rest: shares.append(sentences) or
+                        real_share(sentences, *rest))
+
+    def write(name, text):
+        path = by_name[name]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        stamp = os.path.getmtime(path) + 2 + len(shares)      # a new (mtime, size) whatever the clock's grain
+        os.utime(path, (stamp, stamp))
+
+    def reconcile(build_signature=signature):
+        shares.clear()
+        store.reconcile([p for p in by_name.values() if os.path.exists(p)], ti.make_tokenizer("ja"),
+                        build_signature=build_signature)
+        assert store.get_meta("names_adjust") == json.dumps(_names_adjust_in_one_pass(store), ensure_ascii=False)
+        return len(shares)
+
+    try:
+        tables = store.names_tables()
+        assert "メロンベンチ" in tables["k"] and "奏汰" in tables["j"] and {"焔魄陣", "零魄"} <= set(tables["w"])
+        assert store.get_meta("names_adjust") == json.dumps(_names_adjust_in_one_pass(store), ensure_ascii=False)
+        holding = len(json.loads(store.get_meta("names_adjust_files"))["files"])
+        assert holding == 8, "every file holding a joined name has its share kept (not park.txt, not empty.txt)"
+        bound = [lemma for lemma, _reading, _n in json.loads(store.get_meta("names_adjust"))["111"]["bound"]]
+        assert bound.index("年") < bound.index("父"), "年 is met first, in the file where it nets to nothing"
+
+        write("shop.txt", SHOP + "メロンベンチが好きだ。\n")
+        assert reconcile() == 1, "one file holding a name changed: only it is read again"
+        write("park.txt", PARK + "公園は広い。\n")
+        assert reconcile() == 0, "a file holding no name: nothing is read again"
+        removed = {name: by_name.pop(name) for name in ("a.txt", "g.txt")}
+        for path in removed.values():
+            os.remove(path)
+        assert reconcile() == 1 and "奏汰" not in store.names_tables()["j"], \
+            "奏汰 leaves the tables: b.txt (still holding a term) reads otherwise; h.txt now holds no name at all"
+        by_name.update(removed)
+        write("a.txt", SOTA)
+        write("g.txt", files["g.txt"])
+        assert reconcile() == 4 and "奏汰" in store.names_tables()["j"], "back: every file holding it"
+        same_size = SHOP.replace("メロンベンチ", "メロンとパン", 1) + "メロンベンチが好きだ。\n"
+        assert len(same_size.encode("utf-8")) == os.path.getsize(by_name["shop.txt"])
+        write("shop.txt", same_size)
+        assert reconcile() == 1, "the same size, a new time: read again"
+        stamp = os.path.getmtime(by_name["shop.txt"])
+        write("shop.txt", same_size + "メロンベンチ。\n")
+        os.utime(by_name["shop.txt"], (stamp, stamp))
+        assert reconcile() == 1, "a new size at the same time: read again"
+        by_name["e.txt"] = str(folder / "e.txt")
+        write("e.txt", HOMURA)
+        assert reconcile() == 1
+        by_name["lone.txt"] = str(folder / "lone.txt")
+        write("lone.txt", "焔が燃えた。\n魄が抜けた。\n陣が崩れた。\n" * 6)
+        assert reconcile() == 1 and "焔魄陣" not in store.names_tables()["w"], \
+            "its kanji mostly stand alone now: the term leaves the tables — b.txt (still holding a name) reads " \
+            "otherwise, the two files that held only the term hold no name now"
+        by_name["k2.txt"] = str(folder / "k2.txt")
+        write("k2.txt", STATION + "零魄を唱えた。\n")
+        assert reconcile() == 1
+        by_name["pieces.txt"] = str(folder / "pieces.txt")
+        write("pieces.txt", "メロン。\nベンチ。\n" * 12)
+        assert reconcile() == 1 and "メロンベンチ" not in store.names_tables()["k"], \
+            "its words mostly stand alone now: the run leaves the tables — k2.txt (still holding a term) reads otherwise"
+        holding = len(json.loads(store.get_meta("names_adjust_files"))["files"])
+        assert reconcile(signature + "|another tokenizer") == holding, "every file read again: no share kept"
+        monkeypatch.setattr(analyzer, "ENGINE_REVISION", analyzer.ENGINE_REVISION + 1)
+        write("park.txt", PARK)
+        assert reconcile(signature + "|another tokenizer") == holding, "a newer engine: no share kept"
+        store.set_meta("names_adjust_files", "not json")
+        write("park.txt", PARK + "\n")
+        assert reconcile(signature + "|another tokenizer") == holding, "a share that won't read: computed again"
+    finally:
+        store.close()
+
+
 def test_the_work_terms_switch_off(tmp_path, tokenizer, monkeypatch):
     """Off means today's behaviour — the cached tokens and live text in pieces, the Rarity slider counting the
     pieces — and needs no re-reading of any file (not in the cache's signature); the known words are read again. Before

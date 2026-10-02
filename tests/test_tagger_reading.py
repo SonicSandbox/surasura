@@ -365,3 +365,37 @@ def test_katakana_words_with_a_long_vowel_take_the_fast_path():
 def test_the_allowed_form_of_a_joyo_kanji_is_read_as_its_word(tokenizer, sanitized):
     keys = {(lemma, surface) for lemma, _r, surface, _o in _tokens(tokenizer, "先生に𠮟られた。𠮟責を受けた。")}
     assert ("叱る", "𠮟ら") in keys and ("叱責", "𠮟責") in keys
+
+
+def test_the_character_table_is_the_one_a_pass_over_every_code_point_makes(monkeypatch):
+    """The table of characters read otherwise is made once per process, before a tagger reads its first line. It looks
+    one by one only at the runs of code points Unicode's NFKD changes (a character with a decomposition always
+    changes its text; a run of characters none of which has one is its own NFKD form): the very table a pass over
+    every code point makes — the same characters, in the same order, read the same; the same composing marks and
+    astral characters; the same pattern."""
+    import unicodedata
+
+    read_as, combines = {}, set()
+    for point in range(sys.maxunicode + 1):
+        ch = chr(point)
+        decomposition = unicodedata.decomposition(ch)
+        if not decomposition:
+            continue
+        parts = decomposition.split()
+        if len(parts) == 2 and not decomposition.startswith("<"):
+            combines.add(chr(int(parts[1], 16)))
+        form = unicodedata.normalize("NFKC", ch)
+        if form != ch and all(unicodedata.category(c)[0] in "LMN" for c in form):
+            read_as[ch] = form
+    read_as.update(analyzer._SAME_CHARACTER)
+    for first, last in analyzer._IGNORABLE:
+        read_as.update((chr(point), "") for point in range(first, last + 1))
+    for name, value in (("_READ_RE", []), ("_READ_AS", {}), ("_COMBINES", set()), ("_READ_ASTRAL", set())):
+        monkeypatch.setattr(analyzer, name, value)
+    pattern = analyzer._read_pattern()
+    assert list(analyzer._READ_AS.items()) == list(read_as.items())
+    assert analyzer._COMBINES == combines
+    assert analyzer._READ_ASTRAL == {ch for ch in set(read_as) | combines if ord(ch) > 0xFFFF}
+    assert {ch for ch in set(read_as) | combines if ord(ch) <= 0xFFFF} == {
+        chr(point) for point in range(0x10000) if pattern.match(chr(point))}
+    assert analyzer.tagger_text("ｽﾏﾎを５０台")[0] == "スマホを50台", "a line read through the new table"

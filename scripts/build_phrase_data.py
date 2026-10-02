@@ -27,7 +27,11 @@ The rule, in order (each step's count and examples go to debug/phrase_data.md, f
                 grammar after it (それは, 言って, 帰ってくる); never a card the app reads as one word + an ending
                 (anki_match.one_word: どうしよう is どう + する, as 努力する is 努力); never one word said twice (うんうん).
   R6 keys       a phrase is its words' lemmas: spellings that share them are one phrase, shown in their commonest
-                spelling (the one the frequency lists rank best).
+                spelling (the one the frequency lists rank best). A kanji spelling the tokenizer reads as other words
+                keys nothing: no reading JMdict gives it can be said as the words it is read as — each said as the
+                tagger says it or as JMdict reads it alone, voicing, small kana and long vowels aside — nor does one,
+                read alone, give the same words. JMdict's old spelling 彼の方 'that person' (あのかた) is read 彼 'he'
+                + の + 方, and keyed so it counted every 彼のほう 'his side'.
   R7 a unit     in general text — the shared set's text, as the compound table's counts are made — each phrase's
                 matches by the app's own matcher, turned into the rank they would have among that text's words. Kept
                 when JPDB 2024 (else Jiten) ranks the phrase at most UNIT_RATIO times rarer than that; left out when
@@ -59,6 +63,7 @@ import random
 import re
 import sys
 import time
+import unicodedata
 import zlib
 from collections import Counter, defaultdict
 from datetime import date
@@ -234,6 +239,89 @@ def structure(tokens, role):
     return ""
 
 
+# --- R6: a spelling read as JMdict reads it ------------------------------------------------------------------------ #
+
+_SMALL = str.maketrans("ァィゥェォッャュョヮヵヶ", "アイウエオツヤユヨワカケ")
+# Each kana's vowel: a long vowel one spelling writes どう and JMdict どお is one sound.
+_VOWEL = {kana: vowel for vowel, row in (("ア", "アカサタナハマヤラワガザダバパ"), ("イ", "イキシチニヒミリギジヂビピ"),
+                                         ("ウ", "ウクスツヌフムユルグズヅブプヴ"), ("エ", "エケセテネヘメレゲゼデベペ"),
+                                         ("オ", "オコソトノホモヨロヲゴゾドボポ")) for kana in row}
+
+
+def _sound(text):
+    """`text` as the reading test hears it: katakana, unvoiced (蝉 せみ is the ぜみ of みんみんぜみ), small kana large,
+    す / つ and し / ち one sound (ず and づ, じ and ぢ are)."""
+    plain = "".join(ch for ch in unicodedata.normalize("NFD", _katakana(text)) if ch not in "\u3099\u309a")
+    return unicodedata.normalize("NFC", plain).translate(_SMALL).replace("ツ", "ス").replace("チ", "シ")
+
+
+def _vowels_out(sound):
+    """One word's `_sound` with its long vowels gone — どう, どお and どー are ど, えい is え. Inside one word only: a vowel
+    after another word is that word's own first sound (を + 犯す)."""
+    out = []
+    for ch in sound:
+        if ch == "ー":
+            continue
+        if out and ch in "アイウエオ":
+            before = _VOWEL.get(out[-1])
+            if before == ch or (ch == "ウ" and before in ("オ", "ウ")) or (ch == "イ" and before in ("エ", "イ")):
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def said_as(word, readings_of):
+    """The ways to say one word of a spelling read alone (each `_vowels_out(_sound(...))`): as the tagger says it — its
+    kana, its lemma's reading, a joined word's parts — or as JMdict reads the word's own spelling, dictionary form or
+    lemma (間 あいだ, where alone the tagger says ま), a conjugated word with the tagger's ending moved onto that reading
+    (背負っ is said せおっ for せおう, so しょう is said しょっ; 描け: かく, かけ). `readings_of`: spelling -> JMdict's readings."""
+    from app import analyzer
+    f = word.feature
+    said = f.kana or ""
+    ways = {said, f.lForm or "", word.surface}
+    if isinstance(word, analyzer.JoinedWord):
+        ways.add("".join(part.kana or surface for surface, part in word.parts))
+    endings = set()
+    for form in {getattr(f, "kanaBase", None) or "", f.lForm or ""} - {""}:
+        same = 0
+        while same < min(len(said), len(form)) and said[same] == form[same]:
+            same += 1
+        endings.add((said[same:], form[same:]))
+    for spelled in {word.surface, f.orthBase, f.lemma} - {None, ""}:
+        for reading in readings_of.get(spelled, ()):
+            reading = _katakana(reading)
+            ways.add(reading)
+            ways.update(reading[:len(reading) - len(end)] + now for now, end in endings
+                        if said and reading.endswith(end))
+    return frozenset(_vowels_out(_sound(way)) for way in ways if way)
+
+
+def _sayable(ways, sound):
+    """Can `sound` (a `_sound`) be cut into one piece per word, in order, each piece one of that word's `ways`?"""
+    reach = {0}
+    for word_ways in ways:
+        reach = {end for at in reach for end in range(at + 1, len(sound) + 1)
+                 if _vowels_out(sound[at:end]) in word_ways}
+        if not reach:
+            return False
+    return len(sound) in reach
+
+
+def read_as_jmdict(tagger, joins, spelling, tokens, readings_of):
+    """R6: does the tokenizer read `spelling` (its words `tokens`, as `read_alone` gives them) as JMdict reads it? A
+    reading JMdict gives the spelling can be said as those words — one piece per word, each a way to say it
+    (`said_as`) — or, read alone, gives the same words (いいめいわく is 良い + 迷惑, though JMdict says 良い よい). 彼の方
+    あのかた is not: read 彼 'he' + の + 方 — the words of 'his side' — and JMdict says 彼 かれ or かの, never あ…;
+    この間 このあいだ is, though read alone the tagger says 間 ま."""
+    from app import analyzer
+    readings = readings_of.get(spelling, ())
+    ways = [said_as(word, readings_of) for word in analyzer.join_affixes(tagger(spelling), joins, library=False)]
+    if any(_sayable(ways, _sound(reading)) for reading in readings):
+        return True
+    lemmas = [t[0] for t in tokens]
+    return any([t[0] for t in read_alone(tagger, joins, reading)] == lemmas for reading in readings)
+
+
 def candidates(entries, compounds, log):
     """-> ([candidate], {step: Counter}, {step: [examples]}) — every JMdict phrase built like one (R1-R6). A
     candidate: {"key", "readings", "roles", "spellings", "readings_jm", "orths", "flags", "seqs"}."""
@@ -242,6 +330,7 @@ def candidates(entries, compounds, log):
     for i, entry in enumerate(entries):
         for spelling, readings in entry_spellings(entry):
             spellings[spelling].append((i, readings))
+    readings_of = {spelling: {r for _i, readings in found for r in readings} for spelling, found in spellings.items()}
     log(f"  R1: {len(spellings):,} spellings to read")
     steps, examples = Counter(), defaultdict(list)
 
@@ -268,6 +357,9 @@ def candidates(entries, compounds, log):
         why = structure(tokens, role)
         if why:
             out("R5 " + why, spelling)
+            continue
+        if _KANJI.search(spelling) and not read_as_jmdict(tagger, joins, spelling, tokens, readings_of):
+            out("R6 read as other words", spelling)         # 彼の方 (あのかた) read 彼 'he' + の + 方: 'his side'
             continue
         out("phrase-shaped", spelling)
         key = tuple(t[0] for t in tokens)
@@ -531,7 +623,7 @@ def write_report(cands, kept, dropped, folded, steps, examples, words, lines, cr
            f"JMdict created {created}; {len(kept):,} phrases kept of {len(cands):,} built like one; "
            f"app/phrase_data.py {size / 1024:,.0f} KB; {seconds:.0f} s.", "", "## Log", ""]
     out += [f"    {line}" for line in lines]
-    out += ["", "## R1-R5, spellings by step (20 examples each)", ""]
+    out += ["", "## R1-R6, spellings by step (20 examples each)", ""]
     for step, n in sorted(steps.items(), key=lambda kv: -kv[1]):
         out.append(f"- **{step}**: {n:,} — " + ", ".join(examples[step]))
     ratio = [c for c in cands if c.get("ratio") is not None]
@@ -599,8 +691,9 @@ Derived from JMdict (JMdict created {created}), a dictionary of the JMdict/EDICT
 Dictionary Research and Development Group (EDRDG), used in conformance with the Group's licence: Creative Commons
 Attribution-ShareAlike 4.0 International (CC BY-SA 4.0), https://creativecommons.org/licenses/by-sa/4.0/ —
 https://www.edrdg.org/edrdg/licence.html, https://www.edrdg.org/jmdict/j_jmdict.html. Changes: only the headwords of
-its set phrases are kept (no glosses), read into their words by the app's tokenizer, with which of them live only
-inside the phrase (by JPDB 2024's ranks) and which phrases are units in general text. This table is shared under the
+its set phrases are kept (no glosses), read into their words by the app's tokenizer (a spelling it reads as other
+words left out), with which of them live only inside the phrase (by JPDB 2024's ranks) and which phrases are units in
+general text. This table is shared under the
 same licence.
 
 Stored compressed and decoded when first asked for; empty when it cannot be read, never an exception.

@@ -128,7 +128,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     Still 2.4: one re-analysis with 15–27.
 # 29: a one-kanji word right after a number's counter written in kanji is a piece of the count — the 目 of ２時間目
 #     'second period', the 前 of 三週間前 — no use of 目 'eye' (_bound_at). Still 2.4: one re-analysis with 15–28.
-ENGINE_REVISION = 29
+# 30: the idiom data is rebuilt: a dictionary spelling the tokenizer reads as other words keys no phrase — 彼の方 'that
+#     person' read 彼 'he' + の + 方 counted every 彼のほう 'his side', 口の端 'gossip' every corner of a mouth
+#     (scripts/build_phrase_data.py, R6). Still 2.4: one re-analysis with 15–29.
+ENGINE_REVISION = 30
 
 # Load Logic Settings from settings.json
 LOGIC = {

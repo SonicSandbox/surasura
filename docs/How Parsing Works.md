@@ -79,9 +79,11 @@
 | :-- | :-- |
 | 気 + が + する | 気がする |
 | 腑 + に + 落ちる | 腑に落ちる |
+| 彼のほう 'his side' — counted as 彼の方 'that person' | not an idiom |
 
 - Waits until you know its words: 本題に入る waits for 本題
 - ⚖️ The words inside keep their own rows
+- ⚖️ A rare idiom Surasura reads as other words is left out: 同病相憐れむ
 - **Right:** top 100 rows checked — all 100 kept
 - **Setting:** Idioms and set phrases on your list — on
 

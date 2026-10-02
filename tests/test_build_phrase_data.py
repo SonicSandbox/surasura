@@ -65,6 +65,54 @@ def test_what_is_built_like_a_phrase(read, spelling, expected):
     assert read(spelling) == expected
 
 
+@pytest.fixture
+def reads_as_jmdict(bpd):
+    """R6 on real headwords, read as the build reads them, against the readings JMdict gives the spelling (the call's)
+    and its words' own spellings (JMdict's, a few)."""
+    analyzer.SANITIZE_JA = True
+    defaults = settings_manager.DEFAULT_SETTINGS["logic"]
+    for name in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles",
+                 "pronoun_bases"):
+        analyzer.LOGIC[name] = defaults.get(name, True)
+    tagger, joins = analyzer.Tagger(), analyzer.affix_joins()
+    words = {"彼": {"かれ", "かの"}, "方": {"かた", "ほう", "がた"}, "間": {"あいだ", "ま", "かん"}, "端": {"はし", "はた"},
+             "背負う": {"せおう", "しょう"}, "描く": {"えがく", "かく"}, "良い": {"よい"}}
+
+    def check(spelling, *readings):
+        readings_of = dict(words, **{spelling: set(readings)})
+        return bpd.read_as_jmdict(tagger, joins, spelling, bpd.read_alone(tagger, joins, spelling), readings_of)
+    return check
+
+
+def test_a_spelling_keys_its_phrase_only_where_it_is_read_as_jmdict_reads_it(reads_as_jmdict):
+    """JMdict's old spelling 彼の方 'that person' (あのかた, かのかた) is read alone 彼 'he' + の + 方 — the words of
+    彼のほう 'his side' — and JMdict says 彼 かれ or かの, never あ…: it keys nothing; nor does 口の端 'gossip' (くちのは),
+    read 口 + の + 端 (はし) — the corner of the mouth. The rest are read as JMdict reads them though alone a word is said
+    otherwise: この間 (間 ま alone, あいだ in JMdict), 背負って立つ (しょう with the tagger's ending: しょっ), 絵にも描けない
+    (描け: かく, かけ), 金遣いの荒い (づ for ず), お待ちどうさま (どお for どう), 様を見ろ (ざま, voiced), and 良い迷惑
+    (いいめいわく — JMdict says 良い よい, but いいめいわく read alone is 良い + 迷惑)."""
+    assert not reads_as_jmdict("彼の方", "あのかた", "かのかた")
+    assert not reads_as_jmdict("口の端", "くちのは")
+    for spelling, reading in (("この間", "このあいだ"), ("背負って立つ", "しょってたつ"), ("絵にも描けない", "えにもかけない"),
+                              ("金遣いの荒い", "かねずかいのあらい"), ("お待ちどうさま", "おまちどおさま"),
+                              ("様を見ろ", "ざまをみろ"), ("良い迷惑", "いいめいわく")):
+        assert reads_as_jmdict(spelling, reading), spelling
+
+
+def test_a_spelling_read_as_other_words_keys_nothing_in_the_build(bpd):
+    """The build's own pass (R1-R6) on two made-up entries: 彼の方 (あのかた) is counted under "R6 read as other
+    words" and keys nothing, この間 (このあいだ) keys 此の + 間 — whatever the tagger says 間 alone."""
+    def entry(seq, kanji, kana, pos=("exp",)):
+        return {"seq": seq, "kanji": [(kanji, (), ())], "kana": [(kana, (), (), False, ())],
+                "senses": [{"pos": pos, "misc": (), "xref": ()}]}
+    entries = [entry(1, "彼の方", "あのかた", ("pn",)), entry(2, "この間", "このあいだ", ("n", "adv")),
+               entry(3, "彼", "かれ", ("pn",)), entry(4, "方", "かた", ("n",)), entry(5, "間", "あいだ", ("n",))]
+    cands, steps, examples = bpd.candidates(entries, {}, lambda text: None)
+    keys = {c["key"] for c in cands}
+    assert ("此の", "間") in keys and not any(key[0] == "彼" for key in keys)
+    assert steps["R6 read as other words"] == 1 and examples["R6 read as other words"] == ["彼の方"]
+
+
 def test_a_title_is_never_a_phrase(bpd):
     """An entry every sense of which names a work, a product or an organization gives no spelling to read."""
     title = {"seq": 1, "kanji": [("進撃の巨人", (), ())], "kana": [("しんげきのきょじん", (), (), False, ())],

@@ -69,6 +69,16 @@ def test_the_rules_hold_on_the_table(rows):
     assert by_shown["気がする"][2] == "cgl" and by_shown["気がつく"][2][0] == "c"
 
 
+def test_no_phrase_is_keyed_on_words_jmdict_does_not_read_there(rows):
+    """A spelling the tokenizer reads as other words keys nothing (the build's R6): JMdict's 彼の方 'that person'
+    (あのかた) read 彼 'he' + の + 方 counted every 彼のほう 'his side', 口の端 'gossip' every corner of a mouth, 其者 'an
+    expert' every その者 'that person'. この間 stays: its words say このあいだ."""
+    shown, keys = {row[3] for row in rows}, {row[0] for row in rows}
+    assert not {"彼の方", "彼の人", "彼の子", "彼の娘", "口の端", "其者", "こん身"} & shown
+    assert not {"彼|の|方", "彼|の|人", "彼|の|子", "彼|の|娘", "口|の|端"} & keys
+    assert "此の|間" in keys
+
+
 def test_the_pre_noun_adjectivals_are_jmdicts(rows):
     """The phrases JMdict classes only as pre-noun adjectivals carry the mark — ああいう, こういう, そういう, どういう,
     罪なき — and so do the expressions it sends to one (そういった 'like that', 'see そういう'; こういった): each

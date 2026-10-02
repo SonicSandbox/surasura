@@ -66,6 +66,7 @@
 | :-- | :-- |
 | 手, 顔, 声 — never listed | listed |
 | 年 in 三年 — a use of 年 | a count |
+| 目 in ２時間目 — 'eye' | a count |
 
 - ⚖️ A misread kanji can become a row — Ignore it
 - ⚖️ 本 'book' stays off (more often a counter or suffix)

@@ -86,7 +86,10 @@ from operator import itemgetter
 #    いつも, ちなみに), a pronoun + a suffix the lists carry is one (何様, お前さん), and a katakana word stretched
 #    inside is read without the stretch where that is a word (バイバ～イ): a v17 blob holds them in pieces — still 2.4,
 #    so users rebuild once with v8–v17.
-SCHEMA_VERSION = 18
+# v19 a one-kanji word right after a number's counter written in kanji is a piece of the count (the 目 of ２時間目,
+#    analyzer._bound_at): a v18 store counted it as a use in each file's `bound` record — still 2.4, so users rebuild
+#    once with v8–v18.
+SCHEMA_VERSION = 19
 
 
 # --------------------------------------------------------------------------- #

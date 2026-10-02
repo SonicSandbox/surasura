@@ -73,6 +73,18 @@ def test_a_use_glued_to_another_piece_or_after_a_number_is_a_piece_of_something_
     assert _bound(tokenizer, "そんなことは知らない。") == []
 
 
+def test_a_one_kanji_word_after_a_numbers_counter_is_a_piece_of_the_count(tokenizer):
+    """目 in ２時間目 'second period', 前 in 三週間前 'three weeks ago', 半 in 一時間半: a counter written in kanji right
+    after a number, and the one-kanji word right after it belongs to the count — no use of 目 'eye'. A word after the
+    particle の stands on its own (三の矢 'the third arrow'), and so does one after a word no number comes before
+    (毎日目が疲れる)."""
+    assert _bound(tokenizer, "２時間目は数学の授業だ。") == ["目"]
+    assert _bound(tokenizer, "三週間前に会った。") == ["前"]
+    assert _bound(tokenizer, "一時間半の遅刻だ。") == ["半"]
+    assert _bound(tokenizer, "三の矢を放つ。") == []
+    assert _bound(tokenizer, "毎日目が疲れる。") == []
+
+
 def test_what_the_list_cant_offer_is_named_per_sentence_and_nothing_with_the_rule_off(tokenizer):
     """スバル (read as 昴) and the particles are never offered; 餌 is. Off, nothing is left out. Empty: nothing."""
     sentence, tokens = _sentence(tokenizer, "スバルは餌を撒いた。")

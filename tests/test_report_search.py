@@ -187,8 +187,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     makes the words the tagger cuts at their grammar the dictionary's words (くだらない, 知らせる, いつも, ちなみに), a
     pronoun + a suffix the lists carry one word (何様, お前さん), reads a katakana word stretched inside without the
     stretch where that is a word (バイバ～イ), and counts a pre-noun phrase usually written in kana only in kana; 28
-    shows a sound word said with と in its と form where the dictionary lists it (ドキッと, ぐっと).)"""
-    assert analyzer.ENGINE_REVISION == 28
+    shows a sound word said with と in its と form where the dictionary lists it (ドキッと, ぐっと); 29 makes a one-kanji
+    word right after a number's counter a piece of the count (the 目 of ２時間目).)"""
+    assert analyzer.ENGINE_REVISION == 29
 
 
 # --------------------------------------------------------------------------- #

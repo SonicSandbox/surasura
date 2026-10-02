@@ -126,7 +126,9 @@ ENSURE_AUDIO_EXAMPLE = False
 # 28: a sound word said with と and without (one row) shows its と form when JMdict lists the word with its と
 #     (ドキッと, ぐっと, はっと — _display_orth), so the list and the cards made from it write it as dictionaries do.
 #     Still 2.4: one re-analysis with 15–27.
-ENGINE_REVISION = 28
+# 29: a one-kanji word right after a number's counter written in kanji is a piece of the count — the 目 of ２時間目
+#     'second period', the 前 of 三週間前 — no use of 目 'eye' (_bound_at). Still 2.4: one re-analysis with 15–28.
+ENGINE_REVISION = 29
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -1657,7 +1659,8 @@ def _beside(spans, i, step):
 
 
 def _bound_at(text, spans, i):
-    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, or after a number?"""
+    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, after a number, or
+    after a number's counter (the 目 of ２時間目)?"""
     span = spans[i]
     if span is None:
         return False                    # not found: taken as standing on its own
@@ -1668,6 +1671,12 @@ def _bound_at(text, spans, i):
         if before is not None and before[1] == start:
             # a counted word ends right before it — never a number (numbers are no words): glued when it is one kanji
             if one and before[1] - before[0] == 1 and _KANJI_RE.match(text[before[0]]) is not None:
+                return True
+            # ... or a counter written in kanji right after a number (時間 in ２時間目, 週間 in 三週間前): the one-kanji
+            # word after it belongs to the count. A number proper (２, 二, 十, 万) — _numberish takes any kanji too — and
+            # never の or つ between (三の矢 is the arrow).
+            if (one and before[0] and text[before[0] - 1].isnumeric()
+                    and _KANJI_RE.search(text[before[0]:before[1]]) is not None):
                 return True
         elif _numberish(text[start - 1]):
             return True                 # after a number, or a kanji no word covers (a numeral, a symbol's kanji)
@@ -1684,7 +1693,8 @@ def _bound_at(text, spans, i):
 def bound_uses(text, tokens, spans=None, only=None):
     """The indices of `tokens` — one sentence's counted words in order, (lemma, reading, surface, …) as
     tokenize_sentences yields them with its `text` — that are one-kanji words standing there as pieces of something
-    else (§ above): written as one kanji right beside another one-kanji piece, or right after a number. A one-kanji
+    else (§ above): written as one kanji right beside another one-kanji piece, right after a number, or right after a
+    number's counter written in kanji (the 目 of ２時間目). A one-kanji
     piece is a word written as one kanji, or a kanji no counted word covers (a numeral, a kanji the tagger reads as a
     symbol); a number before it is a digit or such a kanji. A sentence's text holds no spaces between its words, so
     私 今 reads as 私今. `spans` (`word_spans`), when the caller has located the words already; `only`, the indices

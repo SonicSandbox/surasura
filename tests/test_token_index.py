@@ -709,9 +709,7 @@ def test_a_store_from_before_chinese_was_cut_by_the_dictionary_is_rebuilt(tmp_pa
 def test_a_store_from_before_the_dictionary_words_the_tagger_cuts_is_rebuilt(tmp_path):
     """v17 -> v18: a verb + its negative or causative and a word + particles the dictionary lists are one word, a
     pronoun + a suffix the lists carry is one, a katakana word stretched inside is read without the stretch where that
-    is a word. A v17 store holds them in pieces (いつ + も): it must be dropped and rebuilt. Pinned exactly: the next
-    bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 18
+    is a word. A v17 store holds them in pieces (いつ + も): it must be dropped and rebuilt."""
     db = _db(tmp_path)
     f = tmp_path / "late.txt"
     _write(f, "彼はいつも遅れてくる。\nそんなくだらない話はやめろ。\n")
@@ -728,6 +726,30 @@ def test_a_store_from_before_the_dictionary_words_the_tagger_cuts_is_rebuilt(tmp
     assert s2.total_tokens() == 0, "a v17 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert {lemma for (lemma, _reading) in s2.word_counts()[0]} == words
+    s2.close()
+
+
+def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tmp_path):
+    """v18 -> v19: a one-kanji word right after a number's counter written in kanji is a piece of the count — the 目
+    of ２時間目 'second period' — and each file records it among its pieces; a v18 store counted it as a use of 目 'eye':
+    it must be dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 19
+    db = _db(tmp_path)
+    f = tmp_path / "school.txt"
+    _write(f, "２時間目は数学の授業だ。\n目が疲れた。\n")
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    pieces = s.bound_counts()
+    s.close()
+    assert pieces == {("目", "メ"): 1}, "the 目 of ２時間目 is a piece; 目が疲れた is the word"
+    conn = sqlite3.connect(db)      # what a v18 store is: the version it was written with
+    conn.execute("PRAGMA user_version = 18")
+    conn.commit(); conn.close()
+
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v18 store was reused"
+    s2.reconcile([str(f)], ti.make_tokenizer("ja"))
+    assert s2.bound_counts() == pieces
     s2.close()
 
 

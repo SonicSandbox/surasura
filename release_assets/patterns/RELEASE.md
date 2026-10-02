@@ -6,8 +6,22 @@ repository at the commit that added it, and accepts **only that exact file**. Bo
 sha256 live in `modules/junban/patterns_package.py` (`SHARED_URL`, `SHARED_SHA256`). A commit never
 changes, so every app version keeps getting the file it was built for. No GitHub release is needed.
 
-**Pinned now: version 4** (builder 7, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the sha256
-matched, and the app's own download installed it. The same sources and rules as version 3, rebuilt on Surasura's
+**Pinned now: version 5** (builder 9, 2026-10-01). Checked on 2026-10-01 by downloading the URL: the sha256
+matched, and the app's own download installed it. The same sources as version 4, rebuilt on Surasura 2.4's word rules:
+compounds are one word with their own lines (株式会社, 一生懸命), words the tagger cut at their endings are whole (くだらない,
+いつも), a one-kanji word's lines come only from where it stands on its own (年 shows 年を取る, not the 〜前 of 三年前), a
+spelling the dictionary keeps apart is a word of its own too (揚げる, 撮る, 建てる), and numbers and symbols get no lines.
+2.4 counts version 4 (builder 7) as not ready, so 2.4 must ship with this pin.
+- **Size:** 66,313 words, and a 32.3 MB zip. sha256
+  `3013f1fe61e9c142f42d00e1300af73b6ab11a24b6804225c477772dd14509bd`.
+- **The gate:** every yardstick at or above version 4's — the NLT gold equal, and the cards filled from it went from
+  87.9% to 88.2% of the known words tested.
+
+      https://raw.githubusercontent.com/SonicSandbox/surasura/c923aa14ff4fabd4adc8cb02349adc8e712fadfc/release_assets/patterns/patterns_ja_shared.zip
+      sha256 3013f1fe61e9c142f42d00e1300af73b6ab11a24b6804225c477772dd14509bd
+
+**Version 4** (builder 7, 2026-09-25) stays reachable for the app versions pinned to it (2.3). Checked on 2026-09-25
+by downloading the URL: the sha256 matched, and the app's own download installed it. The same sources and rules as version 3, rebuilt on Surasura's
 corrected join table (Patterns_Quality_Spec.md §15.9): the spellings of one お / ご word are one word (おやすみ
 and お休み, ご存じ and ご存知), お話し and お帰り are お + a word, 複雑さ is 複雑 + さ. 2.3 counts version 3
 (builder 6) as not ready, so 2.3 must ship with this pin.
@@ -61,8 +75,21 @@ not part of the app build.
 committed here, then pinned. The pin is `SHARED["zh"]` in `modules/junban/patterns_package.py`: the
 commit's raw URL, the zip's sha256, its size in MB and its credit line.
 
-**Pinned now: version 2** (Chinese builder 2, 2026-09-25). Checked on 2026-09-25 by downloading the URL: the
-sha256 matched, and the app's own download installed it. The same sources as
+**Pinned now: version 3** (Chinese builder 3, 2026-10-01). Checked on 2026-10-01 by downloading the URL: the
+sha256 matched, and the app's own download installed it. The same sources as version 2, rebuilt on Surasura 2.4's one
+Chinese cut: dictionary words instead of guesses (他称 and 很难 are gone), no lines for numbers, a doubled form under its
+word (开开心心 is 开心), and Traditional in Taiwan's standard characters. 2.4 counts version 2 (builder 2) as not ready,
+so 2.4 must ship with this pin.
+- **Size:** 48,877 words, and a 9.6 MB zip. sha256
+  `bf49ff3992cb8a79c800a782302e97b8495c935f0efdaeba43110e3d29784568`.
+- **The check:** against version 2, each read by its own code: words with a field 18,012 → 18,594; on the UD Chinese
+  treebanks, measure words found 52% → 53% and directional complements 66% → 69%.
+
+      https://raw.githubusercontent.com/SonicSandbox/surasura/c923aa14ff4fabd4adc8cb02349adc8e712fadfc/release_assets/patterns/patterns_zh_shared.zip
+      sha256 bf49ff3992cb8a79c800a782302e97b8495c935f0efdaeba43110e3d29784568
+
+**Version 2** (Chinese builder 2, 2026-09-25) stays reachable for the app versions pinned to it (2.3). Checked on
+2026-09-25 by downloading the URL: the sha256 matched, and the app's own download installed it. The same sources as
 version 1, rebuilt for Surasura 2.3 (Patterns_Quality_Spec.md §10): the same pairing filters as Japanese,
 coverb rows only where they cover enough of a word's uses, no 演唱会-type forms, adverbs' pairings, and
 Tatoeba's sentences counted as documents of their own. 2.3 counts version 1 (builder 1) as not ready, so

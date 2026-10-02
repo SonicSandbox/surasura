@@ -69,6 +69,7 @@
 | 目 in ２時間目 — 'eye' | a count |
 
 - ⚖️ A misread kanji can become a row — Ignore it
+- ⚖️ A word right after a span of time can count as part of it: 旅 in 三日間旅をした
 - ⚖️ 本 'book' stays off (more often a counter or suffix)
 - **Right:** 92 of 124 new rows
 - **Setting:** List one-kanji words only when they're dictionary words — on

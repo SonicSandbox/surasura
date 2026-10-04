@@ -1,0 +1,102 @@
+# Every pull request: the core tests on Windows, then a Claude review; a pull request into 3.0-dev or 2.x-dev merges
+# itself once both pass. main takes only pull requests the owner merges. (Surasura 3.0 program setup, S0.2.)
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (the versions the release is built with)
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pandas==2.0.0 numpy==1.25.2 fugashi==1.5.2 unidic-lite==1.0.8 pysrt==1.1.2 EbookLib==0.20
+          beautifulsoup4==4.12.2 soupsieve==2.4 lxml==4.9.2 requests==2.28.2 tkinterdnd2==0.4.3 jieba==0.42.1
+          pytest==9.0.2 python-dotenv==1.0.0
+      - name: The folders the tests expect
+        shell: bash
+        run: mkdir -p data/ja data/zh "User Files"
+      - name: Core suite
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python run_tests.py
+
+  review:
+    needs: tests
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}  PR NUMBER: ${{ github.event.pull_request.number }}
+            You are reviewing a pull request for Surasura: a local, offline desktop app (Python + tkinter, Windows) that turns a
+            learner's own Japanese or Chinese immersion into the words worth learning next. The PR branch is checked out in the
+            working directory. Read the diff with `gh pr diff`, then the code around it. If CLAUDE.md exists, read it first and
+            hold the change to it.
+
+            Report only real problems, most severe first:
+            - correctness bugs (wrong output, crash, a broken edge case: empty files, nested folders, CRLF, mixed scripts);
+            - data safety: user data (User Files/, data/, KnownWord.json, the word lists, master_manifest.json) deleted, rewritten
+              or reordered without a dated backup; non-atomic writes of user files;
+            - a path that must never be committed: settings.json, .env, User Files/, data/, results/, any key or token;
+            - a new network call or a new dependency (the app is offline by default; both need the owner's approval);
+            - a change to tokenization or to a run's output without ENGINE_REVISION / SCHEMA_VERSION bumps;
+            - Japanese-only logic where Chinese is also handled; behaviour changed without tests (tests use real Japanese/Chinese);
+            - GUI work missing Esc-to-close, tooltips or the dark palette;
+            - this repository is PUBLIC: lines quoted from a learner's own library (subtitles, books) or names of the
+              owner's private internal tooling are a privacy leak.
+
+            Post each finding as an inline comment (mcp__github_inline_comment__create_inline_comment, confirmed: true) and one
+            short top-level summary with `gh pr comment`. If there is nothing worth reporting, say so in the summary.
+            Set "blocking" true ONLY for a correctness bug, a data-safety risk, a never-commit path, a secret, a privacy leak or a
+            missing engine bump. Style, naming and suggestions never block.
+          claude_args: |
+            --model claude-sonnet-5-5
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"}},"required":["blocking","summary"]}'
+      - name: Verdict (a blocking finding fails this check)
+        env:
+          VERDICT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          echo "$VERDICT"
+          python3 -c "import json,os,sys; v=json.loads(os.environ.get('VERDICT') or '{}'); sys.exit(1 if v.get('blocking', True) else 0)"
+
+  merge:
+    needs: [tests, review]
+    if: (github.base_ref == '3.0-dev' || github.base_ref == '2.x-dev') && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge into the integration branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge ${{ github.event.pull_request.number }} --merge --repo ${{ github.repository }}

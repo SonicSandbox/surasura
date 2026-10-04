@@ -13,6 +13,14 @@ import tkinter as tk
 from tkinter import ttk
 
 
+def _installed(name):
+    """find_spec on a dotted name imports its parent: a checkout without modules/ (the public repo) raises."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def _checkbox_labels(widget):
     labels = []
     for child in widget.winfo_children():
@@ -35,13 +43,13 @@ def test_settings_no_longer_offer_reels_even_when_the_module_is_on_disk():
 
     assert "Enable Reels" not in labels
     # Guard against a vacuous pass: the optional-module toggles beside it still render.
-    if importlib.util.find_spec("modules.junban") is not None:
+    if _installed("modules.junban"):
         assert "Enable Anki reordering" in labels
 
 
 def test_reels_stays_on_disk_and_dormant():
     """Sunset, not deleted: the module still imports, and its switch still defaults to off."""
-    if importlib.util.find_spec("modules.reels") is None:
+    if not _installed("modules.reels"):
         return   # a checkout without the module has nothing to keep dormant
     import modules.reels as reels
     assert reels.SETTINGS_DEFAULTS["enable_reels"] is False

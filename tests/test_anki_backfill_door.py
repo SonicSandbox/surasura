@@ -51,7 +51,8 @@ class TestDashboardOffersBackfillOnlyWithJunban(unittest.TestCase):
     def test_junban_on_and_installed_offers_it(self):
         from app.main import MasterDashboardApp
         stand_in = MagicMock()
-        with patch.dict(sys.modules, {"modules.junban": stand_in}):
+        # The parent package too: a public checkout has no modules/ at all, and `import modules.junban` imports it first.
+        with patch.dict(sys.modules, {"modules": sys.modules.get("modules") or MagicMock(), "modules.junban": stand_in}):
             self.assertTrue(MasterDashboardApp.backfill_available(self._dashboard(True)))
 
     def test_opening_it_with_junban_off_does_nothing(self):

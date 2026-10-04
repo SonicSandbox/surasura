@@ -144,6 +144,8 @@ class TestFrozenSubsyncIsReachable(unittest.TestCase):
     halves of how that works: there is no interpreter to run a script with, and the script is not
     a file on disk. Three things have to line up, and all three are invisible from source."""
 
+    @unittest.skipUnless(os.path.isdir(os.path.join(_ROOT, "modules", "reels")),
+                         "a checkout without the private modules has no Reels to bundle")
     def test_the_vendored_script_is_an_importable_module(self):
         """PyInstaller bundles what the import graph reaches. The script is only ever executed, so
         without this package marker it is left out of the build and the dispatch imports nothing."""

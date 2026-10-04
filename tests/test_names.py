@@ -402,7 +402,7 @@ def test_a_long_lived_process_picks_up_newer_tables(tmp_path, monkeypatch):
     (folder / "shop.txt").write_text(SHOP, encoding="utf-8")
     ti.reconcile_language("ja", [str(folder / "station.txt"), str(folder / "shop.txt")])
     assert "メロンベンチ" not in names.library_tables()["k"], "read a moment ago: kept for a while"
-    monkeypatch.setattr(names, "REFRESH", 0.0)
+    monkeypatch.setattr(names, "REFRESH", -1.0)   # below zero: two calls inside one Windows clock tick still read again
     assert "メロンベンチ" in names.library_tables()["k"], "then read again"
 
 

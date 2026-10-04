@@ -1,0 +1,91 @@
+# Every pull request runs the core tests on Windows. A pull request into 3.0-dev or 2.x-dev merges itself once the
+# tests pass and it carries the `reviewed` label, which the session adds after its local review; adding the label is what merges (the register is kept
+# outside this repo). A new push takes the label off: new commits need a new review. main takes only pull requests the
+# owner merges.
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (the versions the release is built with)
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pandas==2.0.0 numpy==1.25.2 fugashi==1.5.2 unidic-lite==1.0.8 pysrt==1.1.2 EbookLib==0.20
+          beautifulsoup4==4.12.2 soupsieve==2.4 lxml==4.9.2 requests==2.28.2 tkinterdnd2==0.4.3 jieba==0.42.1
+          pytest==9.0.2 python-dotenv==1.0.0 zstandard==0.25.0
+      - name: The folders the tests expect
+        shell: bash
+        run: mkdir -p data/ja data/zh "User Files"
+      - name: Core suite
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        # Retried once only when Tk itself failed to start on the hosted runner ("tcl_findLibrary"); any other
+        # failure fails the check.
+        run: |
+          set +e
+          python run_tests.py 2>&1 | tee "$RUNNER_TEMP/run1.log"; status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ] && grep -q 'tcl_findLibrary' "$RUNNER_TEMP/run1.log"; then
+            echo '::warning::Tk failed to start a window on the runner; retrying once'
+            python run_tests.py; status=$?
+          fi
+          exit "$status"
+
+  unreview:
+    # New commits after a review: the label comes off at once, so nothing unreviewed can merge.
+    if: github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'reviewed')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --remove-label reviewed
+          echo "::notice::New commits since the review: the reviewed label is off. Review again, then add it back."
+
+  merge:
+    needs: tests
+    if: >-
+      github.event.action == 'labeled' && github.event.label.name == 'reviewed' &&
+      (github.base_ref == '3.0-dev' || github.base_ref == '2.x-dev') &&
+      contains(github.event.pull_request.labels.*.name, 'reviewed')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the tested commit, if the pull request still qualifies now
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          TESTED: ${{ github.event.pull_request.head.sha }}
+        run: |
+          read -r base head draft labelled < <(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isDraft,labels \
+            --jq '[.baseRefName, .headRefOid, (.isDraft|tostring), ([.labels[].name] | index("reviewed") != null | tostring)] | join(" ")')
+          echo "now: base=$base head=$head draft=$draft reviewed=$labelled; tested=$TESTED"
+          case "$base" in 3.0-dev|2.x-dev) ;; *) echo "::notice::base is $base, not an integration branch: not merging"; exit 0;; esac
+          if [ "$draft" != false ] || [ "$labelled" != true ] || [ "$head" != "$TESTED" ]; then
+            echo "::notice::changed since the tests ran: not merging"; exit 0
+          fi
+          gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$TESTED"

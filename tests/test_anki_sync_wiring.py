@@ -80,7 +80,7 @@ class _DashboardHarness(unittest.TestCase):
         self.app.var_language = MagicMock()
         self.app.var_language.get.return_value = "ja"
         self.app._anki_sync_lock = threading.Lock()
-        self.app._last_anki_sync = 0.0
+        self.app._last_anki_sync = float("-inf")   # "never", as the dashboard starts: 0.0 read as "just now" on a machine booted minutes ago
         self.app._current_settings = {}
         self.app.gui_queue = MagicMock()
         # "Generate when Anki adds known words" did not start a Generate — the default, option off.
@@ -312,7 +312,7 @@ class TestAutoGenerate(_DashboardHarness):
         self.app.var_anki_auto_generate = MagicMock()
         self.app.var_anki_auto_generate.get.return_value = True
         self.app._auto_generate_pending = True
-        self.app._last_auto_generate = 0.0
+        self.app._last_auto_generate = float("-inf")   # "never", as the dashboard starts (see above)
         self.app.active_processes = []
         self.app._library_has_content.return_value = True
 
@@ -721,7 +721,7 @@ class TestJunbanAutoReorder(_DashboardHarness):
         self.app.var_enable_junban = MagicMock()
         self.app.var_enable_junban.get.return_value = True
         self.app._junban_auto_lock = threading.Lock()
-        self.app._last_junban_auto = 0.0
+        self.app._last_junban_auto = float("-inf")   # "never", as the dashboard starts (see above)
         self.app.junban_window = None
         self.auto = types.ModuleType("modules.junban.auto")
         self.auto.enabled = lambda settings: settings.get("junban_auto_reorder") is True

@@ -1,4 +1,5 @@
 import codecs
+import hashlib
 import os
 import re
 import sys
@@ -61,7 +62,46 @@ def get_persistent_user_data_path():
         
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
-        
+
+    return path
+
+def _local_data_root():
+    """The per-user LOCAL data folder (never roams, never redirected to a network share)."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "SonicSandbox", "Surasura")
+
+def _install_key(install_dir):
+    """16 hex characters naming one install, as the library store keys its database (Library_Store_Spec §6.1, §6.4):
+    a development checkout and an installed copy never share a folder; a moved install gets a new one."""
+    p = os.path.realpath(install_dir).replace("\\", "/")
+    if sys.platform == "win32":
+        p = os.path.normcase(p)
+    elif sys.platform == "darwin":
+        import unicodedata
+        p = unicodedata.normalize("NFC", p).casefold()
+    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
+
+def get_local_data_path():
+    """
+    Get the per-install LOCAL data folder: the command line's logs, locks and events (P0.3 02-contract §6).
+    Windows: %LOCALAPPDATA%/SonicSandbox/Surasura/<install key>/
+    macOS: ~/Library/Application Support/SonicSandbox/Surasura/<install key>/
+    Linux: $XDG_STATE_HOME (else ~/.local/state)/SonicSandbox/Surasura/<install key>/
+    SURASURA_TEST_ROOT moves it to <test root>/local; a test that reaches the real one raises.
+    """
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        path = os.path.join(root, "local")
+    elif "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError("a test reached the real local data folder: set SURASURA_TEST_ROOT")
+    else:
+        path = os.path.join(_local_data_root(), _install_key(get_user_data_path()))
+    os.makedirs(path, exist_ok=True)
     return path
 
 def get_resource(path):

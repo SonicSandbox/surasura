@@ -3,7 +3,8 @@
 package_app._build_app_package() writes the app-package zip + update.json attached to a
 GitHub release. This proves what the packager emits is exactly what the client (app.updater)
 accepts: the advertised sha256 matches the zip, and the zip passes extract_and_validate().
-The app package is the code-bearing Surasura.exe + the loose templates/ dir.
+The app package is the code-bearing Surasura.exe + surasura-cli.exe (the command line, P1.1) + the loose templates/
+dir.
 """
 import os
 import json
@@ -13,15 +14,19 @@ from app import updater
 
 
 EXE_BYTES = b"MZ\x90\x00fake-surasura-exe-\xe8\xaa\x9e" * 32
+CLI_BYTES = b"MZ\x90\x00fake-surasura-cli-\xe8\xaa\x9e" * 16
 
 
-def _make_fake_dist(root, version):
-    """Create a minimal final_dist with Surasura.exe + _internal/templates, like a real build."""
+def _make_fake_dist(root, version, cli=True):
+    """Create a minimal final_dist with Surasura.exe, surasura-cli.exe + _internal/templates, like a real build."""
     final = os.path.join(root, f"Surasura_v{version}")
     internal = os.path.join(final, "_internal")
     os.makedirs(os.path.join(internal, "templates"), exist_ok=True)
     with open(os.path.join(final, "Surasura.exe"), "wb") as f:
         f.write(EXE_BYTES)
+    if cli:
+        with open(os.path.join(final, "surasura-cli.exe"), "wb") as f:
+            f.write(CLI_BYTES)
     with open(os.path.join(internal, "templates", "web_app.html"), "w", encoding="utf-8") as f:
         f.write("<h1>語彙の旅</h1>\n")
     return final
@@ -51,6 +56,20 @@ def test_app_package_matches_client_expectations(tmp_path, monkeypatch):
     payload = str(tmp_path / "payload")
     assert updater.extract_and_validate(pkg, payload) is True
     assert os.path.isfile(os.path.join(payload, "Surasura.exe"))
+    with open(os.path.join(payload, "surasura-cli.exe"), "rb") as f:
+        assert f.read() == CLI_BYTES                    # the command line travels with the app code
+
+
+def test_a_build_without_the_command_line_makes_no_package(tmp_path, monkeypatch):
+    """A dist missing surasura-cli.exe is a broken build: no app package goes out without it."""
+    version = "2.5"
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("dist", exist_ok=True)
+    final_dist = _make_fake_dist(str(tmp_path / "dist"), version, cli=False)
+
+    package_app._build_app_package(final_dist, version, full_update=False)
+
+    assert not os.path.exists(os.path.join("dist", f"Surasura_app_v{version}.zip"))
 
 
 def test_full_update_manifest_has_no_package(tmp_path, monkeypatch):

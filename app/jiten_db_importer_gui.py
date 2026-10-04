@@ -167,7 +167,7 @@ class JitenImporterGUI:
             env = os.environ.copy()
             env["PYTHONUTF8"] = "1"
             # The key goes in the child's environment, never on its command line (app_entry logs
-            # every argv to debug/app_debug_log.txt). Imported here, not at the top, so opening
+            # every argv to logs/app_debug_log.txt). Imported here, not at the top, so opening
             # the window doesn't load `requests` along with the converter.
             from app.jiten_converter import API_KEY_ENV
             env[API_KEY_ENV] = api_key

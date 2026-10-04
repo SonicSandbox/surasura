@@ -115,7 +115,7 @@ def test_an_empty_jiten_account_never_replaces_existing_known_words(tmp_path):
     assert known.read_bytes() == before
 
 
-# --- The API key never travels on a command line (it would land in debug/app_debug_log.txt) ---- #
+# --- The API key never travels on a command line (it would land in logs/app_debug_log.txt) ----- #
 def test_the_import_window_passes_the_key_in_the_environment_not_the_command_line():
     from app.jiten_db_importer_gui import JitenImporterGUI
     from app.jiten_converter import API_KEY_ENV

@@ -36,7 +36,10 @@ jobs:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
           TEMP: ${{ runner.temp }}
-        run: python run_tests.py
+        # One retry, logged: Tk on GitHub's hosted Windows runners now and then fails to start a window
+        # ("invalid command name tcl_findLibrary"). A real failure fails twice and stays red.
+        shell: bash
+        run: python run_tests.py || { echo '::warning::suite failed once; retrying'; python run_tests.py; }
 
   review:
     needs: tests

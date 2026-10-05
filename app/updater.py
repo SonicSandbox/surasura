@@ -22,6 +22,7 @@ Files, data, results, or settings.json — user data is entirely outside the bla
 import os
 import sys
 import json
+import re
 import time
 import hashlib
 import zipfile
@@ -150,13 +151,15 @@ def can_auto_apply(info=None):
 # The release's file list (K99): {name, dest, kind, sha256} per entry.
 #   name    a flat staging key: the entry's path at the top of the app package zip
 #   dest    relative to the install folder; only Surasura.exe, surasura-cli.exe, RELEASE_NOTES.md
-#           or something under _internal/ (case-folded, no absolute path, no "..", resolved
-#           through junctions and kept inside the install folder) — anything else: FULL
+#           or something under _internal/ (ASCII case ignored, no absolute path, no "..", no name
+#           Windows reserves or reads as another, resolved through junctions and kept inside the
+#           install folder) — anything else: FULL. The list must name Surasura.exe.
 #   kind    "file" or "dir"
 #   sha256  a file's sha256, or a dir's `tree_sha256`
 # ---------------------------------------------------------------------------
 _ROOT_FILES = {"surasura.exe", "surasura-cli.exe", "release_notes.md"}
 _HEX = set("0123456789abcdef")
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"{d}{i}" for d in ("com", "lpt") for i in range(1, 10)}
 
 
 def _install_dir():
@@ -180,9 +183,12 @@ def resolve_destination(dest, install_dir=None):
     parts = [p for p in text.split("/") if p not in ("", ".")]
     if not parts or any(p == ".." for p in parts):
         raise UpdateError(f"destination {dest!r} leaves the install folder")
-    if any(":" in p or p != p.rstrip(" .") for p in parts):
+    if any(":" in p or p != p.rstrip(" .") or any(ord(c) < 32 or c in '<>"|?*' for c in p) for p in parts):
         raise UpdateError(f"destination {dest!r} is not a plain path")
-    folded = [p.casefold() for p in parts]
+    # .lower(), never .casefold(): Windows ignores ASCII case only (casefold reads ſurasura.exe as surasura.exe).
+    folded = [p.lower() for p in parts]
+    if any(p.split(".")[0] in _RESERVED or re.search(r"~[0-9]", p) for p in folded):
+        raise UpdateError(f"destination {dest!r} names a device or a short (8.3) name")
     if not ((len(folded) == 1 and folded[0] in _ROOT_FILES) or (len(folded) >= 2 and folded[0] == "_internal")):
         raise UpdateError(f"destination {dest!r} is not one an in-place update may write")
     path = os.path.join(install_dir, *parts)
@@ -216,6 +222,9 @@ def resolve_files(files, install_dir=None):
         names.add(name.casefold())
         dests.add(os.path.normcase(dest))
         targets.append({"name": name, "kind": kind, "dest": dest, "sha256": sha})
+    root = install_dir or _install_dir()
+    if not any(t["kind"] == "file" and os.path.relpath(t["dest"], root).lower() == EXE_NAME.lower() for t in targets):
+        raise UpdateError("the release's file list doesn't name Surasura.exe")
     return targets
 
 
@@ -658,6 +667,11 @@ def arm_and_launch(marker):
         with open(added_path(), "w", encoding="utf-8") as f:
             json.dump({"target_version": marker.get("target_version", ""), "added": added, "dirs": made}, f,
                       ensure_ascii=False, indent=2)
+    else:
+        try:
+            os.remove(added_path())        # an older update's record: this one's failure must not delete what it named
+        except OSError:
+            pass
     path = write_marker(marker)
     try:
         return launch_helper(path)
@@ -781,6 +795,14 @@ def consume_result():
                 m = json.load(f)
         except Exception:
             m = {}
+        if _is_this_version(m.get("target_version")):
+            # This IS the version it installed: the swap ran and its helper ended before reporting. Never delete
+            # what it added (this version runs on it); a success when every target holds the bytes it names.
+            landed = _swap_landed(m)
+            _cleanup_all()
+            return {"status": "success" if landed else "failed", "from": m.get("from_version", ""),
+                    "to": m.get("target_version", ""),
+                    "reason": "ok (the updater ended before reporting)" if landed else "update did not complete"}
         _remove_added()
         _cleanup_all()
         return {
@@ -791,6 +813,26 @@ def consume_result():
         }
 
     return None
+
+
+def _is_this_version(version):
+    return bool(version) and version == __version__
+
+
+def _swap_landed(marker):
+    """A leftover marker's targets all in place, each file with the sha256 it names (the helper's own last check)."""
+    targets = marker.get("targets") or []
+    for t in targets:
+        dest = t.get("dest") if isinstance(t, dict) else None
+        if not isinstance(dest, str) or not os.path.exists(dest):
+            return False
+        want = t.get("sha256")
+        try:
+            if want and (not os.path.isfile(dest) or sha256_file(dest) != want):
+                return False
+        except OSError:
+            return False
+    return bool(targets)
 
 
 def write_report(stage, reason, to_version="", from_version=""):

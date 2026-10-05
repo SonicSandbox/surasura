@@ -164,18 +164,24 @@ def test_a_command_line_is_named_as_one(procs, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' process listing")
-def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, monkeypatch):
-    """The real listing delays the real update: no Popen of ours, only the program's path."""
-    stray = _sleeper(2)
+def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, monkeypatch, tmp_path):
+    """The real listing delays the real update: no Popen of ours, only the program's path. The program is a copy of
+    Python under this install's name in a folder of its own, so no other Python on the machine can stand in for it —
+    and once it ends, nothing else is listed and the update hands over."""
+    import shutil
+    install = tmp_path / "スラスラ 本番"
+    install.mkdir()
+    exe = install / "Surasura.exe"
+    shutil.copy(sys.executable, exe)
+    stray = subprocess.Popen([str(exe), "-c", "import time; time.sleep(2)"])
     procs.append(stray)
-    monkeypatch.setattr(updater, "_install_images", lambda: [sys.executable])
+    monkeypatch.setattr(updater, "_install_images", lambda: [str(exe), str(install / "surasura-cli.exe")])
     dash._do_auto_update(MagicMock())
     assert _pump(dash, lambda: _wait_window(dash) is not None)
     assert "Another Surasura window" in _texts(_wait_window(dash))
+    assert [c["pid"] for c in updater.running_children([], images=[str(exe)])] == [stray.pid]
     assert dash.calls["armed"] == []
     stray.wait(timeout=10)
-    # Our own python (the test) is excluded; other pythons (other test suites running) may still be listed.
-    monkeypatch.setattr(updater, "_install_images", lambda: [])
     assert _pump(dash, lambda: dash.calls["armed"])
     assert dash.calls["destroyed"] == 1
 
@@ -300,9 +306,23 @@ def test_closing_the_dashboard_during_the_wait_cancels_the_update(dash, procs, m
     monkeypatch.setattr(updater, "_install_images", lambda: [])
     dash._do_auto_update(MagicMock())
     assert _pump(dash, lambda: _wait_window(dash) is not None)
+    import app.main as main
+    started, rebuilds, generates = [], [], []
+    monkeypatch.setattr(main.subprocess, "Popen", lambda args, **kw: started.append(args) or _sleeper(0))
+    monkeypatch.setattr(backfill, "start_rebuild", lambda *a, **k: rebuilds.append(a) or None)
+    monkeypatch.setattr(dash, "_maybe_auto_generate", lambda *a, **k: generates.append(1))
+    # Asked for while the update waits: held back, and they must NOT start when the dashboard closes — started after
+    # on_closing's terminate loop, they would outlive the app (the adversary's finding 1).
+    dash.run_command_async(["content_importer_gui.py", "--language", "ja"], "Content Manager")
+    assert backfill.rebuild_in_background("ja") is False
     dash.on_closing()
+    _pump(dash, lambda: False, timeout=0.5)
     assert dash._update_job is None and dash.calls["armed"] == []
     assert not os.path.exists(updater.marker_path())
+    assert started == [] and rebuilds == [] and generates == []
+    assert not updater.children_held()
+    with updater._DEFERRED_LOCK:
+        assert updater._DEFERRED == []                   # dropped, not kept for a later cancel
 
 
 def test_a_second_update_now_while_one_waits_starts_nothing_more(dash, procs, monkeypatch):
@@ -383,4 +403,91 @@ def test_junbans_automatic_steps_wait_for_the_update(dash, monkeypatch):
     assert asked == []
     updater.release_children()
     dash._maybe_junban_auto(force=True)
+    assert asked == [1]
+
+
+# --- a download cancelled mid-way, and this window's own Anki writers (the adversary's findings 3 and 5) ---------------
+
+def test_a_download_cancelled_mid_way_keeps_the_lock_until_its_worker_ends(dash, procs, monkeypatch):
+    """Esc while the download runs, then *Update now* again: the first worker still writes (and on failure removes)
+    the staging folder, so a second update may not stage there until it ends. Refused meanwhile; once the worker
+    ends, its staging goes and the lock is free."""
+    import threading
+    build = _sleeper(60)
+    procs.append(build)
+    monkeypatch.setattr(backfill, "_PROCESS", build)
+    monkeypatch.setattr(updater, "_install_images", lambda: [])
+    release, stages = threading.Event(), []
+
+    def slow_stage(info, progress_cb=None):
+        stages.append(info.version)
+        release.wait(20)
+        return dash.calls["staged"]
+
+    monkeypatch.setattr(updater, "prepare_update", slow_stage)
+    import app.main as main
+    told = []
+    monkeypatch.setattr(main.messagebox, "showinfo", lambda title, msg: told.append(msg))
+    dash._do_auto_update(MagicMock())
+    assert _pump(dash, lambda: _wait_window(dash) is not None and stages)
+    first = dash._update_job
+    _esc(_wait_window(dash))
+    _pump(dash, lambda: False, timeout=0.3)
+    assert dash._update_job is None and dash.calls["discarded"] == 0   # the worker still writes there
+    dash._do_auto_update(MagicMock())
+    assert told == ["Another Surasura update is already in progress."]
+    assert dash._update_job is None and stages == ["2.5.1"]           # nothing staged a second time
+    assert path_utils.try_lock(updater.update_lock_path()) is None
+    release.set()
+    assert _pump(dash, lambda: dash.calls["discarded"] == 1)
+    assert first["ended"] and dash.calls["armed"] == []
+    lock = path_utils.try_lock(updater.update_lock_path())
+    assert lock is not None                                             # free again
+    path_utils.release_lock(lock)
+
+
+@pytest.mark.parametrize("attr, name", [("_anki_sync_lock", "Anki sync"),
+                                        ("_junban_auto_lock", "Junban's automatic reorder")])
+def test_the_update_waits_for_this_windows_own_anki_writer(dash, monkeypatch, attr, name):
+    """The Anki sync and Junban's automatic steps are threads of this window, writing Anki: no process to list, but
+    the exit would cut them off mid-write. Listed as finishing (no Stop), waited for, then the hand-over."""
+    monkeypatch.setattr(updater, "_install_images", lambda: [])
+    lock = getattr(dash, attr)
+    assert lock.acquire(blocking=False)
+    try:
+        dash._do_auto_update(MagicMock())
+        assert _pump(dash, lambda: _wait_window(dash) is not None)
+        win = _wait_window(dash)
+        assert name in _texts(win) and "finishing…" in _texts(win)
+        assert [b.cget("text") for b in _widgets(win, ttk.Button)] == ["Stop all and update now", "Cancel"]
+        _button(win, "Stop all and update now")[0].invoke()          # stops nothing of ours: it finishes by itself
+        _pump(dash, lambda: False, timeout=0.5)
+        assert dash.calls["armed"] == [] and dash.calls["destroyed"] == 0
+        # The final callback's own check counts it too (it started between two polls).
+        job = {"info": dash._update_info, "lock": None, "staged": dash.calls["staged"], "window": None,
+               "children": [], "done": True, "error": None}
+        assert dash._apply_and_restart(job) is False
+    finally:
+        lock.release()
+    assert _pump(dash, lambda: dash.calls["armed"])
+    assert dash.calls["destroyed"] == 1
+
+
+def test_no_anki_sync_starts_while_an_update_waits(dash, monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    dash.var_anki_sync_auto.set(True)
+    import app.main as main
+    from app import anki_sync
+    monkeypatch.setattr(main.settings_manager, "load_settings",
+                        lambda *a, **k: {"anki_sync_decks": {dash.var_language.get(): ["日本語::Core"]}})
+    monkeypatch.setattr(anki_sync, "load_state", lambda lang: {"last_sync": "2026-10-04T12:00:00"})
+    asked = []
+    lock = MagicMock()
+    lock.acquire.side_effect = lambda blocking=True: asked.append(1) or False   # never runs the sync itself
+    monkeypatch.setattr(dash, "_anki_sync_lock", lock)
+    updater.hold_children()
+    dash._maybe_anki_sync(force=True)
+    assert asked == []
+    updater.release_children()
+    dash._maybe_anki_sync(force=True)
     assert asked == [1]

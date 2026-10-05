@@ -116,6 +116,36 @@ def test_two_writers_interleaved_both_end_up_in_the_list(tmp_path):
     assert sorted(e["data_root"] for e in _note()) == sorted(installs)
 
 
+@pytest.mark.parametrize("damaged", [
+    '{"data_root": "D:/スラスラ", "version": "3.0.0"}',                        # another shape (a dict, not a list)
+    '[{"data_root": "D:/スラスラ", "exe": "D:/スラスラ/Surasura.exe", "versi',   # cut off mid-write
+    b"\xff\xfe\x00[\x00",                                                    # not UTF-8 at all
+])
+def test_a_note_it_cannot_read_as_a_list_is_left_byte_identical(frozen_install, damaged):
+    """The adversary's finding 4: a note that isn't a readable list was read as [] and overwritten with this install
+    alone — every other install's entry lost. Now it is left exactly as it is (and the start goes on)."""
+    path = os.path.join(path_utils.local_data_root(), path_utils.INSTALLS_NOTE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    raw = damaged if isinstance(damaged, bytes) else damaged.encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(raw)
+    assert path_utils.write_install_note() is False
+    with open(path, "rb") as f:
+        assert f.read() == raw
+
+
+def test_an_entry_it_does_not_understand_is_kept(frozen_install):
+    """A later version's entry of another shape stays in the list: an install writes only its own."""
+    path = os.path.join(path_utils.local_data_root(), path_utils.INSTALLS_NOTE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(["3.0 の記録", {"store": "D:/スラスラ/library.db"}], f, ensure_ascii=False)
+    assert path_utils.write_install_note() is True
+    note = _note()
+    assert note[:2] == ["3.0 の記録", {"store": "D:/スラスラ/library.db"}]
+    assert note[2]["data_root"] == frozen_install
+
+
 def test_a_source_checkout_writes_nothing(monkeypatch):
     monkeypatch.setattr(path_utils, "is_frozen", lambda: False)
     assert path_utils.write_install_note() is False

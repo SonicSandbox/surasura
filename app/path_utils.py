@@ -166,14 +166,24 @@ def _install_entry_key(entry):
     except (KeyError, TypeError, ValueError):
         return None
 
-def read_install_note(path=None):
-    """The installs the note names (a list of dicts; [] when there is none or it is unreadable)."""
+def read_install_note(path=None, strict=False):
+    """The installs the note names (a list of dicts; [] when there is none or it is unreadable). `strict` (a writer's
+    read): [] only when there is none; the list exactly as written, anything else in it kept; OSError when it can't
+    be read now, ValueError when it isn't a list — a note the writer must leave as it is."""
     path = path or os.path.join(local_data_root(), INSTALLS_NOTE)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError):
+        if strict:
+            raise
+        return []
+    if strict:
+        if not isinstance(data, list):
+            raise ValueError("not a list")
+        return data
     return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
 
 def _install_languages(data_root):
@@ -208,7 +218,15 @@ def write_install_note(frozen=None):
             time.sleep(0.05)
         try:
             for _attempt in range(3):
-                entries = [e for e in read_install_note(path) if _install_entry_key(e) != key] + [me]
+                try:
+                    current = read_install_note(path, strict=True)
+                except ValueError as e:            # damaged or another shape: never replaced by this install alone
+                    print(f"Install note: {path} is not a list of installs ({e}); left as it is")
+                    return False
+                except OSError:                    # another writer's swap, mid-way: read it again
+                    time.sleep(0.05)
+                    continue
+                entries = [e for e in current if _install_entry_key(e) != key] + [me]
                 tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
                 try:
                     with open(tmp, "w", encoding="utf-8") as f:

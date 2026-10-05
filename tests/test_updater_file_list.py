@@ -153,6 +153,68 @@ def test_an_update_whose_helper_never_ran_removes_nothing_it_did_not_add(install
     assert (install / "_internal" / "templates").is_dir() and (install / "Surasura.exe").exists()
 
 
+def _helper_swaps_then_dies(monkeypatch):
+    """launch_helper -> the REAL swap, then the helper is gone before it writes its result or removes the marker (a
+    kill, a power cut): the user starts the app themselves."""
+    def launch(marker_path_=None):
+        with open(marker_path_ or updater.marker_path(), "r", encoding="utf-8") as f:
+            marker = json.load(f)
+        updater_helper.apply_update(marker)
+    monkeypatch.setattr(updater, "launch_helper", launch)
+
+
+def test_a_finished_swap_whose_helper_died_is_kept_by_the_new_version(install, local_release, monkeypatch):
+    """The adversary's finding 2: the leftover marker used to read as "failed" — the new version deleted the file it
+    had just added and marked itself failed. Now, run as the version the marker installed, with every target's bytes
+    in place: a success, nothing deleted."""
+    marker = updater.prepare_update(update_checker.get_update_info())
+    _helper_swaps_then_dies(monkeypatch)
+    updater.arm_and_launch(marker)
+    assert os.path.exists(updater.marker_path())
+    monkeypatch.setattr(updater, "__version__", "2.5.1")              # the relaunched app is the new one
+    res = updater.consume_result()
+    assert res["status"] == "success" and res["to"] == "2.5.1"
+    assert (install / "_internal" / "新しい" / "lib" / "extra.dll").read_bytes() == DLL_NEW
+    assert (install / "Surasura.exe").read_bytes() == EXE_NEW
+    assert not os.path.exists(updater.marker_path()) and not os.path.exists(updater.added_path())
+
+
+def test_a_swap_cut_short_is_reported_failed_but_the_new_version_keeps_its_files(install, local_release, monkeypatch):
+    """Run as the new version, but a target doesn't hold the bytes the marker names (the helper died mid-swap): a
+    failure to report (a manual download repairs it) — and still nothing deleted under the running version."""
+    marker = updater.prepare_update(update_checker.get_update_info())
+    _helper_swaps_then_dies(monkeypatch)
+    updater.arm_and_launch(marker)
+    (install / "_internal" / "新しい" / "lib" / "extra.dll").write_bytes(b"MZ half")
+    monkeypatch.setattr(updater, "__version__", "2.5.1")
+    res = updater.consume_result()
+    assert res["status"] == "failed" and res["reason"] == "update did not complete"
+    assert (install / "_internal" / "新しい" / "lib" / "extra.dll").exists()
+    assert not os.path.exists(updater.added_path())
+
+
+def test_an_older_updates_added_record_is_dropped_by_an_update_that_adds_nothing(install, tmp_path, monkeypatch):
+    """The adversary's finding 11: the added-files record was written only when an update added something and never
+    cleared, so a later update's failure deleted what an EARLIER version had installed."""
+    earlier = install / "_internal" / "以前" / "kept.dll"
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(DLL_NEW)
+    with open(updater.added_path(), "w", encoding="utf-8") as f:
+        json.dump({"target_version": "2.5.0", "added": [str(earlier)], "dirs": [str(earlier.parent)]}, f)
+    folder = _test_release(tmp_path / "no-add", extra=False)
+    monkeypatch.setenv(update_checker.UPDATE_SOURCE_ENV, str(folder))
+    monkeypatch.setattr(build_info, "RELEASE_BUILD", False)
+    marker = updater.prepare_update(update_checker.get_update_info())
+    assert not [t for t in marker["targets"] if t.get("added")]
+    with open(os.path.join(marker["payload_dir"], "Surasura.exe"), "ab") as f:
+        f.write(b"!")                                                 # the swap fails and rolls back
+    results = _helper_runs_in_process(monkeypatch)
+    updater.arm_and_launch(marker)
+    assert results[0]["status"] == "failed"
+    assert updater.consume_result()["status"] == "failed"
+    assert earlier.read_bytes() == DLL_NEW                            # an earlier version's file stays
+
+
 def test_the_helper_that_cannot_start_leaves_nothing_armed_or_made(install, local_release, monkeypatch):
     info = update_checker.get_update_info()
     marker = updater.prepare_update(info)
@@ -192,10 +254,14 @@ def test_a_new_program_rides_in_the_list(install, tmp_path):
     """surasura-cli.exe: a file 2.4.0's updater could never bring, named by the list."""
     (tmp_path / "p").mkdir()
     (tmp_path / "p" / "surasura-cli.exe").write_bytes(b"MZcli")
-    files = [{"name": "surasura-cli.exe", "dest": "surasura-cli.exe", "kind": "file",
+    (tmp_path / "p" / "Surasura.exe").write_bytes(EXE_NEW)
+    files = [{"name": "Surasura.exe", "dest": "Surasura.exe", "kind": "file",
+              "sha256": updater.sha256_file(str(tmp_path / "p" / "Surasura.exe"))},
+             {"name": "surasura-cli.exe", "dest": "surasura-cli.exe", "kind": "file",
               "sha256": updater.sha256_file(str(tmp_path / "p" / "surasura-cli.exe"))}]
     marker = updater.build_marker(UpdateInfo(version="2.5.1", files=files), str(tmp_path / "p"), 1)
-    [t] = marker["targets"]
+    [exe, t] = marker["targets"]
+    assert exe["dest"] == str(install / "Surasura.exe") and not exe.get("added")
     assert t["dest"] == str(install / "surasura-cli.exe") and t["added"] is True and t["sha256"]
 
 
@@ -207,14 +273,30 @@ def test_a_new_program_rides_in_the_list(install, tmp_path):
     "data/ja/HighPriority/x.txt", "results/report.html", "updater.exe", "pending_update.json", "_internal",
     "Surasura.exe.", "Surasura.exe ", "Surasura.exe:stream", "", "templates/web_app.html",
     "/_internal/x.dll", "\\_internal\\x.dll", "_internal/lib./x.dll", "_internal/lib /x.dll",
+    # The adversary's finding 9: names a text check passes but Windows reads otherwise (or refuses at the swap).
+    "ſurasura.exe", "_internal/CON", "_internal/NUL.txt", "_internal/lib/com1.dll", "_internal/LPT9.pyd",
+    "_internal/a\x01b.dll", "_internal/新しい\tlib/x.dll", "_internal/x?.dll", "_internal/x|y.dll",
+    "_internal/TEMPLA~1", "_internal/TEMPLA~1/web_app.html", "SURASU~1.EXE",
 ])
 def test_a_destination_outside_the_allow_list_makes_the_update_full(install, dest):
     with pytest.raises(updater.UpdateError):
         updater.resolve_destination(dest)
-    files = [{"name": "x", "dest": dest, "kind": "file", "sha256": "ab" * 32}]
+    files = [{"name": "Surasura.exe", "dest": "Surasura.exe", "kind": "file", "sha256": "cd" * 32},
+             {"name": "x", "dest": dest, "kind": "file", "sha256": "ab" * 32}]
     info = UpdateInfo(version="2.5.1", update_type="app", sha256="ab" * 32, app_package_url="x", files=files)
     assert updater.can_auto_apply(info) is False
     assert updater.effective_class("APP", info, can_apply=updater.can_auto_apply(info)) == "FULL"
+
+
+def test_a_list_that_does_not_name_surasura_exe_makes_the_update_full(install):
+    """Without the program the version lives in, the update would leave the old version running and be offered again
+    (the adversary's finding 9): a manual one instead."""
+    files = [{"name": "templates", "dest": "_internal/templates", "kind": "dir", "sha256": "ab" * 32},
+             {"name": "Surasura.exe", "dest": "_internal/Surasura.exe", "kind": "file", "sha256": "cd" * 32}]
+    with pytest.raises(updater.UpdateError, match="Surasura.exe"):
+        updater.resolve_files(files)
+    info = UpdateInfo(version="2.5.1", update_type="app", sha256="ab" * 32, app_package_url="x", files=files)
+    assert updater.can_auto_apply(info) is False
 
 
 @pytest.mark.parametrize("dest", ["Surasura.exe", "surasura.EXE", "surasura-cli.exe", "RELEASE_NOTES.md",

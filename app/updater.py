@@ -600,10 +600,48 @@ def prepare_update(info, progress_cb=None):
         raise UpdateError(str(e))
 
 
+def prepare_installer(info, progress_cb=None):
+    """The 2.x -> 3.0 hand-off (S1.3-6): download the release's installer into staging and check its sha256. ->
+    the staged installer {kind, path, args, ...} for `arm_and_launch`; nothing is launched here. Refuses anything
+    but a frozen build and a release `update_checker.installer_ready` accepts (3.0 or later)."""
+    from app.update_checker import installer_ready
+    if not path_utils.is_frozen():
+        raise UpdateError("the installer hand-off runs only in a packaged (frozen) build")
+    if not installer_ready(__version__, info):
+        raise UpdateError("this release has no installer 2.x may hand over to")
+    sd = staging_dir()
+    shutil.rmtree(sd, ignore_errors=True)
+    folder = os.path.join(sd, "installer")
+    os.makedirs(folder, exist_ok=True)
+    name = os.path.basename(str(info.installer.get("asset")).replace("\\", "/")) or "setup.exe"
+    path = os.path.join(folder, name)
+    try:
+        download(info.installer_url, path, progress_cb=progress_cb)
+        if sha256_file(path).lower() != str(info.installer["sha256"]).lower():
+            raise UpdateError("checksum mismatch — the installer download is corrupted or tampered")
+    except UpdateError:
+        shutil.rmtree(sd, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(sd, ignore_errors=True)
+        raise UpdateError(str(e))
+    return {"kind": "installer", "path": path, "args": list(info.installer.get("args") or []),
+            "target_version": info.version, "from_version": __version__}
+
+
+def launch_installer(staged):
+    """Start the installer detached (not through updater.exe: it replaces the whole install), so it outlives us."""
+    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    return subprocess.Popen([staged["path"]] + list(staged.get("args") or []), creationflags=flags, close_fds=True,
+                            cwd=os.path.dirname(staged["path"]))
+
+
 def arm_and_launch(marker):
     """The hand-over, in the window's one final callback (after its last `can_update_now`): write the marker, then
     start updater.exe; the caller exits next. If the helper can't start, the marker is removed again (nothing stays
-    armed) and the error raised."""
+    armed) and the error raised. A staged installer (S1.3-6) is launched instead: no marker, no helper."""
+    if marker.get("kind") == "installer":
+        return launch_installer(marker)
     added = [t["dest"] for t in marker.get("targets", []) if t.get("added")]
     made = []
     for dest in added:                     # updater.exe's os.replace needs the folder to exist
@@ -794,15 +832,16 @@ def effective_class(cls, info, skipped_version="", auto_enabled=True, can_apply=
       * the in-app update of that version already failed once -> 'FULL', never retried in place (the
         loop-breaker). A skip and a failure are kept apart: the user pressing Skip by accident once
         left only the manual download (2026-09-25).
-    'FULL' otherwise passes through unchanged, and 'NONE' always does.
+    'INSTALLER' (3.0's hand-off, S1.3-6) is guarded exactly like 'APP'. 'FULL' otherwise passes through
+    unchanged, and 'NONE' always does.
     """
     version = getattr(info, "version", "") if info is not None else ""
     if cls == "NONE" or (version and version == skipped_version):
         return "NONE"
-    if cls != "APP":
+    if cls not in ("APP", "INSTALLER"):
         return cls
     if not auto_enabled or not can_apply:
         return "FULL"
     if version and version == failed_version:
         return "FULL"
-    return "APP"
+    return cls

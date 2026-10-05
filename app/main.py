@@ -2011,7 +2011,16 @@ class MasterDashboardApp:
         btn_row = ttk.Frame(wrapper)
         btn_row.pack(fill=tk.X)
 
-        if cls == "APP":
+        if cls == "INSTALLER":
+            btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
+                                 command=lambda: self._do_installer_update(dialog))
+            btn_now.pack(side=tk.LEFT)
+            ToolTip(btn_now, "Download Surasura's installer, close Surasura and start it.")
+            btn_skip = ttk.Button(btn_row, text="Skip this version",
+                                  command=lambda: self._skip_update(dialog))
+            btn_skip.pack(side=tk.LEFT, padx=(8, 0))
+            ToolTip(btn_skip, "Don't offer this version again.")
+        elif cls == "APP":
             btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
                                  command=lambda: self._do_auto_update(dialog))
             btn_now.pack(side=tk.LEFT)
@@ -2032,6 +2041,9 @@ class MasterDashboardApp:
     def _update_body(cls, info, failed_version=""):
         """What the update dialog says. A version whose in-app update already failed is a manual
         download for that reason — it isn't "a larger update", and saying so sent people looking."""
+        if cls == "INSTALLER":
+            return ("This version installs with its own installer: Surasura closes, the installer starts, "
+                    "and it brings your library, words and settings with it.")
         if cls == "APP":
             return ("This is a quick in-app update — it refreshes only the program code and "
                     "report templates (about 15–20 MB). Your words, data, settings, and file "
@@ -2095,6 +2107,19 @@ class MasterDashboardApp:
             webbrowser.open(info.notes_url)
             return
         self._start_update(info, updater.prepare_update)
+
+    def _do_installer_update(self, dialog):
+        """"Update now" on an installer release (3.0, S1.3-6): the same wait (K75), then the installer starts and the
+        app exits. Never reached by a 2.x release (`update_checker.installer_ready`)."""
+        dialog.destroy()
+        info = self._update_info
+        if not info:
+            return
+        from app.path_utils import is_frozen
+        if not is_frozen():
+            webbrowser.open(info.notes_url)
+            return
+        self._start_update(info, updater.prepare_installer)
 
     def _start_update(self, info, stage):
         """From "Update now" until the hand-over: the update lock held (the command line answers `update-staged`), no

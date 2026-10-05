@@ -60,6 +60,8 @@ class UpdateInfo:
     critical: bool = False
     sha256: str = ""
     files: Optional[list] = None       # the release's file list (K99): {name, dest, kind, sha256} each; None = 2.4.0's
+    installer: Optional[dict] = None   # update_type "installer" (S1.3-6): {asset, sha256, args, min_from}; 3.0+ only
+    installer_url: Optional[str] = None
     app_package_url: Optional[str] = None
     full_url: Optional[str] = None
     notes_url: str = ""
@@ -148,11 +150,13 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
     app_url = None
     full_url = None
     manifest_url = None
+    urls = {}
     for asset in assets:
         name = (asset.get("name") or "").lower()
         url = asset.get("browser_download_url")
         if not url:
             continue
+        urls[name] = url
         if name == "update.json":
             manifest_url = url
         elif name.startswith("surasura_app_v") and name.endswith(".zip"):
@@ -182,6 +186,10 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
                 manifest_version = version_string(str(manifest.get("version", "")))
                 if manifest_version:
                     info.version = manifest_version
+                installer = manifest.get("installer")
+                if info.update_type == "installer" and isinstance(installer, dict):
+                    info.installer = installer
+                    info.installer_url = urls.get(str(installer.get("asset") or "").lower())
                 if "files" in manifest:
                     files = manifest.get("files")
                     if isinstance(files, list) and files and all(isinstance(f, dict) for f in files):
@@ -219,6 +227,27 @@ def _read_local(url):
         return response.read().decode("utf-8")
 
 
+INSTALLER_FROM_VERSION = (3, 0)
+
+
+def installer_ready(current_version: str, info: "UpdateInfo") -> bool:
+    """Is this an installer release 2.x may hand over to: version 3.0 or later, its installer named by an asset the
+    release carries, a sha256, args a list of strings, and `min_from` (when given) no newer than this version?"""
+    inst = info.installer if isinstance(info.installer, dict) else None
+    if not inst or parse_version(info.version) < INSTALLER_FROM_VERSION or not info.installer_url:
+        return False
+    sha = str(inst.get("sha256") or "").lower()
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        return False
+    args = inst.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return False
+    min_from = inst.get("min_from")
+    if min_from and parse_version(current_version) < parse_version(str(min_from)):
+        return False
+    return True
+
+
 def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:
     """
     Decide what kind of update (if any) applies.
@@ -230,12 +259,18 @@ def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:
                past the release's runtime_baseline).
       "FULL" — a newer release exists but must be downloaded manually (major/runtime change,
                or any missing/ambiguous metadata — fail closed).
+      "INSTALLER" — 3.0 or later, declared "installer": its own installer takes over (S1.3-6).
     """
     if not info:
         return "NONE"
 
     if parse_version(info.version) <= parse_version(current_version):
         return "NONE"
+
+    if info.update_type == "installer":
+        # The 2.x -> 3.0 hand-off (S1.3-6), shipped in 2.5 switched off: only a release of 3.0 or later that names
+        # its installer completely, for a version it accepts updating from. Anything else: a manual download.
+        return "INSTALLER" if installer_ready(current_version, info) else "FULL"
 
     if (
         info.update_type == "app"

@@ -40,11 +40,14 @@ folder; if it keeps happening, attach that file to an issue on the
 2. Download the latest **`Surasura_vX.Y.zip`** from the
    [Releases page](https://github.com/SonicSandbox/surasura/releases).
 3. Extract it to a new folder and run `Surasura.exe`.
-4. If you're moving from an old version, copy your whole `User Files` folder and your `data`
-   folder into the new one. `User Files/<language>/` holds your known words (`KnownWord.json`),
-   your lists (`IgnoreList.txt`, `Blacklist.txt`, `GraduatedList.txt`), any frequency lists, and
+4. If you're moving from an old version, copy your whole `User Files` folder, your `data`
+   folder **and your `settings.json`** from the old folder into the new one, replacing the new
+   ones. `User Files/<language>/` holds your known words (`KnownWord.json`), your lists
+   (`IgnoreList.txt`, `Blacklist.txt`, `GraduatedList.txt`), any frequency lists, and
    `master_manifest.json` — **your library order**. Leave that one behind and your content is
-   shown in plain folder order again.
+   shown in plain folder order again. `settings.json` holds every setting you changed (your
+   language, rarity, Anki decks, …): the new folder comes with a fresh one, so without yours
+   every setting goes back to its default.
 
 ## Release Notes
 See the `RELEASE_*.md` files or the GitHub Releases page for what's new in each version.

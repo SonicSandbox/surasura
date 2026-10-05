@@ -441,6 +441,7 @@ class MasterDashboardApp:
         # Update state (populated by the background check; consumed by the footer indicator)
         self._update_info = None
         self._update_class = "NONE"
+        self._update_job = None            # "Update now" until the hand-over (or a cancel): _start_update
         self.skipped_version = ""          # "Skip this version": never offered again
         self.failed_update_version = ""    # its in-app update failed: a manual download from then on
         self.btn_offer_skipped = None      # Settings' way back from a skip (`_sync_skipped_row`)
@@ -583,7 +584,11 @@ class MasterDashboardApp:
         # would otherwise go online.
         if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
-        
+
+        # The note naming this install's data folder, for 3.0's first start (K100). Frozen builds only; off the
+        # window's thread, and a failure is only logged (write_install_note never raises).
+        threading.Thread(target=self._write_install_note, daemon=True).start()
+
         # Initial UI update for language
         self.update_ui_for_language()
         
@@ -1925,6 +1930,14 @@ class MasterDashboardApp:
             print(f"Error launching Immersion Architect: {e}")
             messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
 
+    @staticmethod
+    def _write_install_note():
+        try:
+            from app import path_utils
+            path_utils.write_install_note()
+        except Exception as e:
+            print(f"Install note: {e}")
+
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.
 
@@ -1944,8 +1957,8 @@ class MasterDashboardApp:
                 cls, info,
                 skipped_version=cur.get("skipped_version", ""),
                 auto_enabled=cur.get("auto_update_enabled", True),
-                can_apply=updater.can_auto_apply(),
-                failed_version=cur.get("failed_update_version", ""),
+                can_apply=updater.can_auto_apply(info),
+                failed_version=updater.failed_version(cur),
             )
             if cls == "NONE" or info is None:
                 return
@@ -1998,7 +2011,16 @@ class MasterDashboardApp:
         btn_row = ttk.Frame(wrapper)
         btn_row.pack(fill=tk.X)
 
-        if cls == "APP":
+        if cls == "INSTALLER":
+            btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
+                                 command=lambda: self._do_installer_update(dialog))
+            btn_now.pack(side=tk.LEFT)
+            ToolTip(btn_now, "Download Surasura's installer, close Surasura and start it.")
+            btn_skip = ttk.Button(btn_row, text="Skip this version",
+                                  command=lambda: self._skip_update(dialog))
+            btn_skip.pack(side=tk.LEFT, padx=(8, 0))
+            ToolTip(btn_skip, "Don't offer this version again.")
+        elif cls == "APP":
             btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
                                  command=lambda: self._do_auto_update(dialog))
             btn_now.pack(side=tk.LEFT)
@@ -2019,6 +2041,9 @@ class MasterDashboardApp:
     def _update_body(cls, info, failed_version=""):
         """What the update dialog says. A version whose in-app update already failed is a manual
         download for that reason — it isn't "a larger update", and saying so sent people looking."""
+        if cls == "INSTALLER":
+            return ("This version installs with its own installer: Surasura closes, the installer starts, "
+                    "and it brings your library, words and settings with it.")
         if cls == "APP":
             return ("This is a quick in-app update — it refreshes only the program code and "
                     "report templates (about 15–20 MB). Your words, data, settings, and file "
@@ -2070,66 +2095,247 @@ class MasterDashboardApp:
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
     def _do_auto_update(self, dialog):
-        """Download+verify the app package on a worker thread, then arm+restart on the UI thread."""
+        """"Update now": stage the app package (`updater.prepare_update`) while everything else of Surasura's that
+        holds this install's programs finishes (K75), then hand over to updater.exe."""
         dialog.destroy()
         info = self._update_info
         if not info:
             return
-        if not updater.can_auto_apply():
-            # No bundled updater.exe (e.g. running from source) — fall back to manual.
+        if not updater.can_auto_apply(info):
+            # No bundled updater.exe (e.g. running from source), or a file list naming a destination an in-place
+            # update may not write — fall back to manual.
             webbrowser.open(info.notes_url)
             return
+        self._start_update(info, updater.prepare_update)
 
+    def _do_installer_update(self, dialog):
+        """"Update now" on an installer release (3.0, S1.3-6): the same wait (K75), then the installer starts and the
+        app exits. Never reached by a 2.x release (`update_checker.installer_ready`)."""
+        dialog.destroy()
+        info = self._update_info
+        if not info:
+            return
+        from app.path_utils import is_frozen
+        if not is_frozen():
+            webbrowser.open(info.notes_url)
+            return
+        self._start_update(info, updater.prepare_installer)
+
+    def _start_update(self, info, stage):
+        """From "Update now" until the hand-over: the update lock held (the command line answers `update-staged`), no
+        new child process started (`updater.hold_children`), the download running on a worker meanwhile, and a
+        non-modal window naming whatever still runs, polled with `after`. Nothing is written for the helper until
+        the final callback (`_apply_and_restart`), so a cancel, a close or a crash leaves nothing armed."""
+        lock = updater.take_update_lock()
+        if lock is None:                              # this window's own update, or another install's
+            messagebox.showinfo("Update", "Another Surasura update is already in progress.")
+            return
+        updater.hold_children()
+        job = {"info": info, "lock": lock, "staged": None, "error": None, "done": False, "children": None,
+               "listing": False, "window": None, "rows": None, "after": None}
+        self._update_job = job
         self.status_var.set("Downloading update…")
 
         def worker():
             try:
-                marker = updater.prepare_update(info)
+                job["staged"] = stage(info)
             except Exception as e:
-                report = updater.write_report("download", e, to_version=info.version)
-                # Bind the error now: Python deletes `e` when this block ends, before the UI thread
-                # runs the callback (an unbound `e` raised NameError and no dialog ever showed).
-                def _show_error(err=e, report=report):
-                    messagebox.showerror(
-                        "Update",
-                        f"Couldn't download the update:\n{err}\n\n"
-                        "You can try again later, or update manually from the releases page."
-                        + self._update_report_note(report))
-                    self.status_var.set("Ready")
-                self.gui_queue.put(_show_error)
-                return
-            # Arming + closing the app must happen on the main (UI) thread.
-            self.gui_queue.put(lambda: self._apply_and_restart(marker))
+                job["error"] = e
+            job["done"] = True
+            # Back on the window's thread: a failure is said at once; a finished download may hand over now.
+            self.gui_queue.put(lambda: self._update_downloaded(job))
 
         threading.Thread(target=worker, daemon=True).start()
+        self._update_poll(job)
 
-    def _apply_and_restart(self, marker):
-        """Launch the detached helper, then close the app so it can swap files."""
+    def _update_downloaded(self, job):
+        if job.get("ended"):
+            # Cancelled (or closed) while it downloaded: its staging is discarded and the lock freed only now, so a
+            # new "Update now" can never stage into the folder this worker was still writing.
+            updater.discard_staged()
+            updater.drop_update_lock(job.get("lock"))
+            return
+        if job is not getattr(self, "_update_job", None):
+            return
+        err = job["error"]
+        if err is None:
+            self.status_var.set("Update downloaded.")
+            self._update_poll(job)
+            return
+        self._end_update(job)
+        report = updater.write_report("download", err, to_version=getattr(job["info"], "version", ""))
+        messagebox.showerror(
+            "Update",
+            f"Couldn't download the update:\n{err}\n\n"
+            "You can try again later, or update manually from the releases page."
+            + self._update_report_note(report))
+        self.status_var.set("Ready")
+
+    def _list_update_children(self, job):
+        """Worker: what still runs (`updater.running_children`), for the next poll — the listing never runs on the
+        window's thread while the update waits."""
         try:
-            updater.launch_helper(marker)
+            job["children"] = self._busy_threads() + updater.running_children(list(self.active_processes))
         except Exception as e:
+            print(f"Update: {e}")
+            job["children"] = []
+        job["listing"] = False
+
+    def _busy_threads(self):
+        """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        busy = []
+        for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
+            lock = getattr(self, attr, None)
+            if lock is not None and lock.locked():
+                busy.append({"pid": None, "name": name, "stop": None})
+        return busy
+
+    def _update_poll(self, job):
+        """Every 300 ms while the update waits: refresh the list of what it waits for (on a worker), show it, and hand
+        over once the download is done and nothing is left."""
+        if job is not getattr(self, "_update_job", None):
+            return
+        if job.get("after") is not None:
+            try:
+                self.root.after_cancel(job["after"])
+            except Exception:
+                pass
+            job["after"] = None
+        children = job["children"]
+        if children:
+            self._show_update_wait(job, children)
+        elif children is not None and job["done"] and job["error"] is None:
+            if self._apply_and_restart(job):
+                return
+        elif job["window"] is not None:
+            self._show_update_wait(job, children or [])
+        if not job["listing"]:
+            job["listing"] = True
+            threading.Thread(target=self._list_update_children, args=(job,), daemon=True).start()
+        try:
+            job["after"] = self.root.after(300, lambda: self._update_poll(job))
+        except Exception:
+            pass
+
+    def _show_update_wait(self, job, children):
+        """The waiting window: non-modal, one row per running item with *Stop it*, *Stop all and update now*, and
+        *Cancel* (Esc, or closing it, cancels too)."""
+        win = job["window"]
+        if win is None or not win.winfo_exists():
+            win = tk.Toplevel(self.root)
+            win.title("Update waiting")
+            win.configure(bg=BG_COLOR)
+            win.transient(self.root)
+            win.resizable(False, False)
+            win.bind("<Escape>", lambda e: self._cancel_update(job))
+            win.protocol("WM_DELETE_WINDOW", lambda: self._cancel_update(job))
+            wrapper = ttk.Frame(win, padding=10)
+            wrapper.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(wrapper, text=f"Surasura v{getattr(job['info'], 'version', '')} will install when these finish:",
+                      font=('Segoe UI', 11, 'bold'), foreground=SECONDARY_COLOR, background=BG_COLOR,
+                      wraplength=420, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 8))
+            job["list_frame"] = ttk.Frame(wrapper)
+            job["list_frame"].pack(fill=tk.X)
+            job["status"] = ttk.Label(wrapper, text="", foreground="#aaa", background=BG_COLOR)
+            job["status"].pack(anchor=tk.W, pady=(8, 8))
+            btn_row = ttk.Frame(wrapper)
+            btn_row.pack(fill=tk.X)
+            stop_all = ttk.Button(btn_row, text="Stop all and update now", style="Action.TButton",
+                                  command=lambda: self._stop_update_children(job, None))
+            stop_all.pack(side=tk.LEFT)
+            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura.")
+            cancel = ttk.Button(btn_row, text="Cancel", command=lambda: self._cancel_update(job))
+            cancel.pack(side=tk.RIGHT)
+            ToolTip(cancel, "Don't update now. Everything keeps running; the update is offered again later.")
+            job["window"], job["rows"] = win, None
+        pids = tuple(c["pid"] or c["name"] for c in children)
+        if job["rows"] != pids:
+            job["rows"] = pids
+            for w in job["list_frame"].winfo_children():
+                w.destroy()
+            if not children:
+                ttk.Label(job["list_frame"], text="Nothing left to wait for.", background=BG_COLOR,
+                          foreground=TEXT_COLOR).pack(anchor=tk.W)
+            for child in children:
+                row = ttk.Frame(job["list_frame"])
+                row.pack(fill=tk.X, pady=2)
+                ttk.Label(row, text=child["name"], background=BG_COLOR, foreground=TEXT_COLOR).pack(side=tk.LEFT)
+                if child["stop"] is None:              # this window's own work: it finishes by itself
+                    ttk.Label(row, text="finishing…", background=BG_COLOR, foreground="#888").pack(side=tk.RIGHT)
+                    continue
+                stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
+                stop.pack(side=tk.RIGHT)
+                ToolTip(stop, f"Close \"{child['name']}\" as if you closed it yourself (it finishes what it is doing; "
+                              "a task without a window is stopped). The update goes on once nothing else is running.")
+        job["status"].config(text="Downloading the update…" if not job["done"] else "The update is downloaded.")
+
+    def _stop_update_children(self, job, children):
+        """*Stop it* (one item) or *Stop all* (None: everything listed)."""
+        for child in (job["children"] or []) if children is None else children:
+            if child.get("stop") is None:
+                continue
+            try:
+                child["stop"]()
+            except Exception:
+                pass
+        job["children"] = None                         # ask again, now
+        self._update_poll(job)
+
+    def _cancel_update(self, job, start_held=True):
+        """Esc / Cancel / closing the waiting window: nothing armed, the lock released, children free to start (those
+        asked for meanwhile start now — but not when the dashboard itself is closing: `start_held=False`, they would
+        outlive it); the update is offered again later."""
+        if job is not getattr(self, "_update_job", None):
+            return
+        self._end_update(job, start_held)
+        if job.get("done"):
+            updater.discard_staged()               # else the download worker discards it when it ends
+        self.status_var.set("Update cancelled.")
+
+    def _end_update(self, job, start_held=True):
+        self._update_job = None
+        job["ended"] = True
+        if job.get("after") is not None:
+            try:
+                self.root.after_cancel(job["after"])
+            except Exception:
+                pass
+        win = job.get("window")
+        try:
+            if win is not None and win.winfo_exists():
+                win.destroy()
+        except Exception:
+            pass
+        if job.get("done"):
+            updater.drop_update_lock(job.get("lock"))  # else when the download worker ends (_update_downloaded)
+        updater.release_children(start=start_held)
+        if start_held:
+            try:
+                self._maybe_auto_generate()            # one held back meanwhile
+            except Exception:
+                pass
+
+    def _apply_and_restart(self, job):
+        """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the
+        marker and the helper's launch, then the exit. -> True when it handed over or gave up (the update is over);
+        False when something started meanwhile (the wait goes on)."""
+        if self._busy_threads() or not updater.can_update_now(list(self.active_processes)):
+            job["children"] = None
+            return False
+        self._write_install_note()
+        try:
+            updater.arm_and_launch(job["staged"])
+        except Exception as e:
+            self._end_update(job)
             report = updater.write_report("start updater", e,
                                           to_version=getattr(self._update_info, "version", ""))
             messagebox.showerror("Update", f"Couldn't start the updater:\n{e}"
                                  + self._update_report_note(report))
             self.status_var.set("Ready")
-            return
-        # Terminate child processes and wait briefly so their file handles are released before
-        # the helper swaps program files (the helper also waits on our PID, but children are
-        # separate processes it doesn't track).
-        if self.active_processes:
-            for proc in self.active_processes:
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                except Exception:
-                    pass
-            for proc in self.active_processes:
-                try:
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
-        self.root.destroy()
+            return True
+        self.root.destroy()                            # updater.exe waits on this process; the OS frees the lock
+        return True
 
     def reconcile_update_result(self):
         """On startup, surface the outcome of any update applied since last run."""
@@ -2155,7 +2361,7 @@ class MasterDashboardApp:
             ver = res.get("to") or ""
             if ver:
                 self.failed_update_version = ver
-                self.save_settings()
+                updater.record_failed_version(ver)     # this install's update_state.json, never settings.json
             reason = res.get("reason", "")
             report = updater.write_report("install", reason, to_version=ver,
                                           from_version=res.get("from") or "")
@@ -2490,7 +2696,7 @@ class MasterDashboardApp:
             self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
             self.var_anki_auto_generate.set(bool(settings.get("anki_auto_generate", False)))
             self.skipped_version = settings.get("skipped_version", "")
-            self.failed_update_version = settings.get("failed_update_version", "")
+            self.failed_update_version = updater.failed_version(settings)
             self._sync_skipped_row()
 
             # Load Logic Settings
@@ -2589,7 +2795,6 @@ class MasterDashboardApp:
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
                 "anki_auto_generate": self.var_anki_auto_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
-                "failed_update_version": getattr(self, "failed_update_version", ""),
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),
@@ -2757,7 +2962,13 @@ class MasterDashboardApp:
         on_exit: like on_complete, but run however the command ends — also when it could not be
         started at all (Generate's "one is running" must never stick).
         Whenever a command ends, an automatic Generate waiting for it gets its chance
-        (_maybe_auto_generate)."""
+        (_maybe_auto_generate).
+        While an update waits for Surasura's programs (K75) nothing new starts: the command is kept and starts if the
+        update is cancelled."""
+        if updater.defer_child(lambda: self.run_command_async(cmd, desc, capture_output, show_spinner, on_complete,
+                                                              clear_log, on_exit)):
+            self.status_var.set(f"{desc} will start if the update is cancelled.")
+            return
         
         # UI updates must be queued
         def _start_loading():
@@ -2831,7 +3042,8 @@ class MasterDashboardApp:
                     env=env
                 )
                 
-                # Register process for coordinated shutdown
+                # Register process for coordinated shutdown (and named for an update's wait, K75)
+                process.surasura_desc = desc
                 self.active_processes.append(process)
                 
                 if capture_output and process.stdout:
@@ -2876,6 +3088,9 @@ class MasterDashboardApp:
 
     def on_closing(self):
         """Coordinated shutdown: terminate all active sub-processes"""
+        job = getattr(self, "_update_job", None)
+        if job is not None:
+            self._cancel_update(job, start_held=False)   # closing while an update waits: nothing armed, nothing started
         # The speech helper is a daemon thread, so it would die with the process anyway — but
         # closing it here releases the port immediately, so relaunching the app doesn't have to
         # fall through to the next one.
@@ -2946,6 +3161,8 @@ class MasterDashboardApp:
                 return
         except Exception:
             return
+        if updater.children_held():
+            return                      # an update waits (K75): no Anki write may begin
         if not self._anki_sync_lock.acquire(blocking=False):
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now
@@ -3016,6 +3233,8 @@ class MasterDashboardApp:
         """
         if os.environ.get("SURASURA_NO_ANKI_SYNC") or not self.var_enable_junban.get():
             return
+        if updater.children_held():
+            return                      # an update waits for Surasura's programs (K75)
         import time
         now = time.monotonic()
         if not force and now - self._last_junban_auto < 300:
@@ -3086,6 +3305,8 @@ class MasterDashboardApp:
             return False                # for the other language: it runs once that one is open again
         if self._generate_running is not None:
             return False                # a Generate is running (or starting): its end asks again
+        if updater.children_held():
+            return False                # an update waits (K75): asked again if it is cancelled
         try:
             if any(proc.poll() is None for proc in list(self.active_processes)):
                 return False

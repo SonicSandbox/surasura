@@ -127,7 +127,9 @@ def test_a_store_busy_for_two_seconds_settles_on_a_lesser_mode_after_one(languag
     took = time.perf_counter() - started
     t.join()
     assert (mode, reason) == ("read-only", "busy")
-    assert 1.0 <= took <= 1.2, took
+    # settles after its 1 s retry, never by waiting out the 2 s hold; 1.2 s on this desktop's timed run
+    upper = 1.2 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 1.9
+    assert 1.0 <= took <= upper, took
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

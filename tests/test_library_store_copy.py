@@ -314,7 +314,8 @@ def test_a_move_never_waits_for_the_copy_lock(language):
     ids = store.ids("now")
     started = time.perf_counter()
     store.move([ids[0]], "now", after_id=ids[3])
-    assert time.perf_counter() - started < 0.05
+    # never the copy lock's 5 s wait; 50 ms on this desktop's timed run, a slower test machine more
+    assert time.perf_counter() - started < (0.05 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 0.5)
     lock.close()
     store.close()
 

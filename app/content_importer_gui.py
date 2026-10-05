@@ -7,6 +7,7 @@ import json
 import subprocess
 import threading
 import queue
+from contextlib import contextmanager
 import time
 from datetime import datetime
 
@@ -34,6 +35,7 @@ BATCH_STATUS_EVERY = 100
 # thread, the idle export after this window's last change, and how long a build at open holds changes.
 STORE_POLL_S = 0.5
 STORE_DRAIN_MS = 100
+BIG_BLOCK = 1000             # items: a command over this many runs behind a progress mark (§6.12)
 STORE_IDLE_MS = 2000
 STORE_BUILD_WAIT = 30.0
 
@@ -241,6 +243,11 @@ class ContentImporterApp:
             # the worker (S1.1's smoothness rows 1 and 4: never on this thread, and once).
             self.refresh_file_list()
             self.status_var.set("Ready")
+        elif self._store_unsettled():
+            # The library's database was busy at the first look: draw what the copy says, write nothing, and let
+            # the worker take over once the check settles (store mode then redraws from the store).
+            self.refresh_file_list()
+            self.status_var.set("Opening your library…")
         else:
             self.refresh_file_list(sync=(mode == "json"))  # JSON mode: 2.4's open (files added while closed)
             self.status_var.set("Ready")
@@ -268,7 +275,9 @@ class ContentImporterApp:
     def _refresh_from_focus(self):
         try:
             if self._store_mode() == "store":
-                self._request_sync()                    # the walk on the worker; the tree follows its result
+                if self.__dict__.get("_open_walked", True):
+                    self._request_sync()                # the walk on the worker; the tree follows its result
+                # else the open's own walk is still running: the window's first focus adds no second one
                 self.refresh_file_list()                # from the store; rebuilt only if its versions moved
             else:
                 self.refresh_file_list(force=True, sync=True)
@@ -306,10 +315,22 @@ class ContentImporterApp:
         except Exception:
             return None
 
+    def _store_unsettled(self):
+        """The first check found the database busy and hasn't settled yet: its "json" is a placeholder, not JSON
+        mode — a store may well exist, so neither 2.4's writes nor a build may run on it."""
+        try:
+            opener = self._opener()
+            return opener.reason == "not checked" and getattr(opener, "_worker", None) is not None
+        except Exception:
+            return False
+
     def _changes_blocked(self):
-        """True (and says why on the status line) while the library can't take a change: read-only mode, or the
-        store being built at open."""
+        """True (and says why on the status line) while the library can't take a change: read-only mode, the
+        store being built at open, or the library's first check still waiting on a busy database."""
         mode = self._store_mode()
+        if mode == "json" and self._store_unsettled():
+            self.status_var.set("Your library is busy for a moment — try again.")
+            return True
         if mode == "read-only":
             self.status_var.set("Your library can't be changed until it's repaired (see the notice above).")
             self._update_store_banner()
@@ -357,11 +378,21 @@ class ContentImporterApp:
         self._worker_wake = threading.Event()
         self._worker_stop = threading.Event()
         self._worker_results = queue.Queue()
+        self._open_walked = False                        # until the open's walk reports (S1.1 smoothness row 4)
+        self._store_work()                               # made here, before the worker can race to make it
         self._worker_wake.set()                          # the first poll at once: the open's walk waits for nothing
         self._worker = threading.Thread(target=self._store_worker, daemon=True)
         self._worker.start()
         self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
         self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._worker_stop.set(), add="+")
+
+    def _store_work(self):
+        """The lock a disk sync and a command's file work + commit take in turn (Undo-Remove's put-back, Remove's
+        trash, Undo-Add's trash): the worker's poll must never sync a file the window is moving mid-command."""
+        lock = self.__dict__.get("_store_work_lock")
+        if lock is None:
+            lock = self._store_work_lock = threading.RLock()
+        return lock
 
     def _request_sync(self):
         """A disk sync on the worker (open, focus, Refresh, the four flows that add files without an Add). With no
@@ -386,13 +417,17 @@ class ContentImporterApp:
         (`changed_since`), and hand the copy to the helper when someone else rewrote it. Never touches Tk."""
         self._sync_wanted = True                         # the open's one walk (S1.1 smoothness row 4)
         store = poll = token = None
-        handed = None
+        handed = posted = None
         while not self._worker_stop.is_set():
             self._worker_wake.wait(STORE_POLL_S)
             self._worker_wake.clear()
             try:
                 if self._opener().check() != "store":
                     store = poll = token = None
+                    banner = (self._opener().mode, self._opener().reason, None)
+                    if banner != posted:
+                        posted = banner
+                        self._worker_results.put(("banner", banner, 0.0))
                     continue
                 if store is None:
                     store = self._opener().handle()
@@ -402,15 +437,20 @@ class ContentImporterApp:
                     # The tree was drawn before this token: a change made in between is checked against the
                     # versions it was drawn at (the fast path redraws only if they moved).
                     self._worker_results.put(("check", None, 0.0))
-                sync, self._sync_wanted = self._sync_wanted, False
-                changed = poll.check()
-                if sync or changed:
-                    t0 = time.perf_counter()
-                    summary = library_store.sync_for_window(store)
-                    self._worker_results.put(("synced", summary, time.perf_counter() - t0))
+                with self._store_work():
+                    sync, self._sync_wanted = self._sync_wanted, False
+                    changed = poll.check()
+                    if sync or changed:
+                        t0 = time.perf_counter()
+                        summary = library_store.sync_for_window(store)
+                        self._worker_results.put(("synced", summary, time.perf_counter() - t0))
                 if store.changed_since(token):
                     self._worker_results.put(("changed", None, 0.0))
                 token = store.token()
+                banner = (self._opener().mode, self._opener().reason, store.meta().get("reimport_pending"))
+                if banner != posted:
+                    posted = banner
+                    self._worker_results.put(("banner", banner, 0.0))
                 copy = library_store._stat(library_store.manifest_path(self.user_files_root))
                 seen = library_store._stat_str(copy) if copy else ""
                 if seen and seen != store.meta().get("last_export_stat") and seen != handed:
@@ -418,6 +458,7 @@ class ContentImporterApp:
                     library_store.spawn_maintain(self.language)
             except Exception as e:
                 self._worker_results.put(("error", str(e), 0.0))
+                self._sync_wanted = True                 # asked again at the next poll, not left for a focus
                 store = poll = token = None
 
     def _drain_store_worker(self):
@@ -428,10 +469,15 @@ class ContentImporterApp:
         except Exception:
             return
         refresh = check = False
+        banner = None
         try:
             while True:
                 kind, value, _took = self._worker_results.get_nowait()
-                if kind == "check":
+                if kind in ("synced", "error"):
+                    self._open_walked = True
+                if kind == "banner":
+                    banner = value
+                elif kind == "check":
                     check = True
                 elif kind == "synced" and value:
                     refresh = True
@@ -451,13 +497,43 @@ class ContentImporterApp:
                 refresh = True
             else:
                 self.status_var.set("Your library order is kept in its file for now (the store couldn't be made).")
-        self._update_store_banner()
+        if banner is not None:
+            self._apply_store_banner(*banner)
+        if (refresh or check) and self.__dict__.get("_drag_item"):
+            # A drag is under way: a redraw now would drop its selection. Keep the news for the next drain.
+            self._redraw_waiting = (self.__dict__.get("_redraw_waiting") or (False, False))
+            self._redraw_waiting = (self._redraw_waiting[0] or refresh, self._redraw_waiting[1] or check)
+            refresh = check = False
+        elif not self.__dict__.get("_drag_item") and self.__dict__.get("_redraw_waiting"):
+            waiting, self._redraw_waiting = self._redraw_waiting, None
+            refresh, check = refresh or waiting[0], check or waiting[1]
         if refresh or check:
             try:
                 self.refresh_file_list(force=refresh)
             except Exception:
                 pass
         self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
+
+    @contextmanager
+    def _busy_mark(self, count, text):
+        """A block of over BIG_BLOCK items (or Reset's walk) runs behind a progress mark: the busy cursor and a
+        status line, drawn before the command starts (R-6: commands stay on this thread; §6.12)."""
+        if count <= BIG_BLOCK:
+            yield
+            return
+        try:
+            self.root.config(cursor="watch")
+            self.status_var.set(text)
+            self.root.update_idletasks()
+        except Exception:
+            pass
+        try:
+            yield
+        finally:
+            try:
+                self.root.config(cursor="")
+            except Exception:
+                pass
 
     def _ids_for(self, store, paths):
         """Store ids for tree values: absolute file paths, or `GROUP:<folder>` (that folder's rows in this tab)."""
@@ -497,7 +573,7 @@ class ContentImporterApp:
         self._idle_export_job = None
         store = self._store()
         try:
-            if store is not None and store.export_due():
+            if store is not None and library_store.maintain_due(store)[0]:
                 library_store.spawn_maintain(self.language)
         except Exception:
             pass
@@ -516,24 +592,33 @@ class ContentImporterApp:
             pass
 
     def _update_store_banner(self):
-        """The notice above the library: read-only mode, or the size guard's question (Q4-8)."""
-        banner = self.__dict__.get("store_banner")
-        if banner is None:
+        """The notice above the library, checked now (after an action; the worker posts it otherwise)."""
+        if self.__dict__.get("store_banner") is None:
             return
         mode = self._store_mode()
-        text, ask = "", False
-        if mode == "read-only":
-            reason = getattr(self._opener(), "reason", "") or ""
-            text = ("This library was saved by a newer Surasura: it's shown, but can't be changed here."
-                    if "newer" in reason else
-                    "Your library can't be changed until it's repaired: use Repair on the dashboard's notice. "
-                    "Generate still works.")
-        elif mode == "store":
+        pending = None
+        if mode == "store":
             store = self._store()
             try:
                 pending = store.meta().get("reimport_pending") if store is not None else None
             except Exception:
                 pending = None
+        self._apply_store_banner(mode, getattr(self._opener(), "reason", "") or "", pending)
+
+    def _apply_store_banner(self, mode, reason, pending):
+        """Show the notice for (mode, reason, a waiting size-guard question): read-only mode, or the question
+        (Q4-8). The worker posts this state when it changes, so the window never probes the database to draw it."""
+        banner = self.__dict__.get("store_banner")
+        if banner is None:
+            return
+        text, ask = "", False
+        if mode == "read-only" and reason != "busy":
+            reason = reason or ""
+            text = ("This library was saved by a newer Surasura: it's shown, but can't be changed here."
+                    if "newer" in reason else
+                    "Your library can't be changed until it's repaired: use Repair on the dashboard's notice. "
+                    "Generate still works.")
+        elif mode == "store":
             if pending:
                 try:
                     count = json.loads(pending).get("count", "")
@@ -1194,10 +1279,11 @@ class ContentImporterApp:
             if not ids or not anchor:
                 return
             try:
-                if position == "before":
-                    change = store.move(ids, tier, before_id=anchor[0])
-                else:
-                    change = store.move(ids, tier, after_id=anchor[-1])
+                with self._busy_mark(len(ids), f"Moving {len(ids):,} items…"):
+                    if position == "before":
+                        change = store.move(ids, tier, before_id=anchor[0])
+                    else:
+                        change = store.move(ids, tier, after_id=anchor[-1])
             except Exception as e:
                 return self._store_failed(e)
             self._store_did(change, "Move")
@@ -1559,8 +1645,8 @@ class ContentImporterApp:
         if self._store() is not None:
             self._request_sync()
             return
-        if self._store_mode() == "read-only":
-            return                                       # nothing writes the copy in read-only mode
+        if self._store_mode() == "read-only" or self._store_unsettled():
+            return                                       # nothing writes the copy in read-only mode, or unsettled
         manifest = self.load_manifest()
         marker_cache = {}   # one producer-marker read per directory across the whole walk
         schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
@@ -1666,38 +1752,24 @@ class ContentImporterApp:
         record = changes.pop()
         change = record["change"]
         notes = []
+        undo_files = []                                  # the file work, as (moved to, moved from) to reverse
         try:
-            if change.kind in ("insert", "insert_at"):
-                ok, _skipped = store.undo_check(change)
-                rows = {i: store.item(i) for i in ok}
-                trashed = {}
-                for item_id, row in rows.items():
-                    if row is not None:
-                        moved = library_store.trash_file(self.data_root, row["rel_path"])
-                        if moved:
-                            trashed[item_id] = moved
-                out = store.undo(change, trashed_paths=trashed)
-            elif change.kind == "remove":
-                rel_paths = {}
-                for row in store.trash_rows(change.trash_ids):
-                    if row["restored_at"] or not row["trashed_path"]:
-                        continue
-                    back, note = library_store.put_back(self.data_root, row["trashed_path"], row["rel_path"])
-                    if back:
-                        rel_paths[row["id"]] = back
-                        for sidecar_from, sidecar_to in record.get("sidecars", {}).get(row["rel_path"], ()):
-                            try:
-                                if os.path.isfile(sidecar_to) and not os.path.exists(sidecar_from):
-                                    os.rename(sidecar_to, sidecar_from)
-                            except OSError:
-                                pass
-                    if note:
-                        notes.append(note)
-                out = store.undo(change, rel_paths=rel_paths)
-            else:
-                out = store.undo(change)
-                if record.get("graduated"):
-                    library_store.strip_graduated_block(self.user_files_root, self.language, record["graduated"])
+            with self._store_work():
+                try:
+                    out = self._undo_with_files(store, record, change, notes, undo_files)
+                except BaseException:
+                    for there, here in reversed(undo_files):   # the commit failed: the files go back
+                        try:
+                            os.rename(there, here)
+                        except OSError:
+                            pass
+                    raise
+            if out is not None and change.kind not in ("insert", "insert_at", "remove") and record.get("graduated"):
+                restored = {it["id"] for it in out.items}
+                rels = {store.item(i)["rel_path"] for i in restored if store.item(i) is not None}
+                strip = [r for r in record["graduated"] if r in rels]
+                if strip:
+                    library_store.strip_graduated_block(self.user_files_root, self.language, strip)
         except library_store.UndoRefused as e:
             changes.clear()
             notes.append(str(e))
@@ -1713,6 +1785,44 @@ class ContentImporterApp:
         self._schedule_idle_export()
         self.refresh_file_list(force=True)
         self.status_var.set(f"Undid: {record['label']}" + (f" ({'; '.join(notes)})" if notes else ""))
+
+    def _undo_with_files(self, store, record, change, notes, undo_files):
+        """Undo's file work and its commit (under `_store_work`): Undo-Add sends the rows' files to `.trash`,
+        Undo-Remove puts them back (never over a file); `undo_files` collects each move so a failed commit can
+        reverse it."""
+        if change.kind in ("insert", "insert_at"):
+            ok, _skipped = store.undo_check(change)
+            trashed = {}
+            for item_id in ok:
+                row = store.item(item_id)
+                if row is not None:
+                    moved = library_store.trash_file(self.data_root, row["rel_path"])
+                    if moved:
+                        trashed[item_id] = moved
+                        undo_files.append((os.path.join(self.data_root, *moved.split("/")),
+                                           os.path.join(self.data_root, *row["rel_path"].split("/"))))
+            return store.undo(change, trashed_paths=trashed)
+        if change.kind == "remove":
+            rel_paths = {}
+            for row in store.trash_rows(change.trash_ids):
+                if row["restored_at"] or not row["trashed_path"]:
+                    continue
+                back, note = library_store.put_back(self.data_root, row["trashed_path"], row["rel_path"])
+                if back:
+                    rel_paths[row["id"]] = back
+                    undo_files.append((os.path.join(self.data_root, *back.split("/")),
+                                       os.path.join(self.data_root, *row["trashed_path"].split("/"))))
+                    for sidecar_from, sidecar_to in record.get("sidecars", {}).get(row["rel_path"], ()):
+                        try:
+                            if os.path.isfile(sidecar_to) and not os.path.exists(sidecar_from):
+                                os.rename(sidecar_to, sidecar_from)
+                                undo_files.append((sidecar_from, sidecar_to))
+                        except OSError:
+                            pass
+                if note:
+                    notes.append(note)
+            return store.undo(change, rel_paths=rel_paths)
+        return store.undo(change)
 
     # --- Tier tabs (ttk.Notebook) helpers -------------------------------------------------------- #
     def _make_tier_tree(self, parent):
@@ -1972,7 +2082,7 @@ class ContentImporterApp:
                 except OSError:
                     pass
             self._store_failed(e)
-            return None, ""
+            return False, ""
         note = ""
         if change is not None and change.existing:
             where = sorted({library_store.TIER_LABELS.get(t, t) for _p, _i, t in change.existing})
@@ -2062,6 +2172,8 @@ class ContentImporterApp:
             note = ""
             if store is not None and store_files:
                 _change, note = self._insert_in_store(store, store_files, started_at, "Add Files")
+                if _change is False:
+                    return                                       # its copies went to the trash; the status says why
             elif added_paths:
                 self.set_undo_action("add", "Add Files", {"paths": added_paths})
 
@@ -2242,7 +2354,8 @@ class ContentImporterApp:
                 return
 
             if store is not None:
-                self._insert_in_store(store, added_paths, started_at, "Add Folder")
+                if self._insert_in_store(store, added_paths, started_at, "Add Folder")[0] is False:
+                    return                                       # its copies went to the trash; the status says why
             else:
                 self.add_to_manifest(dest, self.target_folder_var.get())
             # Undo removes exactly what we added: for a merge, only the new files (preserving
@@ -2526,7 +2639,8 @@ class ContentImporterApp:
                         if rel:
                             graduated.append(rel)
                             words += n
-            change = store.set_tier(ids, dest_tier, check=check)
+            with self._busy_mark(len(ids), f"Moving {len(ids):,} items…"):
+                change = store.set_tier(ids, dest_tier, check=check)
         except Exception as e:
             if graduated:
                 library_store.strip_graduated_block(self.user_files_root, self.language, graduated)
@@ -2838,6 +2952,8 @@ class ContentImporterApp:
         total = len(pairs)
         self.root.config(cursor="watch")
         self.root.update_idletasks()
+        work = self._store_work()
+        work.acquire()
         try:
             for n, (item_id, path) in enumerate(pairs, 1):
                 self._batch_progress("Removing", n, total)
@@ -2866,6 +2982,7 @@ class ContentImporterApp:
                         pass
                 return self._store_failed(e)
         finally:
+            work.release()
             self.root.config(cursor="")
         self._store_did(change, "Remove Items", sidecars=sidecars)
         self.refresh_file_list(force=True)
@@ -3020,13 +3137,15 @@ class ContentImporterApp:
         self._last_drop_target = target_item
 
     def on_drag_stop(self, event):
+        # The drag is over whatever happens below (the worker's redraws wait while one is under way).
+        drag_item, self._drag_item = self._drag_item, None
         # Clean up visuals
         if hasattr(self, '_drag_highlight') and self._drag_highlight:
             self.tree.item(self._drag_highlight, tags=())
             self._drag_highlight = None
             
         target_item = self.tree.identify_row(event.y)
-        if not target_item or not self._drag_item: return
+        if not target_item or not drag_item: return
         
         # Resolve what we are moving (could be multiple selected items)
         selected_ids = self.tree.selection()
@@ -3162,7 +3281,8 @@ class ContentImporterApp:
                     "disk moves. You can undo it.\n\nProceed?"):
                 return
             try:
-                change = store.reset_order()
+                with self._busy_mark(BIG_BLOCK + 1, "Resetting your library's order…"):
+                    change = store.reset_order()
             except Exception as e:
                 return self._store_failed(e)
             self._store_did(change, "Reset Library")

@@ -503,3 +503,66 @@ def test_a_returning_2_4_0s_big_change_waits_for_the_user(language):
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
     with ls.open_store(language, data_dir, user_files_dir) as store:
         assert store.meta().get("reimport_pending")
+
+
+# --- L2.1 review (reviews/L2.1-adversary.md, L2.1-intent-keeper.md) ---------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_no_helper_is_spawned_while_a_size_guard_question_waits(language):
+    """Adversary #5: while the user hasn't answered the size guard, the helper could only exit 4 — every trigger
+    spawning it would start an exe per focus for nothing."""
+    data_dir, user_files_dir, _doc = _store_library(language, shows=6, episodes=6)
+    copy = read_doc(user_files_dir)
+    copy["schedule"]["PHASE_3_LATER"].reverse()
+    write_manifest(user_files_dir, copy)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    with ls.open_store(language, data_dir, user_files_dir) as store:
+        ids = store.ids("now")
+        store.move([ids[0]], "now", after_id=ids[-1])             # a change is due…
+        assert store.export_due()
+        assert ls.maintain_due(store)[0] is False                  # …but nothing to spawn until the answer
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_read_only_mode_gives_every_reader_generates_list(language):
+    """Adversary #6 / intent #10: in read-only mode the journey check, the indexer and the readers take the list
+    Generate takes — the copy plus a file dropped in since — so the ✓ and Junban's check can match."""
+    from app import analyzer, indexer
+    data_dir, user_files_dir, _doc = _store_library(language)
+    ls.mark_damaged(ls.library_db_path(language, data_dir), "test")
+    rel = f"HighPriority/{names(language)[49]}.srt"
+    touch(data_dir, rel, names(language)[50])
+    generate = ls.read_only_schedule(language, data_dir, user_files_dir)
+    schedule, _v = analyzer.read_library_schedule(language)
+    assert schedule == generate
+    listed = [os.path.relpath(p, data_dir).replace("\\", "/") for p, *_ in
+              analyzer.resolve_found_files(language, verbose=False)]
+    assert rel in listed
+    assert os.path.normpath(os.path.join(data_dir, rel)) in         [os.path.normpath(p) for p in indexer._content_files(data_dir, language)]
+
+
+def test_the_indexer_runs_for_the_language_it_was_checked_for():
+    """Adversary #7: a language switch while the check runs must not index the other language."""
+    from app.main import MasterDashboardApp
+    app = MagicMock()
+    app.var_language.get.return_value = "ja"                      # switched since the check asked about zh
+    MasterDashboardApp._index_checked(app, True, "zh")
+    assert app.run_command_async.call_args[0][0] == ["indexer.py", "--language", "zh"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_outside_change_taken_in_is_told_quietly_once(dashboard, language):
+    """Intent #1 (D27 / Q4-8): a small outside edit of the order file is applied "and tells you quietly": the
+    dashboard's status line says so once, and the note is cleared."""
+    data_dir, user_files_dir, _doc = _store_library(language, shows=6, episodes=6)
+    copy = read_doc(user_files_dir)
+    now = copy["schedule"]["PHASE_1_NOW"]
+    now.insert(0, now.pop())                                     # one row moved: under the 5 % guard
+    write_manifest(user_files_dir, copy)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    app = dashboard(language)
+    app._update_library_notice()
+    assert "changed outside Surasura" in app.status_var.get(), app.status_var.get()
+    app.status_var.set("Ready")
+    app._update_library_notice()
+    assert app.status_var.get() == "Ready", "told once"

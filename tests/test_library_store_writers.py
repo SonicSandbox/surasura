@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import threading
+import types
 import time
 from unittest.mock import patch
 
@@ -486,3 +487,238 @@ def test_a_drag_in_store_mode_is_one_store_command_and_one_redraw(window, size, 
     print(f"\n[store mode] drag at {size}: " + ", ".join(f"{t} ({n} rows) p50 {s * 1000:.0f} ms"
                                                       for t, (n, s) in timings.items()))
     assert timings["now"][1] < (0.1 if BENCH else 1.0)
+
+
+# --- L2.1 review (reviews/L2.1-adversary.md): Undo against the worker, failures, the banner, the first check --- #
+
+def _graduated_window(window, language, monkeypatch, timers=False):
+    data_dir, user_files_dir, _doc = _store_library(language)
+    if timers:
+        monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)))
+    return data_dir, user_files_dir, app
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_remove_holds_the_workers_poll_off_its_put_back(window, language, monkeypatch):
+    """Adversary #1: Undo-Remove puts a file back into a folder the worker polls every 0.5 s; a sync in between
+    would list the returned file as a new row and make the restore conflict (every later Undo stuck). The file
+    work and the commit hold the worker off: the item comes back in its place, once."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch, timers=True)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    victim = os.path.join(data_dir, *before[1].split("/"))
+    with patch.object(app, "_resolve_items_to_paths", return_value=[victim]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()
+    assert not os.path.exists(victim)
+    real = ls.put_back
+
+    def slow_put_back(*a, **k):
+        out = real(*a, **k)
+        time.sleep(1.2)                                  # two of the worker's polls pass mid-command
+        return out
+    monkeypatch.setattr(ls, "put_back", slow_put_back)
+    app.undo_last_action()
+    assert "Undid" in app.status_var.get(), app.status_var.get()
+    assert os.path.exists(victim)
+    assert _order(app, "now") == before, "the item is back in its place, listed once"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_undo_puts_its_files_back_and_can_be_tried_again(window, language, monkeypatch):
+    """Adversary #1: Undo-Remove's commit fails (busy) → the put-back files return to `.trash`, the record stays,
+    and the next Undo works; Undo-Add's file work failing partway → the files already trashed come back."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    before = _order(app, "now")
+    victims = [os.path.join(data_dir, *p.split("/")) for p in before[:2]]
+    with patch.object(app, "_resolve_items_to_paths", return_value=victims), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.remove_files()
+    with patch.object(ls.Store, "undo", side_effect=ls.StoreBusy("held")):
+        app.undo_last_action()
+    assert not any(os.path.exists(v) for v in victims), "the put-back files went back to the trash"
+    app.undo_last_action()
+    assert all(os.path.exists(v) for v in victims) and _order(app, "now") == before
+
+    pick = [touch(os.path.join(os.environ["SURASURA_TEST_ROOT"], "incoming"), f"{names(language)[i]}.txt")
+            for i in (44, 45)]
+    with patch("app.content_importer_gui.filedialog.askopenfilenames", return_value=pick):
+        app.add_files()
+    added = [os.path.join(data_dir, "HighPriority", os.path.basename(p)) for p in pick]
+    assert all(os.path.exists(a) for a in added)
+    calls = []
+    real = ls.trash_file
+
+    def fail_second(*a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("held open by a reader")
+        return real(*a, **k)
+    monkeypatch.setattr(ls, "trash_file", fail_second)
+    app.undo_last_action()
+    assert all(os.path.exists(a) for a in added), "the file already trashed came back"
+    monkeypatch.setattr(ls, "trash_file", real)
+    app.undo_last_action()
+    assert not any(os.path.exists(a) for a in added)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_graduate_strips_only_the_blocks_of_what_it_put_back(window, language, monkeypatch, tmp_path):
+    """Adversary #2: graduate A and B from NOW; B is moved by another window; Undo puts A back and strips A's
+    GraduatedList block only — B stays graduated with its words listed."""
+    data_dir, user_files_dir, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    now = _order(app, "now")
+    a, b = (os.path.join(data_dir, *p.split("/")) for p in now[:2])
+    grad = os.path.join(user_files_dir, "GraduatedList.txt")
+    with open(grad, "w", encoding="utf-8") as f:
+        f.write("# Graduated Words\n")
+    index = {os.path.basename(a): [names(language)[46]], os.path.basename(b): [names(language)[47]]}
+    with patch.object(app, "_resolve_items_to_paths", return_value=[a, b]), \
+         patch.object(app.tree, "selection", return_value=("row",)), \
+         patch.object(app, "_load_graduate_index", return_value=index):
+        app.graduate_content()
+    store = app._store()
+    b_id = store.item_id(now[1])
+    _other_process(language, f"store.set_tier([{b_id}], 'goal')\nstore.set_tier([{b_id}], 'graduated')\n")
+    app.undo_last_action()
+    text = open(grad, encoding="utf-8").read()
+    assert now[0] not in text and now[1] in text, text
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_add_says_so_and_never_reports_success(window, language, monkeypatch):
+    """Adversary #3: the store's insert fails (busy): the copies go to the trash and the window says nothing was
+    added — never "Successfully added"."""
+    data_dir, _uf, app = _graduated_window(window, language, monkeypatch)
+    app.target_folder_var.set("HighPriority")
+    pick = touch(os.path.join(os.environ["SURASURA_TEST_ROOT"], "incoming"), f"{names(language)[48]}.txt")
+    shown = []
+    with patch("app.content_importer_gui.filedialog.askopenfilenames", return_value=[pick]), \
+         patch.object(ls.Store, "insert", side_effect=ls.StoreBusy("held")), \
+         patch("app.content_importer_gui.messagebox.showinfo", side_effect=lambda *a, **k: shown.append(a)):
+        app.add_files()
+    assert shown == [], shown
+    assert "nothing was changed" in app.status_var.get()
+    assert not os.path.exists(os.path.join(data_dir, "HighPriority", os.path.basename(pick)))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_idle_window_never_opens_the_database_on_its_thread(window, language, monkeypatch):
+    """Adversary #4: the banner's state comes from the worker; an idle window's drain (every 100 ms) probes
+    nothing on the window's thread."""
+    _data, _uf, app = _graduated_window(window, language, monkeypatch, timers=True)
+    _pump(app, lambda: False, timeout=1.0)                       # open settles
+    probes = []
+    real = ls._probe
+    monkeypatch.setattr(ls, "_probe", lambda *a, **k: (probes.append(threading.current_thread()), real(*a, **k))[1])
+    _pump(app, lambda: False, timeout=1.5)
+    assert [t for t in probes if t is threading.main_thread()] == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_sync_is_asked_again_at_the_next_poll(window, language, monkeypatch):
+    """Adversary #8: a sync that fails (a timeout at 20k+) is retried by the next poll, not left for a focus."""
+    calls = []
+
+    def flaky(store):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("sync timed out")
+        return None
+    _data, _uf, app = _graduated_window(window, language, monkeypatch, timers=True)
+    _pump(app, lambda: False, timeout=0.6)
+    monkeypatch.setattr(ls, "sync_for_window", flaky)
+    app._request_sync()                                          # fails…
+    assert _pump(app, lambda: len(calls) >= 2, timeout=3.0), calls   # …and the next poll walks again
+
+
+def test_a_block_over_a_thousand_items_moves_behind_a_progress_mark(window, monkeypatch):
+    """Adversary #9 / intent #4 (§6.12): a move of over 1,000 items shows the busy cursor before the command."""
+    _big_library("ja", 3000)
+    app = window("ja")
+    app.target_folder_var.set("GoalContent")
+    app.tree = app.tier_trees["GoalContent"]
+    app.refresh_file_list(force=True)
+    data_dir = app.data_root
+    rows = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "goal")]
+    cursors = []
+    real = ls.Store.move
+    monkeypatch.setattr(ls.Store, "move", lambda self, *a, **k: (cursors.append(str(app.root.cget("cursor"))),
+                                                                real(self, *a, **k))[1])
+    app.move_manifest_items_relative(rows[:1200], rows[-1], "after")
+    app.move_manifest_items_relative(rows[1200:1201], rows[-1], "after")
+    assert cursors == ["watch", ""], cursors
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_busy_first_check_never_runs_the_json_code_on_a_store(window, language, monkeypatch, store_helper_spawns):
+    """Adversary #10: the database is busy at the window's first look; until the check settles the window
+    neither writes the copy (2.4's open sync), nor starts a build, nor takes a change (2.4's Graduate would move
+    files) — then it settles into store mode."""
+    data_dir, user_files_dir, _doc = _store_library(language)
+    copy = read_doc(user_files_dir)
+    before = _snapshot(data_dir)
+    real = ls.check_mode
+
+    def busy_first(language_, data_dir_, busy_wait=ls.BUSY_AT_OPEN):
+        if busy_wait == 0.0 and not getattr(busy_first, "settled", False):
+            return "read-only", "busy"
+        if busy_wait != 0.0:
+            time.sleep(0.8)
+            busy_first.settled = True
+        return real(language_, data_dir_, busy_wait=busy_wait)
+    monkeypatch.setattr(ls, "check_mode", busy_first)
+    app = window(language)
+    app.root.update()
+    assert app._store_unsettled()
+    first = os.path.join(data_dir, *_tree_paths(app)[0].split("/")) if _tree_paths(app) else None
+    app.target_folder_var.set("HighPriority")
+    with patch.object(app, "_resolve_items_to_paths", return_value=[first]), \
+         patch.object(app.tree, "selection", return_value=("row",)):
+        app.graduate_content()
+    app._sync_disk_to_manifest()
+    assert "busy" in app.status_var.get()
+    assert read_doc(user_files_dir) == copy and _snapshot(data_dir) == before
+    assert store_helper_spawns == []
+    assert _pump(app, lambda: app._store_mode() == "store", timeout=5.0)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_windows_first_focus_during_the_opens_walk_adds_no_second_walk(window, language, monkeypatch):
+    """Smoothness #5 (S1.1 row 4): on a shown window the first FocusIn comes after the worker started; while the
+    open's walk runs it asks for none of its own."""
+    _store_library(language)
+    walks = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s: walks.append(1) or time.sleep(0.5) or real(s))
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(walks))                      # the open's walk is running
+    app._refresh_from_focus()                                    # the window's own first focus
+    _pump(app, lambda: False, timeout=1.5)
+    assert len(walks) == 1, walks
+    app._refresh_from_focus()                                    # a real return later: a walk of its own
+    assert _pump(app, lambda: len(walks) == 2, timeout=3.0)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_another_windows_change_waits_for_a_drag_to_end(window, language, monkeypatch):
+    """Smoothness #6: a redraw drops the tree's selection; one arriving mid-drag (a hato drop, another window's
+    move) waits for the button's release, then shows."""
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)))
+    _pump(app, lambda: False, timeout=0.8)
+    app._refresh_from_focus = lambda: None
+    shown = _tree_paths(app)
+    app._drag_item = app.tree.get_children("")[0]                # the button is down on a row
+    _other_process(language, "ids = store.ids('now')\nstore.move([ids[0]], 'now', after_id=ids[-1])\n")
+    _pump(app, lambda: False, timeout=1.5)
+    assert _tree_paths(app) == shown, "redrawn mid-drag"
+    app.on_drag_stop(types.SimpleNamespace(y=-1))                # released over nothing
+    assert _pump(app, lambda: _tree_paths(app) != shown, timeout=2.0)

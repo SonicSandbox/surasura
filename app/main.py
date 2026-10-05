@@ -1008,7 +1008,7 @@ class MasterDashboardApp:
         # every file. The list is the indexer's own (`indexer._content_files`: the store's in store and read-only
         # modes, K2, else the folders), so a file Graduate left in its folder never reads as "to index" forever.
         self._indexer_busy = True
-        self._run_on_worker(lambda: self._index_needed(lang, script), self._index_checked)
+        self._run_on_worker(lambda: self._index_needed(lang, script), lambda need: self._index_checked(need, lang))
 
     @staticmethod
     def _index_needed(lang, script):
@@ -1030,8 +1030,8 @@ class MasterDashboardApp:
         except Exception:
             return False
 
-    def _index_checked(self, need):
-        """The indexer check's answer, on this thread: launch the indexer, or stand down."""
+    def _index_checked(self, need, lang=None):
+        """The indexer check's answer, on this thread: launch the indexer for the language checked, or stand down."""
         if not need:
             self._indexer_busy = False
             return
@@ -1041,7 +1041,7 @@ class MasterDashboardApp:
             self._refresh_band_preview(force=True)   # store just changed -> recompute, don't trust cache
             self._maybe_auto_generate()              # one waiting for the indexer can go now
 
-        self.run_command_async(['indexer.py', '--language', self.var_language.get()],
+        self.run_command_async(['indexer.py', '--language', lang or self.var_language.get()],
                                "Indexing", on_complete=_done)
 
     def update_ui_for_language(self):
@@ -1170,16 +1170,20 @@ class MasterDashboardApp:
             from app.path_utils import get_data_path, get_user_files_path
             data_dir = get_data_path(lang)
             mode, reason = library_store.check_mode(lang, data_dir, busy_wait=0.0)
-            waiting = False
+            waiting, note = False, None
             if mode == "store":
                 store = library_store.open_store(lang, data_dir, get_user_files_path(lang), role="window",
                                                  busy_wait=0.0)
                 if store is not None:
                     with store:
-                        waiting = bool(store.meta().get("reimport_pending"))
-            return mode, reason, waiting
+                        meta = store.meta()
+                        waiting = bool(meta.get("reimport_pending"))
+                        if meta.get("reimport_note"):
+                            note = json.loads(meta["reimport_note"])
+                            store.bookkeeping({"reimport_note": ""})      # told once (D27: "tells you quietly")
+            return mode, reason, waiting, note
         except Exception:
-            return None, None, False
+            return None, None, False, None
 
     def _update_library_notice(self):
         """Re-check the library's mode (on focus, at open, on a language switch, after Repair or Try again) on a
@@ -1190,9 +1194,13 @@ class MasterDashboardApp:
         self._run_on_worker(lambda: self._library_state(lang), lambda state: self._show_library_notice(lang, state))
 
     def _show_library_notice(self, lang, state):
-        mode, reason, waiting = state
+        mode, reason, waiting, note = state
         if mode is None or (self.var_language.get() or "ja") != lang:
             return
+        if note:
+            count = note.get("count")
+            self.status_var.set("Your library's order file was changed outside Surasura: the change was taken in"
+                                + (f" ({count} item{'s' if count != 1 else ''} moved)." if count else "."))
         before = self._library_mode_seen.get(lang)
         self._library_mode_seen[lang] = mode
         if before == "json" and mode == "store":

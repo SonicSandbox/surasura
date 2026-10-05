@@ -3499,6 +3499,10 @@ def read_library_schedule(language, data_dir=None, user_files_dir=None):
     try:
         store = ls.open_store(language, data_dir, user_files_dir, role="reader")
         if store is None:
+            # Read-only mode: every reader takes the list Generate takes (§6.9), so the journey check, the indexer
+            # and the report never disagree with it about a file dropped in since.
+            if ls.check_mode(language, data_dir, busy_wait=0.0)[0] == "read-only":
+                return ls.read_only_schedule(language, data_dir, user_files_dir), None
             return None, None
         with store:
             return store.schedule(with_versions=True)

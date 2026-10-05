@@ -3109,7 +3109,8 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
             if it.new_tier == "graduated":
                 self.conn.execute("UPDATE items SET graduated_at = ? WHERE id = ?", (now, it.id))
         cmd.touch(changed_tiers | {it.tier for it in items.values() if it.new_entry is not None or it.new_rel})
-        self._set_meta({"last_export_stat": read_stat})
+        self._set_meta({"last_export_stat": read_stat,
+                        "reimport_note": _dumps({"count": count, "total": total, "at": now})})
         self.conn.execute("DELETE FROM meta WHERE key = 'reimport_pending'")
         _rederive_soon_line(self)
         return "applied"
@@ -3831,6 +3832,8 @@ def maintain_due(store, handed=""):
     last export, or a copy someone else rewrote whose stat this process hasn't already handed to a helper
     (`handed`). Returns (due, the copy's stat)."""
     seen = store.copy_stat()
+    if store.meta().get("reimport_pending"):
+        return False, seen                       # the helper would only wait for the same answer (exit 4)
     if store.export_due():
         return True, seen
     return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen

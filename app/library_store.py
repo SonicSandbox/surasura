@@ -1059,7 +1059,12 @@ class Store:
             yield
         finally:
             if self.conn.in_transaction:
-                self.conn.execute("COMMIT")
+                try:
+                    self.conn.execute("COMMIT")
+                except BaseException:
+                    if self.conn.in_transaction:
+                        self.conn.execute("ROLLBACK")
+                    raise
 
     @contextmanager
     def _command(self, kind, by="user"):
@@ -1416,9 +1421,9 @@ class Store:
         if any(r[1] != tier for r in ordered):
             return False
         first, last = ordered[0], ordered[-1]
-        count = self.conn.execute(
-            "SELECT COUNT(*) FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?)",
-            (tier, first[2], first[0], last[2], last[0])).fetchone()[0]
+        count = self.conn.execute(          # bounded: a scattered block never counts a whole tier
+            "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
+            "LIMIT ?)", (tier, first[2], first[0], last[2], last[0], len(ordered) + 1)).fetchone()[0]
         if count != len(ordered):
             return False
         if before_id is not None:
@@ -1648,8 +1653,8 @@ class Store:
                 if a is None:
                     raise StoreConflict("the anchor item is gone")
                 dests = [("before" if anchor[1] else "after", a[0], a[1])] * (len(new) + len(taken))
-            elif placement == "top":
-                dests = [("top", tier)] * (len(new) + len(taken))
+            elif placement in ("top", "end"):
+                dests = [(placement, tier)] * (len(new) + len(taken))
             else:
                 dests = [self._destination(it[1], it[3], tier or "now", excl)
                          for it in [t[1] for t in taken] + new]
@@ -1898,8 +1903,8 @@ class Store:
             ordered = sorted(items, key=lambda r: (r[3], r[1]))
             first, last = ordered[0], ordered[-1]
             count = self.conn.execute(
-                "SELECT COUNT(*) FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?)",
-                (tier, first[3], first[1], last[3], last[1])).fetchone()[0]
+                "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
+                "LIMIT ?)", (tier, first[3], first[1], last[3], last[1], len(ordered) + 1)).fetchone()[0]
             if count != len(ordered):
                 raise ValueError("pieces to join must be adjacent")
             target = piece_ids[0]
@@ -3202,8 +3207,10 @@ def _check_copy(store, retry_wait=1.0):
     ours = isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
     if ours and lib.get("content_sha") == content_sha(doc):
         version = lib.get("version")
-        if version == meta.get("last_export_version"):
-            store.bookkeeping({"last_export_stat": read_stat})
+        if version in (meta.get("last_export_version"), meta["state_version"]):
+            # Re-saved unchanged by another program, or a helper killed after its replace but before its
+            # bookkeeping (its version is then the current state_version): adopt, never re-import, no loop.
+            store.bookkeeping({"last_export_stat": read_stat, "last_export_version": version})
             return "adopted"
         if isinstance(version, int) and version > meta["state_version"]:
             _backup_db(store.conn, store.db_path)
@@ -3634,7 +3641,7 @@ def _store_reset_order(self, walk=None):
         change = self._change(cmd, "reset")
         rows = self.conn.execute("SELECT id, rel_key, tier, ord, changed_in, rel_path, availability "
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
-        known = {r[1] for r in self.conn.execute("SELECT rel_key FROM items")}
+        known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         untracked = [rel for rel in order if path_key(rel) not in known]
         prepared = [(rel, rel, path_key(rel), make_entry(rel, "Reset", with_source_type=False),
                      _fingerprint(self.data_dir, rel), TIER_OF_FOLDER[rel.split("/", 1)[0]]) for rel in untracked]
@@ -3804,6 +3811,104 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
     finally:
         store.close()
     return EXIT_DONE
+
+
+# ------------------------------------------------------------------------------------------------ #
+# File work (§6.6, §6.11): the caller's, outside every transaction — the store itself never moves a
+# file (I3). Tk-free, so Phase 2's Content Manager calls these instead of its own copies.
+# ------------------------------------------------------------------------------------------------ #
+
+def trash_file(data_dir, rel):
+    """A user's Remove or Undo-Add: the file to `data/<lang>/.trash/<base>_<stamp><ext>` (never
+    `rmtree`), its 30-day clock restarted. Returns the trashed path relative to data/<lang>, or None
+    when there was no file."""
+    src = os.path.join(data_dir, _strip(rel))
+    if not os.path.isfile(src):
+        return None
+    trash = os.path.join(data_dir, ".trash")
+    os.makedirs(trash, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(src))
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    name, n = f"{base}_{stamp}{ext}", 1
+    while os.path.exists(os.path.join(trash, name)):
+        name, n = f"{base}_{stamp}_{n}{ext}", n + 1
+    dst = os.path.join(trash, name)
+    os.rename(src, dst)
+    restart_trash_clock(dst)
+    return f".trash/{name}"
+
+
+def _rename_no_overwrite(src, dst):
+    """Never overwrite (§6.6): `os.rename` on Windows fails if the target exists; elsewhere a hard link
+    then unlink, which fails too; without hard links (FAT, exFAT), check the target is free first."""
+    if sys.platform == "win32":
+        os.rename(src, dst)
+        return
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError:
+        if os.path.exists(dst):
+            raise FileExistsError(dst)
+        os.rename(src, dst)
+        return
+    os.unlink(src)
+
+
+def put_back(data_dir, trashed_rel, rel):
+    """Undo-Remove / Put back's file half: the trashed file back at `rel`, its missing parent folders
+    recreated; a taken name restores as `name_1.ext` (with a note); a file already purged after 30 days
+    restores nothing. Returns (the rel path it went back to or None, note or None)."""
+    src = os.path.join(data_dir, *trashed_rel.split("/"))
+    if not os.path.isfile(src):
+        return None, "purged"
+    stem, ext = os.path.splitext(rel)
+    candidate, n = rel, 0
+    while True:
+        dst = os.path.join(data_dir, *_strip(candidate).split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            _rename_no_overwrite(src, dst)
+            break
+        except FileExistsError:
+            n += 1
+            candidate = f"{stem}_{n}{ext}"
+    return candidate, (None if candidate == rel else f"put back as {candidate.rsplit('/', 1)[-1]}: the name was taken")
+
+
+def strip_graduated_block(user_files_dir, language, rels):
+    """Undo-Graduate: remove each file's `# Source: <rel>` block from GraduatedList.txt, after a
+    `backup_to_trash` copy, with an atomic write (today's strip was a non-atomic rewrite with no
+    backup). Returns the number of blocks removed."""
+    from app.path_utils import read_text
+    path = os.path.join(user_files_dir, "GraduatedList.txt")
+    if not os.path.exists(path):
+        return 0
+    lines = read_text(path, language, errors="strict").splitlines(True)
+    removed = 0
+    for rel in rels:
+        header = f"# Source: {rel}"
+        for i in range(len(lines) - 1, -1, -1):
+            text = lines[i].rstrip("\r\n")
+            if text == header or text.startswith(header + " ("):
+                end = i + 1
+                while end < len(lines) and lines[end].strip() and not lines[end].startswith("# Source:"):
+                    end += 1
+                if i > 0 and not lines[i - 1].strip():      # the blank line the append put before it
+                    i -= 1
+                del lines[i:end]
+                removed += 1
+                break
+    if removed:
+        backup_to_trash(path)
+        temp = f"{path}.{os.getpid()}.tmp"
+        with open(temp, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    return removed
 
 
 # ------------------------------------------------------------------------------------------------ #

@@ -117,3 +117,30 @@ def subprocess_env():
     env["PYTHONIOENCODING"] = "utf-8"
     env.pop("PYTEST_CURRENT_TEST", None)
     return env
+
+
+def big_store(language, n, available=True):
+    """A synthetic store of `n` items built in one transaction, the 100k shape the reviews measured
+    (NOW 1 %, Soon 44.5 %, 6+ Months the rest), names from the real word list. No files on disk:
+    availability is set as asked, so the mine line counts them."""
+    data_dir, user_files_dir = roots(language)
+    db = ls.library_db_path(language, data_dir)
+    store = ls._helper_store(db, language, data_dir, user_files_dir)
+    ls._ensure_schema(store)
+    words = names(language)
+    now, soon = max(20, n // 100), int(n * 0.445)
+    items = []
+    for i in range(n):
+        tier = "now" if i < now else "soon" if i < now + soon else "goal"
+        show = words[(i // 12) % len(words)]
+        rel = f"{ls.FOLDER_OF_TIER[tier]}/{show}{i // 12}/{show}_{i:06d}.srt"
+        item = ls._item_from_entry(ls.make_entry(rel, "Disk Sync", "subtitle"), tier, data_dir, ls._now())
+        if available:
+            item["availability"], item["size"], item["mtime_ns"] = "available", 100, 1
+        items.append(item)
+    meta = ls._fresh_meta("bench" + language, 1, 1)
+    with store._writing():
+        ls._write_image(store, {"items": items, "tables": {}}, meta)
+        store._set_meta({"migrated_at": ls._now()})
+    store.close()
+    return ls.open_store(language, data_dir, user_files_dir)

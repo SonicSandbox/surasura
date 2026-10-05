@@ -19,11 +19,7 @@ def get_version():
 # When a module will be included in the build, its own test suite must pass first.
 def _included_module_test_dirs(settings):
     dirs = []
-    # Immersion Architect: bundled unless explicitly hidden.
-    if not settings.get("hide_satoru", False):
-        d = os.path.join("modules", "immersion_architect", "tests")
-        if os.path.isdir(d):
-            dirs.append(d)
+    # (The Immersion Architect is never bundled since 2.5 — sunset, RD-D9 — so its suite is no gate.)
     # YouTube Downloader: bundled when either feature is enabled.
     if settings.get("enable_youtube_transcripts", False) or settings.get("enable_youtube_preview", False):
         d = os.path.join("modules", "youtube_downloader", "tests")

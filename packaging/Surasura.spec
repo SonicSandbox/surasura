@@ -37,7 +37,6 @@ print(f"Building {BUILD_NAME}...")
 # -----------------------------------------------------------------------------
 import json
 settings_path = os.path.join(project_root, 'settings.json')
-hide_satoru = False
 enable_youtube = False
 enable_preview = False  # default so a missing/corrupt settings.json can't NameError below
 enable_reels = False
@@ -49,7 +48,6 @@ if os.path.exists(settings_path):
     try:
         with open(settings_path, 'r', encoding='utf-8') as f:
             settings = json.load(f)
-            hide_satoru = settings.get("hide_satoru", False)
             enable_youtube = settings.get("enable_youtube_transcripts", False)
             enable_preview = settings.get("enable_youtube_preview", False)
             enable_reels = settings.get("enable_reels", False)
@@ -57,9 +55,11 @@ if os.path.exists(settings_path):
     except Exception as e:
         print(f"Warning: Could not read settings.json for build configuration: {e}")
 
-if hide_satoru:
-    print("BUILD CONFIG: Excluding Immersion Architect module (hide_satoru=True)")
-    excluded_modules.append('modules.immersion_architect')
+# The Immersion Architect (悟) is deprecated (RD-D9) and out of every build from 2.5 on: kept on disk with
+# its own suite, dormant. The dashboard's button hides itself when the import fails. Revival steps:
+# docs/agent instructions/Immersion_architect_feature.md (its header).
+print("BUILD CONFIG: Excluding Immersion Architect module (sunset, RD-D9)")
+excluded_modules.append('modules.immersion_architect')
 
 # YouTube Downloader is opt-in: bundled when EITHER the transcript downloader or the
 # preview feature is enabled at build time (both live in modules.youtube_downloader).
@@ -122,15 +122,6 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
 # Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is
 # also in `excludes` is a contradiction PyInstaller resolves by warning and dropping it, which
 # would be a silent no-op rather than the guarantee this is here to give.
-
-# Immersion Architect reads (and writes) architect_settings.json through get_resource(), so the
-# file has to exist under the bundle root at the same relative path it has in the repo. Without
-# it every read falls back to hardcoded defaults and the budget slider silently discards changes.
-if not hide_satoru:
-    _architect_settings = os.path.join(project_root, 'modules', 'immersion_architect',
-                                       'architect_settings.json')
-    if os.path.isfile(_architect_settings):
-        datas.append((_architect_settings, 'modules/immersion_architect'))
 
 # The vendored SubsMatcher is only ever RUN, never imported by module code, so nothing in the
 # import graph points at it and PyInstaller would leave it out. Frozen, it is reached through

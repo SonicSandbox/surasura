@@ -38,35 +38,10 @@ CHECK_GRAY = "#8a8a8a"   # the Generate button's "up to date" check — quiet, l
 
 
 def journey_is_current(args, language):
-    """Would Generate compute anything new? True when the last run still describes this library,
-    these known words and these analysis settings; False when it would not (or never ran); None when
-    it cannot tell. The analyzer's OWN signature (`compute_run_signature` + the store's last one + the
-    results stamp), so the Generate button's state can never disagree with what Generate then does —
-    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit)
-    is not part of it: that re-renders in a moment and needs no nudge."""
-    try:
-        from app import analyzer as _analyzer
-        from app import token_index as _ti
-        from app.path_utils import get_user_file
-
-        found = _analyzer.resolve_found_files(language, verbose=False)
-        if not found:
-            return None
-        sig = _analyzer.compute_run_signature(language, found, _analyzer.parse_analysis_args(args[1:]))
-        if not sig:
-            return None
-        results_dir = get_user_file("results")
-        if not all(os.path.exists(os.path.join(results_dir, name)) for name in
-                   ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
-            return False
-        store = _ti.open_store(language)
-        try:
-            stored = store.get_meta("last_run_signature")
-        finally:
-            store.close()
-        return stored == sig and _analyzer.read_run_stamp(results_dir) == sig
-    except Exception:
-        return None
+    """Would Generate compute anything new? (`analyzer.journey_is_current`: it lives beside the run signature
+    it asks, Library_Store_Spec §7.) Imported on call, so the dashboard never loads the analyzer at start."""
+    from app import analyzer as _analyzer
+    return _analyzer.journey_is_current(args, language)
 
 
 def anki_sync_is_set_up(settings):
@@ -77,23 +52,9 @@ def anki_sync_is_set_up(settings):
 
 
 def build_subprocess_env(frozen=None):
-    """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
-
-    Forces the child's stdio to UTF-8 so the parent's strict-UTF-8 stdout capture never chokes on
-    locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
-    Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
-    byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
-    """
-    from app.path_utils import is_frozen
-    if frozen is None:
-        frozen = is_frozen()
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-    if not frozen:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env["PYTHONPATH"] = (project_root + os.pathsep + env["PYTHONPATH"]
-                             if "PYTHONPATH" in env else project_root)
-    return env
+    """`path_utils.build_subprocess_env` (moved there so the Tk-free library store can use it too)."""
+    from app.path_utils import build_subprocess_env as _build
+    return _build(frozen)
 
 
 def csv_has_data_rows(path):
@@ -1148,12 +1109,21 @@ class MasterDashboardApp:
         self._update_generate_state()   # different language -> different library -> re-check emptiness
 
     def _library_has_content(self):
-        """True if the current language's library has at least one analyzable content file. The
+        """True if the current language's library has at least one analyzable content file. With a library
+        store: an available file in an analysed tier, read from this thread's long-lived handle (a Graduate
+        leaves its file in the tier folder, so the folders no longer answer). Without one, the folders: the
         extensions MUST match what the analyzer actually reads (analyzer.get_files_recursive:
         path_utils.is_content_file) — otherwise Generate could enable on files the analysis then
         ignores (e.g. a tier of only .vtt), yielding an empty journey."""
         from app.path_utils import get_data_path, is_content_file
-        base = get_data_path(self.var_language.get() or "ja")
+        lang = self.var_language.get() or "ja"
+        store = self._library_handle(lang)
+        if store is not None:
+            try:
+                return store.has_content()
+            except Exception:
+                pass
+        base = get_data_path(lang)
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(base, tier)
             if os.path.isdir(d):
@@ -1161,6 +1131,23 @@ class MasterDashboardApp:
                     if any(is_content_file(f) for f in files):
                         return True
         return False
+
+    def _library_handle(self, lang):
+        """This thread's long-lived library store handle for `lang` (Library_Store_Spec §6.2), or None
+        outside store mode. The mode is re-checked on every call (cheap: no scans, never waits here)."""
+        try:
+            from app import library_store
+            from app.path_utils import get_data_path, get_user_files_path
+            openers = self.__dict__.setdefault("_library_openers", {})
+            opener = openers.get(lang)
+            if opener is None:
+                opener = openers[lang] = library_store.StoreOpener(lang, get_data_path(lang),
+                                                                    get_user_files_path(lang))
+            if opener.check() != "store":
+                return None
+            return opener.handle()
+        except Exception:
+            return None
 
     def _update_generate_state(self):
         """Disable 'Generate Journey' (with a short hint) while the library is empty — there's nothing

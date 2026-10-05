@@ -554,7 +554,7 @@ def test_the_command_line_runs_maintain(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_an_update_staged_stops_everything_new(language, monkeypatch):
+def test_an_update_staged_stops_everything_new(language, monkeypatch, real_store_helper):
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
     store.move([store.ids("now")[0]], "now", after_id=store.ids("now")[2])
@@ -576,7 +576,7 @@ def test_an_update_staged_stops_everything_new(language, monkeypatch):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_spawn_maintain_runs_the_helper_detached(language):
+def test_spawn_maintain_runs_the_helper_detached(language, real_store_helper):
     data_dir, user_files_dir, doc = library(language)
     write_manifest(user_files_dir, doc)
     proc = ls.spawn_maintain(language)

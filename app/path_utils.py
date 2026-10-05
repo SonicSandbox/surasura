@@ -648,3 +648,22 @@ def append_text(path, text, language=None):
         return
     with open(path, "ab") as f:
         f.write(data)
+
+
+def build_subprocess_env(frozen=None):
+    """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
+
+    Forces the child's stdio to UTF-8 so the parent's strict-UTF-8 stdout capture never chokes on
+    locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
+    Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
+    byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
+    """
+    if frozen is None:
+        frozen = is_frozen()
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    if not frozen:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = (project_root + os.pathsep + env["PYTHONPATH"]
+                             if "PYTHONPATH" in env else project_root)
+    return env

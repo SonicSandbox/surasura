@@ -3455,10 +3455,101 @@ def parse_analysis_args(argv=None):
     return args
 
 
-def resolve_found_files(language, verbose=True):
+def _library_store():
+    """The library store module (`app/library_store.py`), or None where it can't be loaded: every caller
+    then takes the file, as before."""
+    try:
+        from app import library_store
+        return library_store
+    except Exception:
+        return None
+
+
+def read_library_schedule(language, data_dir=None, user_files_dir=None):
+    """A reader's list (Library_Store_Spec §6.2, §6.6): `(schedule, versions)` from a ready store, read in
+    one transaction, else `(None, None)`. A reader never builds: with no ready store, or on any database
+    error, the caller takes the file for this call."""
+    ls = _library_store()
+    if ls is None:
+        return None, None
+    data_dir = data_dir or get_data_path(language)
+    user_files_dir = user_files_dir or get_user_files_path(language)
+    try:
+        store = ls.open_store(language, data_dir, user_files_dir, role="reader")
+        if store is None:
+            return None, None
+        with store:
+            return store.schedule(with_versions=True)
+    except Exception:
+        return None, None
+
+
+def prepare_library(language, data_dir=None, user_files_dir=None):
+    """Generate's list (§7, A10): the store builds or checks itself (`maintain` steps 1–2, in-process),
+    takes in what the disk holds (`sync_disk`), and the schedule and its `order_version` are read in one
+    transaction; the copy is then written by the helper, which the run never waits for. Returns
+    {"schedule", "order_version", "epoch"}: `schedule` None = no store, so the file as before (and no
+    `record_analysed`). Read-only mode reads the copy, with untracked files added in memory (§6.9)."""
+    out = {"schedule": None, "order_version": None, "epoch": None}
+    ls = _library_store()
+    if ls is None:
+        return out
+    data_dir = data_dir or get_data_path(language)
+    user_files_dir = user_files_dir or get_user_files_path(language)
+    try:
+        ls.maintain(language, data_dir, user_files_dir, export=False)
+        store = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+        if store is None:
+            mode, reason = ls.check_mode(language, data_dir)
+            if mode == "read-only":
+                print(f"Library store is read-only ({reason}): new files are analysed but not added to the order.")
+                out["schedule"] = ls.read_only_schedule(language, data_dir, user_files_dir)
+            return out
+    except Exception as e:
+        print(f"Library store unavailable ({e}); reading the library file.")
+        return out
+    try:
+        with store:
+            store.sync_disk()
+            schedule, versions = store.schedule(with_versions=True)
+            if store.export_due():
+                ls.spawn_maintain(language)
+    except Exception as e:
+        print(f"Library store couldn't be read ({e}); reading the library file.")
+        return out
+    out.update(schedule=schedule, order_version=versions["order_version"], epoch=versions["epoch"])
+    return out
+
+
+def record_analysed(language, library, data_dir=None, user_files_dir=None):
+    """A Generate that read the store finished (or reused results already current): the store records the
+    `order_version` it read, so Junban's "journey pending" clears. Never after a JSON fallback, and never
+    across a rebuild (a version means nothing outside its epoch, §6.6). Best-effort."""
+    if not library or library.get("order_version") is None:
+        return
+    ls = _library_store()
+    try:
+        store = ls.open_store(language, data_dir or get_data_path(language),
+                              user_files_dir or get_user_files_path(language), role="analyzer")
+        if store is None:
+            return
+        with store:
+            if store.versions()["epoch"] == library["epoch"]:
+                store.record_analysed(library["order_version"])
+    except Exception:
+        pass
+
+
+def resolve_found_files(language, verbose=True, schedule=None):
     """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
-    from the master_manifest (phase order) or a recursive fallback scan. Shared by main() and the
-    dashboard's no-change pre-flight, so both compute the run-signature over exactly the same list.
+    from the library store's schedule (phase order) when one is ready, else master_manifest.json, else a
+    recursive fallback scan. Shared by main() and the dashboard's no-change pre-flight, so both compute
+    the run-signature over exactly the same list. `schedule`: one already read (Generate's, the journey
+    check's).
+
+    No folder fallback when the list came from a store or from a copy the store wrote (it carries
+    `surasura_library`): there an empty list is an empty run (K21) — the scan would analyse every file a
+    Graduate left in its tier folder.
 
     source_type drives the report's per-sentence source badge (subtitle / youtube / bilibili / epub
     / text).
@@ -3468,6 +3559,9 @@ def resolve_found_files(language, verbose=True):
     user_files_dir = get_user_files_path(language)
     found_files = []
     manifest_path = os.path.join(user_files_dir, "master_manifest.json")
+    if schedule is None:
+        schedule, _versions = read_library_schedule(language, data_dir, user_files_dir)
+    no_fallback = schedule is not None
 
     _marker_cache = {}
 
@@ -3482,18 +3576,22 @@ def resolve_found_files(language, verbose=True):
 
         return infer_source_type(path, declared=declared, marker_type=_marker)
 
-    if os.path.exists(manifest_path):
-        if verbose:
+    if no_fallback or os.path.exists(manifest_path):
+        if verbose and no_fallback:
+            print("Loading Sort Order from the library store")
+        elif verbose:
             try:
                 print(f"Loading Sort Order from Manifest: {manifest_path}")
             except UnicodeEncodeError:
                 print("Loading Sort Order from Manifest (path contains non-ASCII characters)")
         try:
-            # utf-8-sig: the same BOM tolerance as the Content Manager's load_manifest, so a
-            # manifest re-saved from Notepad orders the analysis exactly as the library shows it.
-            with open(manifest_path, 'r', encoding='utf-8-sig') as f:
-                manifest = json.load(f)
-            schedule = manifest.get("schedule", {})
+            if not no_fallback:
+                # utf-8-sig: the same BOM tolerance as the Content Manager's load_manifest, so a
+                # manifest re-saved from Notepad orders the analysis exactly as the library shows it.
+                with open(manifest_path, 'r', encoding='utf-8-sig') as f:
+                    manifest = json.load(f)
+                no_fallback = isinstance(manifest.get("surasura_library"), dict)
+                schedule = manifest.get("schedule", {})
             phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
             seen_paths = set()
             for phase_key in phases:
@@ -3533,7 +3631,7 @@ def resolve_found_files(language, verbose=True):
                 print(f"Error reading manifest: {e}. Falling back to default scan.")
             found_files = []  # Trigger fallback
 
-    if not found_files:
+    if not found_files and not no_fallback:
         if verbose:
             print("Scaning folders recursively (Default Order)...")
         scan_targets = [
@@ -3563,6 +3661,66 @@ def resolve_found_files(language, verbose=True):
                 found_files.append((path, label, weight, _stype(path)))
 
     return found_files
+
+
+def journey_is_current(args, language):
+    """Would Generate compute anything new? True when the last run still describes this library, these
+    known words and these analysis settings; False when it would not (or never ran); None when it cannot
+    tell. The analyzer's OWN signature (`compute_run_signature` + the token store's last one + the results
+    stamp), so the Generate button's state can never disagree with what Generate then does —
+    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit) is not
+    part of it: that re-renders in a moment and needs no nudge.
+
+    With a library store (Library_Store_Spec §7): the disk is synced first (a hato drop then turns the ✓
+    off), and the list and its `order_version` are read in one transaction; the signature still decides —
+    the versions are never a substitute. When it matches, the store records that `order_version` as
+    analysed, so a move and its reverse, or a Generate that already covered the change, clear Junban's
+    "journey pending". With no ready store the helper is started to build one, and the file is read
+    meanwhile. Runs on a worker, never a window's thread: it stats every library file."""
+    try:
+        from app import token_index as _ti
+        from app.path_utils import get_user_file
+
+        library = {"schedule": None, "order_version": None, "epoch": None}
+        ls = _library_store()
+        if ls is not None:
+            data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
+            try:
+                store = ls.open_store(language, data_dir, user_files_dir, role="window")
+            except Exception:
+                store = None
+            if store is None:
+                ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+            else:
+                try:
+                    with store:
+                        ls.sync_for_window(store)
+                        schedule, versions = store.schedule(with_versions=True)
+                    library.update(schedule=schedule, order_version=versions["order_version"],
+                                   epoch=versions["epoch"])
+                except Exception:
+                    pass
+        found = resolve_found_files(language, verbose=False, schedule=library["schedule"])
+        if not found:
+            return None
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        if not sig:
+            return None
+        results_dir = get_user_file("results")
+        if not all(os.path.exists(os.path.join(results_dir, name)) for name in
+                   ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
+            return False
+        store = _ti.open_store(language)
+        try:
+            stored = store.get_meta("last_run_signature")
+        finally:
+            store.close()
+        current = stored == sig and read_run_stamp(results_dir) == sig
+        if current:
+            record_analysed(language, library)
+        return current
+    except Exception:
+        return None
 
 
 def compute_run_signature(language, found_files, args):
@@ -3975,7 +4133,9 @@ def main():
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
     
-    found_files = resolve_found_files(language)   # manifest order or fallback scan (shared with the GUI)
+    # The library's list: the store's (built, checked and synced with the disk first), else the file.
+    _library = prepare_library(language, data_dir, user_files_dir)
+    found_files = resolve_found_files(language, schedule=_library["schedule"])   # shared with the GUI
     print(f"Final Count: Found {len(found_files)} files to process.")
 
     # --- #2 Run-signature: skip the ENTIRE run if nothing affecting the analysis changed ---
@@ -3993,6 +4153,7 @@ def main():
             and _store.get_meta("last_run_signature") == _run_sig
             and read_run_stamp(RESULTS_DIR) == _run_sig):   # ...and results/ is THIS run's (above)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
+        record_analysed(language, _library, data_dir, user_files_dir)
         # A completed run is being reused; make sure the Content Manager sidecars exist and are
         # current (backfills them from word_stats.json on the first skip after an update). One-time.
         _backfill_sidecars(RESULTS_DIR)
@@ -5568,6 +5729,7 @@ def main():
     # entirely next time (and the presentation fingerprint so a same-setting re-run can open the
     # report without re-rendering), then close the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
+    record_analysed(language, _library, data_dir, user_files_dir)
     if _store is not None:
         try:
             if _run_sig:

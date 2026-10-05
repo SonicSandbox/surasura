@@ -162,17 +162,12 @@ def _guard():
 
 def _local_root():
     """The per-user LOCAL data folder (spec §6.1): never %APPDATA%, which roams and can be redirected
-    to a network share where WAL doesn't work (K22). Phase 2 moves this to path_utils."""
+    to a network share where WAL doesn't work (K22): `path_utils`' one local root (S1.1 K100)."""
     root = _guard()
     if root:
         return os.path.join(root, "local")
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    elif sys.platform == "darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return os.path.join(base, "SonicSandbox", "Surasura")
+    from app.path_utils import _local_data_root
+    return _local_data_root()
 
 
 def library_db_path(language, data_dir):
@@ -188,17 +183,40 @@ def library_db_path(language, data_dir):
 
 
 def update_staged_path():
-    """The updater's marker (§6.7): while it exists, nothing new starts that could hold the exe."""
-    return os.path.join(_local_root(), "update_staged")
+    """The updater's own marker, `pending_update.json` beside the app (S1.1): written at the hand-over,
+    deleted by its helper once the files are swapped. The store adds no second marker."""
+    from app.path_utils import get_user_data_path
+    return os.path.join(get_user_data_path(), "pending_update.json")
+
+
+def update_lock_path():
+    """S1.1's update lock, held from "Update now" until the hand-over (`updater.update_lock_path`)."""
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), "locks", "update.lock")
 
 
 def update_staged(max_age=3600.0):
-    """True while an update is staged. A marker older than an hour (a crashed update) is ignored."""
+    """True while an update is staged (§6.7): the update lock is held (Update now, until the hand-over —
+    by this process too: a lock taken on another handle is refused), or the updater's marker exists
+    while its helper swaps the files. A marker older than an hour (a crashed update) is ignored."""
     try:
         age = time.time() - os.path.getmtime(update_staged_path())
+        if age < max_age:
+            return True
     except OSError:
+        pass
+    try:
+        from app.path_utils import release_lock, try_lock
+        path = update_lock_path()
+        if not os.path.exists(path):
+            return False
+        held = try_lock(path)
+    except Exception:
         return False
-    return age < max_age
+    if held is None:
+        return True
+    release_lock(held)
+    return False
 
 
 def manifest_path(user_files_dir):
@@ -3476,21 +3494,25 @@ def spawn_maintain(language, *extra):
     import subprocess
     if update_staged():
         return None
-    if getattr(sys, "frozen", False):
-        args = [sys.executable, "library_maintain", "--language", language, *extra]
-    else:
-        args = [sys.executable, os.path.abspath(__file__), "maintain", "--language", language, *extra]
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
-    if not getattr(sys, "frozen", False):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     flags = 0
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-    return subprocess.Popen(args, env=env, creationflags=flags, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    return subprocess.Popen(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=(sys.platform != "win32"))
+
+
+def _helper_args(language, command, *extra):
+    """The helper's command line, frozen (`Surasura.exe library_maintain <command> …`, app_entry's branch)
+    or from source (`python app/library_store.py <command> …`)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "library_maintain", command, "--language", language, *extra]
+    return [sys.executable, os.path.abspath(__file__), command, "--language", language, *extra]
+
+
+def _helper_env():
+    from app.path_utils import build_subprocess_env
+    return build_subprocess_env()
 
 
 # ------------------------------------------------------------------------------------------------ #
@@ -3781,6 +3803,120 @@ class DiskPoll:
         return changed
 
 
+def _store_has_content(self):
+    """Does an analysed tier hold a file that is there? (The dashboard's Generate button, §7.)"""
+    return self.conn.execute("SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ('now', 'soon', 'goal') "
+                             "AND availability = 'available')").fetchone()[0] == 1
+
+
+def _store_export_due(self):
+    """Has the store something the copy lacks (the trigger rule, §6.7)? Read cheaply, no file I/O."""
+    with self._reading():
+        meta = self._meta()
+    return meta["state_version"] != meta.get("last_export_version") or bool(meta.get("copy_dirty"))
+
+
+def read_only_schedule(language, data_dir, user_files_dir):
+    """Read-only mode (§6.9): the copy's schedule, with the walk's untracked files added in memory by
+    §6.10 rule 3 (never saved), so a file dropped into a tier folder is still analysed. Every file the
+    copy knows, in any tier, counts as known (D6). None when the copy can't be read."""
+    try:
+        doc, _st, _p = read_manifest(manifest_path(user_files_dir))
+    except ManifestUnreadable:
+        return None
+    if not doc:
+        return None
+    schedule = {k: (list(v) if isinstance(v, list) else v) for k, v in (doc.get("schedule") or {}).items()}
+    lists = {t: schedule.setdefault(TIERS[t][0], []) for t in ANALYSED}
+    lib = doc.get("surasura_library") if isinstance(doc.get("surasura_library"), dict) else {}
+    held = [e for t in ANALYSED for e in lists[t] if isinstance(e, dict)]
+    others = [e for key in ("graduated", "arrivals") for e in (lib.get(key) or []) if isinstance(e, dict)]
+    known = {path_key(_strip(str(e.get("physical_path") or ""))) for e in held + others}
+    with_items = {path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) for e in held + others}
+    tops = {t: 0 for t in ANALYSED}
+    marker_cache = {}
+    hato = path_key(HATO_FOLDER)
+    for rel, _size, _mtime in walk_library(data_dir)["files"]:
+        key = path_key(rel)
+        if key in known:
+            continue
+        known.add(key)
+        entry = make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(data_dir, rel), marker_cache))
+        folder_dir = _rel_dir(rel)
+        dkey = path_key(folder_dir)
+
+        def show_last(tier):
+            found = [n for n, e in enumerate(lists[tier]) if isinstance(e, dict)
+                     and path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) == dkey]
+            return found[-1] if found else None
+        if dkey == hato or dkey.startswith(hato + "/"):
+            where = ("top", "now")
+        elif folder_dir in TIER_OF_FOLDER:
+            where = ("top", TIER_OF_FOLDER[folder_dir])
+        elif dkey in with_items:
+            where = ("top", "now")
+            for tier in ("soon", "now"):
+                last = show_last(tier)
+                if last is not None:
+                    where = ("after", tier, last)
+                    break
+        else:
+            tier = TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now")
+            folder = _entry_folder(entry)
+            last = max((n for n, e in enumerate(lists[tier]) if folder and _entry_folder(e) == folder), default=None)
+            where = ("after", tier, last) if last is not None else ("top", tier)
+        if where[0] == "top":
+            lists[where[1]].insert(tops[where[1]], entry)
+            tops[where[1]] += 1
+        else:
+            lists[where[1]].insert(where[2] + 1, entry)
+            if where[2] < tops[where[1]]:
+                tops[where[1]] += 1
+        with_items.add(dkey)
+    return schedule
+
+
+SYNC_IN_PROCESS_AT = 20_000      # items: from here a window's process syncs in a process of its own (§12.1)
+SYNC_TIMEOUT = 120.0
+BUILD_SPAWN_EVERY = 60.0          # s: "no store yet" spawns the builder at most this often per language
+_build_spawned = {}
+
+
+def sync_for_window(store):
+    """`sync_disk` for a window's process (the dashboard's journey check, the Content Manager), called on a
+    worker. At 100k a sync on a worker thread still stalled the window 20–60 ms through the interpreter
+    lock, whatever the switch interval (§12.1), so from `SYNC_IN_PROCESS_AT` items the sync runs in a
+    process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None."""
+    count = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    if count < SYNC_IN_PROCESS_AT:
+        return store.sync_disk()
+    import subprocess
+    args = _helper_args(store.language, "sync")
+    flags = 0x08000000 if sys.platform == "win32" else 0                # CREATE_NO_WINDOW
+    subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT)
+    return None
+
+
+def spawn_build_if_waiting(language, data_dir, user_files_dir):
+    """A window found no ready store: start the helper to build one when there is something to build from
+    (a manifest it can read, in JSON mode), at most once a minute per language (the trigger rule, §6.7).
+    The Content Manager's own open builds from the folders (`--from-folders`) instead."""
+    now = time.monotonic()
+    if now - _build_spawned.get(language, -BUILD_SPAWN_EVERY) < BUILD_SPAWN_EVERY:
+        return None
+    try:
+        mode, _reason = check_mode(language, data_dir, busy_wait=0.0)
+    except StoreError:
+        return None
+    if mode != "json" or not os.path.exists(manifest_path(user_files_dir)):
+        return None
+    _build_spawned[language] = now
+    return spawn_maintain(language)
+
+
+Store.has_content = _store_has_content
+Store.export_due = _store_export_due
 Store.folders = _store_folders
 Store.walk = _store_walk
 Store.sync_disk = _store_sync_disk
@@ -4064,8 +4200,8 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
 
 
 def main(argv=None):
-    """`python app/library_store.py maintain --language ja [--from-folders | --repair] [--check] [--retry]`.
-    Dialog-free: it catches everything and exits with maintain's code."""
+    """`python app/library_store.py maintain --language ja [--from-folders | --repair] [--check] [--retry]`,
+    or `sync --language ja`. Dialog-free: it catches everything and exits with the command's code."""
     import argparse
     parser = argparse.ArgumentParser(prog="library_store")
     sub = parser.add_subparsers(dest="command")
@@ -4076,15 +4212,35 @@ def main(argv=None):
     group.add_argument("--repair", action="store_true")
     m.add_argument("--check", action="store_true", help="run quick_check (once per launch)")
     m.add_argument("--retry", action="store_true", help="retry a failed migration (Try again)")
+    y = sub.add_parser("sync")
+    y.add_argument("--language", required=True)
     try:
         args = parser.parse_args(argv)
     except SystemExit:
         return EXIT_USAGE
+    if args.command == "sync":
+        return sync_process(args.language)
     if args.command != "maintain":
         return EXIT_USAGE
     try:
         return maintain(args.language, from_folders=args.from_folders, repair=args.repair,
                         check_integrity=args.check, retry=args.retry)
+    except Exception:
+        return EXIT_FAILED
+
+
+def sync_process(language):
+    """`sync`: a window's `sync_disk` in a process of its own (`sync_for_window`, a large library). 0 when
+    something changed, 3 nothing, 4 no ready store, 5 an update staged, 1 failed. Dialog-free."""
+    from app.path_utils import get_data_path, get_user_files_path
+    try:
+        if update_staged():
+            return EXIT_BUSY
+        store = open_store(language, get_data_path(language), get_user_files_path(language), role="window")
+        if store is None:
+            return EXIT_NEEDS_YOU
+        with store:
+            return EXIT_DONE if store.sync_disk() else EXIT_NOTHING
     except Exception:
         return EXIT_FAILED
 

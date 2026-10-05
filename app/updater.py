@@ -264,12 +264,13 @@ def defer_child(start):
         return True
 
 
-def release_children():
+def release_children(start=True):
     """The update was cancelled: children may start again, and those asked for meanwhile start now (on the
-    caller's thread). Never raises."""
+    caller's thread) — or, with `start=False` (the dashboard is closing), are dropped: they would outlive it, and an
+    automatic one asks again on the next start. Never raises."""
     with _DEFERRED_LOCK:
         _HOLD.clear()
-        waiting = list(_DEFERRED)
+        waiting = list(_DEFERRED) if start else []
         _DEFERRED.clear()
     for start in waiting:
         try:

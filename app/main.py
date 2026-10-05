@@ -2149,8 +2149,14 @@ class MasterDashboardApp:
         self._update_poll(job)
 
     def _update_downloaded(self, job):
+        if job.get("ended"):
+            # Cancelled (or closed) while it downloaded: its staging is discarded and the lock freed only now, so a
+            # new "Update now" can never stage into the folder this worker was still writing.
+            updater.discard_staged()
+            updater.drop_update_lock(job.get("lock"))
+            return
         if job is not getattr(self, "_update_job", None):
-            return                                    # cancelled meanwhile
+            return
         err = job["error"]
         if err is None:
             self.status_var.set("Update downloaded.")
@@ -2169,11 +2175,21 @@ class MasterDashboardApp:
         """Worker: what still runs (`updater.running_children`), for the next poll — the listing never runs on the
         window's thread while the update waits."""
         try:
-            job["children"] = updater.running_children(list(self.active_processes))
+            job["children"] = self._busy_threads() + updater.running_children(list(self.active_processes))
         except Exception as e:
             print(f"Update: {e}")
             job["children"] = []
         job["listing"] = False
+
+    def _busy_threads(self):
+        """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        busy = []
+        for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
+            lock = getattr(self, attr, None)
+            if lock is not None and lock.locked():
+                busy.append({"pid": None, "name": name, "stop": None})
+        return busy
 
     def _update_poll(self, job):
         """Every 300 ms while the update waits: refresh the list of what it waits for (on a worker), show it, and hand
@@ -2233,7 +2249,7 @@ class MasterDashboardApp:
             cancel.pack(side=tk.RIGHT)
             ToolTip(cancel, "Don't update now. Everything keeps running; the update is offered again later.")
             job["window"], job["rows"] = win, None
-        pids = tuple(c["pid"] for c in children)
+        pids = tuple(c["pid"] or c["name"] for c in children)
         if job["rows"] != pids:
             job["rows"] = pids
             for w in job["list_frame"].winfo_children():
@@ -2245,6 +2261,9 @@ class MasterDashboardApp:
                 row = ttk.Frame(job["list_frame"])
                 row.pack(fill=tk.X, pady=2)
                 ttk.Label(row, text=child["name"], background=BG_COLOR, foreground=TEXT_COLOR).pack(side=tk.LEFT)
+                if child["stop"] is None:              # this window's own work: it finishes by itself
+                    ttk.Label(row, text="finishing…", background=BG_COLOR, foreground="#888").pack(side=tk.RIGHT)
+                    continue
                 stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
                 stop.pack(side=tk.RIGHT)
                 ToolTip(stop, f"Stop \"{child['name']}\" now; the update goes on once nothing else is running.")
@@ -2253,6 +2272,8 @@ class MasterDashboardApp:
     def _stop_update_children(self, job, children):
         """*Stop it* (one item) or *Stop all* (None: everything listed)."""
         for child in (job["children"] or []) if children is None else children:
+            if child.get("stop") is None:
+                continue
             try:
                 child["stop"]()
             except Exception:
@@ -2260,17 +2281,20 @@ class MasterDashboardApp:
         job["children"] = None                         # ask again, now
         self._update_poll(job)
 
-    def _cancel_update(self, job):
+    def _cancel_update(self, job, start_held=True):
         """Esc / Cancel / closing the waiting window: nothing armed, the lock released, children free to start (those
-        asked for meanwhile start now); the update is offered again later."""
+        asked for meanwhile start now — but not when the dashboard itself is closing: `start_held=False`, they would
+        outlive it); the update is offered again later."""
         if job is not getattr(self, "_update_job", None):
             return
-        self._end_update(job)
-        updater.discard_staged()
+        self._end_update(job, start_held)
+        if job.get("done"):
+            updater.discard_staged()               # else the download worker discards it when it ends
         self.status_var.set("Update cancelled.")
 
-    def _end_update(self, job):
+    def _end_update(self, job, start_held=True):
         self._update_job = None
+        job["ended"] = True
         if job.get("after") is not None:
             try:
                 self.root.after_cancel(job["after"])
@@ -2282,18 +2306,20 @@ class MasterDashboardApp:
                 win.destroy()
         except Exception:
             pass
-        updater.drop_update_lock(job.get("lock"))
-        updater.release_children()
-        try:
-            self._maybe_auto_generate()                # one held back meanwhile
-        except Exception:
-            pass
+        if job.get("done"):
+            updater.drop_update_lock(job.get("lock"))  # else when the download worker ends (_update_downloaded)
+        updater.release_children(start=start_held)
+        if start_held:
+            try:
+                self._maybe_auto_generate()            # one held back meanwhile
+            except Exception:
+                pass
 
     def _apply_and_restart(self, job):
         """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the
         marker and the helper's launch, then the exit. -> True when it handed over or gave up (the update is over);
         False when something started meanwhile (the wait goes on)."""
-        if not updater.can_update_now(list(self.active_processes)):
+        if self._busy_threads() or not updater.can_update_now(list(self.active_processes)):
             job["children"] = None
             return False
         self._write_install_note()
@@ -3063,7 +3089,7 @@ class MasterDashboardApp:
         """Coordinated shutdown: terminate all active sub-processes"""
         job = getattr(self, "_update_job", None)
         if job is not None:
-            self._cancel_update(job)        # closing while an update waits: nothing armed
+            self._cancel_update(job, start_held=False)   # closing while an update waits: nothing armed, nothing started
         # The speech helper is a daemon thread, so it would die with the process anyway — but
         # closing it here releases the port immediately, so relaunching the app doesn't have to
         # fall through to the next one.
@@ -3134,6 +3160,8 @@ class MasterDashboardApp:
                 return
         except Exception:
             return
+        if updater.children_held():
+            return                      # an update waits (K75): no Anki write may begin
         if not self._anki_sync_lock.acquire(blocking=False):
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now

@@ -407,11 +407,26 @@ def test_package_app_writes_the_release_flag_for_a_release_freeze_only(tmp_path,
     assert (tmp_path / "app" / "build_info.py").read_bytes() == original
 
 
-def test_the_freeze_runs_inside_the_release_flag():
-    import inspect
-    src = inspect.getsource(package_app.build)
-    assert "_release_flag(release)" in src
-    assert src.index("_release_flag(release)") < src.index("subprocess.run(cmd")
+@pytest.mark.parametrize("release", [True, False])
+def test_the_freeze_runs_inside_the_release_flag(tmp_path, monkeypatch, release):
+    """The real build(): PyInstaller (stubbed) reads app/build_info.py as it freezes — True for a release only — and
+    the file is back as it was the moment the freeze ends (the adversary's finding 12c: this read source text)."""
+    (tmp_path / "app").mkdir()
+    original = open(os.path.join(PROJECT, "app", "build_info.py"), "rb").read()
+    (tmp_path / "app" / "build_info.py").write_bytes(original)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "get_version", lambda: "2.5.0")
+    frozen = []
+
+    def pyinstaller(cmd, **kwargs):
+        assert "PyInstaller" in cmd
+        frozen.append((tmp_path / "app" / "build_info.py").read_bytes())
+        return subprocess.CompletedProcess(cmd, 1)                     # stop there: nothing else is built
+    monkeypatch.setattr(package_app.subprocess, "run", pyinstaller)
+    package_app.build(release=release, skip_tests=True)
+    assert len(frozen) == 1
+    assert (b"RELEASE_BUILD = True" in frozen[0]) is release
+    assert (tmp_path / "app" / "build_info.py").read_bytes() == original
 
 
 # --- the packager emits the list the client checks --------------------------------------------------------------------

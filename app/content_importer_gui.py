@@ -26,6 +26,52 @@ SUCCESS_COLOR = "#03dac6"
 # A bulk Remove / Graduate / Demote updates the status line every this many files.
 BATCH_STATUS_EVERY = 100
 
+# Dialogs of ours open, or closed with the window's events not yet caught up: the focus refresh holds off
+# (_on_focus_in). A dialog closing hands the window its focus back — a FocusIn that is not the user returning.
+_DIALOGS = [0]
+
+
+def _dialog_closed(widget=None):
+    """Release one dialog's hold once the window is back in its event loop and every event pending there has run —
+    the FocusIn its closing queued among them: an idle callback runs only when none is left. Scheduled from a timer,
+    because the action after the dialog may call update_idletasks(), which runs idle callbacks but never timers."""
+    def release():
+        _DIALOGS[0] = max(0, _DIALOGS[0] - 1)
+
+    def when_idle():
+        try:
+            widget.after_idle(release)
+        except Exception:
+            release()
+    widget = widget or tk._default_root
+    try:
+        widget.after(0, when_idle)
+    except Exception:
+        release()
+
+
+class _OwnDialogs:
+    """`messagebox` / `filedialog` as this window calls them: each dialog holds the focus refresh (`_DIALOGS`)."""
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        attr = getattr(self._module, name)
+        if name.startswith("_") or not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            _DIALOGS[0] += 1
+            try:
+                return attr(*args, **kwargs)
+            finally:
+                _dialog_closed()
+        return call
+
+
+messagebox = _OwnDialogs(messagebox)
+filedialog = _OwnDialogs(filedialog)
+
 
 def place_new_entries(existing, new_entries):
     """One tab's order with `new_entries` placed in it (New_Content_Placement_Spec.md, the user
@@ -144,8 +190,7 @@ class ContentImporterApp:
             self.root.after(100, self._initial_load)
 
         # Re-read the library when the window gains focus (_on_focus_in). FocusIn also fires when a
-        # dialog of ours closes; _ignore_refresh holds it off around the confirmations.
-        self._ignore_refresh = False
+        # dialog of ours closes; _DIALOGS holds it off then.
         self._refresh_on_focus = False   # a launched tool (the splicer) is open: refresh when it closes
         self.root.bind("<FocusIn>", self._on_focus_in)
 
@@ -193,7 +238,7 @@ class ContentImporterApp:
         launched = getattr(self, "_refresh_on_focus", False)
         if not launched and (event is not None and event.widget != self.root):
             return
-        if getattr(self, "_ignore_refresh", False):
+        if _DIALOGS[0]:
             return
         self._refresh_on_focus = False
         # after(): avoid recursion if the refresh itself triggers another FocusIn.
@@ -1505,6 +1550,7 @@ class ContentImporterApp:
         dlg.geometry("520x420")
         dlg.transient(self.root)
         dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.bind("<Destroy>", lambda e: self._paste_dialog_closed() if e.widget is dlg else None)
 
         ttk.Label(dlg, text=f"Paste text to add to '{tier_label}':").pack(anchor=tk.W, padx=12, pady=(12, 6))
         name_row = ttk.Frame(dlg)
@@ -1527,6 +1573,10 @@ class ContentImporterApp:
             dlg.destroy()
 
         ttk.Button(dlg, text="Save", command=_save, style="Action.TButton").pack(pady=(0, 12))
+
+    def _paste_dialog_closed(self):
+        _DIALOGS[0] += 1                 # the FocusIn its closing hands back is not a return: held (_on_focus_in)
+        _dialog_closed(self.root)
 
     def _save_pasted_text(self, name, content, tier):
         import re
@@ -2045,9 +2095,7 @@ class ContentImporterApp:
         friendly_dest = names_map.get(dest_folder_name, dest_folder_name)
 
         msg = f"Demote {self._selection_summary(items_to_process)} from '{friendly_src}' to '{friendly_dest}'?"
-        self._ignore_refresh = True
         confirm = messagebox.askyesno("Confirm Demotion", msg)
-        self._ignore_refresh = False
 
         if not confirm:
             return
@@ -2164,9 +2212,7 @@ class ContentImporterApp:
         else:
             msg = f"Move {selection_text} from '{friendly_src}' to '{friendly_dest}'?"
             
-        self._ignore_refresh = True
         confirm = messagebox.askyesno("Confirm Graduation", msg)
-        self._ignore_refresh = False
         
         if not confirm:
             return
@@ -2477,9 +2523,15 @@ class ContentImporterApp:
         if not target_paths: return
         # Land against the near edge of the block actually dropped on.
         target_path_val = target_paths[0] if pos == "before" else target_paths[-1]
-        # Dropped on itself — compared by FILE, not by tree row: an episode dropped below its own
-        # group lands on itself, and so does a group dropped on one of its own episodes.
-        if target_path_val in set(items_to_move): return
+        # Dropped on itself — compared by FILE, not by tree row. A block that is all being moved (a group
+        # dropped on one of its own episodes) moves nothing. When only its near edge is (an episode dropped
+        # below its own group, perhaps with files from elsewhere), the block's files stay where they are and
+        # the rest land against it.
+        moving = set(items_to_move)
+        if moving.issuperset(target_paths): return
+        if target_path_val in moving:
+            items_to_move = [p for p in items_to_move if p not in set(target_paths)]
+            if not items_to_move: return
 
         # Selection is restored by NODE, captured before the manifest write rebuilds the tree and
         # invalidates the ids (see _restore_selection).

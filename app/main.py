@@ -2266,7 +2266,8 @@ class MasterDashboardApp:
                     continue
                 stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
                 stop.pack(side=tk.RIGHT)
-                ToolTip(stop, f"Stop \"{child['name']}\" now; the update goes on once nothing else is running.")
+                ToolTip(stop, f"Close \"{child['name']}\" as if you closed it yourself (it finishes what it is doing; "
+                              "a task without a window is stopped). The update goes on once nothing else is running.")
         job["status"].config(text="Downloading the update…" if not job["done"] else "The update is downloaded.")
 
     def _stop_update_children(self, job, children):

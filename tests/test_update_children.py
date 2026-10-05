@@ -491,3 +491,63 @@ def test_no_anki_sync_starts_while_an_update_waits(dash, monkeypatch):
     updater.release_children()
     dash._maybe_anki_sync(force=True)
     assert asked == [1]
+
+
+# --- *Stop it* closes a window as its user would (the adversary's finding 7) -----------------------------------------
+
+_TK_CHILD = """
+import pathlib, sys, tkinter as tk
+out = pathlib.Path(sys.argv[1])
+root = tk.Tk()
+root.title("コンテンツマネージャー")
+def close():
+    out.write_text("closed by its own handler", encoding="utf-8")
+    root.destroy()
+root.protocol("WM_DELETE_WINDOW", close if sys.argv[2] == "closes" else (lambda: None))
+root.after(200, lambda: pathlib.Path(sys.argv[1] + ".ready").write_text("1"))
+root.mainloop()
+"""
+
+
+def _tk_child(tmp_path, behaviour):
+    out = tmp_path / f"{behaviour}.txt"
+    p = _REAL_POPEN([sys.executable, "-c", _TK_CHILD, str(out), behaviour])
+    end = time.monotonic() + 15
+    while not os.path.exists(str(out) + ".ready") and time.monotonic() < end:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    return p, out
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WM_CLOSE is Windows'")
+def test_stop_it_closes_a_window_through_its_own_close(procs, tmp_path):
+    """A Content Manager mid-Graduate must finish its move and save: *Stop it* asks its window to close, so its own
+    WM_DELETE_WINDOW handler runs — never a TerminateProcess under it."""
+    p, out = _tk_child(tmp_path, "closes")
+    procs.append(p)
+    p.surasura_desc = "Content Manager"
+    [child] = updater.running_children([p], images=[])
+    child["stop"]()
+    assert p.wait(timeout=15) == 0                                    # its own exit, not TerminateProcess's 1
+    assert out.read_text(encoding="utf-8") == "closed by its own handler"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WM_CLOSE is Windows'")
+def test_a_window_that_will_not_close_is_ended_after_the_grace(procs, tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "STOP_GRACE", 1.5)
+    p, out = _tk_child(tmp_path, "stays")
+    procs.append(p)
+    updater.stop_pid(p.pid)
+    time.sleep(0.5)
+    assert p.poll() is None                                           # its grace: not ended at once
+    assert p.wait(timeout=15) == 1
+    assert not out.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' process handles")
+def test_a_program_without_a_window_is_ended_at_once(procs):
+    p = _sleeper(60)
+    procs.append(p)
+    start = time.monotonic()
+    updater.stop_pid(p.pid)
+    assert p.wait(timeout=10) == 1 and time.monotonic() - start < 5

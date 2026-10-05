@@ -351,26 +351,70 @@ def _processes_running(images):
     return found
 
 
-def stop_pid(pid):
-    """End a process by its id (one this app didn't start: no Popen to ask). Never raises."""
+STOP_GRACE = 20.0       # seconds a program asked to close its windows has, before it is ended
+
+
+def _close_windows(pid):
+    """Ask each visible top-level window of `pid` to close (WM_CLOSE: the program's own close, as its user's click
+    on X — run after whatever it is doing). -> how many were asked. Windows only."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    each_window = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    u32.EnumWindows.argtypes = [each_window, wintypes.LPARAM]
+    u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u32.IsWindowVisible.argtypes = [wintypes.HWND]
+    u32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    windows = []
+
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and u32.IsWindowVisible(hwnd):
+            windows.append(hwnd)
+        return True
+
+    u32.EnumWindows(each_window(visit), 0)
+    for hwnd in windows:
+        u32.PostMessageW(hwnd, 0x0010, 0, 0)                     # WM_CLOSE
+    return len(windows)
+
+
+def stop_pid(pid, grace=None):
+    """*Stop it*: a program with a window is asked to close it, as its user would — a Content Manager mid-Graduate
+    finishes the move and saves before it closes; one with no window (Generate, the パターン build), or still running
+    `STOP_GRACE` seconds later, is ended. Returns at once (the grace runs on a thread). Never raises."""
     try:
-        if sys.platform == "win32":
-            import ctypes
-            from ctypes import wintypes
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.OpenProcess.restype = wintypes.HANDLE
-            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-            k32.CloseHandle.argtypes = [wintypes.HANDLE]
-            handle = k32.OpenProcess(0x0001, False, int(pid))        # PROCESS_TERMINATE
-            if handle:
-                try:
-                    k32.TerminateProcess(handle, 1)
-                finally:
-                    k32.CloseHandle(handle)
-        else:
+        if sys.platform != "win32":
             import signal
             os.kill(int(pid), signal.SIGTERM)
+            return
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = k32.OpenProcess(0x00100001, False, int(pid))      # SYNCHRONIZE | PROCESS_TERMINATE
+        if not handle:
+            return
+        asked = _close_windows(int(pid))
+
+        def end():
+            try:
+                wait_ms = int((STOP_GRACE if grace is None else grace) * 1000)
+                if not asked or k32.WaitForSingleObject(handle, wait_ms) != 0:     # 0: it closed itself
+                    k32.TerminateProcess(handle, 1)
+            finally:
+                k32.CloseHandle(handle)
+
+        if asked:
+            threading.Thread(target=end, daemon=True).start()
+        else:
+            end()
     except Exception:
         pass
 
@@ -379,7 +423,7 @@ def _stopper(process):
     def stop():
         try:
             if process.poll() is None:
-                process.terminate()
+                stop_pid(process.pid)       # the Popen's handle keeps its id from being reused meanwhile
         except Exception:
             pass
     return stop

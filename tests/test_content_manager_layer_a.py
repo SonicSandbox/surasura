@@ -62,7 +62,8 @@ class LayerATestBase(unittest.TestCase):
                 shutil.rmtree(d, ignore_errors=True)
             os.makedirs(d, exist_ok=True)
         self._write_manifest({})
-        self.app._ignore_refresh = False
+        from app import content_importer_gui
+        content_importer_gui._DIALOGS[0] = 0
         self.app._refresh_on_focus = False
         self._pump()          # drain any focus refresh a previous test left pending
         self.app.notebook.select(0)
@@ -286,14 +287,62 @@ class TestA2FocusHandler(LayerATestBase):
             refresh.assert_called_once_with(force=True, sync=True)
 
     def test_focus_is_ignored_while_a_dialog_of_ours_is_open(self):
-        self.app._ignore_refresh = True
-        try:
-            with patch.object(self.app, "refresh_file_list") as refresh:
-                self.app._on_focus_in(self._focus_event(self.root))
-                self._pump()
-                refresh.assert_not_called()
-        finally:
-            self.app._ignore_refresh = False
+        from app import content_importer_gui as ci
+
+        def dialog(*args, **kwargs):
+            self.app._on_focus_in(self._focus_event(self.root))
+            return True
+        with patch.object(self.app, "refresh_file_list") as refresh,                 patch("tkinter.messagebox.askyesno", side_effect=dialog):
+            self.assertTrue(ci.messagebox.askyesno("確認", "「本.txt」を移動しますか？"))
+            self._pump()
+            refresh.assert_not_called()
+
+    def _dialog_queues_focus_in(self, *args, **kwargs):
+        """A dialog of ours closing: Windows hands the window its focus back — a real FocusIn, queued behind it."""
+        self.root.event_generate("<FocusIn>", when="tail")
+        return True
+
+    def test_the_focus_a_closing_dialog_hands_back_does_not_refresh(self):
+        """The adversary's finding 6: every dialog closing fired a focus refresh after its action's own refresh
+        (two rebuilds and a disk walk per Remove / Add / Reset). Real events: the FocusIn queued as the
+        confirmation closes runs after the action, and refreshes nothing; the user coming back later still does."""
+        from app import content_importer_gui as ci
+        self._library(["HighPriority/本.txt"])
+        with patch.object(self.app, "_refresh_from_focus") as refresh,                 patch("tkinter.messagebox.askyesno", side_effect=self._dialog_queues_focus_in),                 patch("tkinter.filedialog.askopenfilenames", side_effect=self._dialog_queues_focus_in):
+            ci.messagebox.askyesno("確認", "「本.txt」を移動しますか？")
+            self._pump()
+            refresh.assert_not_called()
+            ci.filedialog.askopenfilenames(title="ファイルを選ぶ")
+            self._pump()
+            refresh.assert_not_called()
+            self.root.event_generate("<FocusIn>", when="tail")          # back from Explorer
+            self._pump()
+            refresh.assert_called_once_with()
+
+    def test_a_real_demote_refreshes_once(self):
+        """Through the action itself: Demote's confirmation closes, the move refreshes, and the FocusIn the
+        confirmation handed back adds no second refresh."""
+        self._library(["HighPriority/本.txt", "HighPriority/漫画.txt"])
+        self.app.tree.selection_set(self._row("HighPriority/本.txt"))
+        with patch.object(self.app, "_refresh_from_focus") as refresh,                 patch("tkinter.messagebox.askyesno", side_effect=self._dialog_queues_focus_in):
+            self.app.demote_content()
+            self._pump()
+            refresh.assert_not_called()
+        self.assertTrue(os.path.exists(os.path.join(self.app.data_root, "LowPriority", "本.txt")))
+
+    def test_the_paste_dialog_closing_does_not_refresh_but_a_return_while_it_is_open_does(self):
+        with patch.object(self.app, "_refresh_from_focus") as refresh:
+            self.app.paste_text_dialog()
+            self.root.update()
+            dlg = [w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel) and w.title() == "Paste text"][0]
+            self.root.event_generate("<FocusIn>", when="tail")          # back to the main window, dialog open
+            self._pump()
+            refresh.assert_called_once_with()
+            refresh.reset_mock()
+            dlg.destroy()
+            self.root.event_generate("<FocusIn>", when="tail")          # the focus its closing hands back
+            self._pump()
+            refresh.assert_not_called()
 
 
 class TestA7SelfDropAndModifiers(LayerATestBase):
@@ -330,6 +379,34 @@ class TestA7SelfDropAndModifiers(LayerATestBase):
         rels = self._series_library()
         self._drag(self._row(rels[2]), self._row(group=SERIES), "top")
         self.assertEqual(self._now_paths(), [rels[2], rels[0], rels[1], rels[3]])
+
+    def _drag_with(self, rels_selected_first, ctrl_row, dst_row, half):
+        """Select the first rows, then begin the drag with a Ctrl-press on one more (a drag of several rows)."""
+        self._press(self._row(rels_selected_first))
+        x0, y0 = self._y(ctrl_row, "top")
+        self.app.tree.event_generate("<ButtonPress-1>", x=x0, y=y0, state=0x0004)
+        x1, y1 = self._y(dst_row, half)
+        self.app.tree.event_generate("<B1-Motion>", x=x1, y=y1, state=0x0004)
+        self.app.tree.event_generate("<ButtonRelease-1>", x=x1, y=y1, state=0x0004)
+        self.root.update()
+
+    def test_a_loose_file_dropped_below_a_group_with_its_last_episode_still_moves(self):
+        """The adversary's finding 8: the last episode and a loose file dropped below the group — the near
+        edge was being moved, so the whole drop was refused and the loose file stayed. Now the group's own
+        episode stays where it is and the loose file lands below the group."""
+        rels = ["HighPriority/本.txt", f"HighPriority/{SERIES}/第01話.txt", f"HighPriority/{SERIES}/第02話.txt",
+                f"HighPriority/{SERIES}/第03話.txt"]
+        self._library(rels)
+        self._drag_with(rels[0], self._row(rels[3]), self._row(group=SERIES), "bottom")
+        self.assertEqual(len(self.app.tree.selection()), 2)
+        self.assertEqual(self._now_paths(), rels[1:] + rels[:1])
+
+    def test_a_loose_file_dropped_above_a_group_with_its_first_episode_still_moves(self):
+        rels = [f"HighPriority/{SERIES}/第01話.txt", f"HighPriority/{SERIES}/第02話.txt",
+                f"HighPriority/{SERIES}/第03話.txt", "HighPriority/本.txt"]
+        self._library(rels)
+        self._drag_with(rels[3], self._row(rels[0]), self._row(group=SERIES), "top")
+        self.assertEqual(self._now_paths(), rels[3:] + rels[:3])
 
     def test_ctrl_click_selects_two_rows(self):
         rels = self._series_library()

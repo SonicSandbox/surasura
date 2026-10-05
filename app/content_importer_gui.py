@@ -357,6 +357,7 @@ class ContentImporterApp:
         self._worker_wake = threading.Event()
         self._worker_stop = threading.Event()
         self._worker_results = queue.Queue()
+        self._worker_wake.set()                          # the first poll at once: the open's walk waits for nothing
         self._worker = threading.Thread(target=self._store_worker, daemon=True)
         self._worker.start()
         self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
@@ -370,6 +371,8 @@ class ContentImporterApp:
             self._sync_wanted = True
             wake.set()
             return
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            return                                       # open's own focus, before the worker starts: its first walk
         store = self._store()
         if store is not None:
             try:
@@ -396,6 +399,9 @@ class ContentImporterApp:
                     poll = library_store.DiskPoll(store)
                     poll.check()
                     token = store.token()
+                    # The tree was drawn before this token: a change made in between is checked against the
+                    # versions it was drawn at (the fast path redraws only if they moved).
+                    self._worker_results.put(("check", None, 0.0))
                 sync, self._sync_wanted = self._sync_wanted, False
                 changed = poll.check()
                 if sync or changed:
@@ -421,11 +427,13 @@ class ContentImporterApp:
                 return
         except Exception:
             return
-        refresh = False
+        refresh = check = False
         try:
             while True:
                 kind, value, _took = self._worker_results.get_nowait()
-                if kind == "synced" and value:
+                if kind == "check":
+                    check = True
+                elif kind == "synced" and value:
                     refresh = True
                     added = len(value.get("added") or [])
                     if added:
@@ -444,9 +452,9 @@ class ContentImporterApp:
             else:
                 self.status_var.set("Your library order is kept in its file for now (the store couldn't be made).")
         self._update_store_banner()
-        if refresh:
+        if refresh or check:
             try:
-                self.refresh_file_list(force=True)
+                self.refresh_file_list(force=refresh)
             except Exception:
                 pass
         self.root.after(STORE_DRAIN_MS, self._drain_store_worker)

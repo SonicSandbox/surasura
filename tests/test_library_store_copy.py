@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -56,7 +57,8 @@ def test_every_reader_loads_the_copy_unchanged(language):
     assert reels.load_manifest(language) == copy
     preview = pytest.importorskip("modules.youtube_downloader.preview")
     src = touch(os.path.join(os.environ["SURASURA_TEST_ROOT"], "incoming"), names(language)[30] + " [abcdefghijk].txt")
-    added = preview.commit_to_front([src], language)          # 2.4.0's preview on a 2.5 copy
+    with patch.object(preview, "_library_mode", return_value="json"):   # 2.4.0's preview: 2.5's JSON mode
+        added = preview.commit_to_front([src], language)      # 2.4.0's preview on a 2.5 copy
     after = read_doc(user_files_dir)
     assert added and after["surasura_library"] == copy["surasura_library"], "an older writer keeps the key"
     assert after["schedule"]["PHASE_1_NOW"][1:] == copy["schedule"]["PHASE_1_NOW"]

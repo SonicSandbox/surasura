@@ -22,6 +22,7 @@ import pytest
 import tkinter as tk
 
 from app import library_store as ls
+from app import content_importer_gui as cig
 from app.content_importer_gui import ContentImporterApp
 from tests.test_library_store_support import (LANGUAGES, library, names, read_doc, roots, subprocess_env, touch,
                                               write_manifest)
@@ -35,6 +36,7 @@ def window():
     made = []
 
     def make(language):
+        cig._DIALOGS[0] = 0                              # a dialog hold left by an earlier test's root never releases
         root = tk.Tk()
         app = ContentImporterApp(root, language)
         made.append(root)
@@ -162,6 +164,8 @@ def test_no_order_or_tier_action_moves_a_file(window, language):
     with patch.object(app, "_resolve_items_to_paths", return_value=soon[:3]), \
          patch.object(app.tree, "selection", return_value=("row",)):
         app.graduate_content()
+    graduated = [os.path.relpath(p, data_dir).replace("\\", "/") for p in soon[:3]]
+    assert all(g in _order(app, "now") for g in graduated), "Graduate from Soon took the three to NOW"
     app.reset_to_folder_structure()
 
     assert {t: _order(app, t) for t in ls.ANALYSED} != order0
@@ -345,17 +349,20 @@ def test_a_json_mode_save_without_a_lock_file_saves_and_says_so(window, language
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_tree_ignores_receipts_and_pins_but_follows_another_windows_move(window, language, monkeypatch):
     """The tree's key is (epoch, order_version, availability_version): a receipt or a pin written by another
-    process never rebuilds it; another window's move does, within one poll of the worker."""
+    process never rebuilds it; another window's move, or a file deleted on disk, does, within one poll of the
+    worker."""
     _store_library(language)
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     app = window(language)
     assert _pump(app, lambda: bool(_tree_paths(app)))
+    app._refresh_from_focus = lambda: None               # only the worker's poll may redraw here
     calls = []
     real = ls.Store.ordered
     monkeypatch.setattr(ls.Store, "ordered", lambda self, tier: calls.append(tier) or real(self, tier))
     first = app._store().ids("now")[0]
     _other_process(language, f"store.pin([{first}])\nstore.receipt({first}, '2026-10-05T00:00:00Z')\n")
     app.refresh_file_list()
+    _pump(app, lambda: False, timeout=0.8)               # the worker's first results drained, its polls seen
     assert calls == [], "a pin or a receipt rebuilt the tree"
 
     shown = _tree_paths(app)
@@ -365,6 +372,30 @@ def test_the_tree_ignores_receipts_and_pins_but_follows_another_windows_move(win
     took = time.monotonic() - t0
     assert _tree_paths(app) == [p for p in _order(app, "now")]
     assert took < (1.2 if BENCH else 3.0), took
+
+    # An availability change (a file deleted outside the app): the worker's poll sees its folder change, the sync
+    # marks it missing, and the tree drops the row within one poll.
+    gone = _tree_paths(app)[0]
+    os.remove(os.path.join(app.data_root, *gone.split("/")))
+    t0 = time.monotonic()
+    assert _pump(app, lambda: gone not in _tree_paths(app), timeout=3.0), "a deleted file stayed in the tree"
+    assert time.monotonic() - t0 < (1.2 if BENCH else 3.0)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_between_the_first_draw_and_the_workers_start_still_shows(window, language, monkeypatch):
+    """The tree is drawn at open, the worker starts after it: another window's move in between is checked against
+    the versions the tree was drawn at (the worker's first poll), never taken as the worker's starting point."""
+    _store_library(language)
+    app = window(language)                               # SURASURA_NO_UI_TIMERS: no worker yet
+    assert _pump(app, lambda: bool(_tree_paths(app)))
+    app._refresh_from_focus = lambda: None
+    shown = _tree_paths(app)
+    _other_process(language, "ids = store.ids('now')\nstore.move([ids[0]], 'now', after_id=ids[-1])\n")
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app._start_store_worker()
+    assert _pump(app, lambda: _tree_paths(app) != shown, timeout=3.0), "a move made before the worker started never showed"
+    assert _tree_paths(app) == _order(app, "now")
 
 
 # --- S1.1's smoothness rows 1, 2, 4: the worker, at 2k and 20k ------------------------------------------- #
@@ -402,9 +433,12 @@ def test_open_and_focus_walk_on_the_worker_never_the_windows_thread(window, size
     ≈0.9 s at 20k on it, per focus). The figures are printed for the as-built notes."""
     language = "ja"
     _big_library(language, size)
-    walks = []
-    real = ls.walk_library
-    monkeypatch.setattr(ls, "walk_library", lambda d: walks.append(threading.current_thread()) or real(d))
+    # One sync is one walk: in this process under SYNC_IN_PROCESS_AT items, in a process of its own above it
+    # (20k), where an in-process count of walk_library would see none. Both are counted, with the thread asking.
+    walks, in_process = [], []
+    real_sync, real_walk = ls.sync_for_window, ls.walk_library
+    monkeypatch.setattr(ls, "sync_for_window", lambda s: walks.append(threading.current_thread()) or real_sync(s))
+    monkeypatch.setattr(ls, "walk_library", lambda d: in_process.append(threading.current_thread()) or real_walk(d))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     t0 = time.perf_counter()
     app = window(language)
@@ -419,7 +453,8 @@ def test_open_and_focus_walk_on_the_worker_never_the_windows_thread(window, size
         app._refresh_from_focus()
         focus.append(time.perf_counter() - t1)
         _pump(app, lambda: len(walks) >= 2 + _, timeout=30)
-    assert all(t is not threading.main_thread() for t in walks), "a walk ran on the window's thread"
+    assert all(t is not threading.main_thread() for t in walks + in_process), "a walk ran on the window's thread"
+    assert len(walks) == 6, f"{len(walks)} syncs for an open and five focus returns"
     focus.sort()
     print(f"\n[store mode] {size} files: open {opened * 1000:.0f} ms (tree shown), "
           f"focus on the window's thread p50 {focus[2] * 1000:.1f} ms, max {focus[-1] * 1000:.1f} ms")

@@ -85,6 +85,9 @@ def test_undo_add_files_trashes_the_copies_and_keeps_a_later_drag(gui, tmp_path)
 
     assert not os.path.exists(added)
     assert any(n.startswith("こころ_") for n in os.listdir(os.path.join(gui.data_root, ".trash")))
+    row = gui._store().trash_rows()[-1]                          # the trash row knows where the file went
+    assert row["rel_path"] == "HighPriority/こころ.txt" and row["trashed_path"].startswith(".trash/こころ_")
+    assert os.path.isfile(os.path.join(gui.data_root, *row["trashed_path"].split("/")))
     assert _order(gui, "now") == ["HighPriority/第02話.srt", "HighPriority/第01話.srt"], "the drag is kept"
 
 
@@ -130,6 +133,24 @@ def test_undo_remove_puts_the_file_and_its_place_back(gui):
     gui.undo_last_action()
     assert os.path.exists(files[1])
     assert _order(gui, "now") == before
+
+
+def test_undo_remove_never_overwrites_a_file_that_took_the_name(gui):
+    """Removed, then a new file saved under the same name: Undo puts the removed one back beside it (`_1`), never
+    over it, and its row points at the name it went back to."""
+    files = [_write(os.path.join(gui.data_root, "HighPriority", f"第{n:02d}話.srt"), EPISODE + str(n)) for n in (1, 2, 3)]
+    _to_store(gui)
+    before = _order(gui, "now")
+    with _select(gui, "HighPriority", [files[1]]):
+        gui.remove_files()
+    _write(files[1], EPISODE + "新しい")
+    gui.undo_last_action()
+    with open(files[1], encoding="utf-8") as f:
+        assert f.read() == EPISODE + "新しい", "the new file is untouched"
+    back = os.path.join(gui.data_root, "HighPriority", "第02話_1.srt")
+    with open(back, encoding="utf-8") as f:
+        assert f.read() == EPISODE + "2"
+    assert _order(gui, "now") == [before[0], "HighPriority/第02話_1.srt", before[2]]
 
 
 def test_undo_is_off_in_json_mode(gui, tmp_path):

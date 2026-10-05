@@ -1,4 +1,5 @@
 import codecs
+import hashlib
 import os
 import re
 import sys
@@ -63,6 +64,171 @@ def get_persistent_user_data_path():
         os.makedirs(path, exist_ok=True)
         
     return path
+
+def _local_data_root():
+    """The per-user LOCAL data folder (never roams, never redirected to a network share), one root for every system
+    (S1.1 K100; the library store and the command line build on it):
+    Windows %LOCALAPPDATA%, macOS ~/Library/Application Support, Linux $XDG_DATA_HOME (else ~/.local/share),
+    each + SonicSandbox/Surasura."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "SonicSandbox", "Surasura")
+
+def local_data_root():
+    """The local data root (`_local_data_root`): where `installs.json`, the note naming every install's data folder,
+    lives. SURASURA_TEST_ROOT moves it to <test root>/local_root; a test that reaches the real one raises."""
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        return os.path.join(root, "local_root")
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError("a test reached the real local data root: set SURASURA_TEST_ROOT")
+    return _local_data_root()
+
+def _install_key(install_dir):
+    """16 hex characters naming one install, as the library store keys its database (Library_Store_Spec §6.1, §6.4):
+    a development checkout and an installed copy never share a folder; a moved install gets a new one."""
+    p = os.path.realpath(install_dir).replace("\\", "/")
+    if sys.platform == "win32":
+        p = os.path.normcase(p)
+    elif sys.platform == "darwin":
+        import unicodedata
+        p = unicodedata.normalize("NFC", p).casefold()
+    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
+
+def get_local_data_path():
+    """
+    Get the per-install LOCAL data folder: the command line's logs, locks and events (P0.3 02-contract §6), and the
+    update's lock and state (S1.1).
+    Windows: %LOCALAPPDATA%/SonicSandbox/Surasura/<install key>/
+    macOS: ~/Library/Application Support/SonicSandbox/Surasura/<install key>/
+    Linux: $XDG_DATA_HOME (else ~/.local/share)/SonicSandbox/Surasura/<install key>/
+    SURASURA_TEST_ROOT moves it to <test root>/local; a test that reaches the real one raises.
+    """
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        path = os.path.join(root, "local")
+    elif "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError("a test reached the real local data folder: set SURASURA_TEST_ROOT")
+    else:
+        path = os.path.join(_local_data_root(), _install_key(get_user_data_path()))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def try_lock(path):
+    """Take an OS lock on `path`'s byte 0 without waiting (the lock pattern the command line probes) -> the open file,
+    which holds the lock until `release_lock` or until this process dies; None when another holder has it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        f = open(path, "a+b")
+    except PermissionError:
+        return None
+    try:
+        f.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+def release_lock(f):
+    """Release a `try_lock` lock. Never raises."""
+    if f is None:
+        return
+    try:
+        f.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        f.close()
+    except OSError:
+        pass
+
+INSTALLS_NOTE = "installs.json"
+
+def _install_entry_key(entry):
+    try:
+        return os.path.normcase(os.path.realpath(entry["data_root"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+def read_install_note(path=None):
+    """The installs the note names (a list of dicts; [] when there is none or it is unreadable)."""
+    path = path or os.path.join(local_data_root(), INSTALLS_NOTE)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+def _install_languages(data_root):
+    return [lang for lang in ("ja", "zh")
+            if os.path.isdir(os.path.join(data_root, "User Files", lang))
+            or os.path.isdir(os.path.join(data_root, "data", lang))]
+
+def write_install_note(frozen=None):
+    """K100: leave a note in the local data root naming this install's data folder, so 3.0's first start finds the
+    library. One entry per install, {data_root, exe, version, languages, last_run}; an install writes only its own.
+    Written by the frozen app only, at the dashboard's start and just before an update hands over. A unique temp file
+    swapped in, then read back: when this install's entry is missing (another install wrote at the same moment), it
+    is written again, up to three times; a short lock on `installs.lock` keeps two writers from crossing at all when
+    the system allows it. -> True when the note names this install. Never raises: a failure is logged."""
+    if not (is_frozen() if frozen is None else frozen):
+        return False
+    try:
+        from app import __version__
+        root = local_data_root()
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, INSTALLS_NOTE)
+        data_root = get_user_data_path()
+        me = {"data_root": data_root, "exe": sys.executable, "version": __version__,
+              "languages": _install_languages(data_root),
+              "last_run": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        key = _install_entry_key(me)
+        lock = None
+        for _ in range(20):                        # wait at most ~1 s for another writer's lock
+            lock = try_lock(os.path.join(root, "installs.lock"))
+            if lock is not None:
+                break
+            time.sleep(0.05)
+        try:
+            for _attempt in range(3):
+                entries = [e for e in read_install_note(path) if _install_entry_key(e) != key] + [me]
+                tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
+                try:
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(entries, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp, path)
+                except OSError:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                    time.sleep(0.05)
+                    continue
+                if any(_install_entry_key(e) == key for e in read_install_note(path)):
+                    return True
+        finally:
+            release_lock(lock)
+        print(f"Install note: this install's entry did not stay in {path}")
+    except Exception as e:
+        print(f"Install note: could not write it ({e})")
+    return False
 
 def get_resource(path):
     """Resolve a resource path relative to the bundle."""

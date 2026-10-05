@@ -583,7 +583,11 @@ class MasterDashboardApp:
         # would otherwise go online.
         if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
-        
+
+        # The note naming this install's data folder, for 3.0's first start (K100). Frozen builds only; off the
+        # window's thread, and a failure is only logged (write_install_note never raises).
+        threading.Thread(target=self._write_install_note, daemon=True).start()
+
         # Initial UI update for language
         self.update_ui_for_language()
         
@@ -1924,6 +1928,14 @@ class MasterDashboardApp:
         except Exception as e:
             print(f"Error launching Immersion Architect: {e}")
             messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
+
+    @staticmethod
+    def _write_install_note():
+        try:
+            from app import path_utils
+            path_utils.write_install_note()
+        except Exception as e:
+            print(f"Install note: {e}")
 
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.

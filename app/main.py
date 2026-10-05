@@ -1957,7 +1957,7 @@ class MasterDashboardApp:
                 cls, info,
                 skipped_version=cur.get("skipped_version", ""),
                 auto_enabled=cur.get("auto_update_enabled", True),
-                can_apply=updater.can_auto_apply(),
+                can_apply=updater.can_auto_apply(info),
                 failed_version=cur.get("failed_update_version", ""),
             )
             if cls == "NONE" or info is None:
@@ -2089,8 +2089,9 @@ class MasterDashboardApp:
         info = self._update_info
         if not info:
             return
-        if not updater.can_auto_apply():
-            # No bundled updater.exe (e.g. running from source) — fall back to manual.
+        if not updater.can_auto_apply(info):
+            # No bundled updater.exe (e.g. running from source), or a file list naming a destination an in-place
+            # update may not write — fall back to manual.
             webbrowser.open(info.notes_url)
             return
         self._start_update(info, updater.prepare_update)

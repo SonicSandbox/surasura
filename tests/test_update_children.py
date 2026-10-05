@@ -63,7 +63,7 @@ def dash(monkeypatch):
                                   app_package_url="https://example.invalid/Surasura_app_v2.5.1.zip")
     app._update_class = "APP"
     calls = {"armed": [], "destroyed": 0, "discarded": 0, "staged": {"target_version": "2.5.1", "targets": []}}
-    monkeypatch.setattr(updater, "can_auto_apply", lambda: True)
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
     monkeypatch.setattr(updater, "prepare_update", lambda info, progress_cb=None: calls["staged"])
     monkeypatch.setattr(updater, "arm_and_launch", lambda staged: calls["armed"].append(staged))
     monkeypatch.setattr(updater, "discard_staged", lambda: calls.__setitem__("discarded", calls["discarded"] + 1))

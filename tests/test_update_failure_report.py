@@ -89,7 +89,7 @@ def _download_fails_with(monkeypatch, reason):
     def _fail(info, progress_cb=None):
         raise updater.UpdateError(reason)
 
-    monkeypatch.setattr(updater, "can_auto_apply", lambda: True)
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
     monkeypatch.setattr(updater, "prepare_update", _fail)
     monkeypatch.setattr(main, "threading", types.SimpleNamespace(Thread=_NowThread))
     shown = []

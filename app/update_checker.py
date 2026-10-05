@@ -2,9 +2,13 @@ import urllib.request
 import urllib.error
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Tuple
+
+from app import build_info
 
 # Simple logger setup
 logger = logging.getLogger(__name__)
@@ -12,6 +16,10 @@ logger = logging.getLogger(__name__)
 _USER_AGENT = "Surasura-Readability-Analyzer"
 _LATEST_RELEASE_API = "https://api.github.com/repos/{repo}/releases/latest"
 _RELEASES_PAGE = "https://github.com/{repo}/releases/latest"
+
+# A test release's rehearsal points the check at a LOCAL folder holding update.json and the release's assets, read
+# only by a build that is not a release build (`build_info.RELEASE_BUILD`): no test release is ever published.
+UPDATE_SOURCE_ENV = "SURASURA_UPDATE_SOURCE"
 
 
 def parse_version(version_str: str) -> Tuple[int, ...]:
@@ -51,6 +59,7 @@ class UpdateInfo:
     runtime_baseline: str = "0.0"      # earliest version whose _internal runtime is compatible
     critical: bool = False
     sha256: str = ""
+    files: Optional[list] = None       # the release's file list (K99): {name, dest, kind, sha256} each; None = 2.4.0's
     app_package_url: Optional[str] = None
     full_url: Optional[str] = None
     notes_url: str = ""
@@ -114,8 +123,9 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
     still notified but nothing is ever auto-applied on bad metadata. Returns None on no
     release / network error.
     """
+    local = _local_source()
     try:
-        data = _http_json(_LATEST_RELEASE_API.format(repo=repo), timeout=timeout)
+        data = _local_release(local) if local else _http_json(_LATEST_RELEASE_API.format(repo=repo), timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             logger.error(f"HTTP Error fetching release: {e}")
@@ -161,7 +171,7 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
 
     if manifest_url:
         try:
-            raw = _http_text(manifest_url, timeout=timeout)
+            raw = _read_local(manifest_url) if local else _http_text(manifest_url, timeout=timeout)
             manifest = json.loads(raw) if raw else {}
             if isinstance(manifest, dict):
                 info.update_type = str(manifest.get("update_type", "full")).lower()
@@ -172,12 +182,41 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
                 manifest_version = version_string(str(manifest.get("version", "")))
                 if manifest_version:
                     info.version = manifest_version
+                if "files" in manifest:
+                    files = manifest.get("files")
+                    if isinstance(files, list) and files and all(isinstance(f, dict) for f in files):
+                        info.files = files
+                    else:
+                        info.update_type = "full"     # a list we can't read: manual (fail closed)
         except Exception as e:
             # Fail closed: unreadable manifest => manual full update only.
             logger.error(f"Could not parse update manifest: {e}")
             info.update_type = "full"
 
     return info
+
+
+def _local_source():
+    """The rehearsal's local folder, or None: never in a release build, never when it isn't a folder."""
+    folder = os.environ.get(UPDATE_SOURCE_ENV)
+    if not folder or getattr(build_info, "RELEASE_BUILD", True):
+        return None
+    return folder if os.path.isdir(folder) else None
+
+
+def _local_release(folder):
+    """The local folder as GitHub's latest-release answer: its update.json names the version; every file in it is
+    an asset, reached by a file:// URL (urllib reads those as it reads https)."""
+    with open(os.path.join(folder, "update.json"), "r", encoding="utf-8") as f:
+        version = str(json.load(f).get("version", ""))
+    assets = [{"name": name, "browser_download_url": Path(os.path.abspath(os.path.join(folder, name))).as_uri()}
+              for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))]
+    return {"tag_name": f"v{version}", "html_url": Path(os.path.abspath(folder)).as_uri(), "assets": assets}
+
+
+def _read_local(url):
+    with urllib.request.urlopen(url) as response:
+        return response.read().decode("utf-8")
 
 
 def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:

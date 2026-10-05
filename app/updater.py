@@ -1,16 +1,23 @@
 """In-app update stager.
 
 Turns an available :class:`~app.update_checker.UpdateInfo` into an armed, verified update:
-download the app-code package -> checksum it -> extract & validate it -> write the
-``pending_update.json`` marker. The actual on-disk swap is performed AFTER the app exits by
-the standalone ``updater.exe`` (see ``updater_helper.py``); this module only stages and hands
-off, then reads back the result on the next launch.
+download the app-code package -> checksum it -> extract & validate it -> (once nothing else of
+Surasura's runs, K75) write the ``pending_update.json`` marker and start the helper. The actual
+on-disk swap is performed AFTER the app exits by the standalone ``updater.exe`` (see
+``updater_helper.py``); this module only stages and hands off, then reads back the result on the
+next launch.
+
+What is swapped comes from the release: since 2.5 its update.json lists every file with its
+sha256 (``files``: Surasura.exe, surasura-cli.exe, RELEASE_NOTES.md, anything under ``_internal/``
+— an allow-list, `resolve_destination`); a release without the list gets the three targets 2.4.0
+swapped (the exe, ``_internal/templates``, RELEASE_NOTES.md). A file the release adds is created
+by the swap; if the swap fails, the relaunched app deletes it (`consume_result`), since the
+helper's rollback only restores what existed.
 
 Deliberately UI-free (no tkinter) so every step is unit-testable, and deliberately narrow in
-what it touches: only program files under the frozen ``_internal/`` dir plus the small
-marker / result JSONs next to the executable, and a failure report under ``debug/``. It NEVER
-reads or writes User Files, data, results, or settings.json — user data is entirely outside the
-blast radius.
+what it touches: only the program files the list names, plus the small marker / result JSONs
+next to the executable, and a failure report under ``debug/``. It NEVER reads or writes User
+Files, data, results, or settings.json — user data is entirely outside the blast radius.
 """
 import os
 import sys
@@ -32,6 +39,7 @@ _USER_AGENT = "Surasura-Readability-Analyzer"
 STAGING_DIRNAME = ".update_staging"
 BACKUP_DIRNAME = ".update_backup"
 MARKER_NAME = "pending_update.json"
+ADDED_NAME = "pending_update_added.json"    # what the swap creates: the helper deletes the marker, so it is kept here
 RESULT_NAME = "last_update_result.json"
 REPORT_NAME = "update_report.txt"
 UPDATER_EXE_NAME = "updater.exe"
@@ -42,8 +50,9 @@ class UpdateError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Locations. The install root (next to the exe) holds the marker/staging/updater.exe;
-# the frozen _internal dir holds the program dirs (app/, templates/) we replace.
+# Locations. The install root (next to the exe) holds the marker/staging/updater.exe and the
+# programs (Surasura.exe, surasura-cli.exe); the frozen _internal dir holds templates/ and the
+# runtime. (The app code is inside Surasura.exe, not loose under _internal.)
 # ---------------------------------------------------------------------------
 def _user_dir():
     return path_utils.get_user_data_path()
@@ -73,13 +82,112 @@ def updater_exe_path():
     return os.path.join(_user_dir(), UPDATER_EXE_NAME)
 
 
+def added_path():
+    return os.path.join(_user_dir(), ADDED_NAME)
+
+
 def report_path():
     return os.path.join(_user_dir(), "debug", REPORT_NAME)
 
 
-def can_auto_apply():
-    """Auto-apply is only possible in a frozen build that shipped the bundled updater.exe."""
-    return path_utils.is_frozen() and os.path.exists(updater_exe_path())
+def can_auto_apply(info=None):
+    """Auto-apply is only possible in a frozen build that shipped the bundled updater.exe — and, for a release that
+    lists its files, only when every destination is one the in-place update may write (`resolve_files`)."""
+    if not (path_utils.is_frozen() and os.path.exists(updater_exe_path())):
+        return False
+    if info is not None and getattr(info, "files", None) is not None:
+        try:
+            resolve_files(info.files)
+        except UpdateError:
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# The release's file list (K99): {name, dest, kind, sha256} per entry.
+#   name    a flat staging key: the entry's path at the top of the app package zip
+#   dest    relative to the install folder; only Surasura.exe, surasura-cli.exe, RELEASE_NOTES.md
+#           or something under _internal/ (case-folded, no absolute path, no "..", resolved
+#           through junctions and kept inside the install folder) — anything else: FULL
+#   kind    "file" or "dir"
+#   sha256  a file's sha256, or a dir's `tree_sha256`
+# ---------------------------------------------------------------------------
+_ROOT_FILES = {"surasura.exe", "surasura-cli.exe", "release_notes.md"}
+_HEX = set("0123456789abcdef")
+
+
+def _install_dir():
+    return _user_dir()          # frozen: the folder holding Surasura.exe
+
+
+def _inside(path, folder):
+    a, b = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
+    return a != b and a.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def resolve_destination(dest, install_dir=None):
+    """`dest` (relative, from a release's list) -> the absolute path it names, or UpdateError when the in-place
+    update may not write there."""
+    install_dir = install_dir or _install_dir()
+    if not isinstance(dest, str) or not dest.strip():
+        raise UpdateError(f"destination {dest!r} is empty")
+    text = dest.replace("\\", "/")
+    if text.startswith("/") or os.path.isabs(dest) or (len(text) > 1 and text[1] == ":"):
+        raise UpdateError(f"destination {dest!r} is absolute")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        raise UpdateError(f"destination {dest!r} leaves the install folder")
+    if any(":" in p or p != p.rstrip(" .") for p in parts):
+        raise UpdateError(f"destination {dest!r} is not a plain path")
+    folded = [p.casefold() for p in parts]
+    if not ((len(folded) == 1 and folded[0] in _ROOT_FILES) or (len(folded) >= 2 and folded[0] == "_internal")):
+        raise UpdateError(f"destination {dest!r} is not one an in-place update may write")
+    path = os.path.join(install_dir, *parts)
+    if not _inside(path, install_dir):
+        raise UpdateError(f"destination {dest!r} resolves outside the install folder")
+    if len(folded) >= 2 and not _inside(path, os.path.join(install_dir, parts[0])):
+        raise UpdateError(f"destination {dest!r} resolves outside _internal")
+    return path
+
+
+def resolve_files(files, install_dir=None):
+    """A release's `files` list -> the targets it names, each {name, kind, dest (absolute), sha256}; UpdateError
+    when any entry is malformed or not allowed (the update is then a manual one)."""
+    if not isinstance(files, list) or not files:
+        raise UpdateError("the release's file list is empty or not a list")
+    targets, names, dests = [], set(), set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise UpdateError("a file list entry is not an object")
+        name, kind, sha = entry.get("name"), entry.get("kind", "file"), str(entry.get("sha256") or "").lower()
+        if (not isinstance(name, str) or not name or name in (".", "..") or any(c in name for c in "/\\:")
+                or name.casefold() in names):
+            raise UpdateError(f"file list name {name!r} is not a unique flat name")
+        if kind not in ("file", "dir"):
+            raise UpdateError(f"file list kind {kind!r} for {name!r}")
+        if len(sha) != 64 or not set(sha) <= _HEX:
+            raise UpdateError(f"{name!r} has no sha256")
+        dest = resolve_destination(entry.get("dest"), install_dir)
+        if os.path.normcase(dest) in dests:
+            raise UpdateError(f"{entry.get('dest')!r} is named twice")
+        names.add(name.casefold())
+        dests.add(os.path.normcase(dest))
+        targets.append({"name": name, "kind": kind, "dest": dest, "sha256": sha})
+    return targets
+
+
+def tree_sha256(folder):
+    """A folder's sha256 for the file list: every file's relative path (with /) and its sha256, sorted."""
+    lines = []
+    for root, dirs, files in os.walk(folder):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            lines.append(f"{rel}\0{sha256_file(full)}\n")
+    h = hashlib.sha256()
+    for line in sorted(lines):
+        h.update(line.encode("utf-8"))
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +405,7 @@ def download(url, dest, progress_cb=None, timeout=60):
     return dest
 
 
-def extract_and_validate(zip_path, payload_dir):
+def extract_and_validate(zip_path, payload_dir, files=None):
     """Extract the app package and confirm its structure.
 
     The package carries the code-bearing executable plus the report templates (the only two
@@ -318,6 +426,17 @@ def extract_and_validate(zip_path, payload_dir):
             if target != root and not target.startswith(root + os.sep):
                 raise UpdateError(f"unsafe path in archive: {name}")
         z.extractall(payload_dir)
+
+    if files is not None:
+        # The release's list: every entry staged under its name, with the bytes its sha256 names.
+        for t in resolve_files(files):
+            staged = os.path.join(payload_dir, t["name"])
+            if t["kind"] == "file":
+                if not os.path.isfile(staged) or sha256_file(staged) != t["sha256"]:
+                    return False
+            elif not os.path.isdir(staged) or tree_sha256(staged) != t["sha256"]:
+                return False
+        return True
 
     exe = os.path.join(payload_dir, EXE_NAME)
     templates = os.path.join(payload_dir, "templates")
@@ -342,6 +461,19 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
     the swapped-in bytes; templates are non-critical and verified only by structure.
     """
     base = _internal_dir()
+    files = getattr(info, "files", None)
+    if files is not None:
+        # The release's list. A file gets its sha256 checked by the helper after the swap; a dir was checked when
+        # it was staged (the helper can't hash a dir). `added`: the swap creates it — see arm_and_launch.
+        targets = []
+        for t in resolve_files(files):
+            target = {"name": t["name"], "kind": t["kind"], "dest": t["dest"]}
+            if t["kind"] == "file":
+                target["sha256"] = t["sha256"]
+            if not os.path.exists(t["dest"]):
+                target["added"] = True
+            targets.append(target)
+        return _marker(info, payload_dir, app_pid, wait_timeout, base, targets)
     staged_exe = os.path.join(payload_dir, EXE_NAME)
     exe_sha = sha256_file(staged_exe) if os.path.isfile(staged_exe) else ""
     targets = [
@@ -354,6 +486,10 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
     if os.path.isfile(os.path.join(payload_dir, "RELEASE_NOTES.md")):
         targets.append({"name": "RELEASE_NOTES.md", "kind": "file",
                         "dest": os.path.join(os.path.dirname(sys.executable), "RELEASE_NOTES.md")})
+    return _marker(info, payload_dir, app_pid, wait_timeout, base, targets)
+
+
+def _marker(info, payload_dir, app_pid, wait_timeout, base, targets):
     return {
         "target_version": info.version,
         "from_version": __version__,
@@ -409,7 +545,7 @@ def prepare_update(info, progress_cb=None):
             raise UpdateError("checksum mismatch — download corrupted or tampered")
 
         payload_dir = os.path.join(sd, "payload")
-        if not extract_and_validate(zip_path, payload_dir):
+        if not extract_and_validate(zip_path, payload_dir, getattr(info, "files", None)):
             raise UpdateError("update package failed validation")
 
         return build_marker(info, payload_dir, os.getpid())
@@ -425,15 +561,62 @@ def arm_and_launch(marker):
     """The hand-over, in the window's one final callback (after its last `can_update_now`): write the marker, then
     start updater.exe; the caller exits next. If the helper can't start, the marker is removed again (nothing stays
     armed) and the error raised."""
+    added = [t["dest"] for t in marker.get("targets", []) if t.get("added")]
+    made = []
+    for dest in added:                     # updater.exe's os.replace needs the folder to exist
+        folder = os.path.dirname(dest)
+        missing = []
+        while folder and not os.path.isdir(folder):
+            missing.append(folder)
+            folder = os.path.dirname(folder)
+        for d in reversed(missing):
+            os.makedirs(d, exist_ok=True)
+            made.append(d)
+    if added:
+        with open(added_path(), "w", encoding="utf-8") as f:
+            json.dump({"target_version": marker.get("target_version", ""), "added": added, "dirs": made}, f,
+                      ensure_ascii=False, indent=2)
     path = write_marker(marker)
     try:
         return launch_helper(path)
     except Exception:
+        for p in (path, added_path()):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        _remove_dirs(made)
+        raise
+
+
+def _remove_dirs(dirs):
+    for d in sorted(dirs, key=len, reverse=True):
         try:
-            os.remove(path)
+            os.rmdir(d)                    # only if empty
         except OSError:
             pass
-        raise
+
+
+def _remove_added():
+    """After a failed swap: delete what the release would have added (the helper's rollback only restores what
+    existed), then the folders made for it if they are empty again."""
+    try:
+        with open(added_path(), "r", encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return
+    install = _install_dir()
+    for dest in record.get("added") or []:
+        try:
+            if not isinstance(dest, str) or not _inside(dest, install):
+                continue                   # never anything outside this install
+            if os.path.isdir(dest):
+                shutil.rmtree(dest, ignore_errors=True)
+            elif os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+    _remove_dirs([d for d in record.get("dirs") or [] if isinstance(d, str) and _inside(d, install)])
 
 
 def discard_staged():
@@ -475,8 +658,8 @@ def launch_helper(marker_path_=None):
 # Reconciliation (read side, next launch)
 # ---------------------------------------------------------------------------
 def _cleanup_all():
-    """Remove every trace of a pending/finished update: marker, result, staging, backup."""
-    for path in (marker_path(), result_path()):
+    """Remove every trace of a pending/finished update: marker, result, added record, staging, backup."""
+    for path in (marker_path(), result_path(), added_path()):
         try:
             if os.path.exists(path):
                 os.remove(path)
@@ -504,6 +687,8 @@ def consume_result():
                 res = json.load(f)
         except Exception:
             res = {"status": "failed", "from": "", "to": "", "reason": "unreadable result"}
+        if res.get("status") != "success":
+            _remove_added()
         _cleanup_all()
         return res
 
@@ -514,6 +699,7 @@ def consume_result():
                 m = json.load(f)
         except Exception:
             m = {}
+        _remove_added()
         _cleanup_all()
         return {
             "status": "failed",

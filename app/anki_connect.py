@@ -80,6 +80,31 @@ def is_loopback(url):
     return (host or "").lower() in _LOOPBACK_HOSTS
 
 
+# A pair of different custom addresses already named in the log (`address`): said once, not on every call.
+_ADDRESS_NOTED = set()
+
+
+def address(settings):
+    """The one AnkiConnect address every Anki caller reads (E1.4 §A). Never empty.
+
+    `anki_connect_url` when it is set and isn't the default; else `junban_url` when it is (2.x's
+    second key, retired: a hand edit is read so nobody loses it, and the dashboard's next full save
+    writes it as `anki_connect_url`); else `DEFAULT_URL`. Both custom and different: the first wins,
+    and the log says so once.
+    """
+    settings = settings or {}
+
+    def custom(key):
+        value = str(settings.get(key) or "").strip()
+        return value if value != DEFAULT_URL else ""
+
+    main, junban = custom("anki_connect_url"), custom("junban_url")
+    if main and junban and main != junban and (main, junban) not in _ADDRESS_NOTED:
+        _ADDRESS_NOTED.add((main, junban))
+        print(f"AnkiConnect: using anki_connect_url ({main}), not junban_url ({junban}).")
+    return main or junban or DEFAULT_URL
+
+
 def _forbidden_in(action, params):
     """The first forbidden action name in `action` or, for a `multi`, in any of its sub-actions
     (nested `multi`s included). Returns None when the request is clean."""

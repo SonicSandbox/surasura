@@ -2875,9 +2875,12 @@ class MasterDashboardApp:
             except (ImportError, ModuleNotFoundError):
                 pass
 
-            # The Anki window owns these (core keys, so always written).
-            for _anki_key in ("anki_connect_url", "anki_sync_decks", "anki_sync_fields",
-                              "anki_sync_include_suspended"):
+            # The Anki window owns these (core keys, so always written). The address is the one every
+            # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
+            # here and the file then holds one address.
+            from app import anki_connect
+            settings["anki_connect_url"] = anki_connect.address(panel)
+            for _anki_key in ("anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"):
                 if _anki_key in panel:
                     settings[_anki_key] = panel[_anki_key]
 
@@ -3173,7 +3176,7 @@ class MasterDashboardApp:
             result = None
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
                     result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
                     # The same decks' new cards, for the report's backlog marks (read-only).
@@ -3214,7 +3217,7 @@ class MasterDashboardApp:
         def work():
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
                     anki_sync.sync_backlog(lang, url, decks, fields)
             except Exception as e:

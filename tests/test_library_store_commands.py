@@ -349,6 +349,21 @@ def test_two_undos_in_a_row_on_the_same_item(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_drag_remove_undo_undo_restores_the_order(language):
+    """Review R3: Undo-Remove put the row back with a NEW `changed_in`, so undoing the drag before it was
+    refused ("1 item changed since"). Each undo restores the `changed_in` it replaced (§6.11)."""
+    store = migrated(language)
+    ids = store.ids("soon")
+    original = list(ids)
+    drag = store.move([ids[1]], "soon", after_id=ids[5])
+    rem = store.remove([ids[1]])
+    assert store.undo(rem).notes == []
+    assert store.undo(drag).notes == []
+    assert store.ids("soon") == original
+    store.close()
+
+
 _FOREIGN_MOVE = """
 import sys
 from app import library_store as ls
@@ -1025,6 +1040,26 @@ def test_register_finds_a_synced_row_or_adds_one(language):
     third = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[93]}.srt"), {"content_key": "h3"})
     assert store.ids("arrivals") == third.added
     assert all(e["physical_path"] != f"{ls.HATO_FOLDER}/{w[93]}.srt" for e in store.schedule()["PHASE_1_NOW"])
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_register_restores_the_keys_previous_pairing(language):
+    """Review R6: hato re-registering a content key against a new file, then Undo: the new item went (as an
+    Add) and its pairing with it, but the key's earlier pairing was never put back, so the key mapped to
+    nothing."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    paired = store.ids("soon")[2]
+    store.register(os.path.join(data_dir, store.item(paired)["rel_path"]), {"content_key": "k-moved"})
+    change = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt"), {"content_key": "k-moved"})
+    assert change.added
+    key = "SELECT item_id FROM pairings WHERE content_key = 'k-moved'"
+    assert store.conn.execute(key).fetchone()[0] == change.added[0]
+    store.undo(change)
+    assert change.added[0] not in store.ids("now")
+    assert store.conn.execute(key).fetchone()[0] == paired
     store.close()
 
 

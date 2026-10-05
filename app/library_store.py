@@ -1828,16 +1828,19 @@ class Store:
                 except OSError:
                     size, mtime_ns, availability = cols.get("size"), cols.get("mtime_ns"), "missing"
                 title, folder, source_type = _columns(entry)
+                # an undo restores the `changed_in` the removal replaced (§6.11), so a second undo in a row
+                # still finds its own version; Put back is a new change
+                changed_in = (cols.get("changed_in") or cmd.version) if kind == "undo" else cmd.version
                 self.conn.execute(
                     "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, "
                     "source_type, availability, size, mtime_ns, changed_in, added_at, graduated_at, piece_id, "
                     "watched, mined_at, pinned, in_learning_order) "
                     "VALUES (?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (r["item_id"], r["root_id"], rel, key, r["tier"], _dumps(entry), title, folder, source_type,
-                     availability, size, mtime_ns, cmd.version, cols.get("added_at") or now,
+                     availability, size, mtime_ns, changed_in, cols.get("added_at") or now,
                      cols.get("graduated_at"), self._piece_or_none(cols.get("piece_id")), cols.get("watched", 0),
                      cols.get("mined_at"), cols.get("pinned"), cols.get("in_learning_order", 1)))
-                self._put(r["tier"], [r["item_id"]], self._restore_where(r), cmd.version)
+                self._put(r["tier"], [r["item_id"]], self._restore_where(r), changed_in)
                 self.conn.executemany("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
                                       "VALUES (?, ?, ?, ?)", [(k, r["item_id"], p, at) for k, p, at in state["pairings"]])
                 self.conn.executemany("INSERT OR IGNORE INTO anki_links (item_id, note_id, source, linked_at) "
@@ -2093,6 +2096,11 @@ class Store:
                     return self._skipped(cmd, len(skipped))
                 explicit = 0 if kind == "register" else 1
                 out = self._remove_as(ok, trashed_paths, explicit)
+                if kind == "register" and getattr(change, "pairing_before", (None, None))[1] is not None:
+                    content_key, old = change.pairing_before          # the key's pairing before hato moved it
+                    if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (old[0],)).fetchone():
+                        self.conn.execute("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
+                                          "VALUES (?, ?, ?, ?)", (content_key,) + tuple(old))
             elif kind == "register":
                 content_key, old = change.pairing_before
                 now = self.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?",
@@ -2815,10 +2823,14 @@ def _migrate(store, user_files_dir, doc, read_stat, from_folders_files=None):
 def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
     """No database here, but the copy carries `surasura_library` (a moved folder, a new PC), or our own
     copy is newer than this database: ids, extra state, the lists and the tables come back; a new
-    store_id (unless keeping ours), `state_version` above the copy's, the copy's epoch + 1."""
+    store_id (unless keeping ours), `state_version` above the copy's, the copy's epoch + 1. A copy an
+    older version edited is kept in the trash first, and its edit re-imported in the same transaction:
+    a failure leaves no store, never a store that has recorded the edited file as its own (§6.8, I2)."""
     norm = normalise(doc)
     lib = norm.lib
     sha_ok = lib.get("content_sha") == content_sha(doc)
+    if not sha_ok:
+        backup_to_trash(manifest_path(user_files_dir))       # byte-verified; if it fails, stop (I2)
     image = _image_from_copy(norm, store.data_dir, by_records=not sha_ok)
     epoch = int((lib.get("meta") or {}).get("epoch", 1) or 1) + 1
     meta = _fresh_meta(keep_store_id or uuid.uuid4().hex, epoch, int(lib.get("version") or 0) + 1)
@@ -2831,9 +2843,9 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
                          "items", "pieces", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)
+        if not sha_ok:
+            store.reimport(doc, read_stat, own=True)          # the size guard applies here too (Q4-8)
         store._set_meta({"migrated_at": _now()})
-    if not sha_ok:
-        store.reimport(doc, read_stat, own=True)              # the size guard applies here too (Q4-8)
     _rederive_soon_line(store)
     return True
 
@@ -3103,7 +3115,8 @@ def replace_under_copy_lock(db_path, temp, target, expect=None, look=None):
     lock = _copy_lock(db_path)
     try:
         for wait in REPLACE_BACKOFF + (None,):
-            lock.acquire(LOCK_TIMEOUT, LOCK_RETRY)
+            if not lock.acquire(LOCK_TIMEOUT, LOCK_RETRY):
+                return False                                   # never replace unlocked; the temp is kept
             try:
                 st = _stat(target)
                 now = _stat_str(st) if st else ""
@@ -3249,24 +3262,49 @@ def _check_copy(store, retry_wait=1.0):
 
 def resolve_reimport(language, data_dir, user_files_dir, use_theirs):
     """The size guard's answer (Q4-8): "Use that order" applies the pending change; "Keep mine" keeps
-    the store's order and lets the next export replace the file."""
+    the store's order and lets the next export replace the file. Under the maintenance lock, as every
+    builder (§6.8); "Use that order" applies only the file the question was about — saved again since,
+    the question is dropped and the next `maintain` checks the file again, with its backups."""
+    lock = MaintenanceLock(library_db_path(language, data_dir))
+    if not lock.acquire(MAINT_WAIT, 0.01):
+        lock.close()
+        return False
+    try:
+        return _resolve_reimport(language, data_dir, user_files_dir, use_theirs)
+    finally:
+        lock.close()
+
+
+def _resolve_reimport(language, data_dir, user_files_dir, use_theirs):
     store = open_store(language, data_dir, user_files_dir, role="helper")
     if store is None:
         return False
     with store:
         meta = store.meta()
-        if not meta.get("reimport_pending"):
+        pending = meta.get("reimport_pending")
+        if not pending:
+            return False
+        asked = json.loads(pending).get("stat")                # the file the question was about
+
+        def drop():                                            # saved again since: the next run checks it again
+            with store._writing():
+                store.conn.execute("DELETE FROM meta WHERE key = 'reimport_pending'")
             return False
         if use_theirs:
-            doc, read_stat, _p = read_manifest(manifest_path(user_files_dir))
-            if doc is None:
+            try:
+                doc, read_stat, _p = read_manifest(manifest_path(user_files_dir))
+            except ManifestUnreadable:
                 return False
+            if doc is None or read_stat != asked:
+                return drop()
             lib = doc.get("surasura_library")
             store.reimport(doc, read_stat, own=isinstance(lib, dict) and lib.get("store_id") == meta["store_id"],
                            force=True)
         else:
             st = _stat(manifest_path(user_files_dir))
-            store.bookkeeping({"last_export_stat": _stat_str(st) if st else "", "copy_dirty": 1})
+            if (_stat_str(st) if st else "") != asked:
+                return drop()
+            store.bookkeeping({"last_export_stat": asked, "copy_dirty": 1})
             with store._writing():
                 store.conn.execute("DELETE FROM meta WHERE key = 'reimport_pending'")
     return True
@@ -3569,8 +3607,9 @@ def _store_sync_disk(self, walk=None):
     structural = delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"]
     if not structural:
         if delta["refresh"]:
-            with self._writing():
+            with self._writing():                                  # bookkeeping the copy carries (§6.6)
                 self.conn.executemany("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?", delta["refresh"])
+                self._set_meta({"copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         return None
     marker_cache = {}
     entries = {rel: make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(self.data_dir, rel), marker_cache))
@@ -3610,6 +3649,7 @@ def _store_sync_disk(self, walk=None):
         summary["missing"], summary["back"] = gone, back
         if delta["refresh"]:
             self.conn.executemany("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?", delta["refresh"])
+            self._set_meta({"copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         new = [(rel, key, size, mtime_ns) for rel, key, size, mtime_ns in delta["new"]
                if exists(rel) and not self.conn.execute("SELECT 1 FROM items WHERE rel_key = ?", (key,)).fetchone()]
         if new:
@@ -3785,8 +3825,21 @@ def _image_from_db(path):
 def repair_store(db_path, language, data_dir, user_files_dir, lock):
     """Repair (`maintain --repair`): the three files renamed aside (all or none, never deleted); each
     table salvaged from the damaged database when the whole table still reads and its `state_version`
-    is at least the copy's, else from the copy; the store_id kept, `state_version` above both, a new
-    epoch; then exported through the lock already held, and the marker removed."""
+    is at least the copy's, else from the copy (a plain manifest gives its lists, as a migration does);
+    the store_id kept, `state_version` above both, a new epoch; then exported through the lock already
+    held, and the marker removed. The manifest is read first and kept in the trash before anything is
+    renamed: unreadable now → nothing done (retried); unusable → set aside, never overwritten unseen."""
+    target = manifest_path(user_files_dir)
+    doc = read_stat = None
+    if os.path.exists(target):
+        try:
+            doc, read_stat, _p = read_manifest(target)
+        except ManifestUnreadable:
+            return EXIT_FAILED                                    # a lock or a placeholder: retried
+        try:
+            backup_to_trash(target, move=doc is None)
+        except OSError:
+            return EXIT_FAILED
     stamp = _stamp()
     moved = []
     for suffix in ("", "-wal", "-shm"):
@@ -3803,13 +3856,6 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
                         pass
                 return EXIT_NEEDS_YOU                                 # close other Surasura windows and try again
     damaged = _image_from_db(f"{db_path}.corrupt.{stamp}") if moved else {}
-    target = manifest_path(user_files_dir)
-    doc = read_stat = None
-    if os.path.exists(target):
-        try:
-            doc, read_stat, _p = read_manifest(target)
-        except ManifestUnreadable:
-            doc = None
     norm = normalise(doc) if doc is not None else None
     lib = norm.lib if norm else None
     copy_version = int(lib.get("version") or 0) if lib else -1
@@ -3821,7 +3867,14 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
     except ValueError:
         db_version = -1
     from_db = lambda name: damaged.get(name) is not None and db_version >= copy_version
-    copy_image = _image_from_copy(norm, data_dir) if lib else {"items": [], "tables": {}}
+    if lib:
+        copy_image = _image_from_copy(norm, data_dir)
+    elif norm:
+        copy_image = _image_from_manifest(norm, data_dir)
+    else:
+        copy_image = {"items": [], "tables": {}}
+    # Items from a plain manifest get new ids: the database's tables keyed by the old ones can't follow.
+    plain = not from_db("items") and not lib
     image = {"items": [], "tables": {}}
     if from_db("items"):
         fields = damaged["items"]["fields"]
@@ -3836,7 +3889,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
     else:
         image["items"] = copy_image["items"]
     for name in COPY_TABLES:
-        if from_db(name):
+        if from_db(name) and not plain:
             image["tables"][name] = damaged[name]
         elif name in copy_image["tables"]:
             image["tables"][name] = copy_image["tables"][name]
@@ -3851,13 +3904,12 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
         meta.update(_copy_meta_block(lib))
     for key in ("manifest_metadata", "manifest_extra", "manifest_schedule_extra", "soon_line", "mine_line",
                 "arrivals_on"):
-        if key in dmeta and from_db("meta"):
+        if key in dmeta and from_db("meta") and not plain:
             meta[key] = dmeta[key]
     for key, value in dmeta.items():
         if key.startswith("reader") and from_db("meta"):
             meta[key] = value
-    st = _stat(target)
-    meta["last_export_stat"] = _stat_str(st) if st else ""
+    meta["last_export_stat"] = read_stat if doc is not None else ""
     store = _helper_store(db_path, language, data_dir, user_files_dir)
     store._repairing = True
     try:

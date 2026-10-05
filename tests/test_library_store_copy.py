@@ -490,6 +490,29 @@ def test_the_recorded_stat_is_the_replaced_files(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_replace_waits_for_the_copy_lock_and_never_runs_without_it(language, monkeypatch):
+    """Review R5: after the copy lock's wait ran out, the replace went ahead unlocked, reopening the window
+    the lock closes (a JSON-mode save landing between the re-stat and the replace). Now it gives up and
+    the next run exports."""
+    store = migrated(language)
+    ids = store.ids("now")
+    store.move([ids[0]], "now", after_id=ids[3])
+    target = ls.manifest_path(store.user_files_dir)
+    before = open(target, "rb").read()
+    other = ls._copy_lock(store.db_path)                       # a second handle: refused like another process
+    assert other.try_acquire()
+    monkeypatch.setattr(ls, "LOCK_TIMEOUT", 0.2)
+    try:
+        assert ls.export_copy(store) is False
+        assert open(target, "rb").read() == before
+    finally:
+        other.close()
+    assert ls.export_copy(store) is True
+    assert open(target, "rb").read() != before
+    store.close()
+
+
 def test_fingerprints_ignore_line_ends_bom_indent_and_key_order():
     data = {"schedule": {"PHASE_1_NOW": [{"title": "冒険.srt", "physical_path": "HighPriority/冒険.srt"}]},
             "metadata": {"b": 1, "a": 2}, "surasura_library": {"version": 3}}

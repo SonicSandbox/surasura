@@ -590,6 +590,66 @@ def test_repair_salvages_table_by_table(language):
     store.close()
 
 
+def _trash_copies(user_files_dir):
+    trash = os.path.join(user_files_dir, ".trash")
+    return [os.path.join(trash, f) for f in os.listdir(trash) if f.startswith("master_manifest.")]         if os.path.isdir(trash) else []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_repair_with_a_plain_manifest_and_an_unreadable_items_table_keeps_every_row(language):
+    """Review R1: a damaged items table beside a plain manifest (the migration's backup put back, or an
+    older version's save, no `surasura_library`) once built an EMPTY store and exported it over the
+    manifest. Repair now takes the manifest's lists, as a migration does, and keeps the file in the trash
+    before anything is written."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)                                 # exported: the copy carries surasura_library
+    db = store.db_path
+    store.close()
+    doc = json.load(open(ls.manifest_path(user_files_dir), encoding="utf-8"))
+    del doc["surasura_library"]
+    write_manifest(user_files_dir, doc)
+    plain = open(ls.manifest_path(user_files_dir), "rb").read()
+    before = set(_trash_copies(user_files_dir))
+    _corrupt_table(db, "items")
+    ls.mark_damaged(db, "a test")
+    assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    for tier, phase in (("now", "PHASE_1_NOW"), ("soon", "PHASE_2_SOON"), ("goal", "PHASE_3_LATER")):
+        assert [e["physical_path"] for _i, e, _a in store.ordered(tier)] ==             [e["physical_path"] for e in doc["schedule"][phase]], tier
+    store.close()
+    kept = [f for f in _trash_copies(user_files_dir) if f not in before]
+    assert any(open(f, "rb").read() == plain for f in kept), "the plain manifest is kept in the trash"
+    exported = json.load(open(ls.manifest_path(user_files_dir), encoding="utf-8"))
+    assert len(exported["schedule"]["PHASE_2_SOON"]) == len(doc["schedule"]["PHASE_2_SOON"]) > 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_repair_while_the_manifest_cannot_be_read_does_nothing(language, monkeypatch):
+    """Review R1 (b): a manifest locked at that moment (antivirus, OneDrive) was read as "no copy": the
+    repaired store came out empty and the next run exported it. Now Repair stops before renaming
+    anything and is tried again."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)                                 # exported: the copy carries surasura_library
+    db = store.db_path
+    store.close()
+    _corrupt_table(db, "items")
+    ls.mark_damaged(db, "a test")
+    manifest = open(ls.manifest_path(user_files_dir), "rb").read()
+
+    def locked(path):
+        raise ls.ManifestUnreadable("a sharing violation")
+    with monkeypatch.context() as m:
+        m.setattr(ls, "read_manifest", locked)
+        assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_FAILED
+    assert os.path.exists(db) and not [f for f in os.listdir(os.path.dirname(db)) if ".corrupt." in f]
+    assert os.path.exists(ls.damaged_marker(db))
+    assert open(ls.manifest_path(user_files_dir), "rb").read() == manifest
+    assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert len(store.ids("soon")) > 0
+    store.close()
+
+
 # --- 10. upgrades -------------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)

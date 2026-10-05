@@ -380,6 +380,25 @@ def test_missing_and_back(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_fingerprint_refresh_is_carried_by_the_next_export(language):
+    """Review R4: a sync that only refreshed a file's size and time never marked the copy behind, so after
+    a rebuild (a new PC) the record's stale fingerprint broke the rename rules for an edited, then renamed
+    subtitle. The refresh is bookkeeping the copy carries (§6.6)."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item = store.ids("soon")[3]
+    rel = store.item(item)["rel_path"]
+    with open(os.path.join(data_dir, rel), "a", encoding="utf-8") as f:
+        f.write(names(language)[30] * 40 + "\n")             # an edited subtitle: same name, new size
+    size = os.path.getsize(os.path.join(data_dir, rel))
+    assert store.sync_disk() is None
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    rec = ls._records(read_doc(user_files_dir)["surasura_library"])[ls.path_key(rel)]
+    assert rec["size"] == size
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_no_delta_writes_nothing(language):
     store = migrated(language)
     v = store.versions()

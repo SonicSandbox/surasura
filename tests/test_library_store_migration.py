@@ -762,6 +762,86 @@ def test_rebuilding_from_an_edited_copy_applies_the_rules(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_use_that_order_applies_only_the_file_it_asked_about(language, monkeypatch):
+    """Review R7: "Use that order" re-read the file as it was NOW and applied it with the guard off, outside
+    the maintenance lock: a file saved again after the question went in unseen and unguarded. Now it runs
+    under the lock, and a file saved since drops the question; the next run asks again."""
+    store = _big(language)
+    data_dir, user_files_dir = roots(language)
+    big = int(sum(len(store.ids(t)) for t in ls.ANALYSED) * 0.06) + 1
+    before = {t: store.ids(t) for t in ls.ANALYSED}
+    _edit(language, lambda d: d["schedule"]["PHASE_3_LATER"].__setitem__(
+        slice(0, big + 1), d["schedule"]["PHASE_3_LATER"][:big + 1][::-1]))
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    with monkeypatch.context() as m:                           # another helper holds the maintenance lock
+        m.setattr(ls, "MAINT_WAIT", 0.2)
+        held = ls.MaintenanceLock(store.db_path)
+        assert held.try_acquire()
+        try:
+            assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True) is False
+        finally:
+            held.close()
+    assert store.meta().get("reimport_pending"), "still asked"
+    time.sleep(0.01)
+    _edit(language, lambda d: d["schedule"]["PHASE_2_SOON"].reverse())    # saved again after the question
+    assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True) is False
+    assert {t: store.ids(t) for t in ls.ANALYSED} == before, "nothing applied unseen"
+    assert not store.meta().get("reimport_pending")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU, "the next run asks again"
+    assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True)
+    assert {t: store.ids(t) for t in ls.ANALYSED} != before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_keep_mine_never_takes_a_file_saved_after_the_question(language):
+    """Review N1: "Keep mine" recorded the file as it was NOW as the store's own, so a file another program
+    saved after the question was overwritten by the next export, unseen and without a backup. Now a file
+    saved since drops the question; the next run checks it again (with its backups) and asks."""
+    store = _big(language)
+    data_dir, user_files_dir = roots(language)
+    big = int(sum(len(store.ids(t)) for t in ls.ANALYSED) * 0.06) + 1
+    _edit(language, lambda d: d["schedule"]["PHASE_3_LATER"].__setitem__(
+        slice(0, big + 1), d["schedule"]["PHASE_3_LATER"][:big + 1][::-1]))
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    time.sleep(0.01)
+    newer = _edit(language, lambda d: d["schedule"]["PHASE_2_SOON"].reverse())
+    saved = open(ls.manifest_path(user_files_dir), "rb").read()
+    assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=False) is False
+    assert not store.meta().get("reimport_pending")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU, "asked again about the newer file"
+    assert open(ls.manifest_path(user_files_dir), "rb").read() == saved, "never exported over it"
+    assert read_doc(user_files_dir)["schedule"]["PHASE_2_SOON"] == newer["schedule"]["PHASE_2_SOON"]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rebuild_interrupted_before_its_re_import_keeps_the_edit(language, monkeypatch):
+    """Review R2: a rebuild committed the records' order and the edited file's stat, then re-imported the
+    edit in a second transaction. A failure between the two left a ready store that took the edited file
+    as its own: the next export overwrote the edit, and no copy of it was kept. Now the edited file is
+    kept in the trash first and the re-import runs in the rebuild's own transaction."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    _new_pc(store)
+    doc = _edit(language, lambda d: d["schedule"]["PHASE_1_NOW"].insert(0, d["schedule"]["PHASE_1_NOW"].pop(4)))
+    edited = open(ls.manifest_path(user_files_dir), "rb").read()
+
+    def fails(*a, **k):
+        raise OSError("the helper was stopped")
+    with monkeypatch.context() as m:
+        m.setattr(ls.Store, "reimport", fails)
+        assert ls.maintain(language, data_dir, user_files_dir) != ls.EXIT_DONE
+    trash = os.path.join(user_files_dir, ".trash")
+    assert any(open(os.path.join(trash, f), "rb").read() == edited for f in os.listdir(trash)),         "the edited copy is kept in the trash before the rebuild applies it"
+    assert open(ls.manifest_path(user_files_dir), "rb").read() == edited, "nothing exported over the edit"
+    assert ls.maintain(language, data_dir, user_files_dir, retry=True) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert [e["physical_path"] for _i, e, _a in store.ordered("now")] ==         [e["physical_path"] for e in doc["schedule"]["PHASE_1_NOW"]], "the edit is applied on the next run"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("how", ["rebuild", "repair"])
 def test_ids_and_log_ids_are_never_reused(language, how):
     store = migrated(language)

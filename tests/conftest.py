@@ -12,6 +12,12 @@ from unittest.mock import patch
 # Ensure the project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.tk_on_github import skip_tk_tests
+
+
+def pytest_collection_modifyitems(items):
+    skip_tk_tests(items)                    # GitHub's runner only: the Tk window tests run in the local --all
+
 @pytest.fixture
 def test_resources_dir():
     """Returns the path to the 'tests/Test Resources' directory."""

@@ -126,9 +126,16 @@ def test_adding_an_identical_file_again_is_skipped_not_duplicated(cm, tmp_path, 
     assert "1 already present" in mock_messagebox.showinfo.call_args[0][1]
 
 
+def _to_store(cm):
+    """Undo is a store-mode feature from 2.5 (Library_Store_Spec §6.11; off in JSON mode)."""
+    from app import library_store as ls
+    assert ls.maintain("ja", cm.data_root, cm.user_files_root, from_folders=True) == ls.EXIT_DONE
+
+
 def test_undo_after_a_name_clash_removes_only_the_new_copy(cm, tmp_path):
     tier = _tier(tmp_path)
     _write(tier / "第01話.srt", EP_A)
+    _to_store(cm)
     _add(cm, _write(tmp_path / "downloads" / "第01話.srt", EP_B))
 
     cm.undo_last_action()
@@ -198,6 +205,7 @@ def test_same_named_files_removed_together_get_separate_trash_entries(cm, tmp_pa
     move landed on the first, and Undo restored the wrong episode."""
     s1 = _write(_tier(tmp_path) / "シーズン1" / "01.srt", EP_A)
     s2 = _write(_tier(tmp_path) / "シーズン2" / "01.srt", EP_B)
+    _to_store(cm)
 
     with patch("app.content_importer_gui.datetime") as clock:
         clock.now.return_value.strftime.return_value = "20260922120000"   # the same second

@@ -5,6 +5,9 @@ import os
 import sys
 import json
 import subprocess
+import threading
+import queue
+import time
 from datetime import datetime
 
 # Ensure package root is in sys.path
@@ -14,6 +17,7 @@ if __name__ == "__main__" and __package__ is None:
 from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get_data_path,
                             get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX,
                             backup_to_trash, restart_trash_clock, read_text, append_text)
+from app import library_store
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -25,6 +29,13 @@ SUCCESS_COLOR = "#03dac6"
 
 # A bulk Remove / Graduate / Demote updates the status line every this many files.
 BATCH_STATUS_EVERY = 100
+
+# The library store (Library_Store_Spec §6.7, §6.10): the worker's poll, its results' drain on the window's
+# thread, the idle export after this window's last change, and how long a build at open holds changes.
+STORE_POLL_S = 0.5
+STORE_DRAIN_MS = 100
+STORE_IDLE_MS = 2000
+STORE_BUILD_WAIT = 30.0
 
 # Dialogs of ours open, or closed with the window's events not yet caught up: the focus refresh holds off
 # (_on_focus_in). A dialog closing hands the window its focus back — a FocusIn that is not the user returning.
@@ -224,8 +235,18 @@ class ContentImporterApp:
         self.status_var.set("Loading library…")
         self.root.update()
         self._load_analyzed_filenames()
-        self.refresh_file_list(sync=True)   # opening the window syncs disk (files added while closed)
-        self.status_var.set("Ready")
+        mode = self._store_mode()
+        if mode == "store":
+            # Store mode (Library_Store_Spec §7): the tree comes from the store at once, and the disk walk runs on
+            # the worker (S1.1's smoothness rows 1 and 4: never on this thread, and once).
+            self.refresh_file_list()
+            self.status_var.set("Ready")
+        else:
+            self.refresh_file_list(sync=(mode == "json"))  # JSON mode: 2.4's open (files added while closed)
+            self.status_var.set("Ready")
+            if mode == "json":
+                self._start_store_build()
+        self._start_store_worker()
 
     def _on_focus_in(self, event=None):
         """Focus returning to the window re-reads the library: a disk sync (files added outside it — a
@@ -246,9 +267,300 @@ class ContentImporterApp:
 
     def _refresh_from_focus(self):
         try:
-            self.refresh_file_list(force=True, sync=True)
+            if self._store_mode() == "store":
+                self._request_sync()                    # the walk on the worker; the tree follows its result
+                self.refresh_file_list()                # from the store; rebuilt only if its versions moved
+            else:
+                self.refresh_file_list(force=True, sync=True)
         except Exception:
             pass
+
+    # --- The library store (Library_Store_Spec §6.9, §7 Phase 2) ------------------------------------------ #
+    # Store mode: every order and tier action is one store command (check → file work → commit), the tree is
+    # read from the store, the disk walk and the 500 ms poll run on a worker, and Undo reverses this window's
+    # own changes one by one (§6.11). JSON mode (no store yet, or none can be made): 2.4's code, with Undo off.
+    # Read-only mode (a damaged or newer store): the library is shown, every change is refused, with a notice.
+    # The mode is checked, not fixed: every action asks again first, so a store that appeared since (its
+    # helper finished) takes the action.
+
+    def _opener(self):
+        opener = self.__dict__.get("_store_opener")
+        if opener is None:
+            opener = self._store_opener = library_store.StoreOpener(self.language, self.data_root,
+                                                                    self.user_files_root)
+        return opener
+
+    def _store_mode(self):
+        """'store' | 'read-only' | 'json', checked now (a probe: no scan; it never waits on this thread)."""
+        try:
+            return self._opener().check()
+        except Exception:
+            return "json"
+
+    def _store(self):
+        """This thread's long-lived handle in store mode, else None."""
+        if self._store_mode() != "store":
+            return None
+        try:
+            return self._opener().handle()
+        except Exception:
+            return None
+
+    def _changes_blocked(self):
+        """True (and says why on the status line) while the library can't take a change: read-only mode, or the
+        store being built at open."""
+        mode = self._store_mode()
+        if mode == "read-only":
+            self.status_var.set("Your library can't be changed until it's repaired (see the notice above).")
+            self._update_store_banner()
+            return True
+        if mode == "json" and self._store_building():
+            self.status_var.set("Getting your library ready… (a moment)")
+            return True
+        return False
+
+    def _store_building(self):
+        """The helper started at open is still building the store (and hasn't run too long)."""
+        waiting = self.__dict__.get("_store_waiting")
+        if not waiting:
+            return False
+        proc, deadline = waiting
+        if proc is not None and proc.poll() is None and time.monotonic() < deadline:
+            return True
+        self._store_waiting = None
+        return False
+
+    def _start_store_build(self):
+        """JSON mode at open: start the helper to build this language's store — from the manifest, or from the
+        folders when there is no usable manifest (§6.8) — with changes held meanwhile (a status line). If it
+        can't (an update staged, a failed migration), the window carries on in JSON mode."""
+        try:
+            if os.path.exists(self.get_manifest_path()):
+                try:
+                    usable = library_store.read_manifest(self.get_manifest_path())[0] is not None
+                except Exception:
+                    usable = True                       # unreadable now (held open): let the helper retry
+            else:
+                usable = False
+            proc = library_store.spawn_maintain(self.language, *([] if usable else ["--from-folders"]))
+        except Exception:
+            proc = None
+        if proc is not None and hasattr(proc, "poll"):
+            self._store_waiting = (proc, time.monotonic() + STORE_BUILD_WAIT)
+            self.status_var.set("Getting your library ready… (a moment)")
+
+    def _start_store_worker(self):
+        """The worker (one per window): the 500 ms poll and every disk sync (§6.10), with its own store handle
+        (K31), and the 100 ms drain of its results on this thread. Skipped under test (no timers)."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS") or self.__dict__.get("_worker"):
+            return
+        self._worker_wake = threading.Event()
+        self._worker_stop = threading.Event()
+        self._worker_results = queue.Queue()
+        self._worker = threading.Thread(target=self._store_worker, daemon=True)
+        self._worker.start()
+        self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
+        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._worker_stop.set(), add="+")
+
+    def _request_sync(self):
+        """A disk sync on the worker (open, focus, Refresh, the four flows that add files without an Add). With no
+        worker (headless, or under test) it runs here, at once."""
+        wake = self.__dict__.get("_worker_wake")
+        if wake is not None:
+            self._sync_wanted = True
+            wake.set()
+            return
+        store = self._store()
+        if store is not None:
+            try:
+                library_store.sync_for_window(store)
+            except Exception as e:
+                print(f"Library sync failed: {e}")
+
+    def _store_worker(self):
+        """Worker thread: every STORE_POLL_S, or when woken — stat the folders that hold items (`DiskPoll`), run
+        `sync_disk` when one changed or a sync was asked for, notice another process's change
+        (`changed_since`), and hand the copy to the helper when someone else rewrote it. Never touches Tk."""
+        self._sync_wanted = True                         # the open's one walk (S1.1 smoothness row 4)
+        store = poll = token = None
+        handed = None
+        while not self._worker_stop.is_set():
+            self._worker_wake.wait(STORE_POLL_S)
+            self._worker_wake.clear()
+            try:
+                if self._opener().check() != "store":
+                    store = poll = token = None
+                    continue
+                if store is None:
+                    store = self._opener().handle()
+                    poll = library_store.DiskPoll(store)
+                    poll.check()
+                    token = store.token()
+                sync, self._sync_wanted = self._sync_wanted, False
+                changed = poll.check()
+                if sync or changed:
+                    t0 = time.perf_counter()
+                    summary = library_store.sync_for_window(store)
+                    self._worker_results.put(("synced", summary, time.perf_counter() - t0))
+                if store.changed_since(token):
+                    self._worker_results.put(("changed", None, 0.0))
+                token = store.token()
+                copy = library_store._stat(library_store.manifest_path(self.user_files_root))
+                seen = library_store._stat_str(copy) if copy else ""
+                if seen and seen != store.meta().get("last_export_stat") and seen != handed:
+                    handed = seen                        # an outside change to the copy: the helper looks
+                    library_store.spawn_maintain(self.language)
+            except Exception as e:
+                self._worker_results.put(("error", str(e), 0.0))
+                store = poll = token = None
+
+    def _drain_store_worker(self):
+        """On this thread, every STORE_DRAIN_MS: apply the worker's results, the banners and the build's end."""
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+        refresh = False
+        try:
+            while True:
+                kind, value, _took = self._worker_results.get_nowait()
+                if kind == "synced" and value:
+                    refresh = True
+                    added = len(value.get("added") or [])
+                    if added:
+                        self.status_var.set(f"Found {added} new file{'s' if added != 1 else ''} in your library folders.")
+                    if value.get("bad"):
+                        self.status_var.set(f"{len(value['bad'])} file name(s) couldn't be read and were skipped.")
+                elif kind == "changed":
+                    refresh = True
+        except queue.Empty:
+            pass
+        if self.__dict__.get("_store_waiting") and not self._store_building():
+            if self._store_mode() == "store":
+                self.status_var.set("Ready")
+                self._request_sync()
+                refresh = True
+            else:
+                self.status_var.set("Your library order is kept in its file for now (the store couldn't be made).")
+        self._update_store_banner()
+        if refresh:
+            try:
+                self.refresh_file_list(force=True)
+            except Exception:
+                pass
+        self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
+
+    def _ids_for(self, store, paths):
+        """Store ids for tree values: absolute file paths, or `GROUP:<folder>` (that folder's rows in this tab)."""
+        ids, tier = [], library_store.TIER_OF_FOLDER.get(self.target_folder_var.get())
+        for p in paths:
+            p = str(p)
+            if p.startswith("GROUP:"):
+                folder = p[6:]
+                ids += [i for i, e, _a in store.ordered(tier) if e.get("parent_folder", "") == folder]
+                continue
+            item_id = store.item_id(self._normalize_path(p))
+            if item_id is not None:
+                ids.append(item_id)
+        return list(dict.fromkeys(ids))
+
+    def _store_did(self, change, label, **files):
+        """A store command committed: keep its change for Undo (newest last), and hand the copy to the helper
+        2 s after this window's last change (one export per burst, §6.7)."""
+        if change is None:
+            return
+        self.__dict__.setdefault("_undo_changes", []).append(dict(files, change=change, label=label))
+        if self.undo_btn:
+            self.undo_btn.config(state=tk.NORMAL)
+            self.undo_btn.tip_text = f"Undo: {label}"
+        self._schedule_idle_export()
+
+    def _schedule_idle_export(self):
+        job = self.__dict__.get("_idle_export_job")
+        try:
+            if job is not None:
+                self.root.after_cancel(job)
+            self._idle_export_job = self.root.after(STORE_IDLE_MS, self._idle_export)
+        except Exception:
+            self._idle_export()
+
+    def _idle_export(self):
+        self._idle_export_job = None
+        store = self._store()
+        try:
+            if store is not None and store.export_due():
+                library_store.spawn_maintain(self.language)
+        except Exception:
+            pass
+
+    def _store_failed(self, e):
+        """A store command couldn't commit (busy, conflict, damage): nothing was half-written; say so quietly."""
+        if isinstance(e, library_store.StoreConflict):
+            self.status_var.set("Something else changed those items meanwhile — nothing was changed. Try again.")
+        elif isinstance(e, library_store.StoreBusy):
+            self.status_var.set("The library is busy for a moment — nothing was changed. Try again.")
+        else:
+            self.status_var.set(f"Couldn't save that change: {e}")
+        try:
+            self.refresh_file_list(force=True)
+        except Exception:
+            pass
+
+    def _update_store_banner(self):
+        """The notice above the library: read-only mode, or the size guard's question (Q4-8)."""
+        banner = self.__dict__.get("store_banner")
+        if banner is None:
+            return
+        mode = self._store_mode()
+        text, ask = "", False
+        if mode == "read-only":
+            reason = getattr(self._opener(), "reason", "") or ""
+            text = ("This library was saved by a newer Surasura: it's shown, but can't be changed here."
+                    if "newer" in reason else
+                    "Your library can't be changed until it's repaired: use Repair on the dashboard's notice. "
+                    "Generate still works.")
+        elif mode == "store":
+            store = self._store()
+            try:
+                pending = store.meta().get("reimport_pending") if store is not None else None
+            except Exception:
+                pending = None
+            if pending:
+                try:
+                    count = json.loads(pending).get("count", "")
+                except Exception:
+                    count = ""
+                text = (f"Your library's order file was changed outside Surasura"
+                        f"{f' ({count} items)' if count != '' else ''}. Use that order, or keep yours?")
+                ask = True
+        if text:
+            self.store_banner_var.set(text)
+            if ask:
+                self.store_banner_buttons.pack(side=tk.RIGHT)
+            else:
+                self.store_banner_buttons.pack_forget()
+            if not banner.winfo_ismapped():
+                banner.pack(fill=tk.X, pady=(0, 8), before=self.library_body)
+        elif banner.winfo_ismapped():
+            banner.pack_forget()
+
+    def _answer_size_guard(self, use_theirs):
+        """The size guard's answer, off this thread: `resolve_reimport` waits for the maintenance lock (§12.2 #18)."""
+        self.status_var.set("Applying…" if use_theirs else "Keeping your order…")
+        self.store_banner_buttons.pack_forget()
+
+        def work():
+            try:
+                library_store.resolve_reimport(self.language, self.data_root, self.user_files_root, use_theirs)
+            except Exception:
+                pass
+            if not use_theirs:
+                library_store.spawn_maintain(self.language)
+            results = self.__dict__.get("_worker_results")
+            if results is not None:
+                results.put(("changed", None, 0.0))
+        threading.Thread(target=work, daemon=True).start()
 
     def apply_dark_theme(self):
         self.style.theme_use('clam')
@@ -469,6 +781,22 @@ class ContentImporterApp:
         step2_frame = ttk.LabelFrame(main_frame, text=" Your Library ", padding="15")
         step2_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
 
+        # The library store's notice (read-only mode, or the size guard's question): hidden until needed
+        # (_update_store_banner), packed above library_body.
+        self.store_banner = ttk.Frame(step2_frame)
+        self.store_banner_var = tk.StringVar()
+        ttk.Label(self.store_banner, textvariable=self.store_banner_var, foreground=ERROR_COLOR, wraplength=560,
+                  justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.store_banner_buttons = ttk.Frame(self.store_banner)
+        keep_btn = ttk.Button(self.store_banner_buttons, text="Keep mine",
+                              command=lambda: self._answer_size_guard(False))
+        keep_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(keep_btn, "Keep the order you see here; the order file is written again from it.")
+        theirs_btn = ttk.Button(self.store_banner_buttons, text="Use that order",
+                                command=lambda: self._answer_size_guard(True))
+        theirs_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.create_tooltip(theirs_btn, "Apply the order from the changed file (a copy of both is kept).")
+
         # The whole manage area lives in library_body; when the library is empty we hide it and show
         # the onboarding card instead (see _update_empty_state).
         self.library_body = ttk.Frame(step2_frame)
@@ -489,7 +817,10 @@ class ContentImporterApp:
 
         reset_btn = ttk.Button(toolbar, text="\U0001f5d1️", command=self.reset_to_folder_structure, width=4, style="Centered.TButton")
         reset_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        self.create_tooltip(reset_btn, "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)")
+        self.create_tooltip(reset_btn, lambda: (
+            "Reset each section to its folders' A–Z order\n(every item stays in its section; you can undo it)"
+            if self._store_mode() == "store" else
+            "Reset Library to Folder Structure\n(Deletes manual ordering and generated manifest)"))
         self.undo_btn = ttk.Button(toolbar, text="⎌", command=self.undo_last_action, state=tk.DISABLED, width=4, style="Centered.TButton")
         self.undo_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self.undo_btn.tip_text = "Undo"
@@ -676,17 +1007,13 @@ class ContentImporterApp:
             print("Skipped saving the library order: the current file couldn't be read.")
             return
         # Written to a temp file and swapped in, so a crash mid-write can never leave half a
-        # manifest behind (which is how one became unreadable in the first place).
-        tmp = path + ".tmp"
+        # manifest behind (which is how one became unreadable in the first place). The swap takes the library
+        # store's copy lock (Library_Store_Spec §6.7: JSON mode), so it never lands between the helper's look and
+        # its own replace; without a lock file it saves as before, and says so.
         try:
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, path)
+            if library_store.json_mode_save(self.language, self.data_root, os.path.dirname(path), data) == "unlocked":
+                print("Saved the library order without the copy lock (its lock file couldn't be opened).")
         except Exception as e:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
             print(f"Error saving manifest: {e}")
             messagebox.showerror("Error", f"Failed to save manifest:\n{e}")
 
@@ -850,6 +1177,24 @@ class ContentImporterApp:
 
     def move_manifest_items_relative(self, items, target_path, position="after"):
         """Moves items to be immediately before or after the target_path in the manifest."""
+        if self._changes_blocked():
+            return
+        store = self._store()
+        if store is not None:
+            tier = library_store.TIER_OF_FOLDER.get(self.target_folder_var.get())
+            ids, anchor = self._ids_for(store, items), self._ids_for(store, [target_path])
+            if not ids or not anchor:
+                return
+            try:
+                if position == "before":
+                    change = store.move(ids, tier, before_id=anchor[0])
+                else:
+                    change = store.move(ids, tier, after_id=anchor[-1])
+            except Exception as e:
+                return self._store_failed(e)
+            self._store_did(change, "Move")
+            self.refresh_file_list()
+            return
         manifest = self.load_manifest()
         schedule = manifest.get("schedule", {})
         
@@ -912,6 +1257,20 @@ class ContentImporterApp:
 
     def move_items_in_manifest(self, items, direction):
         """Moves selected items (files/folders) up or down relative to other visible items in the current folder."""
+        if self._changes_blocked():
+            return
+        store = self._store()
+        if store is not None:
+            ids = self._ids_for(store, items)
+            if not ids:
+                return
+            try:
+                change = store.nudge(ids, direction)
+            except Exception as e:
+                return self._store_failed(e)
+            self._store_did(change, "Move")
+            self.refresh_file_list()
+            return
         manifest = self.load_manifest()
         schedule = manifest.get("schedule", {})
         
@@ -1034,9 +1393,14 @@ class ContentImporterApp:
         if not hasattr(self, "_tier_built_sig"):
             self._tier_built_sig = {}   # defensive: some tests construct the app without full __init__
 
-        # 1. Sync untracked disk files to manifest first — may bump the manifest mtime.
+        # 1. Sync untracked disk files to manifest first — may bump the manifest mtime. (Store mode: on the
+        # worker, never here; the tree follows its result.)
+        store = self._store()
         if sync:
-            self._sync_disk_to_manifest()
+            if store is not None:
+                self._request_sync()
+            else:
+                self._sync_disk_to_manifest()
 
         # 1b. Load analysis results for Graduate button (Optimized Cache)
         self._load_analyzed_filenames()
@@ -1050,10 +1414,19 @@ class ContentImporterApp:
         phase_key = phase_map.get(target_folder)
         if not phase_key: return
 
-        try:
-            msig = os.path.getmtime(self.get_manifest_path())
-        except OSError:
-            msig = None
+        if store is not None:
+            # The fast path's key (§6.6): (epoch, order_version, availability_version) — never state_version, so a
+            # receipt, a pin or a watched mark never rebuilds the tree.
+            try:
+                v = store.versions()
+                msig = ("store", v["epoch"], v["order_version"], v["availability_version"])
+            except Exception:
+                store, msig = None, None
+        else:
+            try:
+                msig = os.path.getmtime(self.get_manifest_path())
+            except OSError:
+                msig = None
 
         # Fast path: this tier's tree is already current -> skip the row rebuild.
         if (not force and msig is not None and self.tree is not None
@@ -1082,11 +1455,18 @@ class ContentImporterApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        # 5. Get manifest data for current phase
-        manifest = self.load_manifest()
-        schedule = manifest.get("schedule", {})
-
-        entries = schedule.get(phase_key, [])
+        # 5. Get manifest data for current phase — in store mode, the store's tier, in order (`ordered()`); a row
+        # whose file is missing is skipped by its availability, as the file check does below
+        if store is not None:
+            try:
+                entries = [e for _i, e, avail in store.ordered(library_store.TIER_OF_FOLDER[target_folder])
+                           if avail == "available"]
+            except Exception:
+                store, entries = None, []
+        if store is None:
+            manifest = self.load_manifest()
+            schedule = manifest.get("schedule", {})
+            entries = schedule.get(phase_key, [])
 
         # Resolve what will actually be drawn ONCE. The run counter below and the insert loop must
         # agree exactly about which entries appear — a manifest row whose file is missing from disk
@@ -1097,7 +1477,7 @@ class ContentImporterApp:
             rel_path = entry.get("physical_path")
             if not rel_path: continue
             abs_path = os.path.join(self.data_root, rel_path)
-            if not os.path.exists(abs_path):
+            if store is None and not os.path.exists(abs_path):
                 continue
             rendered.append((entry, rel_path, abs_path, entry.get("parent_folder", "")))
 
@@ -1164,7 +1544,15 @@ class ContentImporterApp:
     def _sync_disk_to_manifest(self, tiers=None):
         """Scans the 3 main data folders (or only `tiers`) and ensures any untracked files are added
         to the manifest — placed, not appended (`place_new_entries`): a new folder or loose file at
-        the top of its tab, a new file in a folder already there after that folder's last item."""
+        the top of its tab, a new file in a folder already there after that folder's last item.
+
+        Store mode: the store's `sync_disk` (§6.10 rule 3, every folder), on the worker when it runs — this
+        thread only asks — and here, at once, under test (no worker)."""
+        if self._store() is not None:
+            self._request_sync()
+            return
+        if self._store_mode() == "read-only":
+            return                                       # nothing writes the copy in read-only mode
         manifest = self.load_manifest()
         marker_cache = {}   # one producer-marker read per directory across the whole walk
         schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
@@ -1246,121 +1634,77 @@ class ContentImporterApp:
         return count
 
     def set_undo_action(self, action_type, label, data):
-        if hasattr(self, "_temp_manifest_snapshot"):
-            data["previous_manifest"] = self._temp_manifest_snapshot
-            
-        self.last_action = {
-            "type": action_type,
-            "data": data
-        }
-        if self.undo_btn:
-            self.undo_btn.config(state=tk.NORMAL)
-            self.undo_btn.tip_text = f"Undo: {label}"
+        """JSON mode's undo record: Undo is off there (Library_Store_Spec §6.9, G1.1-12): its whole-manifest
+        snapshot put back the entire order, erasing every later change (RD-A6). Store mode keeps each change
+        instead (`_store_did`), and undoes it alone (§6.11)."""
+        self.last_action = {}
+        self._temp_manifest_snapshot = None
 
     def undo_last_action(self):
-        if not self.last_action:
+        if self.__dict__.get("_undo_changes"):
+            self._undo_store_change()
+
+    def _undo_store_change(self):
+        """Store mode: reverse this window's newest change (§6.11), its file work through this window's file
+        code: Undo-Add sends the rows to the trash table and the files to `.trash` (checked first); Undo-Remove
+        puts the files back (never over a file) and restores the rows; Undo-Graduate strips its GraduatedList
+        blocks. A change someone else touched since is left as it is, with a note."""
+        if self._changes_blocked():
             return
-            
-        action_type = self.last_action.get("type")
-        data = self.last_action.get("data", {})
-        count = 0
-        
+        store = self._store()
+        changes = self._undo_changes
+        if store is None:
+            return
+        record = changes.pop()
+        change = record["change"]
+        notes = []
         try:
-            if action_type == "add":
-                for path in data.get("paths", []):
-                    if os.path.exists(path):
-                        if os.path.isdir(path): shutil.rmtree(path)
-                        else: os.remove(path)
-                    count += 1
-                    
-            elif action_type == "move":
-                for move_op in data.get("moves", []):
-                    src = move_op["source"]
-                    dst = move_op["dest"]
-                    if os.path.exists(dst):
-                        os.makedirs(os.path.dirname(src), exist_ok=True)
-                        shutil.move(dst, src)
-                    count += 1
-                    
-            elif action_type == "remove":
-                # Folders the action cleared away come back first (an empty one has nothing that
-                # would recreate it); then everything moves back, the last thing moved first.
-                for dirpath in data.get("removed_dirs", []):
-                    os.makedirs(dirpath, exist_ok=True)
-                for rm_op in reversed(data.get("removals", [])):
-                    orig = rm_op["original"]
-                    trash = rm_op["trash"]
-                    if os.path.exists(trash):
-                        os.makedirs(os.path.dirname(orig), exist_ok=True)
-                        shutil.move(trash, orig)
-                    count += 1
-
-            elif action_type == "graduate":
-                moves = data.get("moves", [])
-                words_added = data.get("words_added", 0)
-                sources = data.get("sources", [])
-
-                for dirpath in data.get("removed_dirs", []):
-                    os.makedirs(dirpath, exist_ok=True)
-                for move_op in reversed(moves):
-                    src = move_op["source"]
-                    dst = move_op["dest"]
-                    if os.path.exists(dst):
-                        os.makedirs(os.path.dirname(src), exist_ok=True)
-                        shutil.move(dst, src)
-                    count += 1
-                
-                if words_added > 0 and sources:
-                    project_root = os.path.dirname(os.path.dirname(self.data_root))
-                    grad_list_path = os.path.join(project_root, "User Files", self.language, "GraduatedList.txt")
-                    if os.path.exists(grad_list_path):
-                        # Its own encoding (path_utils.read_text), strictly: the list is written back.
-                        lines = read_text(grad_list_path, self.language, errors="strict").splitlines(True)
-                            
-                        for source_rel in sources:
-                            target_header = f"# Source: {source_rel}"
-                            header_idx = -1
-                            for i in range(len(lines)-1, -1, -1):
-                                if target_header in lines[i]:
-                                    header_idx = i
-                                    break
-                                    
-                            if header_idx != -1:
-                                end_idx = header_idx + 1
-                                for i in range(header_idx + 1, len(lines)):
-                                    if lines[i].strip() == "" or lines[i].startswith("# Source:"):
-                                        if not lines[i].startswith("# Source:"): end_idx = i + 1
-                                        break
-                                    end_idx = i + 1
-                                del lines[header_idx:end_idx]
-                                
-                        with open(grad_list_path, 'w', encoding='utf-8') as f:
-                            f.writelines(lines)
-
-            # What the action itself created: marker copies, then every folder it made that is empty
-            # again (deepest first) — so the tree ends up exactly as it was.
-            for path in data.get("created", []):
-                if os.path.isfile(path):
-                    os.remove(path)
-            for dirpath in sorted(data.get("created_dirs", []), key=len, reverse=True):
-                try:
-                    os.rmdir(dirpath)
-                except OSError:
-                    pass      # not empty: something else lives there now
-
-            if "previous_manifest" in data:
-                self.save_manifest(data["previous_manifest"])
-                
+            if change.kind in ("insert", "insert_at"):
+                ok, _skipped = store.undo_check(change)
+                rows = {i: store.item(i) for i in ok}
+                trashed = {}
+                for item_id, row in rows.items():
+                    if row is not None:
+                        moved = library_store.trash_file(self.data_root, row["rel_path"])
+                        if moved:
+                            trashed[item_id] = moved
+                out = store.undo(change, trashed_paths=trashed)
+            elif change.kind == "remove":
+                rel_paths = {}
+                for row in store.trash_rows(change.trash_ids):
+                    if row["restored_at"] or not row["trashed_path"]:
+                        continue
+                    back, note = library_store.put_back(self.data_root, row["trashed_path"], row["rel_path"])
+                    if back:
+                        rel_paths[row["id"]] = back
+                        for sidecar_from, sidecar_to in record.get("sidecars", {}).get(row["rel_path"], ()):
+                            try:
+                                if os.path.isfile(sidecar_to) and not os.path.exists(sidecar_from):
+                                    os.rename(sidecar_to, sidecar_from)
+                            except OSError:
+                                pass
+                    if note:
+                        notes.append(note)
+                out = store.undo(change, rel_paths=rel_paths)
+            else:
+                out = store.undo(change)
+                if record.get("graduated"):
+                    library_store.strip_graduated_block(self.user_files_root, self.language, record["graduated"])
+        except library_store.UndoRefused as e:
+            changes.clear()
+            notes.append(str(e))
+            out = None
         except Exception as e:
-            messagebox.showerror("Undo Error", f"Failed to undo action: {e}")
-            
-        self.last_action = {}
+            changes.append(record)
+            return self._store_failed(e)
+        if out is not None:
+            notes += out.notes
         if self.undo_btn:
-            self.undo_btn.config(state=tk.DISABLED)
-            self.undo_btn.tip_text = "Undo"
-            
-        self.refresh_file_list()
-        self.status_var.set(f"Undid past action ({count} items restored)")
+            self.undo_btn.config(state=tk.NORMAL if changes else tk.DISABLED)
+            self.undo_btn.tip_text = f"Undo: {changes[-1]['label']}" if changes else "Undo"
+        self._schedule_idle_export()
+        self.refresh_file_list(force=True)
+        self.status_var.set(f"Undid: {record['label']}" + (f" ({'; '.join(notes)})" if notes else ""))
 
     # --- Tier tabs (ttk.Notebook) helpers -------------------------------------------------------- #
     def _make_tier_tree(self, parent):
@@ -1418,7 +1762,14 @@ class ContentImporterApp:
         return card
 
     def _library_is_empty(self):
-        """True when NO content files exist across the three tiers (Processed/Graduated don't count)."""
+        """True when NO content files exist across the three tiers (Processed/Graduated don't count). Store
+        mode: no available item in an analysed tier (a Graduate leaves its file in the tier folder)."""
+        store = self._store()
+        if store is not None:
+            try:
+                return not store.has_content()
+            except Exception:
+                pass
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(self.data_root, tier)
             if os.path.isdir(d):
@@ -1598,7 +1949,33 @@ class ContentImporterApp:
         self._sync_disk_to_manifest((tier,))
         self.refresh_file_list()
 
+    def _insert_in_store(self, store, files, started_at, label):
+        """Add Files / Add Folder in store mode (§6.6): the files are already copied in (the file work), and
+        one `insert` places them — a new episode joins its show in NOW or Soon, else the top of NOW; a new
+        show by today's rule in this tab (§6.10 rule 3, Q4-9). Add Files of a, b, c lands a, b, c (L-Q6). If the
+        commit fails, the copies go to the trash. Returns the change and a note on files already listed."""
+        tier = library_store.TIER_OF_FOLDER.get(self.target_folder_var.get(), "now")
+        try:
+            change = store.insert(files, tier, "show", started_at=started_at)
+        except Exception as e:
+            for path in files:
+                try:
+                    library_store.trash_file(self.data_root, self._normalize_path(path))
+                except OSError:
+                    pass
+            self._store_failed(e)
+            return None, ""
+        note = ""
+        if change is not None and change.existing:
+            where = sorted({library_store.TIER_LABELS.get(t, t) for _p, _i, t in change.existing})
+            note = f" {len(change.existing)} already in your library ({', '.join(where)}), left where they are."
+        if change is not None and change.added:
+            self._store_did(change, label)
+        return change, note
+
     def add_files(self):
+        if self._changes_blocked():
+            return
         target_dir = self.get_current_dir()
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
@@ -1622,7 +1999,10 @@ class ContentImporterApp:
         )
 
         if filepaths:
-            self._temp_manifest_snapshot = self.load_manifest()
+            store = self._store()
+            started_at = library_store._now()
+            store_files = []       # store mode: every copied file, in the order chosen (one insert, L-Q6)
+            self._temp_manifest_snapshot = self.load_manifest() if store is None else None
             import filecmp
             count = 0
             already = 0
@@ -1641,7 +2021,10 @@ class ContentImporterApp:
                         if not extracted:
                             empty_zips.append(filename)
                             continue
-                        self.add_to_manifest(dest, target_folder_key)
+                        if store is not None:
+                            store_files += extracted
+                        else:
+                            self.add_to_manifest(dest, target_folder_key)
                         added_paths.append(dest)   # undo removes the whole unpacked folder
                         count += len(extracted)
                         continue
@@ -1659,18 +2042,24 @@ class ContentImporterApp:
                         renamed += 1
                     shutil.copy2(path, dest)
 
-                    self.add_to_manifest(dest, target_folder_key)
+                    if store is not None:
+                        store_files.append(dest)
+                    else:
+                        self.add_to_manifest(dest, target_folder_key)
                     added_paths.append(dest)
                     count += 1
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to copy {filename}:\n{e}")
 
-            if added_paths:
+            note = ""
+            if store is not None and store_files:
+                _change, note = self._insert_in_store(store, store_files, started_at, "Add Files")
+            elif added_paths:
                 self.set_undo_action("add", "Add Files", {"paths": added_paths})
 
             self.refresh_file_list()
             self.status_var.set(f"Added {count} files to {self.target_folder_var.get()} ({self.language})")
-            summary = f"Successfully added {count} files."
+            summary = f"Successfully added {count} files." + note
             if already:
                 summary += f" {already} already present."
             if renamed:
@@ -1753,6 +2142,8 @@ class ContentImporterApp:
         return f"{base} ({n}){ext}"
 
     def add_folder(self):
+        if self._changes_blocked():
+            return
         target_dir = self.get_current_dir()
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
@@ -1763,11 +2154,13 @@ class ContentImporterApp:
             initial_dir = self.data_root
 
         folder_path = filedialog.askdirectory(initialdir=initial_dir, title="Select Folder to Import")
-        
+
         if not folder_path:
             return
-            
-        self._temp_manifest_snapshot = self.load_manifest()
+
+        store = self._store()
+        started_at = library_store._now()
+        self._temp_manifest_snapshot = self.load_manifest() if store is None else None
 
         try:
             # Handle cases where path ends with slash (e.g. "C:/" or "D:/")
@@ -1840,7 +2233,10 @@ class ContentImporterApp:
                 )
                 return
 
-            self.add_to_manifest(dest, self.target_folder_var.get())
+            if store is not None:
+                self._insert_in_store(store, added_paths, started_at, "Add Folder")
+            else:
+                self.add_to_manifest(dest, self.target_folder_var.get())
             # Undo removes exactly what we added: for a merge, only the new files (preserving
             # pre-existing content); for a brand-new folder, the whole folder.
             undo_paths = [dest] if not dest_existed else added_paths
@@ -2063,7 +2459,78 @@ class ContentImporterApp:
         except Exception as e:
             print(f"Warning: could not tidy emptied folders: {e}")
 
+    def _append_graduated_words(self, source_path, grad_index):
+        """A NOW file's words into GraduatedList.txt under `# Source: <rel>` (from the last analysis). Returns
+        (rel, count), or (None, 0) when the file had none."""
+        filename = os.path.basename(source_path)
+        filenames_to_match = set()
+        if os.path.isfile(source_path):
+            filenames_to_match.add(filename)
+        else:
+            for root, dirs, files in os.walk(source_path):
+                for f in files:
+                    filenames_to_match.add(f)
+
+        # Union of every matched file's words (same result as scanning word_stats'
+        # per-word `sources`, just read from the pre-built reverse index).
+        file_words = set()
+        for f in filenames_to_match:
+            file_words.update(grad_index.get(f, []))
+        if not file_words:
+            return None, 0
+        file_words = sorted(file_words)
+        project_root = os.path.dirname(os.path.dirname(self.data_root))
+        user_files_dir = os.path.join(project_root, "User Files", self.language)
+        if not os.path.exists(user_files_dir):
+            os.makedirs(user_files_dir)
+
+        rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
+        grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
+        # In the list's own encoding (path_utils.append_text): UTF-8 added to a Shift_JIS
+        # list left a file no encoding reads whole.
+        append_text(grad_list_path,
+                    f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n"
+                    + "".join(f"{w}\n" for w in file_words), self.language)
+        return rel_path, len(file_words)
+
+    def _set_tier_in_store(self, store, paths, current_folder, dest_folder_name, label):
+        """Graduate, Promote and Demote in store mode (L5): the items change section and no file moves. From
+        NOW, Graduate first adds each file's words to GraduatedList.txt (the file work), then commits; if the
+        commit fails, those blocks come out again. Undo strips them too (§6.11)."""
+        dest_tier = "graduated" if dest_folder_name == "Graduated" else library_store.TIER_OF_FOLDER[dest_folder_name]
+        ids = self._ids_for(store, paths)
+        if not ids:
+            return None, 0
+        graduated, words = [], 0
+        try:
+            check = store.check(ids)
+            if current_folder == "HighPriority" and dest_tier == "graduated":
+                try:
+                    from app.settings_manager import load_settings
+                    settings = load_settings()
+                except Exception as e:
+                    print(f"Could not load settings: {e}")
+                    settings = {}
+                grad_index = self._load_graduate_index()
+                if grad_index and settings.get("add_graduated_words", True):
+                    for path in paths:
+                        rel, n = self._append_graduated_words(path, grad_index)
+                        if rel:
+                            graduated.append(rel)
+                            words += n
+            change = store.set_tier(ids, dest_tier, check=check)
+        except Exception as e:
+            if graduated:
+                library_store.strip_graduated_block(self.user_files_root, self.language, graduated)
+            self._store_failed(e)
+            return None, 0
+        self._store_did(change, label, graduated=graduated)
+        self.refresh_file_list(force=True)
+        return change, words
+
     def demote_content(self):
+        if self._changes_blocked():
+            return
         selected_items = self.tree.selection()
         if not selected_items:
             messagebox.showwarning("No Selection", "Please select items to demote.")
@@ -2098,6 +2565,14 @@ class ContentImporterApp:
         confirm = messagebox.askyesno("Confirm Demotion", msg)
 
         if not confirm:
+            return
+
+        store = self._store()
+        if store is not None:
+            change, _w = self._set_tier_in_store(store, items_to_process, current_folder, dest_folder_name,
+                                                 "Demote Content")
+            if change is not None:
+                self.status_var.set(f"Demoted {len(change.items)} items.")
             return
 
         # Ensure destination exists
@@ -2168,6 +2643,8 @@ class ContentImporterApp:
             self._report_failures("Demote", f"Demoted {count:,} files.", failures, total, "moved")
 
     def graduate_content(self):
+        if self._changes_blocked():
+            return
         selected_items = self.tree.selection()
         if not selected_items:
             messagebox.showwarning("No Selection", "Please select items to graduate.")
@@ -2204,11 +2681,13 @@ class ContentImporterApp:
 
         # Confirmation Logic.
         selection_text = self._selection_summary(items_to_process)
+        store_mode = self._store_mode() == "store"
         if current_folder == "HighPriority":
             msg = (f"Graduate {selection_text} to '{friendly_dest}'?\n\n"
                    "CAUTION: This will mark words as KNOWN based on the MOST RECENT analysis.\n"
                    "Words from these files found in the 'word_stats.json' report will be added to your GraduatedList.\n\n"
-                   f"The files will be moved to your local '{friendly_dest}' archive.")
+                   + ("They leave your sections; the files stay where they are." if store_mode else
+                      f"The files will be moved to your local '{friendly_dest}' archive."))
         else:
             msg = f"Move {selection_text} from '{friendly_src}' to '{friendly_dest}'?"
             
@@ -2217,10 +2696,22 @@ class ContentImporterApp:
         if not confirm:
             return
 
+        store = self._store()
+        if store is not None:
+            change, words = self._set_tier_in_store(store, items_to_process, current_folder, dest_folder_name,
+                                                    "Graduate")
+            if change is not None:
+                status_msg = f"Moved {len(change.items)} items to {friendly_dest}."
+                if words:
+                    status_msg += f" Added {words} words to GraduatedList."
+                self.status_var.set(status_msg)
+                messagebox.showinfo("Success", status_msg)
+            return
+
         # Ensure destination exists
         if not os.path.exists(dest_root):
             os.makedirs(dest_root)
-            
+
         count = 0
         words_graduated = 0
         
@@ -2260,37 +2751,10 @@ class ContentImporterApp:
                 try:
                     # 1. Graduate Words Logic (High Priority only)
                     if current_folder == "HighPriority" and grad_index and settings.get("add_graduated_words", True):
-                        # Find all filenames associated with this item
-                        filenames_to_match = set()
-                        if os.path.isfile(source_path):
-                            filenames_to_match.add(filename)
-                        else:
-                            for root, dirs, files in os.walk(source_path):
-                                for f in files:
-                                    filenames_to_match.add(f)
-
-                        # Union of every matched file's words (same result as scanning word_stats'
-                        # per-word `sources`, just read from the pre-built reverse index).
-                        file_words = set()
-                        for f in filenames_to_match:
-                            file_words.update(grad_index.get(f, []))
-
-                        if file_words:
-                            file_words = sorted(file_words)
-                            project_root = os.path.dirname(os.path.dirname(self.data_root))
-                            user_files_dir = os.path.join(project_root, "User Files", self.language)
-                            if not os.path.exists(user_files_dir):
-                                 os.makedirs(user_files_dir)
-
-                            rel_path = os.path.relpath(source_path, self.data_root).replace("\\", "/")
-                            grad_list_path = os.path.join(user_files_dir, "GraduatedList.txt")
-                            # In the list's own encoding (path_utils.append_text): UTF-8 added to a Shift_JIS
-                            # list left a file no encoding reads whole.
-                            append_text(grad_list_path,
-                                        f"\n# Source: {rel_path} ({len(file_words)} words graduated)\n"
-                                        + "".join(f"{w}\n" for w in file_words), self.language)
-                            words_graduated += len(file_words)
-                            words_added_total += len(file_words)
+                        rel_path, n = self._append_graduated_words(source_path, grad_index)
+                        if rel_path:
+                            words_graduated += n
+                            words_added_total += n
                             sources_modified.append(rel_path)
 
                     # Calculate relative path within source bucket to preserve hierarchy
@@ -2351,7 +2815,59 @@ class ContentImporterApp:
         else:
             messagebox.showinfo("Success", status_msg)
 
+    def _remove_in_store(self, store, paths):
+        """Remove in store mode (§6.6): check, then the file work — each file (and its cue sidecar) to
+        `data/<lang>/.trash`, its 30-day clock restarted — then one `remove`. If the commit fails, the files go
+        back. A file already gone is removed from the list all the same."""
+        trash_dir = os.path.join(self.data_root, ".trash")
+        os.makedirs(trash_dir, exist_ok=True)
+        pairs = [(store.item_id(self._normalize_path(p)), p) for p in paths]
+        pairs = [(i, p) for i, p in pairs if i is not None]
+        if not pairs:
+            return
+        check = store.check([i for i, _p in pairs])
+        trashed, sidecars, moves, failures = {}, {}, [], []
+        total = len(pairs)
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            for n, (item_id, path) in enumerate(pairs, 1):
+                self._batch_progress("Removing", n, total)
+                try:
+                    if os.path.exists(path):
+                        base, ext = os.path.splitext(os.path.basename(path))
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                        trash_path = self._unique_path(os.path.join(trash_dir, f"{base}_{timestamp}{ext}"))
+                        moved, _ = self._move_content_file(path, trash_path, copy_marker=False)
+                        for original, gone in moved:
+                            restart_trash_clock(gone)
+                        moves += moved
+                        trashed[item_id] = self._normalize_path(trash_path)
+                        sidecars[self._normalize_path(path)] = moved[1:]
+                except Exception as e:
+                    print(f"Error deleting {path}: {e}")
+                    failures.append(path)
+            ids = [i for i, p in pairs if p not in failures]
+            try:
+                change = store.remove(ids, trashed, check=check) if ids else None
+            except Exception as e:
+                for original, gone in reversed(moves):          # the file work, undone in reverse
+                    try:
+                        os.rename(gone, original)
+                    except OSError:
+                        pass
+                return self._store_failed(e)
+        finally:
+            self.root.config(cursor="")
+        self._store_did(change, "Remove Items", sidecars=sidecars)
+        self.refresh_file_list(force=True)
+        self.status_var.set(f"Removed {len(ids)} items.")
+        if failures:
+            self._report_failures("Remove", f"Removed {len(ids):,} files.", failures, total, "removed")
+
     def remove_files(self):
+        if self._changes_blocked():
+            return
         selected_items = self.tree.selection()
         if not selected_items:
             messagebox.showwarning("No Selection", "Please select items to remove.")
@@ -2367,7 +2883,9 @@ class ContentImporterApp:
             f"Remove {self._selection_summary(paths_to_delete)}? This can be undone."
         )
 
-        if confirm:
+        if confirm and self._store() is not None:
+            self._remove_in_store(self._store(), paths_to_delete)
+        elif confirm:
             self._temp_manifest_snapshot = self.load_manifest()
             count = 0
 
@@ -2622,7 +3140,27 @@ class ContentImporterApp:
 
 
     def reset_to_folder_structure(self):
-        """Regenerates the master manifest based on the physical folder structure."""
+        """Regenerates the master manifest based on the physical folder structure. Store mode (R-1, D25):
+        each section is re-sorted in its folders' A–Z order, every item staying in its section — no file
+        moves — and Undo puts the order back."""
+        if self._changes_blocked():
+            return
+        store = self._store()
+        if store is not None:
+            if not messagebox.askyesno(
+                    "Confirm Reset",
+                    "This re-sorts each section in your folders' A–Z order.\n\n"
+                    "Every item stays in its section, files that aren't listed yet are added, and nothing on "
+                    "disk moves. You can undo it.\n\nProceed?"):
+                return
+            try:
+                change = store.reset_order()
+            except Exception as e:
+                return self._store_failed(e)
+            self._store_did(change, "Reset Library")
+            self.refresh_file_list(force=True)
+            self.status_var.set("Library order reset to the folders' order." if change else "Already in folder order.")
+            return
         msg = ("This will reset your library order to match the physical folders.\n\n"
                "It will REGENERATE your manifest based on the files on disk.\n"
                "This ensures all files are tracked and reordering works correctly.\n\n"
@@ -2918,6 +3456,12 @@ def main():
     root = tk.Tk()
     app = ContentImporterApp(root, language=args.language)
     root.mainloop()
+    # The library store's copy, written once no window is left to freeze (Library_Store_Spec §6.7: close).
+    try:
+        if app._store_mode() == "store":
+            library_store.maintain(args.language, app.data_root, app.user_files_root)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()

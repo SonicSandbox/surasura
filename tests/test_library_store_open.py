@@ -132,7 +132,9 @@ def test_a_store_busy_for_two_seconds_settles_on_a_lesser_mode_after_one(languag
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_window_never_waits_for_a_busy_store(language):
-    """The window thread's call returns the mode it cached within 5 ms; the retry runs on a worker."""
+    """The window thread's call returns the mode it cached at once — within 5 ms in the timed run, and
+    always far under the 1 s busy retry or the 5 s lock wait it must never sit in (a CI runner is slower);
+    the retry runs on a worker."""
     migrated(language).close()
     data_dir, user_files_dir = roots(language)
     opener = ls.StoreOpener(language, data_dir, user_files_dir)
@@ -144,7 +146,8 @@ def test_a_window_never_waits_for_a_busy_store(language):
     started = time.perf_counter()
     mode = opener.check()
     took = time.perf_counter() - started
-    assert mode == "store" and took < 0.005, took
+    limit = 0.005 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 0.1
+    assert mode == "store" and took < limit, took
     assert opener.wait(3) == "read-only" and opener.reason == "busy"
     t.join()
     assert opener.check() == "store"

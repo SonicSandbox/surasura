@@ -9,6 +9,8 @@ import json
 import re
 import csv
 import hashlib
+import threading
+import time
 import unicodedata
 # Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
 # module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
@@ -3465,6 +3467,26 @@ def _library_store():
         return None
 
 
+# The journey check's disk syncs, one at a time per language (Library_Store_Spec §7): a check asked while one
+# runs waits for it, and the first of those waiting runs one follow-up for all of them (`_journey_sync`).
+_JOURNEY_SYNC_LOCKS = {}
+_JOURNEY_SYNC_STARTED = {}
+_JOURNEY_SYNC_GUARD = threading.Lock()
+
+
+def _journey_sync(ls, store, language):
+    """`sync_for_window` for the journey check, coalesced: a sync that started after this request was made
+    already covers it, so a burst of checks (focus, a language switch, Generate) costs at most two walks."""
+    asked = time.monotonic()
+    with _JOURNEY_SYNC_GUARD:
+        lock = _JOURNEY_SYNC_LOCKS.setdefault(language, threading.Lock())
+    with lock:
+        if _JOURNEY_SYNC_STARTED.get(language, float("-inf")) >= asked:
+            return
+        _JOURNEY_SYNC_STARTED[language] = time.monotonic()
+        ls.sync_for_window(store)
+
+
 def read_library_schedule(language, data_dir=None, user_files_dir=None):
     """A reader's list (Library_Store_Spec §6.2, §6.6): `(schedule, versions)` from a ready store, read in
     one transaction, else `(None, None)`. A reader never builds: with no ready store, or on any database
@@ -3694,7 +3716,7 @@ def journey_is_current(args, language):
             else:
                 try:
                     with store:
-                        ls.sync_for_window(store)
+                        _journey_sync(ls, store, language)
                         schedule, versions = store.schedule(with_versions=True)
                     library.update(schedule=schedule, order_version=versions["order_version"],
                                    epoch=versions["epoch"])

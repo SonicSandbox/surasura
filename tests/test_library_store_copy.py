@@ -539,7 +539,8 @@ def test_the_helper_never_opens_a_dialog():
     env = subprocess_env()
     usage = subprocess.run([sys.executable, "-c", script, "nonsense"], cwd=REPO, env=env, timeout=60)
     assert usage.returncode == ls.EXIT_USAGE
-    env.pop("SURASURA_TEST_ROOT", None)                         # an error: STORE_LIVE refuses → 1, no dialog
+    env.pop("SURASURA_TEST_ROOT", None)                         # an error: the test guard refuses → 1, no dialog
+    env["PYTEST_CURRENT_TEST"] = "test_the_helper_never_opens_a_dialog"   # never the real library (I7)
     failed = subprocess.run([sys.executable, "-c", script, "maintain", "--language", "ja"], cwd=REPO, env=env,
                             timeout=60)
     assert failed.returncode == ls.EXIT_FAILED

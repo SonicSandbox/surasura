@@ -13,9 +13,9 @@ writers take turns instead of overwriting each other, and a crash leaves the old
 shape, so older versions and every reader keep working, plus a `surasura_library` key that carries the
 store's extra state and names the store that wrote it.
 
-Phase 1 (L1.2): new files only. Nothing in the app imports this yet, `STORE_LIVE` is False, and every
-open refuses unless `SURASURA_TEST_ROOT` is set, so a stray run can't migrate the real library. Phase 2
-(L2.1, 2.5) switches the app over.
+Phase 1 (L1.2) built it as new files only, with `STORE_LIVE` False. Phase 2 (L2.1, 2.5) switches the app
+over: `STORE_LIVE` is True. Under pytest every open still refuses unless `SURASURA_TEST_ROOT` is set, so a
+test can't migrate the real library.
 
 Rules that bite (spec §6.2, §8)
 -------------------------------
@@ -56,8 +56,9 @@ except ImportError:  # POSIX
     import fcntl
 
 
-# Phase 1: the store is built and proven, never consulted by the app. WP-L8 (2.5) flips it.
-STORE_LIVE = False
+# The switch (WP-L8, 2.5): the app keeps its library order in the store. False turns every open into a refusal
+# (the app then runs as 2.4 did, in JSON mode).
+STORE_LIVE = True
 
 STORE_SCHEMA = 1                 # PRAGMA user_version this code writes
 COPY_FORMAT = 1                  # surasura_library.format
@@ -3043,7 +3044,10 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
         items, new_order, moved, count, total = _reimport_plan(self, norm)
         dirty = any(it.added or it.new_tier or it.new_rel or it.new_entry for it in items.values()) or bool(moved)
         if not dirty:
-            self._set_meta({"last_export_stat": read_stat})
+            # Nothing to apply, yet the copy's content isn't the store's (a returning 2.4.0 put a graduated file
+            # back in NOW: rule 2 keeps it graduated): the copy is written again from the store.
+            self._set_meta({"last_export_stat": read_stat,
+                            "copy_dirty": int(self._meta().get("copy_dirty") or 0) + 1})
             return "unchanged"
         if not force and _guard_trips(count, total):
             self._set_meta({"reimport_pending": _dumps({"stat": read_stat, "count": count, "total": total,
@@ -3816,6 +3820,45 @@ def _store_export_due(self):
     return meta["state_version"] != meta.get("last_export_version") or bool(meta.get("copy_dirty"))
 
 
+def _store_copy_stat(self):
+    """The copy's stat as `last_export_stat` records it, '' when there is no copy."""
+    st = _stat(manifest_path(self.user_files_dir))
+    return _stat_str(st) if st else ""
+
+
+def maintain_due(store, handed=""):
+    """A window's trigger rule (§6.7): spawn the helper only when it has something to do — a change since the
+    last export, or a copy someone else rewrote whose stat this process hasn't already handed to a helper
+    (`handed`). Returns (due, the copy's stat)."""
+    seen = store.copy_stat()
+    if store.export_due():
+        return True, seen
+    return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen
+
+
+def maintain_at_close(language, data_dir=None, user_files_dir=None):
+    """The close trigger (§6.7), in-process once no window is left to freeze: `maintain` for a ready store with
+    something to do. Never waits: a helper holding the maintenance lock is doing it already. Returns the exit
+    code, or None when nothing ran."""
+    from app.path_utils import get_data_path, get_user_files_path
+    data_dir = data_dir or get_data_path(language)
+    user_files_dir = user_files_dir or get_user_files_path(language)
+    store = open_store(language, data_dir, user_files_dir, role="window", busy_wait=0.0)
+    if store is None:
+        return None
+    with store:
+        due, _seen = maintain_due(store)
+    if not due:
+        return None
+    lock = MaintenanceLock(library_db_path(language, data_dir))
+    try:
+        if not lock.try_acquire():
+            return EXIT_BUSY
+        return maintain(language, data_dir, user_files_dir, lock=lock)
+    finally:
+        lock.close()
+
+
 def read_only_schedule(language, data_dir, user_files_dir):
     """Read-only mode (§6.9): the copy's schedule, with the walk's untracked files added in memory by
     §6.10 rule 3 (never saved), so a file dropped into a tier folder is still analysed. Every file the
@@ -3917,6 +3960,7 @@ def spawn_build_if_waiting(language, data_dir, user_files_dir):
 
 Store.has_content = _store_has_content
 Store.export_due = _store_export_due
+Store.copy_stat = _store_copy_stat
 Store.folders = _store_folders
 Store.walk = _store_walk
 Store.sync_disk = _store_sync_disk

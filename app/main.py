@@ -353,7 +353,6 @@ class MasterDashboardApp:
         self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
         self.var_open_count = tk.IntVar(value=0)
-        self.var_hide_satoru = tk.BooleanVar(value=False)
         self.var_hide_audio = tk.BooleanVar(value=False)
         self.var_enable_youtube = tk.BooleanVar(value=False)
         self.youtube_risk_acknowledged = False
@@ -413,7 +412,6 @@ class MasterDashboardApp:
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
-        self.btn_satori: Optional[ttk.Button] = None
         self.btn_youtube: Optional[ttk.Button] = None
         self.btn_preview: Optional[ttk.Button] = None
         self.btn_reels: Optional[ttk.Button] = None
@@ -498,7 +496,6 @@ class MasterDashboardApp:
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
         self.var_hide_audio.trace_add("write", self.save_settings)
-        self.var_hide_satoru.trace_add("write", lambda n, i, m: self.update_satori_visibility())
         self.var_enable_youtube.trace_add("write", self.save_settings)
         self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
         self.var_enable_preview.trace_add("write", self.save_settings)
@@ -522,7 +519,8 @@ class MasterDashboardApp:
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
                                                self._maybe_anki_sync(), self._maybe_junban_auto(),
-                                               self._maybe_auto_generate(), self._schedule_journey_state()))
+                                               self._maybe_auto_generate(), self._schedule_journey_state(),
+                                               self._schedule_maintain(), self._update_library_notice()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -539,6 +537,11 @@ class MasterDashboardApp:
 
             # Whether the journey is up to date — the Generate button's border / check mark.
             self.root.after(1200, self._schedule_journey_state)
+
+            # The library store's helper, when it has something to do (Library_Store_Spec §6.7: at open), and its
+            # notice once that has had a moment to build the store.
+            self.root.after(1500, self._maybe_maintain)
+            self.root.after(1600, self._update_library_notice)
 
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
@@ -999,33 +1002,39 @@ class MasterDashboardApp:
         if not force and (now - self._last_index_check) < 2.0:
             return
         self._last_index_check = now
+        lang = self.var_language.get() or "ja"
+        script = self._effective_zh_script(lang)
+        # The whole check runs on a worker (Library_Store_Spec §7, A12): the list and needs_reconcile's stat of
+        # every file. The list is the indexer's own (`indexer._content_files`: the store's in store and read-only
+        # modes, K2, else the folders), so a file Graduate left in its folder never reads as "to index" forever.
+        self._indexer_busy = True
+        self._run_on_worker(lambda: self._index_needed(lang, script), self._index_checked)
+
+    @staticmethod
+    def _index_needed(lang, script):
+        """Would the indexer have anything to do for `lang`? Stat-only (no tokenizer); False when it can't tell."""
         try:
-            lang = self.var_language.get() or "ja"
-            from app.path_utils import get_data_path, get_user_files_path, is_content_file
-            data_dir = get_data_path(lang)
-            files = []
-            for folder in ("HighPriority", "LowPriority", "GoalContent"):
-                base = os.path.join(data_dir, folder)
-                if os.path.isdir(base):
-                    for r, _d, names in os.walk(base):
-                        files += [os.path.join(r, n) for n in names if is_content_file(n)]
-            script = self._effective_zh_script(lang)
+            from app.path_utils import get_data_path, get_user_files_path
+            from app.indexer import _content_files
+            files = _content_files(get_data_path(lang), lang)
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
                 # needs_reconcile is stat-only, so a tokenizer change (the Chinese script)
                 # alone would never re-index: compare the identity the store was built with too.
-                need = (store.needs_reconcile(files)
-                        or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
-                        or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
+                return bool(store.needs_reconcile(files)
+                            or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
+                            or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:
                 store.close()
         except Exception:
-            return
-        if not need:
-            return
+            return False
 
-        self._indexer_busy = True
+    def _index_checked(self, need):
+        """The indexer check's answer, on this thread: launch the indexer, or stand down."""
+        if not need:
+            self._indexer_busy = False
+            return
 
         def _done():
             self._indexer_busy = False
@@ -1106,6 +1115,8 @@ class MasterDashboardApp:
 
         # A language switch points at a different store — re-index that language in the background.
         self._maybe_launch_indexer(force=True)
+        self._schedule_maintain()
+        self._update_library_notice()
         self._update_generate_state()   # different language -> different library -> re-check emptiness
 
     def _library_has_content(self):
@@ -1115,7 +1126,6 @@ class MasterDashboardApp:
         extensions MUST match what the analyzer actually reads (analyzer.get_files_recursive:
         path_utils.is_content_file) — otherwise Generate could enable on files the analysis then
         ignores (e.g. a tier of only .vtt), yielding an empty journey."""
-        from app.path_utils import get_data_path, is_content_file
         lang = self.var_language.get() or "ja"
         store = self._library_handle(lang)
         if store is not None:
@@ -1123,6 +1133,25 @@ class MasterDashboardApp:
                 return store.has_content()
             except Exception:
                 pass
+        # The folders are walked on a worker (Library_Store_Spec §7, A12); this thread reads the last answer
+        # (Generate stays on until the first one), and the button follows when the answer changes.
+        answers = self.__dict__.setdefault("_folder_content", {})
+        walking = self.__dict__.setdefault("_folder_content_walks", set())
+        if lang not in walking:
+            walking.add(lang)
+
+            def landed(has):
+                walking.discard(lang)
+                changed = answers.get(lang) != has
+                answers[lang] = has
+                if changed and (self.var_language.get() or "ja") == lang:
+                    self._update_generate_state()
+            self._run_on_worker(lambda: self._folders_have_content(lang), landed)
+        return answers.get(lang, True)
+
+    @staticmethod
+    def _folders_have_content(lang):
+        from app.path_utils import get_data_path, is_content_file
         base = get_data_path(lang)
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(base, tier)
@@ -1131,6 +1160,173 @@ class MasterDashboardApp:
                     if any(is_content_file(f) for f in files):
                         return True
         return False
+
+    @staticmethod
+    def _library_state(lang):
+        """(mode, reason, waiting) for `lang`'s library store, read on a worker: `waiting` is an outside edit of
+        the copy that waits for the user's answer (the size guard, Q4-8)."""
+        try:
+            from app import library_store
+            from app.path_utils import get_data_path, get_user_files_path
+            data_dir = get_data_path(lang)
+            mode, reason = library_store.check_mode(lang, data_dir, busy_wait=0.0)
+            waiting = False
+            if mode == "store":
+                store = library_store.open_store(lang, data_dir, get_user_files_path(lang), role="window",
+                                                 busy_wait=0.0)
+                if store is not None:
+                    with store:
+                        waiting = bool(store.meta().get("reimport_pending"))
+            return mode, reason, waiting
+        except Exception:
+            return None, None, False
+
+    def _update_library_notice(self):
+        """Re-check the library's mode (on focus, at open, on a language switch, after Repair or Try again) on a
+        worker, and show what the user needs to know — never a modal (§6.9: the mode is checked, not fixed)."""
+        if not hasattr(self, "library_notice") or self.__dict__.get("_library_notice_busy"):
+            return
+        lang = self.var_language.get() or "ja"
+        self._run_on_worker(lambda: self._library_state(lang), lambda state: self._show_library_notice(lang, state))
+
+    def _show_library_notice(self, lang, state):
+        mode, reason, waiting = state
+        if mode is None or (self.var_language.get() or "ja") != lang:
+            return
+        before = self._library_mode_seen.get(lang)
+        self._library_mode_seen[lang] = mode
+        if before == "json" and mode == "store":
+            self.status_var.set("Library moved to the new store.")
+        kind, text = None, ""
+        if mode == "read-only" and reason == "damaged":
+            kind = "damaged"
+            text = ("Your library needs repair. Until then its order can't be changed, and new files are read "
+                    "but can't be added to it. Generate still works.")
+        elif mode == "read-only" and "newer" in (reason or ""):
+            text = "This library was saved by a newer Surasura: its order can't be changed here."
+        elif mode == "read-only" and reason != "busy":
+            text = "Your library can't be changed right now. Generate still works."
+        elif mode == "json" and reason == "migration failed":
+            kind = "failed"
+            text = ("Your library couldn't be moved to the new store, so its order stays in its file for now "
+                    "(details: library_maintain.log in Surasura's local data folder).")
+        elif waiting:
+            text = "Your library's order file was changed outside Surasura. Open Import Content to choose an order."
+        self._library_notice_kind = kind
+        self.library_notice_var.set(text)
+        if kind:
+            self.btn_library_notice.config(text="Repair" if kind == "damaged" else "Try again", state=tk.NORMAL)
+            self.btn_library_notice.pack(side=tk.RIGHT, padx=(5, 0), pady=(6, 0))
+        else:
+            self.btn_library_notice.pack_forget()
+        if text:
+            self.library_notice.pack(fill=tk.X, side=tk.BOTTOM, before=self.btn_open_data)
+        else:
+            self.library_notice.pack_forget()
+
+    def _close_library_handles(self):
+        """This process's own store handles (the dashboard's long-lived ones): Repair renames the files, which
+        Windows refuses while any is open (§6.9). They reopen on the next use."""
+        for opener in self.__dict__.get("_library_openers", {}).values():
+            store = getattr(opener._local, "store", None)
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+                opener._local.store = None
+
+    def _library_notice_action(self):
+        """Repair (a damaged store) or Try again (a failed move), run as the helper. Repair first closes the
+        Content Manager windows and this window's own handles, and waits for no Generate (§6.9)."""
+        kind, lang = self._library_notice_kind, self.var_language.get() or "ja"
+        if kind not in ("damaged", "failed"):
+            return
+        if kind == "damaged":
+            if self._generate_running is not None:
+                self.status_var.set("Repair waits for Generate to finish — try again in a moment.")
+                return
+            for proc in list(self.active_processes):
+                if getattr(proc, "surasura_desc", "") == "Content Importer":
+                    try:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            proc.wait(5)
+                    except Exception:
+                        pass
+            self._close_library_handles()
+        try:
+            from app import library_store
+            proc = library_store.spawn_maintain(lang, "--repair" if kind == "damaged" else "--retry")
+        except Exception:
+            proc = None
+        if proc is None:
+            self.status_var.set("Couldn't start that just now (an update may be waiting) — try again shortly.")
+            return
+        self._library_notice_busy = True
+        self.btn_library_notice.config(state=tk.DISABLED)
+        self.status_var.set("Repairing your library…" if kind == "damaged" else "Moving your library to the store…")
+
+        def wait_for_it():
+            code = proc.poll()
+            if code is None:
+                self.root.after(300, wait_for_it)
+                return
+            self._library_notice_busy = False
+            if code in (0, 3):
+                self.status_var.set("Library repaired." if kind == "damaged" else "Library moved to the new store.")
+            elif kind == "damaged":
+                self.status_var.set("Repair couldn't finish: close any other Surasura windows, then press Repair "
+                                    "again.")
+            else:
+                self.status_var.set("Your library still couldn't be moved — it keeps working from its file.")
+            self._update_library_notice()
+            self._update_generate_state()
+            self._schedule_journey_state()
+        self.root.after(300, wait_for_it)
+
+    def _schedule_maintain(self):
+        """The library store's helper, 2 s after the last trigger (focus, a language switch): one check for a burst
+        of them (Library_Store_Spec §6.7: idle 2 s, and a copy that may have changed)."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            return
+        job = self.__dict__.get("_maintain_job")
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._maintain_job = self.root.after(2000, self._maybe_maintain)
+
+    def _maybe_maintain(self):
+        """On a worker: spawn the helper (detached) when it has something to do — no store yet but a manifest to
+        build from, a change since the last export, or a copy someone else rewrote (once per new stat)."""
+        self._maintain_job = None
+        lang = self.var_language.get() or "ja"
+        handed = self.__dict__.setdefault("_maintain_handed", {})
+
+        def work():
+            try:
+                from app import library_store
+                from app.path_utils import get_data_path, get_user_files_path
+                data_dir, user_files_dir = get_data_path(lang), get_user_files_path(lang)
+                mode, _reason = library_store.check_mode(lang, data_dir, busy_wait=0.0)
+                if mode == "json":
+                    library_store.spawn_build_if_waiting(lang, data_dir, user_files_dir)
+                    return
+                if mode != "store":
+                    return
+                store = library_store.open_store(lang, data_dir, user_files_dir, role="window", busy_wait=0.0)
+                if store is None:
+                    return
+                with store:
+                    due, seen = library_store.maintain_due(store, handed.get(lang, ""))
+                if due:
+                    handed[lang] = seen
+                    library_store.spawn_maintain(lang)
+            except Exception as e:
+                print(f"Library store helper check: {e}")
+        threading.Thread(target=work, daemon=True).start()
 
     def _library_handle(self, lang):
         """This thread's long-lived library store handle for `lang` (Library_Store_Spec §6.2), or None
@@ -1214,7 +1410,24 @@ class MasterDashboardApp:
         btn_open_data = ttk.Button(lib_frame, text="Import Content", style="Action.TButton",
                                     command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        self.btn_open_data = btn_open_data
         ToolTip(btn_open_data, "Add and manage your immersion content — files, EPUB / Anki, and YouTube.")
+        # The library store's notice (Library_Store_Spec §6.8, §6.9): a damaged store (Repair), a move to the store
+        # that failed (Try again), a library from a newer Surasura, an outside edit waiting for an answer.
+        # Packed below the button row only while there is something to say (_update_library_notice).
+        self.library_notice = ttk.Frame(lib_frame)
+        self.library_notice_var = tk.StringVar(value="")
+        ttk.Label(self.library_notice, textvariable=self.library_notice_var, foreground=ERROR_COLOR,
+                  wraplength=330, justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X, expand=True, pady=(6, 0))
+        self.btn_library_notice = ttk.Button(self.library_notice, text="Repair", width=10,
+                                             command=self._library_notice_action)
+        ToolTip(self.btn_library_notice, lambda: (
+            "Rebuild your library's store from what can still be read and its saved copy. Content Manager windows "
+            "close first; the damaged files are kept aside, never deleted."
+            if self._library_notice_kind == "damaged" else
+            "Try moving your library order into the new store again."))
+        self._library_notice_kind = None
+        self._library_mode_seen = {}
         # self.btn_youtube stays None (declared in __init__): the downloader button moved into the
         # Content Manager, so update_youtube_visibility() safely no-ops on the main GUI.
 
@@ -1418,17 +1631,11 @@ class MasterDashboardApp:
         self.lbl_flag.pack(side=tk.LEFT, padx=(10, 5))
 
         # Settings Button (Icon only). ALWAYS the right-most button: the optional module buttons are
-        # packed before it (see _module_slot), so the footer reads [flag] 悟 🎬 順 ⚙ however many
+        # packed before it (see _module_slot), so the footer reads [flag] 🎬 順 ⚙ however many
         # modules are on and in whatever order they were switched on.
         self.btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
         self.btn_settings.pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.btn_settings, "Open Settings & Logs")
-
-        # Immersion Architect (Satori) Button
-        self.btn_satori = ttk.Button(credit_box, text="悟", command=self.open_immersion_architect, width=3)
-        if not self.var_hide_satoru.get():
-            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
-        ToolTip(self.btn_satori, "Immersion Architect Intelligence")
 
         # Reels Button (optional module). Created unpacked; load_settings decides whether it shows.
         self.btn_reels = ttk.Button(credit_box, text="🎬", command=self.open_reels, width=3)
@@ -1905,18 +2112,6 @@ class MasterDashboardApp:
         else:
             self.settings_window.withdraw()
 
-    def open_immersion_architect(self):
-        try:
-            from modules.immersion_architect.gui import ImmersionArchitectGui
-            # Create if not exists or if destroyed
-            if not hasattr(self, 'satori_window') or self.satori_window is None or not self.satori_window.winfo_exists():
-                self.satori_window = ImmersionArchitectGui(self.root)
-            else:
-                self.satori_window.lift()
-        except Exception as e:
-            print(f"Error launching Immersion Architect: {e}")
-            messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
-
     @staticmethod
     def _write_install_note():
         try:
@@ -2310,10 +2505,18 @@ class MasterDashboardApp:
         if self._busy_threads() or not updater.can_update_now(list(self.active_processes)):
             job["children"] = None
             return False
+        # The library store's helper (a detached process, not a child): its maintenance lock, every language,
+        # held from here until this process exits — the swap comes after (Library_Store_Spec §7).
+        locks = updater.hold_library_locks()
+        if locks is None:
+            job["children"] = None
+            return False
+        self._update_library_locks = locks
         self._write_install_note()
         try:
             updater.arm_and_launch(job["staged"])
         except Exception as e:
+            updater.release_library_locks(self.__dict__.pop("_update_library_locks", None))
             self._end_update(job)
             report = updater.write_report("start updater", e,
                                           to_version=getattr(self._update_info, "version", ""))
@@ -2380,7 +2583,7 @@ class MasterDashboardApp:
         self.gui_queue.put(_update)
 
     # Footer order of the optional module buttons, left to right. Settings (⚙) always follows them.
-    _MODULE_BUTTONS = ("btn_satori", "btn_reels", "btn_junban")
+    _MODULE_BUTTONS = ("btn_reels", "btn_junban")
 
     def _module_slot(self, btn):
         """The footer widget a module button must be packed BEFORE, so the buttons keep one fixed
@@ -2395,32 +2598,6 @@ class MasterDashboardApp:
             except tk.TclError:
                 pass
         return self.btn_settings
-
-    def update_satori_visibility(self):
-        """Hides or shows the Satori button based on settings and module availability"""
-        if not hasattr(self, 'btn_satori'):
-            return
-            
-        should_show = False
-        
-        # 1. User Preference Check
-        if not self.var_hide_satoru.get():
-            # 2. Module Availability Check
-            try:
-                import modules.immersion_architect
-                should_show = True
-            except (ImportError, ModuleNotFoundError):
-                # Module is missing (Open Source build or Excluded)
-                should_show = False
-        
-        if should_show:
-            # Re-pack in the credit box
-            # This is slightly tricky if other elements are added later,
-            # but usually it's at the end.
-            if not self.btn_satori.winfo_ismapped():
-                self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
-        else:
-            self.btn_satori.pack_forget()
 
     def open_youtube_downloader(self):
         # Orchestration lives in the module; the core only needs a thin, lazy entry point.
@@ -2659,8 +2836,6 @@ class MasterDashboardApp:
 
             self.onboarding_completed.set(settings.get("onboarding_completed", False))
             self.var_open_count.set(settings.get("open_count", 0))
-            self.var_hide_satoru.set(settings.get("hide_satoru", False))
-            self.update_satori_visibility()
 
             self.var_enable_youtube.set(settings.get("enable_youtube_transcripts", False))
             self.youtube_risk_acknowledged = settings.get("youtube_risk_acknowledged", False)
@@ -2776,7 +2951,6 @@ class MasterDashboardApp:
                 "zen_limit": self._iv(self.var_zen_limit, cur.get("zen_limit", 50)),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
-                "hide_satoru": self.var_hide_satoru.get(),
                 "auto_update_enabled": self.var_auto_update.get(),
                 "anki_sync_auto": self.var_anki_sync_auto.get(),
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
@@ -3095,6 +3269,17 @@ class MasterDashboardApp:
                 except Exception:
                     pass
         self.root.destroy()
+        # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
+        # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
+        try:
+            from app import library_store
+            for lang in ("ja", "zh"):
+                try:
+                    library_store.maintain_at_close(lang)
+                except Exception as e:
+                    print(f"Library store ({lang}) at close: {e}")
+        except Exception:
+            pass
 
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py', '--language', self.var_language.get()], "Migaku Importer")
@@ -3525,6 +3710,8 @@ class MasterDashboardApp:
         while a pressed one runs starts nothing and says so; a quiet request while any runs starts
         nothing (the running one tells an open 順 window when it's done)."""
         if self._generate_running is not None:
+            if self._generate_running == "checking":
+                return                          # this press's own check is still answering
             if not quiet:
                 if self._generate_running != "manual":
                     self._open_report_when_generated = True     # _on_generate_exit opens it
@@ -3551,12 +3738,40 @@ class MasterDashboardApp:
         # through to the normal subprocess run — the fast path is a pure optimization, never required.
         if quiet:
             args.append('--no-open')     # written, not opened — and no fast path to open it
-        elif self._try_open_existing_report(args):
+            self._start_analyzer(args, quiet)
+            return
+        # Whether the report still holds is asked on a worker (Library_Store_Spec §7, A10 / A12): the check syncs
+        # the library with its folders and stats every file, never on this thread. The press goes on from the answer.
+        self._generate_running = "checking"
+        self._run_on_worker(lambda: self._report_reusable(args), lambda reusable: self._generate_checked(args, reusable))
+
+    def _run_on_worker(self, work, then):
+        """`work()` on a worker thread, then `then(result)` on this one (through gui_queue). Headless or under test
+        (no UI timers drain the queue) both run here, at once."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            then(work())
+            return
+
+        def run():
+            try:
+                result = work()
+            except Exception:
+                result = None
+            self.gui_queue.put(lambda: then(result))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _generate_checked(self, args, reusable):
+        """Generate's press, on this thread again: reopen the report when the worker found it current, else run
+        the analyzer."""
+        self._generate_running = None
+        if reusable is not None and self._open_existing_report(reusable):
             self._maybe_junban_auto(force=True)
             self._schedule_journey_state()
             self._tell_junban_list_changed()
             return
+        self._start_analyzer(args, quiet=False)
 
+    def _start_analyzer(self, args, quiet):
         self._generate_running = "quiet" if quiet else "manual"
         self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
                                capture_output=True, show_spinner=not quiet, clear_log=not quiet,
@@ -3637,7 +3852,27 @@ class MasterDashboardApp:
         return args
 
     def _try_open_existing_report(self, args):
-        """Return True and reopen the existing report if a full analysis is provably unnecessary.
+        """Return True and reopen the existing report if a full analysis is provably unnecessary (the check and
+        the reopen together; Generate's press asks `_report_reusable` on a worker instead)."""
+        reusable = self._report_reusable(args)
+        return reusable is not None and self._open_existing_report(reusable)
+
+    def _open_existing_report(self, a):
+        """Reopen the report `_report_reusable` found current; True when it opened."""
+        try:
+            try:
+                from app import static_html_generator
+            except ImportError:
+                import static_html_generator
+            static_html_generator.open_report(app_mode=a.app_mode)
+            self._refresh_band_preview()   # inputs unchanged -> cache hit, no recompute
+            return True
+        except Exception:
+            return False
+
+    def _report_reusable(self, args):
+        """The parsed analyzer args if a full analysis is provably unnecessary, else None. Safe on a worker: it
+        reads no widget (`args` and the language come from the press).
 
         Mirrors the analyzer's own skip gate (compute_run_signature + outputs-present + render-sig),
         computed in-process so we can avoid the subprocess entirely. Conservative: only the pure
@@ -3648,35 +3883,29 @@ class MasterDashboardApp:
             from app import token_index as _ti
             from app.path_utils import get_user_file
 
-            lang = self.var_language.get()
+            a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
+            lang = a.language                              # from the press's args: no widget read here
             # Analysis unchanged: the analyzer's own signature AND the results stamp — results/ is
             # shared by both languages, and without the stamp a Japanese -> Chinese -> Japanese switch
             # reopened the Chinese report (see analyzer.read_run_stamp). The Generate button's border
             # asks the very same question (journey_is_current), so the two cannot disagree.
             if journey_is_current(args, lang) is not True:
-                return False
-            a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
+                return None
             report = os.path.join(get_user_file("results"), "reading_list_static.html")
             if not os.path.exists(report):
-                return False
+                return None
             store = _ti.open_store(lang)
             try:
                 stored_render = store.get_meta("last_render_sig")
             finally:
                 store.close()
 
-            # ...and presentation unchanged -> reopen the existing report as-is.
+            # ...and presentation unchanged -> the existing report can be reopened as-is.
             if stored_render == _analyzer.compute_render_signature(a):   # shared with the engine
-                try:
-                    from app import static_html_generator
-                except ImportError:
-                    import static_html_generator
-                static_html_generator.open_report(app_mode=a.app_mode)
-                self._refresh_band_preview()   # inputs unchanged -> cache hit, no recompute
-                return True
+                return a
         except Exception:
             pass  # fall through to the normal subprocess run
-        return False
+        return None
 
     def generate_reading_words(self):
         """Export the reading-only words as a word list.

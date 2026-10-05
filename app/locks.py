@@ -41,8 +41,8 @@ POLL = 0.25
 
 _NAME = re.compile(r"[a-z0-9-]+\Z")
 
-# name -> the thread ident holding it in this process. Guarded by `_registry_lock`, which is held only
-# while asking the OS for the lock (never while waiting).
+# name -> (the thread ident holding it in this process, its verb). Guarded by `_registry_lock`, which is
+# held only while asking the OS for the lock (never while waiting).
 _registry = {}
 _registry_lock = threading.Lock()
 
@@ -148,20 +148,26 @@ class Held:
 def held_here(name):
     """Does the calling thread hold `name`?"""
     with _registry_lock:
-        return _registry.get(name) == threading.get_ident()
+        return (_registry.get(name) or (None,))[0] == threading.get_ident()
 
 
-def _try(name, lock_path, me):
+def held_in_process(name):
+    """The verb `name` is held for by any thread of this process, or None."""
+    with _registry_lock:
+        return (_registry.get(name) or (None, None))[1]
+
+
+def _try(name, verb, lock_path, me):
     """One attempt: the OS lock, registered to this thread -> the open file, or None when held."""
     with _registry_lock:
-        owner = _registry.get(name)
+        owner = (_registry.get(name) or (None,))[0]
         if owner == me:
             raise RuntimeError(f"This thread already holds '{name}': a nested take is a programming error.")
         if owner is not None:
             return None
         handle = path_utils.try_lock(lock_path)
         if handle is not None:
-            _registry[name] = me
+            _registry[name] = (me, verb)
         return handle
 
 
@@ -178,7 +184,7 @@ def take(name, verb, wait=0.0, cancel=None, on_wait=None):
     deadline = None if wait is None else time.monotonic() + max(0.0, float(wait))
     waited = False
     while True:
-        handle = _try(name, lock_path, me)
+        handle = _try(name, verb, lock_path, me)
         if handle is not None:
             break
         holder = read_holder(name)

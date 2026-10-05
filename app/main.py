@@ -2183,12 +2183,18 @@ class MasterDashboardApp:
 
     def _busy_threads(self):
         """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
-        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop.
+        A thread here holding the Anki-write lock (順, Backfill, the automatic step: E1.4) is one entry naming what it
+        writes, in place of the automatic step's own lock — never listed twice."""
+        from app import anki_connect, locks
+        writing = locks.held_in_process(anki_connect.WRITER_LOCK)
         busy = []
         for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
             lock = getattr(self, attr, None)
-            if lock is not None and lock.locked():
+            if lock is not None and lock.locked() and not (writing and attr == "_junban_auto_lock"):
                 busy.append({"pid": None, "name": name, "stop": None})
+        if writing:
+            busy.append({"pid": None, "name": f"Writing to Anki ({writing})", "stop": None})
         return busy
 
     def _update_poll(self, job):

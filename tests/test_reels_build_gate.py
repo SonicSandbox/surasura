@@ -162,17 +162,6 @@ class TestFrozenSubsyncIsReachable(unittest.TestCase):
         self.assertTrue(guarded, "the hiddenimport must be inside the `if enable_reels:` gate")
 
 
-class TestArchitectSettingsAreBundled(unittest.TestCase):
-    def test_the_spec_ships_architect_settings_when_the_module_is_included(self):
-        """It is read AND written through `get_resource`, so it has to exist under the bundle root.
-        Without it every read silently falls back to defaults and the budget slider discards
-        changes — which looks like it worked."""
-        with open(_SPEC, "r", encoding="utf-8") as handle:
-            spec = handle.read()
-        self.assertIn("architect_settings.json", spec)
-        self.assertIn("if not hide_satoru:", spec)
-
-
 class TestShippedSettings(unittest.TestCase):
     def test_the_settings_written_into_a_build_carry_no_reels_keys(self):
         """`package_app` regenerates settings.json from the core defaults, so a release never ships

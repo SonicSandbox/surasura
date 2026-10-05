@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Standalone updater.exe — the tiny helper that swaps app/ + templates/ after the app exits.
+# Standalone updater.exe — the tiny helper that swaps the release's files (Surasura.exe, _internal/templates, ...) after the app exits.
 # Built ONLY on a release (see package_app.py --release), NOT part of a normal/dev build.
 #
 # It is a onefile exe that imports NOTHING from app/ (so it can never lock the files it

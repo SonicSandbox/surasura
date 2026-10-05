@@ -20,6 +20,7 @@ import hashlib
 import zipfile
 import shutil
 import platform
+import threading
 import subprocess
 import urllib.request
 
@@ -82,6 +83,188 @@ def can_auto_apply():
 
 
 # ---------------------------------------------------------------------------
+# What holds this install's programs (K75). updater.exe waits only on the app's own PID, so everything else of
+# Surasura's that runs this install's exe is waited for HERE, before the helper is launched.
+# ---------------------------------------------------------------------------
+EXE_NAME = "Surasura.exe"
+CLI_EXE_NAME = "surasura-cli.exe"
+
+_HOLD = threading.Event()       # set from "Update now" until the update is cancelled (or the app exits for it)
+_DEFERRED = []                  # children asked for meanwhile: started when the update is cancelled
+_DEFERRED_LOCK = threading.Lock()
+
+
+def hold_children():
+    """"Update now" was pressed: no new child process of Surasura's starts until `release_children`."""
+    _HOLD.set()
+
+
+def children_held():
+    return _HOLD.is_set()
+
+
+def defer_child(start):
+    """While children are held, keep `start` (a zero-arg callable that starts one) for `release_children` -> True;
+    otherwise False, and the caller starts it now."""
+    with _DEFERRED_LOCK:
+        if not _HOLD.is_set():
+            return False
+        _DEFERRED.append(start)
+        return True
+
+
+def release_children():
+    """The update was cancelled: children may start again, and those asked for meanwhile start now (on the
+    caller's thread). Never raises."""
+    with _DEFERRED_LOCK:
+        _HOLD.clear()
+        waiting = list(_DEFERRED)
+        _DEFERRED.clear()
+    for start in waiting:
+        try:
+            start()
+        except Exception as e:
+            print(f"Update: a deferred task could not start ({e})")
+
+
+def _install_images():
+    """This install's programs: the paths a process must run to hold its files. A source checkout has none."""
+    if not path_utils.is_frozen():
+        return []
+    folder = os.path.dirname(sys.executable)
+    return [os.path.join(folder, EXE_NAME), os.path.join(folder, CLI_EXE_NAME)]
+
+
+def _processes_running(images):
+    """{pid: image path} of every running process whose program is one of `images` (Windows; elsewhere {} — the
+    in-place updater is Windows-only). One snapshot of the process list, then the full path asked only of
+    processes whose exe NAME matches."""
+    if sys.platform != "win32" or not images:
+        return {}
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)   # our own prototypes, never windll's shared ones
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                               ctypes.POINTER(wintypes.DWORD)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    wanted = {os.path.normcase(os.path.abspath(i)) for i in images}
+    names = {os.path.basename(i).lower() for i in wanted}
+    found = {}
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)              # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.szExeFile.lower() in names:
+                handle = k32.OpenProcess(0x1000, False, entry.th32ProcessID)   # QUERY_LIMITED_INFORMATION
+                if handle:
+                    try:
+                        buf = ctypes.create_unicode_buffer(32768)
+                        size = wintypes.DWORD(len(buf))
+                        if k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                            if os.path.normcase(os.path.abspath(buf.value)) in wanted:
+                                found[int(entry.th32ProcessID)] = buf.value
+                    finally:
+                        k32.CloseHandle(handle)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return found
+
+
+def stop_pid(pid):
+    """End a process by its id (one this app didn't start: no Popen to ask). Never raises."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = k32.OpenProcess(0x0001, False, int(pid))        # PROCESS_TERMINATE
+            if handle:
+                try:
+                    k32.TerminateProcess(handle, 1)
+                finally:
+                    k32.CloseHandle(handle)
+        else:
+            import signal
+            os.kill(int(pid), signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _stopper(process):
+    def stop():
+        try:
+            if process.poll() is None:
+                process.terminate()
+        except Exception:
+            pass
+    return stop
+
+
+def running_children(active_processes=(), images=None):
+    """Everything of Surasura's that runs now besides this window, each `{"pid", "name", "stop"}` — what an update
+    waits for: the dashboard's own children (`active_processes`, named by their `surasura_desc`), Backfill's
+    パターン build, and any process running this install's Surasura.exe or surasura-cli.exe other than this one (the
+    splicer and the importers' children, a command line hato started). `images` overrides which programs count
+    (a test, a source checkout). The auto-Generate guard does NOT ask this (Backfill's build goes behind a Generate)."""
+    found, seen = [], {os.getpid()}
+    for process in list(active_processes or ()):
+        try:
+            if process.poll() is None and process.pid not in seen:
+                seen.add(process.pid)
+                found.append({"pid": process.pid, "name": getattr(process, "surasura_desc", "") or "A Surasura task",
+                              "stop": _stopper(process)})
+        except Exception:
+            pass
+    backfill = sys.modules.get("modules.junban.backfill")     # only when it was ever used: never imported here
+    process = getattr(backfill, "rebuild_process", lambda: None)() if backfill else None
+    if process is not None and process.pid not in seen:
+        seen.add(process.pid)
+        found.append({"pid": process.pid, "name": "Building パターン data", "stop": _stopper(process)})
+    try:
+        others = _processes_running(_install_images() if images is None else images)
+    except Exception as e:
+        print(f"Update: could not list running programs ({e})")
+        others = {}
+    for pid, image in sorted(others.items()):
+        if pid in seen:
+            continue
+        cli = os.path.basename(image).lower() == CLI_EXE_NAME.lower()
+        found.append({"pid": pid, "name": "Surasura's command line" if cli else "Another Surasura window",
+                      "stop": (lambda p=pid: stop_pid(p))})
+    return found
+
+
+def can_update_now(active_processes=(), images=None):
+    """The one "may the update start now?" seam: nothing of Surasura's holds this install's programs. (L2.1 adds the
+    library store's lock here.)"""
+    return not running_children(active_processes, images)
+
+
+# ---------------------------------------------------------------------------
 # Download / verify / extract
 # ---------------------------------------------------------------------------
 def sha256_file(path, _bufsize=1 << 20):
@@ -112,9 +295,6 @@ def download(url, dest, progress_cb=None, timeout=60):
                     except Exception:
                         pass
     return dest
-
-
-EXE_NAME = "Surasura.exe"
 
 
 def extract_and_validate(zip_path, payload_dir):
@@ -199,11 +379,13 @@ def write_marker(marker):
 
 
 def prepare_update(info, progress_cb=None):
-    """Download -> verify checksum -> extract & validate -> write marker.
+    """Download -> verify checksum -> extract & validate -> the marker, NOT written.
 
-    Returns the marker path (update is armed). Raises UpdateError on any failure, having
-    cleaned up the staging dir so nothing is left armed. Does NOT launch the helper or exit
-    the app — the caller does that on the main thread after this returns.
+    Returns the marker (a dict). Nothing is armed: `pending_update.json` is written only by
+    `arm_and_launch`, in the window's final callback right before the helper starts, so a cancel,
+    a close, a crash or a sleep while the update waits (K75) leaves no marker and the next start
+    reports nothing. Raises UpdateError on any failure, having cleaned up the staging dir. Does
+    NOT launch the helper or exit the app.
     """
     # Defense in depth: staging targets the frozen executable + _internal; refuse to run in a
     # source checkout, where those paths would point at the live repo. The GUI already gates
@@ -230,14 +412,51 @@ def prepare_update(info, progress_cb=None):
         if not extract_and_validate(zip_path, payload_dir):
             raise UpdateError("update package failed validation")
 
-        marker = build_marker(info, payload_dir, os.getpid())
-        return write_marker(marker)
+        return build_marker(info, payload_dir, os.getpid())
     except UpdateError:
         shutil.rmtree(sd, ignore_errors=True)
         raise
     except Exception as e:
         shutil.rmtree(sd, ignore_errors=True)
         raise UpdateError(str(e))
+
+
+def arm_and_launch(marker):
+    """The hand-over, in the window's one final callback (after its last `can_update_now`): write the marker, then
+    start updater.exe; the caller exits next. If the helper can't start, the marker is removed again (nothing stays
+    armed) and the error raised."""
+    path = write_marker(marker)
+    try:
+        return launch_helper(path)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+
+
+def discard_staged():
+    """A cancelled update: its download goes. Never raises."""
+    shutil.rmtree(staging_dir(), ignore_errors=True)
+
+
+# "An update is happening": one OS lock, held from "Update now" until the app exits for the helper (the OS
+# releases it if the app dies). The command line answers `update-staged` while it is held.
+def update_lock_path():
+    return os.path.join(path_utils.get_local_data_path(), "locks", "update.lock")
+
+
+def take_update_lock():
+    """-> the held lock, or None when another update holds it."""
+    try:
+        return path_utils.try_lock(update_lock_path())
+    except Exception:
+        return None
+
+
+def drop_update_lock(handle):
+    path_utils.release_lock(handle)
 
 
 def launch_helper(marker_path_=None):

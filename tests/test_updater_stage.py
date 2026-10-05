@@ -163,7 +163,9 @@ def test_build_marker_omits_release_notes_when_absent(paths, tmp_path, monkeypat
     assert "RELEASE_NOTES.md" not in {t["name"] for t in marker["targets"]}
 
 
-def test_prepare_update_end_to_end_arms_marker(paths, tmp_path):
+def test_prepare_update_end_to_end_stages_but_arms_nothing(paths, tmp_path):
+    """Staging returns the marker; only arm_and_launch writes it (S1.1 K99): a cancel, close or crash while
+    the update waits leaves nothing armed."""
     from app.update_checker import UpdateInfo
     src = tmp_path / "Surasura_app_v2.1.zip"
     _make_app_package(str(src))
@@ -171,11 +173,9 @@ def test_prepare_update_end_to_end_arms_marker(paths, tmp_path):
 
     info = UpdateInfo(version="2.1", update_type="app", runtime_baseline="2.0",
                       sha256=good_sha, app_package_url=_file_url(str(src)))
-    marker_path = updater.prepare_update(info)
+    marker = updater.prepare_update(info)
 
-    assert os.path.exists(marker_path)
-    with open(marker_path, "r", encoding="utf-8") as f:
-        marker = json.load(f)
+    assert not os.path.exists(updater.marker_path())
     assert marker["target_version"] == "2.1"
     assert os.path.isfile(os.path.join(marker["payload_dir"], "Surasura.exe"))
 

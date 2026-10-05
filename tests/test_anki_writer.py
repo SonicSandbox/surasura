@@ -220,3 +220,56 @@ class TestTheUpdatesWait(_DashboardHarness):
         self.assertEqual(names, ["Writing to Anki (the automatic 順 step)"])
         names = [entry["name"] for entry in self.MasterDashboardApp._busy_threads(self.app)]
         self.assertEqual(names, ["Junban's automatic reorder"], "today's entry, the lock let go")
+
+
+# --- the review's rows (E1.4-adversary #1, #6, #7) ----------------------------------------------------- #
+def test_an_address_that_cannot_be_used_after_a_wait_never_leaks_the_lock():
+    # A hand-edited port that isn't a number: `invoke` raises a ValueError, not an AnkiError.
+    done, thread = _holder()
+    threading.Timer(0.3, done.set).start()
+    held, problem = anki_connect.take_writer("順 reorder", "http://127.0.0.1:abc", wait=5)
+    thread.join(5)
+    assert problem is None and held.waited
+    held.release()
+    assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
+
+
+def test_a_check_after_the_wait_that_fails_lets_the_lock_go():
+    def broken():
+        raise OSError("the snapshot could not be read")
+    with pytest.raises(OSError):
+        _after_wait(_Anki(), changed=broken)
+    assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
+
+
+def test_a_window_closed_as_the_lock_came_free_writes_nothing():
+    closed = threading.Event()
+    closed.set()
+    with patch("urllib.request.urlopen", _Anki()):
+        held, problem = anki_connect.take_writer("順 reorder", URL, cancel=closed)
+    assert held is None and problem == anki_connect.CLOSED
+    assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
+
+
+class TestTheUpdatesWaitBesideAWindow(_DashboardHarness):
+    def _names(self):
+        return [entry["name"] for entry in self.MasterDashboardApp._busy_threads(self.app)]
+
+    def test_the_automatic_steps_entry_stays_while_a_window_writes(self):
+        self.app._junban_auto_lock = threading.Lock()
+        self.app._junban_auto_lock.acquire()            # the automatic step is preparing…
+        done, thread = _holder("Backfill")              # …while the Backfill window writes
+        try:
+            self.assertEqual(self._names(), ["Junban's automatic reorder", "Writing to Anki (Backfill)"])
+        finally:
+            done.set()
+            thread.join(5)
+
+    def test_a_writer_with_no_verb_is_still_listed(self):
+        self.app._junban_auto_lock = threading.Lock()   # not running
+        done, thread = _holder("")
+        try:
+            self.assertEqual(self._names(), ["Writing to Anki (Surasura)"])
+        finally:
+            done.set()
+            thread.join(5)

@@ -94,14 +94,26 @@ def read_holder(name):
     return record if isinstance(record, dict) else None
 
 
+def _retried(step):
+    """`step()`, tried again for up to ~0.2 s: on Windows a waiter reading the record (every 250 ms) makes a
+    replace or delete fail with a sharing violation for that moment. Raises the last error."""
+    for attempt in range(10):
+        try:
+            return step()
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.02)
+
+
 def _write_holder(path, record):
-    """Atomically (temp + `os.replace`). Informative only: a failure is swallowed."""
+    """Atomically (temp + `os.replace`). Informative only: any failure is swallowed."""
     temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         with open(temp, "w", encoding="utf-8") as handle:
             json.dump(record, handle, ensure_ascii=False)
-        os.replace(temp, path)
-    except OSError:
+        _retried(lambda: os.replace(temp, path))
+    except Exception:
         try:
             os.remove(temp)
         except OSError:
@@ -126,7 +138,7 @@ class Held:
         if handle is None:
             return
         try:
-            os.remove(self._record_path)        # before the unlock, so the next holder's record survives
+            _retried(lambda: os.remove(self._record_path))  # before the unlock: the next holder's record survives
         except OSError:
             pass
         with _registry_lock:
@@ -203,7 +215,14 @@ def take(name, verb, wait=0.0, cancel=None, on_wait=None):
                 raise Cancelled(name, read_holder(name))
         else:
             time.sleep(pause)
-    record = {"program": _program(), "pid": os.getpid(),
-              "started": datetime.datetime.now().isoformat(timespec="seconds"), "verb": verb}
-    _write_holder(record_path, record)
-    return Held(name, verb, handle, record_path, waited)
+    try:
+        record = {"program": _program(), "pid": os.getpid(),
+                  "started": datetime.datetime.now().isoformat(timespec="seconds"), "verb": verb}
+        _write_holder(record_path, record)
+        return Held(name, verb, handle, record_path, waited)
+    except BaseException:
+        # Taken but not handed over (an interrupt, say): let go, or the name stays held until restart.
+        with _registry_lock:
+            path_utils.release_lock(handle)
+            _registry.pop(name, None)
+        raise

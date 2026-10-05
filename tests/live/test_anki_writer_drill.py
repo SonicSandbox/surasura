@@ -1,9 +1,10 @@
 """The live drill for the Anki-write lock (E1.4 row E1.4.6): two Surasura processes, one real Anki.
 
 **Skipped unless `SURASURA_LIVE_ANKI=DevTest`** — it writes to Anki. Run only on the DevTest profile,
-holding the program's `anki.lock`, with the program lead's go:
+holding the program's `anki.lock`, with the program lead's go (the DevTest profile's deck is "DevTest", renamed
+from "The Accelerator" after the first run; the profile is not signed in to AnkiWeb):
 
-    SURASURA_LIVE_ANKI=DevTest SURASURA_LIVE_ANKI_DECK="<a DevTest deck>" python -m pytest tests/live -s
+    SURASURA_LIVE_ANKI=DevTest SURASURA_LIVE_ANKI_DECK=DevTest python -m pytest tests/live -s
 
 Before anything, AnkiConnect's `getActiveProfile` must answer DevTest, or the drill stops and writes
 nothing. It never sends `sync` (refused by `anki_connect` anyway), never loads a profile.
@@ -159,7 +160,7 @@ def test_two_processes_never_write_anki_at_once_and_restore_puts_the_deck_back(d
                    junban_order="priority", junban_chunk_size=1)
     models = sorted({note["modelName"] for note in infos})
     fill = dict(junban.SETTINGS_DEFAULTS, target_language="ja", anki_connect_url=URL, junban_backfill_deck=DECK,
-                junban_backfill_fills=["patterns"], junban_backfill_cards="all", junban_backfill_replace=True,
+                junban_backfill_fills=["patterns"], junban_backfill_cards="new", junban_backfill_replace=True,
                 junban_chunk_size=1, junban_backfill_note_languages={model: "ja" for model in models})
 
     assert len(cards) >= 2, "A needs two writes or more to write for 10 s"
@@ -171,8 +172,8 @@ def test_two_processes_never_write_anki_at_once_and_restore_puts_the_deck_back(d
         time.sleep(0.05)
     time.sleep(2.0)                     # 2 s into A, which holds the lock
     b = _start("fill", fill, limit=10)
-    a_out, b_out = _result(a), _result(b)
     try:
+        a_out, b_out = _result(a), _result(b)       # inside: a child that dies still gets the deck restored
         assert a_out["report"]["ok"] and a_out["report"]["written"], a_out["report"]
         assert b_out["report"]["ok"] and b_out["report"]["written"], b_out["report"]
         a_writes, b_writes = _writes(a_out["log"]), _writes(b_out["log"])
@@ -190,7 +191,11 @@ def test_two_processes_never_write_anki_at_once_and_restore_puts_the_deck_back(d
               f"B: {len(b_writes)} writes from {b_writes[0][0] - a_writes[-1][1]:+.3f} s after A's last; "
               f"mod A {a_mod} <= B {b_mod}")
     finally:
-        # The way back, whatever happened above: Junban's Restore, then Backfill's.
+        # The way back, whatever happened above: both children gone, then Junban's Restore, then Backfill's.
+        for child in (a, b):
+            if child.poll() is None:
+                child.kill()
+                child.wait(30)
         assert anki_connect.invoke("getActiveProfile", URL) == "DevTest"
         restored = reposition.restore(reorder)
         refilled = backfill.restore(fill)

@@ -64,6 +64,9 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # The one lock every Anki writer takes (`writer`, E1.4 §W): two writers never write Anki at once.
 WRITER_LOCK = "anki-writer"
 
+# The automatic step's verb (both halves): the dashboard's update wait tells it apart from a window's.
+AUTOMATIC_STEP = "the automatic 順 step"
+
 # The actions Surasura sends that change nothing in the collection, plus the two window calls a reorder
 # ends with. Anything else — every write action, and any new one — is sent only by a thread holding
 # `WRITER_LOCK`, so a writer that forgot the lock is refused in its first test instead of racing in use.
@@ -205,33 +208,42 @@ def waiting_line(holder):
 
 
 def reviewing(url):
-    """Is the user reviewing in Anki now (`guiReviewActive`)? False when Anki doesn't answer: the
-    writer's own first read then says why it can't go on."""
+    """Is the user reviewing in Anki now (`guiReviewActive`)? False when Anki doesn't answer, or the
+    address can't be used: the writer's own first read then says why it can't go on. Never raises."""
     try:
         return invoke("guiReviewActive", url, timeout=5) is True
-    except AnkiError:
+    except Exception:
         return False
 
 
 REVIEWING = "You're reviewing in Anki. Press again when you're done."
 CHANGED = "Your cards changed while this waited. Look at the preview again."
+CLOSED = "Stopped before writing anything: the window was closed."
 
 
 def take_writer(verb, url, wait=0.0, cancel=None, on_wait=None, changed=None):
     """`writer`, as each Anki writer starts: -> `(held, None)`, or `(None, problem)` with the line its
     refusal shows. Held elsewhere (or an update waiting) is refused; after an actual wait it is checked
     again — the user reviewing now refuses (a delayed write never lands mid-review), and so does
-    `changed()` (a Restore whose snapshot the writer it waited for replaced)."""
+    `changed()` (a Restore whose snapshot the writer it waited for replaced). `cancel` set by then (the
+    window closed as the lock came free) refuses too. Whatever goes wrong here, the lock is let go."""
     from app import locks
     try:
         held = writer(verb, wait=wait, cancel=cancel, on_wait=on_wait)
     except locks.Busy as e:
         return None, busy_message(e)
-    if held.waited:
-        problem = REVIEWING if reviewing(url) else (CHANGED if changed is not None and changed() else None)
-        if problem:
-            held.release()
-            return None, problem
+    try:
+        problem = None
+        if held.waited:
+            problem = REVIEWING if reviewing(url) else (CHANGED if changed is not None and changed() else None)
+        if problem is None and cancel is not None and cancel.is_set():
+            problem = CLOSED
+    except BaseException:
+        held.release()
+        raise
+    if problem:
+        held.release()
+        return None, problem
     return held, None
 
 

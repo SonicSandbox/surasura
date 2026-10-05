@@ -252,3 +252,36 @@ def test_take_and_release_uncontended_take_under_five_milliseconds():
         locks.take("anki-writer", "順 reorder").release()
         times.append(time.perf_counter() - started)
     assert statistics.median(times) <= 0.005, f"median {statistics.median(times) * 1000:.2f} ms"
+
+
+# --- the review's rows (E1.4-adversary #2, #8) --------------------------------------------------------- #
+def test_an_interrupt_between_the_take_and_the_hand_over_lets_the_lock_go(monkeypatch):
+    def interrupted(path, record):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as patched:
+        patched.setattr(locks, "_write_holder", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            locks.take("anki-writer", "順 reorder")
+    assert locks.held_in_process("anki-writer") is None
+    with locks.take("anki-writer", "順 reorder"):            # free again, at once
+        pass
+
+
+def test_a_verb_that_cannot_be_written_still_takes_the_lock_without_a_record():
+    with locks.take("anki-writer", "\ud800") as held:      # a lone surrogate: no UTF-8 for it
+        assert held.held and locks.read_holder("anki-writer") is None
+    assert locks.held_in_process("anki-writer") is None
+
+
+def test_the_record_is_written_through_a_readers_brief_sharing_violation(monkeypatch):
+    # On Windows a waiter reading the record every 250 ms makes the replace fail for that moment.
+    real, failures = os.replace, [2]
+
+    def busy_replace(src, dst):
+        if failures[0]:
+            failures[0] -= 1
+            raise PermissionError("[WinError 5] Access is denied")
+        return real(src, dst)
+    monkeypatch.setattr(locks.os, "replace", busy_replace)
+    with locks.take("anki-writer", "Backfill"):
+        assert locks.read_holder("anki-writer")["verb"] == "Backfill"

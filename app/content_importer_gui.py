@@ -114,10 +114,6 @@ class ContentImporterApp:
         self._last_stats_size = 0
         self._last_stats_source = None   # which file _load_analyzed_filenames last read (sidecar vs word_stats)
 
-        # Manifest Order Cache
-        self.manifest_ranks = {} # rel_path -> index
-        self.load_manifest_ranks()
-
         # Per-tier tree freshness: tier -> manifest mtime the tree was last built at. A tab switch
         # rebuilds ~hundreds of Treeview rows, which is the visible lag on a big library; when the
         # manifest hasn't changed since a tier's tree was built, we skip the rebuild entirely.
@@ -147,11 +143,11 @@ class ContentImporterApp:
             # Defer data loading slightly so the window appears instantly
             self.root.after(100, self._initial_load)
 
-        # Auto-refresh when window gains focus (to sync with Architect commits)
-        # Check if we are already in a modal dialog to avoid loops?
-        # Actually, FocusIn triggers when a modal CLOSES too.
-        self.root.bind("<FocusIn>", self._on_focus_in)
+        # Re-read the library when the window gains focus (_on_focus_in). FocusIn also fires when a
+        # dialog of ours closes; _ignore_refresh holds it off around the confirmations.
         self._ignore_refresh = False
+        self._refresh_on_focus = False   # a launched tool (the splicer) is open: refresh when it closes
+        self.root.bind("<FocusIn>", self._on_focus_in)
 
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):
             # Start background polling
@@ -183,15 +179,31 @@ class ContentImporterApp:
         self.status_var.set("Loading library…")
         self.root.update()
         self._load_analyzed_filenames()
-        self.refresh_file_list()
+        self.refresh_file_list(sync=True)   # opening the window syncs disk (files added while closed)
         self.status_var.set("Ready")
 
-    def _on_focus_in(self, event):
-        if event.widget == self.root and not self._ignore_refresh:
-             # Use after() to avoid recursion issues if refresh triggers another FocusIn. force=True:
-             # returning focus should re-scan disk for out-of-band changes (a delete/edit that doesn't
-             # move the manifest mtime), not take the tab-switch fast path.
-             self.root.after(100, lambda: self.refresh_file_list(force=True))
+    def _on_focus_in(self, event=None):
+        """Focus returning to the window re-reads the library: a disk sync (files added outside it — a
+        hato drop, a launched tool's output) and a forced rebuild (an outside write to the manifest, or
+        a delete that doesn't move its mtime, which the tab-switch fast path would miss).
+
+        Only the window's OWN FocusIn counts: <FocusIn> bound on the root also fires, through the
+        bindtags, for every inner widget that takes focus, and moving between widgets inside the
+        window must not walk the disk. A launched tool closing always counts, once."""
+        launched = getattr(self, "_refresh_on_focus", False)
+        if not launched and (event is not None and event.widget != self.root):
+            return
+        if getattr(self, "_ignore_refresh", False):
+            return
+        self._refresh_on_focus = False
+        # after(): avoid recursion if the refresh itself triggers another FocusIn.
+        self.root.after(100, self._refresh_from_focus)
+
+    def _refresh_from_focus(self):
+        try:
+            self.refresh_file_list(force=True, sync=True)
+        except Exception:
+            pass
 
     def apply_dark_theme(self):
         self.style.theme_use('clam')
@@ -392,10 +404,6 @@ class ContentImporterApp:
         help_icon.pack(side=tk.LEFT, padx=(10, 0))   # to the right of the links
         self.create_tooltip(help_icon, "Your vocab journey will prioritize words based on your immersion "
                                        "content, and how soon you'll see them")
-
-        # Refresh the library when focus returns after a launched tool (splicer) closes.
-        self._refresh_on_focus = False
-        self.root.bind("<FocusIn>", self._on_focus_in)
 
         # Tier metadata — (tab label, description) + the "order matters" hint. Used by the tabs below
         # and the add/paste flows. The tier is still tracked by self.target_folder_var (now driven by
@@ -636,64 +644,6 @@ class ContentImporterApp:
                 pass
             print(f"Error saving manifest: {e}")
             messagebox.showerror("Error", f"Failed to save manifest:\n{e}")
-
-    def load_manifest_ranks(self):
-        """Build a lookup map for file ranking based on the master manifest."""
-        self.manifest_ranks = {}
-        manifest_path = self.get_manifest_path()
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, 'r', encoding='utf-8-sig') as f:   # -sig: see load_manifest
-                    data = json.load(f)
-
-                rank = 0
-                schedule = data.get("schedule", {})
-                for phase in ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]:
-                    entries = schedule.get(phase, [])
-                    for entry in entries:
-                        path = entry.get("physical_path")
-                        if path and path not in self.manifest_ranks:
-                            self.manifest_ranks[path] = rank
-                            rank += 1
-            except Exception as e:
-                print(f"Error loading manifest ranks: {e}")
-
-
-    def _get_ordered_items_in_dir(self, directory):
-        """Returns a list of items in the directory, sorted by manifest rank, then alphabetically."""
-        try:
-            if not os.path.isdir(directory): return []
-            disk_items = os.listdir(directory)
-        except Exception:
-            return []
-        
-        # Filter disk_items (ignore system files)
-        filtered_items = [f for f in disk_items if f not in ["_order.json", "master_manifest.json", "desktop.ini"]]
-
-        def get_rank(item):
-            full_path = os.path.join(directory, item)
-            # Normalize path to forward slashes for manifest lookup
-            rel_path = os.path.relpath(full_path, self.data_root).replace("\\", "/")
-            
-            # 1. Exact Match
-            if rel_path in self.manifest_ranks:
-                return self.manifest_ranks[rel_path]
-            
-            # 2. Directory Partial Match (take best rank of children)
-            if os.path.isdir(full_path):
-                min_rank = 999999
-                pattern = rel_path + "/"
-                for path, rank in self.manifest_ranks.items():
-                    if path.startswith(pattern):
-                        if rank < min_rank:
-                            min_rank = rank
-                return min_rank
-            
-            return 999999
-
-        # Sort: Rank first, then Alphabetical
-        filtered_items.sort(key=lambda x: (get_rank(x), x.lower()))
-        return filtered_items
 
     def _normalize_path(self, path):
         return os.path.relpath(path, self.data_root).replace("\\", "/")
@@ -1023,19 +973,25 @@ class ContentImporterApp:
         used.add(iid)
         return iid
 
-    def refresh_file_list(self, force=False):
+    def refresh_file_list(self, force=False, sync=False):
         """Populates the GUI Treeview using the manifest as the source of truth.
 
         On a big library the expensive part is inserting hundreds of rows. Each tier has its own
         persistent tree, so when switching to a tier whose tree already reflects the current manifest
         (unchanged mtime since it was built) we skip the rebuild and just refresh the light bits —
         making tab switches instant. force=True (focus-in, external tools) always rebuilds so an
-        out-of-band change is picked up."""
+        out-of-band change is picked up.
+
+        sync=True walks the disk for untracked files first — only on open and on focus. A move, a
+        tab switch, an undo (it restores its own manifest snapshot) or a bulk action writes the
+        manifest itself and has nothing to find on disk; a flow that drops files into a tier
+        (samples, pasted text, YouTube) syncs that tier itself before refreshing."""
         if not hasattr(self, "_tier_built_sig"):
             self._tier_built_sig = {}   # defensive: some tests construct the app without full __init__
 
-        # 1. Sync untracked disk files to manifest first (quick scan) — may bump the manifest mtime.
-        self._sync_disk_to_manifest()
+        # 1. Sync untracked disk files to manifest first — may bump the manifest mtime.
+        if sync:
+            self._sync_disk_to_manifest()
 
         # 1b. Load analysis results for Graduate button (Optimized Cache)
         self._load_analyzed_filenames()
@@ -1063,9 +1019,6 @@ class ContentImporterApp:
             self._update_graduate_button_state()
             self._update_empty_state()
             return
-
-        # 2. Re-load ranks for sorting
-        self.load_manifest_ranks()
 
         # 3. Store Expansion State — keyed by the node's own id, not its label. A folder whose files
         # aren't contiguous in the manifest draws as SEVERAL nodes sharing one name (see the run
@@ -1163,10 +1116,10 @@ class ContentImporterApp:
         self._update_graduate_button_state()
         self._update_empty_state()   # show the onboarding card iff the library has no content
 
-    def _sync_disk_to_manifest(self):
-        """Scans the 3 main data folders and ensures any untracked files are added to the manifest —
-        placed, not appended (`place_new_entries`): a new folder or loose file at the top of its tab,
-        a new file in a folder already there after that folder's last item."""
+    def _sync_disk_to_manifest(self, tiers=None):
+        """Scans the 3 main data folders (or only `tiers`) and ensures any untracked files are added
+        to the manifest — placed, not appended (`place_new_entries`): a new folder or loose file at
+        the top of its tab, a new file in a folder already there after that folder's last item."""
         manifest = self.load_manifest()
         marker_cache = {}   # one producer-marker read per directory across the whole walk
         schedule = manifest.get("schedule", { "PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": [] })
@@ -1193,6 +1146,7 @@ class ContentImporterApp:
         found = {}    # phase -> the untracked files, in the disk walk's order
 
         for folder, p_key in phase_lookup.items():
+            if tiers is not None and folder not in tiers: continue
             abs_dir = os.path.join(self.data_root, folder)
             if not os.path.exists(abs_dir): continue
             
@@ -1443,13 +1397,14 @@ class ContentImporterApp:
 
     def _seed_samples_clicked(self):
         """'Test with samples': copy the bundled samples in, then switch to the library view."""
-        from app.path_utils import seed_samples
+        from app.path_utils import seed_samples, SAMPLE_SUBFOLDERS
         try:
             n = seed_samples(self.language)
         except Exception as e:
             messagebox.showerror("Error", f"Could not add samples:\n{e}")
             return
         self.status_var.set(f"Added {n} sample files")
+        self._sync_disk_to_manifest(SAMPLE_SUBFOLDERS)   # the tiers samples ship for
         self.refresh_file_list()   # -> _update_empty_state reveals the tabbed library
 
     # --- Add Content options row: helpers -------------------------------------------------------- #
@@ -1498,8 +1453,8 @@ class ContentImporterApp:
 
     def _on_youtube_downloaded(self, created_paths):
         """After a download (into Processed), copy the new transcripts into the active section so
-        they're part of the library — mirroring the splice 'Processed + tier' rule — then refresh
-        (which re-registers them in the manifest via _sync_disk_to_manifest)."""
+        they're part of the library — mirroring the splice 'Processed + tier' rule — then register
+        them in the manifest (_sync_disk_to_manifest, that tier) and refresh."""
         import shutil
         tier = self.target_folder_var.get()
         tier_dir = os.path.join(self.data_root, tier)
@@ -1517,6 +1472,7 @@ class ContentImporterApp:
             except Exception:
                 pass
         self.status_var.set(f"Added transcripts to {self.folder_map.get(tier, (tier,))[0]}")
+        self._sync_disk_to_manifest((tier,))
         self.refresh_file_list()
 
     def _launch_tool(self, script_name, extra_args):
@@ -1538,15 +1494,6 @@ class ContentImporterApp:
             self._refresh_on_focus = True
         except Exception as e:
             messagebox.showerror("Error", f"Could not launch {script_name}:\n{e}")
-
-    def _on_focus_in(self, event=None):
-        """Refresh the library once when focus returns after a launched tool (splicer) closes."""
-        if getattr(self, "_refresh_on_focus", False):
-            self._refresh_on_focus = False
-            try:
-                self.refresh_file_list()
-            except Exception:
-                pass
 
     def paste_text_dialog(self):
         """Paste a snippet of text and save it as a .txt into the selected section."""
@@ -1598,6 +1545,7 @@ class ContentImporterApp:
             messagebox.showerror("Error", f"Could not save:\n{e}")
             return
         self.status_var.set(f"Added pasted text to {self.folder_map.get(tier, (tier,))[0]}")
+        self._sync_disk_to_manifest((tier,))
         self.refresh_file_list()
 
     def add_files(self):
@@ -2479,7 +2427,10 @@ class ContentImporterApp:
     def on_drag_start(self, event):
         item = self.tree.identify_row(event.y)
         if item:
-            self.tree.selection_set(item)
+            # Ctrl / Shift: leave the selection to the Treeview's own click (add / extend). Setting
+            # it here first collapsed it to this row, and Ctrl's toggle then un-selected even that.
+            if not (getattr(event, "state", 0) & (0x0001 | 0x0004)):
+                self.tree.selection_set(item)
             self._drag_item = item
             self._drag_start_y = event.y
 
@@ -2511,8 +2462,6 @@ class ContentImporterApp:
         
         # Determine region (above/below)
         region = self._get_drop_region(target_item, event.y)
-        if target_item in selected_ids: return # Don't drop on self
-        
         pos = "before" if region == "above" else "after"
 
         # Both ends of the drop are resolved to concrete FILE paths, never a "GROUP:<name>" value.
@@ -2528,15 +2477,16 @@ class ContentImporterApp:
         if not target_paths: return
         # Land against the near edge of the block actually dropped on.
         target_path_val = target_paths[0] if pos == "before" else target_paths[-1]
+        # Dropped on itself — compared by FILE, not by tree row: an episode dropped below its own
+        # group lands on itself, and so does a group dropped on one of its own episodes.
+        if target_path_val in set(items_to_move): return
 
         # Selection is restored by NODE, captured before the manifest write rebuilds the tree and
         # invalidates the ids (see _restore_selection).
         sel_pairs = self._selection_pairs(selected_ids)
 
-        # Reorder manifest strictly
+        # Reorder manifest strictly (it refreshes the tree once itself)
         self.move_manifest_items_relative(items_to_move, target_path_val, pos)
-
-        self.refresh_file_list()
         self.status_var.set("Order updated.")
 
         # Restore selection

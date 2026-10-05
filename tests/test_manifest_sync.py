@@ -59,17 +59,10 @@ def test_refresh_loads_architect_manifest(mock_app):
     mock_app.target_folder_var.set("HighPriority")
     mock_app.refresh_file_list()
     
-    # 4. Check internal rank cache
-    # B.txt should be 0, A.txt should be 1
-    # Note: rank keys are relative paths normalized
-    assert mock_app.manifest_ranks.get("HighPriority/B.txt") == 0
-    assert mock_app.manifest_ranks.get("HighPriority/A.txt") == 1
-    
-    # 5. Check order of items returned by Treeview (indirectly via manifest_ranks)
-    # Since we can't easily mock Treeview insertion order deeply in this test,
-    # we verify that the manifest was not changed for existing items.
-    assert mock_app.manifest_ranks.get("HighPriority/B.txt") == 0
-    assert mock_app.manifest_ranks.get("HighPriority/A.txt") == 1
+    # 4. The rows are drawn in the manifest's order (B before A), not the disk's (the old rank
+    # cache that claimed to sort them fed nothing and is gone — S1.1 A1).
+    drawn = [c.kwargs.get("text") for c in mock_app.tree.insert.call_args_list]
+    assert drawn == ["B.txt", "A.txt"]
 
 def test_refresh_syncs_untracked_files(mock_app):
     # 1. Create a file on disk NOT in manifest
@@ -77,9 +70,13 @@ def test_refresh_syncs_untracked_files(mock_app):
     os.makedirs(hp_dir, exist_ok=True)
     with open(os.path.join(hp_dir, "NewFile.txt"), "w") as f: f.write("content")
     
-    # 2. Refresh
+    # 2. A plain refresh (a move, a tab switch) no longer walks the disk (S1.1 A1) ...
     mock_app.refresh_file_list()
-    
+    assert "HighPriority/NewFile.txt" not in json.dumps(mock_app.load_manifest())
+
+    # ... the open / focus refresh does.
+    mock_app.refresh_file_list(sync=True)
+
     # 3. Check manifest
     manifest = mock_app.load_manifest()
     hp_entries = manifest["schedule"]["PHASE_1_NOW"]

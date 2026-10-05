@@ -1465,10 +1465,11 @@ def _record(line):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_100k_moves_touch_only_the_moved_rows(language):
     """B2: a 100k library built in one transaction; 20 moves; each commits only the moved row, its log
-    rows (a reader registered) and the two version rows — never a whole tier. The median against the
-    flush alone + 1 ms is asserted in the timed run (SURASURA_STORE_BENCH=1)."""
+    rows (a reader registered) and the two version rows — never a whole tier. The work (a move less the
+    flush timed just before it) median ≤ 1 ms is asserted in the timed run (SURASURA_STORE_BENCH=1)."""
     store = big_store(language, 100_000 if BENCH else 20_000)
     store.register_reader("connect")
+    probe = _FlushProbe(os.path.dirname(store.db_path))
     ids = store.ids("soon")
     rng = random.Random(3)
     times = []
@@ -1476,16 +1477,18 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         item, anchor = rng.sample(ids, 2)
         before = store.conn.total_changes
         logs = _last_log(store)
+        probe()
         t0 = time.perf_counter()
         store.move([item], "soon", after_id=anchor)
         times.append(time.perf_counter() - t0)
         log_rows = _last_log(store) - logs
         assert store.conn.total_changes - before == 1 + log_rows + 2      # the item, its log rows, 2 versions
     if BENCH:
-        flush = _flush_alone(os.path.dirname(store.db_path))
-        median = statistics.median(times)
-        _record(f"13 {language} 100k: move median {median * 1000:.2f} ms, flush alone {flush * 1000:.2f} ms")
-        assert median <= flush + 0.001, (median, flush)
+        work = statistics.median(t - f for t, f in zip(times, probe.times))
+        _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "
+                f"{statistics.median(probe.times) * 1000:.2f} ms, work {work * 1000:.2f} ms")
+        assert 0 < work <= 0.001, work                         # the flush + 1 ms (§6.12), paired as in #14
+    probe.close()
     store.close()
 
 
@@ -1527,27 +1530,19 @@ def _q(times, p):
     return times[min(len(times) - 1, int(len(times) * p))]
 
 
-FAST_FLUSH = 0.0015      # this disk's fast phase: a bare flush ~0.83 ms; the slow phase runs 2–5 ms
-
-
-def _timed(label, run, items, per_item=0.00005, tries=5):
+def _timed(label, run, items, per_item=0.00005):
     """Time a block with `run()` → (times, flushes) and check it against `allowance`: the work — each
-    command's time less the flush timed just before it — p50 ≤ the allowance and above zero, and p95 ≤ the
-    flush's p95 + twice it. Pairing, not two medians subtracted. Only a fast-phase block counts: in the slow
-    phase a flush is ~0.8 or ~5 ms at random and the paired work can read below zero, so a slow block is run
-    again (up to `tries` times), and a run that never meets a fast phase fails, to be re-run on a quiet disk."""
+    command's time less the flush timed just before it — p50 above zero and ≤ the allowance, and p95 ≤ the
+    flush's p95 + twice it. Pairing, not two medians subtracted: the work reads the same in the disk's fast
+    phase (a flush ~0.83 ms) and its slow one (~0.8 or ~5 ms at random), where two medians swing by a flush.
+    Work at or below zero means a command that committed nothing — a no-op timed as a save."""
     budget = allowance(items, per_item)
-    for _attempt in range(tries):
-        times, flushes = run()
-        p50, p95, f50, f95 = _q(times, 0.5), _q(times, 0.95), _q(flushes, 0.5), _q(flushes, 0.95)
-        work = _q([t - f for t, f in zip(times, flushes)], 0.5)
-        _record(f"{label}: p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms | flush p50 {f50 * 1000:.2f} p95 "
-                f"{f95 * 1000:.2f} | work p50 {work * 1000:.2f} ms, allowance {budget * 1000:.2f}"
-                + ("" if f50 <= FAST_FLUSH else " | slow phase, again"))
-        if f50 <= FAST_FLUSH:
-            assert 0 < work <= budget and p95 <= f95 + 2 * budget, (label, work, p95, f95)
-            return
-    pytest.fail(f"{label}: the disk stayed in its slow phase for {tries} tries; re-run the timed proof quiet")
+    times, flushes = run()
+    p50, p95, f50, f95 = _q(times, 0.5), _q(times, 0.95), _q(flushes, 0.5), _q(flushes, 0.95)
+    work = _q([t - f for t, f in zip(times, flushes)], 0.5)
+    _record(f"{label}: p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms | flush p50 {f50 * 1000:.2f} p95 "
+            f"{f95 * 1000:.2f} | work p50 {work * 1000:.2f} ms, allowance {budget * 1000:.2f}")
+    assert 0 < work <= budget and p95 <= f95 + 2 * budget, (label, work, p95, f95)
 
 
 def _commits_during(store, fn):
@@ -1675,8 +1670,9 @@ def test_set_tier_and_a_small_insert_timed_at_100k(language):
                 times.append(time.perf_counter() - t0)
             return times, probe.times
         return run
+    picks = rng.sample(ids, 100)                    # each to Soon and back: every call a real save
     _timed(f"14 {language} 100k: set_tier", each(200, lambda n: store.set_tier(
-        [rng.choice(ids)], "soon" if n % 2 == 0 else "goal")), 1)
+        [picks[n // 2]], "soon" if n % 2 == 0 else "goal")), 1)
     _timed(f"14 {language} 100k: insert of 1 file", each(100, lambda n: store.insert([next(singles)], "soon")),
            1, per_item=0.00012)
     _timed(f"14 {language} 100k: insert of a 50-file season",

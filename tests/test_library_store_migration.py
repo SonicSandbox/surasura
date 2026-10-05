@@ -749,7 +749,7 @@ def test_rebuilding_from_an_edited_copy_applies_the_rules(language):
 
     def change(doc):
         s = doc["schedule"]
-        s["PHASE_1_NOW"].reverse()
+        s["PHASE_1_NOW"].insert(0, s["PHASE_1_NOW"].pop(4))  # a small edit: applied (a big one asks first)
         s["PHASE_3_LATER"] = [e for e in s["PHASE_3_LATER"] if e["physical_path"] != rel]
 
     doc = _edit(language, change)
@@ -822,4 +822,21 @@ def test_the_soon_line_is_re_derived_from_the_tiers(language):
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert store.meta()["soon_line"] == now, "and after the rebuild"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_big_edit_found_by_a_rebuild_asks_first(language):
+    """A copy an older version edited heavily, met by a rebuild (a new PC): the records' order is built,
+    and the edit waits for the user (Q4-8) like any other big outside change."""
+    store = migrated(language, shows=10, episodes=10)
+    data_dir, user_files_dir = roots(language)
+    order = {t: store.ids(t) for t in ls.ANALYSED}
+    _new_pc(store)
+    _edit(language, lambda d: d["schedule"]["PHASE_3_LATER"].reverse())
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert {t: store.ids(t) for t in ls.ANALYSED} == order and store.meta().get("reimport_pending")
+    assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True)
+    assert store.ids("goal") == order["goal"][::-1]
     store.close()

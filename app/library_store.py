@@ -381,6 +381,8 @@ SCHEMA_SQL = (
       in_learning_order INTEGER NOT NULL DEFAULT 1,
       UNIQUE (root_id, rel_key))""",
     "CREATE INDEX items_order ON items (tier, ord, id)",
+    "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
+    "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -1573,8 +1575,8 @@ class Store:
     def _dir_rows(self, rel_dir_path, excl):
         """The items whose file sits directly in `rel_dir_path` (the show = the file's real directory)."""
         base = path_key(rel_dir_path) + "/"
-        rows = self.conn.execute("SELECT id, tier, ord, rel_key FROM items WHERE rel_key > ? AND rel_key < ?",
-                                 (base, base[:-1] + "0")).fetchall()
+        rows = self.conn.execute("SELECT id, tier, ord, rel_key FROM items WHERE root_id = ? AND rel_key > ? "
+                                 "AND rel_key < ?", (self._root_id(), base, base[:-1] + "0")).fetchall()
         return [r for r in rows if r[0] not in excl and "/" not in r[3][len(base):]]
 
     def _destination(self, rel, entry, fallback_tier, excl):
@@ -2831,7 +2833,7 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
         _write_image(store, image, meta)
         store._set_meta({"migrated_at": _now()})
     if not sha_ok:
-        store.reimport(doc, read_stat, own=True, force=True)
+        store.reimport(doc, read_stat, own=True)              # the size guard applies here too (Q4-8)
     _rederive_soon_line(store)
     return True
 
@@ -3209,11 +3211,11 @@ def _check_copy(store, retry_wait=1.0):
     target = manifest_path(store.user_files_dir)
     meta = store.meta()
     st = _stat(target)
+    pending = meta.get("reimport_pending")
+    if pending and st is not None and json.loads(pending).get("stat") == _stat_str(st):
+        return "pending"                                       # a question is waiting for the user
     if st is None or _stat_str(st) == meta.get("last_export_stat"):
         return "same"
-    pending = meta.get("reimport_pending")
-    if pending and json.loads(pending).get("stat") == _stat_str(st):
-        return "pending"
     doc, read_stat, problem = read_manifest(target)
     if doc is None:
         time.sleep(retry_wait)                                     # a program halfway through saving it?
@@ -3690,13 +3692,56 @@ def _store_reset_order(self, walk=None):
 
 def _store_undo_reset(self, cmd, change):
     out, skipped = self._replace(cmd, change)
-    if change.added:
-        ok, _skip = self.undo_check(change)
+    if change.added:                                           # the untracked files Reset added go back out
+        rows = self._rows(change.added)
+        ok = [i for i in change.added if i in rows and rows[i][3] == change.version]
+        skipped = list(skipped) + [i for i in change.added if i not in ok]
         if ok:
             self._remove_as(ok, None, 0)
     return out, skipped
 
 
+def _store_folders(self):
+    """Every folder that holds items (the tier folders, the Hato folder, each show's directory), as paths
+    relative to data/<lang>: what the poll stats."""
+    folders = {FOLDER_OF_TIER[t] for t in ANALYSED} | {HATO_FOLDER}
+    for (rel,) in self.conn.execute("SELECT rel_path FROM items WHERE tier IN ('now', 'soon', 'goal')"):
+        folders.add(_rel_dir(_strip(rel)))
+    folders.discard("")
+    return sorted(folders)
+
+
+class DiskPoll:
+    """The Content Manager's 500 ms poll (§6.10, G5), run on its worker: one versions read, and a stat of
+    every folder that holds items — a file dropped into a show's folder, or a new sub-folder (it changes
+    its parent's modified time), is seen. `check()` answers "run a sync?"; the folder list is re-read only
+    when the versions move. A drop into an existing folder that holds no item waits for focus or Refresh."""
+
+    def __init__(self, store):
+        self.store = store
+        self.token = None
+        self.folders = []
+        self.stats = None
+
+    def check(self):
+        with self.store._reading():
+            meta = self.store._meta()
+        token = (meta["epoch"], meta["order_version"], meta["availability_version"])
+        if token != self.token:
+            self.folders = self.store.folders()
+            self.token = token
+        stats = {}
+        for folder in self.folders:
+            try:
+                stats[folder] = os.stat(os.path.join(self.store.data_dir, folder)).st_mtime_ns
+            except OSError:
+                stats[folder] = None
+        changed = self.stats is not None and any(f in self.stats and self.stats[f] != v for f, v in stats.items())
+        self.stats = stats
+        return changed
+
+
+Store.folders = _store_folders
 Store.walk = _store_walk
 Store.sync_disk = _store_sync_disk
 Store._repoint = _repoint

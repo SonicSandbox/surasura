@@ -1491,3 +1491,33 @@ def test_the_full_move_command_timed(language, size):
             assert store.ids("soon") == seq
     assert sorted(store.ids("soon")) == sorted(ids)
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_set_tier_and_a_small_insert_timed_at_100k(language):
+    """§6.12: a set_tier or a small insert costs what a move does. Timed in the bench run only."""
+    if not BENCH:
+        pytest.skip("timed in the bench run only")
+    store = big_store(language, 100_000)
+    store.register_reader("connect")
+    data_dir, _u = roots(language)
+    rng = random.Random(9)
+    ids = store.ids("goal")
+    tiers, inserts = [], []
+    for n in range(200):
+        item = rng.choice(ids)
+        t0 = time.perf_counter()
+        store.set_tier([item], "soon" if n % 2 == 0 else "goal")
+        tiers.append(time.perf_counter() - t0)
+    for n in range(100):
+        rel = f"LowPriority/{names(language)[n % 20]}{n}/{n:03d}.srt"
+        full = touch(data_dir, rel)
+        t0 = time.perf_counter()
+        store.insert([full], "soon")
+        inserts.append(time.perf_counter() - t0)
+    for name, times in (("set_tier", tiers), ("insert", inserts)):
+        times.sort()
+        p50, p95 = times[len(times) // 2], times[int(len(times) * 0.95)]
+        _record(f"14 {language} 100k: {name} p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms")
+        assert p50 <= 0.002 and p95 <= 0.005, (name, p50, p95)
+    store.close()

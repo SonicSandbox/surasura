@@ -455,12 +455,18 @@ def test_without_a_test_root_under_pytest_the_store_raises(language, monkeypatch
         ls.library_db_path(language, data_dir)
 
 
+def test_the_store_is_switched_on():
+    """WP-L8: 2.5 keeps the library order in the store."""
+    assert ls.STORE_LIVE is True
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_store_live_false_refuses_without_a_test_root(language, monkeypatch):
+    """The switch still works as one: off, every open refuses (the app runs in JSON mode, as 2.4)."""
     data_dir, user_files_dir = roots(language)
     monkeypatch.delenv("SURASURA_TEST_ROOT")
     monkeypatch.delenv("PYTEST_CURRENT_TEST")
-    assert ls.STORE_LIVE is False
+    monkeypatch.setattr(ls, "STORE_LIVE", False)
     with pytest.raises(ls.StoreRefused, match="STORE_LIVE"):
         ls.library_db_path(language, data_dir)
     with pytest.raises(ls.StoreRefused):

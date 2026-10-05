@@ -464,9 +464,50 @@ def running_children(active_processes=(), images=None):
 
 
 def can_update_now(active_processes=(), images=None):
-    """The one "may the update start now?" seam: nothing of Surasura's holds this install's programs. (L2.1 adds the
-    library store's lock here.)"""
+    """The one "may the update start now?" seam: nothing of Surasura's holds this install's programs. The library
+    store's helper is the one exception that isn't a child: `hold_library_locks` waits for it at the hand-over."""
     return not running_children(active_processes, images)
+
+
+def hold_library_locks(languages=("ja", "zh")):
+    """The library store's maintenance lock for every language (Library_Store_Spec §7), each taken without
+    waiting and held until this process exits — the swap happens after it — so no helper runs from the old exe
+    while it is replaced. A new helper never starts meanwhile: the update lock, held since "Update now", is the
+    store's "update staged" signal (S1.1). -> the held locks, or None while a helper holds one (the wait goes
+    on, as for a running child)."""
+    try:
+        from app import library_store
+    except Exception:
+        return []                                  # no store in this build: nothing to wait for
+    held = []
+    for language in languages:
+        try:
+            db_path = library_store.library_db_path(language, path_utils.get_data_path(language))
+        except Exception:
+            continue
+        if not os.path.exists(os.path.dirname(db_path)):
+            continue                               # no store was ever made here
+        lock = library_store.MaintenanceLock(db_path)
+        try:
+            taken = lock.try_acquire()
+        except OSError:
+            taken = True                           # its lock file can't be opened: nothing can hold it either
+            lock = None
+        if not taken:
+            lock.close()
+            release_library_locks(held)
+            return None
+        if lock is not None:
+            held.append(lock)
+    return held
+
+
+def release_library_locks(locks):
+    for lock in locks or ():
+        try:
+            lock.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

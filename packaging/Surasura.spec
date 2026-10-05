@@ -112,8 +112,10 @@ binaries = []
 # hiddenimport is for. app.zh_script_data is the same case: without it the Chinese Script setting
 # silently reads everything as written; so are app.katakana_data, app.name_data and app.jmdict_data (app/names.py:
 # without them names and a story's own kanji terms stay in pieces), and app.phrases / app.phrase_data (without them
-# the list silently holds no set phrases).
-hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data',
+# the list silently holds no set phrases). app.library_store too (2.5, Library_Store_Spec §7): every caller imports
+# it inside a function, and without it the app would quietly run in JSON mode and the `library_maintain` helper
+# would fail.
+hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.reference_data', 'app.library_store',
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
                  'app.jmdict_data', 'app.phrases', 'app.phrase_data', 'app.one_kanji_data']

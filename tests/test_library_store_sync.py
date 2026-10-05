@@ -47,6 +47,7 @@ def _todays_sync(language, doc):
     cm.user_files_root = own
     cm.language = language
     cm._warn_manifest_once = lambda *a, **k: None
+    cm._store_mode, cm._store = (lambda: "json"), (lambda: None)   # 2.4.0's code: 2.5's JSON mode
     cm._sync_disk_to_manifest()
     return read_doc(own)["schedule"]
 

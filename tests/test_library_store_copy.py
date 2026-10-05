@@ -103,7 +103,7 @@ def test_extra_state_survives_a_rebuild(language):
     store.pin([ids[1]])
     store.set_watched([ids[4]])
     with store._writing():
-        store._set_meta({"soon_line": 9, "mine_line": 25, "arrivals_on": 1})
+        store._set_meta({"soon_line": len(store.ids("now")), "mine_line": 25, "arrivals_on": 1})
     events, _gap = store.read_events("connect")
     store.advance_reader("connect", events[-1][0])
     before = {"order": {t: store.ids(t) for t in ls.TIERS}, "meta": store.meta(),

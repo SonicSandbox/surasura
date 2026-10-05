@@ -98,7 +98,7 @@ BAK_KEEP = 10                    # the store's own .bak files kept (R-5)
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
-            "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on")
+            "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line")
 
 
 class StoreError(Exception):
@@ -562,9 +562,25 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     if mode != "store":
         return None
     try:
-        return Store(db_path, language, data_dir, user_files_dir, role)
+        store = Store(db_path, language, data_dir, user_files_dir, role)
+        _rederive_soon_line(store)
+        return store
     except sqlite3.DatabaseError:
         return None
+    except StoreError:
+        return None
+
+
+def _rederive_soon_line(store):
+    """The tiers win (§6.3): from 3.0 `meta.soon_line` is the number of Current's rows above the line;
+    at open and after any import it is re-derived from the `now` tier. Absent through 2.x: nothing."""
+    raw = store.conn.execute("SELECT value FROM meta WHERE key = 'soon_line'").fetchone()
+    if raw is None:
+        return
+    count = store.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
+    if str(count) != str(raw[0]):
+        with store._writing():
+            store._set_meta({"soon_line": count, "copy_dirty": store._meta().get("copy_dirty", 0) + 1})
 
 
 class StoreOpener:
@@ -1111,7 +1127,7 @@ class Store:
         """Bookkeeping writes (§6.6): no version moves. What the copy carries sets `copy_dirty`."""
         with self._writing():
             if copy_carries:
-                values = dict(values, copy_dirty=1)
+                values = dict(values, copy_dirty=self._meta().get("copy_dirty", 0) + 1)
             self._set_meta(values)
 
     # --- reading -------------------------------------------------------------------------------- #
@@ -2005,12 +2021,12 @@ class Store:
         with self._writing():
             if f"reader:{name}" not in self._meta():
                 self._set_meta({f"reader:{name}": self._log_seq(), f"reader_epoch:{name}": self._meta()["epoch"],
-                                "copy_dirty": 1})
+                                "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
 
     def advance_reader(self, name, log_id):
         """Bookkeeping the copy carries: no version moves, `copy_dirty` set."""
         with self._writing():
-            self._set_meta({f"reader:{name}": log_id, f"reader_epoch:{name}": self._meta()["epoch"], "copy_dirty": 1})
+            self._set_meta({f"reader:{name}": log_id, f"reader_epoch:{name}": self._meta()["epoch"], "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
 
     def read_events(self, name):
         """(events after the reader's watermark, gap). A gap — the oldest id left above the watermark +
@@ -2815,7 +2831,8 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
         _write_image(store, image, meta)
         store._set_meta({"migrated_at": _now()})
     if not sha_ok:
-        store.reimport(doc, read_stat, own=True)
+        store.reimport(doc, read_stat, own=True, force=True)
+    _rederive_soon_line(store)
     return True
 
 
@@ -2961,8 +2978,8 @@ def _reimport_plan(store, norm):
             it.new_tier = tier
         if it.entry is None or json.loads(it.entry) != entry:
             it.new_entry = entry
-    for tier in ("arrivals",):
-        new_order[tier] = [k for k in order[tier] if k not in listed]
+    for tier in ("graduated", "arrivals"):
+        new_order[tier] = [k for k in new_order[tier] if k not in listed]
     moved = set()
     for key, it in items.items():
         if it.added or it.new_tier is not None:
@@ -3058,6 +3075,7 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
         cmd.touch(changed_tiers | {it.tier for it in items.values() if it.new_entry is not None or it.new_rel})
         self._set_meta({"last_export_stat": read_stat})
         self.conn.execute("DELETE FROM meta WHERE key = 'reimport_pending'")
+        _rederive_soon_line(self)
         return "applied"
 
 
@@ -3802,6 +3820,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
         with store._writing():
             _write_image(store, image, meta)
             store._set_meta({"migrated_at": _now()})
+            _rederive_soon_line(store)
         try:
             os.remove(damaged_marker(db_path))
         except OSError:

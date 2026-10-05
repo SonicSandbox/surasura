@@ -144,3 +144,76 @@ def big_store(language, n, available=True):
         store._set_meta({"migrated_at": ls._now()})
     store.close()
     return ls.open_store(language, data_dir, user_files_dir)
+
+
+def _episodes(language, prefix, count, start=0):
+    """`count` episode paths under `prefix`, 12 to a show, shows named from the real word list."""
+    words = names(language)
+    mark = "話" if language == "ja" else "集"
+    out = []
+    for n in range(start, start + count):
+        show = f"{words[(n // 12) % len(words)]}{n // 12:03d}"
+        out.append(f"{prefix}/{show}/{show}_第{n % 12 + 1:02d}{mark}.srt")
+    return out
+
+
+def _ia(entry, n):
+    """The retired Immersion Architect's keys, as 1,818 laptop rows carry them."""
+    entry["reason"] = f"Planned for week {n % 52 + 1}: density band {n % 7}, coverage {(n * 37) % 100}%"
+    entry["metrics"] = {"unknown_words": (n * 13) % 400, "density": round((n % 97) / 97, 4),
+                        "i_plus_one": (n * 7) % 60, "coverage": round((n % 89) / 89, 4)}
+    entry["simulated_day_start"] = n % 365
+    entry["simulated_day_end"] = n % 365 + 3
+    return entry
+
+
+def laptop_library(language, create=True):
+    """The laptop-shaped fixture (L0.1, store spec §4.1), synthetic — never the user's titles: 2,034 rows
+    (NOW 143 · Soon 154 · 6+ Months 1,737), 267 dead rows (NOW 50, 6+ Months 217), 851 rows in another
+    tier's folder (810 LowPriority files filed in 6+ Months, 41 HighPriority files in Soon with status
+    "overflow"), 53 doubled titles (the same inner path and size in LowPriority and GoalContent, both rows
+    live), 1,818 rows with the Immersion Architect's keys, folders split into several runs; on disk
+    134 / 923 / 710 content files. Returns (data_dir, user_files_dir, doc)."""
+    data_dir, user_files_dir = roots(language)
+    high = _episodes(language, "HighPriority", 93 + 50 + 41)
+    now_live, now_dead, overflow = high[:93], high[93:143], high[143:]
+    low = _episodes(language, "LowPriority", 113 + 810, start=1000)
+    soon_low, later_low = low[:113], low[113:]
+    goal = _episodes(language, "GoalContent", 710 + 217, start=3000)
+    goal_live, goal_dead = goal[:710], goal[710:]
+    for n in range(53):                                        # doubled titles: same inner path, both live
+        goal_live[n] = "GoalContent/" + later_low[n].split("/", 1)[1]
+    status = {}
+    for rel in overflow:
+        status[rel] = "overflow"
+    for rel in (now_live + now_dead)[:143] + soon_low[:71]:
+        status[rel] = "New"
+
+    def row(rel, n, origin, ia=False):
+        e = entry(rel, origin)
+        e["status"] = status.get(rel, "active")
+        e["type"] = "book_chapter" if ia else "File"
+        return _ia(e, n) if ia else e
+
+    later = later_low + goal_live + goal_dead
+    chunks = [later[i:i + 7] for i in range(0, len(later), 7)]  # 7 of a 12-episode show: shows split in runs
+    order = [c for pair in zip(chunks[0::2], chunks[1::2]) for c in pair[::-1]] + \
+        ([chunks[-1]] if len(chunks) % 2 else [])
+    later = [rel for c in order for rel in c]
+    schedule = {
+        "PHASE_1_NOW": [row(r, n, "01_NOW") for n, r in enumerate(now_live + now_dead)],
+        "PHASE_2_SOON": [row(r, n, "02_SOON", ia=n < 81) for n, r in enumerate(overflow + soon_low)],
+        "PHASE_3_LATER": [row(r, n, "03_LATER", ia=True) for n, r in enumerate(later)],
+    }
+    doc = {"metadata": {"generated_at": "2026-06-12", "strategy": "smart_sort", "days": 365, "version": 3},
+           "schedule": schedule}
+    if create:
+        dead = set(now_dead + goal_dead)
+        sizes = {}
+        for rel in now_live + overflow + soon_low + later_low + goal_live:
+            if rel in dead:
+                continue
+            inner = rel.split("/", 1)[1]
+            text = sizes.setdefault(inner, f"{inner}\n")         # a doubled title has the same size twice
+            touch(data_dir, rel, text)
+    return data_dir, user_files_dir, doc

@@ -1958,7 +1958,7 @@ class MasterDashboardApp:
                 skipped_version=cur.get("skipped_version", ""),
                 auto_enabled=cur.get("auto_update_enabled", True),
                 can_apply=updater.can_auto_apply(info),
-                failed_version=cur.get("failed_update_version", ""),
+                failed_version=updater.failed_version(cur),
             )
             if cls == "NONE" or info is None:
                 return
@@ -2309,7 +2309,7 @@ class MasterDashboardApp:
             ver = res.get("to") or ""
             if ver:
                 self.failed_update_version = ver
-                self.save_settings()
+                updater.record_failed_version(ver)     # this install's update_state.json, never settings.json
             reason = res.get("reason", "")
             report = updater.write_report("install", reason, to_version=ver,
                                           from_version=res.get("from") or "")
@@ -2644,7 +2644,7 @@ class MasterDashboardApp:
             self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
             self.var_anki_auto_generate.set(bool(settings.get("anki_auto_generate", False)))
             self.skipped_version = settings.get("skipped_version", "")
-            self.failed_update_version = settings.get("failed_update_version", "")
+            self.failed_update_version = updater.failed_version(settings)
             self._sync_skipped_row()
 
             # Load Logic Settings
@@ -2743,7 +2743,6 @@ class MasterDashboardApp:
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
                 "anki_auto_generate": self.var_anki_auto_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
-                "failed_update_version": getattr(self, "failed_update_version", ""),
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),

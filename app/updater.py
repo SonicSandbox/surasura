@@ -86,6 +86,49 @@ def added_path():
     return os.path.join(_user_dir(), ADDED_NAME)
 
 
+def update_state_path():
+    """This install's update state (S1.1-2): in the per-install local folder, never settings.json."""
+    return os.path.join(path_utils.get_local_data_path(), "update_state.json")
+
+
+def _read_state():
+    try:
+        with open(update_state_path(), "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, RuntimeError):
+        return {}
+
+
+def record_failed_version(version):
+    """A version whose in-app update failed: never tried in place again (the loop-breaker). Written atomically to
+    update_state.json — nothing automatic writes settings.json. -> True when written; never raises."""
+    try:
+        path = update_state_path()
+        state = _read_state()
+        state["failed_update_version"] = version
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        print(f"Update: could not record the failed version ({e})")
+        return False
+
+
+def failed_version(settings=None):
+    """The version whose in-app update failed: update_state.json's — else one 2.4.0 left in settings.json, read there
+    (never written back; the dashboard's next save drops the key) and kept in update_state.json from then on."""
+    version = str(_read_state().get("failed_update_version", "") or "")
+    if version:
+        return version
+    legacy = str((settings or {}).get("failed_update_version", "") or "") if isinstance(settings, dict) else ""
+    if legacy:
+        record_failed_version(legacy)
+    return legacy
+
+
 def report_path():
     return os.path.join(_user_dir(), "debug", REPORT_NAME)
 

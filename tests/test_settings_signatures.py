@@ -788,7 +788,7 @@ PLACED = {
     "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
     "hide_satoru": "neither", "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "skipped_version": "neither",
-    "failed_update_version": "neither", "source_display": "report", "word_search_enabled": "report",
+"source_display": "report", "word_search_enabled": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "anki_connect_url": "neither",
     "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",
     "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",

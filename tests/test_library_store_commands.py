@@ -1489,70 +1489,197 @@ def test_100k_moves_touch_only_the_moved_rows(language):
     store.close()
 
 
+def allowance(items, per_item=0.00005):
+    """The store's own work in one save, beside the flush it waits for (§6.12, L1.2-1): 1 ms + 0.05 ms an
+    item moved (an insert: 0.12 ms a file — it reads each file and builds its entry). As built a move
+    measures ~0.5 ms + 0.03–0.04 ms an item, at 2k and 100k alike; the flush counts once, whatever the item
+    count, because the whole command is one transaction."""
+    return 0.001 + per_item * items
+
+
+class _FlushProbe:
+    """A bare one-row commit (synchronous=FULL, WAL) on the same disk, timed just before each command:
+    this disk's flush swings 0.8 ↔ 2–3 ms for minutes at a time, so the budget is read against the flush of
+    the same moments, never a fixed number."""
+
+    def __init__(self, folder):
+        self.conn = sqlite3.connect(os.path.join(folder, "flush_probe.db"), isolation_level=None)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=FULL")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, x)")
+        self.n = 0
+        self.times = []
+
+    def __call__(self):
+        self.n += 1
+        t0 = time.perf_counter()
+        self.conn.execute("BEGIN IMMEDIATE")
+        self.conn.execute("INSERT OR REPLACE INTO t VALUES (?, ?)", (self.n % 50, self.n))
+        self.conn.execute("COMMIT")
+        self.times.append(time.perf_counter() - t0)
+
+    def close(self):
+        self.conn.close()
+
+
+def _q(times, p):
+    times = sorted(times)
+    return times[min(len(times) - 1, int(len(times) * p))]
+
+
+FAST_FLUSH = 0.0015      # this disk's fast phase: a bare flush ~0.83 ms; the slow phase runs 2–5 ms
+
+
+def _timed(label, run, items, per_item=0.00005, tries=5):
+    """Time a block with `run()` → (times, flushes) and check it against `allowance`: the work — each
+    command's time less the flush timed just before it — p50 ≤ the allowance and above zero, and p95 ≤ the
+    flush's p95 + twice it. Pairing, not two medians subtracted. Only a fast-phase block counts: in the slow
+    phase a flush is ~0.8 or ~5 ms at random and the paired work can read below zero, so a slow block is run
+    again (up to `tries` times), and a run that never meets a fast phase fails, to be re-run on a quiet disk."""
+    budget = allowance(items, per_item)
+    for _attempt in range(tries):
+        times, flushes = run()
+        p50, p95, f50, f95 = _q(times, 0.5), _q(times, 0.95), _q(flushes, 0.5), _q(flushes, 0.95)
+        work = _q([t - f for t, f in zip(times, flushes)], 0.5)
+        _record(f"{label}: p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms | flush p50 {f50 * 1000:.2f} p95 "
+                f"{f95 * 1000:.2f} | work p50 {work * 1000:.2f} ms, allowance {budget * 1000:.2f}"
+                + ("" if f50 <= FAST_FLUSH else " | slow phase, again"))
+        if f50 <= FAST_FLUSH:
+            assert 0 < work <= budget and p95 <= f95 + 2 * budget, (label, work, p95, f95)
+            return
+    pytest.fail(f"{label}: the disk stayed in its slow phase for {tries} tries; re-run the timed proof quiet")
+
+
+def _commits_during(store, fn):
+    """How many COMMITs `fn()` sends on the store's connection: one command, one transaction, one flush."""
+    seen = []
+
+    def trace(sql):
+        if sql.strip().upper().startswith("COMMIT"):
+            seen.append(sql)
+    store.conn.set_trace_callback(trace)
+    try:
+        fn()
+    finally:
+        store.conn.set_trace_callback(None)
+    return len(seen)
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("size", [2_000, 100_000])
 def test_the_full_move_command_timed(language, size):
-    """The done condition (WP-L2 #14): `move` as built — its reads, item rows and log rows, the commit,
-    under the write lock — over 1,000 moves of 1 item and of 12, on the real schema, a reader registered:
-    p50 ≤ 2 ms and p95 ≤ 5 ms on this desktop. The budgets are asserted only in the timed run
-    (SURASURA_STORE_BENCH=1, under the test lock); otherwise a short functional pass at 2k."""
+    """The done condition (WP-L2 #14, L1.2-1): `move` as built — its reads, item rows and log rows, the
+    commit, under the write lock — on the real schema, a reader registered, moving 1, 12 and 50 items and
+    the largest one move can carry (a whole tier: every Soon row dragged to 6+ Months and back): p50 ≤ the
+    flush measured beside it + `allowance(items)`, p95 ≤ the flush's p95 + twice that. Asserted in the
+    timed run only (SURASURA_STORE_BENCH=1, under the test lock); otherwise a short functional pass at 2k."""
     if size > 2_000 and not BENCH:
         pytest.skip("the 100k timing runs in the timed proof only")
     store = big_store(language, size)
     store.register_reader("connect")
+    probe = _FlushProbe(os.path.dirname(store.db_path))
     ids = store.ids("soon")
     rng = random.Random(size)
-    runs = 1000 if BENCH else 50
     seq = list(ids)
-    for block in (1, 12):
-        times = []
-        for _ in range(runs):
-            start = rng.randrange(0, len(seq) - block - 1)
-            moving = seq[start:start + block]
-            anchor = rng.choice([i for i in rng.sample(seq, 3) if i not in moving] or [seq[-1]])
-            t0 = time.perf_counter()
-            store.move(moving, "soon", after_id=anchor)
-            times.append(time.perf_counter() - t0)
-            if size <= 2_000:
-                del seq[start:start + block]
-                at = seq.index(anchor) + 1
-                seq[at:at] = moving
-        times.sort()
-        p50, p95 = times[len(times) // 2], times[int(len(times) * 0.95)]
+
+    def moves(block, runs):
+        def run():
+            times, probe.times = [], []
+            for _ in range(runs):
+                start = rng.randrange(0, len(seq) - block - 1)
+                moving = seq[start:start + block]
+                anchor = rng.choice([i for i in rng.sample(seq, 3) if i not in moving] or [seq[-1]])
+                probe()
+                t0 = time.perf_counter()
+                store.move(moving, "soon", after_id=anchor)
+                times.append(time.perf_counter() - t0)
+                if size <= 2_000:
+                    del seq[start:start + block]
+                    at = seq.index(anchor) + 1
+                    seq[at:at] = moving
+            return times, probe.times
+        return run
+
+    for block, runs in ((1, 1000), (12, 1000), (50, 300)):
         if BENCH:
-            _record(f"14 {language} {size}: {block}-item move p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms")
-            assert p50 <= 0.002 and p95 <= 0.005, (block, p50, p95)
+            _timed(f"14 {language} {size}: {block}-item move", moves(block, runs), block)
+        else:
+            moves(block, 30)()
         if size <= 2_000:
             assert store.ids("soon") == seq
+    largest = max(ls.ANALYSED, key=lambda t: len(store.ids(t)))      # 6+ Months: 54.5 % of the library
+    whole = store.ids(largest)
+    other = "soon" if largest != "soon" else "goal"
+
+    def there_and_back():
+        times, probe.times = [], []
+        for _ in range(3 if BENCH else 1):
+            for tier in (other, largest):
+                probe()
+                t0 = time.perf_counter()
+                store.move(whole, tier)
+                times.append(time.perf_counter() - t0)
+        return times, probe.times
+    if BENCH:
+        _timed(f"14 {language} {size}: whole-tier move ({len(whole)} items)", there_and_back, len(whole))
+    else:
+        there_and_back()
+    assert store.ids(largest) == whole, "a whole tier keeps its order there and back"
     assert sorted(store.ids("soon")) == sorted(ids)
+    probe.close()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_command_is_one_commit_whatever_its_size(language):
+    """The flush counts once (L1.2-1): a move of 1, 12 or 50 items or of a whole tier, a set_tier of a
+    selection and an Add Folder of a season each send exactly one COMMIT — never one per item or per
+    chunk, whatever the disk's speed."""
+    store = migrated(language, shows=10, episodes=10)
+    data_dir, _u = roots(language)
+    ids = store.ids("goal")
+    for block in (1, 12, 50):
+        assert _commits_during(store, lambda: store.move(ids[:block], "goal", after_id=ids[-1])) == 1, block
+        ids = store.ids("goal")
+    whole = store.ids("goal")
+    assert _commits_during(store, lambda: store.move(whole, "soon")) == 1
+    assert _commits_during(store, lambda: store.set_tier(whole[:30], "goal")) == 1
+    season = [touch(data_dir, f"LowPriority/{names(language)[60]}/{e:03d}.srt") for e in range(50)]
+    assert _commits_during(store, lambda: store.insert(season, "soon")) == 1
     store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_set_tier_and_a_small_insert_timed_at_100k(language):
-    """§6.12: a set_tier or a small insert costs what a move does. Timed in the bench run only."""
+    """§6.12: a set_tier or an insert costs what a move of as many items does — one Demote, one Add of a
+    file and an Add Folder of a 50-file season, each one save. Timed in the bench run only."""
     if not BENCH:
         pytest.skip("timed in the bench run only")
     store = big_store(language, 100_000)
     store.register_reader("connect")
+    probe = _FlushProbe(os.path.dirname(store.db_path))
     data_dir, _u = roots(language)
     rng = random.Random(9)
     ids = store.ids("goal")
-    tiers, inserts = [], []
-    for n in range(200):
-        item = rng.choice(ids)
-        t0 = time.perf_counter()
-        store.set_tier([item], "soon" if n % 2 == 0 else "goal")
-        tiers.append(time.perf_counter() - t0)
-    for n in range(100):
-        rel = f"LowPriority/{names(language)[n % 20]}{n}/{n:03d}.srt"
-        full = touch(data_dir, rel)
-        t0 = time.perf_counter()
-        store.insert([full], "soon")
-        inserts.append(time.perf_counter() - t0)
-    for name, times in (("set_tier", tiers), ("insert", inserts)):
-        times.sort()
-        p50, p95 = times[len(times) // 2], times[int(len(times) * 0.95)]
-        _record(f"14 {language} 100k: {name} p50 {p50 * 1000:.2f} ms p95 {p95 * 1000:.2f} ms")
-        assert p50 <= 0.002 and p95 <= 0.005, (name, p50, p95)
+    singles = iter([touch(data_dir, f"LowPriority/{names(language)[n % 20]}{n}/{n:03d}.srt") for n in range(500)])
+    seasons = iter([[touch(data_dir, f"LowPriority/{names(language)[n % 20]}S{n}/{e:03d}.srt") for e in range(50)]
+                    for n in range(100)])          # the files exist before any timing: no probe pays for them
+
+    def each(count, command):
+        def run():
+            times, probe.times = [], []
+            for n in range(count):
+                probe()
+                t0 = time.perf_counter()
+                command(n)
+                times.append(time.perf_counter() - t0)
+            return times, probe.times
+        return run
+    _timed(f"14 {language} 100k: set_tier", each(200, lambda n: store.set_tier(
+        [rng.choice(ids)], "soon" if n % 2 == 0 else "goal")), 1)
+    _timed(f"14 {language} 100k: insert of 1 file", each(100, lambda n: store.insert([next(singles)], "soon")),
+           1, per_item=0.00012)
+    _timed(f"14 {language} 100k: insert of a 50-file season",
+           each(20, lambda n: store.insert(next(seasons), "soon")), 50, per_item=0.00012)
+    probe.close()
     store.close()

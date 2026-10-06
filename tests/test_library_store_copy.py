@@ -714,3 +714,109 @@ def test_connects_made_words_travel_in_the_copy_and_back(language):
     assert store.conn.execute("SELECT item_id, word, note_ids FROM made_words").fetchall() == \
         [(item, word, "[1700000000001]")]
     store.close()
+
+
+def _made_word(store, item, word):
+    with store._writing():
+        for sql in ls.ADDED_TABLES_SQL:
+            store.conn.execute(sql)
+        store.conn.execute("INSERT INTO made_words VALUES (?, ?, ?, ?, ?)", (item, word, "[1700000000002]",
+                                                                             "2026-10-06T01:00:00", "batch-2"))
+        store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_rebuilt_from_its_own_newer_copy_keeps_its_made_words_once(language):
+    # Why: a database restored from an older backup meets its own newer copy and is rebuilt from it in place
+    # (keep_store_id). The rebuild empties each table first; `made_words` left out of that list collided on its
+    # key with the copy's rows, rolled the rebuild back, and the helper failed on every run.
+    import shutil
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, word = store.ids("now")[0], names(language)[5]
+    _made_word(store, item, word)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    db = store.db_path
+    store.checkpoint()
+    store.close()
+    shutil.copyfile(db, db + ".backup")                        # the older backup, made_words row included
+    store = ls.open_store(language, data_dir, user_files_dir)
+    ids = store.ids("now")
+    store.move([ids[-1]], "now")                               # the copy moves on past the backup
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    order = store.ids("now")
+    store.close()
+    for suffix in ("-wal", "-shm"):
+        if os.path.exists(db + suffix):
+            os.remove(db + suffix)
+    shutil.copyfile(db + ".backup", db)                        # restored
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.ids("now") == order, "rebuilt from the newer copy"
+    assert store.conn.execute("SELECT item_id, word FROM made_words").fetchall() == [(item, word)]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_repair_brings_made_words_back(language):
+    # Why: Repair salvages each table from the damaged database (or the copy); an added table must come back too.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, word = store.ids("now")[0], names(language)[6]
+    _made_word(store, item, word)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    db = store.db_path
+    store.close()
+    ls.mark_damaged(db, "a test")
+    assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.conn.execute("SELECT item_id, word FROM made_words").fetchall() == [(item, word)]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_beside_a_newer_copy_stops_asking_for_the_helper_until_it_goes(language):
+    # Why: with exports refused, `export_due` stayed true and every focus spawned a helper that re-read the whole
+    # file. It stays quiet while the newer copy sits there unchanged, and exports again once it's gone.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    _make_newer(user_files_dir, store_id="a-newer-surasura")
+    store.move([store.ids("now")[-1]], "now")
+    assert store.export_due()
+    ls.maintain(language, data_dir, user_files_dir)
+    assert not store.export_due(), "quiet while the newer copy sits there"
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NOTHING
+    os.remove(ls.manifest_path(user_files_dir))                # the user takes it away
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert read_doc(user_files_dir)["surasura_library"]["store_id"] == store.meta()["store_id"]
+    assert "newer_copy_seen" not in store.meta()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_read_only_on_a_newer_copy_still_starts_the_helper(language, monkeypatch):
+    # Why: no window starts the helper in read-only mode; without this, putting back a copy this version wrote
+    # left the library read-only until the next Generate.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    db = store.db_path
+    store.close()
+    _db_aside(db)
+    _make_newer(user_files_dir)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    spawned = []
+    monkeypatch.setattr(ls, "spawn_maintain", lambda lang, *a: spawned.append(lang) or "spawned")
+    monkeypatch.setattr(ls, "_build_spawned", {})
+    assert ls.spawn_build_if_waiting(language, data_dir, user_files_dir) == "spawned"
+    assert spawned == [language]
+    assert ls.read_only_view(language, data_dir, user_files_dir)[0] == "unknown"
+
+
+def test_a_copy_whose_schema_cant_be_read_counts_as_newer():
+    # Why: fail closed — a schema this version can't read is never rebuilt from.
+    assert ls.copy_is_newer({"surasura_library": {"store_schema": "two"}})
+    assert ls.copy_is_newer({"surasura_library": {"store_schema": ls.STORE_SCHEMA + 1}})
+    assert not ls.copy_is_newer({"surasura_library": {"store_schema": ls.STORE_SCHEMA, "format": ls.COPY_FORMAT}})
+    assert not ls.copy_is_newer({"schedule": {}})

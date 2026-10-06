@@ -398,6 +398,7 @@ def test_junbans_automatic_steps_wait_for_the_update(dash, monkeypatch):
     dash.var_enable_junban.set(True)
     import app.main as main
     # The guards live in Junban's module since P1.2 (`auto.blocked`: an update waiting is one): nothing starts.
+    pytest.importorskip("modules.junban.auto")
     started = []
     monkeypatch.setattr(main.settings_manager, "load_settings",
                         lambda *a, **k: {"enable_junban": True, "junban_auto_reorder": True})

@@ -351,7 +351,7 @@ def test_a_killed_holder_frees_results_for_the_next_generate():
 # junban-window — the 順 window holds it; the automatic reorder looks at it
 # --------------------------------------------------------------------------- #
 def test_an_open_junban_window_anywhere_makes_the_automatic_reorder_stand_aside(monkeypatch):
-    from modules.junban import auto
+    auto = pytest.importorskip("modules.junban.auto")     # a build without modules/ (the public CI) skips
     monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
     settings = {"enable_junban": True}
     assert auto.blocked(settings) is None
@@ -372,7 +372,7 @@ def test_the_junban_window_holds_its_lock_while_open_and_lets_go_on_close():
     worker.start()
     worker.join(10)
     assert window._window_lock is not None and locks.read_holder("junban-window")["verb"] == "the 順 window"
-    from modules.junban import auto
+    auto = pytest.importorskip("modules.junban.auto")     # a build without modules/ (the public CI) skips
     assert auto.window_open()
     gui.JunbanGui._close(window)
     _wait_free("junban-window")
@@ -455,7 +455,7 @@ def test_two_readers_looking_at_once_never_see_each_other_as_a_holder():
     env = dict(os.environ, PYTHONPATH=PROJECT_ROOT)
     lookers = [subprocess.Popen([sys.executable, "-c", _LOOKER, "junban-window", "400"], cwd=PROJECT_ROOT, env=env,
                                 stdout=subprocess.PIPE, text=True) for _ in range(3)]
-    from modules.junban import auto
+    auto = pytest.importorskip("modules.junban.auto")     # a build without modules/ (the public CI) skips
     mine = sum(auto.window_open() for _ in range(200))
     assert [int(p.communicate(timeout=180)[0]) for p in lookers] == [0, 0, 0] and mine == 0
     with Holder("junban-window", "the 順 window"):

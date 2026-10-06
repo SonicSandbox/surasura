@@ -118,7 +118,9 @@ def _validate(plan):
                         ("weights", dict), ("files", int), ("keys", int), ("shared_phrases", list)):
         if not isinstance(h.get(name), kinds):
             raise PlanError(f"the plan file's header has no {name!r}")
-    for name, kinds in (("store", (dict, type(None))), ("max_contexts", int), ("order_free_parts", dict),
+    if "max_contexts" in h and not (type(h["max_contexts"]) is int and 0 <= h["max_contexts"] <= 50):
+        raise PlanError("the plan file's header 'max_contexts' is damaged")
+    for name, kinds in (("store", (dict, type(None))), ("order_free_parts", dict),
                         ("target_coverage", (int, float)), ("only_i_plus_one", (bool, int))):
         if name in h and not isinstance(h[name], kinds):
             raise PlanError(f"the plan file's header {name!r} is damaged")
@@ -153,6 +155,7 @@ def _validate(plan):
                 and (tie[3] is None or (isinstance(tie[3], dict) and all(isinstance(v, str) for v in tie[3].values())
                                         and set(tie[3]) <= set(tie[1])))):
             raise PlanError("the plan file's ties table is damaged")
+    ties = {tie[0]: tie for tie in plan.ties}
     uses = [0] * n_keys
     phrase = [key[2] for key in plan.keys]
     for line in plan.per_file:
@@ -165,7 +168,7 @@ def _validate(plan):
                 k, u = pairs[i], pairs[i + 1]
                 # A use is counted (the writer's records start at 1): a 0 would give a file where nothing counted a
                 # word's first place (02 §2.3).
-                if not (_index(k, n_keys) and type(u) is int and u > 0) or k in met:
+                if not (_index(k, n_keys) and _count(u) and u > 0) or k in met:
                     raise PlanError("a file's uses are damaged")
                 met.add(k)
                 if phrase[k] != is_phrase:
@@ -175,19 +178,19 @@ def _validate(plan):
                 uses[k] += u
         sps = line.get("sp", [])
         if not isinstance(sps, list) or not all(
-                isinstance(sp, list) and len(sp) == 3 and _index(sp[0], n_keys) and _strings(sp[1])
-                and _strings(sp[2]) for sp in sps):
+                isinstance(sp, list) and len(sp) == 3 and sp[0] in ties and _strings(sp[1]) and _strings(sp[2])
+                and set(sp[1]) <= set(ties[sp[0]][1]) and set(sp[2]) <= set(ties[sp[0]][2]) for sp in sps):
             raise PlanError("a file's spellings are damaged")
         prog = line.get("prog")
         if not (isinstance(prog, list) and len(prog) == 7 and type(prog[0]) is int and type(prog[1]) is int
-                and 0 <= prog[1] <= prog[0]):
+                and 0 <= prog[1] <= prog[0] < _LIMIT):
             raise PlanError("a file's progressive record is damaged")
         for table in (prog[2], prog[3], prog[4], prog[5]):
             if not isinstance(table, list) or len(table) % 2 or not all(
-                    _index(table[i], n_keys) and type(table[i + 1]) is int for i in range(0, len(table), 2)):
+                    _index(table[i], n_keys) and _count(table[i + 1]) for i in range(0, len(table), 2)):
                 raise PlanError("a file's progressive record is damaged")
         if not isinstance(prog[6], list) or not all(
-                isinstance(sib, list) and len(sib) == 2 and isinstance(sib[0], str) and type(sib[1]) is int
+                isinstance(sib, list) and len(sib) == 2 and isinstance(sib[0], str) and _count(sib[1])
                 for sib in prog[6]):
             raise PlanError("a file's progressive record is damaged")
     if uses != [key[4] for key in plan.keys]:
@@ -196,6 +199,13 @@ def _validate(plan):
 
 def _index(value, n):
     return type(value) is int and 0 <= value < n
+
+
+_LIMIT = 1 << 31                    # counts are kept in compact arrays of 32-bit ints
+
+
+def _count(value):
+    return type(value) is int and 0 <= value < _LIMIT
 
 
 def _number(value):
@@ -347,6 +357,9 @@ class Engine:
     the store no longer holds); by default its rel_path."""
 
     def __init__(self, plan, ids=None):
+        # `self.plan` keeps the tables only (header, files, keys, rows, ties), never the per-file lines.
+        if plan.per_file is None:
+            raise PlanError("an engine's own copy holds no per-file lines: load the plan file again")
         aside = stands_aside(plan)
         if aside:
             raise PlanError(f"the engine stands aside: {aside}")
@@ -445,17 +458,20 @@ class Engine:
         raw = [0] * n
         counts = [[0, 0, 0] for _ in range(n)]
         first = [None] * n
+        first_idx = [0] * n                 # the word's place among its first file's words: a Generate's insertion order
         w = self._w
         uses = self._uses
         for f, slot in zip(fs, tiers):
             weight = w[slot]
             ks, us = uses[f]
-            for k, u in zip(ks, us):
+            for i, k in enumerate(ks):
+                u = us[i]
                 raw[k] += weight * u
                 counts[k][slot] += u
                 if first[k] is None:
                     first[k] = f
-        self._raw, self._counts, self._first = raw, counts, first
+                    first_idx[k] = i
+        self._raw, self._counts, self._first, self._first_idx = raw, counts, first, first_idx
         self._n_new = [0] * n_files
         for f in first:
             if f is not None:
@@ -477,8 +493,7 @@ class Engine:
         """The priority list's sort key (`analyzer.py`'s, 02 §2.5): Score down, first place, the phrase flag, then a
         Generate's insertion order — the word's place among its first file's words (or phrases); `k` last, never
         reached (two keys can't share a first file's place)."""
-        f = self._first[k]
-        return (-self._score(k), self._pos[f], self._phrase[k], self._uses[f][0].index(k), k)
+        return (-self._score(k), self._pos[self._first[k]], self._phrase[k], self._first_idx[k], k)
 
     # ----------------------------------------------------------------------------------------------------------- #
     # Incremental (02 §3)
@@ -519,7 +534,10 @@ class Engine:
         # Where a moved word's next file is looked for: the first item after the block's first, in the old order,
         # that stays — every file before the old first file of a word lacks it.
         i = old.index(block[0])
-        walk_from = next((g for g in old[i + 1:] if g not in block_set), None)
+        if len(block) == 1:
+            walk_from = old[i + 1] if i + 1 < len(old) else None
+        else:
+            walk_from = next((g for g in old[i + 1:] if g not in block_set), None)
         touched = {}                                # word -> its numbers before the move
         holders = {}                                # word -> the block's files that hold it, in the block's order
         for f in block:
@@ -529,7 +547,11 @@ class Engine:
                     holders[k] = [f]
                 else:
                     holders[k].append(f)
-        order = [f for f in old if f not in block_set]
+        if len(block) == 1:
+            order = old
+            del order[i]
+        else:
+            order = [f for f in old if f not in block_set]
         for f in block:
             self._tier_count[self._tier[f]] -= 1
         at = sum(self._tier_count[:slot]) if anchor is None else order.index(a) + (1 if before_id is None else 0)
@@ -563,6 +585,7 @@ class Engine:
                 self._n_new[was] -= 1
                 self._n_new[new] += 1
                 self._first[k] = new
+                self._first_idx[k] = self._uses[new][0].index(k)
             if self._listed[k]:
                 r = self._rank(k)
                 if r != self._rank_of[k]:
@@ -586,15 +609,22 @@ class Engine:
             files = self._files_of[k]
             if len(files) <= _SHORT:
                 out[k] = min((f for f in files if pos[f] is not None), key=pos.__getitem__)
+            elif len(files) == len(holders[k]):
+                out[k] = min(holders[k], key=pos.__getitem__)     # every file of it moved: nothing to walk for
             else:
                 walk.add(k)
         if walk:
             found = {}
             if walk_from is not None:
                 order, uses = self._order, self._uses
-                for g in order[order.index(walk_from):]:
+                # Past the latest of the walked words' own earliest block holder, nothing found could come first.
+                limit = max(min(pos[f] for f in holders[k]) for k in walk)
+                for j in range(order.index(walk_from), len(order)):
+                    g = order[j]
                     if g in block_set:
                         continue
+                    if pos[g] > limit:
+                        break
                     for k in uses[g][0]:
                         if k in walk and k not in found:
                             found[k] = g

@@ -265,6 +265,13 @@ def test_a_move_reports_the_words_whose_numbers_changed_and_no_other():
     moved = {k for k in r0.counts if r0.counts[k] != r1.counts[k]}
     assert moved and set(keys) == moved | {k for k in r0.first if r0.first[k] != r1.first[k]}
     assert r0.score == r1.score
+    # NOW's first item to NOW's end: no count or Score moves, but first items do — and those are reported.
+    now = [item for item, t in _order(eng)[0] if t == "now"]
+    r0 = eng.result()
+    keys, _items = eng.move(now[0], "now", after_id=now[-1])
+    r1 = eng.result()
+    firsts = {k for k in r0.first if r0.first[k] != r1.first[k]}
+    assert firsts and set(keys) == firsts and r0.counts == r1.counts
 
 
 def test_any_collection_of_ids_is_a_block():

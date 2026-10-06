@@ -146,14 +146,9 @@ def _moves_to(eng, plan, target):
     """Move the engine's items one by one into `target`'s order ([(item_id, tier)]), as a user drags them: each item,
     front to back, placed after the one before it (the first at its tier's top)."""
     prev = None
-    for i, (item, tier) in enumerate(target):
-        nxt = target[i + 1] if i + 1 < len(target) else None
+    for item, tier in target:
         if prev is not None and prev[1] == tier:
             eng.move(item, tier, after_id=prev[0])
-        elif (nxt is not None and nxt[1] == tier and i % 2
-              and eng._tier[eng._f_of[nxt[0]]] == plan_engine._SLOT[tier]):
-            eng.move(item, tier, before_id=nxt[0])      # before the next one: placed at its tier's top all the same
-            eng.move(item, tier)
         else:
             eng.move(item, tier)
         prev = (item, tier)

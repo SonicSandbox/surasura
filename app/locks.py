@@ -41,7 +41,8 @@ POLL = 0.25
 
 _NAME = re.compile(r"[a-z0-9-]+\Z")
 
-# name -> (the thread ident holding it in this process, its verb). Guarded by `_registry_lock`, which is
+# name -> (its owner in this process — the taking thread's ident, or the `owner` a hold that outlives its thread
+# named — and its verb). Guarded by `_registry_lock`, which is
 # held only while asking the OS for the lock (never while waiting).
 _registry = {}
 _registry_lock = threading.Lock()
@@ -224,10 +225,11 @@ class Held:
         return False
 
 
-def held_here(name):
-    """Does the calling thread hold `name`?"""
+def held_here(name, owner=None):
+    """Does the calling thread (or `owner`, when given) hold `name`?"""
+    owner = threading.get_ident() if owner is None else owner
     with _registry_lock:
-        return (_registry.get(name) or (None,))[0] == threading.get_ident()
+        return (_registry.get(name) or (None,))[0] == owner
 
 
 def held_in_process(name):
@@ -241,7 +243,7 @@ def _try(name, verb, lock_path, me):
     with _registry_lock:
         owner = (_registry.get(name) or (None,))[0]
         if owner == me:
-            raise RuntimeError(f"This thread already holds '{name}': a nested take is a programming error.")
+            raise RuntimeError(f"'{name}' is already held by this owner: a nested take is a programming error.")
         if owner is not None:
             return None
         handle = path_utils.try_lock(lock_path)
@@ -250,16 +252,20 @@ def _try(name, verb, lock_path, me):
         return handle
 
 
-def take(name, verb, wait=0.0, cancel=None, on_wait=None):
+def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
     """Take `name` for `verb` (a short user-facing phrase: "順 reorder", "Backfill") -> `Held`.
 
     `wait=0` answers at once; `wait=s` looks again every 250 ms for up to `s` seconds; `wait=None` waits
     until the lock is free or `cancel` (a `threading.Event`) is set. Held elsewhere when the wait runs
     out -> `Busy(holder)`; cancelled -> `Cancelled(holder)`. `on_wait(holder)` is called once, when
     waiting starts. Both run on the calling thread — never the GUI's.
+
+    A hold never outlives its thread unless it names an `owner` (any object: the 順 window passes its own token, takes
+    the lock on a worker that ends, and lets go through its `Held`): the registry keeps the owner, and the nested-take
+    check and `held_here` compare owners, so a later thread that reuses the ident is never mistaken for the holder.
     """
     lock_path, record_path = _paths(name)
-    me = threading.get_ident()
+    me = threading.get_ident() if owner is None else owner
     deadline = None if wait is None else time.monotonic() + max(0.0, float(wait))
     waited = False
     while True:

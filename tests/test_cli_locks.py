@@ -366,6 +366,7 @@ def test_an_open_junban_window_anywhere_makes_the_automatic_reorder_stand_aside(
 def test_the_junban_window_holds_its_lock_while_open_and_lets_go_on_close():
     gui = pytest.importorskip("modules.junban.gui")
     window = SimpleNamespace(_closing=False, _window_lock=None, _window_lock_guard=threading.Lock(),
+                             _window_lock_owner=object(),
                              _stop=threading.Event(), destroy=lambda: None)
     worker = threading.Thread(target=gui.JunbanGui._hold_window_lock, args=(window,))   # as the window does
     worker.start()
@@ -522,3 +523,29 @@ def test_an_update_lock_that_cannot_be_opened_is_no_update():
     """#19: read as staged, every command would answer `update-staged` for good."""
     os.makedirs(library_store.update_lock_path())
     assert library_store.update_staged(looks=library_store.PROBE_LOOKS) is False
+
+
+def test_a_hold_that_outlives_its_thread_names_an_owner_and_a_later_thread_is_never_it():
+    """The adversary's #13, Haya's ruling: the 順 window takes `junban-window` on a worker that ends. With its own
+    owner token, any later thread (whatever ident Windows hands it) sees `held_here() == False`, is told `Busy`
+    (never a nested-take `RuntimeError`), and the window lets go through its `Held`."""
+    token, holds = object(), []
+    worker = threading.Thread(target=lambda: holds.append(locks.take("junban-window", "the 順 window", owner=token)))
+    worker.start()
+    worker.join(10)
+    for _ in range(50):                              # many short threads: Windows reuses idents
+        seen = []
+
+        def later():
+            seen.append(locks.held_here("junban-window"))
+            try:
+                locks.take("junban-window", "the automatic 順 check")
+            except locks.Busy:
+                seen.append("busy")
+        t = threading.Thread(target=later)
+        t.start()
+        t.join(10)
+        assert seen == [False, "busy"]
+    assert locks.held_here("junban-window", owner=token) and locks.in_use("junban-window")
+    holds[0].release()
+    assert not locks.held_in_process("junban-window")

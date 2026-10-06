@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -56,7 +57,8 @@ def test_every_reader_loads_the_copy_unchanged(language):
     assert reels.load_manifest(language) == copy
     preview = pytest.importorskip("modules.youtube_downloader.preview")
     src = touch(os.path.join(os.environ["SURASURA_TEST_ROOT"], "incoming"), names(language)[30] + " [abcdefghijk].txt")
-    added = preview.commit_to_front([src], language)          # 2.4.0's preview on a 2.5 copy
+    with patch.object(preview, "_library_mode", return_value="json"):   # 2.4.0's preview: 2.5's JSON mode
+        added = preview.commit_to_front([src], language)      # 2.4.0's preview on a 2.5 copy
     after = read_doc(user_files_dir)
     assert added and after["surasura_library"] == copy["surasura_library"], "an older writer keeps the key"
     assert after["schedule"]["PHASE_1_NOW"][1:] == copy["schedule"]["PHASE_1_NOW"]
@@ -537,7 +539,8 @@ def test_the_helper_never_opens_a_dialog():
     env = subprocess_env()
     usage = subprocess.run([sys.executable, "-c", script, "nonsense"], cwd=REPO, env=env, timeout=60)
     assert usage.returncode == ls.EXIT_USAGE
-    env.pop("SURASURA_TEST_ROOT", None)                         # an error: STORE_LIVE refuses → 1, no dialog
+    env.pop("SURASURA_TEST_ROOT", None)                         # an error: the test guard refuses → 1, no dialog
+    env["PYTEST_CURRENT_TEST"] = "test_the_helper_never_opens_a_dialog"   # never the real library (I7)
     failed = subprocess.run([sys.executable, "-c", script, "maintain", "--language", "ja"], cwd=REPO, env=env,
                             timeout=60)
     assert failed.returncode == ls.EXIT_FAILED
@@ -554,7 +557,7 @@ def test_the_command_line_runs_maintain(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_an_update_staged_stops_everything_new(language, monkeypatch):
+def test_an_update_staged_stops_everything_new(language, monkeypatch, real_store_helper):
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
     store.move([store.ids("now")[0]], "now", after_id=store.ids("now")[2])
@@ -576,7 +579,7 @@ def test_an_update_staged_stops_everything_new(language, monkeypatch):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_spawn_maintain_runs_the_helper_detached(language):
+def test_spawn_maintain_runs_the_helper_detached(language, real_store_helper):
     data_dir, user_files_dir, doc = library(language)
     write_manifest(user_files_dir, doc)
     proc = ls.spawn_maintain(language)

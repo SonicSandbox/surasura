@@ -601,6 +601,8 @@ def test_the_return_from_2_4_0s_content_manager(language):
     cm.get_manifest_path = lambda: ls.manifest_path(user_files_dir)
     cm._warn_manifest_once = lambda *a, **k: None
     cm._manifest_unreadable = False
+    cm.language, cm.data_root, cm.user_files_root = language, data_dir, user_files_dir
+    cm._store_mode, cm._store = (lambda: "json"), (lambda: None)   # 2.4.0's code: 2.5's JSON mode
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
     cm.save_manifest(manifest)

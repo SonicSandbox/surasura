@@ -156,6 +156,8 @@ def test_dashboard_fast_path_reopens_only_this_runs_results(stamp, reopens):
     argv = _fast_path_state(stamp)
     dashboard = SimpleNamespace(var_language=MagicMock(get=MagicMock(return_value="ja")),
                                 _refresh_band_preview=MagicMock())
+    dashboard._report_reusable = lambda args: MasterDashboardApp._report_reusable(dashboard, args)
+    dashboard._open_existing_report = lambda a: MasterDashboardApp._open_existing_report(dashboard, a)
 
     with patch("app.static_html_generator.open_report") as open_report:
         assert MasterDashboardApp._try_open_existing_report(dashboard, argv) is reopens

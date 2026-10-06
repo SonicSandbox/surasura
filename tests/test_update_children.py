@@ -21,6 +21,7 @@ import pytest
 from app import path_utils
 from app import updater
 from app.update_checker import UpdateInfo
+from tests import tk_on_github
 
 backfill = pytest.importorskip("modules.junban.backfill")
 
@@ -520,6 +521,7 @@ def _tk_child(tmp_path, behaviour):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="WM_CLOSE is Windows'")
+@pytest.mark.skipif(tk_on_github.on_github(), reason=tk_on_github.REASON)     # Tk in a child: no scan sees it
 def test_stop_it_closes_a_window_through_its_own_close(procs, tmp_path):
     """A Content Manager mid-Graduate must finish its move and save: *Stop it* asks its window to close, so its own
     WM_DELETE_WINDOW handler runs — never a TerminateProcess under it."""
@@ -533,6 +535,7 @@ def test_stop_it_closes_a_window_through_its_own_close(procs, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="WM_CLOSE is Windows'")
+@pytest.mark.skipif(tk_on_github.on_github(), reason=tk_on_github.REASON)
 def test_a_window_that_will_not_close_is_ended_after_the_grace(procs, tmp_path, monkeypatch):
     monkeypatch.setattr(updater, "STOP_GRACE", 1.5)
     p, out = _tk_child(tmp_path, "stays")

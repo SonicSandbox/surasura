@@ -92,6 +92,13 @@ class _DashboardHarness(unittest.TestCase):
         self.env = patch.dict(os.environ)
         self.env.start()
         os.environ.pop("SURASURA_NO_ANKI_SYNC", None)
+        # Generate's press asks whether the report still holds on a worker (`_report_reusable`; in place under
+        # test, SURASURA_NO_UI_TIMERS) and goes on in `_generate_checked`. The stand-in's
+        # `_try_open_existing_report` mock stays the one question the tests set and count: "reusable" when True.
+        self._real("_run_on_worker", "_generate_checked", "_start_analyzer")
+        self.app._report_reusable.side_effect = (
+            lambda args: object() if self.app._try_open_existing_report(args) else None)
+        self.app._open_existing_report.return_value = True
 
     def tearDown(self):
         self.env.stop()
@@ -801,7 +808,8 @@ class TestJunbanAutoReorder(_DashboardHarness):
     def test_every_generate_tells_an_open_junban_window(self):
         """§16.9: the 順 window's "Generate & preview" waits for the dashboard's Generate — the
         analyzer's completion and the reopen-only fast path alike."""
-        source = inspect.getsource(self.MasterDashboardApp.run_analyzer)
+        source = "".join(inspect.getsource(getattr(self.MasterDashboardApp, name))   # the press, its check's
+                         for name in ("run_analyzer", "_generate_checked", "_start_analyzer"))  # answer, the run
         self.assertEqual(source.count("_tell_junban_list_changed()"), 2)
         window = MagicMock()
         window.winfo_exists.return_value = True
@@ -817,7 +825,8 @@ class TestJunbanAutoReorder(_DashboardHarness):
 
     def test_a_generate_triggers_it_whether_or_not_the_analysis_ran(self):
         """The analyzer's own completion AND the fast path that only reopens the report."""
-        source = inspect.getsource(self.MasterDashboardApp.run_analyzer)
+        source = "".join(inspect.getsource(getattr(self.MasterDashboardApp, name))   # the press, its check's
+                         for name in ("run_analyzer", "_generate_checked", "_start_analyzer"))  # answer, the run
         self.assertEqual(source.count("_maybe_junban_auto(force=True)"), 2)
 
     def test_a_reason_to_wait_is_said_once_not_every_five_minutes(self):

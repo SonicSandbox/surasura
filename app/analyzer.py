@@ -3421,7 +3421,7 @@ def _backfill_sidecars(results_dir):
         print(f"Warning: could not backfill sidecars: {e}")
 
 
-# --- The plan file (results/plan.json.gz; E1.1-fast-replan/01-plan-file.md) ------------------------------------------- #
+# --- The plan file (results/plan.json.gz; E1.1-fast-replan/01-plan-file.md) ----------------------------------------- #
 # Every full Generate writes what a re-plan needs to recompute the order's columns — Score, the tier counts, first
 # places, the priority order, the progressive list, Orth and Forms where spellings tie — for ANY order of the same
 # files, without the tokenizer: each file's uses of each list word as the aggregation counted them, in the order first
@@ -3508,11 +3508,12 @@ def plan_lines(run):
 
     keys = run["keys"]
     index = {key: k for k, key in enumerate(keys)}
-    # Each phrase met: (its row's k when its entry is the row's, its row's k) — worked out once per phrase (`_phrase_rows`).
+    # Each phrase met: (its row's k when its entry is the row's, its row's k) — once per phrase (`_phrase_rows`).
     phrase_rows = {}
 
     valid = run["valid_lrs"]
-    listed = {(r["Word"], r["Reading"]): r for r in run["output_rows"] if valid is None or (r["Word"], r["Reading"]) in valid}
+    listed = {(r["Word"], r["Reading"]): r for r in run["output_rows"]
+              if valid is None or (r["Word"], r["Reading"]) in valid}
     n_contexts = run["max_contexts"]
     rows, ties, tied = [], [], {}
     for k, key in enumerate(keys):
@@ -3521,7 +3522,8 @@ def plan_lines(run):
         r = listed.get(key)
         rows.append(None if r is None else [
             r["Tier"], _plan_tier(key[0], run["freq_data"]) if is_phrase else None, r["Modality"], r["Sources"],
-            r["Orth"], r["Forms"], [r.get(f"{c} {i}", "") for i in range(1, n_contexts + 1) for c in ("Context", "Src")]])
+            r["Orth"], r["Forms"],
+            [r.get(f"{c} {i}", "") for i in range(1, n_contexts + 1) for c in ("Context", "Src")]])
         found = _spelling_ties(key[0], entry["orths"], entry["surfaces"])
         if found[0] or found[1]:
             tied[key] = found
@@ -3602,9 +3604,9 @@ def _phrase_rows(phrase_rows, phrase, phrase_set, phrase_keys, phrase_key_of, in
 def _plan_progressive(run, f, file_path, index, phrases):
     """[Total Count, the baseline known, tokens, phrase-given, credits, phrases, siblings]: what the progressive pass
     reads of a file, in its own order. Total Count, the baseline, tokens [k, count after pieces, …] for the list words
-    met here, phrase-given [k, uses given to a phrase, …] (only where any) and siblings [[lemma, n], …] — the other words
-    of a list word's lemma, known here once that lemma is learned — as the pass read them (`prog`); credits [k, n, …]
-    for the list words met inside a rare compound; phrases [k, n, …] per phrase met on a row (`plan_lines`)."""
+    met here, phrase-given [k, uses given to a phrase, …] (only where any) and siblings [[lemma, n], …] — the other
+    words of a list word's lemma, known here once that lemma is learned — as the pass read them (`prog`); credits
+    [k, n, …] for the list words met inside a rare compound; phrases [k, n, …] per phrase on a row (`plan_lines`)."""
     total, baseline, tokens, bound, siblings = run["prog"][f]
     credits = []
     for key, n in (run["credit_cache"].get(file_path) or {}).items():
@@ -3626,8 +3628,8 @@ def _plan_json(obj):
 
 def write_plan_file(results_dir, lines):
     """Write the plan file atomically: a temp file, gzip level 3, flushed and fsynced, read back whole (the gzip CRC,
-    and the header's JSON — every line is `json.dumps`' own), then `os.replace`. On any error the temp is removed, the old plan stays as it was, and
-    the error is raised for the caller to log. Returns the bytes written."""
+    and the header's JSON — every line is `json.dumps`' own), then `os.replace`. On any error the temp is removed, the
+    old plan stays as it was, and the error is raised for the caller to log. Returns the bytes written."""
     import gzip
     import time
     path = os.path.join(results_dir, PLAN_FILE)
@@ -6052,7 +6054,7 @@ def main():
     session_lemmas = set(known_lemmas_initial)
     word_state = _word_state.get
     # The plan file's: every list key (in word_stats' order) and, per file, what this pass reads of the words a list
-    # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses given to a phrase}, {lemma: count}).
+    # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses a phrase took}, {lemma: count}).
     plan_keys = [key for key, entry in word_stats.items() if entry["total_count"] >= floor_count]
     plan_index = {key: k for k, key in enumerate(plan_keys)}
     plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
@@ -6275,8 +6277,8 @@ def main():
             "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),
             "max_contexts": args.max_contexts, "data_dir": data_dir, "found_files": found_files,
             "plan_files": plan_files, "word_stats": word_stats, "phrase_keys": phrase_keys, "halved": _halved,
-            "shared_phrases": _shared_phrases,
-            "output_rows": output_rows, "valid_lrs": valid_lrs, "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,
+            "shared_phrases": _shared_phrases, "output_rows": output_rows, "valid_lrs": valid_lrs,
+            "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,
             "token_cache": file_token_cache, "credit_cache": file_credit_cache, "phrase_cache": file_phrase_cache,
             "bound_cache": file_bound_cache, "piece_cache": file_piece_cache, "keys": plan_keys,
             "prog": plan_prog}))

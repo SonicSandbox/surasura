@@ -186,8 +186,8 @@ def _same(expected_rows, replayed_rows, columns):
 PRIORITY_COLUMNS = ["Word", "Reading", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier"]
 PROGRESSIVE_COLUMNS = ["Sequence", "Source File", "Word", "Reading", "Score", "Occurrences (Global)",
-                       "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count", "Total Count",
-                       "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier"]
+                       "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
+                       "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier"]
 
 
 def check_replay(plan, order, run):
@@ -425,7 +425,7 @@ def test_a_write_that_fails_part_way_leaves_the_old_plan_whole(tmp_path):
         raise RuntimeError("the run's memory ran out")
 
     def garbled():
-        yield '{"format": 1, "language": "j'      # the header: the read-back parses it (every other line is json.dumps')
+        yield '{"format": 1, "language": "j'      # the header, which the read-back parses (the rest: json.dumps')
         yield json.dumps({"f": 0, "main": [1, 2]})
 
     for lines in (stops(), garbled()):

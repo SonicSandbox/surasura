@@ -82,7 +82,8 @@ def test_the_one_call_digest_is_the_chunked_one():
     parts = {"files": [["C:/ライブラリ/第1話.srt", [1759000000.123456, 4096], "HighPriority", 10, "subtitle"],
                        ["C:/library/gone.txt", None, "GoalContent", 2.5, "text"]],
              "known": '[true, 1759000000.5, 120]', "settings": '{"logic": {"weights": {"high": 10}}}',
-             "args": ["ja", 0, 0, False, False, False, False, False, None, None, 3, "asis"], "engine": "2.5.0|schema19|rev30"}
+             "args": ["ja", 0, 0, False, False, False, False, False, None, None, 3, "asis"],
+             "engine": "2.5.0|schema19|rev30"}
     for order_free in (False, True):
         assert (analyzer.signature_digest(parts, order_free, chunked=False)
                 == analyzer.signature_digest(parts, order_free) is not None)

@@ -132,3 +132,28 @@ def test_nothing_of_connect_loads_unless_a_verb_needs_it(tmp_path):
     proc = subprocess.run([sys.executable, "-c", script], cwd=str(tmp_path), env=environment,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert json.loads(proc.stdout.decode("ascii").splitlines()[-1]) == []
+
+
+# --------------------------------------------------------------------------- #
+# P2.1's verbs (row 2.1.8): `register`, `place`, `finish` and `connect --consume-only` are quick — no tokenizer either
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def paired_library():
+    """A library with its store, Connect on, and one hato drop with its pairing record on disk."""
+    from tests import cli_helpers as h
+    from tests import connect_helpers as c
+    c.library()
+    record = c.write_record(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
+    return h.root(), record
+
+
+@pytest.mark.parametrize("argv, exit_code", [
+    (["register", "--pairing", "{record}"], 0),
+    (["place", "--file", "1", "--to", "soon", "--source", "test"], 0),
+    (["finish", "--file", "1", "--source", "test"], 2),            # held to 3.0
+    (["connect", "--consume-only"], 0),
+])
+def test_p2_1s_verbs_load_nothing_heavy_and_no_tokenizer(paired_library, argv, exit_code):
+    root, record = paired_library
+    code, loaded = _loaded([a.replace("{record}", record) for a in argv], root)
+    assert code == exit_code and not loaded & set(NOT_EVEN_TEXT), loaded

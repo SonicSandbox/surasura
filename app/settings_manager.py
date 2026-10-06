@@ -43,6 +43,14 @@ DEFAULT_SETTINGS = {
     # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
     # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
     "sentence_dictionary_source": False,
+    # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
+    # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
+    # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:
+    # empty = every arrival waits). Sources: a record's producer ("hato"), "<producer>:<channel id>"; targets: wait ·
+    # top · after-show · soon · goal · finished (app/connect/rules.py; the store's L2.2 05 §5.12). Read only by the
+    # command line and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_enabled": False,
+    "placing_rules": {},
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run

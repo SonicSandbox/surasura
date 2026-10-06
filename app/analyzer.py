@@ -4139,6 +4139,8 @@ def run_signature_parts(language, found_files, args):
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
+            # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
+            "connect_enabled", "placing_rules",
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
@@ -4219,6 +4221,18 @@ def run_signature_parts(language, found_files, args):
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
+        # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
+        # threshold): a part of its own, present only then, so no other library's signature moves.
+        try:
+            _auto_on = ((settings_manager.load_settings().get("logic") or {}).get("selection") or {}).get("auto") is True
+        except Exception:
+            _auto_on = False
+        if _auto_on:
+            try:
+                from app import library_store as _library_store
+                _sig_parts["auto_band"] = _library_store.read_auto_band(language, get_data_path(language))
+            except Exception:                     # no store to ask (refused, a path error): nothing remembered
+                _sig_parts["auto_band"] = None
         return _sig_parts
     except Exception as e:
         print(f"Warning: could not compute run signature: {e}")
@@ -4584,6 +4598,7 @@ def main():
     # Its parts are kept: the plan file (below) carries the same signature without the order, from this very read.
     _sig_parts = run_signature_parts(language, found_files, args)
     _run_sig = signature_digest(_sig_parts, chunked=False)
+    _auto_pick = {}                      # Q4-3: the band Automatic picks below, remembered before the stamp
 
     # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
     _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
@@ -4803,17 +4818,21 @@ def main():
                     # later Generate skipped.
                     print(f"Warning: automatic rarity could not read the token store ({e}); "
                           f"deciding on this run's own counts.")
+            remembered = (_sig_parts or {}).get("auto_band")
             try:
                 if freqs is None:
                     freqs = own_freqs()
-                auto = word_selection.auto_band(
-                    word_selection.band_previews(freqs, SELECT_BANDS_PPM, SELECT_MIN_COUNT),
-                    SELECT_AUTO_MAX_WORDS)
+                previews = word_selection.band_previews(freqs, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
+                auto = word_selection.auto_band(previews, SELECT_AUTO_MAX_WORDS, remembered=remembered)
+                plain = word_selection.auto_band(previews, SELECT_AUTO_MAX_WORDS)
             except Exception as e:
                 print(f"Warning: automatic rarity could not pick a band ({e}); keeping '{SELECT_BAND}'.")
                 auto = None
             if auto is not None:
                 band, why = auto, f" (automatic: the rarest band with {SELECT_AUTO_MAX_WORDS} words or fewer)"
+                if auto != plain:
+                    why = f" (automatic: kept until its list passes {word_selection.DEFAULT_AUTO_STEP_BACK_WORDS} words)"
+                _auto_pick.update(band=auto, words=previews[auto]["word_count"])
         floor = word_selection.band_floor_count(band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
         print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor:.2f} "
               f"(of {total_tokens} library tokens).")
@@ -6271,6 +6290,20 @@ def main():
             _report_failed = True
 
     # The plan file (E1.1 01), last: every output exists, and the stamp below comes only after it. Never fails the run.
+    # Q4-3: a band Automatic chose that differs from the one remembered is remembered now, and the run is stamped (and
+    # its plan written) with it — the parts the next check will read — so a band change never costs a second Generate.
+    try:
+        from app import library_store as _library_store
+        if _auto_pick and _sig_parts is not None and "auto_band" in _sig_parts:
+            if _auto_pick["band"] != _sig_parts["auto_band"] and _library_store.record_auto_band(
+                    language, data_dir, user_files_dir, _auto_pick["band"], _auto_pick["words"]):
+                _sig_parts = dict(_sig_parts, auto_band=_auto_pick["band"])
+                _run_sig = signature_digest(_sig_parts, chunked=False)
+        elif not SELECT_AUTO:
+            _library_store.forget_auto_band(language, data_dir, user_files_dir)   # off: switched on again, it starts fresh
+    except Exception as e:
+        print(f"Warning: automatic rarity could not remember its band ({e}); the next run decides afresh.")
+
     # No run signature, no plan: nothing could tell which run it describes.
     try:
         if not _run_sig:

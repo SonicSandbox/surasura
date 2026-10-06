@@ -310,7 +310,7 @@ def test_an_update_staged_starts_no_helper_and_register_exits_5(language, real_s
         assert ls.update_staged()
         assert ls.spawn_maintain(language) is None
         rel = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[42]}.srt")
-        assert ls.register_headless(language, rel, None) == ls.EXIT_BUSY
+        assert ls.register_headless(language, rel, None).code == ls.EXIT_BUSY
     finally:
         updater.drop_update_lock(lock)
     assert not ls.update_staged()

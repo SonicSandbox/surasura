@@ -170,10 +170,53 @@ exe = EXE(
     entitlements_file=None,
     icon=[os.path.join(project_root, 'app', 'assets', 'images', 'app_icon.ico')],
 )
+
+# -----------------------------------------------------------------------------
+# surasura-cli.exe: the headless command line (P0.3 02-contract §1, §8), a console program beside Surasura.exe
+# sharing its _internal\. Its own slim Analysis — no Tk, pandas or Qt can reach it — so it adds one small file, not a
+# second copy of the app. A frozen program ignores the caller's PYTHONUTF8 / PYTHONUNBUFFERED: the OPTIONS set both.
+# -----------------------------------------------------------------------------
+cli_a = Analysis(
+    [os.path.join(project_root, 'app', 'cli', '__main__.py')],
+    pathex=[project_root],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excluded_modules + ['tkinter', '_tkinter', 'tkinterdnd2', 'pandas', 'numpy', 'PyQt6',
+                                 'requests', 'app.main', 'app.telemetry', 'app.static_html_generator'],
+    noarchive=False,
+    optimize=0,
+)
+cli_pyz = PYZ(cli_a.pure)
+cli_exe = EXE(
+    cli_pyz,
+    cli_a.scripts,
+    [('X utf8', None, 'OPTION'), ('u', None, 'OPTION')],
+    exclude_binaries=True,
+    name='surasura-cli',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=[os.path.join(project_root, 'app', 'assets', 'images', 'app_icon.ico')],
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    cli_exe,
+    cli_a.binaries,
+    cli_a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

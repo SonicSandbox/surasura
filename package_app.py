@@ -5,6 +5,8 @@ import sys
 import argparse
 import json
 
+CLI_EXE_NAME = "surasura-cli.exe"   # the headless command line, built beside Surasura.exe (packaging/Surasura.spec)
+
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
     init_path = os.path.join("app", "__init__.py")
@@ -155,7 +157,7 @@ def _build_app_package(final_dist, version, full_update):
     Since 2.5 update.json also lists every file the package carries (`files`, K99): each entry's
     name (its path at the top of the zip — the same layout 2.4.0's updater reads), its destination
     in the install folder, its kind and its sha256 (a folder's: `updater.tree_sha256`). 2.5's
-    updater swaps exactly that list; surasura-cli.exe rides in it when the build has one.
+    updater swaps exactly that list; surasura-cli.exe is always in it (the app zip refuses a build without it).
     """
     import zipfile
 
@@ -183,18 +185,17 @@ def _build_app_package(final_dist, version, full_update):
 
     if not full_update:
         exe_src = os.path.join(final_dist, "Surasura.exe")
+        cli_src = os.path.join(final_dist, CLI_EXE_NAME)
         templates_dir = os.path.join(final_dist, "_internal", "templates")
-        if not os.path.isfile(exe_src) or not os.path.isdir(templates_dir):
-            print("ERROR: Surasura.exe or _internal/templates missing; cannot build app package.")
+        if not os.path.isfile(exe_src) or not os.path.isfile(cli_src) or not os.path.isdir(templates_dir):
+            print(f"ERROR: Surasura.exe, {CLI_EXE_NAME} or _internal/templates missing; cannot build app package.")
             return
         pkg_path = os.path.join("dist", f"Surasura_app_v{version}.zip")
         notes_src = os.path.join(final_dist, "RELEASE_NOTES.md")
-        cli_src = os.path.join(final_dist, "surasura-cli.exe")
         manifest["files"] = _package_file_list(final_dist)
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(exe_src, "Surasura.exe")
-            if os.path.isfile(cli_src):
-                z.write(cli_src, "surasura-cli.exe")
+            z.write(cli_src, CLI_EXE_NAME)    # the command line (P1.1); the updater swaps it from 2.5 (K99)
             if os.path.isfile(notes_src):
                 z.write(notes_src, "RELEASE_NOTES.md")   # refreshed in place on update (see build_marker)
             for root, dirs, files in os.walk(templates_dir):
@@ -268,6 +269,9 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
     build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
     zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
     print(f"Building Readability Analyzer {zip_name}...")
+    if sys.version_info < (3, 11, 4):
+        # P0.3 02-contract §8: on 3.11.2 a frozen console program with no stderr crashes on a usage error.
+        print(f"WARNING: building on Python {sys.version.split()[0]}; surasura-cli wants 3.11.4 or later.")
 
     # A release always produces the full zip too; --full-update implies --release.
     if full_update:
@@ -336,6 +340,12 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
         return
 
     print(f"Build output verified at {final_dist}")
+    for exe_name in ("Surasura.exe", CLI_EXE_NAME):
+        exe_path = os.path.join(final_dist, exe_name)
+        if not os.path.isfile(exe_path):
+            print(f"Error: {exe_name} not found in {final_dist}")
+            return
+        print(f"  {exe_name}: {os.path.getsize(exe_path) / (1024 * 1024):.1f} MB")
 
     # 2. Copy User Files (SANITIZED)
     print("Copying User Files (Sanitized)...")

@@ -9,11 +9,16 @@ if app_root not in sys.path:
     sys.path.insert(0, app_root)
 
 def log_error(msg):
-    # Ensure debug folder exists for logs
-    if not os.path.exists("debug"):
-        os.makedirs("debug", exist_ok=True)
-    with open(os.path.join("debug", "app_debug_log.txt"), "a", encoding="utf-8") as f:
-        f.write(f"{msg}\n")
+    # The app's log lives in the per-install local data folder (P0.3 02-contract §6), never in the folder Surasura was
+    # started from. Logging never stops the app.
+    try:
+        from app.path_utils import get_local_data_path
+        folder = os.path.join(get_local_data_path(), "logs")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "app_debug_log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{msg}\n")
+    except Exception:
+        pass
 
 # Windows Taskbar Icon Fix (Set AppUserModelID)
 if sys.platform == "win32":
@@ -38,6 +43,11 @@ def main():
             pass
 
     multiprocessing.freeze_support()
+    # --headless: another program started this subcommand (surasura-cli's generate, P0.3 02-contract §1). A crash is
+    # logged and exits 1, never a Critical Error box; an unknown or missing command exits 2, never opens the dashboard.
+    headless = "--headless" in sys.argv[1:]
+    if headless:
+        sys.argv = [arg for arg in sys.argv if arg != "--headless"]
     try:
         log_error(f"App starting. Args: {sys.argv}")
         
@@ -155,6 +165,10 @@ def main():
             else:
                 log_error(f"Unknown command: {command}")
 
+        if headless:
+            log_error("Headless: nothing to run; the dashboard never opens headless")
+            sys.exit(2)
+
         # Default: Run Main Dashboard
         log_error("Launching Dashboard")
         
@@ -171,6 +185,8 @@ def main():
     except Exception as e:
         err_msg = f"CRITICAL ERROR:\n{traceback.format_exc()}"
         log_error(err_msg)
+        if headless:
+            sys.exit(1)
         # Also try to show a message box if possible
         try:
             import tkinter as tk

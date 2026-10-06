@@ -19,6 +19,7 @@ import time
 import pytest
 
 from app import library_store as ls
+from app import path_utils
 from tests.test_library_store_support import (LANGUAGES, library, migrated, paths, roots, subprocess_env,
                                               write_manifest)
 
@@ -461,9 +462,12 @@ def test_the_store_is_switched_on():
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_store_live_false_refuses_without_a_test_root(language, monkeypatch):
+def test_store_live_false_refuses_without_a_test_root(language, monkeypatch, tmp_path):
     """The switch still works as one: off, every open refuses (the app runs in JSON mode, as 2.4)."""
     data_dir, user_files_dir = roots(language)
+    # With no test root, maintain() takes its lock in the real local data folder: keep that folder in tmp_path
+    # (conftest's _guard_real_local_data fails any test that creates the real one).
+    monkeypatch.setattr(path_utils, "_local_data_root", lambda: str(tmp_path / "local_root"))
     monkeypatch.delenv("SURASURA_TEST_ROOT")
     monkeypatch.delenv("PYTEST_CURRENT_TEST")
     monkeypatch.setattr(ls, "STORE_LIVE", False)

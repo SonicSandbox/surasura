@@ -11,7 +11,7 @@ if __name__ == "__main__" and __package__ is None:
 from app.path_utils import get_user_file, get_user_files_path, backup_to_trash
 
 # The key reaches this process through its environment, never its command line: app_entry logs every
-# argv to debug/app_debug_log.txt, and a command line is visible to other programs on the machine.
+# argv to logs/app_debug_log.txt, and a command line is visible to other programs on the machine.
 API_KEY_ENV = "SURASURA_JITEN_API_KEY"
 
 def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):

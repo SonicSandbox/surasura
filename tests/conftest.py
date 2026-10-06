@@ -139,6 +139,43 @@ def _isolate_user_data_root(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
 
 
+def _real_local_data_folder():
+    """This checkout's REAL per-install local data folder (path_utils.get_local_data_path() with no test root),
+    computed once, here, before any test can mock path_utils."""
+    from app import path_utils
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(path_utils._local_data_root(), path_utils._install_key(project_root))
+
+
+_REAL_LOCAL_DATA = _real_local_data_folder()
+
+
+def _folder_state(folder):
+    """Every file under `folder` with its size and mtime; (False, []) when the folder doesn't exist."""
+    files = []
+    for dirpath, _dirs, names in os.walk(folder):
+        for name in names:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            files.append((os.path.relpath(full, folder), st.st_size, st.st_mtime_ns))
+    return os.path.isdir(folder), sorted(files)
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_local_data():
+    """Fail any test that writes the real local data folder (the command line's logs, locks and events, P0.3
+    02-contract §6). get_local_data_path() already refuses under pytest without SURASURA_TEST_ROOT; this catches a
+    path built some other way, and a subprocess started without the test root. (Running this checkout's own app or
+    `python -m app.cli` by hand during a test run writes that folder too, and fails whichever test is running.)"""
+    before = _folder_state(_REAL_LOCAL_DATA)
+    yield
+    assert _folder_state(_REAL_LOCAL_DATA) == before, \
+        f"a test wrote the real local data folder {_REAL_LOCAL_DATA}: use the test root"
+
+
 @pytest.fixture(autouse=True)
 def _isolate_token_store(tmp_path_factory, monkeypatch):
     """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to

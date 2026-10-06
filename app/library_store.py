@@ -2420,8 +2420,9 @@ class Store:
             doc[key] = value
         lib_meta = {"epoch": meta["epoch"], "log_seq": log_seq, "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
                     "arrivals_on": meta.get("arrivals_on", 0)}
-        if "soon_line" in meta:
-            lib_meta["soon_line"] = meta["soon_line"]
+        for key in ("soon_line", "auto_band"):
+            if key in meta:
+                lib_meta[key] = meta[key]
         for key, value in meta.items():
             if key.startswith("reader"):
                 lib_meta[key] = value
@@ -2864,7 +2865,7 @@ def _copy_meta_block(lib):
     meta = {}
     block = lib.get("meta") if isinstance(lib, dict) else None
     if isinstance(block, dict):
-        for key in ("soon_line", "mine_line", "arrivals_on", "log_seq"):
+        for key in ("soon_line", "mine_line", "arrivals_on", "log_seq", "auto_band"):
             if key in block:
                 meta[key] = block[key]
         for key, value in block.items():
@@ -4170,6 +4171,63 @@ def read_only_view(language, data_dir, user_files_dir):
         conn.close()
 
 
+def read_auto_band(language, data_dir):
+    """Q4-3: the band Automatic rarity last chose, as this library's store remembers it (`meta.auto_band`), or None —
+    no ready store, read-only, nothing remembered. A `mode=ro` look: never built, never waits."""
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
+        return None
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=0.5)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'auto_band'").fetchone()
+        finally:
+            conn.close()
+        value = json.loads(row[0]) if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return None
+    return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
+
+
+def record_auto_band(language, data_dir, user_files_dir, band, words):
+    """Remember the band Automatic rarity chose (bookkeeping: no version moves; the copy carries it). Never into
+    settings.json (S16). False when there is no store to write (JSON mode, read-only): the run then had today's rule."""
+    try:
+        store = open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
+    except StoreError:
+        return False
+    if store is None:
+        return False
+    try:
+        with store:
+            store.bookkeeping({"auto_band": _dumps({"band": band, "words": words, "at": _now()})}, copy_carries=True)
+        return True
+    except (StoreError, sqlite3.Error):
+        return False
+
+
+def forget_auto_band(language, data_dir, user_files_dir):
+    """Automatic rarity is off: forget its band, so switching it on again starts from today's rule, not a band chosen
+    months ago. A read first; written only when there is a band to forget."""
+    if read_auto_band(language, data_dir) is None:
+        return False
+    try:
+        store = open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
+    except StoreError:
+        return False
+    if store is None:
+        return False
+    try:
+        with store:
+            with store._writing():
+                store.conn.execute("DELETE FROM meta WHERE key = 'auto_band'")
+                store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+        return True
+    except (StoreError, sqlite3.Error):
+        return False
+
+
 def spawn_build_if_waiting(language, data_dir, user_files_dir):
     """A window found no ready store: start the helper to build one when there is something to build from
     (a manifest it can read, in JSON mode), at most once a minute per language (the trigger rule, §6.7).
@@ -4316,7 +4374,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
         meta.update(_manifest_meta(norm))
         meta.update(_copy_meta_block(lib))
     for key in ("manifest_metadata", "manifest_extra", "manifest_schedule_extra", "soon_line", "mine_line",
-                "arrivals_on"):
+                "arrivals_on", "auto_band"):
         if key in dmeta and from_db("meta") and not plain:
             meta[key] = dmeta[key]
     for key, value in dmeta.items():

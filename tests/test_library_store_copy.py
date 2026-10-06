@@ -822,3 +822,32 @@ def test_a_copy_whose_schema_cant_be_read_counts_as_newer():
     assert ls.copy_is_newer({"surasura_library": {"store_schema": ls.STORE_SCHEMA + 1}})
     assert not ls.copy_is_newer({"surasura_library": {"store_schema": ls.STORE_SCHEMA, "format": ls.COPY_FORMAT}})
     assert not ls.copy_is_newer({"schedule": {}})
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_automatic_band_is_remembered_in_the_store_and_travels_in_the_copy(language):
+    # Why: Q4-3's second threshold needs the band Automatic last chose; it lives in the store (never settings.json,
+    # S16), goes out in the copy and comes back through a rebuild (a new PC keeps its level steady).
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.read_auto_band(language, data_dir) is None
+    state = store.versions()["state_version"]
+    assert ls.record_auto_band(language, data_dir, user_files_dir, "rare", 912)
+    assert ls.read_auto_band(language, data_dir) == "rare"
+    assert store.versions()["state_version"] == state, "bookkeeping: no version moves"
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert json.loads(read_doc(user_files_dir)["surasura_library"]["meta"]["auto_band"])["band"] == "rare"
+    db = store.db_path
+    store.close()
+    for suffix in ("", "-wal", "-shm"):                        # a new PC: no database at all
+        if os.path.exists(db + suffix):
+            os.rename(db + suffix, db + suffix + ".elsewhere")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert ls.read_auto_band(language, data_dir) == "rare"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_no_store_means_no_remembered_band_and_nothing_written(language):
+    # Why: JSON mode or read-only — the run then uses today's single line; nothing is written anywhere.
+    data_dir, user_files_dir = roots(language)
+    assert ls.read_auto_band(language, data_dir) is None
+    assert ls.record_auto_band(language, data_dir, user_files_dir, "rare", 900) is False
+    assert not os.path.exists(ls.library_db_path(language, data_dir))

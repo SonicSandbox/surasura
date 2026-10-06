@@ -51,6 +51,7 @@ VERBS = {
     "known-sync": (verbs.known_sync_args, verbs.known_sync, True),
     "generate": (verbs.generate_args, verbs.generate, True),
     "junban": (verbs.junban_args, verbs.junban, True),
+    "backfill": (verbs.backfill_args, verbs.backfill, True),
     "pick": (verbs.pick_args, verbs.pick, True),
 }
 

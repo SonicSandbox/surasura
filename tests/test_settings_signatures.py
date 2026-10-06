@@ -356,8 +356,9 @@ def test_a_saved_value_always_wins_in_the_run_signature(library, path, saved, ag
 
 
 def test_first_start_after_an_update_keeps_the_journey_current(library, start_dashboard):
-    """The first start after an update rewrites settings.json once: the dashboard writes the new defaults in, updates the
-    old Chinese sentence ends and drops the retired key. None of it changes what a run reads, so a list that was up to
+    """The first start after an update saves settings.json once: the dashboard writes its own keys (the new switches at
+    their defaults) onto the file as it is (the settings service, W1.3), so the retired key stays as the file holds it
+    and the old Chinese sentence ends stay as written. None of it changes what a run reads, so a list that was up to
     date before the start is up to date after it — no full Generate for the update's sake."""
     _write(_pre_24_settings())
     _seed_generate("ja")
@@ -365,10 +366,31 @@ def test_first_start_after_an_update_keeps_the_journey_current(library, start_da
 
     app = start_dashboard()                      # its start saves settings.json from its widgets
     rewritten = _read()
-    assert "reinforce_segmentation" not in rewritten and rewritten["logic"]["phrase_rows"] is True
-    assert rewritten["logic"]["sentence_boundaries"]["zh"] != OLD_ZH_ENDS, "the start did rewrite the file"
+    assert rewritten["logic"]["phrase_rows"] is True, "the start did save the dashboard's own keys"
+    assert rewritten["reinforce_segmentation"] is False, "a key the dashboard doesn't own stays as the file holds it"
     assert app._analyzer_args() == _argv("ja"), "the dashboard's own argv is the one these tests rebuild"
     assert _journey_current("ja") is True, "the update's first start is no new analysis"
+
+
+def test_the_dashboards_save_writes_only_its_own_keys_and_keeps_a_logic_key_written_meanwhile(library, start_dashboard):
+    """W1.3 (04 §4.2): the dashboard hands the settings service its own keys — its `logic` ones as dotted paths — so a
+    `logic` key another program writes after the dashboard loaded (a hand edit of the weights) survives its next save,
+    and so does a key this version doesn't know. The one key it may write beyond its own is the Anki address."""
+    app = start_dashboard()
+    on_disk = _read()
+    on_disk["logic"]["weights"] = {"high": 7, "low": 2, "goal": 1}
+    on_disk["logic"]["selection"]["bands_ppm"] = {"very_rare": 3}
+    on_disk["a_key_from_a_later_version"] = {"x": 1}
+    _write(on_disk)
+    app.var_zen_limit.set(77)
+    app.save_settings()
+    after = _read()
+    assert after["zen_limit"] == 77
+    assert after["logic"]["weights"] == {"high": 7, "low": 2, "goal": 1}
+    assert after["logic"]["selection"]["bands_ppm"] == {"very_rare": 3}
+    assert after["a_key_from_a_later_version"] == {"x": 1}
+    changed = {k for k in set(after) | set(on_disk) if after.get(k) != on_disk.get(k)}
+    assert changed <= {"zen_limit", "logic", "anki_connect_url"}, changed
 
 
 def test_junban_panel_save_keeps_the_journey_current(library, start_dashboard):
@@ -490,22 +512,29 @@ def _paths(settings, prefix=""):
     return out
 
 
-def test_the_dashboard_leaves_out_only_excluded_defaults(library):
-    """The dashboard rebuilds settings.json from its own widgets on every save, so a default it doesn't write is
-    dropped from the file. e464ee5 stopped writing reinforce_segmentation while the defaults still held it, and every
-    window that saved the defaults put it back. So any setting load_settings() returns that the dashboard's save leaves
-    out must be one no run reads: flipping it in the file never changes a run signature."""
+def test_the_dashboards_save_drops_nothing_from_the_file(library):
+    """The dashboard used to rebuild settings.json from its own widgets on every save, so a default it didn't write was
+    dropped from the file (e464ee5 stopped writing reinforce_segmentation while the defaults still held it, and every
+    window that saved the defaults put it back). Since W1.3 it hands the settings service only its own keys, written
+    onto the file as it is: every setting in the file — each default load_settings() returns, and a key this version
+    doesn't know — is still there after its save, and only the dashboard's own keys (its widgets' stand-in values here)
+    and the Anki address change."""
     _write({"target_language": "ja"})
     loaded = copy.deepcopy(settings_manager.load_settings())
-    written = set(_paths(_dashboard_saved()))
-    left_out = [path for path in _paths(loaded) if path not in written]
+    loaded["a_key_from_a_later_version"] = {"x": 1}
     _write(loaded)
-    before = {lang: _run_sig(lang) for lang in LANGUAGES}
-    moved = []
-    for path in left_out:
-        _write(_with(path, _flip(path, _get(loaded, path)), loaded))
-        moved += [f"{path} ({lang})" for lang in LANGUAGES if _run_sig(lang) != before[lang]]
-    assert not moved, f"the dashboard drops these from settings.json, yet a run reads them: {moved}"
+    saved = _dashboard_saved()
+
+    def value(settings, path):
+        try:
+            return _get(settings, path)
+        except (KeyError, TypeError):
+            return KeyError
+    dropped = [path for path in _paths(loaded) if value(saved, path) is KeyError]
+    assert not dropped, f"the dashboard's save dropped these from settings.json: {dropped}"
+    changed = [path for path in _paths(loaded) if value(saved, path) != value(loaded, path)
+               and not isinstance(value(saved, path), MagicMock) and path != "anki_connect_url"]
+    assert not changed, f"the dashboard's save changed keys it doesn't own: {changed}"
 
 
 # === 3. Settings no run reads ====================================================================================== #
@@ -782,69 +811,7 @@ def test_save_keys_reads_a_file_saved_with_a_bom():
 # the one named ("analysis:ja"). "report": only the report shows it, so the render signature moves and the run's
 # doesn't. "neither": no run and no report reads it. A setting missing here fails the test below: place it when you
 # add it. Until it is placed, compute_run_signature hashes it — a needless run at worst, never a stale list.
-PLACED = {
-    "exclude_single": "analysis:ja", "open_app_mode": "neither", "theme": "report", "strategy": "analysis",
-    "target_coverage": "analysis", "split_length": "neither", "target_language": "analysis",
-    "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "report",
-    "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
-    "hide_satoru": "neither", "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
-    "add_graduated_words": "neither", "auto_update_enabled": "neither", "skipped_version": "neither",
-"source_display": "report", "word_search_enabled": "report",
-    "word_search_category": "report", "sentence_dictionary_source": "neither", "anki_connect_url": "neither",
-    "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",
-    "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",
-    "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
-    "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",
-    "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",
-    "logic.phrases_and_titles": "analysis:ja", "logic.pronoun_bases": "analysis:ja", "logic.phrase_rows": "analysis:ja",
-    "logic.ignore_names": "analysis:ja",
-    "logic.weights.high": "analysis", "logic.weights.low": "analysis", "logic.weights.goal": "analysis",
-    "logic.tiers.thresholds": "analysis",
-    "logic.context.search_range": "neither", "logic.context.min_chars": "analysis", "logic.context.max_extra": "neither",
-    "logic.context.preferred_max_chars": "analysis", "logic.context.max_contexts": "analysis",
-    "logic.context.max_chars": "analysis", "logic.context.recency_files": "analysis",
-    "logic.sentence_boundaries.ja": "analysis:ja", "logic.sentence_boundaries.zh": "analysis:zh",
-    "logic.gui.tooltip_delay": "neither",
-    "logic.priority_markers.priority_threshold": "report", "logic.priority_markers.priority_min": "report",
-    "logic.priority_markers.lopsided_threshold": "report",
-    "logic.selection.band": "analysis", "logic.selection.auto": "analysis", "logic.selection.auto_max_words": "analysis",
-    "logic.selection.min_count": "analysis", "logic.selection.minutes_per_file": "analysis",
-    "logic.selection.bands_ppm": "analysis",
-    "logic.modality.target_hours": "analysis", "logic.modality.min_series": "analysis",
-    "logic.modality.min_lib_count": "analysis", "logic.modality.min_library_series": "analysis",
-    "logic.importer.split_overflow": "neither",
-    # The optional modules' switches and their own tunables (each module's SETTINGS_DEFAULTS).
-    "enable_youtube_transcripts": "neither", "enable_youtube_preview": "neither", "youtube_risk_acknowledged": "neither",
-    "enable_koe": "report", "koe_port": "report", "koe_voice": "neither", "koe_model": "neither", "koe_style": "neither",
-    "koe_temperature": "neither", "koe_daily_cap": "neither",
-    "enable_reels": "neither", "reels_context_cues": "neither", "reels_exclude_numerals": "neither",
-    "reels_exclude_proper_nouns": "neither", "reels_ffmpeg_dir": "neither", "reels_gap_seconds": "neither",
-    "reels_max_folder_gb": "neither", "reels_max_unknown": "neither", "reels_open_player": "neither",
-    "reels_output_dir": "neither", "reels_subsync_path": "neither", "reels_words_per_part": "neither",
-    "enable_junban": "neither", "junban_auto_actions": "neither", "junban_auto_backfill": "neither",
-    "junban_auto_reorder": "neither", "junban_backfill_cards": "neither", "junban_backfill_deck": "neither",
-    "junban_backfill_fields": "neither", "junban_backfill_fills": "neither", "junban_backfill_note_languages": "neither",
-    "junban_backfill_replace": "neither", "junban_chunk_size": "neither", "junban_deck": "neither",
-    "junban_frequency_field": "neither", "junban_later_flag": "neither", "junban_later_suspend": "neither",
-    "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
-    "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
-    "junban_tag_markers": "neither", "junban_unlisted": "neither",
-    "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
-}
-# Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.
-OWNERS = (("junban_", "modules.junban"), ("enable_junban", "modules.junban"), ("koe_", "modules.koe"),
-          ("enable_koe", "modules.koe"), ("reels_", "modules.reels"), ("enable_reels", "modules.reels"),
-          ("enable_youtube_", "modules.youtube_downloader"), ("youtube_", "modules.youtube_downloader"))
-
-
-def _installed(path):
-    """Whether the optional module `path` belongs to is installed — a core setting always is."""
-    import importlib.util
-    owner = next((module for prefix, module in OWNERS if path.startswith(prefix)), None)
-    try:
-        return owner is None or importlib.util.find_spec(owner) is not None
-    except ImportError:
-        return False
+from app.settings_placement import OWNERS, PLACED, _installed  # noqa: E402  (moved: W1.3, 04 §4.2)
 
 
 # A setting read only in some state is flipped from that state.

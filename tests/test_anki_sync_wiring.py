@@ -260,7 +260,9 @@ class TestSettingsCarryThrough(_DashboardHarness):
         self.app._iv.side_effect = lambda var, default: default
         self.app.combo_theme.get.return_value = "Dark Flow"
         saved = {}
+        # `on_disk` is the file as it is: what the dashboard's settings service (W1.3) reads it through.
         with patch.object(self.main.settings_manager, "load_settings", return_value=on_disk), \
+             patch.object(self.main.settings_service, "file_as_is", side_effect=lambda: dict(on_disk)), \
              patch.object(self.main.settings_manager, "save_settings",
                           side_effect=lambda s: saved.update(s)):
             self.MasterDashboardApp.save_settings(self.app, skip_ui=True)

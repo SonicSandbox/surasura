@@ -97,8 +97,10 @@ def test_the_windows_settings_save_queues_while_another_program_holds_the_lock(s
     h.seed_library("ja", templates=False)
     h.write_settings()
     app = start_dashboard()
-    app._settings_writer = settings_manager.SettingsWriter(
-        delay=0.05, wait=0.1, on_saved=lambda _s: app.gui_queue.put(app._schedule_journey_state))
+    from app.services.settings import SettingsService      # the dashboard saves through it (W1.3)
+    app.settings_service = SettingsService(delay=0.05, wait=0.1, load=False)
+    app.settings_service.subscribe(lambda _keys: app.gui_queue.put(app._schedule_journey_state))
+    app._settings_writer = app.settings_service.writer
     with Holder("settings", "saving settings") as other:
         monkeypatch.delenv("SURASURA_NO_UI_TIMERS", raising=False)
         app.var_only_i_plus_one.set(True)                  # its trace saves

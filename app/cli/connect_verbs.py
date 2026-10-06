@@ -155,7 +155,9 @@ def _check_record(record):
         wrong.append("video_size")
     if record["show"] is not None and not isinstance(record["show"], dict):
         wrong.append("show")
-    if isinstance(record["producer"], str) and not _SOURCE.fullmatch(record["producer"]):
+    producer = record["producer"]
+    if isinstance(producer, str) and (not _SOURCE.fullmatch(producer) or producer in RESERVED
+                                      or producer.startswith("rule")):
         wrong.append("producer")        # a short program name: the placement log records it as who registered
     if wrong:
         raise _bad("The pairing record has fields Surasura can't read.", fields=wrong)

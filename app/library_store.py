@@ -774,13 +774,34 @@ def _dumps(value):
 
 
 _PRODUCER = re.compile(r"[a-z0-9_-]{1,32}")
+_NOT_PRODUCERS = ("user", "undo", "sync")       # the names a person, an undo and a disk sync are logged under
 
 
 def _producer(pairing):
     """Who registered (the record's `producer`), as the placement log records it: a short name (lowercase letters,
-    digits, - or _, up to 32), else "hato" — it lands in the copy and the log."""
+    digits, - or _, up to 32) that isn't a person's, an undo's, a sync's or a rule's, else "hato" — it lands in the
+    copy and the log."""
     name = pairing.get("producer") if isinstance(pairing, dict) else None
-    return name if isinstance(name, str) and _PRODUCER.fullmatch(name) else "hato"
+    if isinstance(name, str) and _PRODUCER.fullmatch(name) and name not in _NOT_PRODUCERS \
+            and not name.startswith("rule"):
+        return name
+    return "hato"
+
+
+def library_rel(data_dir, path):
+    """`path` (absolute, or relative to the data folder) as the data folder's normalised relative path ('/'), or None
+    when it isn't under it: another drive, a drive-relative path (D:foo.srt), `..`, the folder itself. 3.0's Sources
+    (roots) widen this."""
+    if not os.path.isabs(path) and os.path.splitdrive(path)[0]:
+        return None
+    try:
+        rel = os.path.relpath(path, data_dir) if os.path.isabs(path) else path
+    except ValueError:              # os.path.relpath across drives (Windows)
+        return None
+    rel = os.path.normpath(rel).replace("\\", "/")
+    if rel in (".", "..") or rel.startswith("../") or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        return None
+    return rel
 
 
 def _same_record(text, pairing):
@@ -1368,12 +1389,8 @@ class Store:
         return path.replace("\\", "/")
 
     def _in_library(self, path):
-        """Does `path` lie under the data folder? (another drive, `..` or the folder itself: no)"""
-        try:
-            rel = os.path.normpath(self._rel(path)).replace("\\", "/")
-        except ValueError:          # os.path.relpath across drives (Windows)
-            return False
-        return not (rel in (".", "..") or rel.startswith("../") or os.path.isabs(rel))
+        """Does `path` lie under the data folder? (`library_rel`)"""
+        return library_rel(self.data_dir, path) is not None
 
     # --- order primitives (§6.5) ----------------------------------------------------------------- #
 
@@ -1802,9 +1819,10 @@ class Store:
         placement event for the item, so nothing is ever mined because of it (✅ G1.1-2's watermark). The events
         are logged as the record's `producer`'s (`_producer`: "hato" when it names none), never explicit."""
         content_key = pairing["content_key"]
-        if not self._in_library(path):
+        rel = library_rel(self.data_dir, path)
+        if rel is None:
             raise NotInLibrary(f"not in the library: {path}")
-        prepared = self._prepare([path], None, "hato")
+        prepared = self._prepare([rel], None, "hato")     # normalised: one key per file (a/../b.srt is b.srt)
         by = _producer(pairing)
         with self._command("register", by) as cmd:
             meta = cmd.meta
@@ -4367,6 +4385,9 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
     user_files_dir = user_files_dir or get_user_files_path(language)
     if update_staged(looks=looks):
         return _registered(EXIT_BUSY)
+    rel = library_rel(data_dir, path)
+    if rel is None:
+        return _registered(EXIT_BAD_DATA)          # refused before anything is written, a store's build included
     store = open_store(language, data_dir, user_files_dir, role="register")
     if store is None:
         mode, _reason = check_mode(language, data_dir)
@@ -4386,16 +4407,15 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if store is None:
             return _registered(EXIT_NEEDS_YOU)
     with store:
-        if not store._in_library(path):
-            return _registered(EXIT_BAD_DATA)
         if reader:
             store.register_reader(reader)
         try:
-            change = store.register(path, pairing, backfill=backfill)
+            change = store.register(rel, pairing, backfill=backfill)
         except NotInLibrary:
             return _registered(EXIT_BAD_DATA)
-        rel = store._rel(path)
-        item_id = store.item_id(rel)
+        # The change's own item (a move or remove after the commit can't lose it); a pairing already there: by its path
+        item_id = getattr(change, "pairing_item", None) or (change.added[0] if change is not None and change.added
+                                                             else store.item_id(rel))
         tier, position = store.place_of(item_id)
     if change is not None and change.added:
         dkey, hato = path_key(_rel_dir(rel)), path_key(HATO_FOLDER)

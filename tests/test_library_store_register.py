@@ -199,3 +199,28 @@ def test_a_rules_move_is_its_sources_and_explicit(language):
     store.move([item], "now", by="hato", explicit=1)
     assert (item, "placed", "hato", 1) in [(r[1], r[2], r[3], r[4]) for r in store.read_events("connect")[0]]
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kuras_review_rows_paths_and_names(language, tmp_path):
+    """Kura's review of the store hunks (P2.1-store-hunks-review.md): (1) an outside path is refused before a store is
+    built; (2) a drive-relative path is refused and `a/../b` is stored as `b` (one key per file); (3) a reserved name
+    never becomes who registered."""
+    data_dir, user_files_dir, doc = library(language)
+    write_manifest(user_files_dir, doc)
+    outside = tmp_path / "x.srt"
+    outside.write_text("1\n", encoding="utf-8")
+    assert ls.register_headless(language, str(outside), _record("v1-ll"), data_dir, user_files_dir).code == \
+        ls.EXIT_BAD_DATA
+    assert not os.path.exists(ls.library_db_path(language, data_dir)), "no store built for a refused path"
+    assert ls.library_rel(data_dir, "D:foo.srt") is None and ls.library_rel(data_dir, "a/../b.srt") == "b.srt"
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    store.register_reader("connect")
+    w = names(language)
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[91]}.srt")
+    winding = os.path.join(data_dir, "HighPriority", "Hato", "..", "Hato", f"{w[91]}.srt")
+    added = store.register(winding, _record("v1-mm", producer="user")).added[0]
+    assert store.item(added)["rel_path"] == f"{ls.HATO_FOLDER}/{w[91]}.srt"
+    assert {r[3] for r in store.read_events("connect")[0] if r[1] == added} == {"hato"}, "never logged as the user's"
+    store.close()

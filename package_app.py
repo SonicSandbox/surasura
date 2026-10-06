@@ -157,7 +157,7 @@ def _build_app_package(final_dist, version, full_update):
     Since 2.5 update.json also lists every file the package carries (`files`, K99): each entry's
     name (its path at the top of the zip — the same layout 2.4.0's updater reads), its destination
     in the install folder, its kind and its sha256 (a folder's: `updater.tree_sha256`). 2.5's
-    updater swaps exactly that list; surasura-cli.exe rides in it when the build has one.
+    updater swaps exactly that list; surasura-cli.exe is always in it (the app zip refuses a build without it).
     """
     import zipfile
 

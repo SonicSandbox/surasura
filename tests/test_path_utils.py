@@ -50,6 +50,7 @@ def test_two_installs_never_share_a_folder_and_one_install_always_gets_the_same(
     _outside_pytest(monkeypatch)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))     # macOS's root comes from ~
     paths = {}
     for name in ("checkout", "インストール"):
         install = tmp_path / name

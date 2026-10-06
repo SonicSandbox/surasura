@@ -172,3 +172,30 @@ def test_events_say_who_made_them_and_only_a_person_is_explicit(language):
     assert (item, "placed", "my-script", 0) in log and (item, "finished", "my-script", 0) in log
     assert (other, "placed", "user", 1) in log
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_register_headless_sets_a_reader_before_registering_even_on_a_store_it_builds(language):
+    """`reader=`: Connect's watermark set before the registration, so a store `register_headless` builds from the
+    manifest still logs the drop (P2.1 intent review #35) — and nothing the build itself placed."""
+    data_dir, user_files_dir, doc = library(language)
+    write_manifest(user_files_dir, doc)
+    drop = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[90]}.srt")
+    answer = ls.register_headless(language, drop, _record("v1-kk"), data_dir, user_files_dir, reader="connect")
+    assert answer.code == ls.EXIT_DONE and answer.landed == "now-top"
+    store = ls.open_store(language, data_dir, user_files_dir)
+    rows, gap = store.read_events("connect")
+    entered = {r[1] for r in rows if r[2] != "left_mine_line"}     # one of the build's items it pushed out
+    assert not gap and entered == {answer.file_id}, "the drop only, never the build's own items"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rules_move_is_its_sources_and_explicit(language):
+    """`explicit=`: a placing rule the user turned on is the user's own action (D30) — logged by the source, explicit."""
+    store = migrated(language)
+    store.register_reader("connect")
+    item = store.ids("soon")[0]
+    store.move([item], "now", by="hato", explicit=1)
+    assert (item, "placed", "hato", 1) in [(r[1], r[2], r[3], r[4]) for r in store.read_events("connect")[0]]
+    store.close()

@@ -52,11 +52,16 @@ def test_what_arrived_while_the_window_was_open_is_never_named_at_the_next_start
 
 
 def test_a_persons_placements_and_the_placing_rules_are_no_arrivals():
-    c.library(arrivals=True, arrivals_straight_sources=["hato"])
+    c.library(arrivals=True, placing_rules={"hato": "top"})
     notice.at_open("ja")
     with c.store() as s:
+        with s._writing():                      # the library as the user had it: added days ago
+            s.conn.execute("UPDATE items SET added_at = '2026-10-01T09:00:00.000000Z'")
         item = s.ids("now")[-1]
-    h.call("place", "--file", str(item), "--to", "now", "--source", "user")
+        s.move([item], "now")                   # the user's own drag in the window
+    code, _line = h.call("place", "--file", str(item), "--to", "soon",
+                         "--source", "my-script")    # another program moving an item the user already had
+    assert code == 0
     _hato(5)                                    # placed by hato, then moved by the rule: one arrival
     assert notice.at_open("ja") == "1 episode arrived from hato while Surasura was closed"
 
@@ -77,3 +82,20 @@ def test_with_the_preview_off_the_window_imports_nothing_of_it(monkeypatch):
     window = types.SimpleNamespace(_current_settings={"connect_enabled": False})
     main.MasterDashboardApp._arrivals_notice(window)
     assert not [m for m in sys.modules if m.startswith("app.connect")]
+
+
+def test_the_dashboards_save_carries_connects_keys_only_as_the_file_holds_them():
+    """Intent review #18: a save never drops `connect_enabled` / `placing_rules` the user set, and never writes them into
+    a settings.json that lacks them (or one that can't be read)."""
+    import os
+    from app import main
+    keys = ["connect_enabled", "placing_rules"]
+    path = os.path.join(h.root(), "settings.json")
+    assert main.carry_as_written({"theme": "x"}, keys) == {"theme": "x"}, "no file"
+    h.write_settings(connect_enabled=True, placing_rules={"hato": "top"})
+    assert main.carry_as_written({}, keys) == {"connect_enabled": True, "placing_rules": {"hato": "top"}}
+    h.write_settings()
+    assert main.carry_as_written({}, keys) == {}, "a file without them"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert main.carry_as_written({}, keys) == {}, "a file that can't be read"

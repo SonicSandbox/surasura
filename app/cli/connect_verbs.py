@@ -70,23 +70,25 @@ def _store_write(write, wait):
                 from None
 
 
-def _kick(lang, loaded):
+def _kick(loaded):
     """Start Connect if it should run (P2.1 row 2.1.5); never fails the verb."""
     try:
         from app.connect import kick
-        kick.kick(lang, loaded)
+        kick.kick(loaded)
     except Exception:
         contract.log.exception("Connect wasn't started")
 
 
-def _ensure_reader(lang, wait):
-    """Connect's watermark before a write it must see (✅ G1.1-2): set once, the first time Connect is on."""
-    from app.connect import library
-    store = library.open_store(lang, role="register")
-    if store is None:
-        return
-    with store:
-        _store_write(lambda: library.ensure_reader(store), wait)
+_SOURCE = re.compile(r"[a-z0-9_-]{1,32}")
+RESERVED = ("user", "undo", "sync")     # the names the store and the window log their own placements under
+
+
+def _source(value):
+    """`--source`: a short program name (as the placement log keeps it), never one the store or a person uses."""
+    if not _SOURCE.fullmatch(value or "") or value in RESERVED or value.startswith("rule"):
+        raise CliError("usage", "--source is your program's name: lowercase letters, digits, - or _, up to 32 "
+                                f"(not {', '.join(RESERVED)} or rule…).")
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -99,6 +101,10 @@ def register_args(parser):
                         help="the pairing record (JSON): - to read it from stdin, or a file's path")
     parser.add_argument("--backfill", action="store_true",
                         help="a pairing made before Connect was switched on: recorded, never mined because of it")
+
+
+def _no_constant(name):
+    raise ValueError(f"{name} isn't JSON")          # NaN, Infinity: never into the store or its copy
 
 
 def _read_record(source):
@@ -119,7 +125,7 @@ def _read_record(source):
     if data.startswith(codecs.BOM_UTF8):
         data = data[len(codecs.BOM_UTF8):]
     try:
-        record = json.loads(data.decode("utf-8"))
+        record = json.loads(data.decode("utf-8"), parse_constant=_no_constant)
     except (UnicodeDecodeError, ValueError) as e:
         raise _bad("The pairing record isn't JSON in UTF-8.", detail=str(e)) from None
     if not isinstance(record, dict):
@@ -149,6 +155,8 @@ def _check_record(record):
         wrong.append("video_size")
     if record["show"] is not None and not isinstance(record["show"], dict):
         wrong.append("show")
+    if isinstance(record["producer"], str) and not _SOURCE.fullmatch(record["producer"]):
+        wrong.append("producer")        # a short program name: the placement log records it as who registered
     if wrong:
         raise _bad("The pairing record has fields Surasura can't read.", fields=wrong)
 
@@ -198,10 +206,11 @@ def register(args):
 
     from app import library_store
     from app.connect import library, rules
-    if not args.backfill:
-        _ensure_reader(lang, args.wait)      # the drop is logged, after the watermark
+    # Connect's watermark set before the registration (a store this call builds too), so the drop is logged after it
+    reader = None if args.backfill else library.READER
     done = _store_write(lambda: library_store.register_headless(lang, path, record, backfill=args.backfill,
-                                                                  looks=library_store.PROBE_LOOKS), args.wait)
+                                                                  looks=library_store.PROBE_LOOKS, reader=reader),
+                        args.wait)
     if done.code == library_store.EXIT_BUSY:
         if library_store.update_staged(looks=library_store.PROBE_LOOKS):
             raise CliError("update-staged", "Surasura is installing an update. Try again once it has restarted.")
@@ -218,16 +227,24 @@ def register(args):
            "pairing": done.pairing, "content_key": key}
     if args.backfill:
         return out
-    if done.landed == "arrivals":
-        store = library.open_store(lang, role="register")
-        if store is not None:
-            with store:
-                rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), args.wait)
+    work = False
+    store = library.open_store(lang, role="register")
+    if store is not None:
+        with store:
+            if done.tier == "arrivals":
+                # Every call while the item waits, so a retry after a failed first try still places it
+                try:
+                    rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), args.wait)
+                except ValueError:          # its anchor moved meanwhile: it waits, and hato's retry places it
+                    contract.log.warning("a placing rule's anchor moved; item %s waits", done.file_id)
+                    rule = None
                 if rule:
                     out["rule"] = rule
                     out["tier"], out["position"] = store.place_of(done.file_id)
-    if not (done.landed == "already" and done.pairing == "same"):
-        _kick(lang, loaded)
+            from app.connect import inbox
+            work = inbox.pending(store)
+    if work:
+        _kick(loaded)       # also on a retry: a crash after the commit never leaves the drop unread
     return out
 
 
@@ -284,6 +301,7 @@ def place(args):
     from app.connect import library
     if args.position is not None and args.position < 1:
         raise CliError("usage", "--position counts from 1.")
+    source = _source(args.source)
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
@@ -298,12 +316,14 @@ def place(args):
         if loaded.get("connect_enabled"):
             _store_write(lambda: library.ensure_reader(store), args.wait)
         change = _store_write(lambda: library.place(store, args.file, tier, before_id=before_id, after_id=after_id,
-                                                    source=args.source), args.wait)
+                                                    source=source), args.wait)
         tier, position = store.place_of(args.file)
+        if args.to == "current" and tier == "soon":
+            position += len(store.ids("now"))           # its place in Current: NOW, then Soon
     if change is not None:
-        _kick(lang, loaded)
+        _kick(loaded)
     return {"file_id": args.file, "tier": tier, "position": position, "moved": change is not None,
-            "source": args.source}
+            "source": source}
 
 
 def finish_args(parser):
@@ -313,6 +333,7 @@ def finish_args(parser):
 def finish(args):
     """Move one item to *Finished* (3.0): no known word and no card changes (✅ Q2-5, Q2-6). Held to 3.0 (✅ P2.1-1)."""
     from app.connect import library
+    source = _source(args.source)
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
@@ -324,40 +345,70 @@ def finish(args):
                                 "(it also marks the item's words known).")
     with store:
         _item(store, args.file, lang)
-        change = _store_write(lambda: library.finish(store, args.file, source=args.source), args.wait)
+        change = _store_write(lambda: library.finish(store, args.file, source=source), args.wait)
         tier, position = store.place_of(args.file)
     return {"file_id": args.file, "tier": tier, "position": position, "finished": change is not None,
-            "source": args.source}
+            "source": source}
 
 
 # --------------------------------------------------------------------------- #
 # connect (P2.1: the inbox, once; the loop is P2.4's)
 # --------------------------------------------------------------------------- #
+ROUNDS = 20         # reads of the log a Connect makes before it leaves the rest to the next one
+
+
 def connect_args(parser):
-    add_language(parser)
     parser.add_argument("--consume-only", action="store_true",
                         help="read the library's new placements into Connect's queue, then exit")
 
 
 def connect(args):
-    """Connect, one per install (its `connect` lock): a second one answers `skipped` at once. Started by `kick`."""
+    """Connect, one per install (its `connect` lock): a second one answers `skipped` at once. Started by `kick`. Reads
+    every language's log (one lock for both: a kick for Chinese while a Japanese read runs is this run's work), and
+    again after letting go of its lock while anything new was logged meanwhile — a kick that found it running is never
+    lost."""
     loaded = settings()
-    lang = language(args, loaded)
     if not loaded.get("connect_enabled"):
-        return {"language": lang, "skipped": PREVIEW_OFF}
+        return {"skipped": PREVIEW_OFF}
     if not args.consume_only:
         raise CliError("usage", "Connect's mining isn't built yet: run it with --consume-only.")
-    require_set_up(lang)
     from app import locks
     from app.connect import inbox, kick, library
-    try:
-        held = locks.take(kick.LOCK, "Connect", wait=1.0)       # a kick's look holds it well under a millisecond
-    except locks.Busy:
-        return {"language": lang, "skipped": "already running"}
-    with held:
-        store = library.open_store(lang)
-        if store is None:
-            return {"language": lang, "skipped": "no library store"}
-        with store:
-            result = _store_write(lambda: inbox.consume(store, lang), 10.0)
-    return {"language": lang, **result}
+    from app.path_utils import get_user_files_path
+    languages = [lang for lang in LANGUAGES if os.path.isdir(get_user_files_path(lang))]
+    if not languages:
+        raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
+    out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0} for lang in languages}
+    rounds = 0
+    while rounds < ROUNDS:
+        try:
+            held = locks.take(kick.LOCK, "Connect", wait=1.0)   # a kick's look holds it well under a millisecond
+        except locks.Busy:
+            if rounds == 0:
+                return {"skipped": "already running"}
+            break                                               # another Connect took over: it reads the rest
+        rounds += 1
+        with held:
+            for lang in languages:
+                store = library.open_store(lang)
+                if store is None:
+                    continue                                    # no store (JSON mode, read-only): nothing written
+                with store:
+                    got = _store_write(lambda: inbox.consume(store, lang), 10.0)
+                mine = out[lang]
+                mine["queued"] += got["queued"]
+                mine["dropped"] += got["dropped"]
+                mine["reconciled"] = mine["reconciled"] or got["reconciled"]
+                mine["read"] += got["read"]
+        if not any(_pending(lang) for lang in languages):
+            break
+    return {"languages": out, "rounds": rounds}
+
+
+def _pending(lang):
+    from app.connect import inbox, library
+    store = library.open_store(lang)
+    if store is None:
+        return False
+    with store:
+        return inbox.pending(store)

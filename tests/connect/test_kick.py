@@ -41,7 +41,7 @@ def _work():
 
 def test_a_kick_starts_connect_which_queues_the_work_and_exits(kicks):
     item = _work()
-    proc = kick.kick("ja", {"connect_enabled": True})
+    proc = kick.kick({"connect_enabled": True})
     assert proc is not None
     kicks.append(proc)
     assert proc.wait(timeout=120) == 0
@@ -53,7 +53,7 @@ def test_a_kick_starts_connect_which_queues_the_work_and_exits(kicks):
 def test_two_kicks_make_one_job_and_never_two_connects_at_once(kicks):
     item = _work()
     for _ in range(2):
-        proc = kick.kick("ja", {"connect_enabled": True})
+        proc = kick.kick({"connect_enabled": True})
         if proc is not None:
             kicks.append(proc)
     assert kicks and all(p.wait(timeout=120) == 0 for p in kicks)
@@ -74,7 +74,7 @@ def test_a_running_connect_is_not_started_again_and_a_second_one_steps_aside(kic
     try:
         assert taken.wait(10)
         assert kick.running() is True
-        assert kick.kick("ja", {"connect_enabled": True}) is None
+        assert kick.kick({"connect_enabled": True}) is None
         code, lines = h.run_cli("connect", "--consume-only")
         assert code == 0 and h.answer(lines)["skipped"] == "already running", lines
     finally:
@@ -86,13 +86,13 @@ def test_a_running_connect_is_not_started_again_and_a_second_one_steps_aside(kic
 
 def test_nothing_starts_with_the_preview_off_or_an_update_staged(kicks):
     _work()
-    assert kick.kick("ja", {"connect_enabled": False}) is None
+    assert kick.kick({"connect_enabled": False}) is None
     marker = library_store.update_staged_path()
     os.makedirs(os.path.dirname(marker), exist_ok=True)
     with open(marker, "w", encoding="utf-8") as f:
         f.write("{}")
     try:
-        assert kick.kick("ja", {"connect_enabled": True}) is None
+        assert kick.kick({"connect_enabled": True}) is None
         code, line = h.call("connect", "--consume-only")
         assert (code, line["code"]) == (3, "update-staged"), "Connect refuses to start while an update is staged"
     finally:
@@ -102,7 +102,7 @@ def test_nothing_starts_with_the_preview_off_or_an_update_staged(kicks):
 def test_under_a_test_root_kick_starts_nothing_unless_asked():
     _work()
     assert "SURASURA_CONNECT_KICK" not in os.environ
-    assert kick.kick("ja", {"connect_enabled": True}) is None
+    assert kick.kick({"connect_enabled": True}) is None
 
 
 def test_the_connect_verb_with_the_preview_off_or_without_consume_only():
@@ -117,9 +117,9 @@ def test_the_connect_verb_with_the_preview_off_or_without_consume_only():
 def test_register_kicks_connect_when_it_is_on(kicks, monkeypatch):
     c.library()
     seen = []
-    monkeypatch.setattr(kick, "kick", lambda lang, loaded: seen.append((lang, loaded.get("connect_enabled"))))
+    monkeypatch.setattr(kick, "kick", lambda loaded: seen.append(loaded.get("connect_enabled")))
     path = c.drop("Example Show - 05.ja.srt")
     code, _line = h.call("register", "--pairing", c.write_record(c.record(path, "video-05")))
-    assert code == 0 and seen == [("ja", True)]
+    assert code == 0 and seen == [True]
     code, _line = h.call("register", "--pairing", c.write_record(c.record(path, "video-05")))
-    assert code == 0 and len(seen) == 1, "the same record again is no new work"
+    assert code == 0 and seen == [True, True], "a retry kicks too: a crash after the first commit never loses it"

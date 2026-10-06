@@ -197,3 +197,40 @@ def test_a_held_store_answers_busy_after_wait(monkeypatch):
     monkeypatch.setattr(library_store, "register_headless", held)
     code, line = _register(c.record(path, "video-05"), "--wait", "0.3")
     assert (code, line["code"], line["lock"]) == (3, "busy", "library")
+
+
+def test_nan_or_infinity_in_a_record_is_bad_data():
+    c.library()
+    rec = c.record(c.drop("Example Show - 05.ja.srt"), "video-05")
+    text = json.dumps(dict(rec, timing={"outcome": "CONFIDENT", "match_rate": float("nan")}))
+    code, lines = c.register_stdin(text.encode("utf-8"))
+    assert (code, h.answer(lines)["code"]) == (1, "bad-data")
+
+
+def test_a_register_that_builds_the_store_still_queues_the_drop():
+    """Review P2.1 #2: no store yet, a usable manifest: register builds the store and sets Connect's watermark before
+    registering (`register_headless(reader=…)`), so the drop is logged — and nothing that was already there."""
+    from app import library_store as ls
+    from app.connect.ledger import Ledger
+    h.seed_library("ja", templates=False)
+    h.write_settings(connect_enabled=True)
+    data_dir, user_files = c.dirs()
+    assert ls.maintain("ja", data_dir, user_files, from_folders=True) == ls.EXIT_DONE
+    os.remove(ls.library_db_path("ja", data_dir))            # the manifest stays: the store is rebuilt from it
+    for side in ("-wal", "-shm"):
+        if os.path.exists(ls.library_db_path("ja", data_dir) + side):
+            os.remove(ls.library_db_path("ja", data_dir) + side)
+    code, line = _register(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
+    assert code == 0 and line["landed"] == "now-top", line
+    from app.connect import inbox
+    with c.store() as s, Ledger() as ledger:
+        assert inbox.consume(s, "ja", ledger)["queued"] == [line["file_id"]], "logged after Connect's watermark"
+        assert [(j["item_id"], j["source"]) for j in ledger.jobs("ja")] == [(line["file_id"], "hato")]
+
+
+@pytest.mark.parametrize("producer", ["AnkiMiner", "my tool", "", "x" * 33])
+def test_a_producer_that_isnt_a_short_program_name_is_bad_data(producer):
+    """Intent review #4: the placement log records the producer as who registered: never rewritten to "hato"."""
+    c.library()
+    code, line = _register(c.record(c.drop("Example Show - 05.ja.srt"), "video-05", producer=producer))
+    assert (code, line["code"]) == (1, "bad-data") and "producer" in line["fields"]

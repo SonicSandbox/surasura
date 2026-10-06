@@ -35,6 +35,15 @@ def ensure_reader(store, name=READER):
         store.register_reader(name)
 
 
+def switch_on(store, name=READER):
+    """Connect switched on (again): its watermark at the log's end, so nothing placed while it was off is ever read
+    (✅ G1.1-2, every switch-on). For the preview's switch (P3.1); a first switch-on is `ensure_reader`'s."""
+    if not has_reader(store, name):
+        store.register_reader(name)
+    else:
+        store.advance_reader(name, log_seq(store))
+
+
 def mine_line(store):
     """The top N of Current's available items (`meta.mine_line`, default 20), in order."""
     from app import library_store
@@ -65,12 +74,13 @@ def pairings(store):
     return out
 
 
-def place(store, item_id, tier, before_id=None, after_id=None, source="user"):
-    """Move one item (a drag), its events logged as `source`'s. Returns the store's Change, or None for a no-op."""
-    return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source)
+def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
+    """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
+    `explicit` says). Returns the store's Change, or None for a no-op."""
+    return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit)
 
 
-def finish(store, item_id, source="user"):
+def finish(store, item_id, source="user", explicit=None):
     """Move one item to *Finished* (the store's `graduated` tier), its event logged as `source`'s. Never touches known
     words or Anki: the store's `set_tier` moves no file and writes nothing else (✅ Q2-5, Q2-6)."""
-    return store.set_tier([item_id], "graduated", by=source)
+    return store.set_tier([item_id], "graduated", by=source, explicit=explicit)

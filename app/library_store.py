@@ -1485,12 +1485,13 @@ class Store:
 
     # --- commands (§6.6) ------------------------------------------------------------------------- #
 
-    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user"):
+    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None):
         """Drag: the block keeps its current relative order and lands contiguous before or after the
         anchor (neither = the top of `tier`). A tier change is Demote / Promote without moving files.
         A no-op — an anchor inside `ids`, or every item already in `tier` in the same sequence —
         commits nothing and returns None. `by`: who placed it, as the placement log records it (a
-        program's name from the command line's `place --source`, ✅ G1.3-5); explicit only when "user"."""
+        program's name from the command line's `place --source`, ✅ G1.3-5); explicit when "user", or as
+        `explicit` says (a placing rule the user turned on is the user's own action, D30)."""
         ids = list(dict.fromkeys(ids))
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
@@ -1517,7 +1518,7 @@ class Store:
             self._put(tier, block, where, cmd.version)
             cmd.touch({r[1] for r in ordered} | {tier})
             for item_id in block:
-                cmd.event(item_id, "placed", int(by == "user"))
+                cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit))
             return change
 
     def _in_place(self, tier, ordered, before_id, after_id):
@@ -1609,7 +1610,7 @@ class Store:
                 return row
         return None
 
-    def set_tier(self, ids, tier, check=None, by="user"):
+    def set_tier(self, ids, tier, check=None, by="user", explicit=None):
         """Graduate (→ graduated, `graduated_at` set), Demote, Promote — no file moves (L5). Each item
         lands after its folder's last row in the new tier, else at the top, in the order given. `by` as
         `move`'s (the command line's `finish --source`)."""
@@ -1638,7 +1639,8 @@ class Store:
                                       [(_now(), i) for i in moving])
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
-                cmd.event(item_id, "finished" if tier == "graduated" else "placed", int(by == "user"))
+                cmd.event(item_id, "finished" if tier == "graduated" else "placed",
+                          int(by == "user" if explicit is None else explicit))
             return change
 
     # --- adding files -------------------------------------------------------------------------- #
@@ -4347,11 +4349,13 @@ def _registered(code):
     return Registered(code, None, None, None, None, None)
 
 
-def register_headless(language, path, pairing, data_dir=None, user_files_dir=None, backfill=False, looks=1):
+def register_headless(language, path, pairing, data_dir=None, user_files_dir=None, backfill=False, looks=1,
+                      reader=None):
     """`register` as hato's command line calls it: 5 while an update is staged (`looks`: how many looks at the
     update lock, `update_staged`); with no store yet, the store is built headless when a usable manifest exists (as
     Generate would), else 4 "needs you" and nothing written (the file still lands as today; only the pairing waits
-    for a retry); 6 for a path outside the library. Returns a `Registered`."""
+    for a retry); 6 for a path outside the library. `reader`: a placement-log reader set (once) before the
+    registration — Connect's watermark, so a store this call builds logs the drop too. Returns a `Registered`."""
     from app.path_utils import get_data_path, get_user_files_path
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
@@ -4376,6 +4380,10 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if store is None:
             return _registered(EXIT_NEEDS_YOU)
     with store:
+        if not store._in_library(path):
+            return _registered(EXIT_BAD_DATA)
+        if reader:
+            store.register_reader(reader)
         try:
             change = store.register(path, pairing, backfill=backfill)
         except NotInLibrary:

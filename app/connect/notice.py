@@ -5,20 +5,32 @@ The log is read as its own reader, `window-notice`: set the first time the windo
 log's end each time the window opens (after naming what arrived) and when it closes (so what arrived while it was open
 is never named again). Only with Connect's preview on: with it off the window imports nothing from here.
 """
+import datetime
+
 from app.connect import library
 
 READER = "window-notice"
 PEOPLE = ("user", "undo")       # placements a person made in the window: never "arrived"
 
 
-def _arrived(rows):
-    """{program: number of items} for the items another program added (a `placed` event that isn't a person's or a
-    placing rule's)."""
+def _arrived(store, rows):
+    """{program: number of items} for the items another program added since the reader's last move: a `placed` event
+    that isn't a person's or a placing rule's, of an item added no earlier than a second before the first event read
+    (an add and its event share one transaction: microseconds apart). Another program's move of an item the user
+    already had is no arrival."""
     seen, out = set(), {}
+    first = min((r[6] for r in rows), default=None)
+    if first is None:
+        return out
+    since = (datetime.datetime.strptime(first[:19], "%Y-%m-%dT%H:%M:%S")
+             - datetime.timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S")
     for _id, item_id, kind, by, _explicit, _version, _at in rows:
         if kind != "placed" or by in PEOPLE or str(by).startswith("rule:") or item_id in seen:
             continue
         seen.add(item_id)
+        item = store.item(item_id)
+        if item is None or (item.get("added_at") or "") < since:
+            continue
         out[by] = out.get(by, 0) + 1
     return out
 
@@ -44,7 +56,7 @@ def at_open(language):
             store.register_reader(READER)           # the first session with Connect on: from now on
             return None
         rows, gap = store.read_events(READER)
-        arrived = {} if gap else _arrived(rows)
+        arrived = {} if gap else _arrived(store, rows)
         _catch_up(store, gap)
     return _words(arrived) if arrived else None
 

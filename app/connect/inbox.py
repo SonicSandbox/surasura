@@ -2,6 +2,7 @@
 
 - **The watermark** (✅ G1.1-2): the first time anything runs with Connect on, `register_reader("connect")` sets it to
   the log's last id; nothing logged before it is ever read, so nothing placed before Connect was switched on is mined.
+  Switching Connect on again later moves it to the log's end (`library.switch_on`: the preview's switch, P3.1).
 - **What makes a job:** an item that entered the top 20 (`entered_mine_line`: a person's drag, another program's
   `place`, a hato drop landing at the top of NOW) and is still there, not mined (no receipt) and with no job yet →
   a `queued` job, recording who placed it (the event's `by`, ✅ G1.3-5). A back-fill registration logs no event
@@ -11,7 +12,8 @@
   events, and a re-read decides from the store as it is now: one open job per item, never two.
 - **A gap** (the log pruned past the watermark, or a rebuild's new epoch): the events can't be trusted, so it
   reconciles instead — every job not started whose item isn't in the top 20 now is dropped — and queues nothing:
-  never a mine of history. Then the reader moves to the log's end.
+  never a mine of history. The reader then moves to the log's end as it was read, in the same read as the events, so
+  nothing logged meanwhile is passed unread.
 """
 from app.connect import library
 from app.connect.ledger import Ledger
@@ -26,8 +28,10 @@ def consume(store, language, ledger=None):
     own = ledger is None
     ledger = ledger or Ledger()
     try:
-        rows, gap = store.read_events(library.READER)
-        line = library.mine_line(store)
+        with store._reading():                  # one snapshot: the events, the log's end and the top 20 agree
+            rows, gap = store.read_events(library.READER)
+            end = library.log_seq(store)
+            line = library.mine_line(store)
         in_line = set(line)
         queued, dropped = [], []
         with ledger.transaction():
@@ -47,10 +51,17 @@ def consume(store, language, ledger=None):
                             queued.append(item_id)
                     elif ledger.drop(language, item_id, "left the top 20"):
                         dropped.append(item_id)
-        last = max([r[0] for r in rows] + ([library.log_seq(store)] if gap else []), default=None)
+        last = max([r[0] for r in rows] + ([end] if gap else []), default=None)
         if last is not None:
             store.advance_reader(library.READER, last)
         return {"queued": queued, "dropped": dropped, "reconciled": bool(gap), "read": len(rows)}
     finally:
         if own:
             ledger.close()
+
+
+def pending(store):
+    """Has the log anything Connect hasn't read? (a look, no write: the last check before Connect exits)"""
+    if not library.has_reader(store):
+        return False
+    return library.log_seq(store) > int(store.meta().get(f"reader:{library.READER}", 0))

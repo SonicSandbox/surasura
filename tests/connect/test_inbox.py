@@ -152,3 +152,62 @@ def test_a_gap_reconciles_drops_what_left_and_queues_nothing():
     with c.store() as s:
         rows, gap = s.read_events("connect")
         assert not gap and rows == [], "the reader moved to the log's end"
+
+
+def test_switching_connect_on_again_reads_nothing_placed_while_it_was_off():
+    """Review P2.1 #3: every switch-on is a watermark (G1.1-2), not only the first."""
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        library.place(s, s.ids("now")[-1], "now", source="user")     # while Connect is off
+        library.switch_on(s)                                           # the preview's switch turned on again
+    assert _consume() == {"queued": [], "dropped": [], "reconciled": False, "read": 0}
+
+
+def test_a_gap_moves_the_reader_only_as_far_as_it_read(monkeypatch):
+    """Review P2.1 #4: an item placed while a gap's reconcile reads is read by the next run, never passed."""
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        s.bookkeeping({"reader_epoch:connect": -1})            # a rebuild's new epoch: a gap
+        late = s.ids("now")[-1]
+    real = library.mine_line
+
+    def meanwhile(store):
+        with c.store() as other:                             # another program, between the read and the advance
+            library.place(other, late, "now", source="my-script")
+        return real(store)
+    monkeypatch.setattr(library, "mine_line", meanwhile)
+    assert _consume()["reconciled"] is True
+    monkeypatch.setattr(library, "mine_line", real)
+    assert _consume()["queued"] == [late]
+
+
+def test_connect_reads_every_language_and_again_before_it_exits(monkeypatch):
+    """Review P2.1 #5: one Connect for both languages, and what was logged during its read is read before it leaves."""
+    from tests import cli_helpers as h
+    _library("ja")
+    _library("zh")
+    for lang in ("ja", "zh"):
+        _consume(lang)
+    from app.connect import inbox, library
+    with c.store("zh") as s:
+        zh_item = s.ids("now")[-1]
+        library.place(s, zh_item, "now", source="my-script")
+    with c.store("ja") as s:
+        ja_item = s.ids("now")[-1]
+    real, calls = inbox.consume, []
+
+    def consume(store, language, ledger=None):
+        calls.append(language)
+        out = real(store, language, ledger)
+        if len(calls) == 1:                                  # a Japanese drop lands during the first read
+            with c.store("ja") as other:
+                library.place(other, ja_item, "now", source="hato")
+        return out
+    monkeypatch.setattr(inbox, "consume", consume)
+    code, line = h.call("connect", "--consume-only")
+    assert code == 0 and line["rounds"] == 2, line
+    assert line["languages"]["zh"]["queued"] == [zh_item] and line["languages"]["ja"]["queued"] == [ja_item]

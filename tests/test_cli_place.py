@@ -77,7 +77,7 @@ def test_current_in_the_3_0_library_counts_now_then_soon():
     now = _ids("now")
     with c.store() as s:
         s.move([now[-1]], "soon")                       # Soon holds one item, Current = NOW then Soon
-    now, soon = _ids("now"), _ids("soon")
+    now = _ids("now")
     item = now[0]
     # right after NOW's last item stays in NOW
     code, line = h.call("place", "--file", str(item), "--to", "current", "--position", str(len(now)), "--source", "t")
@@ -117,3 +117,25 @@ def test_no_store_needs_you():
     h.write_settings(connect_enabled=True)
     code, line = h.call("place", "--file", "1", "--to", "now", "--source", "t")
     assert (code, line["code"]) == (4, "needs-you")
+
+
+@pytest.mark.parametrize("source", ["user", "undo", "sync", "rule:straight-into-current", "My Script", "", "x" * 33])
+def test_a_source_a_person_or_the_store_uses_is_refused(source):
+    """Review P2.1 #8: a program can't log its placement as the user's (explicit), an undo, a sync or a rule."""
+    c.library()
+    stored = c.store_state()
+    code, line = h.call("place", "--file", str(_ids("now")[-1]), "--to", "now", "--source", source)
+    assert (code, line["code"]) == (2, "usage") and c.store_state() == stored
+
+
+def test_current_answers_the_place_in_current():
+    """Review P2.1 #16: `--to current` answers its place in NOW then Soon, not within Soon."""
+    c.library(arrivals=True)
+    now = _ids("now")
+    with c.store() as s:
+        s.move(now[-2:], "soon")
+    now = _ids("now")
+    item = now[0]
+    code, line = h.call("place", "--file", str(item), "--to", "current", "--position", str(len(now) + 1),
+                        "--source", "t")
+    assert code == 0 and line["tier"] == "soon" and line["position"] == len(_ids("now")) + _ids("soon").index(item) + 1

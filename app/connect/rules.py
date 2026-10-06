@@ -1,22 +1,31 @@
-"""New arrivals' placing rules (P2.1 row 2.1.6; ✅ Q2-3): an arrival waits in *New arrivals* unless a rule the user
-turned on places it. Each rule is a setting, off by default (RD-S16: arrivals never place themselves without a setting
-the user turned on), and they exist only where New arrivals do (3.0: the store's `arrivals_on`). Through 2.x hato's
-drops keep landing at the top of NOW (✅ Q4-11) and nothing here runs.
+"""New arrivals' placing rules (P2.1 row 2.1.6; ✅ Q2-3, D30): an arrival waits in *New arrivals* unless a rule the
+user turned on places it. The rules are one setting, `placing_rules` = {source: target}, empty by default (RD-S16:
+arrivals never place themselves without a setting the user turned on), and they exist only where New arrivals do (3.0:
+the store's `arrivals_on`). Through 2.x hato's drops keep landing at the top of NOW (✅ Q4-11) and nothing here runs.
+The shape is the store's (L2.2 05 §5.12, agreed with Kura): from L3.1 `register` reads it itself and this step goes.
 
-One rule places an item, never two: the first that applies wins.
-1. **Continuing shows** (`arrivals_continuing_shows`, HC-N6; ✅ P2.1-2: off by default, Sonic turns it on): the next
-   episode of a show in Current goes right after its previous one there (before its next one when only later
-   episodes are in Current). A show whose episodes are all in Finished or 6+ Months: the new one goes to the top of
-   Current (✅ Q4-9). The show is the one the pairing record names (`show.title`, `show.season`; K81), never the folder.
-2. **Straight into Current** (`arrivals_straight_sources`: the programs whose drops skip New arrivals, e.g. "hato"):
-   the top of Current.
+- **Sources:** the record's `producer` (`hato`, any other program's name); `<producer>:<channel id>` for a record that
+  names its channel (`channel_id`), which wins over the producer's own line (`youtube:<id>` over `youtube`).
+- **Targets:** `wait` (the default) · `top` (the top of Current) · `after-show` (HC-N6, ✅ P2.1-2: the next episode of a
+  show in Current right after its previous one there, before its next one when only later episodes are; a show whose
+  other episodes are all in Finished or 6+ Months → the top of Current, ✅ Q4-9; a show with episodes still waiting and
+  none in Current, or none at all → it waits) · `soon` / `goal` (the top of Soon / 6+ Months) · `finished`.
 
-Each placement is logged under the rule's name (`rule:<name>`), so the placement log says what placed it.
+One rule places an item, never two. Its placement is the user's own action (D30): logged `by` the source, explicit.
 """
 from app.connect import library
 
-CONTINUING = "continuing-shows"
-STRAIGHT = "straight-into-current"
+TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
+SET_ASIDE = ("graduated", "goal")       # Finished, 6+ Months: a show there is one the user finished or put off
+
+
+def _season(value):
+    """A season as a number: none named is the first (09 §1: `season` int | null); "2" is 2."""
+    if value is None:
+        return 1
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
 
 
 def _show(record):
@@ -28,19 +37,27 @@ def _show(record):
     if not isinstance(title, str) or not title.strip() or isinstance(episode, bool) \
             or not isinstance(episode, (int, float)):
         return None
-    return title.strip().casefold(), show.get("season"), episode
+    return title.strip().casefold(), _season(show.get("season")), episode
 
 
-def _sources(settings):
-    value = settings.get("arrivals_straight_sources") or []
-    if isinstance(value, str):
-        value = [value]
-    return {str(v).strip().casefold() for v in value if str(v).strip()}
+def rule_for(record, settings):
+    """(source, target) of the rule for this record's arrival, or None: wait."""
+    rules = settings.get("placing_rules")
+    if not isinstance(rules, dict):
+        return None
+    producer = str((record or {}).get("producer") or "").strip()
+    channel = (record or {}).get("channel_id")
+    for source in ([f"{producer}:{channel}"] if channel else []) + [producer]:
+        target = rules.get(source)
+        if target in TARGETS and target != "wait":
+            return source, target
+        if target == "wait":
+            return None
+    return None
 
 
-def _continuing(store, item_id, record):
-    """Where the continuing-shows rule puts the item: (tier, before_id, after_id), or None when the library holds no
-    other episode of its show."""
+def _after_show(store, item_id, record):
+    """Where `after-show` puts the item: (tier, before_id, after_id), or None when it waits."""
     mine = _show(record)
     if mine is None:
         return None
@@ -52,19 +69,15 @@ def _continuing(store, item_id, record):
         for rec in records:
             show = _show(rec)
             if show and show[0] == title and show[1] == season and show[2] != episode:
-                others.append((show[2], other_id))
+                item = store.item(other_id)
+                if item is not None:
+                    others.append((show[2], other_id, item["tier"]))
                 break
-    if not others:
-        return None
-    current = []
-    for ep, other_id in others:
-        item = store.item(other_id)
-        if item is None:
-            continue
-        if item["tier"] in ("now", "soon"):
-            current.append((ep, other_id, item["tier"]))
+    current = [o for o in others if o[2] in ("now", "soon")]
     if not current:
-        return ("now", None, None)                  # Q4-9: a finished show's new episode, the top of Current
+        if others and all(o[2] in SET_ASIDE for o in others):
+            return ("now", None, None)              # Q4-9: a finished show's new episode, the top of Current
+        return None
     earlier = [c for c in current if c[0] < episode]
     if earlier:
         _ep, prev_id, tier = max(earlier)
@@ -74,20 +87,25 @@ def _continuing(store, item_id, record):
 
 
 def apply(store, item_id, record, settings):
-    """Place an arrival by the first rule that applies -> the rule's name, or None (it waits in New arrivals)."""
+    """Place an arrival by its source's rule -> the target it was placed by, or None (it waits in New arrivals)."""
     if not library.three_oh(store):
         return None
     item = store.item(item_id)
     if item is None or item["tier"] != "arrivals":
         return None
-    if settings.get("arrivals_continuing_shows"):
-        where = _continuing(store, item_id, record)
-        if where is not None:
-            tier, before_id, after_id = where
-            library.place(store, item_id, tier, before_id=before_id, after_id=after_id, source=f"rule:{CONTINUING}")
-            return CONTINUING
-    producer = str((record or {}).get("producer") or "").strip().casefold()
-    if producer and producer in _sources(settings):
-        library.place(store, item_id, "now", source=f"rule:{STRAIGHT}")
-        return STRAIGHT
-    return None
+    found = rule_for(record, settings)
+    if found is None:
+        return None
+    source, target = found
+    if target == "finished":
+        library.finish(store, item_id, source=source, explicit=1)
+        return target
+    if target == "after-show":
+        where = _after_show(store, item_id, record)
+        if where is None:
+            return None
+    else:
+        where = ({"top": "now"}.get(target, target), None, None)
+    tier, before_id, after_id = where
+    library.place(store, item_id, tier, before_id=before_id, after_id=after_id, source=source, explicit=1)
+    return target

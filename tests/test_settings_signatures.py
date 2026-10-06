@@ -827,7 +827,7 @@ PLACED = {
     "junban_frequency_field": "neither", "junban_later_flag": "neither", "junban_later_suspend": "neither",
     "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
-    "junban_tag_markers": "neither", "junban_unlisted": "neither", "junban_url": "neither",
+    "junban_tag_markers": "neither", "junban_unlisted": "neither",
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.

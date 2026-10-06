@@ -42,7 +42,30 @@ def _content_files(data_dir, language=None):
     return files
 
 
+def _holding_indexer(run):
+    """Run `run` holding the `indexer` lock (`app/locks.py`): informative — `surasura-cli status` reports the indexer
+    busy while it is held (P0.3 03) — and one index run at a time per install: a second waits for the first, then
+    reconciles whatever the first did not see."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        held = None
+        try:
+            from app import locks
+            held = locks.take("indexer", "indexing", wait=None)
+        except Exception as e:
+            print(f"Indexer: its lock can't be used ({e}); indexing without it.")
+        try:
+            return run(*args, **kwargs)
+        finally:
+            if held is not None:
+                held.release()
+    return wrapper
+
+
 @without_cycle_collection
+@_holding_indexer
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Surasura background token indexer")

@@ -811,10 +811,16 @@ def update_lock_path():
     return os.path.join(path_utils.get_local_data_path(), "locks", "update.lock")
 
 
-def take_update_lock():
-    """-> the held lock, or None when another update holds it."""
+def take_update_lock(looks=6, gap=0.02):
+    """-> the held lock, or None when another update holds it. Looked at a few times over ~0.1 s: a command
+    line's check (`library_store.update_staged`) holds it for a moment, and "Update now" landing in that moment
+    must not read it as another update."""
     try:
-        return path_utils.try_lock(update_lock_path())
+        for look in range(looks):
+            held = path_utils.try_lock(update_lock_path())
+            if held is not None or look == looks - 1:
+                return held
+            time.sleep(gap)
     except Exception:
         return None
 

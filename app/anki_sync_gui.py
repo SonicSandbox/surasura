@@ -249,28 +249,25 @@ class AnkiSyncGui(tk.Toplevel):
 
         Written onto the file AS IT IS ON DISK, not onto the merged settings: those carry every
         installed module's defaults, and saving them wrote Speech's hidden `koe_*` keys for users
-        who never revealed it (and changed the analysis fingerprint on every deck click)."""
+        who never revealed it (and changed the analysis fingerprint on every deck click). Through
+        `settings_manager.save_keys`: the per-language merge runs inside the settings lock, so a save
+        the dashboard writes meanwhile is never put back, and this window never waits on it (P1.2)."""
         try:
-            import json
             from app import settings_manager
-            from app.path_utils import get_user_file, read_text
-            try:
-                s = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
-                if not isinstance(s, dict):
-                    raise ValueError("settings.json is not an object")
-            except (OSError, ValueError):
-                s = settings_manager.load_settings()
-            decks = dict(s.get("anki_sync_decks") or {})
-            decks[self.language] = list(self.decks)
-            fields = dict(s.get("anki_sync_fields") or {})
-            fields[self.language] = self._fields()
-            s["anki_sync_decks"] = decks
-            s["anki_sync_fields"] = fields
-            s["anki_sync_include_suspended"] = bool(self.var_suspended.get())
+            language, decks_now, fields_now = self.language, list(self.decks), self._fields()
+            own = {"anki_sync_include_suspended": bool(self.var_suspended.get())}
             if self.app is None:
-                s["anki_sync_auto"] = bool(self.var_auto.get())
-                s["anki_auto_generate"] = bool(self.var_generate.get())
-            settings_manager.save_settings(s)
+                own["anki_sync_auto"] = bool(self.var_auto.get())
+                own["anki_auto_generate"] = bool(self.var_generate.get())
+
+            def merge(s):
+                decks = dict(s.get("anki_sync_decks") or {})
+                decks[language] = list(decks_now)
+                fields = dict(s.get("anki_sync_fields") or {})
+                fields[language] = list(fields_now)
+                s["anki_sync_decks"] = decks
+                s["anki_sync_fields"] = fields
+            settings_manager.save_keys(own, update=merge)
         except Exception as e:
             self._set_result(f"Could not save your choices: {e}", ERROR)
 

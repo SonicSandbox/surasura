@@ -66,3 +66,42 @@ def test_no_cli_source_names_a_dialog_toolkit():
             source = f.read()
         for name in ("tkinter", "messagebox", "PyQt6", "pandas", "requests"):
             assert f"import {name}" not in source and f"from {name}" not in source, (path, name)
+
+
+# --------------------------------------------------------------------------- #
+# P1.2's verbs (row 1.2.3): the quick ones load nothing heavy and read no text; the rest load no GUI toolkit, no
+# pandas and no network library either (fugashi only where text is read: `junban`, `known` on a stale cache)
+# --------------------------------------------------------------------------- #
+NOT_EVEN_TEXT = FORBIDDEN                                       # quick verbs: no tokenizer either
+NOT_HEAVY = tuple(m for m in FORBIDDEN if m not in ("fugashi", "jieba"))
+
+
+@pytest.fixture
+def generated():
+    """A library generated once (the analyzer runs as its own process: it is not this guard's subject)."""
+    from tests import cli_helpers as h
+    h.seed_library("ja")
+    h.write_settings()
+    code, lines = h.run_cli("generate")
+    assert code == 0, lines
+    return h.root()
+
+
+def _loaded(argv, root):
+    code, loaded = _loaded_by(argv, root)
+    return code, set(loaded)
+
+
+@pytest.mark.parametrize("argv", [["status"], ["status", "--anki"], ["list", "--limit", "5"],
+                                  ["list", "--order", "encounter"], ["known"]])
+def test_the_quick_verbs_load_nothing_heavy_and_no_tokenizer(generated, argv):
+    code, loaded = _loaded(argv, generated)
+    assert code == 0 and not loaded & set(NOT_EVEN_TEXT), loaded
+
+
+@pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"]])
+def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated, argv):
+    """`generate` with nothing changed answers without pandas; the Anki verbs reach Anki through the standard library
+    (here with Anki switched off for the run, as the suites keep it)."""
+    code, loaded = _loaded(argv, generated)
+    assert code == 0 and not loaded & set(NOT_HEAVY), loaded

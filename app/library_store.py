@@ -3924,8 +3924,12 @@ def maintain_due(store, handed=""):
     last export, or a copy someone else rewrote whose stat this process hasn't already handed to a helper
     (`handed`). Returns (due, the copy's stat)."""
     seen = store.copy_stat()
-    if store.meta().get("reimport_pending"):
+    meta = store.meta()
+    if meta.get("reimport_pending"):
         return False, seen                       # the helper would only wait for the same answer (exit 4)
+    newer = meta.get("newer_copy_seen")
+    if newer is not None:                        # a newer store's copy: due only once it changes or goes
+        return seen != newer and (not seen or seen != handed), seen     # gone ("") is always due
     if store.export_due():
         return True, seen
     return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen

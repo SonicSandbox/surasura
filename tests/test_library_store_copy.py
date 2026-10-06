@@ -787,7 +787,9 @@ def test_a_store_beside_a_newer_copy_stops_asking_for_the_helper_until_it_goes(l
     ls.maintain(language, data_dir, user_files_dir)
     assert not store.export_due(), "quiet while the newer copy sits there"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NOTHING
+    assert not ls.maintain_due(store)[0], "no helper per focus while it sits there"
     os.remove(ls.manifest_path(user_files_dir))                # the user takes it away
+    assert ls.maintain_due(store)[0], "a window's trigger notices it went"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     assert read_doc(user_files_dir)["surasura_library"]["store_id"] == store.meta()["store_id"]
     assert "newer_copy_seen" not in store.meta()

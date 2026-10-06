@@ -454,9 +454,21 @@ SCHEMA_SQL = (
       at TEXT NOT NULL)""",
 )
 
+# Tables added without a schema change (L2.2 §2.2): an older Surasura ignores a table it doesn't know, so each is
+# made IF NOT EXISTS wherever tables are written, and goes out in the copy only where it exists.
+ADDED_TABLES_SQL = (
+    """CREATE TABLE IF NOT EXISTS made_words (
+      item_id  INTEGER NOT NULL,
+      word     TEXT NOT NULL,
+      note_ids TEXT NOT NULL,
+      made_at  TEXT NOT NULL,
+      batch    TEXT,
+      PRIMARY KEY (item_id, word))""",
+)
+
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log")
+               "placement_log", "made_words")
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order")
 
@@ -568,6 +580,8 @@ def _probe(db_path, busy_wait):
                 return "json", "not ready"
             row = conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone()
             if row is None:
+                if conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone():
+                    return "read-only", NEWER_COPY                  # the helper met a newer store's copy (G2.2-7)
                 failed = conn.execute("SELECT value FROM meta WHERE key = 'migration_failed'").fetchone()
                 return "json", ("migration failed" if failed else "not ready")
             return "store", None
@@ -2306,7 +2320,10 @@ class Store:
             names = [d[0] for d in cur.description]
             rows = [dict(zip(names, r)) for r in cur.fetchall()]
             tables = {}
+            present = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             for name in COPY_TABLES:
+                if name not in present:                            # an added table this store hasn't made yet
+                    continue
                 c = self.conn.execute(f"SELECT * FROM {name} ORDER BY rowid")
                 tables[name] = {"fields": [d[0] for d in c.description], "rows": [list(r) for r in c.fetchall()]}
             log_seq = self._log_seq()
@@ -2406,6 +2423,22 @@ class _Norm:
         self.extra = {}
         self.lib = None
         self.report = []
+
+
+NEWER_COPY = "made by a newer Surasura"
+
+
+def copy_is_newer(doc):
+    """Was this copy written by a newer store (its `surasura_library` names a later schema or format)? Such a copy
+    may carry tables and fields this version doesn't know: it is never rebuilt from, re-imported or repaired from
+    here, and never overwritten (L2.2 G2.2-7)."""
+    lib = doc.get("surasura_library") if isinstance(doc, dict) else None
+    if not isinstance(lib, dict):
+        return False
+    try:
+        return int(lib.get("store_schema") or 0) > STORE_SCHEMA or int(lib.get("format") or 0) > COPY_FORMAT
+    except (TypeError, ValueError):
+        return True                                    # a schema this version can't read: never built from
 
 
 def normalise(doc, platform=sys.platform):
@@ -2598,6 +2631,8 @@ def _write_image(store, image, meta):
     items (keys 1024, 2048, … per tier), every other table, the id sequences (K30) and `meta`."""
     conn = store.conn
     now = _now()
+    for sql in ADDED_TABLES_SQL:
+        conn.execute(sql)
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -2639,11 +2674,17 @@ def _write_image(store, image, meta):
             col = t["fields"].index("item_id")
             kept = {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in have]}
             _insert_rows(conn, name, kept)
+    t = tables.get("made_words")                               # outlives Remove: an item or its trash row
+    if t and t["rows"]:
+        col = t["fields"].index("item_id")
+        known = have | {r[0] for r in conn.execute("SELECT item_id FROM trash")}
+        _insert_rows(conn, "made_words", {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in known]})
     # K30: AUTOINCREMENT learns only from the rows a table holds; ids are never reused.
     highest = max([0] + list(have) + [r[0] for r in conn.execute(
         "SELECT MAX(item_id) FROM trash UNION ALL SELECT MAX(item_id) FROM placement_log "
         "UNION ALL SELECT MAX(item_id) FROM pairings UNION ALL SELECT MAX(item_id) FROM anki_links "
-        "UNION ALL SELECT MAX(item_id) FROM anki_changes") if r[0] is not None])
+        "UNION ALL SELECT MAX(item_id) FROM anki_changes UNION ALL SELECT MAX(item_id) FROM made_words")
+        if r[0] is not None])
     _set_seq(conn, "items", highest)
     marks = [v for k, v in meta.items() if k.startswith("reader:")]
     log_high = conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
@@ -2880,8 +2921,10 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
     meta["last_export_stat"] = read_stat or ""
     with store._writing():
         if keep_store_id:
-            for name in ("anki_links", "pairings", "placement_log", "trash", "exclusions", "anki_changes",
-                         "items", "pieces", "roots", "meta"):
+            for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
+                store.conn.execute(sql)
+            for name in ("anki_links", "pairings", "made_words", "placement_log", "trash", "exclusions",
+                         "anki_changes", "items", "pieces", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)
         if not sha_ok:
@@ -3245,6 +3288,8 @@ def export_copy(store):
         except ManifestUnreadable:
             return False
         lib = other.get("surasura_library") if other else None
+        if copy_is_newer(other):
+            return False                                           # a newer store's copy is never overwritten here
         if not (isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
                 and isinstance(lib.get("version"), int) and lib["version"] < meta["state_version"]
                 and lib.get("content_sha") == content_sha(other)):
@@ -3264,6 +3309,12 @@ def export_copy(store):
     return True
 
 
+def _forget_newer_copy_seen(store):
+    """The newer copy is gone or replaced: exports may resume (bookkeeping, no version moves)."""
+    with store._writing():
+        store.conn.execute("DELETE FROM meta WHERE key = 'newer_copy_seen'")
+
+
 def _check_copy(store, retry_wait=1.0):
     """Step 2 of `maintain`: has the JSON changed without the store? Returns what was done."""
     target = manifest_path(store.user_files_dir)
@@ -3273,7 +3324,11 @@ def _check_copy(store, retry_wait=1.0):
     if pending and st is not None and json.loads(pending).get("stat") == _stat_str(st):
         return "pending"                                       # a question is waiting for the user
     if st is None or _stat_str(st) == meta.get("last_export_stat"):
+        if meta.get("newer_copy_seen") is not None:
+            _forget_newer_copy_seen(store)
         return "same"
+    if meta.get("newer_copy_seen") == _stat_str(st):
+        return "newer"                                         # unchanged since we last read it: not again
     doc, read_stat, problem = read_manifest(target)
     if doc is None:
         time.sleep(retry_wait)                                     # a program halfway through saving it?
@@ -3281,6 +3336,11 @@ def _check_copy(store, retry_wait=1.0):
         if doc is None:
             backup_to_trash(target, move=True)
             return "set aside"
+    if copy_is_newer(doc):
+        store.bookkeeping({"newer_copy_seen": read_stat})      # export_due stays quiet while it sits there
+        return "newer"                     # never re-imported or rebuilt from here; export won't overwrite it either
+    if meta.get("newer_copy_seen") is not None:
+        _forget_newer_copy_seen(store)
     lib = doc.get("surasura_library")
     ours = isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
     if ours and lib.get("content_sha") == content_sha(doc):
@@ -3409,6 +3469,15 @@ def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
                 doc, read_stat, problem = read_manifest(target)
             except ManifestUnreadable:
                 return EXIT_FAILED                                 # retried, never treated as damage
+        newer = doc is not None and copy_is_newer(doc)
+        if newer or store.meta().get("newer_copy") is not None:
+            with store._writing():                                 # read-only on that copy until it's ours again
+                if newer:
+                    store._set_meta({"newer_copy": _dumps({"stat": read_stat, "at": _now()})})
+                else:
+                    store.conn.execute("DELETE FROM meta WHERE key = 'newer_copy'")
+            if newer:
+                return EXIT_NEEDS_YOU
         try:
             if doc is not None and isinstance(doc.get("surasura_library"), dict):
                 _rebuild(store, user_files_dir, doc, read_stat)
@@ -3502,7 +3571,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             return EXIT_NEEDS_YOU
         if found == "backup failed":
             return EXIT_FAILED
-        did = did or found not in ("same", "stale", "unchanged")
+        did = did or found not in ("same", "stale", "unchanged", "newer")
         if export:
             did = export_copy(store) or did
             _cleanup_temps(manifest_path(user_files_dir))
@@ -3840,6 +3909,8 @@ def _store_export_due(self):
     """Has the store something the copy lacks (the trigger rule, §6.7)? Read cheaply, no file I/O."""
     with self._reading():
         meta = self._meta()
+    if meta.get("newer_copy_seen") is not None:
+        return False                       # a newer store's copy sits there: nothing may be exported over it
     return meta["state_version"] != meta.get("last_export_version") or bool(meta.get("copy_dirty"))
 
 
@@ -3854,8 +3925,12 @@ def maintain_due(store, handed=""):
     last export, or a copy someone else rewrote whose stat this process hasn't already handed to a helper
     (`handed`). Returns (due, the copy's stat)."""
     seen = store.copy_stat()
-    if store.meta().get("reimport_pending"):
+    meta = store.meta()
+    if meta.get("reimport_pending"):
         return False, seen                       # the helper would only wait for the same answer (exit 4)
+    newer = meta.get("newer_copy_seen")
+    if newer is not None:                        # a newer store's copy: due only once it changes or goes
+        return seen != newer and (not seen or seen != handed), seen     # gone ("") is always due
     if store.export_due():
         return True, seen
     return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen
@@ -3997,6 +4072,8 @@ def read_only_view(language, data_dir, user_files_dir):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version > STORE_SCHEMA:
             return "unknown", None, None, False
+        if conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone():
+            return "unknown", None, None, False                # read-only on a newer store's copy (G2.2-7)
         if version < STORE_SCHEMA or conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone() is None:
             return "json", None, None, False
         store = Store.__new__(Store)            # a reader on this connection: no write lock, nothing opened for writing
@@ -4080,10 +4157,11 @@ def spawn_build_if_waiting(language, data_dir, user_files_dir):
     if now - _build_spawned.get(language, -BUILD_SPAWN_EVERY) < BUILD_SPAWN_EVERY:
         return None
     try:
-        mode, _reason = check_mode(language, data_dir, busy_wait=0.0)
+        mode, reason = check_mode(language, data_dir, busy_wait=0.0)
     except StoreError:
         return None
-    if mode != "json" or not os.path.exists(manifest_path(user_files_dir)):
+    newer = mode == "read-only" and reason == NEWER_COPY   # the helper notices a copy put back or deleted
+    if not newer and (mode != "json" or not os.path.exists(manifest_path(user_files_dir))):
         return None
     _build_spawned[language] = now
     return spawn_maintain(language)
@@ -4147,6 +4225,9 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             doc, read_stat, _p = read_manifest(target)
         except ManifestUnreadable:
             return EXIT_FAILED                                    # a lock or a placeholder: retried
+        if copy_is_newer(doc):
+            print(f"Repair refused: the library's copy was {NEWER_COPY}; open it there to repair it.")
+            return EXIT_NEEDS_YOU                                 # nothing renamed: a newer copy is never rebuilt from
         try:
             backup_to_trash(target, move=doc is None)
         except OSError:

@@ -840,7 +840,7 @@ class TestSyncSettingsAreNotAnalysis(unittest.TestCase):
     def test_changing_decks_does_not_force_a_reanalysis(self):
         """Spec I9: every deck click re-analysing the whole library would be absurd."""
         from app import analyzer
-        source = inspect.getsource(analyzer.compute_run_signature)
+        source = inspect.getsource(analyzer.run_signature_parts)     # what compute_run_signature hashes
         for key in ("anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
                     "anki_sync_include_suspended"):
             self.assertIn(f'"{key}"', source, f"{key} must be excluded from the run signature")

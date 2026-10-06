@@ -92,7 +92,7 @@ def dashboard(monkeypatch):
                                      failed_update_version=app.failed_update_version)
     app.save_settings = save
     monkeypatch.setattr(main, "get_update_info", lambda *a, **k: app.release)
-    monkeypatch.setattr(updater, "can_auto_apply", lambda: True)
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
     return app
 
 

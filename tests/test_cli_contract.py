@@ -11,10 +11,11 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
-from app import __version__, analyzer, token_index, updater
+from app import __version__, analyzer, library_store, token_index, updater
 from app.cli import __main__ as cli
 from app.cli import contract
 
@@ -291,14 +292,24 @@ def test_a_native_crash_leaves_a_trace_in_the_log(root):
 # Checks at start
 # --------------------------------------------------------------------------- #
 def test_the_update_marker_is_the_updaters():
-    assert contract.UPDATE_MARKER == updater.MARKER_NAME
+    assert os.path.basename(library_store.update_staged_path()) == updater.MARKER_NAME
 
 
 def test_a_staged_update_answers_update_staged_exit_3(root):
-    (root / contract.UPDATE_MARKER).write_text("{}", encoding="utf-8")
+    (root / updater.MARKER_NAME).write_text("{}", encoding="utf-8")
     for args in (("--version",), ("_selftest", "ok")):
         code, lines, _raw, _err = run_cli(root, *args)
         assert code == 3 and lines[0]["code"] == "update-staged"
+
+
+def test_a_marker_over_an_hour_old_is_a_crashed_update_and_blocks_nothing(root):
+    # The store's rule (S1.1): a helper that died leaves its marker behind; the command line must not refuse forever.
+    marker = root / updater.MARKER_NAME
+    marker.write_text("{}", encoding="utf-8")
+    two_hours_ago = time.time() - 7200
+    os.utime(marker, (two_hours_ago, two_hours_ago))
+    code, lines, _raw, _err = run_cli(root, "_selftest", "ok")
+    assert code == 0, lines
 
 
 def test_a_held_update_lock_answers_update_staged_and_a_free_one_doesnt(root):

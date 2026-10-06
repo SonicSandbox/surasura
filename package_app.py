@@ -21,11 +21,7 @@ def get_version():
 # When a module will be included in the build, its own test suite must pass first.
 def _included_module_test_dirs(settings):
     dirs = []
-    # Immersion Architect: bundled unless explicitly hidden.
-    if not settings.get("hide_satoru", False):
-        d = os.path.join("modules", "immersion_architect", "tests")
-        if os.path.isdir(d):
-            dirs.append(d)
+    # (The Immersion Architect is never bundled since 2.5 — sunset, RD-D9 — so its suite is no gate.)
     # YouTube Downloader: bundled when either feature is enabled.
     if settings.get("enable_youtube_transcripts", False) or settings.get("enable_youtube_preview", False):
         d = os.path.join("modules", "youtube_downloader", "tests")
@@ -157,6 +153,11 @@ def _build_app_package(final_dist, version, full_update):
     a onedir freeze the Python code is NOT loose under _internal/app (that's only assets), so
     replacing the exe is what actually updates the code. For a --full-update release we skip
     the package (users download the full zip) and publish only an update.json (update_type=full).
+
+    Since 2.5 update.json also lists every file the package carries (`files`, K99): each entry's
+    name (its path at the top of the zip — the same layout 2.4.0's updater reads), its destination
+    in the install folder, its kind and its sha256 (a folder's: `updater.tree_sha256`). 2.5's
+    updater swaps exactly that list; surasura-cli.exe rides in it when the build has one.
     """
     import zipfile
 
@@ -191,6 +192,7 @@ def _build_app_package(final_dist, version, full_update):
             return
         pkg_path = os.path.join("dist", f"Surasura_app_v{version}.zip")
         notes_src = os.path.join(final_dist, "RELEASE_NOTES.md")
+        manifest["files"] = _package_file_list(final_dist)
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(exe_src, "Surasura.exe")
             z.write(cli_src, CLI_EXE_NAME)    # the command line (P1.1); the updater swaps it from 2.5 (K99)
@@ -213,6 +215,53 @@ def _build_app_package(final_dist, version, full_update):
     print(f"update.json written (update_type={manifest['update_type']}, runtime_baseline={baseline}).")
     print("  -> Attach to the GitHub release: full zip"
           + ("" if full_update else ", app package zip") + ", update.json")
+
+
+def _package_file_list(final_dist):
+    """update.json's `files`: what the app package carries, each with its sha256 (K99). Names are the package's
+    top-level paths (2.4.0's layout: Surasura.exe, templates/, RELEASE_NOTES.md)."""
+    from app import updater
+    files = [{"name": "Surasura.exe", "dest": "Surasura.exe", "kind": "file",
+              "sha256": updater.sha256_file(os.path.join(final_dist, "Surasura.exe"))}]
+    cli = os.path.join(final_dist, "surasura-cli.exe")
+    if os.path.isfile(cli):
+        files.append({"name": "surasura-cli.exe", "dest": "surasura-cli.exe", "kind": "file",
+                      "sha256": updater.sha256_file(cli)})
+    notes = os.path.join(final_dist, "RELEASE_NOTES.md")
+    if os.path.isfile(notes):
+        files.append({"name": "RELEASE_NOTES.md", "dest": "RELEASE_NOTES.md", "kind": "file",
+                      "sha256": updater.sha256_file(notes)})
+    files.append({"name": "templates", "dest": "_internal/templates", "kind": "dir",
+                  "sha256": updater.tree_sha256(os.path.join(final_dist, "_internal", "templates"))})
+    return files
+
+
+BUILD_INFO = os.path.join("app", "build_info.py")
+
+
+class _release_flag:
+    """For a release's freeze: app/build_info.py says RELEASE_BUILD = True (so the exe ignores the update check's
+    local-folder override), and is put back exactly as it was afterwards, whatever happens."""
+    def __init__(self, on):
+        self.on = on
+        self.saved = None
+
+    def __enter__(self):
+        if self.on:
+            with open(BUILD_INFO, "rb") as f:
+                self.saved = f.read()
+            text = self.saved.decode("utf-8").replace("RELEASE_BUILD = False", "RELEASE_BUILD = True")
+            if "RELEASE_BUILD = True" not in text:
+                raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
+            with open(BUILD_INFO, "wb") as f:
+                f.write(text.encode("utf-8"))
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            with open(BUILD_INFO, "wb") as f:
+                f.write(self.saved)
+        return False
 
 
 def build(zip_output=False, skip_tests=False, release=False, full_update=False):
@@ -267,7 +316,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
     if not os.path.exists("debug"):
         os.makedirs("debug", exist_ok=True)
         
-    with open(os.path.join("debug", "build_log.txt"), "w") as log_file:
+    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release):
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
     
     if result.returncode != 0:

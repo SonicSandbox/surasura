@@ -352,11 +352,7 @@ def test_graduating_now_into_graduated_keeps_the_folder_together(cm):
 # ---------------------------------------------------------------------------------------------- #
 # Undo puts the tree back exactly
 # ---------------------------------------------------------------------------------------------- #
-@pytest.mark.parametrize("op, tier, dest", OPERATIONS)
-def test_undo_restores_files_and_metadata_exactly(cm, op, tier, dest):
-    """Every file with the same bytes, every folder (an empty one inside a moved book included), the
-    same manifest — and nothing the action created is left over: no marker copy, no destination
-    folder, no dated folder in the trash."""
+def _library(cm, tier):
     root = _tier(cm, tier)
     series = [_write(os.path.join(root, "シリーズ", season, f"第{n:02d}話.srt"), EPISODE)
               for season in ("シーズン1", "シーズン2") for n in (1, 2)]
@@ -366,15 +362,42 @@ def test_undo_restores_files_and_metadata_exactly(cm, op, tier, dest):
     partial = _book(os.path.join(root, "こころ"), chapters=2)         # only one chapter moves
     channel = os.path.join(root, "日本語チャンネル")
     video = _transcript(channel)
-    cm._sync_disk_to_manifest()
-    before, manifest_before = _snapshot(cm.data_root), _manifest(cm)
+    return series + book + partial[:1] + [video]
 
-    _run(cm, op, series + book + partial[:1] + [video], tier)
-    assert _snapshot(cm.data_root) != before
+
+@pytest.mark.parametrize("op, tier, dest", OPERATIONS)
+def test_store_mode_undo_restores_files_metadata_and_order_exactly(cm, op, tier, dest):
+    """Store mode (2.5): Graduate / Demote move no file at all (L5); Remove sends each file and its cue sidecar
+    to the trash. Undo then puts every file back with the same bytes, every folder, and the same order in every
+    section — nothing the action created is left over."""
+    from app import library_store as ls
+    chosen = _library(cm, tier)
+    assert ls.maintain("ja", cm.data_root, cm.user_files_root, from_folders=True) == ls.EXIT_DONE
+    store = cm._store()
+    order = lambda: {t: [e["physical_path"] for _i, e, _a in store.ordered(t)] for t in ls.ANALYSED}
+    before, order_before = _snapshot(cm.data_root), order()
+
+    _run(cm, op, chosen, tier)
+    assert order() != order_before
+    if op != "remove_files":
+        assert _snapshot(cm.data_root) == before, "the store never moves a file"
     cm.undo_last_action()
 
     after = _snapshot(cm.data_root)
     assert sorted(set(after) - set(before)) == [], "left over after Undo"
     assert sorted(set(before) - set(after)) == [], "missing after Undo"
     assert after == before, "a file came back with different bytes"
-    assert _manifest(cm) == manifest_before
+    assert order() == order_before
+
+
+@pytest.mark.parametrize("op, tier, dest", OPERATIONS)
+def test_json_mode_undo_is_off(cm, op, tier, dest):
+    """JSON mode (no store yet): 2.4's file moves, with Undo off (Library_Store_Spec §6.9, G1.1-12) — its
+    whole-manifest snapshot erased every later change (RD-A6). An Undo press changes nothing."""
+    chosen = _library(cm, tier)
+    cm._sync_disk_to_manifest()
+    _run(cm, op, chosen, tier)
+    done, manifest_done = _snapshot(cm.data_root), _manifest(cm)
+    cm.undo_last_action()
+    assert _snapshot(cm.data_root) == done and _manifest(cm) == manifest_done
+    cm.undo_btn.config.assert_not_called()

@@ -1,4 +1,4 @@
-"""The dashboard footer's button order: [flag] 悟 🎬 順 ⚙.
+"""The dashboard footer's button order: [flag] 🎬 順 ⚙.
 
 Settings (⚙) is always the right-most button, and the optional module buttons sit to its left in one
 fixed order however many are switched on and in whatever order they were switched on. Before, ⚙ was
@@ -39,7 +39,6 @@ class TestFooterModuleOrder(unittest.TestCase):
         self.app = SimpleNamespace(_MODULE_BUTTONS=self.Dash._MODULE_BUTTONS)
         self.app.btn_settings = ttk.Button(self.box, text="⚙")
         self.app.btn_settings.pack(side=tk.LEFT)
-        self.app.btn_satori = ttk.Button(self.box, text="悟")
         self.app.btn_reels = ttk.Button(self.box, text="🎬")
         self.app.btn_junban = ttk.Button(self.box, text="順")
         self.flag = flag
@@ -55,24 +54,22 @@ class TestFooterModuleOrder(unittest.TestCase):
         return [w.cget("text") for w in self.box.pack_slaves()]
 
     def test_settings_stays_rightmost_with_junban_directly_left_of_it(self):
-        self._show("btn_satori")
         self._show("btn_junban")
-        self.assertEqual(self._order(), ["JP", "悟", "順", "⚙"])
+        self.assertEqual(self._order(), ["JP", "順", "⚙"])
 
     def test_the_order_is_fixed_whatever_order_modules_are_switched_on(self):
         """Switching Junban on before Reels must not put 順 left of 🎬."""
         self._show("btn_junban")
         self._show("btn_reels")
-        self._show("btn_satori")
-        self.assertEqual(self._order(), ["JP", "悟", "🎬", "順", "⚙"])
+        self.assertEqual(self._order(), ["JP", "🎬", "順", "⚙"])
 
     def test_hiding_a_module_and_showing_it_again_returns_it_to_its_place(self):
-        for name in ("btn_satori", "btn_reels", "btn_junban"):
+        for name in ("btn_reels", "btn_junban"):
             self._show(name)
         self.app.btn_reels.pack_forget()
-        self.assertEqual(self._order(), ["JP", "悟", "順", "⚙"])
+        self.assertEqual(self._order(), ["JP", "順", "⚙"])
         self._show("btn_reels")
-        self.assertEqual(self._order(), ["JP", "悟", "🎬", "順", "⚙"])
+        self.assertEqual(self._order(), ["JP", "🎬", "順", "⚙"])
 
     def test_no_modules_leaves_settings_alone_on_the_right(self):
         self.assertEqual(self._order(), ["JP", "⚙"])

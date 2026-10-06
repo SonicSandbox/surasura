@@ -34,9 +34,6 @@ LOG_BYTES = 1024 * 1024     # cli.log rotates at 1 MB, three old ones kept (M-6 
 LOG_BACKUPS = 3
 EVENTS_KEPT = 200
 
-# updater.MARKER_NAME, named here so a quick verb never imports the updater (urllib, zipfile)
-UPDATE_MARKER = "pending_update.json"
-
 log = logging.getLogger("surasura-cli")
 
 
@@ -252,36 +249,12 @@ def _record_event(event):
 # --------------------------------------------------------------------------- #
 # Checks at start
 # --------------------------------------------------------------------------- #
-def _lock_held(path):
-    """True when another process holds `path`'s byte 0 (04 §2's lock pattern). Until E1.4's lock helper lands (P1.2)
-    this probe is all the command line needs: it only asks, never creates the file or keeps the lock."""
-    try:
-        f = open(path, "r+b")
-    except FileNotFoundError:
-        return False
-    except PermissionError:
-        return True
-    with f:
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(f, fcntl.LOCK_UN)
-        except OSError:
-            return True
-    return False
-
-
 def check_update():
-    """An update staged (the window's pending_update.json) or swapping (the `update` lock): answer `update-staged`."""
-    from app.path_utils import get_user_data_path, get_local_data_path
-    if os.path.exists(os.path.join(get_user_data_path(), UPDATE_MARKER)) or \
-            _lock_held(os.path.join(get_local_data_path(), "locks", "update.lock")):
+    """An update staged or swapping: answer `update-staged`. One rule for the whole program, the store's
+    (`library_store.update_staged`, S1.1): the update lock held, or the updater's marker under an hour old (an older
+    one is a crashed update and blocks nothing)."""
+    from app.library_store import update_staged
+    if update_staged():
         raise CliError("update-staged", "Surasura is installing an update. Try again once it has restarted.")
 
 

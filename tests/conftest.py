@@ -12,6 +12,12 @@ from unittest.mock import patch
 # Ensure the project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.tk_on_github import skip_tk_tests
+
+
+def pytest_collection_modifyitems(items):
+    skip_tk_tests(items)                    # GitHub's runner only: the Tk window tests run in the local --all
+
 @pytest.fixture
 def test_resources_dir():
     """Returns the path to the 'tests/Test Resources' directory."""
@@ -99,6 +105,10 @@ def _no_ui_timers(monkeypatch):
     monkeypatch.setenv("SURASURA_NO_UI_TIMERS", "1")
 
 
+from app import library_store as _library_store_module
+_REAL_SPAWN_MAINTAIN = _library_store_module.spawn_maintain
+
+
 @pytest.fixture(autouse=True)
 def _isolate_user_data_root(tmp_path_factory, monkeypatch):
     """Point every test at a throwaway data root.
@@ -176,6 +186,25 @@ def _isolate_token_store(tmp_path_factory, monkeypatch):
         lambda language: str(d / f"token_store_{language}.db"),
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def store_helper_spawns(monkeypatch):
+    """The library store's helper (`library_store.spawn_maintain`) is a DETACHED process: started by a test's
+    Generate, Content Manager or dashboard, it would outlive the test and write into a test root being torn
+    down. Each spawn is recorded here instead (the list is this fixture's value); a test that wants the real
+    helper asks for `real_store_helper`."""
+    from app import library_store
+    calls = []
+    monkeypatch.setattr(library_store, "spawn_maintain", lambda language, *extra: calls.append((language,) + extra))
+    return calls
+
+
+@pytest.fixture
+def real_store_helper(store_helper_spawns, monkeypatch):
+    """Undo `store_helper_spawns` for one test: `spawn_maintain` starts the real helper."""
+    from app import library_store
+    monkeypatch.setattr(library_store, "spawn_maintain", _REAL_SPAWN_MAINTAIN)
 
 
 @pytest.fixture(autouse=True)

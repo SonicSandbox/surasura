@@ -49,7 +49,7 @@ def test_two_installs_never_share_a_folder_and_one_install_always_gets_the_same(
     # key again (so its logs and locks are found).
     _outside_pytest(monkeypatch)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
     paths = {}
     for name in ("checkout", "インストール"):
         install = tmp_path / name
@@ -70,17 +70,17 @@ def test_windows_key_ignores_case_and_separators(tmp_path):
 
 def test_macos_and_linux_folders(tmp_path, monkeypatch):
     # Not verifiable on this machine except by the folder each system is given (05 §2: macOS/Linux until the
-    # installers).
+    # installers). Linux keeps it in $XDG_DATA_HOME, not $XDG_STATE_HOME (S1.1 K100).
     monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path / "home")))
     monkeypatch.setattr(sys, "platform", "darwin")
     assert path_utils._local_data_root() == os.path.join(
         str(tmp_path / "home"), "Library", "Application Support", "SonicSandbox", "Surasura")
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    assert path_utils._local_data_root() == os.path.join(str(tmp_path / "state"), "SonicSandbox", "Surasura")
-    monkeypatch.delenv("XDG_STATE_HOME")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    assert path_utils._local_data_root() == os.path.join(str(tmp_path / "share"), "SonicSandbox", "Surasura")
+    monkeypatch.delenv("XDG_DATA_HOME")
     assert path_utils._local_data_root() == os.path.join(
-        str(tmp_path / "home"), ".local", "state", "SonicSandbox", "Surasura")
+        str(tmp_path / "home"), ".local", "share", "SonicSandbox", "Surasura")
 
 
 def test_the_guard_watches_the_folder_the_app_would_write(monkeypatch):

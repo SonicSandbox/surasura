@@ -446,6 +446,13 @@ def test_status_write_undo_uses_the_value_check(language, command):
     if command == "set_watched":
         other.set_watched([ids[1]], False)
     else:
+        # The second writer pins later than this window did (a real one, seconds later). Here it comes within
+        # milliseconds, and Windows' default clock ticks every 15.6 ms (GitHub's runner): both pins could carry
+        # one stamp, which the value check, comparing values, can't tell apart. Wait for the clock to move first.
+        deadline = time.perf_counter() + 1
+        while ls._now() == change.status[0][3]:
+            assert time.perf_counter() < deadline, "the clock never moved"
+            time.sleep(0.001)
         other.unpin([ids[1]])
         other.pin([ids[1]])
     other.close()

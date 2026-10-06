@@ -827,6 +827,10 @@ def test_concurrent_writers_serialize_without_double_apply(tmp_path):
 
     # Two threads, each its OWN connection to one shared DB, released together for max contention.
     db = _db(tmp_path, "shared.db")
+    # The store exists before the writers open it, as when Generate and the indexer meet on a library. Two FIRST
+    # opens of a new file at once are another race: switching a new file to WAL answers "database is locked" at
+    # once, without the busy timeout — on a loaded runner one worker failed in open_store, before the barrier.
+    ti.open_store("ja", path=db).close()
     # A timeout on the barrier, and daemon workers: if one worker fails BEFORE reaching the barrier
     # (e.g. 'database is locked' on a loaded machine), the other must not wait forever. Without
     # them it did — the join below timed out, the test failed, and then pytest itself hung at exit

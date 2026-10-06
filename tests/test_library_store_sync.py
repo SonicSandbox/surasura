@@ -400,6 +400,38 @@ def test_a_fingerprint_refresh_is_carried_by_the_next_export(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_the_read_only_view_never_mixes_two_states(language, monkeypatch):
+    # Why: `surasura-cli status` builds the journey's signature from this schedule and says "current" when nothing
+    # is pending. A window's sync committing a hato drop while the view reads must never give the old schedule
+    # (without the drop) together with "nothing pending" (the drop already synced): that would call a stale list
+    # current. Forced here: the sync commits after the view has read its schedule, before it reads the rows its
+    # delta compares.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    rel = f"{ls.HATO_FOLDER}/{names(language)[60]}.srt"
+    touch(data_dir, rel)
+    real_known = ls._known
+    synced = []
+
+    def a_window_syncs_then_known(reader):
+        if reader is not store and not synced:                 # the view's read, once (the sync reads it too)
+            synced.append(True)
+            assert store.sync_disk()["added"], "the window's sync takes the drop in"
+        return real_known(reader)
+
+    monkeypatch.setattr(ls, "_known", a_window_syncs_then_known)
+    mode, schedule, _versions, pending = ls.read_only_view(language, data_dir, user_files_dir)
+    assert mode == "store"
+    listed = {e["physical_path"] for rows in schedule.values() for e in rows}
+    assert pending or rel in listed, "a schedule without the drop must come with pending"
+    assert synced
+    _mode, schedule, _versions, pending = ls.read_only_view(language, data_dir, user_files_dir)
+    listed = {e["physical_path"] for rows in schedule.values() for e in rows}
+    assert not pending and rel in listed, "the next look has the drop, nothing pending"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_no_delta_writes_nothing(language):
     store = migrated(language)
     v = store.versions()

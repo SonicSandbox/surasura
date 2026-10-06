@@ -4036,7 +4036,11 @@ def read_only_view(language, data_dir, user_files_dir):
         renamed or gone): the walk a sync would make, its delta computed and never applied;
       * ("json", None, None, False): no ready store — the file is the list, as every reader takes it;
       * ("unknown", None, None, False): a store that can't be read this way now (damaged, made by a newer Surasura,
-        busy, an I/O error)."""
+        busy, an I/O error).
+
+    The disk is walked first, then the schedule, the versions and the rows the delta compares are read in one
+    transaction: a sync committing in between is in all three or in none, so `pending` and the schedule always
+    describe the same state."""
     db_path = library_db_path(language, data_dir)
     if not os.path.exists(db_path):
         return "json", None, None, False
@@ -4058,9 +4062,11 @@ def read_only_view(language, data_dir, user_files_dir):
         store = Store.__new__(Store)            # a reader on this connection: no write lock, nothing opened for writing
         store.db_path, store.language, store.data_dir, store.user_files_dir = db_path, language, data_dir, user_files_dir
         store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
-        schedule, versions = store.schedule(with_versions=True)
-        known, _version = _known(store)
-        delta = _sync_delta(store, walk_library(data_dir), known)
+        walk = walk_library(data_dir)
+        with store._reading():
+            schedule, versions = store.schedule(with_versions=True)
+            known, _version = _known(store)
+        delta = _sync_delta(store, walk, known)
         pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"])
         return "store", schedule, versions, pending
     except sqlite3.Error:

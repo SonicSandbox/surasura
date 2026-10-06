@@ -3094,9 +3094,11 @@ class MasterDashboardApp:
             except (ImportError, ModuleNotFoundError):
                 pass
             carried += ["anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"]
-            # Connect's switch and the placing rules (P2.1): no control here yet (P3.1). Carried only as the file holds
-            # them — a save never drops one the user set, and never writes a default into a file that lacks it
-            connect_keys = ["connect_enabled", "placing_rules"]
+            # Connect's settings (P1.3's mine path, P2.1's switch and placing rules): no control here yet (P2.x / P3.1).
+            # Carried only as the file holds them — a save never drops one the user set, and never writes a default
+            # into a settings.json that lacks it (or one that can't be read)
+            as_written = ["connect_mine_words", "connect_send_grammar", "connect_anki_miner_path",
+                          "connect_anki_miner_profile", "connect_enabled", "placing_rules"]
 
             def build():
                 # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
@@ -3112,7 +3114,7 @@ class MasterDashboardApp:
                 for key in carried:
                     if key in panel:
                         out[key] = panel[key]
-                carry_as_written(out, connect_keys)
+                carry_as_written(out, as_written)
                 # The Anki window owns these (core keys, so always written). The address is the one every
                 # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
                 # here and the file then holds one address.

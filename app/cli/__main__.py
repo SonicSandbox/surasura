@@ -51,6 +51,7 @@ VERBS = {
     "known-sync": (verbs.known_sync_args, verbs.known_sync, True),
     "generate": (verbs.generate_args, verbs.generate, True),
     "junban": (verbs.junban_args, verbs.junban, True),
+    "pick": (verbs.pick_args, verbs.pick, True),
     # P2.1: the library verbs for Connect and hato (app/cli/connect_verbs.py)
     "register": (connect_verbs.register_args, connect_verbs.register, True),
     "place": (connect_verbs.place_args, connect_verbs.place, True),

@@ -56,6 +56,14 @@ class StatusService:
         self._refreshing = False
         self._subscribers = []
         self._logs_path = self._logs()
+        # The events file's path, settled now (on the window's start): a refresh later never works one out again.
+        self._events_path = None
+        if reader is None:
+            try:
+                from app.cli import events
+                self._events_path = events.path()
+            except Exception:
+                self._events_path = None
         self._snapshot = self._make()
         registry.subscribe(self._jobs_changed)
         self._jobs_changed(registry.snapshot())
@@ -93,11 +101,10 @@ class StatusService:
     def refresh(self):
         """Read new command-line failures and ask the providers (files and calls: a worker's)."""
         try:
-            if self._reader is None:
-                from app.cli import events
-                self._reader = events.Reader()
             from app.cli import events
-            newest = self._reader.newest_to_show()
+            if self._reader is None and self._events_path:
+                self._reader = events.Reader(events_path=self._events_path)
+            newest = self._reader.newest_to_show() if self._reader is not None else None
             extra = {}
             for name in ("ankiweb", "connect"):
                 provider = self.providers.get(name)

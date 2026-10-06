@@ -165,6 +165,13 @@ class GenerateController:
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.closing = closing
         self.settle = settle
+        # Where its log goes, settled now (on the window's start): a run that ends later never works out a path again.
+        if log_folder is None:
+            try:
+                from app.path_utils import get_local_data_path
+                log_folder = os.path.join(get_local_data_path(), "logs")
+            except Exception:
+                log_folder = None
         self._log_folder = log_folder
         self._lock = threading.RLock()
         self._deliver = threading.RLock()  # one delivery at a time (a listener may ask for a run from inside one)
@@ -192,11 +199,8 @@ class GenerateController:
             self._text_listeners.append(callback)
 
     def log_path(self):
-        folder = self._log_folder
-        if folder is None:
-            from app.path_utils import get_local_data_path
-            folder = os.path.join(get_local_data_path(), "logs")
-        return os.path.join(folder, LOG_NAME)
+        """The window's Generate log (`<local data>/logs/generate-window.log`; None when it has no folder)."""
+        return os.path.join(self._log_folder, LOG_NAME) if self._log_folder else None
 
     # --- the journey check -------------------------------------------------------------------------------------- #
     def check(self, settings, language, then=None):
@@ -367,7 +371,8 @@ class GenerateController:
         from app.path_utils import build_subprocess_env, is_frozen
         env = build_subprocess_env(is_frozen())
         env["SURASURA_RESULTS_WAIT"] = "forever"
-        folder = os.path.dirname(self.log_path())
+        import tempfile
+        folder = self._log_folder or tempfile.gettempdir()
         os.makedirs(folder, exist_ok=True)
         run.cancel_file = os.path.join(folder, f"generate-cancel-{os.getpid()}-{id(run)}.flag")
         env["SURASURA_CANCEL_FILE"] = run.cancel_file
@@ -380,8 +385,7 @@ class GenerateController:
         def read():
             log = None
             try:
-                os.makedirs(os.path.dirname(self.log_path()), exist_ok=True)
-                log = open(self.log_path(), "w", encoding="utf-8")
+                log = open(self.log_path() or os.devnull, "w", encoding="utf-8")
             except OSError:
                 log = None
             try:
@@ -439,7 +443,7 @@ class GenerateController:
             self._after(run, CURRENT)
         else:
             what = "couldn't start" if returncode is None else f"stopped (exit code {returncode})"
-            message = f"Generate {what}. The details are in {self.log_path()}"
+            message = f"Generate {what}." + (f" The details are in {self.log_path()}" if self.log_path() else "")
             run.job.finish(ok=False, message=message)
             self._after(run, FAILED, message=message, log_path=self.log_path())
 

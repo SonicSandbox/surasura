@@ -1063,7 +1063,8 @@ def test_the_four_switches_in_settings_save_load_and_show_for_japanese_only(monk
         assert token_index.build_signature("ja") == built, "the library's tables: no file is read again"
         boxes[0].invoke()
         logic = saved()
-        assert logic["names_katakana"] is False and logic["sentence_boundaries"], "the rest of the logic block is kept"
+        assert logic["names_katakana"] is False and settings_manager.load_settings()["logic"]["sentence_boundaries"], \
+            "the rest of the logic block is kept (the dashboard writes only its own keys, W1.3: the rest read back as every run reads it)"
         assert token_index.build_signature("ja") != built and launches(), "every file reads differently: re-index"
 
         with open(settings_file, "w", encoding="utf-8") as handle:

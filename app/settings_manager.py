@@ -43,6 +43,16 @@ DEFAULT_SETTINGS = {
     # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
     # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
     "sentence_dictionary_source": False,
+    # Surasura Connect's preview switch and the New arrivals placing rules (P2.1; docs/agent instructions/3.0/
+    # P1.5-connect/): Connect is off until the user turns it on (2.x: an opt-in preview); with it off, `register`
+    # writes nothing. The rules place an arrival in Current only when the user turned them on (✅ Q2-3, RD-S16), and
+    # only where New arrivals exist (3.0, the store's `arrivals_on`): `arrivals_straight_sources` names the programs
+    # whose drops go straight to the top of Current ("hato"), `arrivals_continuing_shows` puts a show's next episode
+    # right after its previous one (HC-N6; a finished show's new one at the top of Current, Q4-9). Read only by the
+    # command line and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_enabled": False,
+    "arrivals_straight_sources": [],
+    "arrivals_continuing_shows": False,
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run

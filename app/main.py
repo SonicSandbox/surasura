@@ -558,6 +558,9 @@ class MasterDashboardApp:
             # The library store's helper, when it has something to do (Library_Store_Spec §6.7: at open), and its
             # notice once that has had a moment to build the store.
             self.root.after(1500, self._maybe_maintain)
+
+            # Connect's preview on: name what another program (hato) added while Surasura was closed (P2.1 row 2.1.7)
+            self.root.after(2500, self._arrivals_notice)
             self.root.after(1600, self._update_library_notice)
 
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
@@ -1351,6 +1354,24 @@ class MasterDashboardApp:
                     library_store.spawn_maintain(lang)
             except Exception as e:
                 print(f"Library store helper check: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _arrivals_notice(self):
+        """With Connect's preview on: on a worker, the items another program registered while Surasura was closed,
+        named once in the bottom bar (`app/connect/notice.py`). With it off nothing of Connect's is imported."""
+        if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+        lang = self.var_language.get() or "ja"
+
+        def work():
+            try:
+                from app.connect import notice
+                line = notice.at_open(lang)
+            except Exception as e:
+                print(f"Arrivals notice: {e}")
+                return
+            if line:
+                self.gui_queue.put(lambda: self.status_var.set(line))
         threading.Thread(target=work, daemon=True).start()
 
     def _library_handle(self, lang):
@@ -3057,6 +3078,9 @@ class MasterDashboardApp:
             except (ImportError, ModuleNotFoundError):
                 pass
             carried += ["anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"]
+            # Connect's switch and the placing rules (P2.1): no control here yet (P3.1). Carried only as the file holds
+            # them — a save never drops one the user set, and never writes a default into a file that lacks it
+            connect_keys = ["connect_enabled", "arrivals_straight_sources", "arrivals_continuing_shows"]
 
             def build():
                 # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
@@ -3072,6 +3096,13 @@ class MasterDashboardApp:
                 for key in carried:
                     if key in panel:
                         out[key] = panel[key]
+                try:
+                    as_is = settings_manager._read_file_as_is()
+                except Exception:
+                    as_is = {}
+                for key in connect_keys:
+                    if key in as_is:
+                        out[key] = as_is[key]
                 # The Anki window owns these (core keys, so always written). The address is the one every
                 # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
                 # here and the file then holds one address.
@@ -3369,6 +3400,13 @@ class MasterDashboardApp:
         self.root.destroy()
         # What the settings writer still holds is written before the process ends (the window is gone: nothing waits).
         self._flush_settings(timeout=10.0)
+        # Connect's preview on: what arrived while the window was open was seen here — never named at the next start
+        if (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            try:
+                from app.connect import notice
+                notice.at_close(self.var_language.get() or "ja")
+            except Exception as e:
+                print(f"Arrivals notice at close: {e}")
         # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
         # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
         try:

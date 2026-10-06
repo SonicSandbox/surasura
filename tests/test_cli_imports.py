@@ -105,3 +105,28 @@ def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated
     (here with Anki switched off for the run, as the suites keep it)."""
     code, loaded = _loaded(argv, generated)
     assert code == 0 and not loaded & set(NOT_HEAVY), loaded
+
+
+# --------------------------------------------------------------------------- #
+# P2.1's verbs (row 2.1.8): `register`, `place`, `finish` and `connect --consume-only` are quick — no tokenizer either
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def paired_library():
+    """A library with its store, Connect on, and one hato drop with its pairing record on disk."""
+    from tests import cli_helpers as h
+    from tests import connect_helpers as c
+    c.library()
+    record = c.write_record(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
+    return h.root(), record
+
+
+@pytest.mark.parametrize("argv, exit_code", [
+    (["register", "--pairing", "{record}"], 0),
+    (["place", "--file", "1", "--to", "soon", "--source", "test"], 0),
+    (["finish", "--file", "1", "--source", "test"], 2),            # held to 3.0
+    (["connect", "--consume-only"], 0),
+])
+def test_p2_1s_verbs_load_nothing_heavy_and_no_tokenizer(paired_library, argv, exit_code):
+    root, record = paired_library
+    code, loaded = _loaded([a.replace("{record}", record) for a in argv], root)
+    assert code == exit_code and not loaded & set(NOT_EVEN_TEXT), loaded

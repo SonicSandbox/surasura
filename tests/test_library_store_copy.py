@@ -572,7 +572,7 @@ def test_an_update_staged_stops_everything_new(language, monkeypatch, real_store
         m.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
         assert ls.spawn_maintain(language) is None and spawned == []
     path = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[33]}.srt")
-    assert ls.register_headless(language, path, {"content_key": "x"}, data_dir, user_files_dir) == ls.EXIT_BUSY
+    assert ls.register_headless(language, path, {"content_key": "x"}, data_dir, user_files_dir).code == ls.EXIT_BUSY
     os.utime(marker, (time.time() - 3700, time.time() - 3700))  # an hour old: a crashed update, ignored
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store.close()

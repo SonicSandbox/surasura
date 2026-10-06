@@ -1,0 +1,154 @@
+"""Connect's inbox (P2.1 row 2.1.4): the store's placement log → jobs in the ledger.
+
+What a wrong answer would cost: Connect writes the user's Anki unattended, so a job made for something placed before
+Connect was switched on would mine the user's history (✅ G1.1-2 forbids it); a back-fill registration that made a job
+would mine the ~60 files already in hato's folder; a kill between reading and advancing that made a second job would
+make every card twice; a pruned log replayed as fresh would mine history too. Real subtitles, synthetic titles, a
+small mine line (2) so a handful of real files cross it.
+"""
+import pytest
+
+from app.connect import inbox
+from app.connect.ledger import Ledger
+from tests import connect_helpers as c
+from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
+
+
+def _library(lang="ja", line=2):
+    c.library(lang)
+    with c.store(lang) as s:
+        s.bookkeeping({"mine_line": line}, copy_carries=True)
+
+
+def _consume(lang="ja"):
+    with c.store(lang) as s, Ledger() as ledger:
+        return inbox.consume(s, lang, ledger)
+
+
+def _jobs(lang="ja", **kw):
+    with Ledger() as ledger:
+        return ledger.jobs(lang, **kw)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_first_run_skips_everything_placed_before_the_watermark(lang):
+    _library(lang)
+    with c.store(lang) as s:
+        s.register_reader("window-notice")          # another reader: the log is written from here on
+        ids = s.ids("now")
+        s.move([ids[-1]], "now")                    # entered the top 2 before Connect was on
+        assert any(k == "entered_mine_line" for _i, k, _b in c.events(s))
+    first = _consume(lang)
+    assert first == {"queued": [], "dropped": [], "reconciled": False, "read": 0}
+    assert _jobs(lang) == [], "nothing placed before Connect was switched on is mined"
+    assert _consume(lang)["queued"] == []
+
+
+def test_an_item_entering_the_top_20_is_queued_with_who_placed_it():
+    _library()
+    _consume()                                          # Connect on: the watermark
+    with c.store() as s:
+        moved = s.ids("now")[-1]
+    from app.connect import library
+    with c.store() as s:
+        library.place(s, moved, "now", source="my-script")
+    out = _consume()
+    assert out["queued"] == [moved]
+    job = _jobs()[0]
+    assert (job["item_id"], job["state"], job["source"]) == (moved, "queued", "my-script")
+
+
+def test_a_hato_drop_is_queued_as_hatos_and_a_backfill_never_is():
+    _library()
+    _consume()
+    with c.store() as s:
+        loud = s.register(c.drop("Example Show - 05.ja.srt"), c.record(c.drop("Example Show - 05.ja.srt"), "v5"))
+        quiet = s.register(c.drop("Example Show - 04.ja.srt"), c.record(c.drop("Example Show - 04.ja.srt"), "v4"),
+                           backfill=True)
+    out = _consume()
+    assert out["queued"] == [loud.added[0]] and quiet.added[0] not in out["queued"]
+    assert [j["source"] for j in _jobs()] == ["hato"]
+
+
+def test_an_item_that_leaves_the_top_20_before_mining_is_dropped():
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        ids = s.ids("now")
+        library.place(s, ids[-1], "now", source="user")      # enters (top 2), pushes ids[1] out
+    _consume()
+    with c.store() as s:
+        library.place(s, ids[-1], "soon", source="user")     # leaves again before any mining
+    out = _consume()
+    assert ids[-1] in out["dropped"]
+    assert [j["state"] for j in _jobs() if j["item_id"] == ids[-1]] == ["dropped"]
+
+
+def test_a_started_job_is_never_dropped():
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        item = s.ids("now")[-1]
+        library.place(s, item, "now", source="user")
+    _consume()
+    with Ledger() as ledger:
+        ledger.conn.execute("UPDATE jobs SET state = 'mining' WHERE item_id = ?", (item,))
+    with c.store() as s:
+        library.place(s, item, "soon", source="user")
+    assert _consume()["dropped"] == [] and _jobs()[0]["state"] == "mining", "once mining has started, it finishes"
+
+
+def test_a_kill_between_read_and_advance_re_reads_without_a_second_job(monkeypatch):
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        item = s.ids("now")[-1]
+        library.place(s, item, "now", source="user")
+    from app import library_store
+
+    def killed(*_a, **_k):
+        raise KeyboardInterrupt("killed after the ledger's commit, before the reader moved")
+    advance = library_store.Store.advance_reader
+    monkeypatch.setattr(library_store.Store, "advance_reader", killed)
+    with pytest.raises(KeyboardInterrupt):
+        _consume()
+    monkeypatch.setattr(library_store.Store, "advance_reader", advance)
+    assert [j["item_id"] for j in _jobs()] == [item], "the job was committed"
+    again = _consume()
+    assert again["read"] > 0 and again["queued"] == []
+    assert len(_jobs()) == 1, "re-read, one job"
+
+
+def test_a_mined_item_is_not_queued_again():
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        item = s.ids("now")[-1]
+        s.receipt(item, "2026-10-05T12:00:00Z")
+        library.place(s, item, "now", source="user")
+    assert _consume()["queued"] == []
+
+
+def test_a_gap_reconciles_drops_what_left_and_queues_nothing():
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        ids = s.ids("now")
+        library.place(s, ids[-1], "now", source="user")
+    _consume()                                              # ids[-1] queued
+    with c.store() as s:
+        library.place(s, ids[-1], "goal", source="user")     # left …
+        library.place(s, ids[1], "now", source="user")       # … and another entered
+        with s._writing():                                  # the log pruned past Connect's watermark
+            s.conn.execute("DELETE FROM placement_log")
+    out = _consume()
+    assert out["reconciled"] is True and out["queued"] == [], "never a mine of history"
+    assert out["dropped"] == [ids[-1]]
+    with c.store() as s:
+        rows, gap = s.read_events("connect")
+        assert not gap and rows == [], "the reader moved to the log's end"

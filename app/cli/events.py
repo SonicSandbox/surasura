@@ -9,9 +9,11 @@ dashboard and 3.0's window (W1.3) read it alike; call it off the window's thread
 import json
 import os
 
-# What a window shows: a failure (exit 1) and a question for the user (exit 4). A wrong command (2), busy or an update
-# staged (3) are the caller's to handle: Connect retries them, and showing each would flood the bar.
+# What a window shows: a failure (exit 1), a question for the user (exit 4), and the two exit-2 answers only a person
+# can fix (another version's word index; a language not set up). A wrong command, busy or an update staged are the
+# caller's to handle: Connect retries them, and showing each would flood the bar.
 SHOWN_EXITS = frozenset({1, 4})
+SHOWN_CODES = frozenset({"version-skew", "not-set-up"})
 
 
 def path():
@@ -82,6 +84,6 @@ class Reader:
         return out
 
     def newest_to_show(self):
-        """The newest new event a window shows (`SHOWN_EXITS`), or None."""
-        shown = [e for e in self.new() if e.get("exit") in SHOWN_EXITS]
+        """The newest new event a window shows (`SHOWN_EXITS`, `SHOWN_CODES`), or None."""
+        shown = [e for e in self.new() if e.get("exit") in SHOWN_EXITS or e.get("code") in SHOWN_CODES]
         return shown[-1] if shown else None

@@ -288,6 +288,8 @@ def _write_atomically(path: str, to_save: Dict[str, Any]):
     try:
         with open(temp, "w", encoding="utf-8") as f:
             json.dump(to_save, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())                # on disk before it replaces the old file (a power cut: old or new)
         for attempt in range(_REPLACE_TRIES):
             try:
                 os.replace(temp, path)
@@ -374,26 +376,80 @@ def _read_file_as_is() -> Dict[str, Any]:
     return settings
 
 
-def save_keys(changes: Dict[str, Any]) -> Dict[str, Any]:
+def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None) -> Dict[str, Any]:
     """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
     and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
     so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
     Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
-    settings. The Anki window's own save works the same way (anki_sync_gui.AnkiSyncGui._save). The read and the write
-    hold the `settings` lock together, so no other program's save lands between them."""
+    settings. `update(settings)`, when given, changes the file's dict in place after `changes` (a window whose keys
+    merge into what the file holds: the Anki window's per-language decks).
+
+    The read and the write hold the `settings` lock together, so no other program's save lands between them. Never
+    waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
+    by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
+    order the windows saved (`flush_keys` waits for them; the process writes them before it ends)."""
+    entry = (dict(changes or {}), update)
     try:
-        held = _settings_lock(LOCK_WAIT)
+        held = locks.take("settings", "saving settings") if not locks.held_here("settings") else None
+    except locks.Busy:
+        with _QUEUED_LOCK:
+            _QUEUED.append(entry)
+        _queued_writer().submit(_build_queued)
+        return _apply([entry], _read_file_as_is())
     except Exception as e:
-        print(f"Error: Could not save settings: {e}")
-        return {**_read_file_as_is(), **changes}
+        print(f"Warning: the settings lock can't be used ({e}); saving without it.")
+        held = None
     try:
-        settings = _read_file_as_is()
-        settings.update(changes)
+        settings = _apply([entry], _read_file_as_is())
         save_settings(settings)
     finally:
         if held is not None:
             held.release()
     return settings
+
+
+def _apply(entries, settings):
+    for changes, update in entries:
+        settings.update(changes)
+        if update is not None:
+            update(settings)
+    return settings
+
+
+# The other windows' saves that met a held lock, in order; written by one worker (`_build_queued`).
+_QUEUED = []
+_QUEUED_LOCK = threading.Lock()
+_QUEUED_WRITER = None
+_WRITTEN_UPTO = [0]
+
+
+def _build_queued():
+    """The file as it is with every queued save applied in order (inside the lock, on the writer's worker)."""
+    with _QUEUED_LOCK:
+        entries = list(_QUEUED)
+    _WRITTEN_UPTO[0] = len(entries)
+    return _apply(entries, _read_file_as_is())
+
+
+def _queued_written(_settings):
+    with _QUEUED_LOCK:
+        del _QUEUED[:_WRITTEN_UPTO[0]]
+
+
+def _queued_writer():
+    global _QUEUED_WRITER
+    with _QUEUED_LOCK:
+        if _QUEUED_WRITER is None:
+            _QUEUED_WRITER = SettingsWriter(delay=0.0, on_saved=_queued_written)
+            import atexit
+            atexit.register(flush_keys, 10.0)
+        return _QUEUED_WRITER
+
+
+def flush_keys(timeout: Optional[float] = None) -> bool:
+    """Wait until every queued window save is written (on a worker, or as the process ends). True when none is left."""
+    writer = _QUEUED_WRITER
+    return True if writer is None else writer.flush(timeout)
 
 
 class SettingsWriter:

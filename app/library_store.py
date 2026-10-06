@@ -203,13 +203,15 @@ PROBE_LOOKS = 6
 PROBE_GAP = 0.02
 
 
-def update_staged(max_age=3600.0):
+def update_staged(max_age=3600.0, looks=1):
     """True while an update is staged (§6.7): the update lock is held (Update now, until the hand-over —
     by this process too: a lock taken on another handle is refused), or the updater's marker exists
     while its helper swaps the files. A marker older than an hour (a crashed update) is ignored.
 
-    The look takes the lock for a moment, so another caller's look can find it held: only a lock held at
-    every look over ~0.1 s (`PROBE_LOOKS`) is an update."""
+    A look takes the lock for a moment, so another caller's look can find it held: the command line looks
+    `PROBE_LOOKS` times (~0.1 s) and only a lock held at every look is an update; a window's thread looks once
+    (`looks=1`, never waiting). An update lock file this process can't open is no update (logged): read as one,
+    every command would answer `update-staged` for good."""
     try:
         age = time.time() - os.path.getmtime(update_staged_path())
         if age < max_age:
@@ -219,15 +221,21 @@ def update_staged(max_age=3600.0):
     try:
         from app.path_utils import release_lock, try_lock
         path = update_lock_path()
-        for look in range(PROBE_LOOKS):
+        for look in range(max(1, looks)):
             if not os.path.exists(path):
                 return False
             held = try_lock(path)
             if held is not None:
                 release_lock(held)
                 return False
-            if look < PROBE_LOOKS - 1:
+            if look < looks - 1:
                 time.sleep(PROBE_GAP)
+        try:
+            with open(path, "a+b"):
+                pass
+        except PermissionError:
+            print(f"Warning: the update lock can't be opened ({path}); read as no update.")
+            return False
     except Exception:
         return False
     return True

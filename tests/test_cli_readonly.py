@@ -229,3 +229,27 @@ def test_status_on_a_774_file_library_is_quick(monkeypatch):
         assert code == 0, lines
     print(f"\nTIMING status on 774 files: {json.dumps(timings)}")
     assert timings["status"] < 5.0
+
+
+def test_list_after_a_generate_killed_part_way_says_generate_again(generated):
+    """The review's #6: a run killed mid-write leaves a list cut short and no run stamp: `bad-data`, never `ok`."""
+    results = os.path.join(h.root(), "results")
+    path = os.path.join(results, "priority_learning_list.csv")
+    data = open(path, "rb").read()
+    with open(path, "wb") as f:
+        f.write(data[: len(data) // 2])
+    os.remove(os.path.join(results, analyzer.RUN_STAMP_FILE))
+    code, lines = h.run_cli("list")
+    assert code == 1 and h.answer(lines)["code"] == "bad-data" and "Generate again" in h.answer(lines)["message"]
+
+
+def test_list_limit_zero_is_empty_and_a_negative_one_is_a_usage_error(generated):
+    assert h.answer(h.run_cli("list", "--limit", "0")[1])["words"] == []
+    code, lines = h.run_cli("list", "--limit", "-1")
+    assert code == 2 and h.answer(lines)["code"] == "usage"
+
+
+def test_one_kanji_means_a_kanji(generated, monkeypatch):
+    from app.cli import verbs
+    kind = verbs._kinds("ja")
+    assert kind("手") == "one_kanji" and kind("ね") == "word" and kind("ア") == "word"

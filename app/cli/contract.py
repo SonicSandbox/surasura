@@ -226,6 +226,7 @@ UNOPENABLE = "Surasura couldn't open its lock file; try again, or check the fold
 def busy_error(name, holder, what=None):
     """`busy` (exit 3) for a lock held elsewhere: `lock`, `held_by` (the holder record, or null), plain words."""
     from app import locks
+    holder = locks.holder_alive(holder)         # a record a killed holder left names nobody
     if holder is None:
         path = locks.unopenable(name)
         if path is not None:
@@ -255,8 +256,8 @@ def check_update():
     """An update staged or swapping: answer `update-staged`. One rule for the whole program, the store's
     (`library_store.update_staged`, S1.1): the update lock held, or the updater's marker under an hour old (an older
     one is a crashed update and blocks nothing)."""
-    from app.library_store import update_staged
-    if update_staged():
+    from app.library_store import PROBE_LOOKS, update_staged
+    if update_staged(looks=PROBE_LOOKS):        # several looks: another call's look is not an update
         raise CliError("update-staged", "Surasura is installing an update. Try again once it has restarted.")
 
 

@@ -9,6 +9,7 @@ a fresh cache) read no text, so fugashi and jieba stay out of them too. Every im
 """
 import csv
 import datetime
+import re
 import importlib.util
 import json
 import os
@@ -22,6 +23,14 @@ from app.cli.contract import CliError
 LANGUAGES = ("ja", "zh")
 PRIORITY_CSV = "priority_learning_list.csv"
 PROGRESSIVE_CSV = "progressive_learning_list.csv"
+
+
+def _han():
+    from app.unicode_ranges import HAN
+    return re.compile(f"[{HAN}]")
+
+
+_HAN = _han()
 
 
 # --------------------------------------------------------------------------- #
@@ -61,6 +70,11 @@ def require_set_up(lang):
                        language=lang)
 
 
+def read_run_stamp_here():
+    from app import analyzer
+    return analyzer.read_run_stamp(_results_dir())
+
+
 def _results_dir():
     from app.path_utils import get_user_file
     return get_user_file("results")
@@ -80,18 +94,9 @@ def _iso(seconds):
     return datetime.datetime.fromtimestamp(seconds).isoformat(timespec="seconds")
 
 
-def _held_elsewhere(name):
-    """A look at `name`: held by another program right now? Takes the OS lock for a moment and writes nothing (no
-    holder record): a reader's look, as `library_store.update_staged` looks at the update lock."""
-    from app import locks, path_utils
-    path = os.path.join(locks.folder(name), name + ".lock")
-    if not os.path.exists(path):
-        return False
-    held = path_utils.try_lock(path)
-    if held is None:
-        return True
-    path_utils.release_lock(held)
-    return False
+def _in_use(name):
+    from app import locks
+    return locks.in_use(name)
 
 
 def _module_present(name):
@@ -139,7 +144,7 @@ def status(args):
         "anki": anki,
         "junban": "present" if _module_present("modules.junban.reposition") else "absent",
         "backfill": "present" if _module_present("modules.junban.backfill") else "absent",
-        "indexer": "busy" if _held_elsewhere("indexer") else "idle",
+        "indexer": "busy" if _in_use("indexer") else "idle",
         "update_staged": bool(library_store.update_staged()),
     }
 
@@ -153,7 +158,15 @@ def list_args(parser):
     parser.add_argument("--file", default=None, help="only this library file's words, in the file's own order")
     parser.add_argument("--order", choices=("leverage", "encounter"), default="leverage",
                         help="leverage (the list's order, default) or encounter (the journey's order)")
-    parser.add_argument("--limit", type=int, default=None, help="at most this many words")
+    parser.add_argument("--limit", type=_count, default=None, help="at most this many words")
+
+
+def _count(text):
+    import argparse
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("a count can't be negative")
+    return value
 
 
 def _kinds(lang):
@@ -179,7 +192,7 @@ def _kinds(lang):
             return "phrase"
         if word in compounds:
             return "compound"
-        if len(word) == 1:
+        if len(word) == 1 and _HAN.match(word):
             return "one_kanji"
         return "word"
     return kind
@@ -212,6 +225,8 @@ def list_words(args):
         holds = _results_language()
         if holds and holds != lang:
             return {"language": lang, "words": [], "skipped": f"results hold {holds}"}
+        if read_run_stamp_here() is None and os.path.exists(os.path.join(_results_dir(), PRIORITY_CSV)):
+            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
         if args.file is not None or args.order == "encounter":
             rows = _read_rows(os.path.join(_results_dir(), PROGRESSIVE_CSV))
         else:
@@ -224,6 +239,8 @@ def list_words(args):
     kind = _kinds(lang)
     words, seen = [], set()
     for row in rows:
+        if args.limit is not None and len(words) >= args.limit:
+            break
         key = (row.get("Word", ""), row.get("Reading", ""))
         if key in seen:                     # the journey meets a word once; a file's rows are its own
             continue
@@ -235,8 +252,6 @@ def list_words(args):
             word["file_order"] = len(words) + 1
             word["file_occurrences"] = _int(row.get("Occurrences (File)"))
         words.append(word)
-        if args.limit is not None and len(words) >= args.limit:
-            break
     out["words"] = words
     return out
 
@@ -424,13 +439,16 @@ def _count_rows(path):
 def generate(args):
     """Generate as the window's button does, headless: the same argv (`run_args`, always `--no-open`, never
     `--app-mode`), `ran: false` when nothing changed (no analyzer, no pandas), else the analyzer as a child that
-    holds `results` itself — so a killed command line never leaves a writer without the lock."""
+    holds `results` itself — so a killed command line never leaves a writer without the lock. `ran` says whether the
+    analysis ran (a new run stamp): a re-render alone, or the analyzer's own "nothing changed", is `ran: false`.
+    `--force` runs it anyway."""
     from app import analyzer, path_utils, run_args
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
     argv = run_args.analyzer_args(loaded, lang, headless=True)
     started = time.monotonic()
+    deadline = started + max(0.0, args.wait or 0.0)
     with contract.take_lock("results", "Generate (command line)", wait=args.wait):
         contract.emit_progress("reading Anki's backlog", 0, None)
         _backlog_read(loaded, lang)
@@ -438,15 +456,23 @@ def generate(args):
             return {"language": lang, "ran": False, "run_signature": analyzer.read_run_stamp(_results_dir()),
                     "words": _count_rows(os.path.join(_results_dir(), PRIORITY_CSV)),
                     "seconds": round(time.monotonic() - started, 3)}
-    # Let go, then start the child: it takes `results` itself (waiting CHILD_WAIT for this moment).
+    # Let go, then start the child: it takes `results` itself, waiting for this moment what is left of --wait (never
+    # less than CHILD_WAIT): a window's Generate pressed meanwhile may start first, and then this one waits its turn.
     log_path = os.path.join(contract.log_folder(), "generate.log")
+    stamp = os.path.join(_results_dir(), analyzer.RUN_STAMP_FILE)
+    stamped = _mtime(stamp)
     env = path_utils.build_subprocess_env(path_utils.is_frozen())
-    env["SURASURA_RESULTS_WAIT"] = str(CHILD_WAIT)
+    env["SURASURA_RESULTS_WAIT"] = str(round(max(CHILD_WAIT, deadline - time.monotonic()), 3))
+    if args.force:
+        env["SURASURA_FORCE_RUN"] = "1"     # the analyzer runs even when its own signature says nothing changed
     contract.emit_progress("generating", 0, None)
     with open(log_path, "w", encoding="utf-8", errors="replace") as child_log:
+        if sys.platform == "win32":
+            detached = {"creationflags": CREATE_NO_WINDOW}
+        else:
+            detached = {"start_new_session": True}      # Ctrl+C in the caller's terminal never stops it mid-write
         child = subprocess.Popen(child_command(argv), stdin=subprocess.DEVNULL, stdout=child_log,
-                                 stderr=subprocess.STDOUT, env=env,
-                                 creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                                 stderr=subprocess.STDOUT, env=env, **detached)
         contract.log.info("generate: analyzer child pid=%s", child.pid)
         code = child.wait()
     seconds = round(time.monotonic() - started, 3)
@@ -455,10 +481,18 @@ def generate(args):
         raise contract.busy_error("results", locks.read_holder("results"))
     if code != 0:
         raise CliError("crashed-child", f"Generate failed (the analyzer stopped with code {code}). The details are "
-                                        f"in its log: {log_path}", exit=code, log=log_path)
+                                        f"in its log: {log_path}", child_exit=code, log=log_path)
     contract.emit_progress("generating", 1, 1)
-    return {"language": lang, "ran": True, "run_signature": analyzer.read_run_stamp(_results_dir()),
+    return {"language": lang, "ran": _mtime(stamp) != stamped,
+            "run_signature": analyzer.read_run_stamp(_results_dir()),
             "words": _count_rows(os.path.join(_results_dir(), PRIORITY_CSV)), "seconds": seconds}
+
+
+def _mtime(path):
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
 
 
 # --------------------------------------------------------------------------- #

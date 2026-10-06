@@ -443,9 +443,8 @@ class MasterDashboardApp:
         # Settings are written off this thread, under the `settings` lock (P0.3 04 §2): queued and retried, never
         # dropped. A child process, a journey check or closing the window flushes it first (`_flush_settings`).
         self._settings_writer = settings_manager.SettingsWriter(
-            on_saved=lambda _s: self.gui_queue.put(self._schedule_journey_state),
-            on_error=lambda _e: self.gui_queue.put(
-                lambda: self.status_var.set("Saving your settings waits for another Surasura program…")))
+            on_saved=lambda _s: self.gui_queue.put(self._on_settings_saved),
+            on_error=lambda _e: self.gui_queue.put(lambda: self.status_var.set(self.SETTINGS_WAIT_LINE)))
         # Set when the window closes: a worker still waiting on a lock (a background Generate's) stops.
         self._closing_event = threading.Event()
 
@@ -3157,6 +3156,14 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open the parsing guide: {e}")
             
+    SETTINGS_WAIT_LINE = "Saving your settings waits for another Surasura program…"
+
+    def _on_settings_saved(self):
+        """The settings writer wrote: the journey check follows, and its waiting line (if shown) goes."""
+        if self.status_var.get() == self.SETTINGS_WAIT_LINE:
+            self.status_var.set("Ready")
+        self._schedule_journey_state()
+
     CLI_EVENTS_EVERY = 3000     # ms between looks at the command line's events file (a stat; the read is a worker's)
 
     def _watch_cli_events(self):
@@ -3198,14 +3205,16 @@ class MasterDashboardApp:
         writer = getattr(self, "_settings_writer", None)
         if isinstance(writer, settings_manager.SettingsWriter):
             writer.flush(timeout)
+        settings_manager.flush_keys(timeout)        # the other windows' saves that met a held lock
 
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
-                          clear_log=True, on_exit=None):
+                          clear_log=True, on_exit=None, extra_env=None):
         """Runs a command with optional output redirection to the terminal.
 
         on_complete: optional zero-arg callable run on the GUI thread after the process exits
         (e.g. refreshing the band preview once a new analysis has written its token index).
         clear_log: False keeps what the log already shows (the automatic Generate appends to it).
+        extra_env: variables for this command's process only (the analyzer's wait for `results`).
         on_exit: like on_complete, but run however the command ends — also when it could not be
         started at all (Generate's "one is running" must never stick).
         Whenever a command ends, an automatic Generate waiting for it gets its chance
@@ -3213,7 +3222,7 @@ class MasterDashboardApp:
         While an update waits for Surasura's programs (K75) nothing new starts: the command is kept and starts if the
         update is cancelled."""
         if updater.defer_child(lambda: self.run_command_async(cmd, desc, capture_output, show_spinner, on_complete,
-                                                              clear_log, on_exit)):
+                                                              clear_log, on_exit, extra_env)):
             self.status_var.set(f"{desc} will start if the update is cancelled.")
             return
         
@@ -3269,6 +3278,7 @@ class MasterDashboardApp:
                 # SET ENVIRONMENT: UTF-8 stdio (so the strict-UTF-8 stdout capture below never
                 # chokes on locale-encoded bytes) + project root on PYTHONPATH in source mode.
                 env = build_subprocess_env(is_frozen())
+                env.update(extra_env or {})
                 
                 # subprocess.CREATE_NO_WINDOW can cause issues for GUI apps
                 # but it's good for console tools like analyzer if we capture output.
@@ -3502,6 +3512,12 @@ class MasterDashboardApp:
         settings["enable_junban"] = bool(self.var_enable_junban.get())     # the switch as shown, saved or not yet
         if not auto.enabled(settings) or auto.blocked(settings, window=False):
             return
+        window = getattr(self, "junban_window", None)
+        try:
+            if window is not None and window.winfo_exists():
+                return                  # this window's own 順 panel, before its lock is even taken
+        except Exception:
+            pass
         if not self._junban_auto_lock.acquire(blocking=False):
             return
         self._last_junban_auto = now
@@ -3881,7 +3897,10 @@ class MasterDashboardApp:
                                                         self._maybe_junban_auto(force=True),
                                                         self._schedule_journey_state(),
                                                         self._tell_junban_list_changed()),
-                                   on_exit=self._on_generate_exit)
+                                   on_exit=self._on_generate_exit,
+                                   # It has waited its turn already; started in the moment another program's
+                                   # Generate also starts, it waits for that one (closing the window ends it).
+                                   extra_env={"SURASURA_RESULTS_WAIT": "forever"})
 
         def go():
             if not wait_for_results():

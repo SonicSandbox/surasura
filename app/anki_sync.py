@@ -144,7 +144,14 @@ def _atomic_write_bytes(path, data):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        for attempt in range(5):            # a reader holding the file open refuses the replace for a moment (02 §8)
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
     except BaseException:
         try:
             os.remove(tmp)

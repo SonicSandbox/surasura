@@ -111,3 +111,29 @@ def test_the_windows_settings_save_queues_while_another_program_holds_the_lock(s
         other.release()
     assert app._settings_writer.flush(timeout=10)
     assert settings_manager.load_settings()["only_i_plus_one"] is True
+
+
+def test_a_version_mismatch_and_a_language_not_set_up_are_shown_only_a_person_fixes_them():
+    """Decision 1's lean (the intent review): of the exit-2 answers, these two are shown; a wrong command is not."""
+    reader = cli_events.Reader()
+    h.seed_library("ja", templates=False)
+    h.write_settings()
+    assert h.run_cli("status", "--lang", "zh")[0] == 2       # zh never set up
+    event = reader.newest_to_show()
+    assert event["code"] == "not-set-up"
+    h.run_cli("nope")
+    assert reader.newest_to_show() is None
+
+
+def test_the_settings_waiting_line_goes_once_the_write_lands():
+    from app.main import MasterDashboardApp
+    app = MagicMock()
+    app.SETTINGS_WAIT_LINE = MasterDashboardApp.SETTINGS_WAIT_LINE
+    app.status_var.get.return_value = MasterDashboardApp.SETTINGS_WAIT_LINE
+    MasterDashboardApp._on_settings_saved(app)
+    app.status_var.set.assert_called_with("Ready")
+    app._schedule_journey_state.assert_called_once()
+    app.status_var.reset_mock()
+    app.status_var.get.return_value = "Generating…"           # another line since: left alone
+    MasterDashboardApp._on_settings_saved(app)
+    app.status_var.set.assert_not_called()

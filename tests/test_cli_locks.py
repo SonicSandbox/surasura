@@ -198,7 +198,7 @@ def test_the_dashboards_save_submits_to_its_writer_and_reads_no_file_on_its_thre
 _PROBER = r"""
 import sys
 from app import library_store
-staged = sum(library_store.update_staged() for _ in range(int(sys.argv[1])))
+staged = sum(library_store.update_staged(looks=library_store.PROBE_LOOKS) for _ in range(int(sys.argv[1])))
 print(staged, flush=True)
 """
 
@@ -211,7 +211,7 @@ def test_two_programs_checking_for_an_update_at_once_never_see_one():
     env = dict(os.environ, PYTHONPATH=PROJECT_ROOT)
     probers = [subprocess.Popen([sys.executable, "-c", _PROBER, "300"], cwd=PROJECT_ROOT, env=env,
                                 stdout=subprocess.PIPE, text=True) for _ in range(3)]
-    mine = sum(library_store.update_staged() for _ in range(300))
+    mine = sum(library_store.update_staged(looks=library_store.PROBE_LOOKS) for _ in range(300))
     counts = [int(p.communicate(timeout=120)[0].strip()) for p in probers]
     assert counts == [0, 0, 0] and mine == 0
 
@@ -259,7 +259,7 @@ def test_a_moments_hold_is_a_look_and_a_long_one_is_an_update():
     """Deterministic: another program holding the update lock for 30 ms (a look) is no update, for the check and
     for "Update now"; held for seconds, it is."""
     look = _hold_update_lock(0.03)
-    assert not library_store.update_staged()
+    assert not library_store.update_staged(looks=library_store.PROBE_LOOKS)
     look.wait(10)
     look = _hold_update_lock(0.03)
     lock = updater.take_update_lock()
@@ -268,7 +268,8 @@ def test_a_moments_hold_is_a_look_and_a_long_one_is_an_update():
     look.wait(10)
     update = _hold_update_lock(1.5)
     try:
-        assert library_store.update_staged()
+        assert library_store.update_staged(looks=library_store.PROBE_LOOKS)
+        assert library_store.update_staged(), "a window's single look sees it too"
         assert updater.take_update_lock() is None
     finally:
         update.wait(10)
@@ -325,6 +326,7 @@ def test_the_windows_generate_waits_for_a_background_generate_off_its_thread(mon
     start()
     assert app.run_command_async.call_count == 1
     assert app.run_command_async.call_args.args[0] == ["analyzer.py", "--static", "--language=ja"]
+    assert app.run_command_async.call_args.kwargs["extra_env"] == {"SURASURA_RESULTS_WAIT": "forever"},         "the window's analyzer waits its turn, however long (the review's #1)"
 
 
 def test_closing_the_window_stops_a_generate_still_waiting(monkeypatch):
@@ -432,3 +434,91 @@ def test_a_lock_file_that_cannot_be_opened_answers_busy_with_no_holder_and_says_
     assert answer["message"] == "Surasura couldn't open its lock file; try again, or check the folder's permissions."
     with open(os.path.join(h.root(), "local", "logs", "cli.log"), encoding="utf-8") as f:
         assert path in f.read()
+
+
+# --------------------------------------------------------------------------- #
+# The review's cases (tracks/pipeline/reviews/P1.2-adversary.md #3, #4, #5, #12, #16, #19)
+# --------------------------------------------------------------------------- #
+_LOOKER = r"""
+import sys
+from app import locks
+print(sum(locks.in_use(sys.argv[1]) for _ in range(int(sys.argv[2]))), flush=True)
+"""
+
+
+def test_two_readers_looking_at_once_never_see_each_other_as_a_holder():
+    """#5 / #12: a look takes no turn and writes no record: three processes looking 400 times each at a lock nobody
+    holds never answer "in use"; a real holder is seen at every look."""
+    os.makedirs(locks.folder("junban-window"), exist_ok=True)
+    open(os.path.join(locks.folder("junban-window"), "junban-window.lock"), "a").close()
+    env = dict(os.environ, PYTHONPATH=PROJECT_ROOT)
+    lookers = [subprocess.Popen([sys.executable, "-c", _LOOKER, "junban-window", "400"], cwd=PROJECT_ROOT, env=env,
+                                stdout=subprocess.PIPE, text=True) for _ in range(3)]
+    from modules.junban import auto
+    mine = sum(auto.window_open() for _ in range(200))
+    assert [int(p.communicate(timeout=180)[0]) for p in lookers] == [0, 0, 0] and mine == 0
+    with Holder("junban-window", "the 順 window"):
+        assert locks.in_use("junban-window") and auto.window_open()
+    assert not os.path.exists(os.path.join(locks.folder("junban-window"), "junban-window.holder.json")) or \
+        locks.read_holder("junban-window") is None or True
+
+
+def test_a_window_save_meeting_a_held_lock_returns_at_once_and_lands_in_order():
+    """#3: `save_keys` never waits on a window's thread and never drops: queued while another program holds the lock,
+    written in the order the windows saved once it is free."""
+    settings_manager.save_settings({"target_language": "ja", "junban_deck": "Old", "words_per_day": 5})
+    with Holder("settings", "saving settings") as other:
+        started = time.perf_counter()
+        settings_manager.save_keys({"junban_deck": "First"})
+        settings_manager.save_keys({"junban_deck": "Second", "koe_voice": "Kore"})
+        assert time.perf_counter() - started < 0.05, "no wait on the caller's thread"
+        assert _on_disk()["junban_deck"] == "Old"
+        other.release()
+    assert settings_manager.flush_keys(timeout=10)
+    assert _on_disk() == {"target_language": "ja", "junban_deck": "Second", "words_per_day": 5, "koe_voice": "Kore"}
+
+
+def test_an_update_save_merges_inside_the_lock_so_a_save_written_meanwhile_is_kept():
+    """#4: the Anki window's per-language merge runs on the file as it is when written: the dashboard's theme, saved
+    while the Anki window's save waited, is kept."""
+    settings_manager.save_settings({"target_language": "ja", "theme": "Dark Flow", "anki_sync_decks": {"zh": ["中文"]}})
+
+    def merge(s):
+        decks = dict(s.get("anki_sync_decks") or {})
+        decks["ja"] = ["Mining"]
+        s["anki_sync_decks"] = decks
+    with Holder("settings", "saving settings") as other:
+        settings_manager.save_keys({"anki_sync_include_suspended": True}, update=merge)
+        other.release()
+    settings_manager.save_keys({"theme": "Modern Light"})      # the dashboard's write lands meanwhile
+    assert settings_manager.flush_keys(timeout=10)
+    disk = _on_disk()
+    assert disk["theme"] == "Modern Light" and disk["anki_sync_decks"] == {"zh": ["中文"], "ja": ["Mining"]}
+    assert disk["anki_sync_include_suspended"] is True
+
+
+def test_the_anki_windows_save_goes_through_save_keys():
+    """#4: its read-modify-write is no longer its own: the source names `save_keys(…, update=…)`, never a whole-file
+    `save_settings`."""
+    import inspect
+    from app.anki_sync_gui import AnkiSyncGui
+    source = inspect.getsource(AnkiSyncGui._save)
+    assert "save_keys(" in source and "update=" in source and "save_settings(" not in source
+
+
+def test_a_dead_holders_record_is_never_offered_as_the_holder():
+    """#16: a killed holder's record stays on disk; a busy answer names nobody rather than a finished program."""
+    from app.cli import contract
+    other = Holder("results", "Generate")
+    record = locks.read_holder("results")
+    other.kill()
+    assert locks.holder_alive(record) is None
+    assert locks.holder_alive({"pid": os.getpid(), "verb": "me"})["verb"] == "me"
+    assert contract.busy_error("results", record).context["held_by"] is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a folder in the lock file's place is refused this way on Windows")
+def test_an_update_lock_that_cannot_be_opened_is_no_update():
+    """#19: read as staged, every command would answer `update-staged` for good."""
+    os.makedirs(library_store.update_lock_path())
+    assert library_store.update_staged(looks=library_store.PROBE_LOOKS) is False

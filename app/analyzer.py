@@ -4055,10 +4055,12 @@ def _set_run_stamp(results_dir, signature):
 # results/ is written by one Generate at a time, across programs (P0.3 04 §2): the analyzer holds the `results` lock
 # (`app/locks.py`) for its whole run — itself, the writer, so a parent killed meanwhile (surasura-cli's `generate`)
 # never leaves a writer without the lock. Whoever starts it waits for the lock to be free first (the window on a
-# worker, the command line with --wait); the analyzer waits this long more (SURASURA_RESULTS_WAIT, seconds) for the
-# moment between the two, then gives up with exit code 3, nothing written.
+# worker, the command line with --wait); the analyzer waits this long more (SURASURA_RESULTS_WAIT, seconds, or
+# "forever": the window's, which has already waited its turn and stops it by closing) for the moment between the two,
+# then gives up with RESULTS_BUSY, nothing written. 75 (EX_TEMPFAIL), never 3: on Windows a native crash (abort) exits
+# 3 too, and a crash must never read as "busy, try later".
 RESULTS_WAIT = 10.0
-RESULTS_BUSY = 3
+RESULTS_BUSY = 75
 
 
 def _report_written(path, since):
@@ -4082,12 +4084,14 @@ def _holding_results(run):
         from app import locks
         held = None
         if not locks.held_here("results"):
+            raw = os.environ.get("SURASURA_RESULTS_WAIT", "")
             try:
-                wait = float(os.environ.get("SURASURA_RESULTS_WAIT", RESULTS_WAIT))
+                wait = None if raw == "forever" else float(raw or RESULTS_WAIT)
             except ValueError:
                 wait = RESULTS_WAIT
             try:
-                held = locks.take("results", "Generate", wait=wait)
+                held = locks.take("results", "Generate", wait=wait, on_wait=lambda holder: print(
+                    f"Waiting for {(holder or {}).get('verb') or 'another Generate'} to finish writing results/..."))
             except locks.Busy as e:
                 verb = (e.holder or {}).get("verb") or "another Surasura program"
                 print(f"Error: results/ is being written by {verb}; nothing was changed. Try again when it has finished.")
@@ -4287,6 +4291,7 @@ def main():
     # compute_render_signature — shared with the dashboard so the two can't drift).
     _render_sig = compute_render_signature(args)
     if (_store is not None and _run_sig and _analysis_outputs_present
+            and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
             and _store.get_meta("last_run_signature") == _run_sig
             and read_run_stamp(RESULTS_DIR) == _run_sig):   # ...and results/ is THIS run's (above)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")

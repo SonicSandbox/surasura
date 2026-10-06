@@ -397,14 +397,17 @@ def test_junbans_automatic_steps_wait_for_the_update(dash, monkeypatch):
     monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
     dash.var_enable_junban.set(True)
     import app.main as main
-    asked = []
-    monkeypatch.setattr(main.settings_manager, "load_settings", lambda *a, **k: asked.append(1) or {})
+    # The guards live in Junban's module since P1.2 (`auto.blocked`: an update waiting is one): nothing starts.
+    started = []
+    monkeypatch.setattr(main.settings_manager, "load_settings",
+                        lambda *a, **k: {"enable_junban": True, "junban_auto_reorder": True})
+    monkeypatch.setattr(dash, "_junban_spinner", lambda on: started.append(on))
     updater.hold_children()
     dash._maybe_junban_auto(force=True)
-    assert asked == []
+    assert started == []
     updater.release_children()
     dash._maybe_junban_auto(force=True)
-    assert asked == [1]
+    assert started == [True]
 
 
 # --- a download cancelled mid-way, and this window's own Anki writers (the adversary's findings 3 and 5) ---------------

@@ -98,6 +98,59 @@ def unopenable(name):
         return None
 
 
+def in_use(name, looks=6, gap=0.02):
+    """Is `name` held — by any thread of this process, or another program? A reader's look (P1.2): it never takes the
+    lock for a holder, writes no record and joins no registry. The OS lock is tried and let go at once, `looks` times
+    `gap` seconds apart: another reader's look holds it well under a millisecond, a holder holds it all along, so
+    only a lock held at every look is in use. A missing lock file is free. Never raises."""
+    if held_in_process(name):
+        return True
+    try:
+        path = _paths(name)[0]
+        if not os.path.exists(path):
+            return False
+        for look in range(looks):
+            handle = path_utils.try_lock(path)
+            if handle is not None:
+                path_utils.release_lock(handle)
+                return False
+            if look < looks - 1:
+                time.sleep(gap)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
+def holder_alive(holder):
+    """The holder record if its process still runs, else None: a record a killed holder left names nobody. Never
+    raises."""
+    try:
+        pid = int((holder or {}).get("pid"))
+    except (TypeError, ValueError):
+        return None
+    if pid == os.getpid():
+        return holder
+    if sys.platform == "win32":
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            code = ctypes.c_ulong()
+            alive = kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value == 259    # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+        return holder if alive else None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except OSError:
+        pass
+    return holder
+
+
 def read_holder(name):
     """The holder record of `name`, or None when there is none or it can't be read. Never raises."""
     try:

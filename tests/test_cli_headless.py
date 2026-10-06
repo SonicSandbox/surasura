@@ -95,13 +95,18 @@ def test_the_child_never_opens_anything_on_the_desktop(monkeypatch):
             return 0
     monkeypatch.setattr(verbs.subprocess, "Popen", lambda argv, **kw: started.append((argv, kw)) or Child())
     code, line = h.call("generate", "--force")
-    assert code == 0 and line["ran"] is True
+    assert code == 0 and line["ran"] is False, "the stand-in child wrote no run stamp: no analysis ran"
     (argv, kw), = started
     assert argv[argv.index("analyzer"):argv.index("analyzer") + 2] == ["analyzer", "--headless"]
     assert "--no-open" in argv and "--app-mode" not in argv
     if sys.platform == "win32":
         assert kw["creationflags"] & 0x08000000
-    assert kw["env"]["SURASURA_RESULTS_WAIT"] == "10.0"
+    assert kw["env"]["SURASURA_RESULTS_WAIT"] == "10.0", "the hand-over's moment, at least"
+    assert kw["env"]["SURASURA_FORCE_RUN"] == "1", "--force reaches the analyzer"
+    started.clear()
+    code, line = h.call("generate", "--force", "--wait", "45")
+    (argv, kw), = started
+    assert 40 < float(kw["env"]["SURASURA_RESULTS_WAIT"]) <= 45, "the child waits what is left of --wait"
 
 
 def test_a_crashing_analyzer_is_crashed_child_with_no_run_stamp():
@@ -112,7 +117,7 @@ def test_a_crashing_analyzer_is_crashed_child_with_no_run_stamp():
     with open(os.path.join(h.root(), "User Files", "ja", "KnownWord.json"), "w", encoding="utf-8") as f:
         f.write('{"words": [{"dictForm": "冒険"')
     code, lines = h.run_cli("generate")
-    assert code == 1 and h.answer(lines)["code"] == "crashed-child" and h.answer(lines)["exit"] == 1
+    assert code == 1 and h.answer(lines)["code"] == "crashed-child" and h.answer(lines)["child_exit"] == 1
     assert os.path.exists(h.answer(lines)["log"])
     assert analyzer.read_run_stamp(os.path.join(h.root(), "results")) is None
     assert h.answer(h.run_cli("status")[1])["journey_current"] is not True
@@ -269,3 +274,64 @@ def test_auto_on_a_list_behind_the_library_skips(junban, monkeypatch):
     with patched:
         code, line = h.call("junban", "--auto")
     assert code == 0 and line["skipped"] == "the list is out of date: Generate first" and fake.writes == []
+
+
+# --------------------------------------------------------------------------- #
+# The review's cases (tracks/pipeline/reviews/P1.2-adversary.md #1, #2, #9)
+# --------------------------------------------------------------------------- #
+def _window_analyzer(*extra):
+    """The analyzer as the window starts it: `app_entry.py analyzer …`, waiting for `results` without a limit."""
+    from app import run_args, settings_manager
+    argv = run_args.analyzer_args(settings_manager.load_settings(), "ja")
+    env = h.child_env(SURASURA_RESULTS_WAIT="forever", SURASURA_FORCE_RUN="1")
+    return subprocess.Popen([sys.executable, os.path.join(h.PROJECT_ROOT, "app_entry.py"), "analyzer"] + argv[1:]
+                            + ["--no-open"] + list(extra), cwd=h.root(), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def test_a_window_generate_and_a_headless_one_started_together_both_finish():
+    """#1: both start in the same moment (the hand-over): whichever takes `results` first runs, the other waits its
+    turn — the window's without a limit, the command line's for what is left of --wait. Neither fails."""
+    _big_library()
+    window = _window_analyzer()
+    cli = h.start_cli("generate", "--force", "--wait", "300")
+    out, _err = cli.communicate(timeout=600)
+    window_out, _ = window.communicate(timeout=600)
+    assert cli.returncode == 0, out
+    assert json.loads(out.decode("ascii").splitlines()[-1])["ran"] is True
+    assert window.returncode == 0, window_out.decode("utf-8", "replace")[-2000:]
+
+
+def test_a_crashing_analyzer_is_never_read_as_busy(tmp_path):
+    """#2: a native abort exits 3 on Windows; the busy answer has its own code (75), so this is `crashed-child`, and
+    the dead child's leftover holder record is never offered as `held_by`."""
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(textwrap.dedent("""
+        import os, signal, sys, threading
+        if os.environ.get("P12_ABORT_ANALYZER"):
+            def _abort():
+                if "app.analyzer" in sys.modules and "app.cli" not in sys.modules:     # the child, not the CLI
+                    signal.raise_signal(signal.SIGABRT)
+            threading.Timer(0.8, _abort).start()
+    """), encoding="utf-8")
+    _big_library()
+    env = {"PYTHONPATH": str(hook) + os.pathsep + h.PROJECT_ROOT, "P12_ABORT_ANALYZER": "1"}
+    code, lines = h.run_cli("generate", env=env)
+    answer = h.answer(lines)
+    assert code == 1 and answer["code"] == "crashed-child", answer
+    assert answer["child_exit"] != analyzer.RESULTS_BUSY
+    code, lines = h.run_cli("generate")                     # the lock is free again (the OS let go)
+    assert code == 0, lines
+
+
+def test_force_runs_the_analysis_and_ran_says_whether_it_did():
+    """#9: `--force` runs the analysis though nothing changed (a new run stamp, `ran: true`); without it, `ran: false`."""
+    h.seed_library("ja")
+    h.write_settings()
+    assert h.answer(h.run_cli("generate")[1])["ran"] is True
+    assert h.answer(h.run_cli("generate")[1])["ran"] is False
+    stamp = os.path.join(h.root(), "results", analyzer.RUN_STAMP_FILE)
+    before = os.stat(stamp).st_mtime_ns
+    code, lines = h.run_cli("generate", "--force")
+    assert code == 0 and h.answer(lines)["ran"] is True and os.stat(stamp).st_mtime_ns != before

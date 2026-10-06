@@ -334,7 +334,7 @@ class AnkiImporterApp:
         """Merge into KnownWord.json, holding its lock (P0.3 04 §2) from the read to the write: another program
         updating it meanwhile (the Anki sync, surasura-cli) -> ValueError, nothing changed."""
         from app.anki_sync import hold_known_words
-        held, refused = hold_known_words(self.language, "Anki import")
+        held, refused = hold_known_words(self.language, "Anki import", wait=0)     # on its window's thread: never waits
         if refused is not None:
             raise ValueError(refused[0])
         try:

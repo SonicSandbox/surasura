@@ -129,8 +129,9 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             out_dir = os.path.dirname(output_json)
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
-            with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            # Atomically (temp + fsync + replace): a reader never sees half a file, a kill leaves old or new.
+            from app.anki_sync import _atomic_write_json
+            _atomic_write_json(output_json, json_data)
         finally:
             if held is not None:
                 held.release()

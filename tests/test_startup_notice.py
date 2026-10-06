@@ -99,3 +99,21 @@ def test_the_dashboards_save_carries_connects_keys_only_as_the_file_holds_them()
     with open(path, "w", encoding="utf-8") as f:
         f.write("{not json")
     assert main.carry_as_written({}, keys) == {}, "a file that can't be read"
+
+
+def test_connect_losing_track_is_said_once_with_its_dates_and_count():
+    """✅ P2.1-3: the 2.x preview's start-up notice says it once (3.0's Needs you offers the list)."""
+    from app.connect import inbox
+    from app.connect.ledger import Ledger
+    c.library()
+    notice.at_open("ja")
+    with c.store() as s, Ledger() as ledger:
+        s.bookkeeping({"mine_line": 2}, copy_carries=True)
+        inbox.consume(s, "ja", ledger)
+        s.bookkeeping({"reader_epoch:connect": -1})         # a Repair's new epoch: a gap
+        inbox.consume(s, "ja", ledger)
+        since = ledger.gaps("ja")[0]["since"][:10]
+    line = notice.at_open("ja")
+    assert line.startswith(f"Connect lost track of your moves from {since} to ") and \
+        line.endswith(": 2 episodes in the top 20 have no cards"), line
+    assert notice.at_open("ja") is None, "said once"

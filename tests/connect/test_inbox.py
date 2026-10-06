@@ -39,7 +39,7 @@ def test_the_first_run_skips_everything_placed_before_the_watermark(lang):
         s.move([ids[-1]], "now")                    # entered the top 2 before Connect was on
         assert any(k == "entered_mine_line" for _i, k, _b in c.events(s))
     first = _consume(lang)
-    assert first == {"queued": [], "dropped": [], "reconciled": False, "read": 0}
+    assert first == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []}
     assert _jobs(lang) == [], "nothing placed before Connect was switched on is mined"
     assert _consume(lang)["queued"] == []
 
@@ -162,7 +162,7 @@ def test_switching_connect_on_again_reads_nothing_placed_while_it_was_off():
     with c.store() as s:
         library.place(s, s.ids("now")[-1], "now", source="user")     # while Connect is off
         library.switch_on(s)                                           # the preview's switch turned on again
-    assert _consume() == {"queued": [], "dropped": [], "reconciled": False, "read": 0}
+    assert _consume() == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []}
 
 
 def test_a_gap_moves_the_reader_only_as_far_as_it_read(monkeypatch):
@@ -211,3 +211,24 @@ def test_connect_reads_every_language_and_again_before_it_exits(monkeypatch):
     code, line = h.call("connect", "--consume-only")
     assert code == 0 and line["rounds"] == 2, line
     assert line["languages"]["zh"]["queued"] == [zh_item] and line["languages"]["ja"]["queued"] == [ja_item]
+
+
+def test_a_gap_keeps_the_top_20_episodes_without_cards_for_needs_you_and_mines_none():
+    """✅ P2.1-3 (Sonic: the lean, plus Needs you): after a gap nothing is mined; the top-20 episodes with no cards and
+    no job are kept in the ledger, from Connect's last read to now, for the start-up notice (2.x) and Needs you (3.0)."""
+    _library()
+    _consume()
+    from app.connect import library
+    with c.store() as s:
+        line = library.mine_line(s)
+        s.receipt(line[0], "2026-10-05T12:00:00Z")          # mined already: never "missed"
+        with s._writing():
+            s.conn.execute("DELETE FROM placement_log")
+        s.bookkeeping({"reader_epoch:connect": -1})
+    out = _consume()
+    assert out["reconciled"] is True and out["queued"] == [] and out["missed"] == line[1:]
+    assert _consume()["missed"] == [], "the next read is no gap"
+    with Ledger() as ledger:
+        gaps = ledger.gaps("ja")
+    assert [g["items"] for g in gaps] == [line[1:]] and gaps[0]["since"] and gaps[0]["until"] >= gaps[0]["since"]
+    assert _jobs() == []

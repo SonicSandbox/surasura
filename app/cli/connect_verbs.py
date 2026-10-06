@@ -380,7 +380,7 @@ def connect(args):
     languages = [lang for lang in LANGUAGES if os.path.isdir(get_user_files_path(lang))]
     if not languages:
         raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
-    out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0} for lang in languages}
+    out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []} for lang in languages}
     rounds = 0
     while rounds < ROUNDS:
         try:
@@ -402,6 +402,7 @@ def connect(args):
                 mine["dropped"] += got["dropped"]
                 mine["reconciled"] = mine["reconciled"] or got["reconciled"]
                 mine["read"] += got["read"]
+                mine["missed"] += got["missed"]
         if not any(_pending(lang) for lang in languages):
             break
     return {"languages": out, "rounds": rounds}

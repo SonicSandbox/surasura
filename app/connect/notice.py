@@ -1,5 +1,6 @@
 """The start-up notice (P2.1 row 2.1.7): items another program registered while Surasura was closed, named once in the
-window's bottom bar when it opens — "3 episodes arrived from hato while Surasura was closed" — from the placement log.
+window's bottom bar when it opens — "3 episodes arrived from hato while Surasura was closed" — from the placement log;
+and, once, when Connect lost track of the library's moves (✅ P2.1-3: the 2.x preview's word for 3.0's *Needs you*).
 
 The log is read as its own reader, `window-notice`: set the first time the window opens with Connect on, moved to the
 log's end each time the window opens (after naming what arrived) and when it closes (so what arrived while it was open
@@ -46,6 +47,26 @@ def _words(arrived):
     return f"{total} {noun} {verb} while Surasura was closed: {parts}"
 
 
+def _lost_track(language):
+    """Connect's gaps not yet named (✅ P2.1-3) -> their line, marked named; None when there's none. The ledger is only
+    read when it exists: the window never makes one."""
+    import os
+    from app.connect import ledger as ledger_module
+    if not os.path.exists(ledger_module.path()):
+        return None
+    with ledger_module.Ledger() as ledger, ledger.transaction():
+        gaps = ledger.gaps(language, unnoticed=True)
+        if not gaps:
+            return None
+        ledger.mark_noticed([g["id"] for g in gaps])
+    count = len({i for g in gaps for i in g["items"]})
+    since, until = gaps[0]["since"], gaps[-1]["until"]
+    span = f"from {since[:10]} to {until[:10]}" if since else f"until {until[:10]}"
+    noun = "episode" if count == 1 else "episodes"
+    have = "has" if count == 1 else "have"
+    return f"Connect lost track of your moves {span}: {count} {noun} in the top 20 {have} no cards"
+
+
 def at_open(language):
     """On a worker when the window opens -> the line to show, or None. Moves the reader to the log's end."""
     store = library.open_store(language, role="window")
@@ -54,11 +75,13 @@ def at_open(language):
     with store:
         if not library.has_reader(store, READER):
             store.register_reader(READER)           # the first session with Connect on: from now on
-            return None
-        rows, gap = store.read_events(READER)
-        arrived = {} if gap else _arrived(store, rows)
-        _catch_up(store, gap)
-    return _words(arrived) if arrived else None
+            arrived = {}
+        else:
+            rows, gap = store.read_events(READER)
+            arrived = {} if gap else _arrived(store, rows)
+            _catch_up(store, gap)
+    lines = [line for line in (_words(arrived) if arrived else None, _lost_track(language)) if line]
+    return " · ".join(lines) or None
 
 
 def _catch_up(store, gap=False):

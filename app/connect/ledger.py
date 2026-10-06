@@ -7,6 +7,7 @@ word outcomes, undo records) is P2.4's, on the same table. Short transactions, s
 store.
 """
 import datetime
+import json
 import os
 import sqlite3
 
@@ -32,6 +33,15 @@ _SCHEMA_SQL = (
     # One open job per item (N4): a re-read of the same events can never queue it twice
     "CREATE UNIQUE INDEX IF NOT EXISTS one_open_job ON jobs (language, item_id) WHERE state IN ({})".format(
         ", ".join(f"'{s}'" for s in OPEN)),
+    # A gap in the placement log (✅ P2.1-3): the top-20 episodes with no cards when Connect lost track, from its last
+    # read (`since`) to the gap's read (`until`) — never mined; named once (2.x: the start-up notice; 3.0: Needs you)
+    """CREATE TABLE IF NOT EXISTS gaps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      language TEXT NOT NULL,
+      since TEXT,
+      until TEXT NOT NULL,
+      items TEXT NOT NULL,
+      noticed INTEGER NOT NULL DEFAULT 0)""",
 )
 
 
@@ -108,6 +118,30 @@ class Ledger:
                                 "VALUES (?, ?, 'queued', ?, ?, ?, ?)", (language, item_id, source, event_id, now, now))
         return cur.lastrowid
 
+    def last_read(self, language):
+        """When Connect last read the language's placement log, or None."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"last_read:{language}",)).fetchone()
+        return row[0] if row else None
+
+    def mark_read(self, language):
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_read:{language}", _now()))
+
+    def add_gap(self, language, items):
+        """A gap's record: the top-20 items with no cards, from the last read to now -> its id."""
+        cur = self.conn.execute("INSERT INTO gaps (language, since, until, items) VALUES (?, ?, ?, ?)",
+                                (language, self.last_read(language), _now(), json.dumps(list(items))))
+        return cur.lastrowid
+
+    def gaps(self, language, unnoticed=False):
+        """Every gap recorded for the language (newest last), each {id, since, until, items, noticed}: what 3.0's
+        *Needs you* offers (*Make their cards* · *Leave them*)."""
+        cur = self.conn.execute("SELECT * FROM gaps WHERE language = ?" + (" AND noticed = 0" if unnoticed else "")
+                                + " ORDER BY id", (language,))
+        return [_gap_row(cur, r) for r in cur.fetchall()]
+
+    def mark_noticed(self, ids):
+        self.conn.executemany("UPDATE gaps SET noticed = 1 WHERE id = ?", [(i,) for i in ids])
+
     def drop(self, language, item_id, reason):
         """The item's job, if it hasn't started (an item that left the top 20 before mining) -> dropped or not. Once
         mining has started, it finishes (02 §2)."""
@@ -116,6 +150,12 @@ class Ledger:
                                 f"AND item_id = ? AND state IN ({marks})",
                                 (reason, _now(), language, item_id) + NOT_STARTED)
         return cur.rowcount > 0
+
+
+def _gap_row(cur, row):
+    out = dict(zip([d[0] for d in cur.description], row))
+    out["items"] = json.loads(out["items"])
+    return out
 
 
 class _Transaction:

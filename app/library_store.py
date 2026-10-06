@@ -454,9 +454,21 @@ SCHEMA_SQL = (
       at TEXT NOT NULL)""",
 )
 
+# Tables added without a schema change (L2.2 §2.2): an older Surasura ignores a table it doesn't know, so each is
+# made IF NOT EXISTS wherever tables are written, and goes out in the copy only where it exists.
+ADDED_TABLES_SQL = (
+    """CREATE TABLE IF NOT EXISTS made_words (
+      item_id  INTEGER NOT NULL,
+      word     TEXT NOT NULL,
+      note_ids TEXT NOT NULL,
+      made_at  TEXT NOT NULL,
+      batch    TEXT,
+      PRIMARY KEY (item_id, word))""",
+)
+
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log")
+               "placement_log", "made_words")
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order")
 
@@ -568,6 +580,8 @@ def _probe(db_path, busy_wait):
                 return "json", "not ready"
             row = conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone()
             if row is None:
+                if conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone():
+                    return "read-only", NEWER_COPY                  # the helper met a newer store's copy (G2.2-7)
                 failed = conn.execute("SELECT value FROM meta WHERE key = 'migration_failed'").fetchone()
                 return "json", ("migration failed" if failed else "not ready")
             return "store", None
@@ -2306,7 +2320,10 @@ class Store:
             names = [d[0] for d in cur.description]
             rows = [dict(zip(names, r)) for r in cur.fetchall()]
             tables = {}
+            present = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             for name in COPY_TABLES:
+                if name not in present:                            # an added table this store hasn't made yet
+                    continue
                 c = self.conn.execute(f"SELECT * FROM {name} ORDER BY rowid")
                 tables[name] = {"fields": [d[0] for d in c.description], "rows": [list(r) for r in c.fetchall()]}
             log_seq = self._log_seq()
@@ -2405,6 +2422,22 @@ class _Norm:
         self.extra = {}
         self.lib = None
         self.report = []
+
+
+NEWER_COPY = "made by a newer Surasura"
+
+
+def copy_is_newer(doc):
+    """Was this copy written by a newer store (its `surasura_library` names a later schema or format)? Such a copy
+    may carry tables and fields this version doesn't know: it is never rebuilt from, re-imported or repaired from
+    here, and never overwritten (L2.2 G2.2-7)."""
+    lib = doc.get("surasura_library") if isinstance(doc, dict) else None
+    if not isinstance(lib, dict):
+        return False
+    try:
+        return int(lib.get("store_schema") or 0) > STORE_SCHEMA or int(lib.get("format") or 0) > COPY_FORMAT
+    except (TypeError, ValueError):
+        return False
 
 
 def normalise(doc, platform=sys.platform):
@@ -2597,6 +2630,8 @@ def _write_image(store, image, meta):
     items (keys 1024, 2048, … per tier), every other table, the id sequences (K30) and `meta`."""
     conn = store.conn
     now = _now()
+    for sql in ADDED_TABLES_SQL:
+        conn.execute(sql)
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -2607,7 +2642,7 @@ def _write_image(store, image, meta):
     else:
         root_id = conn.execute("INSERT INTO roots (kind, path, created_at) VALUES ('library', NULL, ?)",
                                (now,)).lastrowid
-    for name in ("pieces", "trash", "exclusions", "anki_changes", "placement_log"):
+    for name in ("pieces", "trash", "exclusions", "anki_changes", "placement_log", "made_words"):
         if tables.get(name) and tables[name]["rows"]:
             _insert_rows(conn, name, tables[name])
     used = [i["id"] for i in image["items"] if i["id"] is not None]
@@ -3244,6 +3279,8 @@ def export_copy(store):
         except ManifestUnreadable:
             return False
         lib = other.get("surasura_library") if other else None
+        if copy_is_newer(other):
+            return False                                           # a newer store's copy is never overwritten here
         if not (isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
                 and isinstance(lib.get("version"), int) and lib["version"] < meta["state_version"]
                 and lib.get("content_sha") == content_sha(other)):
@@ -3280,6 +3317,8 @@ def _check_copy(store, retry_wait=1.0):
         if doc is None:
             backup_to_trash(target, move=True)
             return "set aside"
+    if copy_is_newer(doc):
+        return "newer"                     # never re-imported or rebuilt from here; export won't overwrite it either
     lib = doc.get("surasura_library")
     ours = isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
     if ours and lib.get("content_sha") == content_sha(doc):
@@ -3408,6 +3447,15 @@ def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
                 doc, read_stat, problem = read_manifest(target)
             except ManifestUnreadable:
                 return EXIT_FAILED                                 # retried, never treated as damage
+        newer = doc is not None and copy_is_newer(doc)
+        if newer or store.meta().get("newer_copy") is not None:
+            with store._writing():                                 # read-only on that copy until it's ours again
+                if newer:
+                    store._set_meta({"newer_copy": _dumps({"stat": read_stat, "at": _now()})})
+                else:
+                    store.conn.execute("DELETE FROM meta WHERE key = 'newer_copy'")
+            if newer:
+                return EXIT_NEEDS_YOU
         try:
             if doc is not None and isinstance(doc.get("surasura_library"), dict):
                 _rebuild(store, user_files_dir, doc, read_stat)
@@ -3501,7 +3549,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             return EXIT_NEEDS_YOU
         if found == "backup failed":
             return EXIT_FAILED
-        did = did or found not in ("same", "stale", "unchanged")
+        did = did or found not in ("same", "stale", "unchanged", "newer")
         if export:
             did = export_copy(store) or did
             _cleanup_temps(manifest_path(user_files_dir))
@@ -4089,6 +4137,9 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             doc, read_stat, _p = read_manifest(target)
         except ManifestUnreadable:
             return EXIT_FAILED                                    # a lock or a placeholder: retried
+        if copy_is_newer(doc):
+            print(f"Repair refused: the library's copy was {NEWER_COPY}; open it there to repair it.")
+            return EXIT_NEEDS_YOU                                 # nothing renamed: a newer copy is never rebuilt from
         try:
             backup_to_trash(target, move=doc is None)
         except OSError:

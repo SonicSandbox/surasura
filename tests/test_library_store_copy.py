@@ -585,3 +585,132 @@ def test_spawn_maintain_runs_the_helper_detached(language, real_store_helper):
     proc = ls.spawn_maintain(language)
     assert proc is not None and proc.wait(60) == ls.EXIT_DONE
     assert "surasura_library" in read_doc(user_files_dir)
+
+
+# --- a newer store's copy (L2.2 G2.2-7) ---------------------------------------------------------- #
+
+def _make_newer(user_files_dir, *, store_id=None, swap_now=False):
+    """The copy as a later Surasura (3.0, schema 2) writes it: a newer `store_schema` and a table this version
+    doesn't know. Returns the file's bytes."""
+    doc = read_doc(user_files_dir)
+    lib = doc["surasura_library"]
+    lib["store_schema"] = ls.STORE_SCHEMA + 1
+    lib.setdefault("tables", {})["works"] = {"fields": ["id", "title"], "rows": [[1, names("ja")[0]]]}
+    if store_id:
+        lib["store_id"] = store_id
+    if swap_now:
+        now = doc["schedule"]["PHASE_1_NOW"]
+        now[0], now[1] = now[1], now[0]
+    write_manifest(user_files_dir, doc)
+    with open(ls.manifest_path(user_files_dir), "rb") as f:
+        return f.read()
+
+
+def _bytes(user_files_dir):
+    with open(ls.manifest_path(user_files_dir), "rb") as f:
+        return f.read()
+
+
+def _db_aside(db):
+    for suffix in ("", "-wal", "-shm"):
+        if os.path.exists(db + suffix):
+            os.rename(db + suffix, db + suffix + ".elsewhere")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_pc_never_rebuilds_from_a_newer_stores_copy(language):
+    # Why: 2.5's rebuild read `surasura_library` without looking at its schema, so an older Surasura on a new PC
+    # rebuilt a 3.0 library from its copy, dropping 3.0's tables (titles, covers, Connect's records), then wrote
+    # that thinner copy back. From 2.6 it opens read-only on that copy and never rewrites it; once the copy is
+    # one it can read again, it builds as usual.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    order = {t: [e["physical_path"] for _i, e, _a in store.ordered(t)] for t in ("now", "soon", "goal")}
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    db = store.db_path
+    store.close()
+    _db_aside(db)
+    newer = _make_newer(user_files_dir)
+    for _ in range(2):                                         # every helper run: the same answer, nothing written
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+        assert ls.check_mode(language, data_dir) == ("read-only", ls.NEWER_COPY)
+        assert ls.open_store(language, data_dir, user_files_dir) is None
+        assert _bytes(user_files_dir) == newer
+    doc = read_doc(user_files_dir)                             # the user puts back a copy this version wrote
+    doc["surasura_library"]["store_schema"] = ls.STORE_SCHEMA
+    del doc["surasura_library"]["tables"]["works"]
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert ls.check_mode(language, data_dir) == ("store", None)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert {t: [e["physical_path"] for _i, e, _a in store.ordered(t)] for t in ("now", "soon", "goal")} == order
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("whose", ["another store", "this store"])
+def test_a_ready_store_leaves_a_newer_copy_alone(language, whose):
+    # Why: a newer store's copy beside a working store (a downgrade by hand, a synced folder) must be neither
+    # re-imported (its order would be taken while its tables were dropped) nor overwritten by the next export.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    before = {t: store.ids(t) for t in ls.TIERS}
+    store_id = "a-newer-surasura" if whose == "another store" else None
+    newer = _make_newer(user_files_dir, store_id=store_id, swap_now=True)
+    store.move([before["now"][-1]], "now")                     # a change of ours, so an export is due
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    assert _bytes(user_files_dir) == newer, "never overwritten"
+    after = {t: store.ids(t) for t in ls.TIERS}
+    assert after["now"][0] == before["now"][-1] and sorted(after["now"]) == sorted(before["now"]), "never re-imported"
+    assert ls.check_mode(language, data_dir) == ("store", None)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_repair_refuses_a_newer_copy_and_renames_nothing(language):
+    # Why: Repair builds from the copy where the damaged database can't serve; from a newer store's copy that
+    # would drop its tables. Refused before anything is renamed or set aside.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    db = store.db_path
+    store.close()
+    newer = _make_newer(user_files_dir)
+    ls.mark_damaged(db, "a test")
+    assert ls.maintain(language, data_dir, user_files_dir, repair=True) == ls.EXIT_NEEDS_YOU
+    assert os.path.exists(db) and not [n for n in os.listdir(os.path.dirname(db)) if ".corrupt." in n]
+    assert _bytes(user_files_dir) == newer
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_connects_made_words_travel_in_the_copy_and_back(language):
+    # Why: Connect (2.7) records the words it made cards for so it never makes them again (G1.3-4). The table is
+    # added without a schema change, so 2.6 must carry it in the copy and bring it back on a rebuild; a store
+    # that never made it (2.5's shape) still exports.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item = store.ids("now")[0]
+    word = names(language)[3]
+    with store._writing():
+        store.conn.execute("DROP TABLE IF EXISTS made_words")  # 2.5's shape: no such table
+        store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert "made_words" not in read_doc(user_files_dir)["surasura_library"]["tables"]
+    with store._writing():
+        for sql in ls.ADDED_TABLES_SQL:
+            store.conn.execute(sql)
+        store.conn.execute("INSERT INTO made_words VALUES (?, ?, ?, ?, ?)", (item, word, "[1700000000001]",
+                                                                             "2026-10-06T01:00:00", "batch-1"))
+        store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    table = read_doc(user_files_dir)["surasura_library"]["tables"]["made_words"]
+    assert table["rows"] == [[item, word, "[1700000000001]", "2026-10-06T01:00:00", "batch-1"]]
+    db = store.db_path
+    store.close()
+    _db_aside(db)                                              # a new PC
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.conn.execute("SELECT item_id, word, note_ids FROM made_words").fetchall() == \
+        [(item, word, "[1700000000001]")]
+    store.close()

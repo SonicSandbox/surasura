@@ -22,9 +22,9 @@ class _Parser(argparse.ArgumentParser):
 # Verbs
 # --------------------------------------------------------------------------- #
 def _version(args):
-    from app import __version__, analyzer, token_index
+    from app import __version__, analyzer, library_store, token_index
     return {"app": __version__, "engine": analyzer.ENGINE_REVISION, "schema": token_index.SCHEMA_VERSION,
-            "store": None}      # the library store's schema, from 2.5
+            "store": library_store.STORE_SCHEMA}      # the library store's schema (2.5)
 
 
 def _selftest_args(parser):

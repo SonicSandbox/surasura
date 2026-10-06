@@ -71,7 +71,8 @@ def test_version_is_one_result_line_with_every_version(root):
     code, lines, raw, err = run_cli(root, "--version")
     assert code == 0 and err == ""
     assert lines == [{"type": "result", "contract": 1, "ok": True, "app": __version__,
-                      "engine": analyzer.ENGINE_REVISION, "schema": token_index.SCHEMA_VERSION, "store": None}]
+                      "engine": analyzer.ENGINE_REVISION, "schema": token_index.SCHEMA_VERSION,
+                      "store": library_store.STORE_SCHEMA}]
     assert not raw.startswith(b"\xef\xbb\xbf") and raw.endswith(b"}\n") and b"\r" not in raw    # no BOM; \n, never \r\n
 
 

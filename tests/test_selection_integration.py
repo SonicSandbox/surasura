@@ -725,3 +725,30 @@ def test_with_automatic_off_the_signature_has_no_band_part(samples_env):
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     parts = analyzer.run_signature_parts("ja", [], analyzer.parse_analysis_args(["--language", "ja"]))
     assert "auto_band" not in parts
+
+
+def test_turning_automatic_off_forgets_its_band(samples_env):
+    # Why: a band remembered from before Automatic was switched off would come back months later when it's switched
+    # on again; switched off, the next run forgets it, so switching on starts from today's rule.
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.record_auto_band("ja", data_dir, user_files, "rare", 40)
+    _run_samples(root)                                          # Automatic off
+    assert ls.read_auto_band("ja", data_dir) is None
+
+
+def test_automatic_with_no_library_store_still_stamps_a_run_the_next_check_reuses(samples_env):
+    # Why: with no store to remember in (JSON mode), the run uses today's single line, its signature part says
+    # nothing is remembered, and the stamp still matches the next check (no endless re-Generates).
+    from app.main import journey_is_current
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True,
+                   auto_max_words=counts["uncommon"])
+    lib = _run_samples(root)
+    assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
+    assert journey_is_current(["analyzer.py", "--language", "ja"], "ja") is True

@@ -4051,6 +4051,27 @@ def record_auto_band(language, data_dir, user_files_dir, band, words):
         return False
 
 
+def forget_auto_band(language, data_dir, user_files_dir):
+    """Automatic rarity is off: forget its band, so switching it on again starts from today's rule, not a band chosen
+    months ago. A read first; written only when there is a band to forget."""
+    if read_auto_band(language, data_dir) is None:
+        return False
+    try:
+        store = open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
+    except StoreError:
+        return False
+    if store is None:
+        return False
+    try:
+        with store:
+            with store._writing():
+                store.conn.execute("DELETE FROM meta WHERE key = 'auto_band'")
+                store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+        return True
+    except (StoreError, sqlite3.Error):
+        return False
+
+
 def spawn_build_if_waiting(language, data_dir, user_files_dir):
     """A window found no ready store: start the helper to build one when there is something to build from
     (a manifest it can read, in JSON mode), at most once a minute per language (the trigger rule, §6.7).

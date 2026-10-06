@@ -833,6 +833,13 @@ class MasterDashboardApp:
         n = self._auto_max_words()
         return f"{n:,}" if isinstance(n, (int, float)) else str(n)
 
+    def _auto_step_back_text(self):
+        """Q4-3's second line as the tooltips say it: 1,100, or the first line when a hand edit put it higher."""
+        try:
+            return f"{max(word_selection.DEFAULT_AUTO_STEP_BACK_WORDS, int(self._auto_max_words())):,}"
+        except (TypeError, ValueError):
+            return f"{word_selection.DEFAULT_AUTO_STEP_BACK_WORDS:,}"
+
     def _auto_band_choice(self):
         """The band automatic rarity picks from the current preview — word_selection.auto_band over the
         numbers the slider shows, the rule the analyzer applies on the same ones (I3) — or None before
@@ -1503,7 +1510,8 @@ class MasterDashboardApp:
         # why and where to turn that off.
         ToolTip(self.band_slider, lambda: (
                 f"Chosen for you by Automatic rarity: the rarest band with {self._auto_max_words_text()} "
-                "words or fewer. To choose it yourself, turn off Automatic rarity in "
+                f"words or fewer, kept until its list passes {self._auto_step_back_text()}. "
+                "To choose it yourself, turn off Automatic rarity in "
                 "Settings → Sentences & Logic."
                 if self.var_auto_band.get() else
                 "Which words to include, by how common they are in your library:\n\n"
@@ -2060,7 +2068,8 @@ class MasterDashboardApp:
         chk_auto_band.pack(anchor=tk.W)
         ToolTip(chk_auto_band, lambda: (
             f"Picks the Rarity band for you: the rarest band with {self._auto_max_words_text()} words or "
-            "fewer. It moves on by itself as you learn. The slider on the main window is locked while "
+            f"fewer, and keeps it until its list passes {self._auto_step_back_text()}, so your list doesn't "
+            "flip back and forth. It moves on by itself as you learn. The slider on the main window is locked while "
             "this is on. By Commonness only."))
 
 

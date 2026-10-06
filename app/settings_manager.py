@@ -2,7 +2,10 @@ import json
 import os
 import copy
 import importlib
-from typing import Any, Dict
+import threading
+import time
+from typing import Any, Callable, Dict, Optional
+from app import locks
 from app.path_utils import get_user_file, read_text
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
@@ -190,8 +193,14 @@ def _optional_module_defaults() -> Dict[str, Any]:
 _OLD_ZH_BOUNDARIES = "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
 
 
-def load_settings() -> Dict[str, Any]:
-    """Loads settings from disk and merges with defaults (plus any present optional modules)."""
+class SettingsError(Exception):
+    """settings.json exists but can't be read (`load_settings(strict=True)`)."""
+
+
+def load_settings(strict: bool = False) -> Dict[str, Any]:
+    """Loads settings from disk and merges with defaults (plus any present optional modules).
+    `strict`: a settings.json that exists but can't be read raises `SettingsError` instead of falling back to the
+    defaults (the command line's `bad-data`: a fallback a later save would write back, P0.3 05 §1)."""
     settings_path = get_user_file("settings.json")
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     # Optional modules contribute their own defaults, but only when importable.
@@ -221,6 +230,8 @@ def load_settings() -> Dict[str, Any]:
                 if key != "logic":
                     settings[key] = value
         except Exception as e:
+            if strict:
+                raise SettingsError(f"settings.json can't be read: {e}") from e
             print(f"Warning: Could not load settings, using defaults: {e}")
 
     # Sentence boundaries are user-editable, but a few characters are STRUCTURAL — without them
@@ -264,21 +275,71 @@ def load_settings() -> Dict[str, Any]:
 
     return settings
 
-def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
+# settings.json is written under the `settings` lock (`app/locks.py`, P0.3 04 §2), atomically: a temp file, then
+# `os.replace`, retried briefly while another program holds the file open (02 §8). A writer waits this long for the lock;
+# another program holds it only for one write.
+LOCK_WAIT = 2.0
+_REPLACE_TRIES = 5
+
+
+def _write_atomically(path: str, to_save: Dict[str, Any]):
+    """Temp file + `os.replace` (retried 5 x 100 ms while a reader holds the file open): old or new, never half."""
+    temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())                # on disk before it replaces the old file (a power cut: old or new)
+        for attempt in range(_REPLACE_TRIES):
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError:
+                if attempt == _REPLACE_TRIES - 1:
+                    raise
+                time.sleep(0.1)
+    finally:
+        if os.path.exists(temp):
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+
+
+def _settings_lock(wait: float):
+    """The `settings` lock (a context manager), or None when this thread holds it already (a write inside
+    `save_keys` or the window's writer). Raises `locks.Busy` when another holder keeps it past `wait`."""
+    try:
+        if locks.held_here("settings"):
+            return None
+        return locks.take("settings", "saving settings", wait=wait)
+    except locks.Busy as e:
+        if e.holder is None and locks.unopenable("settings"):
+            # The lock file can't be opened (its folder's permissions): today's unlocked write beats losing the
+            # setting. Every other program writing settings.json takes the same lock, so it can only race them.
+            print("Warning: the settings lock can't be opened; saving without it.")
+            return None
+        raise
+    except Exception as e:
+        print(f"Warning: the settings lock can't be used ({e}); saving without it.")
+        return None
+
+
+def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait: float = LOCK_WAIT) -> bool:
     """
-    Saves settings to disk.
+    Saves settings to disk, atomically, under the `settings` lock (waiting up to `wait` seconds for it).
     If clean_for_build is True, or if the module is missing, 'hide_satoru' is stripped.
+    Returns True once written; False when it could not be (the reason printed), the file untouched.
     """
     settings_path = get_user_file("settings.json")
-    
+
     # 1. Start with a copy to avoid mutating the app's state
     # Ensure settings is a dict before calling copy
     if not isinstance(settings, dict):
         print(f"Error: save_settings expected dict, got {type(settings)}")
-        return
-        
+        return False
     to_save = copy.deepcopy(settings)
-    
+
     # 2. Check for module availability
     module_exists = False
     try:
@@ -293,26 +354,199 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False):
 
     # 4. Write to disk
     try:
-        with open(settings_path, 'w', encoding='utf-8') as f:
-            json.dump(to_save, f, indent=4)
+        held = _settings_lock(wait)
+        try:
+            _write_atomically(settings_path, to_save)
+        finally:
+            if held is not None:
+                held.release()
+        return True
     except Exception as e:
         print(f"Error: Could not save settings: {e}")
+        return False
 
-def save_keys(changes: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
-    and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
-    so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
-    Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
-    settings. The Anki window's own save works the same way (anki_sync_gui.AnkiSyncGui._save)."""
+
+def _read_file_as_is() -> Dict[str, Any]:
     try:
         settings = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
         if not isinstance(settings, dict):
             raise ValueError("settings.json is not an object")
     except (OSError, ValueError):
         settings = load_settings()
-    settings.update(changes)
-    save_settings(settings)
     return settings
+
+
+def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None) -> Dict[str, Any]:
+    """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
+    and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
+    so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
+    Speech's hidden keys for users who never turned Speech on. A file that can't be read falls back to the loaded
+    settings. `update(settings)`, when given, changes the file's dict in place after `changes` (a window whose keys
+    merge into what the file holds: the Anki window's per-language decks).
+
+    The read and the write hold the `settings` lock together, so no other program's save lands between them. Never
+    waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
+    by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
+    order the windows saved (`flush_keys` waits for them; the process writes them before it ends)."""
+    entry = (dict(changes or {}), update)
+    try:
+        held = locks.take("settings", "saving settings") if not locks.held_here("settings") else None
+    except locks.Busy:
+        with _QUEUED_LOCK:
+            _QUEUED.append(entry)
+        _queued_writer().submit(_build_queued)
+        return _apply([entry], _read_file_as_is())
+    except Exception as e:
+        print(f"Warning: the settings lock can't be used ({e}); saving without it.")
+        held = None
+    try:
+        settings = _apply([entry], _read_file_as_is())
+        save_settings(settings)
+    finally:
+        if held is not None:
+            held.release()
+    return settings
+
+
+def _apply(entries, settings):
+    for changes, update in entries:
+        settings.update(changes)
+        if update is not None:
+            update(settings)
+    return settings
+
+
+# The other windows' saves that met a held lock, in order; written by one worker (`_build_queued`).
+_QUEUED = []
+_QUEUED_LOCK = threading.Lock()
+_QUEUED_WRITER = None
+_WRITTEN_UPTO = [0]
+
+
+def _build_queued():
+    """The file as it is with every queued save applied in order (inside the lock, on the writer's worker)."""
+    with _QUEUED_LOCK:
+        entries = list(_QUEUED)
+    _WRITTEN_UPTO[0] = len(entries)
+    return _apply(entries, _read_file_as_is())
+
+
+def _queued_written(_settings):
+    with _QUEUED_LOCK:
+        del _QUEUED[:_WRITTEN_UPTO[0]]
+
+
+def _queued_writer():
+    global _QUEUED_WRITER
+    with _QUEUED_LOCK:
+        if _QUEUED_WRITER is None:
+            _QUEUED_WRITER = SettingsWriter(delay=0.0, on_saved=_queued_written)
+            import atexit
+            atexit.register(flush_keys, 10.0)
+        return _QUEUED_WRITER
+
+
+def flush_keys(timeout: Optional[float] = None) -> bool:
+    """Wait until every queued window save is written (on a worker, or as the process ends). True when none is left."""
+    writer = _QUEUED_WRITER
+    return True if writer is None else writer.flush(timeout)
+
+
+class SettingsWriter:
+    """The window's settings writes, off its thread (P0.3 04 §2): `submit` hands over what to save and returns at
+    once; one worker writes it `delay` seconds after the last submit, under the `settings` lock, atomically. A held
+    lock or a refused replace is retried every `RETRY` seconds: queued, never dropped (the newest submit replaces an
+    unwritten one, since each holds the window's whole state). Before the process ends, `flush` writes what is left.
+
+    `submit(build)`: `build()` -> the settings dict, called on the worker inside the lock, so it may read the file as it
+    is then: a key another window saved meanwhile is carried, never reverted. `on_saved(settings)` / `on_error(error)`
+    run on the worker, never Tk: a window passes callbacks that only post to its own queue."""
+
+    RETRY = 0.25
+
+    def __init__(self, delay: float = 0.25, on_saved: Optional[Callable] = None,
+                 on_error: Optional[Callable] = None, wait: float = LOCK_WAIT):
+        self.delay = delay
+        self.wait = wait
+        self.on_saved = on_saved
+        self.on_error = on_error
+        self._cond = threading.Condition()
+        self._pending = None            # the newest build not yet written
+        self._submitted = 0             # submits so far
+        self._written = 0               # the submit count the last write covered
+        self._due = 0.0                 # when the pending build may be written (the debounce)
+        self._worker = None
+
+    def submit(self, build: Callable[[], Dict[str, Any]]):
+        """Hand over the newest state to save. Never waits: safe on a window's thread."""
+        with self._cond:
+            self._pending = build
+            self._submitted += 1
+            self._due = time.monotonic() + self.delay
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, name="settings-writer", daemon=True)
+                self._worker.start()
+            self._cond.notify_all()
+
+    def pending(self) -> bool:
+        with self._cond:
+            return self._written < self._submitted
+
+    def flush(self, timeout: Optional[float] = None) -> bool:
+        """Write what is pending now, and wait (on the caller's thread: never Tk's) until everything submitted so far
+        is written. True when it is; False when `timeout` ran out first."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            target = self._submitted
+            self._due = 0.0
+            self._cond.notify_all()
+            while self._written < target:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+            return True
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while True:
+                    if self._pending is None:
+                        self._worker = None
+                        return
+                    quiet = self._due - time.monotonic()
+                    if quiet <= 0:
+                        break
+                    self._cond.wait(quiet)
+                build, upto = self._pending, self._submitted
+            try:
+                held = _settings_lock(self.wait)
+                try:
+                    settings = build()
+                    if not save_settings(settings):
+                        raise OSError("settings.json could not be written")
+                finally:
+                    if held is not None:
+                        held.release()
+            except Exception as e:
+                if self.on_error is not None:
+                    try:
+                        self.on_error(e)
+                    except Exception:
+                        pass
+                time.sleep(self.RETRY)                  # queued, never dropped: the same (or a newer) build again
+                continue
+            with self._cond:
+                self._written = max(self._written, upto)
+                if upto == self._submitted:
+                    self._pending = None
+                self._cond.notify_all()
+            if self.on_saved is not None:
+                try:
+                    self.on_saved(settings)
+                except Exception:
+                    pass
+
 
 def get_default_settings() -> Dict[str, Any]:
     """Returns a fresh copy of default settings."""

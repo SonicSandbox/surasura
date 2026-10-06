@@ -126,6 +126,7 @@ def _argv(lang, settings=None):
         combo_theme=_Var(s.get("theme") if s.get("theme") in THEMES else "Dark Flow"),
         var_open_app_mode=_Var(s.get("open_app_mode", False)), var_zen_limit=_Var(s.get("zen_limit", 50)))
     dashboard._effective_zh_script = lambda language: MasterDashboardApp._effective_zh_script(dashboard, language)
+    dashboard._run_settings = lambda: MasterDashboardApp._run_settings(dashboard)
     return MasterDashboardApp._analyzer_args(dashboard)
 
 

@@ -63,6 +63,43 @@ _ZH_TARGET_RE = re.compile(f'[{HAN}]')        # any CJK ideograph
 # The dashboard's auto-sync thread and the window's Sync button may overlap; one writer at a time.
 _LOCK = threading.Lock()
 
+# ...and across programs (P0.3 04 §2): KnownWord.json's read-modify-write holds `known-words-<lang>` (`app/locks.py`),
+# taken here for every caller — the dashboard's sync, the Anki window, surasura-cli's known-sync — and by the
+# known-words imports. Every caller runs on a worker, so it may wait this long for another program's write.
+KNOWN_LOCK_WAIT = 10.0
+
+
+def known_lock_name(language):
+    return f"known-words-{language}"
+
+
+def hold_known_words(language, verb, wait=None):
+    """KnownWord.json's lock for `verb` (a short user-facing phrase) -> (the held lock or None, a refusal or None).
+    The refusal is a plain sentence naming the program that kept it. No lock (None, None) when this thread holds it
+    already (the command line takes it first, to answer `busy`), or when it can't be used at all."""
+    from app import locks
+    name = known_lock_name(language)
+    try:
+        if locks.held_here(name):
+            return None, None
+        return locks.take(name, verb, wait=KNOWN_LOCK_WAIT if wait is None else wait), None
+    except locks.Busy as e:
+        who = (e.holder or {}).get("verb") or "another Surasura program"
+        return None, (f"Your known words are being updated by {who}. Nothing was changed: try again in a moment.",
+                      e.holder)
+    except Exception as e:
+        print(f"Warning: the known-words lock can't be used ({e}).")
+        return None, None
+
+
+def _hold_known(language, mode):
+    """`hold_known_words` for the sync -> (the held lock or None, a refusal `SyncResult` or None)."""
+    held, refused = hold_known_words(language, "Anki known-words sync")
+    if refused is None:
+        return held, None
+    return None, SyncResult(mode=mode, error=refused[0], busy=True, held_by=refused[1],
+                            total_known=count_known(language))
+
 
 @dataclass
 class SyncResult:
@@ -74,6 +111,8 @@ class SyncResult:
     total_known: int = 0           # count_known() after the operation
     backup: "str | None" = None    # replace/restore: backup filename written
     error: "str | None" = None     # human-readable, shown in the UI verbatim; None on success
+    busy: bool = False             # refused: another program held KnownWord.json (`held_by` is its record)
+    held_by: "dict | None" = None
 
 
 class _KnownFileError(Exception):
@@ -105,7 +144,14 @@ def _atomic_write_bytes(path, data):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        for attempt in range(5):            # a reader holding the file open refuses the replace for a moment (02 §8)
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
     except BaseException:
         try:
             os.remove(tmp)
@@ -193,6 +239,39 @@ def load_state(language):
     """The saved sync state, or {} when missing or corrupt. Keys: version, url, decks, fields,
     include_suspended, note_ids, known_sig, last_sync (ISO), last_added, last_backup."""
     return _read_state(language, quarantine=False)
+
+
+# The automatic sync runs at most this often (seconds). The dashboard counts its own presses; another program
+# (surasura-cli known-sync) counts from the last sync on disk, so the limit holds across programs.
+SYNC_EVERY = 300
+
+
+def may_sync(language, settings, throttle=True, now=None):
+    """May a sync of `language`'s known words start now? None when it may; else `(why, plain words)`. The gates the
+    dashboard's automatic sync and `surasura-cli known-sync` share (P1.2), in order:
+
+      * "off" — `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run): Anki is never reached;
+      * "no-decks" — no decks chosen for this language in the Anki window;
+      * "never-synced" — the FIRST sync is always the user's own "Sync now" (Anki_Known_Sync_Spec §5.6): the Anki
+        window pre-picks every studied deck the moment it opens, and until the user has reviewed that pick and synced
+        once, nothing may be read into their known words behind their back (appends can't be taken back);
+      * "throttled" (only with `throttle`) — the last sync on disk is under SYNC_EVERY seconds old.
+    """
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return "off", "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
+    if not list(((settings or {}).get("anki_sync_decks") or {}).get(language) or []):
+        return "no-decks", "Choose your Anki decks in Surasura's Anki window first."
+    last = load_state(language).get("last_sync")
+    if not last:
+        return "never-synced", "Sync once from Surasura's Anki window first."
+    if throttle:
+        try:
+            age = ((now or datetime.now()) - datetime.fromisoformat(str(last))).total_seconds()
+        except ValueError:
+            age = None
+        if age is not None and 0 <= age < SYNC_EVERY:
+            return "throttled", f"synced {int(age)} s ago"
+    return None
 
 
 def _save_state(language, state):
@@ -381,6 +460,9 @@ def sync(language, url, decks, fields, include_suspended=False, full=False):
     """Append the words of newly studied notes to KnownWord.json. Never raises; errors come back in
     `SyncResult.error` with nothing written."""
     with _LOCK:
+        held, refused = _hold_known(language, "full" if full else "delta")
+        if refused is not None:
+            return refused
         try:
             return _sync(language, url or anki_connect.DEFAULT_URL, _clean_decks(decks),
                          [str(f) for f in (fields or [])], bool(include_suspended), full)
@@ -391,6 +473,9 @@ def sync(language, url, decks, fields, include_suspended=False, full=False):
             return SyncResult(mode="full" if full else "delta",
                               error=f"Could not save your known words: {e}",
                               total_known=count_known(language))
+        finally:
+            if held is not None:
+                held.release()
 
 
 def _sync(language, url, decks, fields, include_suspended, full):
@@ -651,49 +736,74 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             return result
 
         known_path = _known_path(language)
+        held, refused = _hold_known(language, mode)
+        if refused is not None:
+            return refused
         try:
-            result.backup = _backup_current(language)
-        except OSError as e:
-            result.error = f"Nothing was replaced: your current list could not be backed up ({e})."
-            result.total_known = count_known(language)
-            return result
-        try:
-            _atomic_write_json(known_path, _fresh_file(words))
-            state = load_state(language)
-            state.update({
-                "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
-                "note_ids": sorted(note_ids), "known_sig": known_signature(known_path),
-                "last_sync": now, "last_added": result.added, "last_backup": result.backup,
-            })
-            _save_state(language, state)
-        except OSError as e:
-            result.error = f"Replace failed: {e}"
+            return _replace_held(language, result, known_path, words, url, decks, fields, include_suspended,
+                                 note_ids, now)
+        finally:
+            if held is not None:
+                held.release()
+
+
+def _replace_held(language, result, known_path, words, url, decks, fields, include_suspended, note_ids, now):
+    """`replace`'s write, holding KnownWord.json's lock."""
+    try:
+        result.backup = _backup_current(language)
+    except OSError as e:
+        result.error = f"Nothing was replaced: your current list could not be backed up ({e})."
         result.total_known = count_known(language)
         return result
+    try:
+        _atomic_write_json(known_path, _fresh_file(words))
+        state = load_state(language)
+        state.update({
+            "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
+            "note_ids": sorted(note_ids), "known_sig": known_signature(known_path),
+            "last_sync": now, "last_added": result.added, "last_backup": result.backup,
+        })
+        _save_state(language, state)
+    except OSError as e:
+        result.error = f"Replace failed: {e}"
+    result.total_known = count_known(language)
+    return result
 
 
 def restore_previous(language):
     """Undo the last replace: back up the CURRENT file the same way (so this is undoable too), copy
     the backup back atomically, and clear the seen note ids so the next sync re-evaluates cleanly."""
     with _LOCK:
-        result = SyncResult(mode="restore")
-        state = load_state(language)
-        name = state.get("last_backup")
-        backup_path = os.path.join(get_user_files_path(language), ".trash", str(name or ""))
-        if not name or not os.path.isfile(backup_path):
-            result.error = "There is no previous list to restore."
-            result.total_known = count_known(language)
-            return result
-        known_path = _known_path(language)
+        held, refused = _hold_known(language, "restore")
+        if refused is not None:
+            return refused
         try:
-            with open(backup_path, "rb") as f:
-                payload = f.read()
-            result.backup = _backup_current(language)
-            _atomic_write_bytes(known_path, payload)
-            state.update({"note_ids": [], "known_sig": None,   # full resync next time
-                          "last_backup": result.backup})
-            _save_state(language, state)
-        except OSError as e:
-            result.error = f"Restore failed, nothing was changed: {e}"
+            return _restore_held(language)
+        finally:
+            if held is not None:
+                held.release()
+
+
+def _restore_held(language):
+    """`restore_previous`, holding KnownWord.json's lock."""
+    result = SyncResult(mode="restore")
+    state = load_state(language)
+    name = state.get("last_backup")
+    backup_path = os.path.join(get_user_files_path(language), ".trash", str(name or ""))
+    if not name or not os.path.isfile(backup_path):
+        result.error = "There is no previous list to restore."
         result.total_known = count_known(language)
         return result
+    known_path = _known_path(language)
+    try:
+        with open(backup_path, "rb") as f:
+            payload = f.read()
+        result.backup = _backup_current(language)
+        _atomic_write_bytes(known_path, payload)
+        state.update({"note_ids": [], "known_sig": None,   # full resync next time
+                      "last_backup": result.backup})
+        _save_state(language, state)
+    except OSError as e:
+        result.error = f"Restore failed, nothing was changed: {e}"
+    result.total_known = count_known(language)
+    return result

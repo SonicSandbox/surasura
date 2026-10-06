@@ -41,7 +41,8 @@ POLL = 0.25
 
 _NAME = re.compile(r"[a-z0-9-]+\Z")
 
-# name -> (the thread ident holding it in this process, its verb). Guarded by `_registry_lock`, which is
+# name -> (its owner in this process — the taking thread's ident, or the `owner` a hold that outlives its thread
+# named — and its verb). Guarded by `_registry_lock`, which is
 # held only while asking the OS for the lock (never while waiting).
 _registry = {}
 _registry_lock = threading.Lock()
@@ -82,6 +83,73 @@ def _paths(name):
 def _program():
     """The running program's name: `Surasura.exe` / `surasura-cli.exe` when frozen, else `python`."""
     return os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "python"
+
+
+def unopenable(name):
+    """The path of `name`'s lock file when this process can't open it (a PermissionError: its folder's permissions),
+    else None. `take` reads such a file as held by a program it can't name (`Busy(None)`), failing closed; a caller
+    asks this to say so in plain words instead of "busy" (P1.2, E1.4's review #11). Never raises."""
+    try:
+        path = _paths(name)[0]
+        with open(path, "a+b"):
+            return None
+    except PermissionError:
+        return path
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def in_use(name, looks=6, gap=0.02):
+    """Is `name` held — by any thread of this process, or another program? A reader's look (P1.2): it never takes the
+    lock for a holder, writes no record and joins no registry. The OS lock is tried and let go at once, `looks` times
+    `gap` seconds apart: another reader's look holds it well under a millisecond, a holder holds it all along, so
+    only a lock held at every look is in use. A missing lock file is free. Never raises."""
+    if held_in_process(name):
+        return True
+    try:
+        path = _paths(name)[0]
+        if not os.path.exists(path):
+            return False
+        for look in range(looks):
+            handle = path_utils.try_lock(path)
+            if handle is not None:
+                path_utils.release_lock(handle)
+                return False
+            if look < looks - 1:
+                time.sleep(gap)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
+def holder_alive(holder):
+    """The holder record if its process still runs, else None: a record a killed holder left names nobody. Never
+    raises."""
+    try:
+        pid = int((holder or {}).get("pid"))
+    except (TypeError, ValueError):
+        return None
+    if pid == os.getpid():
+        return holder
+    if sys.platform == "win32":
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            code = ctypes.c_ulong()
+            alive = kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value == 259    # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+        return holder if alive else None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except OSError:
+        pass
+    return holder
 
 
 def read_holder(name):
@@ -157,10 +225,11 @@ class Held:
         return False
 
 
-def held_here(name):
-    """Does the calling thread hold `name`?"""
+def held_here(name, owner=None):
+    """Does the calling thread (or `owner`, when given) hold `name`?"""
+    owner = threading.get_ident() if owner is None else owner
     with _registry_lock:
-        return (_registry.get(name) or (None,))[0] == threading.get_ident()
+        return (_registry.get(name) or (None,))[0] == owner
 
 
 def held_in_process(name):
@@ -174,7 +243,7 @@ def _try(name, verb, lock_path, me):
     with _registry_lock:
         owner = (_registry.get(name) or (None,))[0]
         if owner == me:
-            raise RuntimeError(f"This thread already holds '{name}': a nested take is a programming error.")
+            raise RuntimeError(f"'{name}' is already held by this owner: a nested take is a programming error.")
         if owner is not None:
             return None
         handle = path_utils.try_lock(lock_path)
@@ -183,16 +252,20 @@ def _try(name, verb, lock_path, me):
         return handle
 
 
-def take(name, verb, wait=0.0, cancel=None, on_wait=None):
+def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
     """Take `name` for `verb` (a short user-facing phrase: "順 reorder", "Backfill") -> `Held`.
 
     `wait=0` answers at once; `wait=s` looks again every 250 ms for up to `s` seconds; `wait=None` waits
     until the lock is free or `cancel` (a `threading.Event`) is set. Held elsewhere when the wait runs
     out -> `Busy(holder)`; cancelled -> `Cancelled(holder)`. `on_wait(holder)` is called once, when
     waiting starts. Both run on the calling thread — never the GUI's.
+
+    A hold never outlives its thread unless it names an `owner` (any object: the 順 window passes its own token, takes
+    the lock on a worker that ends, and lets go through its `Held`): the registry keeps the owner, and the nested-take
+    check and `held_here` compare owners, so a later thread that reuses the ident is never mistaken for the holder.
     """
     lock_path, record_path = _paths(name)
-    me = threading.get_ident()
+    me = threading.get_ident() if owner is None else owner
     deadline = None if wait is None else time.monotonic() + max(0.0, float(wait))
     waited = False
     while True:

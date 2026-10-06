@@ -733,6 +733,10 @@ class TestJunbanAutoReorder(_DashboardHarness):
         self.auto = types.ModuleType("modules.junban.auto")
         self.auto.enabled = lambda settings: settings.get("junban_auto_reorder") is True
         self.auto.run_quietly = MagicMock(return_value="")
+        # The guards live in the module (P1.2: `auto.blocked`, `auto.window_open`; their own suite proves them):
+        # the dashboard asks them, the window's lock on its worker.
+        self.auto.blocked = MagicMock(return_value=None)
+        self.auto.window_open = MagicMock(return_value=False)
 
     def _modules(self):
         parent, junban = types.ModuleType("modules"), types.ModuleType("modules.junban")
@@ -773,19 +777,33 @@ class TestJunbanAutoReorder(_DashboardHarness):
 
     def test_never_while_the_junban_window_is_open(self):
         """The user is ordering by hand there; a write underneath would leave their preview
-        describing a queue that has moved."""
-        self.app.junban_window = MagicMock()
-        self.app.junban_window.winfo_exists.return_value = True
-        self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+        describing a queue that has moved. The window holds `junban-window` (any program's 順
+        window), looked at on the worker, never on the window's thread."""
+        self.auto.window_open.return_value = True
+        thread = self._call({"junban_auto_reorder": True}, force=True)
+        self.auto.blocked.assert_called_once()
+        self.assertIs(self.auto.blocked.call_args.kwargs.get("window"), False)
+        self.auto.window_open.assert_not_called()                     # not on the window's thread
+        with patch.object(self.main, "journey_is_current", return_value=True):
+            thread.call_args.kwargs["target"]()
+        self.auto.window_open.assert_called_once_with()
+        self.auto.run_quietly.assert_not_called()
 
     def test_a_build_without_the_module_is_untouched(self):
         """The Prime Invariant: no `modules/junban`, nothing scheduled and nothing raised."""
         self._call({"junban_auto_reorder": True}, force=True,
                    modules={"modules.junban": None}).assert_not_called()
 
-    def test_the_test_guard_blocks_it(self):
-        os.environ["SURASURA_NO_ANKI_SYNC"] = "1"
+    def test_a_guard_of_the_module_blocks_it(self):
+        """The test switch, the module off, an update waiting: `auto.blocked` says why, and nothing is scheduled."""
+        self.auto.blocked.return_value = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"
         self._call({"junban_auto_reorder": True}, force=True).assert_not_called()
+
+    def test_the_switch_as_shown_is_what_the_module_reads(self):
+        """`enable_junban` from the widget: the setting may not be written yet (the settings writer)."""
+        self.app.var_enable_junban.get.return_value = False
+        self._call({"junban_auto_reorder": True, "enable_junban": True}, force=True)
+        self.assertIs(self.auto.blocked.call_args.args[0]["enable_junban"], False)
 
     def test_the_run_reads_the_dashboards_live_language(self):
         self.app.var_language.get.return_value = "zh"

@@ -38,35 +38,10 @@ CHECK_GRAY = "#8a8a8a"   # the Generate button's "up to date" check — quiet, l
 
 
 def journey_is_current(args, language):
-    """Would Generate compute anything new? True when the last run still describes this library,
-    these known words and these analysis settings; False when it would not (or never ran); None when
-    it cannot tell. The analyzer's OWN signature (`compute_run_signature` + the store's last one + the
-    results stamp), so the Generate button's state can never disagree with what Generate then does —
-    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit)
-    is not part of it: that re-renders in a moment and needs no nudge."""
-    try:
-        from app import analyzer as _analyzer
-        from app import token_index as _ti
-        from app.path_utils import get_user_file
-
-        found = _analyzer.resolve_found_files(language, verbose=False)
-        if not found:
-            return None
-        sig = _analyzer.compute_run_signature(language, found, _analyzer.parse_analysis_args(args[1:]))
-        if not sig:
-            return None
-        results_dir = get_user_file("results")
-        if not all(os.path.exists(os.path.join(results_dir, name)) for name in
-                   ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
-            return False
-        store = _ti.open_store(language)
-        try:
-            stored = store.get_meta("last_run_signature")
-        finally:
-            store.close()
-        return stored == sig and _analyzer.read_run_stamp(results_dir) == sig
-    except Exception:
-        return None
+    """Would Generate compute anything new? (`analyzer.journey_is_current`: it lives beside the run signature
+    it asks, Library_Store_Spec §7.) Imported on call, so the dashboard never loads the analyzer at start."""
+    from app import analyzer as _analyzer
+    return _analyzer.journey_is_current(args, language)
 
 
 def anki_sync_is_set_up(settings):
@@ -77,23 +52,9 @@ def anki_sync_is_set_up(settings):
 
 
 def build_subprocess_env(frozen=None):
-    """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
-
-    Forces the child's stdio to UTF-8 so the parent's strict-UTF-8 stdout capture never chokes on
-    locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
-    Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
-    byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
-    """
-    from app.path_utils import is_frozen
-    if frozen is None:
-        frozen = is_frozen()
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-    if not frozen:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env["PYTHONPATH"] = (project_root + os.pathsep + env["PYTHONPATH"]
-                             if "PYTHONPATH" in env else project_root)
-    return env
+    """`path_utils.build_subprocess_env` (moved there so the Tk-free library store can use it too)."""
+    from app.path_utils import build_subprocess_env as _build
+    return _build(frozen)
 
 
 def csv_has_data_rows(path):
@@ -392,7 +353,6 @@ class MasterDashboardApp:
         self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
         self.var_open_count = tk.IntVar(value=0)
-        self.var_hide_satoru = tk.BooleanVar(value=False)
         self.var_hide_audio = tk.BooleanVar(value=False)
         self.var_enable_youtube = tk.BooleanVar(value=False)
         self.youtube_risk_acknowledged = False
@@ -441,6 +401,7 @@ class MasterDashboardApp:
         # Update state (populated by the background check; consumed by the footer indicator)
         self._update_info = None
         self._update_class = "NONE"
+        self._update_job = None            # "Update now" until the hand-over (or a cancel): _start_update
         self.skipped_version = ""          # "Skip this version": never offered again
         self.failed_update_version = ""    # its in-app update failed: a manual download from then on
         self.btn_offer_skipped = None      # Settings' way back from a skip (`_sync_skipped_row`)
@@ -451,7 +412,6 @@ class MasterDashboardApp:
         self.terminal: Optional[tk.Text] = None
         self.spinner: Optional[ttk.Progressbar] = None
         self.settings_window: Optional[tk.Toplevel] = None
-        self.btn_satori: Optional[ttk.Button] = None
         self.btn_youtube: Optional[ttk.Button] = None
         self.btn_preview: Optional[ttk.Button] = None
         self.btn_reels: Optional[ttk.Button] = None
@@ -536,7 +496,6 @@ class MasterDashboardApp:
         self.var_show_words_per_day.trace_add("write", self.save_settings)
         self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
         self.var_hide_audio.trace_add("write", self.save_settings)
-        self.var_hide_satoru.trace_add("write", lambda n, i, m: self.update_satori_visibility())
         self.var_enable_youtube.trace_add("write", self.save_settings)
         self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
         self.var_enable_preview.trace_add("write", self.save_settings)
@@ -560,7 +519,8 @@ class MasterDashboardApp:
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
                                                self._maybe_anki_sync(), self._maybe_junban_auto(),
-                                               self._maybe_auto_generate(), self._schedule_journey_state()))
+                                               self._maybe_auto_generate(), self._schedule_journey_state(),
+                                               self._schedule_maintain(), self._update_library_notice()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -578,12 +538,21 @@ class MasterDashboardApp:
             # Whether the journey is up to date — the Generate button's border / check mark.
             self.root.after(1200, self._schedule_journey_state)
 
+            # The library store's helper, when it has something to do (Library_Store_Spec §6.7: at open), and its
+            # notice once that has had a moment to build the store.
+            self.root.after(1500, self._maybe_maintain)
+            self.root.after(1600, self._update_library_notice)
+
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
         # would otherwise go online.
         if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
-        
+
+        # The note naming this install's data folder, for 3.0's first start (K100). Frozen builds only; off the
+        # window's thread, and a failure is only logged (write_install_note never raises).
+        threading.Thread(target=self._write_install_note, daemon=True).start()
+
         # Initial UI update for language
         self.update_ui_for_language()
         
@@ -1033,40 +1002,46 @@ class MasterDashboardApp:
         if not force and (now - self._last_index_check) < 2.0:
             return
         self._last_index_check = now
+        lang = self.var_language.get() or "ja"
+        script = self._effective_zh_script(lang)
+        # The whole check runs on a worker (Library_Store_Spec §7, A12): the list and needs_reconcile's stat of
+        # every file. The list is the indexer's own (`indexer._content_files`: the store's in store and read-only
+        # modes, K2, else the folders), so a file Graduate left in its folder never reads as "to index" forever.
+        self._indexer_busy = True
+        self._run_on_worker(lambda: self._index_needed(lang, script), lambda need: self._index_checked(need, lang))
+
+    @staticmethod
+    def _index_needed(lang, script):
+        """Would the indexer have anything to do for `lang`? Stat-only (no tokenizer); False when it can't tell."""
         try:
-            lang = self.var_language.get() or "ja"
-            from app.path_utils import get_data_path, get_user_files_path, is_content_file
-            data_dir = get_data_path(lang)
-            files = []
-            for folder in ("HighPriority", "LowPriority", "GoalContent"):
-                base = os.path.join(data_dir, folder)
-                if os.path.isdir(base):
-                    for r, _d, names in os.walk(base):
-                        files += [os.path.join(r, n) for n in names if is_content_file(n)]
-            script = self._effective_zh_script(lang)
+            from app.path_utils import get_data_path, get_user_files_path
+            from app.indexer import _content_files
+            files = _content_files(get_data_path(lang), lang)
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
                 # needs_reconcile is stat-only, so a tokenizer change (the Chinese script)
                 # alone would never re-index: compare the identity the store was built with too.
-                need = (store.needs_reconcile(files)
-                        or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
-                        or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
+                return bool(store.needs_reconcile(files)
+                            or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
+                            or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:
                 store.close()
         except Exception:
-            return
-        if not need:
-            return
+            return False
 
-        self._indexer_busy = True
+    def _index_checked(self, need, lang=None):
+        """The indexer check's answer, on this thread: launch the indexer for the language checked, or stand down."""
+        if not need:
+            self._indexer_busy = False
+            return
 
         def _done():
             self._indexer_busy = False
             self._refresh_band_preview(force=True)   # store just changed -> recompute, don't trust cache
             self._maybe_auto_generate()              # one waiting for the indexer can go now
 
-        self.run_command_async(['indexer.py', '--language', self.var_language.get()],
+        self.run_command_async(['indexer.py', '--language', lang or self.var_language.get()],
                                "Indexing", on_complete=_done)
 
     def update_ui_for_language(self):
@@ -1140,15 +1115,44 @@ class MasterDashboardApp:
 
         # A language switch points at a different store — re-index that language in the background.
         self._maybe_launch_indexer(force=True)
+        self._schedule_maintain()
+        self._update_library_notice()
         self._update_generate_state()   # different language -> different library -> re-check emptiness
 
     def _library_has_content(self):
-        """True if the current language's library has at least one analyzable content file. The
+        """True if the current language's library has at least one analyzable content file. With a library
+        store: an available file in an analysed tier, read from this thread's long-lived handle (a Graduate
+        leaves its file in the tier folder, so the folders no longer answer). Without one, the folders: the
         extensions MUST match what the analyzer actually reads (analyzer.get_files_recursive:
         path_utils.is_content_file) — otherwise Generate could enable on files the analysis then
         ignores (e.g. a tier of only .vtt), yielding an empty journey."""
+        lang = self.var_language.get() or "ja"
+        store = self._library_handle(lang)
+        if store is not None:
+            try:
+                return store.has_content()
+            except Exception:
+                pass
+        # The folders are walked on a worker (Library_Store_Spec §7, A12); this thread reads the last answer
+        # (Generate stays on until the first one), and the button follows when the answer changes.
+        answers = self.__dict__.setdefault("_folder_content", {})
+        walking = self.__dict__.setdefault("_folder_content_walks", set())
+        if lang not in walking:
+            walking.add(lang)
+
+            def landed(has):
+                walking.discard(lang)
+                changed = answers.get(lang) != has
+                answers[lang] = has
+                if changed and (self.var_language.get() or "ja") == lang:
+                    self._update_generate_state()
+            self._run_on_worker(lambda: self._folders_have_content(lang), landed)
+        return answers.get(lang, True)
+
+    @staticmethod
+    def _folders_have_content(lang):
         from app.path_utils import get_data_path, is_content_file
-        base = get_data_path(self.var_language.get() or "ja")
+        base = get_data_path(lang)
         for tier in ("HighPriority", "LowPriority", "GoalContent"):
             d = os.path.join(base, tier)
             if os.path.isdir(d):
@@ -1156,6 +1160,198 @@ class MasterDashboardApp:
                     if any(is_content_file(f) for f in files):
                         return True
         return False
+
+    @staticmethod
+    def _library_state(lang):
+        """(mode, reason, waiting) for `lang`'s library store, read on a worker: `waiting` is an outside edit of
+        the copy that waits for the user's answer (the size guard, Q4-8)."""
+        try:
+            from app import library_store
+            from app.path_utils import get_data_path, get_user_files_path
+            data_dir = get_data_path(lang)
+            mode, reason = library_store.check_mode(lang, data_dir, busy_wait=0.0)
+            waiting, note = False, None
+            if mode == "store":
+                store = library_store.open_store(lang, data_dir, get_user_files_path(lang), role="window",
+                                                 busy_wait=0.0)
+                if store is not None:
+                    with store:
+                        meta = store.meta()
+                        waiting = bool(meta.get("reimport_pending"))
+                        if meta.get("reimport_note"):
+                            note = json.loads(meta["reimport_note"])
+                            store.bookkeeping({"reimport_note": ""})      # told once (D27: "tells you quietly")
+            return mode, reason, waiting, note
+        except Exception:
+            return None, None, False, None
+
+    def _update_library_notice(self):
+        """Re-check the library's mode (on focus, at open, on a language switch, after Repair or Try again) on a
+        worker, and show what the user needs to know — never a modal (§6.9: the mode is checked, not fixed)."""
+        if not hasattr(self, "library_notice") or self.__dict__.get("_library_notice_busy"):
+            return
+        lang = self.var_language.get() or "ja"
+        self._run_on_worker(lambda: self._library_state(lang), lambda state: self._show_library_notice(lang, state))
+
+    def _show_library_notice(self, lang, state):
+        mode, reason, waiting, note = state
+        if mode is None or (self.var_language.get() or "ja") != lang:
+            return
+        if note:
+            count = note.get("count")
+            self.status_var.set("Your library's order file was changed outside Surasura: the change was taken in"
+                                + (f" ({count} item{'s' if count != 1 else ''} moved)." if count else "."))
+        before = self._library_mode_seen.get(lang)
+        self._library_mode_seen[lang] = mode
+        if before == "json" and mode == "store":
+            self.status_var.set("Library moved to the new store.")
+        kind, text = None, ""
+        if mode == "read-only" and reason == "damaged":
+            kind = "damaged"
+            text = ("Your library needs repair. Until then its order can't be changed, and new files are read "
+                    "but can't be added to it. Generate still works.")
+        elif mode == "read-only" and "newer" in (reason or ""):
+            text = "This library was saved by a newer Surasura: its order can't be changed here."
+        elif mode == "read-only" and reason != "busy":
+            text = "Your library can't be changed right now. Generate still works."
+        elif mode == "json" and reason == "migration failed":
+            kind = "failed"
+            text = ("Your library couldn't be moved to the new store, so its order stays in its file for now "
+                    "(details: library_maintain.log in Surasura's local data folder).")
+        elif waiting:
+            text = "Your library's order file was changed outside Surasura. Open Import Content to choose an order."
+        self._library_notice_kind = kind
+        self.library_notice_var.set(text)
+        if kind:
+            self.btn_library_notice.config(text="Repair" if kind == "damaged" else "Try again", state=tk.NORMAL)
+            self.btn_library_notice.pack(side=tk.RIGHT, padx=(5, 0), pady=(6, 0))
+        else:
+            self.btn_library_notice.pack_forget()
+        if text:
+            self.library_notice.pack(fill=tk.X, side=tk.BOTTOM, before=self.btn_open_data)
+        else:
+            self.library_notice.pack_forget()
+
+    def _close_library_handles(self):
+        """This process's own store handles (the dashboard's long-lived ones): Repair renames the files, which
+        Windows refuses while any is open (§6.9). They reopen on the next use."""
+        for opener in self.__dict__.get("_library_openers", {}).values():
+            store = getattr(opener._local, "store", None)
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+                opener._local.store = None
+
+    def _library_notice_action(self):
+        """Repair (a damaged store) or Try again (a failed move), run as the helper. Repair first closes the
+        Content Manager windows and this window's own handles, and waits for no Generate (§6.9)."""
+        kind, lang = self._library_notice_kind, self.var_language.get() or "ja"
+        if kind not in ("damaged", "failed"):
+            return
+        if kind == "damaged":
+            if self._generate_running is not None:
+                self.status_var.set("Repair waits for Generate to finish — try again in a moment.")
+                return
+            for proc in list(self.active_processes):
+                if getattr(proc, "surasura_desc", "") == "Content Importer":
+                    try:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            proc.wait(5)
+                    except Exception:
+                        pass
+            self._close_library_handles()
+        try:
+            from app import library_store
+            proc = library_store.spawn_maintain(lang, "--repair" if kind == "damaged" else "--retry")
+        except Exception:
+            proc = None
+        if proc is None:
+            self.status_var.set("Couldn't start that just now (an update may be waiting) — try again shortly.")
+            return
+        self._library_notice_busy = True
+        self.btn_library_notice.config(state=tk.DISABLED)
+        self.status_var.set("Repairing your library…" if kind == "damaged" else "Moving your library to the store…")
+
+        def wait_for_it():
+            code = proc.poll()
+            if code is None:
+                self.root.after(300, wait_for_it)
+                return
+            self._library_notice_busy = False
+            if code in (0, 3):
+                self.status_var.set("Library repaired." if kind == "damaged" else "Library moved to the new store.")
+            elif kind == "damaged":
+                self.status_var.set("Repair couldn't finish: close any other Surasura windows, then press Repair "
+                                    "again.")
+            else:
+                self.status_var.set("Your library still couldn't be moved — it keeps working from its file.")
+            self._update_library_notice()
+            self._update_generate_state()
+            self._schedule_journey_state()
+        self.root.after(300, wait_for_it)
+
+    def _schedule_maintain(self):
+        """The library store's helper, 2 s after the last trigger (focus, a language switch): one check for a burst
+        of them (Library_Store_Spec §6.7: idle 2 s, and a copy that may have changed)."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            return
+        job = self.__dict__.get("_maintain_job")
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._maintain_job = self.root.after(2000, self._maybe_maintain)
+
+    def _maybe_maintain(self):
+        """On a worker: spawn the helper (detached) when it has something to do — no store yet but a manifest to
+        build from, a change since the last export, or a copy someone else rewrote (once per new stat)."""
+        self._maintain_job = None
+        lang = self.var_language.get() or "ja"
+        handed = self.__dict__.setdefault("_maintain_handed", {})
+
+        def work():
+            try:
+                from app import library_store
+                from app.path_utils import get_data_path, get_user_files_path
+                data_dir, user_files_dir = get_data_path(lang), get_user_files_path(lang)
+                mode, _reason = library_store.check_mode(lang, data_dir, busy_wait=0.0)
+                if mode == "json":
+                    library_store.spawn_build_if_waiting(lang, data_dir, user_files_dir)
+                    return
+                if mode != "store":
+                    return
+                store = library_store.open_store(lang, data_dir, user_files_dir, role="window", busy_wait=0.0)
+                if store is None:
+                    return
+                with store:
+                    due, seen = library_store.maintain_due(store, handed.get(lang, ""))
+                if due:
+                    handed[lang] = seen
+                    library_store.spawn_maintain(lang)
+            except Exception as e:
+                print(f"Library store helper check: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _library_handle(self, lang):
+        """This thread's long-lived library store handle for `lang` (Library_Store_Spec §6.2), or None
+        outside store mode. The mode is re-checked on every call (cheap: no scans, never waits here)."""
+        try:
+            from app import library_store
+            from app.path_utils import get_data_path, get_user_files_path
+            openers = self.__dict__.setdefault("_library_openers", {})
+            opener = openers.get(lang)
+            if opener is None:
+                opener = openers[lang] = library_store.StoreOpener(lang, get_data_path(lang),
+                                                                    get_user_files_path(lang))
+            if opener.check() != "store":
+                return None
+            return opener.handle()
+        except Exception:
+            return None
 
     def _update_generate_state(self):
         """Disable 'Generate Journey' (with a short hint) while the library is empty — there's nothing
@@ -1222,7 +1418,24 @@ class MasterDashboardApp:
         btn_open_data = ttk.Button(lib_frame, text="Import Content", style="Action.TButton",
                                     command=self.run_content_importer)
         btn_open_data.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        self.btn_open_data = btn_open_data
         ToolTip(btn_open_data, "Add and manage your immersion content — files, EPUB / Anki, and YouTube.")
+        # The library store's notice (Library_Store_Spec §6.8, §6.9): a damaged store (Repair), a move to the store
+        # that failed (Try again), a library from a newer Surasura, an outside edit waiting for an answer.
+        # Packed below the button row only while there is something to say (_update_library_notice).
+        self.library_notice = ttk.Frame(lib_frame)
+        self.library_notice_var = tk.StringVar(value="")
+        ttk.Label(self.library_notice, textvariable=self.library_notice_var, foreground=ERROR_COLOR,
+                  wraplength=330, justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X, expand=True, pady=(6, 0))
+        self.btn_library_notice = ttk.Button(self.library_notice, text="Repair", width=10,
+                                             command=self._library_notice_action)
+        ToolTip(self.btn_library_notice, lambda: (
+            "Rebuild your library's store from what can still be read and its saved copy. Content Manager windows "
+            "close first; the damaged files are kept aside, never deleted."
+            if self._library_notice_kind == "damaged" else
+            "Try moving your library order into the new store again."))
+        self._library_notice_kind = None
+        self._library_mode_seen = {}
         # self.btn_youtube stays None (declared in __init__): the downloader button moved into the
         # Content Manager, so update_youtube_visibility() safely no-ops on the main GUI.
 
@@ -1426,17 +1639,11 @@ class MasterDashboardApp:
         self.lbl_flag.pack(side=tk.LEFT, padx=(10, 5))
 
         # Settings Button (Icon only). ALWAYS the right-most button: the optional module buttons are
-        # packed before it (see _module_slot), so the footer reads [flag] 悟 🎬 順 ⚙ however many
+        # packed before it (see _module_slot), so the footer reads [flag] 🎬 順 ⚙ however many
         # modules are on and in whatever order they were switched on.
         self.btn_settings = ttk.Button(credit_box, text="⚙", command=self.toggle_settings_window, width=3)
         self.btn_settings.pack(side=tk.LEFT, padx=(5, 0))
         ToolTip(self.btn_settings, "Open Settings & Logs")
-
-        # Immersion Architect (Satori) Button
-        self.btn_satori = ttk.Button(credit_box, text="悟", command=self.open_immersion_architect, width=3)
-        if not self.var_hide_satoru.get():
-            self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
-        ToolTip(self.btn_satori, "Immersion Architect Intelligence")
 
         # Reels Button (optional module). Created unpacked; load_settings decides whether it shows.
         self.btn_reels = ttk.Button(credit_box, text="🎬", command=self.open_reels, width=3)
@@ -1913,17 +2120,13 @@ class MasterDashboardApp:
         else:
             self.settings_window.withdraw()
 
-    def open_immersion_architect(self):
+    @staticmethod
+    def _write_install_note():
         try:
-            from modules.immersion_architect.gui import ImmersionArchitectGui
-            # Create if not exists or if destroyed
-            if not hasattr(self, 'satori_window') or self.satori_window is None or not self.satori_window.winfo_exists():
-                self.satori_window = ImmersionArchitectGui(self.root)
-            else:
-                self.satori_window.lift()
+            from app import path_utils
+            path_utils.write_install_note()
         except Exception as e:
-            print(f"Error launching Immersion Architect: {e}")
-            messagebox.showerror("Error", f"Could not launch Immersion Architect:\n{e}")
+            print(f"Install note: {e}")
 
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.
@@ -1944,8 +2147,8 @@ class MasterDashboardApp:
                 cls, info,
                 skipped_version=cur.get("skipped_version", ""),
                 auto_enabled=cur.get("auto_update_enabled", True),
-                can_apply=updater.can_auto_apply(),
-                failed_version=cur.get("failed_update_version", ""),
+                can_apply=updater.can_auto_apply(info),
+                failed_version=updater.failed_version(cur),
             )
             if cls == "NONE" or info is None:
                 return
@@ -1998,7 +2201,16 @@ class MasterDashboardApp:
         btn_row = ttk.Frame(wrapper)
         btn_row.pack(fill=tk.X)
 
-        if cls == "APP":
+        if cls == "INSTALLER":
+            btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
+                                 command=lambda: self._do_installer_update(dialog))
+            btn_now.pack(side=tk.LEFT)
+            ToolTip(btn_now, "Download Surasura's installer, close Surasura and start it.")
+            btn_skip = ttk.Button(btn_row, text="Skip this version",
+                                  command=lambda: self._skip_update(dialog))
+            btn_skip.pack(side=tk.LEFT, padx=(8, 0))
+            ToolTip(btn_skip, "Don't offer this version again.")
+        elif cls == "APP":
             btn_now = ttk.Button(btn_row, text="Update now", style="Action.TButton",
                                  command=lambda: self._do_auto_update(dialog))
             btn_now.pack(side=tk.LEFT)
@@ -2019,6 +2231,9 @@ class MasterDashboardApp:
     def _update_body(cls, info, failed_version=""):
         """What the update dialog says. A version whose in-app update already failed is a manual
         download for that reason — it isn't "a larger update", and saying so sent people looking."""
+        if cls == "INSTALLER":
+            return ("This version installs with its own installer: Surasura closes, the installer starts, "
+                    "and it brings your library, words and settings with it.")
         if cls == "APP":
             return ("This is a quick in-app update — it refreshes only the program code and "
                     "report templates (about 15–20 MB). Your words, data, settings, and file "
@@ -2070,66 +2285,255 @@ class MasterDashboardApp:
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
     def _do_auto_update(self, dialog):
-        """Download+verify the app package on a worker thread, then arm+restart on the UI thread."""
+        """"Update now": stage the app package (`updater.prepare_update`) while everything else of Surasura's that
+        holds this install's programs finishes (K75), then hand over to updater.exe."""
         dialog.destroy()
         info = self._update_info
         if not info:
             return
-        if not updater.can_auto_apply():
-            # No bundled updater.exe (e.g. running from source) — fall back to manual.
+        if not updater.can_auto_apply(info):
+            # No bundled updater.exe (e.g. running from source), or a file list naming a destination an in-place
+            # update may not write — fall back to manual.
             webbrowser.open(info.notes_url)
             return
+        self._start_update(info, updater.prepare_update)
 
+    def _do_installer_update(self, dialog):
+        """"Update now" on an installer release (3.0, S1.3-6): the same wait (K75), then the installer starts and the
+        app exits. Never reached by a 2.x release (`update_checker.installer_ready`)."""
+        dialog.destroy()
+        info = self._update_info
+        if not info:
+            return
+        from app.path_utils import is_frozen
+        if not is_frozen():
+            webbrowser.open(info.notes_url)
+            return
+        self._start_update(info, updater.prepare_installer)
+
+    def _start_update(self, info, stage):
+        """From "Update now" until the hand-over: the update lock held (the command line answers `update-staged`), no
+        new child process started (`updater.hold_children`), the download running on a worker meanwhile, and a
+        non-modal window naming whatever still runs, polled with `after`. Nothing is written for the helper until
+        the final callback (`_apply_and_restart`), so a cancel, a close or a crash leaves nothing armed."""
+        lock = updater.take_update_lock()
+        if lock is None:                              # this window's own update, or another install's
+            messagebox.showinfo("Update", "Another Surasura update is already in progress.")
+            return
+        updater.hold_children()
+        job = {"info": info, "lock": lock, "staged": None, "error": None, "done": False, "children": None,
+               "listing": False, "window": None, "rows": None, "after": None}
+        self._update_job = job
         self.status_var.set("Downloading update…")
 
         def worker():
             try:
-                marker = updater.prepare_update(info)
+                job["staged"] = stage(info)
             except Exception as e:
-                report = updater.write_report("download", e, to_version=info.version)
-                # Bind the error now: Python deletes `e` when this block ends, before the UI thread
-                # runs the callback (an unbound `e` raised NameError and no dialog ever showed).
-                def _show_error(err=e, report=report):
-                    messagebox.showerror(
-                        "Update",
-                        f"Couldn't download the update:\n{err}\n\n"
-                        "You can try again later, or update manually from the releases page."
-                        + self._update_report_note(report))
-                    self.status_var.set("Ready")
-                self.gui_queue.put(_show_error)
-                return
-            # Arming + closing the app must happen on the main (UI) thread.
-            self.gui_queue.put(lambda: self._apply_and_restart(marker))
+                job["error"] = e
+            job["done"] = True
+            # Back on the window's thread: a failure is said at once; a finished download may hand over now.
+            self.gui_queue.put(lambda: self._update_downloaded(job))
 
         threading.Thread(target=worker, daemon=True).start()
+        self._update_poll(job)
 
-    def _apply_and_restart(self, marker):
-        """Launch the detached helper, then close the app so it can swap files."""
+    def _update_downloaded(self, job):
+        if job.get("ended"):
+            # Cancelled (or closed) while it downloaded: its staging is discarded and the lock freed only now, so a
+            # new "Update now" can never stage into the folder this worker was still writing.
+            updater.discard_staged()
+            updater.drop_update_lock(job.get("lock"))
+            return
+        if job is not getattr(self, "_update_job", None):
+            return
+        err = job["error"]
+        if err is None:
+            self.status_var.set("Update downloaded.")
+            self._update_poll(job)
+            return
+        self._end_update(job)
+        report = updater.write_report("download", err, to_version=getattr(job["info"], "version", ""))
+        messagebox.showerror(
+            "Update",
+            f"Couldn't download the update:\n{err}\n\n"
+            "You can try again later, or update manually from the releases page."
+            + self._update_report_note(report))
+        self.status_var.set("Ready")
+
+    def _list_update_children(self, job):
+        """Worker: what still runs (`updater.running_children`), for the next poll — the listing never runs on the
+        window's thread while the update waits."""
         try:
-            updater.launch_helper(marker)
+            job["children"] = self._busy_threads() + updater.running_children(list(self.active_processes))
         except Exception as e:
+            print(f"Update: {e}")
+            job["children"] = []
+        job["listing"] = False
+
+    def _busy_threads(self):
+        """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        busy = []
+        for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
+            lock = getattr(self, attr, None)
+            if lock is not None and lock.locked():
+                busy.append({"pid": None, "name": name, "stop": None})
+        return busy
+
+    def _update_poll(self, job):
+        """Every 300 ms while the update waits: refresh the list of what it waits for (on a worker), show it, and hand
+        over once the download is done and nothing is left."""
+        if job is not getattr(self, "_update_job", None):
+            return
+        if job.get("after") is not None:
+            try:
+                self.root.after_cancel(job["after"])
+            except Exception:
+                pass
+            job["after"] = None
+        children = job["children"]
+        if children:
+            self._show_update_wait(job, children)
+        elif children is not None and job["done"] and job["error"] is None:
+            if self._apply_and_restart(job):
+                return
+        elif job["window"] is not None:
+            self._show_update_wait(job, children or [])
+        if not job["listing"]:
+            job["listing"] = True
+            threading.Thread(target=self._list_update_children, args=(job,), daemon=True).start()
+        try:
+            job["after"] = self.root.after(300, lambda: self._update_poll(job))
+        except Exception:
+            pass
+
+    def _show_update_wait(self, job, children):
+        """The waiting window: non-modal, one row per running item with *Stop it*, *Stop all and update now*, and
+        *Cancel* (Esc, or closing it, cancels too)."""
+        win = job["window"]
+        if win is None or not win.winfo_exists():
+            win = tk.Toplevel(self.root)
+            win.title("Update waiting")
+            win.configure(bg=BG_COLOR)
+            win.transient(self.root)
+            win.resizable(False, False)
+            win.bind("<Escape>", lambda e: self._cancel_update(job))
+            win.protocol("WM_DELETE_WINDOW", lambda: self._cancel_update(job))
+            wrapper = ttk.Frame(win, padding=10)
+            wrapper.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(wrapper, text=f"Surasura v{getattr(job['info'], 'version', '')} will install when these finish:",
+                      font=('Segoe UI', 11, 'bold'), foreground=SECONDARY_COLOR, background=BG_COLOR,
+                      wraplength=420, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 8))
+            job["list_frame"] = ttk.Frame(wrapper)
+            job["list_frame"].pack(fill=tk.X)
+            job["status"] = ttk.Label(wrapper, text="", foreground="#aaa", background=BG_COLOR)
+            job["status"].pack(anchor=tk.W, pady=(8, 8))
+            btn_row = ttk.Frame(wrapper)
+            btn_row.pack(fill=tk.X)
+            stop_all = ttk.Button(btn_row, text="Stop all and update now", style="Action.TButton",
+                                  command=lambda: self._stop_update_children(job, None))
+            stop_all.pack(side=tk.LEFT)
+            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura.")
+            cancel = ttk.Button(btn_row, text="Cancel", command=lambda: self._cancel_update(job))
+            cancel.pack(side=tk.RIGHT)
+            ToolTip(cancel, "Don't update now. Everything keeps running; the update is offered again later.")
+            job["window"], job["rows"] = win, None
+        pids = tuple(c["pid"] or c["name"] for c in children)
+        if job["rows"] != pids:
+            job["rows"] = pids
+            for w in job["list_frame"].winfo_children():
+                w.destroy()
+            if not children:
+                ttk.Label(job["list_frame"], text="Nothing left to wait for.", background=BG_COLOR,
+                          foreground=TEXT_COLOR).pack(anchor=tk.W)
+            for child in children:
+                row = ttk.Frame(job["list_frame"])
+                row.pack(fill=tk.X, pady=2)
+                ttk.Label(row, text=child["name"], background=BG_COLOR, foreground=TEXT_COLOR).pack(side=tk.LEFT)
+                if child["stop"] is None:              # this window's own work: it finishes by itself
+                    ttk.Label(row, text="finishing…", background=BG_COLOR, foreground="#888").pack(side=tk.RIGHT)
+                    continue
+                stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
+                stop.pack(side=tk.RIGHT)
+                ToolTip(stop, f"Close \"{child['name']}\" as if you closed it yourself (it finishes what it is doing; "
+                              "a task without a window is stopped). The update goes on once nothing else is running.")
+        job["status"].config(text="Downloading the update…" if not job["done"] else "The update is downloaded.")
+
+    def _stop_update_children(self, job, children):
+        """*Stop it* (one item) or *Stop all* (None: everything listed)."""
+        for child in (job["children"] or []) if children is None else children:
+            if child.get("stop") is None:
+                continue
+            try:
+                child["stop"]()
+            except Exception:
+                pass
+        job["children"] = None                         # ask again, now
+        self._update_poll(job)
+
+    def _cancel_update(self, job, start_held=True):
+        """Esc / Cancel / closing the waiting window: nothing armed, the lock released, children free to start (those
+        asked for meanwhile start now — but not when the dashboard itself is closing: `start_held=False`, they would
+        outlive it); the update is offered again later."""
+        if job is not getattr(self, "_update_job", None):
+            return
+        self._end_update(job, start_held)
+        if job.get("done"):
+            updater.discard_staged()               # else the download worker discards it when it ends
+        self.status_var.set("Update cancelled.")
+
+    def _end_update(self, job, start_held=True):
+        self._update_job = None
+        job["ended"] = True
+        if job.get("after") is not None:
+            try:
+                self.root.after_cancel(job["after"])
+            except Exception:
+                pass
+        win = job.get("window")
+        try:
+            if win is not None and win.winfo_exists():
+                win.destroy()
+        except Exception:
+            pass
+        if job.get("done"):
+            updater.drop_update_lock(job.get("lock"))  # else when the download worker ends (_update_downloaded)
+        updater.release_children(start=start_held)
+        if start_held:
+            try:
+                self._maybe_auto_generate()            # one held back meanwhile
+            except Exception:
+                pass
+
+    def _apply_and_restart(self, job):
+        """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the
+        marker and the helper's launch, then the exit. -> True when it handed over or gave up (the update is over);
+        False when something started meanwhile (the wait goes on)."""
+        if self._busy_threads() or not updater.can_update_now(list(self.active_processes)):
+            job["children"] = None
+            return False
+        # The library store's helper (a detached process, not a child): its maintenance lock, every language,
+        # held from here until this process exits — the swap comes after (Library_Store_Spec §7).
+        locks = updater.hold_library_locks()
+        if locks is None:
+            job["children"] = None
+            return False
+        self._update_library_locks = locks
+        self._write_install_note()
+        try:
+            updater.arm_and_launch(job["staged"])
+        except Exception as e:
+            updater.release_library_locks(self.__dict__.pop("_update_library_locks", None))
+            self._end_update(job)
             report = updater.write_report("start updater", e,
                                           to_version=getattr(self._update_info, "version", ""))
             messagebox.showerror("Update", f"Couldn't start the updater:\n{e}"
                                  + self._update_report_note(report))
             self.status_var.set("Ready")
-            return
-        # Terminate child processes and wait briefly so their file handles are released before
-        # the helper swaps program files (the helper also waits on our PID, but children are
-        # separate processes it doesn't track).
-        if self.active_processes:
-            for proc in self.active_processes:
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                except Exception:
-                    pass
-            for proc in self.active_processes:
-                try:
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
-        self.root.destroy()
+            return True
+        self.root.destroy()                            # updater.exe waits on this process; the OS frees the lock
+        return True
 
     def reconcile_update_result(self):
         """On startup, surface the outcome of any update applied since last run."""
@@ -2155,7 +2559,7 @@ class MasterDashboardApp:
             ver = res.get("to") or ""
             if ver:
                 self.failed_update_version = ver
-                self.save_settings()
+                updater.record_failed_version(ver)     # this install's update_state.json, never settings.json
             reason = res.get("reason", "")
             report = updater.write_report("install", reason, to_version=ver,
                                           from_version=res.get("from") or "")
@@ -2187,7 +2591,7 @@ class MasterDashboardApp:
         self.gui_queue.put(_update)
 
     # Footer order of the optional module buttons, left to right. Settings (⚙) always follows them.
-    _MODULE_BUTTONS = ("btn_satori", "btn_reels", "btn_junban")
+    _MODULE_BUTTONS = ("btn_reels", "btn_junban")
 
     def _module_slot(self, btn):
         """The footer widget a module button must be packed BEFORE, so the buttons keep one fixed
@@ -2202,32 +2606,6 @@ class MasterDashboardApp:
             except tk.TclError:
                 pass
         return self.btn_settings
-
-    def update_satori_visibility(self):
-        """Hides or shows the Satori button based on settings and module availability"""
-        if not hasattr(self, 'btn_satori'):
-            return
-            
-        should_show = False
-        
-        # 1. User Preference Check
-        if not self.var_hide_satoru.get():
-            # 2. Module Availability Check
-            try:
-                import modules.immersion_architect
-                should_show = True
-            except (ImportError, ModuleNotFoundError):
-                # Module is missing (Open Source build or Excluded)
-                should_show = False
-        
-        if should_show:
-            # Re-pack in the credit box
-            # This is slightly tricky if other elements are added later,
-            # but usually it's at the end.
-            if not self.btn_satori.winfo_ismapped():
-                self.btn_satori.pack(side=tk.LEFT, padx=(5, 0), before=self._module_slot(self.btn_satori))
-        else:
-            self.btn_satori.pack_forget()
 
     def open_youtube_downloader(self):
         # Orchestration lives in the module; the core only needs a thin, lazy entry point.
@@ -2466,8 +2844,6 @@ class MasterDashboardApp:
 
             self.onboarding_completed.set(settings.get("onboarding_completed", False))
             self.var_open_count.set(settings.get("open_count", 0))
-            self.var_hide_satoru.set(settings.get("hide_satoru", False))
-            self.update_satori_visibility()
 
             self.var_enable_youtube.set(settings.get("enable_youtube_transcripts", False))
             self.youtube_risk_acknowledged = settings.get("youtube_risk_acknowledged", False)
@@ -2490,7 +2866,7 @@ class MasterDashboardApp:
             self.var_anki_backlog_on_generate.set(bool(settings.get("anki_backlog_on_generate", True)))
             self.var_anki_auto_generate.set(bool(settings.get("anki_auto_generate", False)))
             self.skipped_version = settings.get("skipped_version", "")
-            self.failed_update_version = settings.get("failed_update_version", "")
+            self.failed_update_version = updater.failed_version(settings)
             self._sync_skipped_row()
 
             # Load Logic Settings
@@ -2583,13 +2959,11 @@ class MasterDashboardApp:
                 "zen_limit": self._iv(self.var_zen_limit, cur.get("zen_limit", 50)),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
-                "hide_satoru": self.var_hide_satoru.get(),
                 "auto_update_enabled": self.var_auto_update.get(),
                 "anki_sync_auto": self.var_anki_sync_auto.get(),
                 "anki_backlog_on_generate": self.var_anki_backlog_on_generate.get(),
                 "anki_auto_generate": self.var_anki_auto_generate.get(),
                 "skipped_version": getattr(self, "skipped_version", ""),
-                "failed_update_version": getattr(self, "failed_update_version", ""),
                 "logic": {
                     **self.logic_settings,
                     "inline_completed_files": self.var_inline_completed.get(),
@@ -2757,7 +3131,13 @@ class MasterDashboardApp:
         on_exit: like on_complete, but run however the command ends — also when it could not be
         started at all (Generate's "one is running" must never stick).
         Whenever a command ends, an automatic Generate waiting for it gets its chance
-        (_maybe_auto_generate)."""
+        (_maybe_auto_generate).
+        While an update waits for Surasura's programs (K75) nothing new starts: the command is kept and starts if the
+        update is cancelled."""
+        if updater.defer_child(lambda: self.run_command_async(cmd, desc, capture_output, show_spinner, on_complete,
+                                                              clear_log, on_exit)):
+            self.status_var.set(f"{desc} will start if the update is cancelled.")
+            return
         
         # UI updates must be queued
         def _start_loading():
@@ -2831,7 +3211,8 @@ class MasterDashboardApp:
                     env=env
                 )
                 
-                # Register process for coordinated shutdown
+                # Register process for coordinated shutdown (and named for an update's wait, K75)
+                process.surasura_desc = desc
                 self.active_processes.append(process)
                 
                 if capture_output and process.stdout:
@@ -2876,6 +3257,9 @@ class MasterDashboardApp:
 
     def on_closing(self):
         """Coordinated shutdown: terminate all active sub-processes"""
+        job = getattr(self, "_update_job", None)
+        if job is not None:
+            self._cancel_update(job, start_held=False)   # closing while an update waits: nothing armed, nothing started
         # The speech helper is a daemon thread, so it would die with the process anyway — but
         # closing it here releases the port immediately, so relaunching the app doesn't have to
         # fall through to the next one.
@@ -2893,6 +3277,17 @@ class MasterDashboardApp:
                 except Exception:
                     pass
         self.root.destroy()
+        # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
+        # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
+        try:
+            from app import library_store
+            for lang in ("ja", "zh"):
+                try:
+                    library_store.maintain_at_close(lang)
+                except Exception as e:
+                    print(f"Library store ({lang}) at close: {e}")
+        except Exception:
+            pass
 
     def run_migaku_importer(self):
         self.run_command_async(['migaku_db_importer_gui.py', '--language', self.var_language.get()], "Migaku Importer")
@@ -2946,6 +3341,8 @@ class MasterDashboardApp:
                 return
         except Exception:
             return
+        if updater.children_held():
+            return                      # an update waits (K75): no Anki write may begin
         if not self._anki_sync_lock.acquire(blocking=False):
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now
@@ -3016,6 +3413,8 @@ class MasterDashboardApp:
         """
         if os.environ.get("SURASURA_NO_ANKI_SYNC") or not self.var_enable_junban.get():
             return
+        if updater.children_held():
+            return                      # an update waits for Surasura's programs (K75)
         import time
         now = time.monotonic()
         if not force and now - self._last_junban_auto < 300:
@@ -3086,6 +3485,8 @@ class MasterDashboardApp:
             return False                # for the other language: it runs once that one is open again
         if self._generate_running is not None:
             return False                # a Generate is running (or starting): its end asks again
+        if updater.children_held():
+            return False                # an update waits (K75): asked again if it is cancelled
         try:
             if any(proc.poll() is None for proc in list(self.active_processes)):
                 return False
@@ -3317,6 +3718,8 @@ class MasterDashboardApp:
         while a pressed one runs starts nothing and says so; a quiet request while any runs starts
         nothing (the running one tells an open 順 window when it's done)."""
         if self._generate_running is not None:
+            if self._generate_running == "checking":
+                return                          # this press's own check is still answering
             if not quiet:
                 if self._generate_running != "manual":
                     self._open_report_when_generated = True     # _on_generate_exit opens it
@@ -3343,12 +3746,40 @@ class MasterDashboardApp:
         # through to the normal subprocess run — the fast path is a pure optimization, never required.
         if quiet:
             args.append('--no-open')     # written, not opened — and no fast path to open it
-        elif self._try_open_existing_report(args):
+            self._start_analyzer(args, quiet)
+            return
+        # Whether the report still holds is asked on a worker (Library_Store_Spec §7, A10 / A12): the check syncs
+        # the library with its folders and stats every file, never on this thread. The press goes on from the answer.
+        self._generate_running = "checking"
+        self._run_on_worker(lambda: self._report_reusable(args), lambda reusable: self._generate_checked(args, reusable))
+
+    def _run_on_worker(self, work, then):
+        """`work()` on a worker thread, then `then(result)` on this one (through gui_queue). Headless or under test
+        (no UI timers drain the queue) both run here, at once."""
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            then(work())
+            return
+
+        def run():
+            try:
+                result = work()
+            except Exception:
+                result = None
+            self.gui_queue.put(lambda: then(result))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _generate_checked(self, args, reusable):
+        """Generate's press, on this thread again: reopen the report when the worker found it current, else run
+        the analyzer."""
+        self._generate_running = None
+        if reusable is not None and self._open_existing_report(reusable):
             self._maybe_junban_auto(force=True)
             self._schedule_journey_state()
             self._tell_junban_list_changed()
             return
+        self._start_analyzer(args, quiet=False)
 
+    def _start_analyzer(self, args, quiet):
         self._generate_running = "quiet" if quiet else "manual"
         self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
                                capture_output=True, show_spinner=not quiet, clear_log=not quiet,
@@ -3429,7 +3860,27 @@ class MasterDashboardApp:
         return args
 
     def _try_open_existing_report(self, args):
-        """Return True and reopen the existing report if a full analysis is provably unnecessary.
+        """Return True and reopen the existing report if a full analysis is provably unnecessary (the check and
+        the reopen together; Generate's press asks `_report_reusable` on a worker instead)."""
+        reusable = self._report_reusable(args)
+        return reusable is not None and self._open_existing_report(reusable)
+
+    def _open_existing_report(self, a):
+        """Reopen the report `_report_reusable` found current; True when it opened."""
+        try:
+            try:
+                from app import static_html_generator
+            except ImportError:
+                import static_html_generator
+            static_html_generator.open_report(app_mode=a.app_mode)
+            self._refresh_band_preview()   # inputs unchanged -> cache hit, no recompute
+            return True
+        except Exception:
+            return False
+
+    def _report_reusable(self, args):
+        """The parsed analyzer args if a full analysis is provably unnecessary, else None. Safe on a worker: it
+        reads no widget (`args` and the language come from the press).
 
         Mirrors the analyzer's own skip gate (compute_run_signature + outputs-present + render-sig),
         computed in-process so we can avoid the subprocess entirely. Conservative: only the pure
@@ -3440,35 +3891,29 @@ class MasterDashboardApp:
             from app import token_index as _ti
             from app.path_utils import get_user_file
 
-            lang = self.var_language.get()
+            a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
+            lang = a.language                              # from the press's args: no widget read here
             # Analysis unchanged: the analyzer's own signature AND the results stamp — results/ is
             # shared by both languages, and without the stamp a Japanese -> Chinese -> Japanese switch
             # reopened the Chinese report (see analyzer.read_run_stamp). The Generate button's border
             # asks the very same question (journey_is_current), so the two cannot disagree.
             if journey_is_current(args, lang) is not True:
-                return False
-            a = _analyzer.parse_analysis_args(args[1:])   # args[0] is the 'analyzer.py' script name
+                return None
             report = os.path.join(get_user_file("results"), "reading_list_static.html")
             if not os.path.exists(report):
-                return False
+                return None
             store = _ti.open_store(lang)
             try:
                 stored_render = store.get_meta("last_render_sig")
             finally:
                 store.close()
 
-            # ...and presentation unchanged -> reopen the existing report as-is.
+            # ...and presentation unchanged -> the existing report can be reopened as-is.
             if stored_render == _analyzer.compute_render_signature(a):   # shared with the engine
-                try:
-                    from app import static_html_generator
-                except ImportError:
-                    import static_html_generator
-                static_html_generator.open_report(app_mode=a.app_mode)
-                self._refresh_band_preview()   # inputs unchanged -> cache hit, no recompute
-                return True
+                return a
         except Exception:
             pass  # fall through to the normal subprocess run
-        return False
+        return None
 
     def generate_reading_words(self):
         """Export the reading-only words as a word list.

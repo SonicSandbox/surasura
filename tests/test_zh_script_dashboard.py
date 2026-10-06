@@ -75,7 +75,7 @@ class TestZhScriptDashboard(unittest.TestCase):
         self.assertEqual(self.app.var_zh_script.get(), "asis")
 
     def _analyzer_args(self):
-        with patch.object(self.app, "_try_open_existing_report", return_value=False), \
+        with patch.object(self.app, "_report_reusable", return_value=None), \
              patch.object(self.app, "run_command_async") as run:
             self.app.run_analyzer()
         run.call_args.kwargs["on_exit"]()       # the run ends, so the next Generate may start

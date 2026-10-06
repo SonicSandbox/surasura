@@ -1,25 +1,34 @@
 """In-app update stager.
 
 Turns an available :class:`~app.update_checker.UpdateInfo` into an armed, verified update:
-download the app-code package -> checksum it -> extract & validate it -> write the
-``pending_update.json`` marker. The actual on-disk swap is performed AFTER the app exits by
-the standalone ``updater.exe`` (see ``updater_helper.py``); this module only stages and hands
-off, then reads back the result on the next launch.
+download the app-code package -> checksum it -> extract & validate it -> (once nothing else of
+Surasura's runs, K75) write the ``pending_update.json`` marker and start the helper. The actual
+on-disk swap is performed AFTER the app exits by the standalone ``updater.exe`` (see
+``updater_helper.py``); this module only stages and hands off, then reads back the result on the
+next launch.
+
+What is swapped comes from the release: since 2.5 its update.json lists every file with its
+sha256 (``files``: Surasura.exe, surasura-cli.exe, RELEASE_NOTES.md, anything under ``_internal/``
+— an allow-list, `resolve_destination`); a release without the list gets the three targets 2.4.0
+swapped (the exe, ``_internal/templates``, RELEASE_NOTES.md). A file the release adds is created
+by the swap; if the swap fails, the relaunched app deletes it (`consume_result`), since the
+helper's rollback only restores what existed.
 
 Deliberately UI-free (no tkinter) so every step is unit-testable, and deliberately narrow in
-what it touches: only program files under the frozen ``_internal/`` dir plus the small
-marker / result JSONs next to the executable, and a failure report under ``debug/``. It NEVER
-reads or writes User Files, data, results, or settings.json — user data is entirely outside the
-blast radius.
+what it touches: only the program files the list names, plus the small marker / result JSONs
+next to the executable, and a failure report under ``debug/``. It NEVER reads or writes User
+Files, data, results, or settings.json — user data is entirely outside the blast radius.
 """
 import os
 import sys
 import json
+import re
 import time
 import hashlib
 import zipfile
 import shutil
 import platform
+import threading
 import subprocess
 import urllib.request
 
@@ -31,6 +40,7 @@ _USER_AGENT = "Surasura-Readability-Analyzer"
 STAGING_DIRNAME = ".update_staging"
 BACKUP_DIRNAME = ".update_backup"
 MARKER_NAME = "pending_update.json"
+ADDED_NAME = "pending_update_added.json"    # what the swap creates: the helper deletes the marker, so it is kept here
 RESULT_NAME = "last_update_result.json"
 REPORT_NAME = "update_report.txt"
 UPDATER_EXE_NAME = "updater.exe"
@@ -41,8 +51,9 @@ class UpdateError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Locations. The install root (next to the exe) holds the marker/staging/updater.exe;
-# the frozen _internal dir holds the program dirs (app/, templates/) we replace.
+# Locations. The install root (next to the exe) holds the marker/staging/updater.exe and the
+# programs (Surasura.exe, surasura-cli.exe); the frozen _internal dir holds templates/ and the
+# runtime. (The app code is inside Surasura.exe, not loose under _internal.)
 # ---------------------------------------------------------------------------
 def _user_dir():
     return path_utils.get_user_data_path()
@@ -72,13 +83,431 @@ def updater_exe_path():
     return os.path.join(_user_dir(), UPDATER_EXE_NAME)
 
 
+def added_path():
+    return os.path.join(_user_dir(), ADDED_NAME)
+
+
+def update_state_path():
+    """This install's update state (S1.1-2): in the per-install local folder, never settings.json."""
+    return os.path.join(path_utils.get_local_data_path(), "update_state.json")
+
+
+def _read_state():
+    try:
+        with open(update_state_path(), "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, RuntimeError):
+        return {}
+
+
+def record_failed_version(version):
+    """A version whose in-app update failed: never tried in place again (the loop-breaker). Written atomically to
+    update_state.json — nothing automatic writes settings.json. -> True when written; never raises."""
+    try:
+        path = update_state_path()
+        state = _read_state()
+        state["failed_update_version"] = version
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        print(f"Update: could not record the failed version ({e})")
+        return False
+
+
+def failed_version(settings=None):
+    """The version whose in-app update failed: update_state.json's — else one 2.4.0 left in settings.json, read there
+    (never written back; the dashboard's next save drops the key) and kept in update_state.json from then on."""
+    version = str(_read_state().get("failed_update_version", "") or "")
+    if version:
+        return version
+    legacy = str((settings or {}).get("failed_update_version", "") or "") if isinstance(settings, dict) else ""
+    if legacy:
+        record_failed_version(legacy)
+    return legacy
+
+
 def report_path():
     return os.path.join(_user_dir(), "debug", REPORT_NAME)
 
 
-def can_auto_apply():
-    """Auto-apply is only possible in a frozen build that shipped the bundled updater.exe."""
-    return path_utils.is_frozen() and os.path.exists(updater_exe_path())
+def can_auto_apply(info=None):
+    """Auto-apply is only possible in a frozen build that shipped the bundled updater.exe — and, for a release that
+    lists its files, only when every destination is one the in-place update may write (`resolve_files`)."""
+    if not (path_utils.is_frozen() and os.path.exists(updater_exe_path())):
+        return False
+    if info is not None and getattr(info, "files", None) is not None:
+        try:
+            resolve_files(info.files)
+        except UpdateError:
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# The release's file list (K99): {name, dest, kind, sha256} per entry.
+#   name    a flat staging key: the entry's path at the top of the app package zip
+#   dest    relative to the install folder; only Surasura.exe, surasura-cli.exe, RELEASE_NOTES.md
+#           or something under _internal/ (ASCII case ignored, no absolute path, no "..", no name
+#           Windows reserves or reads as another, resolved through junctions and kept inside the
+#           install folder) — anything else: FULL. The list must name Surasura.exe.
+#   kind    "file" or "dir"
+#   sha256  a file's sha256, or a dir's `tree_sha256`
+# ---------------------------------------------------------------------------
+_ROOT_FILES = {"surasura.exe", "surasura-cli.exe", "release_notes.md"}
+_HEX = set("0123456789abcdef")
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"{d}{i}" for d in ("com", "lpt") for i in range(1, 10)}
+
+
+def _install_dir():
+    return _user_dir()          # frozen: the folder holding Surasura.exe
+
+
+def _inside(path, folder):
+    a, b = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
+    return a != b and a.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def resolve_destination(dest, install_dir=None):
+    """`dest` (relative, from a release's list) -> the absolute path it names, or UpdateError when the in-place
+    update may not write there."""
+    install_dir = install_dir or _install_dir()
+    if not isinstance(dest, str) or not dest.strip():
+        raise UpdateError(f"destination {dest!r} is empty")
+    text = dest.replace("\\", "/")
+    if text.startswith("/") or os.path.isabs(dest) or (len(text) > 1 and text[1] == ":"):
+        raise UpdateError(f"destination {dest!r} is absolute")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        raise UpdateError(f"destination {dest!r} leaves the install folder")
+    if any(":" in p or p != p.rstrip(" .") or any(ord(c) < 32 or c in '<>"|?*' for c in p) for p in parts):
+        raise UpdateError(f"destination {dest!r} is not a plain path")
+    # .lower(), never .casefold(): Windows ignores ASCII case only (casefold reads ſurasura.exe as surasura.exe).
+    folded = [p.lower() for p in parts]
+    if any(p.split(".")[0] in _RESERVED or re.search(r"~[0-9]", p) for p in folded):
+        raise UpdateError(f"destination {dest!r} names a device or a short (8.3) name")
+    if not ((len(folded) == 1 and folded[0] in _ROOT_FILES) or (len(folded) >= 2 and folded[0] == "_internal")):
+        raise UpdateError(f"destination {dest!r} is not one an in-place update may write")
+    path = os.path.join(install_dir, *parts)
+    if not _inside(path, install_dir):
+        raise UpdateError(f"destination {dest!r} resolves outside the install folder")
+    if len(folded) >= 2 and not _inside(path, os.path.join(install_dir, parts[0])):
+        raise UpdateError(f"destination {dest!r} resolves outside _internal")
+    return path
+
+
+def resolve_files(files, install_dir=None):
+    """A release's `files` list -> the targets it names, each {name, kind, dest (absolute), sha256}; UpdateError
+    when any entry is malformed or not allowed (the update is then a manual one)."""
+    if not isinstance(files, list) or not files:
+        raise UpdateError("the release's file list is empty or not a list")
+    targets, names, dests = [], set(), set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise UpdateError("a file list entry is not an object")
+        name, kind, sha = entry.get("name"), entry.get("kind", "file"), str(entry.get("sha256") or "").lower()
+        if (not isinstance(name, str) or not name or name in (".", "..") or any(c in name for c in "/\\:")
+                or name.casefold() in names):
+            raise UpdateError(f"file list name {name!r} is not a unique flat name")
+        if kind not in ("file", "dir"):
+            raise UpdateError(f"file list kind {kind!r} for {name!r}")
+        if len(sha) != 64 or not set(sha) <= _HEX:
+            raise UpdateError(f"{name!r} has no sha256")
+        dest = resolve_destination(entry.get("dest"), install_dir)
+        if os.path.normcase(dest) in dests:
+            raise UpdateError(f"{entry.get('dest')!r} is named twice")
+        names.add(name.casefold())
+        dests.add(os.path.normcase(dest))
+        targets.append({"name": name, "kind": kind, "dest": dest, "sha256": sha})
+    root = install_dir or _install_dir()
+    if not any(t["kind"] == "file" and os.path.relpath(t["dest"], root).lower() == EXE_NAME.lower() for t in targets):
+        raise UpdateError("the release's file list doesn't name Surasura.exe")
+    return targets
+
+
+def tree_sha256(folder):
+    """A folder's sha256 for the file list: every file's relative path (with /) and its sha256, sorted."""
+    lines = []
+    for root, dirs, files in os.walk(folder):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            lines.append(f"{rel}\0{sha256_file(full)}\n")
+    h = hashlib.sha256()
+    for line in sorted(lines):
+        h.update(line.encode("utf-8"))
+    return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# What holds this install's programs (K75). updater.exe waits only on the app's own PID, so everything else of
+# Surasura's that runs this install's exe is waited for HERE, before the helper is launched.
+# ---------------------------------------------------------------------------
+EXE_NAME = "Surasura.exe"
+CLI_EXE_NAME = "surasura-cli.exe"
+
+_HOLD = threading.Event()       # set from "Update now" until the update is cancelled (or the app exits for it)
+_DEFERRED = []                  # children asked for meanwhile: started when the update is cancelled
+_DEFERRED_LOCK = threading.Lock()
+
+
+def hold_children():
+    """"Update now" was pressed: no new child process of Surasura's starts until `release_children`."""
+    _HOLD.set()
+
+
+def children_held():
+    return _HOLD.is_set()
+
+
+def defer_child(start):
+    """While children are held, keep `start` (a zero-arg callable that starts one) for `release_children` -> True;
+    otherwise False, and the caller starts it now."""
+    with _DEFERRED_LOCK:
+        if not _HOLD.is_set():
+            return False
+        _DEFERRED.append(start)
+        return True
+
+
+def release_children(start=True):
+    """The update was cancelled: children may start again, and those asked for meanwhile start now (on the
+    caller's thread) — or, with `start=False` (the dashboard is closing), are dropped: they would outlive it, and an
+    automatic one asks again on the next start. Never raises."""
+    with _DEFERRED_LOCK:
+        _HOLD.clear()
+        waiting = list(_DEFERRED) if start else []
+        _DEFERRED.clear()
+    for start in waiting:
+        try:
+            start()
+        except Exception as e:
+            print(f"Update: a deferred task could not start ({e})")
+
+
+def _install_images():
+    """This install's programs: the paths a process must run to hold its files. A source checkout has none."""
+    if not path_utils.is_frozen():
+        return []
+    folder = os.path.dirname(sys.executable)
+    return [os.path.join(folder, EXE_NAME), os.path.join(folder, CLI_EXE_NAME)]
+
+
+def _processes_running(images):
+    """{pid: image path} of every running process whose program is one of `images` (Windows; elsewhere {} — the
+    in-place updater is Windows-only). One snapshot of the process list, then the full path asked only of
+    processes whose exe NAME matches."""
+    if sys.platform != "win32" or not images:
+        return {}
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)   # our own prototypes, never windll's shared ones
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                               ctypes.POINTER(wintypes.DWORD)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    wanted = {os.path.normcase(os.path.abspath(i)) for i in images}
+    names = {os.path.basename(i).lower() for i in wanted}
+    found = {}
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)              # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.szExeFile.lower() in names:
+                handle = k32.OpenProcess(0x1000, False, entry.th32ProcessID)   # QUERY_LIMITED_INFORMATION
+                if handle:
+                    try:
+                        buf = ctypes.create_unicode_buffer(32768)
+                        size = wintypes.DWORD(len(buf))
+                        if k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                            if os.path.normcase(os.path.abspath(buf.value)) in wanted:
+                                found[int(entry.th32ProcessID)] = buf.value
+                    finally:
+                        k32.CloseHandle(handle)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return found
+
+
+STOP_GRACE = 20.0       # seconds a program asked to close its windows has, before it is ended
+
+
+def _close_windows(pid):
+    """Ask each visible top-level window of `pid` to close (WM_CLOSE: the program's own close, as its user's click
+    on X — run after whatever it is doing). -> how many were asked. Windows only."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    each_window = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    u32.EnumWindows.argtypes = [each_window, wintypes.LPARAM]
+    u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u32.IsWindowVisible.argtypes = [wintypes.HWND]
+    u32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    windows = []
+
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and u32.IsWindowVisible(hwnd):
+            windows.append(hwnd)
+        return True
+
+    u32.EnumWindows(each_window(visit), 0)
+    for hwnd in windows:
+        u32.PostMessageW(hwnd, 0x0010, 0, 0)                     # WM_CLOSE
+    return len(windows)
+
+
+def stop_pid(pid, grace=None):
+    """*Stop it*: a program with a window is asked to close it, as its user would — a Content Manager mid-Graduate
+    finishes the move and saves before it closes; one with no window (Generate, the パターン build), or still running
+    `STOP_GRACE` seconds later, is ended. Returns at once (the grace runs on a thread). Never raises."""
+    try:
+        if sys.platform != "win32":
+            import signal
+            os.kill(int(pid), signal.SIGTERM)
+            return
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = k32.OpenProcess(0x00100001, False, int(pid))      # SYNCHRONIZE | PROCESS_TERMINATE
+        if not handle:
+            return
+        asked = _close_windows(int(pid))
+
+        def end():
+            try:
+                wait_ms = int((STOP_GRACE if grace is None else grace) * 1000)
+                if not asked or k32.WaitForSingleObject(handle, wait_ms) != 0:     # 0: it closed itself
+                    k32.TerminateProcess(handle, 1)
+            finally:
+                k32.CloseHandle(handle)
+
+        if asked:
+            threading.Thread(target=end, daemon=True).start()
+        else:
+            end()
+    except Exception:
+        pass
+
+
+def _stopper(process):
+    def stop():
+        try:
+            if process.poll() is None:
+                stop_pid(process.pid)       # the Popen's handle keeps its id from being reused meanwhile
+        except Exception:
+            pass
+    return stop
+
+
+def running_children(active_processes=(), images=None):
+    """Everything of Surasura's that runs now besides this window, each `{"pid", "name", "stop"}` — what an update
+    waits for: the dashboard's own children (`active_processes`, named by their `surasura_desc`), Backfill's
+    パターン build, and any process running this install's Surasura.exe or surasura-cli.exe other than this one (the
+    splicer and the importers' children, a command line hato started). `images` overrides which programs count
+    (a test, a source checkout). The auto-Generate guard does NOT ask this (Backfill's build goes behind a Generate)."""
+    found, seen = [], {os.getpid()}
+    for process in list(active_processes or ()):
+        try:
+            if process.poll() is None and process.pid not in seen:
+                seen.add(process.pid)
+                found.append({"pid": process.pid, "name": getattr(process, "surasura_desc", "") or "A Surasura task",
+                              "stop": _stopper(process)})
+        except Exception:
+            pass
+    backfill = sys.modules.get("modules.junban.backfill")     # only when it was ever used: never imported here
+    process = getattr(backfill, "rebuild_process", lambda: None)() if backfill else None
+    if process is not None and process.pid not in seen:
+        seen.add(process.pid)
+        found.append({"pid": process.pid, "name": "Building パターン data", "stop": _stopper(process)})
+    try:
+        others = _processes_running(_install_images() if images is None else images)
+    except Exception as e:
+        print(f"Update: could not list running programs ({e})")
+        others = {}
+    for pid, image in sorted(others.items()):
+        if pid in seen:
+            continue
+        cli = os.path.basename(image).lower() == CLI_EXE_NAME.lower()
+        found.append({"pid": pid, "name": "Surasura's command line" if cli else "Another Surasura window",
+                      "stop": (lambda p=pid: stop_pid(p))})
+    return found
+
+
+def can_update_now(active_processes=(), images=None):
+    """The one "may the update start now?" seam: nothing of Surasura's holds this install's programs. The library
+    store's helper is the one exception that isn't a child: `hold_library_locks` waits for it at the hand-over."""
+    return not running_children(active_processes, images)
+
+
+def hold_library_locks(languages=("ja", "zh")):
+    """The library store's maintenance lock for every language (Library_Store_Spec §7), each taken without
+    waiting and held until this process exits — the swap happens after it — so no helper runs from the old exe
+    while it is replaced. A new helper never starts meanwhile: the update lock, held since "Update now", is the
+    store's "update staged" signal (S1.1). -> the held locks, or None while a helper holds one (the wait goes
+    on, as for a running child)."""
+    try:
+        from app import library_store
+    except Exception:
+        return []                                  # no store in this build: nothing to wait for
+    held = []
+    for language in languages:
+        try:
+            db_path = library_store.library_db_path(language, path_utils.get_data_path(language))
+        except Exception:
+            continue
+        if not os.path.exists(os.path.dirname(db_path)):
+            continue                               # no store was ever made here
+        lock = library_store.MaintenanceLock(db_path)
+        try:
+            taken = lock.try_acquire()
+        except OSError:
+            taken = True                           # its lock file can't be opened: nothing can hold it either
+            lock = None
+        if not taken:
+            lock.close()
+            release_library_locks(held)
+            return None
+        if lock is not None:
+            held.append(lock)
+    return held
+
+
+def release_library_locks(locks):
+    for lock in locks or ():
+        try:
+            lock.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +543,7 @@ def download(url, dest, progress_cb=None, timeout=60):
     return dest
 
 
-EXE_NAME = "Surasura.exe"
-
-
-def extract_and_validate(zip_path, payload_dir):
+def extract_and_validate(zip_path, payload_dir, files=None):
     """Extract the app package and confirm its structure.
 
     The package carries the code-bearing executable plus the report templates (the only two
@@ -138,6 +564,17 @@ def extract_and_validate(zip_path, payload_dir):
             if target != root and not target.startswith(root + os.sep):
                 raise UpdateError(f"unsafe path in archive: {name}")
         z.extractall(payload_dir)
+
+    if files is not None:
+        # The release's list: every entry staged under its name, with the bytes its sha256 names.
+        for t in resolve_files(files):
+            staged = os.path.join(payload_dir, t["name"])
+            if t["kind"] == "file":
+                if not os.path.isfile(staged) or sha256_file(staged) != t["sha256"]:
+                    return False
+            elif not os.path.isdir(staged) or tree_sha256(staged) != t["sha256"]:
+                return False
+        return True
 
     exe = os.path.join(payload_dir, EXE_NAME)
     templates = os.path.join(payload_dir, "templates")
@@ -162,6 +599,19 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
     the swapped-in bytes; templates are non-critical and verified only by structure.
     """
     base = _internal_dir()
+    files = getattr(info, "files", None)
+    if files is not None:
+        # The release's list. A file gets its sha256 checked by the helper after the swap; a dir was checked when
+        # it was staged (the helper can't hash a dir). `added`: the swap creates it — see arm_and_launch.
+        targets = []
+        for t in resolve_files(files):
+            target = {"name": t["name"], "kind": t["kind"], "dest": t["dest"]}
+            if t["kind"] == "file":
+                target["sha256"] = t["sha256"]
+            if not os.path.exists(t["dest"]):
+                target["added"] = True
+            targets.append(target)
+        return _marker(info, payload_dir, app_pid, wait_timeout, base, targets)
     staged_exe = os.path.join(payload_dir, EXE_NAME)
     exe_sha = sha256_file(staged_exe) if os.path.isfile(staged_exe) else ""
     targets = [
@@ -174,6 +624,10 @@ def build_marker(info, payload_dir, app_pid, wait_timeout=60):
     if os.path.isfile(os.path.join(payload_dir, "RELEASE_NOTES.md")):
         targets.append({"name": "RELEASE_NOTES.md", "kind": "file",
                         "dest": os.path.join(os.path.dirname(sys.executable), "RELEASE_NOTES.md")})
+    return _marker(info, payload_dir, app_pid, wait_timeout, base, targets)
+
+
+def _marker(info, payload_dir, app_pid, wait_timeout, base, targets):
     return {
         "target_version": info.version,
         "from_version": __version__,
@@ -199,11 +653,13 @@ def write_marker(marker):
 
 
 def prepare_update(info, progress_cb=None):
-    """Download -> verify checksum -> extract & validate -> write marker.
+    """Download -> verify checksum -> extract & validate -> the marker, NOT written.
 
-    Returns the marker path (update is armed). Raises UpdateError on any failure, having
-    cleaned up the staging dir so nothing is left armed. Does NOT launch the helper or exit
-    the app — the caller does that on the main thread after this returns.
+    Returns the marker (a dict). Nothing is armed: `pending_update.json` is written only by
+    `arm_and_launch`, in the window's final callback right before the helper starts, so a cancel,
+    a close, a crash or a sleep while the update waits (K75) leaves no marker and the next start
+    reports nothing. Raises UpdateError on any failure, having cleaned up the staging dir. Does
+    NOT launch the helper or exit the app.
     """
     # Defense in depth: staging targets the frozen executable + _internal; refuse to run in a
     # source checkout, where those paths would point at the live repo. The GUI already gates
@@ -227,17 +683,144 @@ def prepare_update(info, progress_cb=None):
             raise UpdateError("checksum mismatch — download corrupted or tampered")
 
         payload_dir = os.path.join(sd, "payload")
-        if not extract_and_validate(zip_path, payload_dir):
+        if not extract_and_validate(zip_path, payload_dir, getattr(info, "files", None)):
             raise UpdateError("update package failed validation")
 
-        marker = build_marker(info, payload_dir, os.getpid())
-        return write_marker(marker)
+        return build_marker(info, payload_dir, os.getpid())
     except UpdateError:
         shutil.rmtree(sd, ignore_errors=True)
         raise
     except Exception as e:
         shutil.rmtree(sd, ignore_errors=True)
         raise UpdateError(str(e))
+
+
+def prepare_installer(info, progress_cb=None):
+    """The 2.x -> 3.0 hand-off (S1.3-6): download the release's installer into staging and check its sha256. ->
+    the staged installer {kind, path, args, ...} for `arm_and_launch`; nothing is launched here. Refuses anything
+    but a frozen build and a release `update_checker.installer_ready` accepts (3.0 or later)."""
+    from app.update_checker import installer_ready
+    if not path_utils.is_frozen():
+        raise UpdateError("the installer hand-off runs only in a packaged (frozen) build")
+    if not installer_ready(__version__, info):
+        raise UpdateError("this release has no installer 2.x may hand over to")
+    sd = staging_dir()
+    shutil.rmtree(sd, ignore_errors=True)
+    folder = os.path.join(sd, "installer")
+    os.makedirs(folder, exist_ok=True)
+    name = os.path.basename(str(info.installer.get("asset")).replace("\\", "/")) or "setup.exe"
+    path = os.path.join(folder, name)
+    try:
+        download(info.installer_url, path, progress_cb=progress_cb)
+        if sha256_file(path).lower() != str(info.installer["sha256"]).lower():
+            raise UpdateError("checksum mismatch — the installer download is corrupted or tampered")
+    except UpdateError:
+        shutil.rmtree(sd, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(sd, ignore_errors=True)
+        raise UpdateError(str(e))
+    return {"kind": "installer", "path": path, "args": list(info.installer.get("args") or []),
+            "target_version": info.version, "from_version": __version__}
+
+
+def launch_installer(staged):
+    """Start the installer detached (not through updater.exe: it replaces the whole install), so it outlives us."""
+    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    return subprocess.Popen([staged["path"]] + list(staged.get("args") or []), creationflags=flags, close_fds=True,
+                            cwd=os.path.dirname(staged["path"]))
+
+
+def arm_and_launch(marker):
+    """The hand-over, in the window's one final callback (after its last `can_update_now`): write the marker, then
+    start updater.exe; the caller exits next. If the helper can't start, the marker is removed again (nothing stays
+    armed) and the error raised. A staged installer (S1.3-6) is launched instead: no marker, no helper."""
+    if marker.get("kind") == "installer":
+        return launch_installer(marker)
+    added = [t["dest"] for t in marker.get("targets", []) if t.get("added")]
+    made = []
+    for dest in added:                     # updater.exe's os.replace needs the folder to exist
+        folder = os.path.dirname(dest)
+        missing = []
+        while folder and not os.path.isdir(folder):
+            missing.append(folder)
+            folder = os.path.dirname(folder)
+        for d in reversed(missing):
+            os.makedirs(d, exist_ok=True)
+            made.append(d)
+    if added:
+        with open(added_path(), "w", encoding="utf-8") as f:
+            json.dump({"target_version": marker.get("target_version", ""), "added": added, "dirs": made}, f,
+                      ensure_ascii=False, indent=2)
+    else:
+        try:
+            os.remove(added_path())        # an older update's record: this one's failure must not delete what it named
+        except OSError:
+            pass
+    path = write_marker(marker)
+    try:
+        return launch_helper(path)
+    except Exception:
+        for p in (path, added_path()):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        _remove_dirs(made)
+        raise
+
+
+def _remove_dirs(dirs):
+    for d in sorted(dirs, key=len, reverse=True):
+        try:
+            os.rmdir(d)                    # only if empty
+        except OSError:
+            pass
+
+
+def _remove_added():
+    """After a failed swap: delete what the release would have added (the helper's rollback only restores what
+    existed), then the folders made for it if they are empty again."""
+    try:
+        with open(added_path(), "r", encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return
+    install = _install_dir()
+    for dest in record.get("added") or []:
+        try:
+            if not isinstance(dest, str) or not _inside(dest, install):
+                continue                   # never anything outside this install
+            if os.path.isdir(dest):
+                shutil.rmtree(dest, ignore_errors=True)
+            elif os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+    _remove_dirs([d for d in record.get("dirs") or [] if isinstance(d, str) and _inside(d, install)])
+
+
+def discard_staged():
+    """A cancelled update: its download goes. Never raises."""
+    shutil.rmtree(staging_dir(), ignore_errors=True)
+
+
+# "An update is happening": one OS lock, held from "Update now" until the app exits for the helper (the OS
+# releases it if the app dies). The command line answers `update-staged` while it is held.
+def update_lock_path():
+    return os.path.join(path_utils.get_local_data_path(), "locks", "update.lock")
+
+
+def take_update_lock():
+    """-> the held lock, or None when another update holds it."""
+    try:
+        return path_utils.try_lock(update_lock_path())
+    except Exception:
+        return None
+
+
+def drop_update_lock(handle):
+    path_utils.release_lock(handle)
 
 
 def launch_helper(marker_path_=None):
@@ -256,8 +839,8 @@ def launch_helper(marker_path_=None):
 # Reconciliation (read side, next launch)
 # ---------------------------------------------------------------------------
 def _cleanup_all():
-    """Remove every trace of a pending/finished update: marker, result, staging, backup."""
-    for path in (marker_path(), result_path()):
+    """Remove every trace of a pending/finished update: marker, result, added record, staging, backup."""
+    for path in (marker_path(), result_path(), added_path()):
         try:
             if os.path.exists(path):
                 os.remove(path)
@@ -285,6 +868,8 @@ def consume_result():
                 res = json.load(f)
         except Exception:
             res = {"status": "failed", "from": "", "to": "", "reason": "unreadable result"}
+        if res.get("status") != "success":
+            _remove_added()
         _cleanup_all()
         return res
 
@@ -295,6 +880,15 @@ def consume_result():
                 m = json.load(f)
         except Exception:
             m = {}
+        if _is_this_version(m.get("target_version")):
+            # This IS the version it installed: the swap ran and its helper ended before reporting. Never delete
+            # what it added (this version runs on it); a success when every target holds the bytes it names.
+            landed = _swap_landed(m)
+            _cleanup_all()
+            return {"status": "success" if landed else "failed", "from": m.get("from_version", ""),
+                    "to": m.get("target_version", ""),
+                    "reason": "ok (the updater ended before reporting)" if landed else "update did not complete"}
+        _remove_added()
         _cleanup_all()
         return {
             "status": "failed",
@@ -304,6 +898,26 @@ def consume_result():
         }
 
     return None
+
+
+def _is_this_version(version):
+    return bool(version) and version == __version__
+
+
+def _swap_landed(marker):
+    """A leftover marker's targets all in place, each file with the sha256 it names (the helper's own last check)."""
+    targets = marker.get("targets") or []
+    for t in targets:
+        dest = t.get("dest") if isinstance(t, dict) else None
+        if not isinstance(dest, str) or not os.path.exists(dest):
+            return False
+        want = t.get("sha256")
+        try:
+            if want and (not os.path.isfile(dest) or sha256_file(dest) != want):
+                return False
+        except OSError:
+            return False
+    return bool(targets)
 
 
 def write_report(stage, reason, to_version="", from_version=""):
@@ -346,15 +960,16 @@ def effective_class(cls, info, skipped_version="", auto_enabled=True, can_apply=
       * the in-app update of that version already failed once -> 'FULL', never retried in place (the
         loop-breaker). A skip and a failure are kept apart: the user pressing Skip by accident once
         left only the manual download (2026-09-25).
-    'FULL' otherwise passes through unchanged, and 'NONE' always does.
+    'INSTALLER' (3.0's hand-off, S1.3-6) is guarded exactly like 'APP'. 'FULL' otherwise passes through
+    unchanged, and 'NONE' always does.
     """
     version = getattr(info, "version", "") if info is not None else ""
     if cls == "NONE" or (version and version == skipped_version):
         return "NONE"
-    if cls != "APP":
+    if cls not in ("APP", "INSTALLER"):
         return cls
     if not auto_enabled or not can_apply:
         return "FULL"
     if version and version == failed_version:
         return "FULL"
-    return "APP"
+    return cls

@@ -48,11 +48,11 @@ class _Var:
 
 class _NowThread:
     """Stands in for threading.Thread: runs the worker at start(), on this thread."""
-    def __init__(self, target=None, daemon=None, **kwargs):
-        self._target = target
+    def __init__(self, target=None, daemon=None, args=(), **kwargs):
+        self._target, self._args = target, args
 
     def start(self):
-        self._target()
+        self._target(*self._args)
 
 
 def _dashboard():
@@ -89,7 +89,7 @@ def _download_fails_with(monkeypatch, reason):
     def _fail(info, progress_cb=None):
         raise updater.UpdateError(reason)
 
-    monkeypatch.setattr(updater, "can_auto_apply", lambda: True)
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
     monkeypatch.setattr(updater, "prepare_update", _fail)
     monkeypatch.setattr(main, "threading", types.SimpleNamespace(Thread=_NowThread))
     shown = []
@@ -130,8 +130,13 @@ def test_updater_that_will_not_start_is_reported_and_the_app_stays_open(install_
 
     app = _dashboard()
     app.root = MagicMock()
-    app._apply_and_restart(os.path.join(install_root, "pending_update.json"))
+    job = {"info": app._update_info, "lock": None, "staged": {"target_version": "2.3", "targets": []},
+           "window": None}
+    app._update_job = job
+    assert app._apply_and_restart(job) is True
 
+    assert not os.path.exists(updater.marker_path()), "nothing stays armed when the helper can't start"
+    app.root.destroy.assert_not_called()
     assert len(shown) == 1
     assert "アクセスが拒否されました" in shown[0]
     assert updater.report_path() in shown[0]

@@ -39,16 +39,9 @@ jobs:
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
           TEMP: ${{ runner.temp }}
         shell: bash
-        # Retried once only when Tk itself failed to start on the hosted runner ("tcl_findLibrary"); any other
-        # failure fails the check.
-        run: |
-          set +e
-          python run_tests.py 2>&1 | tee "$RUNNER_TEMP/run1.log"; status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ] && grep -q 'tcl_findLibrary' "$RUNNER_TEMP/run1.log"; then
-            echo '::warning::Tk failed to start a window on the runner; retrying once'
-            python run_tests.py; status=$?
-          fi
-          exit "$status"
+        # Never retried: the tests that open a Tk window are skipped on this runner (its Tk can't always start;
+        # tests/tk_on_github.py) and run in the local `run_tests.py --all` before every pull request.
+        run: python run_tests.py
 
   unreview:
     # New commits after a review: the label comes off at once, so nothing unreviewed can merge.

@@ -55,7 +55,22 @@ def main():
             log_error(f"Dispatching command: {command}")
             
             # Dispatch Logic
-            if command == 'analyzer':
+            if command == 'library_maintain':
+                # The library store's helper (Library_Store_Spec §6.7): `library_maintain [maintain | sync]
+                # --language <l> …`. Dialog-free — it never reaches the crash dialog below — and it ends with
+                # its exit code. An unknown command must never fall through to the dashboard (K8).
+                code = 1
+                try:
+                    from app import library_store
+                    rest = sys.argv[2:]
+                    if not rest or rest[0] not in ("maintain", "sync"):
+                        rest = ["maintain"] + rest
+                    code = library_store.main(rest)
+                except Exception:
+                    log_error(f"library_maintain failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
+            elif command == 'analyzer':
                 from app import analyzer
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 analyzer.main()

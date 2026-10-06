@@ -15,9 +15,21 @@ import os
 from app.batch_gc import without_cycle_collection
 
 
-def _content_files(data_dir):
-    # Must match the analyzer's scan exactly, or the store would index files a run never reads (or
-    # miss ones it does) — hence the shared CONTENT_EXTENSIONS.
+def _content_files(data_dir, language=None):
+    # Must match the analyzer's list exactly, or the store would index files a run never reads (or
+    # miss ones it does). With a library store (or its read-only copy) that IS the analyzer's list
+    # (Library_Store_Spec K2): a file Graduate left in its tier folder is no longer in it, and indexing it
+    # would only be undone by the next run's reconcile. Without one, the walk with the shared
+    # CONTENT_EXTENSIONS, as before.
+    if language:
+        try:
+            from app import library_store
+            mode, _reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
+        except Exception:
+            mode = "json"
+        if mode in ("store", "read-only"):
+            from app.analyzer import resolve_found_files
+            return [path for path, _label, _weight, _type in resolve_found_files(language, verbose=False)]
     from app.path_utils import is_content_file
     files = []
     for folder in ("HighPriority", "LowPriority", "GoalContent"):
@@ -44,7 +56,7 @@ def main():
         from app.path_utils import get_data_path, get_user_files_path
         from app.zh_script import effective
 
-        files = _content_files(get_data_path(language))
+        files = _content_files(get_data_path(language), language)
 
         # Must match the tokenizer identity a Generate run uses, or the two would fight over the
         # store (each rebuilding the other's tokens). The GUI passes --reinforce and --zh-script to

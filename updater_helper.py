@@ -1,8 +1,11 @@
 """Standalone update helper for Surasura — frozen into `updater.exe`.
 
 This runs AS A SEPARATE PROCESS, launched by the dashboard just before it exits. It swaps
-the freshly-downloaded app-code payload (``app/`` + ``templates/``) into the frozen
-``_internal/`` folder, then relaunches the app.
+the freshly-downloaded payload into the install — the targets the marker lists, each a file or
+a folder: Surasura.exe (all the app code is inside it), ``_internal/templates``,
+RELEASE_NOTES.md, and since 2.5 whatever the release's own file list names (surasura-cli.exe,
+files under ``_internal/``) — then relaunches the app. (Its code is unchanged since 2.4.0: the
+list is built by the app, ``app/updater.py``.)
 
 Design constraints (why this is its own file / its own exe):
   * It imports NOTHING from ``app/`` — so it can never hold open the very files it must
@@ -13,9 +16,11 @@ Design constraints (why this is its own file / its own exe):
     Chinese characters), and it is unit-tested as plain Python before it is ever frozen.
 
 Invariants that make an auto-update un-botchable:
-  * It only ever touches program dirs named in the marker (``app`` / ``templates``) plus the
-    small marker / result JSONs. It never reads or writes User Files, data, results, or
-    settings.json.
+  * It only ever touches the targets named in the marker (the app allows only the programs,
+    RELEASE_NOTES.md and ``_internal/``) plus the small marker / result JSONs. It never reads or
+    writes User Files, data, results, or settings.json.
+  * It waits only for the app's own process; the app waits for everything else of Surasura's
+    first (2.5), and deletes a file a failed swap added (a rollback restores only what existed).
   * It backs up what it replaces first and rolls back on ANY failure, so a bad swap always
     leaves a working install.
   * It increments the marker's attempt counter BEFORE acting, so a crash mid-swap is visible

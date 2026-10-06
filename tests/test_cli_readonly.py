@@ -73,6 +73,8 @@ def test_status_writes_nothing_and_says_the_journey_is_current(generated, store)
     assert status["last_generate"] and status["known_words"] > 1000
     assert status["junban"] in ("present", "absent") and status["indexer"] == "idle"
     assert status["update_staged"] is False and "reachable" not in status["anki"]
+    assert status["logs"] == os.path.join(h.root(), "local", "logs") and os.path.isfile(
+        os.path.join(status["logs"], "cli.log")), "the logs are where status says"
     assert _snapshot() == before, "status changed a file"
 
 

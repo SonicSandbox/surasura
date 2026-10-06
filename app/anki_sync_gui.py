@@ -219,7 +219,7 @@ class AnkiSyncGui(tk.Toplevel):
     # ------------------------------------------------------------------- settings
     def _url(self):
         from app import anki_connect
-        return self._saved_settings().get("anki_connect_url") or anki_connect.DEFAULT_URL
+        return anki_connect.address(self._saved_settings())
 
     @staticmethod
     def _saved_settings():

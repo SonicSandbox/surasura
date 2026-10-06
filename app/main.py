@@ -2373,12 +2373,19 @@ class MasterDashboardApp:
 
     def _busy_threads(self):
         """This window's own background work that writes to Anki (the known-words sync, Junban's automatic reorder and
-        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop."""
+        Backfill): no process to list, but an exit mid-write would leave Anki half-written. Waited for; no Stop.
+        A thread here holding the Anki-write lock (順, Backfill, the automatic step: E1.4) is one entry naming what it
+        writes; when that is the automatic step, in place of its own lock's entry — never listed twice."""
+        from app import anki_connect, locks
+        writing = locks.held_in_process(anki_connect.WRITER_LOCK)
         busy = []
         for attr, name in (("_anki_sync_lock", "Anki sync"), ("_junban_auto_lock", "Junban's automatic reorder")):
             lock = getattr(self, attr, None)
-            if lock is not None and lock.locked():
+            if lock is not None and lock.locked() and not (
+                    attr == "_junban_auto_lock" and writing == anki_connect.AUTOMATIC_STEP):
                 busy.append({"pid": None, "name": name, "stop": None})
+        if writing is not None:
+            busy.append({"pid": None, "name": f"Writing to Anki ({writing or 'Surasura'})", "stop": None})
         return busy
 
     def _update_poll(self, job):
@@ -3044,9 +3051,12 @@ class MasterDashboardApp:
             except (ImportError, ModuleNotFoundError):
                 pass
 
-            # The Anki window owns these (core keys, so always written).
-            for _anki_key in ("anki_connect_url", "anki_sync_decks", "anki_sync_fields",
-                              "anki_sync_include_suspended"):
+            # The Anki window owns these (core keys, so always written). The address is the one every
+            # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
+            # here and the file then holds one address.
+            from app import anki_connect
+            settings["anki_connect_url"] = anki_connect.address(panel)
+            for _anki_key in ("anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"):
                 if _anki_key in panel:
                     settings[_anki_key] = panel[_anki_key]
 
@@ -3353,7 +3363,7 @@ class MasterDashboardApp:
             result = None
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
                     result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
                     # The same decks' new cards, for the report's backlog marks (read-only).
@@ -3394,7 +3404,7 @@ class MasterDashboardApp:
         def work():
             try:
                 from app import anki_connect, anki_sync
-                url = s.get("anki_connect_url") or anki_connect.DEFAULT_URL
+                url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
                     anki_sync.sync_backlog(lang, url, decks, fields)
             except Exception as e:

@@ -133,7 +133,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 30: the idiom data is rebuilt: a dictionary spelling the tokenizer reads as other words keys no phrase — 彼の方 'that
 #     person' read 彼 'he' + の + 方 counted every 彼のほう 'his side', 口の端 'gossip' every corner of a mouth
 #     (scripts/build_phrase_data.py, R6). Still 2.4: one re-analysis with 15–29.
-ENGINE_REVISION = 30
+# 31: Japanese TV captions are read through the caption cleaner (app/caption_clean.py, P1.3 row 1.3.2, ✅ G1.3-11 and
+#     P1.3-1 a): a word's reading written as a small-type row of its own is no line and no words (its kana counted as
+#     words before) — the list reads the lines Connect's pick and Anki Miner read. The release after 2.5: one re-analysis, with SCHEMA_VERSION 20.
+ENGINE_REVISION = 31
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2973,6 +2976,10 @@ def parse_ass(file_path, language='ja'):
     except Exception as e:
         print(f"Error reading ASS/SSA {file_path}: {e}")
         return ""
+    # TV captions read as card-making reads them (ENGINE_REVISION 31): their reading rows dropped, a caption's rows
+    # one event — the same lines Connect's pick and Anki Miner read. Arrows stay: close_cue reads them as "runs on"
+    from app import caption_clean
+    content = caption_clean.clean(content, arrows=False)
 
     lines = content.splitlines()
     events_section = False
@@ -4136,6 +4143,8 @@ def run_signature_parts(language, found_files, args):
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
             "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
+            # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
+            "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
             # Optional-module switches that change what the app SHOWS, never what a run computes.
             # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
             # library_frequency.json it used to switch on.)

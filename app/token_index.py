@@ -89,7 +89,9 @@ from operator import itemgetter
 # v19 a one-kanji word right after a number's counter written in kanji is a piece of the count (the 目 of ２時間目,
 #    analyzer._bound_at): a v18 store counted it as a use in each file's `bound` record — still 2.4, so users rebuild
 #    once with v8–v18.
-SCHEMA_VERSION = 19
+# v20 an .ass file is read through the caption cleaner (app/caption_clean.py, ENGINE_REVISION 31): a v19 blob holds a
+#    TV caption's small-type reading rows as words — the release after 2.5, so users rebuild once (P1.3-1 a).
+SCHEMA_VERSION = 20
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

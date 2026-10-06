@@ -6,7 +6,7 @@
 
 ## Summary
 - **Instant Library re-order** - a drag saves in about 1–2 ms, instead of rewriting the whole order file
-- **Crash-safe** - files saved pre-and-post move with redundancy
+- **Crash-safe** - every move saves all-or-nothing, with a second copy of the order kept
 - **Undo upgrades** - More robust, handles multiple undos in content manager
 - **Content Manager stays smooth** - coming back to the window no longer freezes it while it checks your folders
 - **New episodes join their show** - in NOW or Soon, wherever the show already is
@@ -44,12 +44,6 @@
 | Before | Now |
 | :-- | :-- |
 | **Update now** during a Generate or an open Content Manager could fail | The update waits, names what's still running, and offers **Stop it** |
-
-## Also
-- The **悟** (Immersion Architect) button is gone: the module was deprecated.
-- ⚖️ **One library, one machine.** Two PCs syncing one library folder isn't supported.
-- Dictionary data is unchanged from 2.4 (JMdict 2026-09-28); every source: **Settings → Data & System → Data
-  credits**.
 
 ## Setup Instructions
 1. Extract the zip file.

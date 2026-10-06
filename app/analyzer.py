@@ -4139,6 +4139,8 @@ def run_signature_parts(language, found_files, args):
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
+            # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
+            "connect_enabled", "placing_rules",
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",

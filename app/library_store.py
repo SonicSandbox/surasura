@@ -35,12 +35,14 @@ import json
 import ntpath
 import os
 import random
+import re
 import sqlite3
 import sys
 import threading
 import time
 import unicodedata
 import uuid
+from collections import namedtuple
 from contextlib import contextmanager
 
 if __name__ == "__main__" and __package__ is None:
@@ -87,8 +89,9 @@ MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 SKIP_NAMES = ("master_manifest.json", "_order.json", "desktop.ini")
 
-# maintain's exit codes (spec §6.7)
+# maintain's exit codes (spec §6.7); register_headless adds 6: the path can't be registered (not in the library)
 EXIT_DONE, EXIT_FAILED, EXIT_USAGE, EXIT_NOTHING, EXIT_NEEDS_YOU, EXIT_BUSY = 0, 1, 2, 3, 4, 5
+EXIT_BAD_DATA = 6
 
 LOCK_TIMEOUT = 5.0               # the write lock and SQLite's busy wait
 LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
@@ -125,6 +128,10 @@ class StoreConflict(StoreError):
 
 class UndoRefused(StoreError):
     """An undo record from another epoch (a rebuild or Repair happened since, §6.6)."""
+
+
+class NotInLibrary(StoreError):
+    """`register` was handed a path outside the library's data folder: refused before anything is written."""
 
 
 # ------------------------------------------------------------------------------------------------ #
@@ -780,6 +787,45 @@ def _dumps(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+_PRODUCER = re.compile(r"[a-z0-9_-]{1,32}")
+_NOT_PRODUCERS = ("user", "undo", "sync")       # the names a person, an undo and a disk sync are logged under
+
+
+def _producer(pairing):
+    """Who registered (the record's `producer`), as the placement log records it: a short name (lowercase letters,
+    digits, - or _, up to 32) that isn't a person's, an undo's, a sync's or a rule's, else "hato" — it lands in the
+    copy and the log."""
+    name = pairing.get("producer") if isinstance(pairing, dict) else None
+    if isinstance(name, str) and _PRODUCER.fullmatch(name) and name not in _NOT_PRODUCERS \
+            and not name.startswith("rule"):
+        return name
+    return "hato"
+
+
+def library_rel(data_dir, path):
+    """`path` (absolute, or relative to the data folder) as the data folder's normalised relative path ('/'), or None
+    when it isn't under it: another drive, a drive-relative path (D:foo.srt), `..`, the folder itself. 3.0's Sources
+    (roots) widen this."""
+    if not os.path.isabs(path) and os.path.splitdrive(path)[0]:
+        return None
+    try:
+        rel = os.path.relpath(path, data_dir) if os.path.isabs(path) else path
+    except ValueError:              # os.path.relpath across drives (Windows)
+        return None
+    rel = os.path.normpath(rel).replace("\\", "/")
+    if rel in (".", "..") or rel.startswith("../") or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        return None
+    return rel
+
+
+def _same_record(text, pairing):
+    """A stored pairing row and a record: equal by value, whatever order the row's keys were written in."""
+    try:
+        return json.loads(text) == pairing
+    except ValueError:
+        return False
+
+
 def _rel_dir(rel):
     return rel.rsplit("/", 1)[0] if "/" in rel else ""
 
@@ -920,6 +966,7 @@ class _Command:
         self.mine_before = store._mine_ids(self.mine_n) if self.logging else None
         self.events = []      # (item_id, kind, explicit)
         self.explicit = {}    # item_id -> explicit, for its crossing events
+        self.quiet = set()    # items that log no event at all (a back-fill registration, P2.1)
 
     def touch(self, tiers=(), order=False, availability=False, pins=False):
         """Record a change: any tier in `tiers` that is analysed bumps `order_version`."""
@@ -950,12 +997,13 @@ class _Command:
             for item_id in self.mine_before:
                 if item_id not in now:
                     self.events.append((item_id, "left_mine_line", self.explicit.get(item_id, 0)))
-            if self.events:
+            events = [e for e in self.events if e[0] not in self.quiet]
+            if events:
                 at = _now()
                 store.conn.executemany(
                     "INSERT INTO placement_log (item_id, kind, by, explicit, state_version, at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    [(i, k, self.by, e, self.version, at) for i, k, e in self.events])
+                    [(i, k, self.by, e, self.version, at) for i, k, e in events])
         updates = [("state_version", self.version)]
         if self.bump_order:
             updates.append(("order_version", self.meta["order_version"] + 1))
@@ -1286,6 +1334,16 @@ class Store:
         out["entry"] = json.loads(out["entry"])
         return out
 
+    def place_of(self, item_id):
+        """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
+        with self._reading():
+            row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                return None, None
+            above = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = ? AND (ord < ? OR (ord = ? AND id < ?))",
+                                      (row[0], row[1], row[1], item_id)).fetchone()[0]
+        return row[0], above + 1
+
     def item_id(self, rel_path):
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel_path),)).fetchone()
         return row[0] if row else None
@@ -1343,6 +1401,10 @@ class Store:
         if os.path.isabs(path):
             path = os.path.relpath(path, self.data_dir)
         return path.replace("\\", "/")
+
+    def _in_library(self, path):
+        """Does `path` lie under the data folder? (`library_rel`)"""
+        return library_rel(self.data_dir, path) is not None
 
     # --- order primitives (§6.5) ----------------------------------------------------------------- #
 
@@ -1454,18 +1516,20 @@ class Store:
 
     # --- commands (§6.6) ------------------------------------------------------------------------- #
 
-    def move(self, ids, tier, before_id=None, after_id=None, check=None):
+    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None):
         """Drag: the block keeps its current relative order and lands contiguous before or after the
         anchor (neither = the top of `tier`). A tier change is Demote / Promote without moving files.
         A no-op — an anchor inside `ids`, or every item already in `tier` in the same sequence —
-        commits nothing and returns None."""
+        commits nothing and returns None. `by`: who placed it, as the placement log records it (a
+        program's name from the command line's `place --source`, ✅ G1.3-5); explicit when "user", or as
+        `explicit` says (a placing rule the user turned on is the user's own action, D30)."""
         ids = list(dict.fromkeys(ids))
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
         anchor = before_id if before_id is not None else after_id
         if anchor is not None and anchor in ids:
             return None
-        with self._command("move") as cmd:
+        with self._command("move", by) as cmd:
             self._recheck(check)
             rows = self._rows(ids)
             if not rows:
@@ -1485,7 +1549,7 @@ class Store:
             self._put(tier, block, where, cmd.version)
             cmd.touch({r[1] for r in ordered} | {tier})
             for item_id in block:
-                cmd.event(item_id, "placed", 1)
+                cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit))
             return change
 
     def _in_place(self, tier, ordered, before_id, after_id):
@@ -1577,13 +1641,14 @@ class Store:
                 return row
         return None
 
-    def set_tier(self, ids, tier, check=None):
+    def set_tier(self, ids, tier, check=None, by="user", explicit=None):
         """Graduate (→ graduated, `graduated_at` set), Demote, Promote — no file moves (L5). Each item
-        lands after its folder's last row in the new tier, else at the top, in the order given."""
+        lands after its folder's last row in the new tier, else at the top, in the order given. `by` as
+        `move`'s (the command line's `finish --source`)."""
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
         ids = list(dict.fromkeys(ids))
-        with self._command("set_tier") as cmd:
+        with self._command("set_tier", by) as cmd:
             self._recheck(check)
             rows = self._rows(ids)
             moving = [i for i in ids if i in rows and rows[i][1] != tier]
@@ -1605,7 +1670,8 @@ class Store:
                                       [(_now(), i) for i in moving])
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
-                cmd.event(item_id, "finished" if tier == "graduated" else "placed", 1)
+                cmd.event(item_id, "finished" if tier == "graduated" else "placed",
+                          int(by == "user" if explicit is None else explicit))
             return change
 
     # --- adding files -------------------------------------------------------------------------- #
@@ -1754,32 +1820,45 @@ class Store:
         row = self.conn.execute("SELECT rel_key FROM items WHERE id = ?", (item_id,)).fetchone()
         return row is not None and self._takeover(row[0], started_at) == item_id
 
-    def register(self, path, pairing):
+    def register(self, path, pairing, backfill=False):
         """hato's command (headless): find the item for `path` (a sync may have made it) or add it — in
         `arrivals` when `meta.arrivals_on`; else a file in hato's drop folder at the top of NOW (Q4-11,
         through 2.x); else by §6.10 rule 3 (Q4-9) — and write its pairing (`pairing["content_key"]`, the
-        record verbatim). An added item undoes as an Add; a pairing alone leaves `changed_in`."""
+        record verbatim). An added item undoes as an Add; a pairing alone leaves `changed_in`.
+
+        The record is written with its keys sorted and compared by its parsed value, so the same record in
+        another key order (or a row written before keys were sorted) is the same: nothing written. A path not
+        under the data folder raises `NotInLibrary` before anything is written (3.0's Sources widen this).
+        `backfill` (P3.2: pairings hato made before Connect was on) attaches and places as above but logs no
+        placement event for the item, so nothing is ever mined because of it (✅ G1.1-2's watermark). The events
+        are logged as the record's `producer`'s (`_producer`: "hato" when it names none), never explicit."""
         content_key = pairing["content_key"]
-        prepared = self._prepare([path], None, "hato")
-        with self._command("register", "hato") as cmd:
+        rel = library_rel(self.data_dir, path)
+        if rel is None:
+            raise NotInLibrary(f"not in the library: {path}")
+        prepared = self._prepare([rel], None, "hato")     # normalised: one key per file (a/../b.srt is b.srt)
+        by = _producer(pairing)
+        with self._command("register", by) as cmd:
             meta = cmd.meta
             _p, rel, key, entry, fp = prepared[0]
             row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
             change = None
             if row is None:
                 if meta.get("arrivals_on"):
-                    change = self._add(prepared, "arrivals", "end", None, None, None, "register", "hato", 0)
+                    change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
                 else:
                     first = rel.split("/", 1)[0]
                     change = self._add(prepared, TIER_OF_FOLDER.get(first, "now"), "show", None, None, None,
-                                       "register", "hato", 0)
+                                       "register", by, 0)
                 item_id = change.added[0]
             else:
                 item_id = row[0]
+            if backfill:
+                cmd.quiet.add(item_id)
             old = self.conn.execute("SELECT item_id, pairing, paired_at FROM pairings WHERE content_key = ?",
                                     (content_key,)).fetchone()
-            record = _dumps(pairing)
-            if old is not None and old[0] == item_id and old[1] == record:
+            record = json.dumps(pairing, sort_keys=True, ensure_ascii=False)
+            if old is not None and old[0] == item_id and _same_record(old[1], pairing):
                 return change
             self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
                               "VALUES (?, ?, ?, ?)", (content_key, item_id, record, _now()))
@@ -4365,15 +4444,31 @@ def strip_graduated_block(user_files_dir, language, rels):
 # register with no store yet (✅ G1.1-6), and the command line
 # ------------------------------------------------------------------------------------------------ #
 
-def register_headless(language, path, pairing, data_dir=None, user_files_dir=None):
-    """`register` as hato's command line calls it: 5 while an update is staged; with no store yet, the
-    store is built headless when a usable manifest exists (as Generate would), else 4 "needs you" and
-    nothing written (the file still lands as today; only the pairing waits for a retry)."""
+# What `register_headless` answers (P2.1, the command line's `register`): `code` (EXIT_*); for a registration, the
+# item (`file_id`), where it is (`landed`: now-top · arrivals · show · already; `tier`, its 1-based `position` there)
+# and what became of the pairing (`pairing`: new · same · replaced). The fields after `code` are None otherwise.
+Registered = namedtuple("Registered", "code file_id landed tier position pairing")
+
+
+def _registered(code):
+    return Registered(code, None, None, None, None, None)
+
+
+def register_headless(language, path, pairing, data_dir=None, user_files_dir=None, backfill=False, looks=1,
+                      reader=None):
+    """`register` as hato's command line calls it: 5 while an update is staged (`looks`: how many looks at the
+    update lock, `update_staged`); with no store yet, the store is built headless when a usable manifest exists (as
+    Generate would), else 4 "needs you" and nothing written (the file still lands as today; only the pairing waits
+    for a retry); 6 for a path outside the library. `reader`: a placement-log reader set (once) before the
+    registration — Connect's watermark, so a store this call builds logs the drop too. Returns a `Registered`."""
     from app.path_utils import get_data_path, get_user_files_path
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
-    if update_staged():
-        return EXIT_BUSY
+    if update_staged(looks=looks):
+        return _registered(EXIT_BUSY)
+    rel = library_rel(data_dir, path)
+    if rel is None:
+        return _registered(EXIT_BAD_DATA)          # refused before anything is written, a store's build included
     store = open_store(language, data_dir, user_files_dir, role="register")
     if store is None:
         mode, _reason = check_mode(language, data_dir)
@@ -4385,16 +4480,33 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
             except ManifestUnreadable:
                 usable = False
         if not usable:
-            return EXIT_NEEDS_YOU
+            return _registered(EXIT_NEEDS_YOU)
         code = maintain(language, data_dir, user_files_dir, export=False)
         if code not in (EXIT_DONE, EXIT_NOTHING):
-            return code
+            return _registered(code)
         store = open_store(language, data_dir, user_files_dir, role="register")
         if store is None:
-            return EXIT_NEEDS_YOU
+            return _registered(EXIT_NEEDS_YOU)
     with store:
-        store.register(path, pairing)
-    return EXIT_DONE
+        if reader:
+            store.register_reader(reader)
+        try:
+            change = store.register(rel, pairing, backfill=backfill)
+        except NotInLibrary:
+            return _registered(EXIT_BAD_DATA)
+        # The change's own item (a move or remove after the commit can't lose it); a pairing already there: by its path
+        item_id = getattr(change, "pairing_item", None) or (change.added[0] if change is not None and change.added
+                                                             else store.item_id(rel))
+        tier, position = store.place_of(item_id)
+    if change is not None and change.added:
+        dkey, hato = path_key(_rel_dir(rel)), path_key(HATO_FOLDER)
+        landed = "arrivals" if tier == "arrivals" else \
+            "now-top" if dkey == hato or dkey.startswith(hato + "/") else "show"
+    else:
+        landed = "already"
+    before = getattr(change, "pairing_before", None)
+    paired = "same" if before is None else "new" if before[1] is None else "replaced"
+    return Registered(EXIT_DONE, item_id, landed, tier, position, paired)
 
 
 def main(argv=None):

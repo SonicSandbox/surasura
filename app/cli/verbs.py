@@ -145,7 +145,7 @@ def status(args):
         "junban": "present" if _module_present("modules.junban.reposition") else "absent",
         "backfill": "present" if _module_present("modules.junban.backfill") else "absent",
         "indexer": "busy" if _in_use("indexer") else "idle",
-        "update_staged": bool(library_store.update_staged()),
+        "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
 

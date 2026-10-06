@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from app.cli import contract, verbs
+from app.cli import connect_verbs, contract, verbs
 
 
 class _Parser(argparse.ArgumentParser):
@@ -52,6 +52,11 @@ VERBS = {
     "generate": (verbs.generate_args, verbs.generate, True),
     "junban": (verbs.junban_args, verbs.junban, True),
     "pick": (verbs.pick_args, verbs.pick, True),
+    # P2.1: the library verbs for Connect and hato (app/cli/connect_verbs.py)
+    "register": (connect_verbs.register_args, connect_verbs.register, True),
+    "place": (connect_verbs.place_args, connect_verbs.place, True),
+    "finish": (connect_verbs.finish_args, connect_verbs.finish, True),
+    "connect": (connect_verbs.connect_args, connect_verbs.connect, True),
 }
 
 # The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other

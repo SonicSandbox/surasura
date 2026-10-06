@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "content_key": "v1-0000000000000000000000000000000000000000000000000000000000000000",
+  "producer": "hato",
+  "producer_version": "1.0.10",
+  "language": "ja",
+  "video_path": "D:\\Shows\\Example Show\\Example Show - 05.mkv",
+  "video_size": 1473922811,
+  "subtitle_path": "D:\\Shows\\Example Show\\Example Show - 05.ja.srt",
+  "library_path": null,
+  "subtitle_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verdict": "timed",
+  "untimed_tier": null,
+  "picked_by": "hato",
+  "timing": {"outcome": "CONFIDENT", "match_rate": 0.91, "offset_s": -1.24, "segments": 1, "reference": "text-track", "tsubasa_version": "0.1.10"},
+  "show": {"title": "Example Show", "season": 1, "episode": 5, "movie": false},
+  "jimaku_entry_id": 11407,
+  "anilist_id": 154587,
+  "tmdb_id": "tv:209867",
+  "subtitle_source": {"provider": "jimaku", "file_name": "[Example] Example Show 05.srt"},
+  "paired_at": "2026-10-05T11:42:07Z"
+}

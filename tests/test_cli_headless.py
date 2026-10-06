@@ -179,10 +179,19 @@ def test_a_headless_generate_and_the_windows_never_write_together(monkeypatch):
     _wait_for_the_child(cli)
     app = MagicMock()
     app.gui_queue, app._closing_event = queue.Queue(), threading.Event()
-    started = time.perf_counter()
+    # Its thread never waits: asserted on who takes the lock and how, not on the clock (a 4 ms bound failed on a
+    # GitHub runner at 49 ms with nothing wrong). Every take that can wait must run on a worker.
+    takes, real_take = [], locks.take
+
+    def recording_take(name, verb, wait=0.0, **kw):
+        takes.append((threading.current_thread(), name, wait))
+        return real_take(name, verb, wait=wait, **kw)
+    monkeypatch.setattr(locks, "take", recording_take)
+    caller = threading.current_thread()
     MasterDashboardApp._start_analyzer(app, ["analyzer.py", "--static", "--language=ja"], quiet=False)
-    assert time.perf_counter() - started <= 0.004
+    assert not [t for t in takes if t[0] is caller], "the window's thread takes no lock: a worker waits for it"
     app.gui_queue.get(timeout=10)()
+    assert [t for t in takes if t[0] is not caller and t[1] == "results" and t[2] is None], "a worker waits"
     app.status_var.set.assert_called_with("Waiting for a background Generate…")
     start = app.gui_queue.get(timeout=300)
     assert cli.poll() is not None or locks.read_holder("results") is None, "only once the headless run let go"

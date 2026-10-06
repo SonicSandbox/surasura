@@ -204,11 +204,12 @@ def _against_replay(plan, eng, order, tag):
 
 
 @pytest.mark.parametrize("seed,gap,short", [(seed, gap, short) for seed in (1, 2, 3, 4) for gap in (1 << 40, 3)
-                                            for short in (256, 1)])
+                                            for short in (256, 4, 1)])
 def test_every_move_is_placed_as_the_store_places_it_and_equals_the_reference(monkeypatch, seed, gap, short):
     """150 drags per seed — single items and blocks of up to six across tiers, a whole tier emptied and refilled,
     before / after anchors and tier tops, three items dropped first; with gaps of 3 places run out every few moves,
-    and with `short` 1 every moved word finds its next file by walking the order (a common word's way) — each checked
+    and with `short` 1 every moved word finds its next file by walking the order (a common word's way), with 4 the
+    common and the rare words' ways side by side (a replan's first files too) — each checked
     against a model of Store.move's placement and E1.2's replay, on every column."""
     monkeypatch.setattr(plan_engine, "_GAP", gap)
     monkeypatch.setattr(plan_engine, "_SHORT", short)

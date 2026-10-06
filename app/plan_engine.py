@@ -36,7 +36,7 @@ _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
                                            # neighbours, so 40 drags into one spot before every item is numbered again
 _SHORT = 256                               # a word met in at most this many files finds its first file by looking
-                                           # at each; a commoner one by walking the order (`move`)
+                                           # at each; a commoner one by walking the order (`move`, `_numbers`)
 ORDER_MODES = ("content", "priority")      # Junban's `junban_order_mode`: the progressive list, or the priority list
 
 
@@ -406,6 +406,7 @@ class Engine:
                 files_of[k].append(f)
             self._uses.append((ks, us))
         self._files_of = [array("i", fs) for fs in files_of]
+        self._common = frozenset(k for k in range(n) if len(files_of[k]) > _SHORT)
         self._prog = [self._prog_file(line) for line in plan.per_file]   # the progressive pass's input
         self._ties = {tie[0]: tie for tie in plan.ties}
         self._sp = {}
@@ -460,22 +461,38 @@ class Engine:
         self._tier_count = [tiers.count(s) for s in range(3)]
 
         n = self._n
-        raw = [0] * n
-        counts = [[0, 0, 0] for _ in range(n)]
+        by_tier = ([0] * n, [0] * n, [0] * n)
         first = [None] * n
         first_idx = [0] * n                 # the word's place among its first file's words: a Generate's insertion order
-        w = self._w
+        unseen = set(self._common)          # the common keys no file in the order has held yet
         uses = self._uses
+        # One pass over every use (most of a re-plan's time): each tier's counts only; the weights are whole numbers
+        # (stands_aside), so the Score summed from the tiers' counts is the Score summed use by use.
         for f, slot in zip(fs, tiers):
-            weight = w[slot]
             ks, us = uses[f]
-            for i, k in enumerate(ks):
-                u = us[i]
-                raw[k] += weight * u
-                counts[k][slot] += u
-                if first[k] is None:
-                    first[k] = f
-                    first_idx[k] = i
+            c = by_tier[slot]
+            for k, u in zip(ks, us):
+                c[k] += u
+            if unseen and not unseen.isdisjoint(ks):
+                for i, k in enumerate(ks):
+                    if k in unseen and first[k] is None:     # a rare key's first file may be one the walk skipped
+                        first[k] = f
+                        first_idx[k] = i
+                unseen.difference_update(ks)
+        # The rare keys (and a common one no file in the order holds): each one's first file in the order, from its own.
+        pos = self._pos
+        for k in range(n):
+            if first[k] is not None:
+                continue
+            held = [f for f in self._files_of[k] if pos[f] is not None]
+            if held:
+                f = min(held, key=pos.__getitem__)
+                first[k] = f
+                first_idx[k] = uses[f][0].index(k)
+        w0, w1, w2 = self._w
+        now, soon, goal = by_tier
+        raw = [w0 * a + w1 * b + w2 * c for a, b, c in zip(now, soon, goal)]
+        counts = [[a, b, c] for a, b, c in zip(now, soon, goal)]
         self._raw, self._counts, self._first, self._first_idx = raw, counts, first, first_idx
         self._n_new = [0] * n_files
         for f in first:

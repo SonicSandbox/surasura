@@ -157,25 +157,21 @@ def _validate(plan):
             raise PlanError("the plan file's ties table is damaged")
     ties = {tie[0]: tie for tie in plan.ties}
     uses = [0] * n_keys
-    phrase = [key[2] for key in plan.keys]
+    phrases = {k for k, key in enumerate(plan.keys) if key[2]}
     for line in plan.per_file:
         for table, is_phrase in (("main", False), ("ph", True)):
-            pairs = line.get(table)
-            if not isinstance(pairs, list) or len(pairs) % 2:
+            ks, us = _pairs(line.get(table), n_keys, "a file's uses are damaged")
+            # A use is counted (the writer's records start at 1): a 0 would give a file where nothing counted a
+            # word's first place (02 §2.3). A word listed once per table.
+            if (us and min(us) < 1) or len(set(ks)) != len(ks):
                 raise PlanError("a file's uses are damaged")
-            met = set()
-            for i in range(0, len(pairs), 2):
-                k, u = pairs[i], pairs[i + 1]
-                # A use is counted (the writer's records start at 1): a 0 would give a file where nothing counted a
-                # word's first place (02 §2.3).
-                if not (_index(k, n_keys) and _count(u) and u > 0) or k in met:
-                    raise PlanError("a file's uses are damaged")
-                met.add(k)
-                if phrase[k] != is_phrase:
-                    # A word counted as a phrase's own uses, or the reverse: the insertion order a Generate keeps
-                    # (words first, then phrases) couldn't be told from the plan.
-                    raise PlanError("a file's uses mix a word and a phrase row")
-                uses[k] += u
+            if (set(ks) <= phrases) if is_phrase else phrases.isdisjoint(ks):
+                for k, u in zip(ks, us):
+                    uses[k] += u
+            else:
+                # A word counted as a phrase's own uses, or the reverse: the insertion order a Generate keeps
+                # (words first, then phrases) couldn't be told from the plan.
+                raise PlanError("a file's uses mix a word and a phrase row")
         sps = line.get("sp", [])
         if not isinstance(sps, list) or not all(
                 isinstance(sp, list) and len(sp) == 3 and sp[0] in ties and _strings(sp[1]) and _strings(sp[2])
@@ -186,15 +182,24 @@ def _validate(plan):
                 and 0 <= prog[1] <= prog[0] < _LIMIT):
             raise PlanError("a file's progressive record is damaged")
         for table in (prog[2], prog[3], prog[4], prog[5]):
-            if not isinstance(table, list) or len(table) % 2 or not all(
-                    _index(table[i], n_keys) and _count(table[i + 1]) for i in range(0, len(table), 2)):
-                raise PlanError("a file's progressive record is damaged")
+            _pairs(table, n_keys, "a file's progressive record is damaged")
         if not isinstance(prog[6], list) or not all(
                 isinstance(sib, list) and len(sib) == 2 and isinstance(sib[0], str) and _count(sib[1])
                 for sib in prog[6]):
             raise PlanError("a file's progressive record is damaged")
     if uses != [key[4] for key in plan.keys]:
         raise PlanError("the plan file's uses don't add up to its words' Occurrences")
+
+
+def _pairs(table, n, damaged):
+    """A flat `[k, n, k, n, …]` table checked in bulk — every value an int, each k an index into the keys, each count
+    within `_count` — and returned as (keys, counts)."""
+    if not isinstance(table, list) or len(table) % 2 or not set(map(type, table)) <= {int}:
+        raise PlanError(damaged)
+    ks, us = table[0::2], table[1::2]
+    if ks and (min(ks) < 0 or max(ks) >= n or min(us) < 0 or max(us) >= _LIMIT):
+        raise PlanError(damaged)
+    return ks, us
 
 
 def _index(value, n):
@@ -752,14 +757,16 @@ class Engine:
     @staticmethod
     def _prog_file(line):
         """A file's line of the progressive pass (`plan_rules.progressive_pass`) from its plan record (01 §7): the
-        tokens with the uses a phrase took beside each (one compact array), siblings, credits and phrase uses as
-        pairs."""
+        tokens as three compact arrays (keys, counts, the uses a phrase took — nearly always none), siblings, credits
+        and phrase uses as pairs."""
         total, baseline, tokens, given, credits, phrases, siblings = line["prog"]
-        given = dict(zip(given[::2], given[1::2]))
-        flat = array("i")
-        for i in range(0, len(tokens), 2):
-            k = tokens[i]
-            flat.extend((k, tokens[i + 1], given.get(k, 0)))
+        keys = array("i", tokens[0::2])
+        if given:
+            given = dict(zip(given[::2], given[1::2]))
+            bounds = array("i", [given.get(k, 0) for k in keys])
+        else:
+            bounds = array("i", bytes(4 * len(keys)))
+        flat = (keys, array("i", tokens[1::2]), bounds)
         return (total, baseline, flat, [tuple(s) for s in siblings], list(zip(credits[::2], credits[1::2])),
                 list(zip(phrases[::2], phrases[1::2])))
 

@@ -5999,7 +5999,7 @@ def main():
             # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
             file_pieces = file_piece_cache.get(file_path)
             plan_tokens, plan_bound, plan_siblings = [], {}, {}
-            tokens = []
+            keys, counts, bounds = [], [], []
 
             for key, count in file_counter.items():
                 lemma = key[0]
@@ -6032,7 +6032,9 @@ def main():
                         plan_tokens += (k, count)
                         if file_bound and key in file_bound:
                             plan_bound[k] = file_bound[key]
-                tokens += (key, count, bound)
+                keys.append(key)
+                counts.append(count)
+                bounds.append(bound)
 
             plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
 
@@ -6049,7 +6051,7 @@ def main():
                     key = (phrase.word, phrase.reading)
                     if key in phrase_keys:
                         phrases.append((key, count))
-            yield file_total_tokens, file_baseline_known_count, tokens, (), credits, phrases
+            yield file_total_tokens, file_baseline_known_count, (keys, counts, bounds), (), credits, phrases
 
     _no_stats = {"score": 0, "total_count": 0, "high_count": 0, "low_count": 0, "goal_count": 0,
                  "final_context_1": "", "final_context_2": "", "final_context_3": ""}

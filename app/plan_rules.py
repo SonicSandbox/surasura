@@ -158,8 +158,9 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
     `files`: per file, in the order, `(total, baseline, tokens, siblings, credits, phrases)` —
       total      the file's tokens (Total Count); baseline the ones known before any file (the known words, the
                  ignored ones, a one-character word the list never offers, a word's uses as a piece of another);
-      tokens     flat `[key, count, bound, …]`: every other word met here, in the file's order — count after its
-                 pieces, bound the uses a set phrase took (a word met here only inside its phrase is no new word);
+      tokens     `(keys, counts, bounds)`, three parallel sequences: every other word met here, in the file's order —
+                 its count after its pieces, and the uses a set phrase took of it (a word met here only inside its
+                 phrase is no new word);
       siblings   `[(lemma, count), …]`: words met here that only their lemma makes known (the plan's: words not on
                  the list whose lemma is a list word's; the analyzer hands every word in `tokens` instead);
       credits    `[(key, n), …]`: list words met here inside a rarer compound (ignored and never-offered left out) —
@@ -173,8 +174,7 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
     for total, baseline, tokens, siblings, credits, phrases in files:
         current = baseline
         unknown, credited = {}, {}
-        for i in range(0, len(tokens), 3):
-            key, count, bound = tokens[i], tokens[i + 1], tokens[i + 2]
+        for key, count, bound in zip(*tokens):
             if key in known or lemma_of(key) in lemmas:
                 current += count
             elif bound < count:

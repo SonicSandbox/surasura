@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from app.cli import contract
+from app.cli import contract, verbs
 
 
 class _Parser(argparse.ArgumentParser):
@@ -45,7 +45,17 @@ def _selftest(args):
 # name: (add its arguments, run it, shown in --help)
 VERBS = {
     "_selftest": (_selftest_args, _selftest, False),
+    "status": (verbs.status_args, verbs.status, True),
+    "list": (verbs.list_args, verbs.list_words, True),
+    "known": (verbs.known_args, verbs.known, True),
+    "known-sync": (verbs.known_sync_args, verbs.known_sync, True),
+    "generate": (verbs.generate_args, verbs.generate, True),
+    "junban": (verbs.junban_args, verbs.junban, True),
 }
+
+# The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other
+# verb answers `update-staged` (02 §7).
+ANSWER_WHILE_UPDATING = {"status"}
 
 
 def _parser():
@@ -97,7 +107,8 @@ def main(argv=None, out=None):
         def call():
             if usage is not None:
                 raise usage
-            contract.check_update()
+            if verb not in ANSWER_WHILE_UPDATING:
+                contract.check_update()
             if args.version:
                 return _version(args)
             contract.check_token_stores()

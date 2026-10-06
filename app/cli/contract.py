@@ -33,6 +33,7 @@ EXIT_CODES = {
 LOG_BYTES = 1024 * 1024     # cli.log rotates at 1 MB, three old ones kept (M-6 6)
 LOG_BACKUPS = 3
 EVENTS_KEPT = 200
+EVENTS_WAIT = 10.0      # an append waits this long for another call's (each holds the events lock for one append)
 
 log = logging.getLogger("surasura-cli")
 
@@ -193,37 +194,6 @@ def replace_with_retry(src, dst, tries=5, wait=0.1):
     return False
 
 
-class _Locked:
-    """Holds `path`'s byte 0 for a moment (04 §2's pattern; waits up to ~10 s). Only the events file uses it until E1.4's
-    lock helper lands (P1.2)."""
-
-    def __init__(self, path):
-        self.path = path
-
-    def __enter__(self):
-        self.f = open(self.path, "a+b")
-        if sys.platform == "win32":
-            import msvcrt
-            self.f.seek(0)
-            msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.f, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *exc):
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-                self.f.seek(0)
-                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.f, fcntl.LOCK_UN)
-        finally:
-            self.f.close()
-
-
 def _record_event(event):
     """Append an error to cli-events.jsonl under its lock, so two failing calls never lose one. Once the file passes
     twice EVENTS_KEPT lines it is cut back to the newest EVENTS_KEPT (a reader holding it open only delays the cut)."""
@@ -231,7 +201,8 @@ def _record_event(event):
         path = os.path.join(log_folder(), "cli-events.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         line = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
-        with _Locked(path + ".lock"):
+        from app import locks
+        with locks.take("cli-events", "a command-line error note", wait=EVENTS_WAIT):
             with open(path, "a", encoding="utf-8", newline="\n") as f:
                 f.write(line + "\n")
             with open(path, encoding="utf-8") as f:
@@ -244,6 +215,37 @@ def _record_event(event):
                     os.remove(tmp)
     except Exception:
         log.exception("the events file can't be written")
+
+
+# --------------------------------------------------------------------------- #
+# Locks (04 §2: E1.4's helper, `app/locks.py`; no second primitive)
+# --------------------------------------------------------------------------- #
+UNOPENABLE = "Surasura couldn't open its lock file; try again, or check the folder's permissions."
+
+
+def busy_error(name, holder, what=None):
+    """`busy` (exit 3) for a lock held elsewhere: `lock`, `held_by` (the holder record, or null), plain words."""
+    from app import locks
+    if holder is None:
+        path = locks.unopenable(name)
+        if path is not None:
+            log.warning("lock %s: its file can't be opened: %s", name, path)
+            return CliError("busy", UNOPENABLE, lock=name, held_by=None)
+    verb = (holder or {}).get("verb") or "Another Surasura program"
+    since = (holder or {}).get("started")
+    when = f" (since {since.replace('T', ' ')})" if since else ""
+    return CliError("busy", what or f"{verb} is running{when}. Try again when it has finished.",
+                    lock=name, held_by=holder)
+
+
+def take_lock(name, verb, wait=0.0):
+    """Take `name` for `verb` -> the held lock (`locks.Held`), waiting up to `wait` seconds (`--wait`, polled every
+    250 ms); still held -> `busy`."""
+    from app import locks
+    try:
+        return locks.take(name, verb, wait=wait or 0.0)
+    except locks.Busy as e:
+        raise busy_error(name, e.holder) from None
 
 
 # --------------------------------------------------------------------------- #

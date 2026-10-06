@@ -98,31 +98,42 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             conn.close()
             return False
 
-        # This import REPLACES the file. Keep a dated copy of what it replaces first
-        # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
-        try:
-            backup = backup_to_trash(output_json)
-        except OSError as e:
-            print(f"Error: could not back up your current known words, so nothing was changed ({e}).")
+        # KnownWord.json is replaced holding its lock (P0.3 04 §2): never beside the Anki sync's or surasura-cli's write.
+        from app.anki_sync import hold_known_words
+        lock_language = language or os.path.basename(os.path.dirname(os.path.abspath(output_json)))
+        held, refused = hold_known_words(lock_language, "Migaku import")
+        if refused is not None:
+            print(f"Error: {refused[0]}")
             conn.close()
             return False
-        if backup:
-            print(f"Backed up your previous known words to: {backup}")
+        try:
+            # This import REPLACES the file. Keep a dated copy of what it replaces first
+            # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
+            try:
+                backup = backup_to_trash(output_json)
+            except OSError as e:
+                print(f"Error: could not back up your current known words, so nothing was changed ({e}).")
+                conn.close()
+                return False
+            if backup:
+                print(f"Backed up your previous known words to: {backup}")
 
-        print(f"\nWriting JSON to: {output_json}")
-        json_data = {
-            'exportDate': datetime.now().isoformat(),
-            'databaseFile': str(db_path),
-            'statistics': stats,
-            'words': words
-        }
+            print(f"\nWriting JSON to: {output_json}")
+            json_data = {
+                'exportDate': datetime.now().isoformat(),
+                'databaseFile': str(db_path),
+                'statistics': stats,
+                'words': words
+            }
 
-        out_dir = os.path.dirname(output_json)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        with open(output_json, 'w', encoding='utf-8') as f:
-            json.dump(json_data, f, indent=2, ensure_ascii=False)
-
+            out_dir = os.path.dirname(output_json)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(output_json, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+        finally:
+            if held is not None:
+                held.release()
         print(f"JSON exported: {output_json}")
 
         conn.close()

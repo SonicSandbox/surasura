@@ -111,6 +111,26 @@ def smoke(command, install_dir, frozen):
               and lines[-1].get("echo") == "あ" and b"\\u3042" in raw,
               f'_selftest ok --echo あ: exit 0, "あ" handed back escaped ({raw[:160]!r}, exit {code})')
 
+        # P1.2: a library of one real Japanese file (Anki pointed at a closed port, never reached): `status` before and
+        # after `generate`, whose analyzer is the installed Surasura.exe started headless (`analyzer --headless`).
+        library = os.path.join(root, "data", "ja", "HighPriority")
+        os.makedirs(library)
+        os.makedirs(os.path.join(root, "User Files", "ja"))
+        shutil.copy2(os.path.join(PROJECT_ROOT, "tests", "Test Resources", "ja", "context_test.txt"), library)
+        shutil.copytree(os.path.join(PROJECT_ROOT, "templates"), os.path.join(root, "templates"))
+        with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"target_language": "ja", "anki_connect_url": "http://127.0.0.1:9"}, f)
+        code, lines, raw, _err = call("status")
+        check(code == 0 and lines is not None and lines[-1].get("journey_current") is not True
+              and lines[-1].get("update_staged") is False and lines[-1].get("indexer") == "idle",
+              f"status: exit 0, the list not current yet ({raw[:200]!r}, exit {code})")
+        code, lines, raw, _err = call("generate")
+        check(code == 0 and lines is not None and lines[-1].get("ran") is True and lines[-1].get("words", 0) > 0,
+              f"generate: exit 0, the analyzer ran headless ({raw[:200]!r}, exit {code})")
+        code, lines, raw, _err = call("status")
+        check(code == 0 and lines is not None and lines[-1].get("journey_current") is True,
+              f"status after generate: the list is current ({raw[:200]!r}, exit {code})")
+
         check(os.listdir(work) == [], "nothing written in the working folder")
         real_after = _folder_files(real_local) if os.path.isdir(real_local) else None
         check(real_after == real_before, f"the real local data folder untouched ({real_local})")

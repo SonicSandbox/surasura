@@ -10,6 +10,7 @@ import re
 import csv
 import hashlib
 import threading
+import time
 import unicodedata
 # Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
 # module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
@@ -3568,12 +3569,13 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None):
         pass
 
 
-def resolve_found_files(language, verbose=True, schedule=None):
+def resolve_found_files(language, verbose=True, schedule=None, read_store=True):
     """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
     from the library store's schedule (phase order) when one is ready, else master_manifest.json, else a
     recursive fallback scan. Shared by main() and the dashboard's no-change pre-flight, so both compute
     the run-signature over exactly the same list. `schedule`: one already read (Generate's, the journey
-    check's).
+    check's). `read_store=False`: with no `schedule` given, take the file without opening the store (a caller that
+    has already read it read-only and found no ready store: `journey_check`).
 
     No folder fallback when the list came from a store or from a copy the store wrote (it carries
     `surasura_library`): there an empty list is an empty run (K21) — the scan would analyse every file a
@@ -3587,7 +3589,7 @@ def resolve_found_files(language, verbose=True, schedule=None):
     user_files_dir = get_user_files_path(language)
     found_files = []
     manifest_path = os.path.join(user_files_dir, "master_manifest.json")
-    if schedule is None:
+    if schedule is None and read_store:
         schedule, _versions = read_library_schedule(language, data_dir, user_files_dir)
     no_fallback = schedule is not None
 
@@ -3748,6 +3750,59 @@ def journey_is_current(args, language):
             record_analysed(language, library)
         return current
     except Exception:
+        return None
+
+
+def journey_check(args, language):
+    """`journey_is_current`, for a caller that must write nothing (surasura-cli `status`, P1.2): the same question
+    asked of the same signature — True, False, or None when it can't tell — with every store opened `mode=ro`, the
+    disk never synced into the library store, its helper never started and nothing recorded. The window keeps its own
+    call (which syncs first).
+
+    None also while the library store holds a change from disk it hasn't synced yet (a file dropped in since): only
+    a sync can tell, and this check never syncs. It stats every library file, as the window's check does."""
+    try:
+        from app.path_utils import get_user_file
+
+        schedule = None
+        ls = _library_store()
+        if ls is not None:
+            mode, schedule, _versions, pending = ls.read_only_view(language, get_data_path(language),
+                                                                   get_user_files_path(language))
+            if mode == "unknown" or pending:
+                return None
+        found = resolve_found_files(language, verbose=False, schedule=schedule, read_store=False)
+        if not found:
+            return None
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        if not sig:
+            return None
+        results_dir = get_user_file("results")
+        if not all(os.path.exists(os.path.join(results_dir, name)) for name in
+                   ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
+            return False
+        return _token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
+    except Exception:
+        return None
+
+
+def _token_store_meta(language, key):
+    """A value the language's token store keeps in its meta table, as written (`Store.set_meta`), read through a
+    `mode=ro` connection — None when there is no store or no such value. Never writes, never raises."""
+    import pathlib
+    import sqlite3
+    from app import token_index as _ti
+    path = _ti.store_path_for(language)
+    if not os.path.isfile(path):
+        return None
+    try:
+        conn = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+    except sqlite3.Error:
         return None
 
 
@@ -3997,8 +4052,61 @@ def _set_run_stamp(results_dir, signature):
         print(f"Warning: could not update the results stamp: {e}")
 
 
+# results/ is written by one Generate at a time, across programs (P0.3 04 §2): the analyzer holds the `results` lock
+# (`app/locks.py`) for its whole run — itself, the writer, so a parent killed meanwhile (surasura-cli's `generate`)
+# never leaves a writer without the lock. Whoever starts it waits for the lock to be free first (the window on a
+# worker, the command line with --wait); the analyzer waits this long more (SURASURA_RESULTS_WAIT, seconds) for the
+# moment between the two, then gives up with exit code 3, nothing written.
+RESULTS_WAIT = 10.0
+RESULTS_BUSY = 3
+
+
+def _report_written(path, since):
+    """Did the report generator write `path` (at or after `since`)? It says its own failures (a missing template, an
+    unreadable list) and returns: the run's exit code reads them here."""
+    try:
+        if os.path.getmtime(path) >= since - 2:
+            return True
+    except OSError:
+        pass
+    print("Error: the report was not written (see the lines above).")
+    return False
+
+
+def _holding_results(run):
+    """Run `run` holding the `results` lock; still held by another program after the wait -> RESULTS_BUSY."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        from app import locks
+        held = None
+        if not locks.held_here("results"):
+            try:
+                wait = float(os.environ.get("SURASURA_RESULTS_WAIT", RESULTS_WAIT))
+            except ValueError:
+                wait = RESULTS_WAIT
+            try:
+                held = locks.take("results", "Generate", wait=wait)
+            except locks.Busy as e:
+                verb = (e.holder or {}).get("verb") or "another Surasura program"
+                print(f"Error: results/ is being written by {verb}; nothing was changed. Try again when it has finished.")
+                return RESULTS_BUSY
+            except Exception as e:
+                print(f"Warning: the results lock can't be used ({e}); generating without it.")
+        try:
+            return run(*args, **kwargs)
+        finally:
+            if held is not None:
+                held.release()
+    return wrapper
+
+
 @without_cycle_collection
+@_holding_results
 def main():
+    """The analyzer's run. Returns its exit code: None (0) when it finished, 1 when the report couldn't be written
+    (results/ is complete; the next Generate re-renders it), RESULTS_BUSY when another program held results/."""
     import sys
 
     # --- VISUALIZER REMOVED ---
@@ -4018,6 +4126,7 @@ def main():
 
     # --- ARGUMENT PARSING (shared parser so the dashboard reconstructs the identical args) ---
     args = parse_analysis_args()
+    _report_failed = False      # the report couldn't be written: the run's exit code says so (1)
 
     global SKIP_SINGLE_CHARS, MIN_FREQ, SANITIZE_JA, ONLY_I_PLUS_ONE, ENSURE_AUDIO_EXAMPLE
     ONLY_I_PLUS_ONE = args.only_i_plus_one
@@ -4201,17 +4310,20 @@ def main():
                         static_html_generator.open_report(app_mode=args.app_mode)
                 else:
                     print("Re-rendering report from existing results (presentation changed)...")
+                    _rendering = time.time()
                     static_html_generator.generate_static_html(
                         theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
                         open_browser=not args.no_open)
+                    _report_failed = not _report_written(_html, _rendering)
                     try:
                         _store.set_meta("last_render_sig", _render_sig)
                     except Exception:
                         pass
             except Exception as e:
                 print(f"Error: Could not generate static HTML: {e}")
+                _report_failed = True
         _store.close()
-        return
+        return 1 if _report_failed else None
 
     # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
     # "nothing changed" skip path above never pays its ~0.35s import cost.
@@ -5747,11 +5859,14 @@ def main():
 
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
+            _rendering = time.time()
             static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
                 open_browser=not args.no_open)
+            _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
+            _report_failed = True
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint so a same-setting re-run can open the
@@ -5772,6 +5887,7 @@ def main():
         print("\nAnalysis complete.")
         print("Use '--visualize' to run the interactive server.")
         print("Use '--static' to generate a standalone HTML file.")
+    return 1 if _report_failed else None
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

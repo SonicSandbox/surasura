@@ -440,6 +440,15 @@ class MasterDashboardApp:
         # Track active child processes
         self.active_processes = []
 
+        # Settings are written off this thread, under the `settings` lock (P0.3 04 §2): queued and retried, never
+        # dropped. A child process, a journey check or closing the window flushes it first (`_flush_settings`).
+        self._settings_writer = settings_manager.SettingsWriter(
+            on_saved=lambda _s: self.gui_queue.put(self._schedule_journey_state),
+            on_error=lambda _e: self.gui_queue.put(
+                lambda: self.status_var.set("Saving your settings waits for another Surasura program…")))
+        # Set when the window closes: a worker still waiting on a lock (a background Generate's) stops.
+        self._closing_event = threading.Event()
+
         # Set Application Icon
         try:
             from app.path_utils import get_icon_path, get_ico_path
@@ -525,7 +534,16 @@ class MasterDashboardApp:
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
         # body is not enough; it is never invoked.
+        # A command-line call that fails while the window is open shows in the bottom bar (P0.3 02 §4, ✅ G0.3-1).
+        self._cli_events = None
+        self._cli_events_reading = False
+        try:
+            from app.cli import events as cli_events
+            self._cli_events = cli_events.Reader()
+        except Exception as e:
+            print(f"Command-line events not watched: {e}")
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(self.CLI_EVENTS_EVERY, self._watch_cli_events)
             # And once shortly after startup, so the preview appears without a manual Generate.
             self.root.after(1500, lambda: self._maybe_launch_indexer(force=True))
 
@@ -2932,16 +2950,11 @@ class MasterDashboardApp:
             return fallback
 
     def save_settings(self, *args, skip_ui=False):
+        """The widgets are read here, on the window's thread; the file is read and written by the settings writer
+        (`settings_manager.SettingsWriter`, P0.3 04 §2) on its worker, under the `settings` lock — this thread never
+        waits on it. Under test, or with no writer, it is written here at once."""
         try:
             cur = getattr(self, "_current_settings", {}) or {}
-            # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
-            # decks and fields) are carried through from DISK, not from `cur`: `cur` is this
-            # dashboard's snapshot from its own last load/save, so carrying from it silently
-            # reverted — or dropped — whatever a panel had saved since.
-            try:
-                panel = settings_manager.load_settings() or cur
-            except Exception:
-                panel = cur
             cur_ctx = cur.get("logic", {}).get("context", {}) if isinstance(cur.get("logic"), dict) else {}
             # Build settings dict from GUI vars
             settings = {
@@ -3015,14 +3028,12 @@ class MasterDashboardApp:
             # `enable_koe` line to settings.json themselves. Nothing about it is written back
             # unless that line is already there — otherwise the first save would scatter koe_*
             # keys through every user's settings and the feature would announce itself.
+            carried = []        # (key, also when absent from the file) — read from the file as it is when written
             try:
                 import modules.koe as _koe
                 if _koe.is_revealed():
                     settings["enable_koe"] = self.var_enable_koe.get()
-                    for _koe_key in ("koe_voice", "koe_model", "koe_style",
-                                     "koe_temperature", "koe_port", "koe_daily_cap"):
-                        if _koe_key in panel:
-                            settings[_koe_key] = panel[_koe_key]
+                    carried += ["koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_port", "koe_daily_cap"]
             except (ImportError, ModuleNotFoundError):
                 pass
 
@@ -3032,9 +3043,7 @@ class MasterDashboardApp:
             try:
                 import modules.reels as _reels
                 settings["enable_reels"] = self.var_enable_reels.get()
-                for _reels_key in _reels.SETTINGS_DEFAULTS:
-                    if _reels_key != "enable_reels" and _reels_key in panel:
-                        settings[_reels_key] = panel[_reels_key]
+                carried += [k for k in _reels.SETTINGS_DEFAULTS if k != "enable_reels"]
             except (ImportError, ModuleNotFoundError):
                 pass
 
@@ -3045,25 +3054,42 @@ class MasterDashboardApp:
             try:
                 import modules.junban as _junban
                 settings["enable_junban"] = self.var_enable_junban.get()
-                for _junban_key in _junban.SETTINGS_DEFAULTS:
-                    if _junban_key != "enable_junban" and _junban_key in panel:
-                        settings[_junban_key] = panel[_junban_key]
+                carried += [k for k in _junban.SETTINGS_DEFAULTS if k != "enable_junban"]
             except (ImportError, ModuleNotFoundError):
                 pass
+            carried += ["anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"]
 
-            # The Anki window owns these (core keys, so always written). The address is the one every
-            # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
-            # here and the file then holds one address.
-            from app import anki_connect
-            settings["anki_connect_url"] = anki_connect.address(panel)
-            for _anki_key in ("anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"):
-                if _anki_key in panel:
-                    settings[_anki_key] = panel[_anki_key]
+            def build():
+                # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
+                # decks and fields) are carried through from DISK, not from `cur`: `cur` is this
+                # dashboard's snapshot from its own last load/save, so carrying from it silently
+                # reverted — or dropped — whatever a panel had saved since. Read when the file is
+                # written, inside the lock, so a panel's save just before is carried too.
+                try:
+                    panel = settings_manager.load_settings() or cur
+                except Exception:
+                    panel = cur
+                out = dict(settings)
+                for key in carried:
+                    if key in panel:
+                        out[key] = panel[key]
+                # The Anki window owns these (core keys, so always written). The address is the one every
+                # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
+                # here and the file then holds one address.
+                from app import anki_connect
+                out["anki_connect_url"] = anki_connect.address(panel)
+                return out
 
-            settings_manager.save_settings(settings)
-            self._current_settings = settings
-            # An analysis setting may have changed what Generate would compute — re-check the button.
-            self._schedule_journey_state()
+            writer = getattr(self, "_settings_writer", None)
+            if isinstance(writer, settings_manager.SettingsWriter) and not os.environ.get("SURASURA_NO_UI_TIMERS"):
+                writer.submit(build)            # written on its worker; the journey check follows (_on_settings_saved)
+                self._current_settings = {**cur, **settings}
+            else:
+                built = build()
+                settings_manager.save_settings(built)
+                self._current_settings = built
+                # An analysis setting may have changed what Generate would compute — re-check the button.
+                self._schedule_journey_state()
 
             # Update UI state (enable/disable language specific options). Skipped for band-slider
             # saves — a commonness-band change never affects the language-dependent UI, and the
@@ -3131,6 +3157,48 @@ class MasterDashboardApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open the parsing guide: {e}")
             
+    CLI_EVENTS_EVERY = 3000     # ms between looks at the command line's events file (a stat; the read is a worker's)
+
+    def _watch_cli_events(self):
+        """Every few seconds: a stat of the command line's events file on this thread; when it changed, the new lines
+        are read on a worker and the newest failure lands in the bottom bar (`_show_cli_event`). Never a box."""
+        try:
+            self._check_cli_events()
+        finally:
+            try:
+                self.root.after(self.CLI_EVENTS_EVERY, self._watch_cli_events)
+            except Exception:
+                pass
+
+    def _check_cli_events(self):
+        reader = getattr(self, "_cli_events", None)
+        if reader is None or self._cli_events_reading or not reader.changed():
+            return
+        self._cli_events_reading = True
+
+        def work():
+            try:
+                event = reader.newest_to_show()
+            except Exception:
+                event = None
+            self.gui_queue.put(lambda: self._show_cli_event(event))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_cli_event(self, event):
+        self._cli_events_reading = False
+        if event is None:
+            return
+        from app.cli import events as cli_events
+        self.status_var.set(cli_events.plain(event))
+
+    def _flush_settings(self, timeout=10.0):
+        """Wait until the settings writer has written what it holds: a child process or a check reads settings.json
+        from disk. On a worker, or once the window is gone — never on the window's thread while it is up."""
+        writer = getattr(self, "_settings_writer", None)
+        if isinstance(writer, settings_manager.SettingsWriter):
+            writer.flush(timeout)
+
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
                           clear_log=True, on_exit=None):
         """Runs a command with optional output redirection to the terminal.
@@ -3167,6 +3235,7 @@ class MasterDashboardApp:
         self.gui_queue.put(_start_loading)
 
         def task():
+            self._flush_settings()          # every child reads settings.json: the newest choice first
             # Dispatch Mapping for Frozen Environment
             SCRIPT_MAP = {
                 'analyzer.py': 'analyzer',
@@ -3286,7 +3355,10 @@ class MasterDashboardApp:
                         proc.terminate()
                 except Exception:
                     pass
+        self._closing_event.set()
         self.root.destroy()
+        # What the settings writer still holds is written before the process ends (the window is gone: nothing waits).
+        self._flush_settings(timeout=10.0)
         # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
         # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
         try:
@@ -3338,19 +3410,15 @@ class MasterDashboardApp:
             s = settings_manager.load_settings() or s
         except Exception:
             pass
-        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
-        if not decks:
-            return
-        # The FIRST sync is always the user's own "Sync now" (spec §5.6). The Anki window pre-picks
-        # every studied deck the moment it opens; until the user has reviewed that pick and synced
-        # once, nothing may be read into their known words behind their back — a sentence or kanji
-        # deck in that pick would otherwise be appended, and appends can't be taken back.
+        # The gates every sync shares (`anki_sync.may_sync`: the test switch, decks chosen, and the FIRST sync being
+        # the user's own "Sync now"); the 5-minute limit is this window's own count, above.
         try:
             from app import anki_sync
-            if not anki_sync.load_state(lang).get("last_sync"):
+            if anki_sync.may_sync(lang, s, throttle=False) is not None:
                 return
         except Exception:
             return
+        decks = list((s.get("anki_sync_decks") or {}).get(lang) or [])
         if updater.children_held():
             return                      # an update waits (K75): no Anki write may begin
         if not self._anki_sync_lock.acquire(blocking=False):
@@ -3417,14 +3485,10 @@ class MasterDashboardApp:
 
         After a Generate (`force`) and when the window comes back into focus (at most every 5
         minutes, like the Anki sync), on a daemon thread with a spinner on the 順 button. Every
-        decision about whether to write lives in the module (`modules/junban/auto.py`); this only
-        schedules it. Never while the 順 window is open — the user is ordering by hand there, and a
-        write underneath would make the preview on their screen describe a queue that has moved.
+        decision about whether to write lives in the module (`modules/junban/auto.py`: `blocked` —
+        the test switch, the module off, an update waiting, a 順 window open — and the reorder's own
+        guards); this only schedules it.
         """
-        if os.environ.get("SURASURA_NO_ANKI_SYNC") or not self.var_enable_junban.get():
-            return
-        if updater.children_held():
-            return                      # an update waits for Surasura's programs (K75)
         import time
         now = time.monotonic()
         if not force and now - self._last_junban_auto < 300:
@@ -3435,14 +3499,9 @@ class MasterDashboardApp:
         except Exception:
             return
         settings["target_language"] = self.var_language.get()
-        if not auto.enabled(settings):
+        settings["enable_junban"] = bool(self.var_enable_junban.get())     # the switch as shown, saved or not yet
+        if not auto.enabled(settings) or auto.blocked(settings, window=False):
             return
-        window = getattr(self, "junban_window", None)
-        try:
-            if window is not None and window.winfo_exists():
-                return
-        except Exception:
-            pass
         if not self._junban_auto_lock.acquire(blocking=False):
             return
         self._last_junban_auto = now
@@ -3453,6 +3512,9 @@ class MasterDashboardApp:
         def work():
             message = ""
             try:
+                if auto.window_open():          # a lock look: on this worker, never the window's thread
+                    return
+                self._flush_settings()
                 message = auto.run_quietly(settings, list_current=journey_is_current(args, language))
             finally:
                 self._junban_auto_lock.release()
@@ -3563,6 +3625,7 @@ class MasterDashboardApp:
         args, language = self._analyzer_args(), self.var_language.get()
 
         def work():
+            self._flush_settings()          # the check reads settings.json
             state = journey_is_current(args, language)
             self.gui_queue.put(lambda: gen == self._journey_gen and self._set_journey_state(state))
 
@@ -3761,7 +3824,8 @@ class MasterDashboardApp:
         # Whether the report still holds is asked on a worker (Library_Store_Spec §7, A10 / A12): the check syncs
         # the library with its folders and stats every file, never on this thread. The press goes on from the answer.
         self._generate_running = "checking"
-        self._run_on_worker(lambda: self._report_reusable(args), lambda reusable: self._generate_checked(args, reusable))
+        self._run_on_worker(lambda: (self._flush_settings(), self._report_reusable(args))[1],    # the file, then the check
+                            lambda reusable: self._generate_checked(args, reusable))
 
     def _run_on_worker(self, work, then):
         """`work()` on a worker thread, then `then(result)` on this one (through gui_queue). Headless or under test
@@ -3790,14 +3854,55 @@ class MasterDashboardApp:
         self._start_analyzer(args, quiet=False)
 
     def _start_analyzer(self, args, quiet):
+        """Start the analyzer, once no other program's Generate holds `results` (P0.3 04 §2): a headless one
+        (`surasura-cli generate`) is waited for on a worker, with a line in the bottom bar, never a box; this thread
+        never waits. The analyzer takes the lock itself, so the two can never write results/ together."""
         self._generate_running = "quiet" if quiet else "manual"
-        self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
-                               capture_output=True, show_spinner=not quiet, clear_log=not quiet,
-                               on_complete=lambda: (self._refresh_band_preview(force=True),
-                                                    self._maybe_junban_auto(force=True),
-                                                    self._schedule_journey_state(),
-                                                    self._tell_junban_list_changed()),
-                               on_exit=self._on_generate_exit)
+
+        def wait_for_results():
+            from app import locks
+            try:
+                if locks.read_holder("results") is None and locks.unopenable("results"):
+                    return True             # no program to wait for: the analyzer's own take says why (its log)
+                with locks.take("results", "Generate (waiting)", wait=None, cancel=self._closing_event,
+                                on_wait=lambda _holder: self.gui_queue.put(
+                                    lambda: self.status_var.set("Waiting for a background Generate…"))):
+                    pass
+            except locks.Cancelled:
+                return False                # the window closed while it waited: nothing starts
+            except Exception:
+                pass                        # the lock can't be read here: the analyzer decides
+            return True
+
+        def start():
+            self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
+                                   capture_output=True, show_spinner=not quiet, clear_log=not quiet,
+                                   on_complete=lambda: (self._refresh_band_preview(force=True),
+                                                        self._maybe_junban_auto(force=True),
+                                                        self._schedule_journey_state(),
+                                                        self._tell_junban_list_changed()),
+                                   on_exit=self._on_generate_exit)
+
+        def go():
+            if not wait_for_results():
+                return
+            self.gui_queue.put(start)
+
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # Under test nothing drains the queue: a free lock starts the analyzer here, at once; a held one is
+            # waited for on a worker, as in use.
+            from app import locks
+            try:
+                with locks.take("results", "Generate (waiting)"):
+                    pass
+            except locks.Busy:
+                threading.Thread(target=go, daemon=True).start()
+                return
+            except Exception:
+                pass
+            start()
+            return
+        threading.Thread(target=go, daemon=True).start()
 
     def _on_generate_exit(self):
         """However a Generate ended — finished, failed, or never started — the next one may run. The
@@ -3813,61 +3918,28 @@ class MasterDashboardApp:
             self.run_analyzer()
 
     def _analyzer_args(self):
-        """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread."""
-        args = ['analyzer.py']
-        if not self.var_exclude_single.get():
-            args.append('--include-single-chars')
-        
-        if self.var_strategy.get() == "coverage":
-            coverage_target = self.var_target_coverage.get()
-            args.append(f'--target-coverage={coverage_target}')
-        # else: density-band selection. The analyzer reads logic.selection (band + ppm floors)
-        # from settings, which are saved before this run. Raw --min-freq is retired from the UI
-        # (kept only as a CLI override); the band slider writes logic.selection.band.
+        """The analyzer's argv as Generate passes it, from the widgets — read on the GUI thread. One builder for the
+        window and the command line (`app/run_args.py`), so their runs hash alike."""
+        from app import run_args
+        return run_args.analyzer_args(self._run_settings(), self.var_language.get())
 
-        args.append('--static')
-        
-        # Add Language
-        args.append(f'--language={self.var_language.get()}')
-        
-        # Chinese script: only when one is chosen, so an as-is run passes exactly the old args.
-        zh_mode = self._effective_zh_script(self.var_language.get())
-        if zh_mode != "asis":
-            args.append(f'--zh-script={zh_mode}')
-            
-        if self.var_ensure_audio.get():
-            args.append('--ensure-audio-example')
-
-        if self.var_only_i_plus_one.get():
-            args.append('--only-i-plus-one')
-            
-        args.append(f'--context-min={self.var_context_min_chars.get()}')
-        args.append(f'--context-max={self.var_context_max_chars.get()}')
-        
-        max_c = self.var_max_contexts.get()
-        if max_c != 3:
-            args.append(f'--max-contexts={max_c}')
-        
-        # Add theme argument
-        theme_map = {
-            'Default (Dark)': 'default',
-            'Dark Flow': 'world-class',
-            'Midnight (Vibrant)': 'midnight-vibrant',
-            'Modern Light': 'modern-light',
-            'Zen Mode': 'zen-focus'
+    def _run_settings(self):
+        """The widgets Generate reads, in settings.json's shape (what `run_args.analyzer_args` takes)."""
+        return {
+            "exclude_single": self.var_exclude_single.get(),
+            "strategy": self.var_strategy.get(),
+            "target_coverage": self.var_target_coverage.get(),
+            "target_language": self.var_language.get(),
+            "zh_script": self.var_zh_script.get(),
+            "ensure_audio_example": self.var_ensure_audio.get(),
+            "only_i_plus_one": self.var_only_i_plus_one.get(),
+            "logic": {"context": {"min_chars": self.var_context_min_chars.get(),
+                                  "preferred_max_chars": self.var_context_max_chars.get(),
+                                  "max_contexts": self.var_max_contexts.get()}},
+            "theme": self.combo_theme.get(),
+            "open_app_mode": self.var_open_app_mode.get(),
+            "zen_limit": self.var_zen_limit.get(),
         }
-        selected_theme = self.combo_theme.get()
-        theme_arg = theme_map.get(selected_theme, 'default')
-        args.append(f'--theme={theme_arg}')
-        
-        if self.var_open_app_mode.get():
-            args.append('--app-mode')
-            
-        # Zen Limit (passed to analyzer just in case, or for consistency)
-        zen_limit = self.var_zen_limit.get()
-        if zen_limit > 0:
-            args.append(f'--zen-limit={zen_limit}')
-        return args
 
     def _try_open_existing_report(self, args):
         """Return True and reopen the existing report if a full analysis is provably unnecessary (the check and

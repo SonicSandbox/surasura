@@ -84,6 +84,20 @@ def _program():
     return os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "python"
 
 
+def unopenable(name):
+    """The path of `name`'s lock file when this process can't open it (a PermissionError: its folder's permissions),
+    else None. `take` reads such a file as held by a program it can't name (`Busy(None)`), failing closed; a caller
+    asks this to say so in plain words instead of "busy" (P1.2, E1.4's review #11). Never raises."""
+    try:
+        path = _paths(name)[0]
+        with open(path, "a+b"):
+            return None
+    except PermissionError:
+        return path
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def read_holder(name):
     """The holder record of `name`, or None when there is none or it can't be read. Never raises."""
     try:

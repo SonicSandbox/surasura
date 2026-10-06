@@ -83,8 +83,9 @@ def main():
             elif command == 'analyzer':
                 from app import analyzer
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
-                analyzer.main()
-                return
+                # Its exit code: 1 when the report couldn't be written, 3 when another program held results/
+                # (P0.3 04 §1) — the caller reads it (surasura-cli's generate; the window's log).
+                sys.exit(analyzer.main() or 0)
 
             elif command == 'epub_importer':
                 from app import epub_importer

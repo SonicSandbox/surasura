@@ -331,86 +331,97 @@ class AnkiImporterApp:
             self.status_var.set("Error")
 
     def update_known_words(self, new_known_tuples):
-        user_files_dir = get_user_files_path(self.language)
-        output_json = os.path.join(user_files_dir, "KnownWord.json")
-        
-        existing_data = {"words": [], "statistics": {}}
-        if os.path.exists(output_json):
-            # A file we cannot parse must never be replaced by an Anki-only list: raise, write nothing
-            # (process_extraction shows the error).
-            try:
-                # Its own encoding (a BOM, UTF-16, CP932 / GBK), strictly: the file is written back.
-                existing_data = json.loads(read_text(output_json, self.language, errors="strict"))
-            except Exception as e:
-                raise ValueError(f"Your existing KnownWord.json could not be read, so nothing was changed.\n{e}")
-
-        # Handle both list and dict formats for backward compat
-        if isinstance(existing_data, list):
-            existing_words = existing_data
-            existing_data = {"words": existing_words, "statistics": {}}
-        elif isinstance(existing_data, dict) and isinstance(existing_data.get("words", []), list):
-            existing_words = existing_data.get("words", [])
-        else:
-            raise ValueError("Your existing KnownWord.json is not in a recognised format, so nothing was changed.")
-
-        # Map for quick lookup; the existing list itself is kept whole and in order (first entry per key wins)
-        word_map = {}
-        for w in existing_words:
-            if isinstance(w, dict):
-                word_map.setdefault((w.get('dictForm'), w.get('secondary', '')), w)
-        updated_words = list(existing_words)
-
-        # Add or update new words
-        now_str = datetime.now().isoformat()
-        for lemma, reading in new_known_tuples:
-            key = (lemma, reading)
-            if key in word_map:
-                # Only upgrade words still being learned; an IGNORED word stays ignored
-                if word_map[key].get('knownStatus') in ("LEARNING", "UNKNOWN"):
-                    word_map[key]['knownStatus'] = "KNOWN"
-            else:
-                word_map[key] = {
-                    'dictForm': lemma,
-                    'secondary': reading,
-                    'partOfSpeech': '',
-                    'language': self.language,
-                    'knownStatus': "KNOWN",
-                    'hasCard': 1, # Since it came from Anki
-                    'tracked': 0,
-                    'created': now_str,
-                    'mod': now_str,
-                    'isModern': 1
-                }
-                updated_words.append(word_map[key])
-        
-        # Update Stats
-        stats = {
-            'totalWords': len(updated_words),
-            'knownWords': sum(1 for w in updated_words if w.get('knownStatus') == "KNOWN"),
-            'learningWords': sum(1 for w in updated_words if w.get('knownStatus') == "LEARNING"),
-            'unknownWords': sum(1 for w in updated_words if w.get('knownStatus') == "UNKNOWN"),
-            'ignoredWords': sum(1 for w in updated_words if w.get('knownStatus') == "IGNORED"),
-            'languages': sorted(list(set(w.get('language', self.language) for w in updated_words)))
-        }
-
-        # Keep every other top-level key (e.g. Migaku's databaseFile) instead of rewriting the header
-        json_data = dict(existing_data)
-        json_data['exportDate'] = now_str
-        json_data.setdefault('source', 'Anki Extraction')
-        json_data['statistics'] = stats
-        json_data['words'] = updated_words
-
-        # Atomic write: readers (analyzer, indexer) may open the file at any moment
-        os.makedirs(user_files_dir, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix="KnownWord.", suffix=".tmp", dir=user_files_dir)
+        """Merge into KnownWord.json, holding its lock (P0.3 04 §2) from the read to the write: another program
+        updating it meanwhile (the Anki sync, surasura-cli) -> ValueError, nothing changed."""
+        from app.anki_sync import hold_known_words
+        held, refused = hold_known_words(self.language, "Anki import")
+        if refused is not None:
+            raise ValueError(refused[0])
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
-            os.replace(tmp_path, output_json)
-        except BaseException:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            raise
+            user_files_dir = get_user_files_path(self.language)
+            output_json = os.path.join(user_files_dir, "KnownWord.json")
+        
+            existing_data = {"words": [], "statistics": {}}
+            if os.path.exists(output_json):
+                # A file we cannot parse must never be replaced by an Anki-only list: raise, write nothing
+                # (process_extraction shows the error).
+                try:
+                    # Its own encoding (a BOM, UTF-16, CP932 / GBK), strictly: the file is written back.
+                    existing_data = json.loads(read_text(output_json, self.language, errors="strict"))
+                except Exception as e:
+                    raise ValueError(f"Your existing KnownWord.json could not be read, so nothing was changed.\n{e}")
+
+            # Handle both list and dict formats for backward compat
+            if isinstance(existing_data, list):
+                existing_words = existing_data
+                existing_data = {"words": existing_words, "statistics": {}}
+            elif isinstance(existing_data, dict) and isinstance(existing_data.get("words", []), list):
+                existing_words = existing_data.get("words", [])
+            else:
+                raise ValueError("Your existing KnownWord.json is not in a recognised format, so nothing was changed.")
+
+            # Map for quick lookup; the existing list itself is kept whole and in order (first entry per key wins)
+            word_map = {}
+            for w in existing_words:
+                if isinstance(w, dict):
+                    word_map.setdefault((w.get('dictForm'), w.get('secondary', '')), w)
+            updated_words = list(existing_words)
+
+            # Add or update new words
+            now_str = datetime.now().isoformat()
+            for lemma, reading in new_known_tuples:
+                key = (lemma, reading)
+                if key in word_map:
+                    # Only upgrade words still being learned; an IGNORED word stays ignored
+                    if word_map[key].get('knownStatus') in ("LEARNING", "UNKNOWN"):
+                        word_map[key]['knownStatus'] = "KNOWN"
+                else:
+                    word_map[key] = {
+                        'dictForm': lemma,
+                        'secondary': reading,
+                        'partOfSpeech': '',
+                        'language': self.language,
+                        'knownStatus': "KNOWN",
+                        'hasCard': 1, # Since it came from Anki
+                        'tracked': 0,
+                        'created': now_str,
+                        'mod': now_str,
+                        'isModern': 1
+                    }
+                    updated_words.append(word_map[key])
+        
+            # Update Stats
+            stats = {
+                'totalWords': len(updated_words),
+                'knownWords': sum(1 for w in updated_words if w.get('knownStatus') == "KNOWN"),
+                'learningWords': sum(1 for w in updated_words if w.get('knownStatus') == "LEARNING"),
+                'unknownWords': sum(1 for w in updated_words if w.get('knownStatus') == "UNKNOWN"),
+                'ignoredWords': sum(1 for w in updated_words if w.get('knownStatus') == "IGNORED"),
+                'languages': sorted(list(set(w.get('language', self.language) for w in updated_words)))
+            }
+
+            # Keep every other top-level key (e.g. Migaku's databaseFile) instead of rewriting the header
+            json_data = dict(existing_data)
+            json_data['exportDate'] = now_str
+            json_data.setdefault('source', 'Anki Extraction')
+            json_data['statistics'] = stats
+            json_data['words'] = updated_words
+
+            # Atomic write: readers (analyzer, indexer) may open the file at any moment
+            os.makedirs(user_files_dir, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix="KnownWord.", suffix=".tmp", dir=user_files_dir)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_path, output_json)
+            except BaseException:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
+        finally:
+            if held is not None:
+                held.release()
+
 
 def main():
     import argparse

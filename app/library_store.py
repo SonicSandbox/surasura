@@ -196,10 +196,20 @@ def update_lock_path():
     return os.path.join(get_local_data_path(), "locks", "update.lock")
 
 
+# A probe of the update lock (below) holds it for well under a millisecond; an update holds it from "Update now"
+# until the hand-over. Held at every look over this window = an update (P1.2: two command-line calls probing at once
+# must never read each other's probe as one).
+PROBE_LOOKS = 6
+PROBE_GAP = 0.02
+
+
 def update_staged(max_age=3600.0):
     """True while an update is staged (§6.7): the update lock is held (Update now, until the hand-over —
     by this process too: a lock taken on another handle is refused), or the updater's marker exists
-    while its helper swaps the files. A marker older than an hour (a crashed update) is ignored."""
+    while its helper swaps the files. A marker older than an hour (a crashed update) is ignored.
+
+    The look takes the lock for a moment, so another caller's look can find it held: only a lock held at
+    every look over ~0.1 s (`PROBE_LOOKS`) is an update."""
     try:
         age = time.time() - os.path.getmtime(update_staged_path())
         if age < max_age:
@@ -209,15 +219,18 @@ def update_staged(max_age=3600.0):
     try:
         from app.path_utils import release_lock, try_lock
         path = update_lock_path()
-        if not os.path.exists(path):
-            return False
-        held = try_lock(path)
+        for look in range(PROBE_LOOKS):
+            if not os.path.exists(path):
+                return False
+            held = try_lock(path)
+            if held is not None:
+                release_lock(held)
+                return False
+            if look < PROBE_LOOKS - 1:
+                time.sleep(PROBE_GAP)
     except Exception:
         return False
-    if held is None:
-        return True
-    release_lock(held)
-    return False
+    return True
 
 
 def manifest_path(user_files_dir):
@@ -3942,6 +3955,49 @@ def sync_for_window(store):
     subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT)
     return None
+
+
+def read_only_view(language, data_dir, user_files_dir):
+    """The store as a caller that must write nothing sees it (surasura-cli `status`, P1.2): opened `mode=ro` — never
+    built, synced, repaired, re-derived or marked damaged — and read in one transaction. -> (mode, schedule, versions,
+    pending):
+
+      * ("store", schedule, versions, pending): a ready store, its analysed tiers as `Store.schedule` reads them;
+        `pending` is True when the disk holds a change its last sync hasn't taken in (a file dropped in since,
+        renamed or gone): the walk a sync would make, its delta computed and never applied;
+      * ("json", None, None, False): no ready store — the file is the list, as every reader takes it;
+      * ("unknown", None, None, False): a store that can't be read this way now (damaged, made by a newer Surasura,
+        busy, an I/O error)."""
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path):
+        return "json", None, None, False
+    if os.path.exists(damaged_marker(db_path)):
+        return "unknown", None, None, False
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0,
+                               isolation_level=None)
+    except sqlite3.Error:
+        return "unknown", None, None, False
+    try:
+        conn.execute("PRAGMA query_only=1")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > STORE_SCHEMA:
+            return "unknown", None, None, False
+        if version < STORE_SCHEMA or conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone() is None:
+            return "json", None, None, False
+        store = Store.__new__(Store)            # a reader on this connection: no write lock, nothing opened for writing
+        store.db_path, store.language, store.data_dir, store.user_files_dir = db_path, language, data_dir, user_files_dir
+        store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
+        schedule, versions = store.schedule(with_versions=True)
+        known, _version = _known(store)
+        delta = _sync_delta(store, walk_library(data_dir), known)
+        pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"])
+        return "store", schedule, versions, pending
+    except sqlite3.Error:
+        return "unknown", None, None, False
+    finally:
+        conn.close()
 
 
 def spawn_build_if_waiting(language, data_dir, user_files_dir):

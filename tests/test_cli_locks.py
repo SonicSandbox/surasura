@@ -133,18 +133,42 @@ def test_save_keys_reads_and_writes_inside_one_hold_of_the_lock(monkeypatch):
     assert _on_disk() == {"target_language": "ja", "junban_deck": "Mining", "words_per_day": 8}
 
 
-def test_the_windows_writer_returns_at_once_and_writes_once_the_lock_is_free():
-    """The dashboard's save never waits on its thread: `submit` returns in <= 4 ms while another program holds the
-    lock; the write is queued and retried, then lands — the newest state, never dropped."""
+def _record_takes(monkeypatch):
+    """Every `locks.take` as (thread, name, wait). "Never waits on its thread" is asserted on who takes a lock and
+    how, not on the clock: a 4 ms bound failed on a GitHub runner at 49 ms with nothing wrong (private #22)."""
+    takes, real_take = [], locks.take
+
+    def take(name, verb, wait=0.0, **kw):
+        takes.append((threading.current_thread(), name, wait))
+        return real_take(name, verb, wait=wait, **kw)
+    monkeypatch.setattr(locks, "take", take)
+    return takes
+
+
+def _waits_on(takes, thread):
+    """The takes that could wait (any `wait` but 0) made on `thread`."""
+    return [t for t in takes if t[0] is thread and t[2] != 0.0]
+
+
+def _taken_on(takes, thread):
+    """Every take made on `thread`, waiting or not."""
+    return [t for t in takes if t[0] is thread]
+
+
+def test_the_windows_writer_returns_at_once_and_writes_once_the_lock_is_free(monkeypatch):
+    """The dashboard's save never waits on its thread: `submit` takes no lock that can wait while another program
+    holds it; the write is queued and retried, then lands — the newest state, never dropped."""
     settings_manager.save_settings({"target_language": "ja", "words_per_day": 5})
     errors, saved = [], []
     writer = settings_manager.SettingsWriter(delay=0.05, wait=0.1, on_error=errors.append, on_saved=saved.append)
+    takes = _record_takes(monkeypatch)
     with Holder("settings", "saving settings") as other:
-        started = time.perf_counter()
         writer.submit(lambda: {"target_language": "ja", "words_per_day": 6})
         writer.submit(lambda: {"target_language": "ja", "words_per_day": 7})     # the newer state replaces it
-        assert time.perf_counter() - started <= 0.004
-        time.sleep(0.6)
+        assert not _taken_on(takes, threading.current_thread()), "the window's thread takes no lock"
+        deadline = time.monotonic() + 10
+        while not errors and time.monotonic() < deadline:   # polled, not slept: a slow runner gets its time
+            time.sleep(0.05)
         assert errors, "the held lock was met, and the write is retried"
         assert _on_disk()["words_per_day"] == 5, "nothing written while the other program holds it"
         other.release()
@@ -308,15 +332,15 @@ def _dashboard_stub():
 
 
 def test_the_windows_generate_waits_for_a_background_generate_off_its_thread(monkeypatch):
-    """A headless Generate holds `results`: the press returns in <= 4 ms, the bottom bar says it waits (no box), and
+    """A headless Generate holds `results`: the press waits on no lock itself, the bottom bar says it waits (no box), and
     the analyzer starts once the lock is free. (In use: under test the window takes a free lock at once instead.)"""
     from app.main import MasterDashboardApp
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS", raising=False)
     app = _dashboard_stub()
+    takes = _record_takes(monkeypatch)
     with Holder("results", "Generate") as other:
-        started = time.perf_counter()
         MasterDashboardApp._start_analyzer(app, ["analyzer.py", "--static", "--language=ja"], quiet=False)
-        assert time.perf_counter() - started <= 0.004
+        assert not _taken_on(takes, threading.current_thread()), "the window's thread takes no lock: a worker waits"
         line = app.gui_queue.get(timeout=5)
         line()
         app.status_var.set.assert_called_with("Waiting for a background Generate…")
@@ -464,15 +488,15 @@ def test_two_readers_looking_at_once_never_see_each_other_as_a_holder():
         locks.read_holder("junban-window") is None or True
 
 
-def test_a_window_save_meeting_a_held_lock_returns_at_once_and_lands_in_order():
+def test_a_window_save_meeting_a_held_lock_returns_at_once_and_lands_in_order(monkeypatch):
     """#3: `save_keys` never waits on a window's thread and never drops: queued while another program holds the lock,
     written in the order the windows saved once it is free."""
     settings_manager.save_settings({"target_language": "ja", "junban_deck": "Old", "words_per_day": 5})
+    takes = _record_takes(monkeypatch)
     with Holder("settings", "saving settings") as other:
-        started = time.perf_counter()
         settings_manager.save_keys({"junban_deck": "First"})
         settings_manager.save_keys({"junban_deck": "Second", "koe_voice": "Kore"})
-        assert time.perf_counter() - started < 0.05, "no wait on the caller's thread"
+        assert not _waits_on(takes, threading.current_thread()), "no wait on the caller's thread"
         assert _on_disk()["junban_deck"] == "Old"
         other.release()
     assert settings_manager.flush_keys(timeout=10)

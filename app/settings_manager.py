@@ -62,6 +62,16 @@ DEFAULT_SETTINGS = {
     # in known words. Only then — new episodes are the user's to order first. Never in the run
     # signature.
     "anki_auto_generate": False,
+    # Surasura Connect's mine path (P1.3; docs/agent instructions/3.0/P1.3-mine-path/): which words of an episode
+    # become cards (`list`: on your list, not known, no card yet · `unknown`: every word you don't know · `i1`: only
+    # words with a line whose other words you know), whether grammar words go too (names follow logic.ignore_names:
+    # G1.3), where Anki Miner is ("" = found by its installer's key) and the Anki Miner profile Connect mines with.
+    # Read only by
+    # `surasura-cli pick` and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_mine_words": "list",
+    "connect_send_grammar": True,
+    "connect_anki_miner_path": "",
+    "connect_anki_miner_profile": "Surasura",
     "logic": {
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:

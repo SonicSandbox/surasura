@@ -51,6 +51,7 @@ VERBS = {
     "known-sync": (verbs.known_sync_args, verbs.known_sync, True),
     "generate": (verbs.generate_args, verbs.generate, True),
     "junban": (verbs.junban_args, verbs.junban, True),
+    "pick": (verbs.pick_args, verbs.pick, True),
 }
 
 # The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other

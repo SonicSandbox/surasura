@@ -793,6 +793,8 @@ PLACED = {
     "word_search_category": "report", "sentence_dictionary_source": "neither", "anki_connect_url": "neither",
     "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",
     "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",
+    "connect_mine_words": "neither", "connect_send_grammar": "neither", "connect_anki_miner_path": "neither",
+    "connect_anki_miner_profile": "neither",
     "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
     "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",
     "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",

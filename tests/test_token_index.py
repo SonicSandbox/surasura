@@ -732,8 +732,8 @@ def test_a_store_from_before_the_dictionary_words_the_tagger_cuts_is_rebuilt(tmp
 def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tmp_path):
     """v18 -> v19: a one-kanji word right after a number's counter written in kanji is a piece of the count — the 目
     of ２時間目 'second period' — and each file records it among its pieces; a v18 store counted it as a use of 目 'eye':
-    it must be dropped and rebuilt. Pinned exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 19
+    it must be dropped and rebuilt. (Pinned at 19 until v20, the caption cleaner: below.)"""
+    assert ti.SCHEMA_VERSION >= 19
     db = _db(tmp_path)
     f = tmp_path / "school.txt"
     _write(f, "２時間目は数学の授業だ。\n目が疲れた。\n")
@@ -750,6 +750,28 @@ def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tm
     assert s2.total_tokens() == 0, "a v18 store was reused"
     s2.reconcile([str(f)], ti.make_tokenizer("ja"))
     assert s2.bound_counts() == pieces
+    s2.close()
+
+
+def test_a_store_from_before_the_caption_cleaner_is_rebuilt_without_the_reading_rows(tmp_path):
+    """v19 -> v20 (P1.3-1 a): an .ass file is read through the caption cleaner — a TV caption's small-type reading row
+    (もんばん over 門番) is no line and no words; a v19 store counted its kana: it must be dropped and rebuilt. Pinned
+    exactly: the next bump updates this knowingly."""
+    assert ti.SCHEMA_VERSION == 20
+    import shutil
+    db = _db(tmp_path)
+    f = tmp_path / "tv_captions.ass"
+    shutil.copy2(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "tv_captions.ass"), f)
+    s = ti.open_store("ja", path=db)
+    s.reconcile([str(f)], ti.make_tokenizer("ja"))
+    words = {t[0] for _s, tokens in s.file_tokens(str(f)) for t in tokens}
+    s.close()
+    assert "門番" in words and not words & {"もんばん", "ちょうろう"}
+    conn = sqlite3.connect(db)      # what a v19 store is: the version it was written with
+    conn.execute("PRAGMA user_version = 19")
+    conn.commit(); conn.close()
+    s2 = ti.open_store("ja", path=db)
+    assert s2.total_tokens() == 0, "a v19 store was reused"
     s2.close()
 
 

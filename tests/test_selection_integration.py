@@ -659,3 +659,69 @@ def test_every_files_counts_share_each_words_one_key(samples_env, monkeypatch):
             assert held is key, f"{key}: one key object for every file"
             shared += held is key and counts is not files[0]
     assert shared, "words met in more than one file"
+
+
+# --- Q4-3: the band Automatic remembers in the library store (2.6) ------------------------------ #
+
+def _with_library_store(root):
+    from app import library_store
+    data_dir, user_files = str(root / "data" / "ja"), str(root / "User Files" / "ja")
+    assert library_store.maintain("ja", data_dir, user_files, from_folders=True) == library_store.EXIT_DONE
+    return library_store, data_dir, user_files
+
+
+def test_the_remembered_band_is_kept_by_the_second_threshold(samples_env, capsys):
+    # Why: Q4-3 — a band Automatic chose stays until its list passes ~1,100 words, so the list stops flipping. On
+    # this small library every band is far under 1,100, so a remembered rarer band holds.
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    line = counts["uncommon"]
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.record_auto_band("ja", data_dir, user_files, "rare", counts["rare"])
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True, auto_max_words=line)
+    capsys.readouterr()
+    lib = _run_samples(root)
+    log = capsys.readouterr().out
+    assert "Selection band 'rare' (automatic: kept until its list passes 1100 words)" in log
+    assert lib["min_count"] == pytest.approx(_floor("rare", lib))
+    assert ls.read_auto_band("ja", data_dir) == "rare"
+
+
+def test_a_band_change_is_remembered_and_stamped_so_the_next_check_reuses_it(samples_env):
+    # Why: the remembered band is a part of the run signature (it picks the list). A run that changes the band must
+    # stamp, and write its plan with, the parts the NEXT check reads — else every band change would cost a second
+    # Generate, and the re-plan would refuse the plan ("generate-first: auto_band"). Haya's E1.3 check.
+    import gzip
+    from app.main import journey_is_current
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    _run_samples(root)
+    counts, _freqs = _band_counts()
+    line = counts["uncommon"]
+    ls, data_dir, user_files = _with_library_store(root)
+    assert ls.read_auto_band("ja", data_dir) is None
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True, auto_max_words=line)
+    _run_samples(root)                                          # nothing remembered → picks Uncommon → remembers it
+    assert ls.read_auto_band("ja", data_dir) == "uncommon"
+    argv = ["analyzer.py", "--language", "ja"]
+    schedule, _versions = analyzer.read_library_schedule("ja")       # the files as the journey check reads them
+    found = analyzer.resolve_found_files("ja", verbose=False, schedule=schedule)
+    parts = analyzer.run_signature_parts("ja", found, analyzer.parse_analysis_args(argv[1:]))
+    assert parts["auto_band"] == "uncommon"
+    stamp = analyzer.read_run_stamp(str(root / "results"))
+    assert stamp == analyzer.signature_digest(parts, chunked=False), "the stamp is the next check's signature"
+    with gzip.open(root / "results" / analyzer.PLAN_FILE, "rt", encoding="utf-8") as f:
+        header = json.loads(f.readline())
+    assert header["order_free_signature"] == analyzer.signature_digest(parts, order_free=True)
+    assert journey_is_current(argv, "ja") is True, "no second Generate"
+
+
+def test_with_automatic_off_the_signature_has_no_band_part(samples_env):
+    # Why: the part exists only with Automatic on, so nobody else's signature moved (no forced re-run in 2.6 beyond
+    # its own engine bump).
+    root = samples_env
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
+    parts = analyzer.run_signature_parts("ja", [], analyzer.parse_analysis_args(["--language", "ja"]))
+    assert "auto_band" not in parts

@@ -841,7 +841,8 @@ class MasterDashboardApp:
         if not self._band_previews:
             return None
         try:
-            return word_selection.auto_band(self._band_previews, self._auto_max_words())
+            return word_selection.auto_band(self._band_previews, self._auto_max_words(),
+                                            remembered=getattr(self, "_auto_remembered", None))
         except Exception:
             return self.var_band.get()
 
@@ -969,6 +970,12 @@ class MasterDashboardApp:
         touch any tk widget; it only returns the {band: preview} dict (or None). The distribution is
         token_index.preview_frequencies: the analyzer's automatic rarity decides from the same one."""
         try:
+            try:                       # Q4-3: the band Automatic last chose, read here, never on the window's thread
+                from app import library_store
+                from app.path_utils import get_data_path
+                self._auto_remembered = library_store.read_auto_band(lang, get_data_path(lang))
+            except Exception:
+                self._auto_remembered = None
             store = token_index.open_store(lang)
             try:
                 from app.path_utils import get_user_files_path

@@ -158,7 +158,7 @@ def test_a_real_full_release_is_still_called_a_larger_update():
 def test_neither_mark_forces_a_reanalysis():
     # A failed update, or a skip, must not re-analyse the whole library on the next Generate.
     from app import analyzer
-    source = inspect.getsource(analyzer.compute_run_signature)
+    source = inspect.getsource(analyzer.run_signature_parts)
     for key in ("skipped_version", "failed_update_version"):
         assert f'"{key}"' in source, f"{key} must be excluded from the run signature"
 

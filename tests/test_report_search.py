@@ -234,7 +234,7 @@ def test_an_unreadable_template_never_breaks_the_signature(tmp_path):
 def test_the_template_fingerprint_is_render_only_not_analysis():
     """A template change must re-render, never re-analyze: it is not in the run signature."""
     import inspect
-    assert "_template_fingerprint" not in inspect.getsource(analyzer.compute_run_signature)
+    assert "_template_fingerprint" not in inspect.getsource(analyzer.run_signature_parts)
 
 
 # --------------------------------------------------------------------------- #

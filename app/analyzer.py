@@ -3421,6 +3421,259 @@ def _backfill_sidecars(results_dir):
         print(f"Warning: could not backfill sidecars: {e}")
 
 
+# --- The plan file (results/plan.json.gz; E1.1-fast-replan/01-plan-file.md) ----------------------------------------- #
+# Every full Generate writes what a re-plan needs to recompute the order's columns — Score, the tier counts, first
+# places, the priority order, the progressive list, Orth and Forms where spellings tie — for ANY order of the same
+# files, without the tokenizer: each file's uses of each list word as the aggregation counted them, in the order first
+# counted, and what the progressive pass reads of each file. Nothing reads it unless the fast re-plan's preview is on
+# (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
+# whose run_signature no stamp matches. Never fails a Generate.
+PLAN_FILE = "plan.json.gz"
+PLAN_FORMAT = 1
+_PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
+_PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
+
+
+def _plan_file(records, word_stats, phrase_spelled, phrase_stats):
+    """A file's part of the plan, from the aggregation's records: ({key: its counted uses here}, the words' unusual
+    spellings here, the phrases')."""
+    uses, spelled = {}, {}
+    for key, record in records.items():
+        uses[key] = record[1]
+        if record[2] is not None:
+            spelled[key] = record[2]
+    return (uses, _unusual_spellings(spelled, word_stats),
+            _unusual_spellings(phrase_spelled, phrase_stats) if phrase_spelled else None)
+
+
+def _unusual_spellings(spelled, entries):
+    """`spelled` without the words met here only as they were first met anywhere (their Counters' first keys) — what
+    nearly every word is: the plan file implies those (`_plan_spellings`). A value is (spelling, surface) when the word
+    was met here in one, else [{spelling: None, …}, {surface: None, …}], each in the order met (main()'s word site)."""
+    out = {}
+    for key, met in spelled.items():
+        if type(met) is tuple:
+            entry = entries[key]
+            if met[0] == next(iter(entry["orths"])) and met[1] == next(iter(entry["surfaces"])):
+                continue
+        out[key] = met
+    return out
+
+
+def _spelling_ties(lemma, orths, surfaces):
+    """(the spellings, the surfaces) whose order of first meeting can decide `Orth` or `Forms` (K108): spellings tied
+    at the top count (`_display_orth`: the first met wins a tie), and every surface of a count shared with another one
+    near enough the front to reach `Forms` (`_display_forms`: equal counts keep the order met; one place more, for the
+    spelling shown, which `Forms` leaves out). Both empty: the order of the files can't change either column."""
+    candidates = _said_with_to(orths) or orths
+    top = max([n for o, n in candidates.items() if o] or [0])
+    tied_orths = [o for o, n in candidates.items() if o and n == top]
+    if len(tied_orths) < 2:
+        tied_orths = []
+    tied_surfaces = []
+    ranked = sorted(((n, s) for s, n in surfaces.items() if s and s != lemma), key=lambda ns: -ns[0])
+    place = 0
+    while place < len(ranked) and place <= FORMS_LIMIT:
+        end = place
+        while end < len(ranked) and ranked[end][0] == ranked[place][0]:
+            end += 1
+        if end - place > 1:
+            tied_surfaces.extend(s for _n, s in ranked[place:end])
+        place = end
+    return tied_orths, tied_surfaces
+
+
+def _plan_spellings(key, k, word_uses, unusual, entry, ties):
+    """[k, the tied spellings met in this file, the tied surfaces] in the order met here, or None."""
+    met = unusual.get(key) if unusual else None
+    if met is None:
+        met = (next(iter(entry["orths"])), next(iter(entry["surfaces"]))) if word_uses else None
+        if met is None:
+            return None
+    tied_orths, tied_surfaces = ties
+    orths = [o for o in ([met[0]] if type(met) is tuple else met[0]) if o in tied_orths]
+    surfaces = [s for s in ([met[1]] if type(met) is tuple else met[1]) if s in tied_surfaces]
+    return [k, orths, surfaces] if orths or surfaces else None
+
+
+def plan_lines(run):
+    """The plan file's lines, each one JSON text (E1.1 01 §2): the header, then the tables in chunks, then one line per
+    file in the run's order. `run`: what main() still holds when every output is written (names below). Raises
+    ValueError when the per-file uses don't add up to each word's `Occurrences` — then no plan is written."""
+    word_stats, phrase_keys = run["word_stats"], run["phrase_keys"]
+    floor, data_dir = run["floor"], run["data_dir"]
+    found_files, plan_files = run["found_files"], run["plan_files"]
+    phrase_set = run["phrase_set"]
+    phrase_key_of = {index: key for key, index in phrase_keys.items()}     # the phrase whose entry is the row
+
+    keys = run["keys"]
+    index = {key: k for k, key in enumerate(keys)}
+    # Each phrase met: (its row's k when its entry is the row's, its row's k) — once per phrase (`_phrase_rows`).
+    phrase_rows = {}
+
+    valid = run["valid_lrs"]
+    listed = {(r["Word"], r["Reading"]): r for r in run["output_rows"]
+              if valid is None or (r["Word"], r["Reading"]) in valid}
+    n_contexts = run["max_contexts"]
+    rows, ties, tied = [], [], {}
+    for k, key in enumerate(keys):
+        entry = word_stats[key]
+        is_phrase = key in phrase_keys
+        r = listed.get(key)
+        rows.append(None if r is None else [
+            r["Tier"], _plan_tier(key[0], run["freq_data"]) if is_phrase else None, r["Modality"], r["Sources"],
+            r["Orth"], r["Forms"],
+            [r.get(f"{c} {i}", "") for i in range(1, n_contexts + 1) for c in ("Context", "Src")]])
+        found = _spelling_ties(key[0], entry["orths"], entry["surfaces"])
+        if found[0] or found[1]:
+            tied[key] = found
+            ties.append([k, dict(entry["orths"]), dict(entry["surfaces"]),
+                         {o: _plan_tier(o, run["freq_data"]) for o in found[0]} if is_phrase else None])
+
+    library = run["library"] or {}
+    header = {
+        "format": PLAN_FORMAT, "language": run["language"], "engine": run["engine"],
+        "run_signature": run["run_signature"], "order_free_signature": run["order_free_signature"],
+        "store": {name: library.get(name) for name in ("epoch", "order_version", "pins_version")},
+        "weights": dict(zip(("now", "soon", "goal"), run["weights"])),
+        "floor": floor, "total_tokens": run["total_tokens"], "phrase_rows": run["phrase_rows"],
+        "target_coverage": run["target_coverage"], "only_i_plus_one": run["only_i_plus_one"],
+        "max_contexts": n_contexts, "files": len(found_files), "keys": len(keys),
+        "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
+    }
+    yield _plan_json(header)
+    prefix = os.path.join(data_dir, "")
+    files = [[(f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)).replace("\\", "/"),
+              _PLAN_TIERS.get(f[1], "goal")] for f in found_files]
+    for name, table in (("files", files),
+                        ("keys", [[key[0], key[1], key in phrase_keys, key in run["halved"],
+                                   word_stats[key]["total_count"]] for key in keys]),
+                        ("rows", rows), ("ties", ties)):
+        for start in range(0, len(table), _PLAN_CHUNK):
+            yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
+
+    counted = [0] * len(keys)
+    for f, (file_path, _label, _weight, _type) in enumerate(found_files):
+        uses, unusual, phrase_unusual = plan_files[f]
+        credits = run["credit_cache"].get(file_path) or {}
+        main, spellings = [], []
+        for key, n in uses.items():
+            k = index.get(key)
+            if k is None:
+                continue
+            main += (k, n)
+            counted[k] += n
+            if key in tied:
+                found = _plan_spellings(key, k, n > credits.get(key, 0), unusual, word_stats[key], tied[key])
+                if found:
+                    spellings.append(found)
+        phrases, met = [], []           # the row's entry's uses; every phrase use on a row (the progressive pass's)
+        for phrase, n in (run["phrase_cache"].get(file_path) or {}).items():
+            row_of = phrase_rows.get(phrase) or _phrase_rows(phrase_rows, phrase, phrase_set, phrase_keys,
+                                                             phrase_key_of, index)
+            if row_of[1] is not None:
+                met += (row_of[1], n)
+            k = row_of[0]
+            if k is None:
+                continue
+            key = keys[k]
+            phrases += (k, n)
+            counted[k] += n
+            if key in tied:
+                found = _plan_spellings(phrase, k, True, phrase_unusual, word_stats[key], tied[key])
+                if found:
+                    spellings.append(found)
+        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings,
+                          "prog": _plan_progressive(run, f, file_path, index, met)})
+    for k, key in enumerate(keys):
+        if counted[k] != word_stats[key]["total_count"]:
+            raise ValueError(f"the uses of {key} add up to {counted[k]}, not {word_stats[key]['total_count']}")
+
+
+def _phrase_rows(phrase_rows, phrase, phrase_set, phrase_keys, phrase_key_of, index):
+    """(the row's k when this phrase's entry holds the row, else None; the k of the phrase row its words and reading
+    name, else None — never a word's row of the same Word and Reading, which the progressive pass never gives a phrase's
+    uses) — for `plan_lines`' cache."""
+    entry = phrase_set.entry(phrase)
+    key = (entry.word, entry.reading)
+    row_of = phrase_rows[phrase] = (index.get(phrase_key_of.get(phrase)),
+                                    index.get(key) if key in phrase_keys else None)
+    return row_of
+
+
+def _plan_progressive(run, f, file_path, index, phrases):
+    """[Total Count, the baseline known, tokens, phrase-given, credits, phrases, siblings]: what the progressive pass
+    reads of a file, in its own order. Total Count, the baseline, tokens [k, count after pieces, …] for the list words
+    met here, phrase-given [k, uses given to a phrase, …] (only where any) and siblings [[lemma, n], …] — the other
+    words of a list word's lemma, known here once that lemma is learned — as the pass read them (`prog`); credits
+    [k, n, …] for the list words met inside a rare compound; phrases [k, n, …] per phrase on a row (`plan_lines`)."""
+    total, baseline, tokens, bound, siblings = run["prog"][f]
+    credits = []
+    for key, n in (run["credit_cache"].get(file_path) or {}).items():
+        k = index.get(key)
+        if k is not None:
+            credits += (k, n)
+    return [total, baseline, tokens, [x for k, n in bound.items() for x in (k, n)], credits, phrases,
+            [[lemma, n] for lemma, n in siblings.items()]]
+
+
+def _plan_tier(text, freq_data):
+    tier_labels = get_tier_label(text, freq_data)
+    return ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
+
+
+def _plan_json(obj):
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def write_plan_file(results_dir, lines):
+    """Write the plan file atomically: a temp file, gzip level 3, flushed and fsynced, read back whole (the gzip CRC,
+    and the header's JSON — every line is `json.dumps`' own), then `os.replace`. On any error the temp is removed, the
+    old plan stays as it was, and the error is raised for the caller to log. Returns the bytes written."""
+    import gzip
+    import time
+    path = os.path.join(results_dir, PLAN_FILE)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    for name in os.listdir(results_dir):
+        old = os.path.join(results_dir, name)
+        if name.startswith(PLAN_FILE + ".") and name.endswith(".tmp") and old != tmp:
+            try:
+                if time.time() - os.path.getmtime(old) > 60:
+                    os.remove(old)
+            except OSError:
+                pass
+    try:
+        with open(tmp, "wb") as raw:
+            # Level 3: a quarter of level 6's time for a tenth more bytes (E1.2.3). mtime=0: the bytes are the
+            # content's alone — the same run writes the same file.
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=3, mtime=0) as gz:
+                for line in lines:
+                    gz.write(line.encode("utf-8"))
+                    gz.write(b"\n")
+            raw.flush()
+            os.fsync(raw.fileno())
+        with gzip.open(tmp, "rb") as gz:
+            json.loads(gz.readline())
+            while gz.read(1 << 20):     # to the end: the CRC and the length are checked there
+                pass
+        size = os.path.getsize(tmp)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:         # Windows: a reader has the old plan open (a virus scan, the re-plan)
+                if attempt == 4:
+                    raise
+                time.sleep(0.2)
+        return size
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _build_analysis_parser():
     import argparse
     parser = argparse.ArgumentParser(description="Japanese Text Analyzer")
@@ -3517,9 +3770,9 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     """Generate's list (§7, A10): the store builds or checks itself (`maintain` steps 1–2, in-process),
     takes in what the disk holds (`sync_disk`), and the schedule and its `order_version` are read in one
     transaction; the copy is then written by the helper, which the run never waits for. Returns
-    {"schedule", "order_version", "epoch"}: `schedule` None = no store, so the file as before (and no
+    {"schedule", "order_version", "epoch", "pins_version"}: `schedule` None = no store, so the file as before (and no
     `record_analysed`). Read-only mode reads the copy, with untracked files added in memory (§6.9)."""
-    out = {"schedule": None, "order_version": None, "epoch": None}
+    out = {"schedule": None, "order_version": None, "epoch": None, "pins_version": None}
     ls = _library_store()
     if ls is None:
         return out
@@ -3546,7 +3799,8 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     except Exception as e:
         print(f"Library store couldn't be read ({e}); reading the library file.")
         return out
-    out.update(schedule=schedule, order_version=versions["order_version"], epoch=versions["epoch"])
+    out.update(schedule=schedule, order_version=versions["order_version"], epoch=versions["epoch"],
+               pins_version=versions["pins_version"])
     return out
 
 
@@ -3806,13 +4060,51 @@ def _token_store_meta(language, key):
         return None
 
 
-def compute_run_signature(language, found_files, args):
+def compute_run_signature(language, found_files, args, order_free=False):
     """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
     (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
     lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
     Presentation (theme / app-mode / zen / words-per-day) is deliberately excluded. Returns the
     sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
-    whether Generate can just reopen the existing report without spawning the analyzer)."""
+    whether Generate can just reopen the existing report without spawning the analyzer).
+
+    `order_free`: the plan file's form (`signature_digest`) — the same library in any order has one."""
+    return signature_digest(run_signature_parts(language, found_files, args), order_free)
+
+
+# One encoder for every signature: sorted keys, the text as written, anything else by its str().
+_SIGNATURE_ENCODER = json.JSONEncoder(sort_keys=True, ensure_ascii=False, default=str)
+
+
+def signature_digest(parts, order_free=False, chunked=True):
+    """sha256 of the signature's parts (`run_signature_parts`) as sorted-key JSON, or None for none. `chunked`: encoded
+    chunk by chunk into the hash (`iterencode`) — the same text `json.dumps` writes, so the same digest, but no single
+    call holds the interpreter: the journey check runs this on a worker, and one `json.dumps` of a 20,000-file list
+    held the dashboard's thread 42 ms. The analyzer's own run has no other thread to wait: one call, `json.dumps`' C
+    encoder (`chunked=False`).
+
+    `order_free` (the plan file's, E1.1 01 §1): the files sorted by path, each without its label and weight — which
+    tier a file is in and where, the one thing a re-plan changes; which files, their contents and everything else stay
+    in it."""
+    if parts is None:
+        return None
+    try:
+        if order_free:
+            parts = dict(parts, files=sorted(([fp, sig, st] for fp, sig, _l, _w, st in parts["files"]),
+                                             key=lambda f: f[0]))
+        if not chunked:
+            return hashlib.sha256(_SIGNATURE_ENCODER.encode(parts).encode("utf-8")).hexdigest()
+        digest = hashlib.sha256()
+        for chunk in _SIGNATURE_ENCODER.iterencode(parts):
+            digest.update(chunk.encode("utf-8"))
+        return digest.hexdigest()
+    except Exception as e:
+        print(f"Warning: could not compute run signature: {e}")
+        return None
+
+
+def run_signature_parts(language, found_files, args):
+    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -3918,9 +4210,7 @@ def compute_run_signature(language, found_files, args):
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
-        return hashlib.sha256(
-            json.dumps(_sig_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
-        ).hexdigest()
+        return _sig_parts
     except Exception as e:
         print(f"Warning: could not compute run signature: {e}")
         return None
@@ -4282,7 +4572,9 @@ def main():
     # --- #2 Run-signature: skip the ENTIRE run if nothing affecting the analysis changed ---
     # Computed by the shared compute_run_signature() (the dashboard calls the same function in-process
     # to decide whether Generate can just reopen the existing report without spawning this analyzer).
-    _run_sig = compute_run_signature(language, found_files, args)
+    # Its parts are kept: the plan file (below) carries the same signature without the order, from this very read.
+    _sig_parts = run_signature_parts(language, found_files, args)
+    _run_sig = signature_digest(_sig_parts, chunked=False)
 
     # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
     _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
@@ -4695,6 +4987,26 @@ def main():
         candidates.sort(key=_CONTEXT_RANK)
         del candidates[30:]
 
+    # The plan file's (written at the end): per file, in order, its uses of each word as counted below — credits too —
+    # in the order first counted, and the spellings each word and phrase was met in there, in the order met, where they
+    # aren't simply the ones it was first met in anywhere (`_unusual_spellings`). Kept for the words that can reach the
+    # list only (`_plan_keys`): those whose uses can reach the cut-off — the store's count less its one-kanji pieces,
+    # plus the uses of every rare compound that counts toward it, bound a word's counted uses. Nearly every word met is
+    # in the long tail below the cut-off; the writer checks every list word's uses add up. None: the cut-off is fixed
+    # only after the aggregation — every word.
+    plan_files = []
+    _plan_keys = None
+    if _counts is not None and floor_count is not None:
+        _pieces = (_bound_counts or {}) if skip_singles else {}     # pieces count when the one-kanji rule is off
+        _room = Counter()
+        for compound in _rare:
+            n = _counts.get(compound)
+            if n:                       # (most of the table's compounds aren't in the library at all)
+                for part in _view.credits(compound):
+                    _room[part] += n
+        _plan_keys = {key for key in set(_counts).union(_room)
+                      if _counts.get(key, 0) - _pieces.get(key, 0) + _room.get(key, 0) >= floor_count}
+
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         try:
@@ -4716,6 +5028,8 @@ def main():
         file_phrases, file_bound = Counter(), Counter()   # its set phrases, and the uses its bound words give them
         file_pieces = Counter()     # one-kanji list words' uses here that are pieces of something else (三年's 年)
         file_unlisted = {}          # (lemma, reading) -> {spelling: uses}: one-kanji words the list can't offer
+        file_uses = {}              # (lemma, reading) -> [this file, its counted uses here, spellings]: the plan file's
+        file_phrase_spelled = {}    # phrase index -> (spelling, surface) met here, or the dicts of them (the plan file)
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
         file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
@@ -4835,6 +5149,18 @@ def main():
                     if seq_idx < entry["min_seq"]:
                         entry["min_seq"] = seq_idx
                     file_phrases[index] += 1
+                    # The plan file's spellings, for a phrase met as often as a row needs (`_phrase_uses`, as words'
+                    # `_plan_keys` below).
+                    if _phrase_uses is None or _phrase_uses[index] >= floor_count:
+                        met = file_phrase_spelled.get(index)
+                        if met is None:
+                            file_phrase_spelled[index] = (orth, written)
+                        elif met.__class__ is tuple:
+                            if met[0] != orth or met[1] != written:
+                                file_phrase_spelled[index] = [{met[0]: None, orth: None}, {met[1]: None, written: None}]
+                        else:
+                            met[0][orth] = None
+                            met[1][written] = None
                     # Known as a whole? Asked again only for a spelling not met before.
                     if spelled_anew and not _phrase_known.get(index):
                         _phrase_known[index] = _phrases.known_whole(phrase, (orth, written), known_words_initial,
@@ -4859,12 +5185,12 @@ def main():
 
             # 2. Update Stats for all unknown tokens in this sentence (a one-character word only where the list can
             # offer it — above)
-            for lemma, reading, surface, orth in sentence_unknowns:
-                if taken and taken.get((lemma, reading)):
-                    taken[(lemma, reading)] -= 1      # a use its phrase has taken (above)
+            for key, (lemma, reading, surface, orth) in zip(unknown_keys, sentence_unknowns):
+                if taken and taken.get(key):
+                    taken[key] -= 1      # a use its phrase has taken (above)
                     continue
 
-                entry = word_stats[(lemma, reading)]
+                entry = word_stats[key]
                 entry["score"] += weight
                 entry["total_count"] += 1
                 entry["sources"].add(file_basename)
@@ -4880,6 +5206,27 @@ def main():
                 # Track first appearance sequence
                 if seq_idx < entry["min_seq"]:
                     entry["min_seq"] = seq_idx
+                # The plan file's (below): the word's uses here and the spellings met here, on a record its entry
+                # holds for the file it was last met in (no lookup by key per use; taken off after the pass). False:
+                # a word that can't reach the list (`_plan_keys`), decided once.
+                plan = entry.get("_plan")
+                if plan is not False:
+                    if plan is None or plan[0] != seq_idx:
+                        if plan is None and _plan_keys is not None and key not in _plan_keys:
+                            entry["_plan"] = False
+                        else:
+                            file_uses[key] = entry["_plan"] = [seq_idx, 1, (orth, surface)]
+                    else:
+                        plan[1] += 1
+                        met = plan[2]
+                        if met is None:                     # met here as a credit first (below)
+                            plan[2] = (orth, surface)
+                        elif met.__class__ is tuple:
+                            if met[0] != orth or met[1] != surface:
+                                plan[2] = [{met[0]: None, orth: None}, {met[1]: None, surface: None}]
+                        else:                               # spellings met here, in order (a dict keeps the first)
+                            met[0][orth] = None
+                            met[1][surface] = None
 
             if rare:
                 # Each use of a rare compound is also a use of its free parts on the list — their count, score,
@@ -4903,6 +5250,15 @@ def main():
                         entry["series"].add(file_series)
                         if seq_idx < entry["min_seq"]:
                             entry["min_seq"] = seq_idx
+                        plan = entry.get("_plan")
+                        if plan is not False:
+                            if plan is None or plan[0] != seq_idx:
+                                if plan is None and _plan_keys is not None and part not in _plan_keys:
+                                    entry["_plan"] = False
+                                else:
+                                    file_uses[part] = entry["_plan"] = [seq_idx, 1, None]
+                            else:
+                                plan[1] += 1
 
             # Each phrase the learner doesn't know as a whole takes the sentence as a candidate example. Its unknowns
             # are the sentence's unknown words outside it, and the words it waits for (never the i+1 of a phrase whose
@@ -5032,6 +5388,7 @@ def main():
 
         
         file_token_cache[file_path] = file_counter
+        plan_files.append(_plan_file(file_uses, word_stats, file_phrase_spelled, phrase_stats))
         if file_credits:
             file_credit_cache[file_path] = file_credits
         if file_phrases:
@@ -5063,17 +5420,25 @@ def main():
 
     # (The token store stays open until the end of the run so we can record the run-signature.)
 
+    for entry in word_stats.values():
+        entry.pop("_plan", None)        # the plan file's per-file records (above): no output carries them
+
     # U9's "lower": a word the learner can read through its known word (利用者) scores half — as does a compound
     # none of whose parts is an unknown (上層部).
+    _halved = set()             # the keys scored half (the plan file's)
     for lr, entry in word_stats.items():
         if _readable(lr, known_words_initial, known_lemmas_initial):
             entry["score"] //= 2
+            _halved.add(lr)
 
     # The set phrases met join the words, keyed as a word is — (Word, Reading): their lemmas and readings joined — so
     # every output below lists them the same way. No row for a phrase known or ignored as a whole, nor for one whose
     # lemmas joined are a word the library holds (the word keeps its row). A ready phrase whose real words are all
     # known scores half, as a word read through its known word does (利用者).
     phrase_keys = {}                # (Word, Reading) -> phrase index: the phrases this run may list
+    # Rows two phrases share (甘い物好き spelled two ways): the one met last in the run holds it — an order the plan
+    # file can't replay, so it names them.
+    _shared_phrases = set()
     if phrase_stats:
         lemmas = ({key[0] for key in _counts} if _counts is not None
                   else {key[0] for counts in file_token_cache.values() for key in counts})
@@ -5081,9 +5446,15 @@ def main():
             phrase = _phrase_set.entry(index)
             if _phrase_known.get(index) or phrase.word in lemmas:
                 continue
+            key = (phrase.word, phrase.reading)
+            if key in phrase_keys:
+                _shared_phrases.add(key)
             if _phrase_waits[index][1]:
                 entry["score"] //= 2
-            phrase_keys[(phrase.word, phrase.reading)] = index
+                _halved.add(key)
+            else:
+                _halved.discard(key)        # the entry stored last holds the row (below), and its own half
+            phrase_keys[key] = index
             word_stats[(phrase.word, phrase.reading)] = entry
 
     # --- The word-selection floor, when it could not be fixed before the aggregation ---
@@ -5682,6 +6053,12 @@ def main():
     session_known = set(known_words_initial)
     session_lemmas = set(known_lemmas_initial)
     word_state = _word_state.get
+    # The plan file's: every list key (in word_stats' order) and, per file, what this pass reads of the words a list
+    # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses a phrase took}, {lemma: count}).
+    plan_keys = [key for key, entry in word_stats.items() if entry["total_count"] >= floor_count]
+    plan_index = {key: k for k, key in enumerate(plan_keys)}
+    plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
+    plan_prog = []
     
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         filename = os.path.basename(file_path)
@@ -5702,6 +6079,7 @@ def main():
         file_bound = file_bound_cache.get(file_path)
         # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
         file_pieces = file_piece_cache.get(file_path)
+        plan_tokens, plan_bound, plan_siblings = [], {}, {}
 
         for key, count in file_counter.items():
             lemma = key[0]
@@ -5726,11 +6104,21 @@ def main():
                 count -= file_pieces[key]
                 if count <= 0:
                     continue
+            if lemma in plan_lemmas:
+                k = plan_index.get(key)
+                if k is None:
+                    plan_siblings[lemma] = plan_siblings.get(lemma, 0) + count
+                else:
+                    plan_tokens += (k, count)
+                    if file_bound and key in file_bound:
+                        plan_bound[k] = file_bound[key]
             # Check against cumulative session known (includes previous files)
             if key in session_known or lemma in session_lemmas:
                 file_current_start_count += count
             elif file_bound is None or file_bound.get(key, 0) < count:
                 file_unknown_token_counts[key] += count
+
+        plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
 
         # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
         # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
@@ -5872,6 +6260,31 @@ def main():
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             _report_failed = True
+
+    # The plan file (E1.1 01), last: every output exists, and the stamp below comes only after it. Never fails the run.
+    # No run signature, no plan: nothing could tell which run it describes.
+    try:
+        if not _run_sig:
+            raise ValueError("the run has no signature")
+        from app import __version__ as _app_version
+        _plan_size = write_plan_file(RESULTS_DIR, plan_lines({
+            "language": language,
+            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
+            "run_signature": _run_sig, "order_free_signature": signature_digest(_sig_parts, order_free=True,
+                                                                                         chunked=False),
+            "library": _library, "weights": (WEIGHT_HIGH, WEIGHT_LOW, WEIGHT_GOAL), "floor": floor_count,
+            "total_tokens": total_tokens, "phrase_rows": _phrase_set is not None,
+            "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),
+            "max_contexts": args.max_contexts, "data_dir": data_dir, "found_files": found_files,
+            "plan_files": plan_files, "word_stats": word_stats, "phrase_keys": phrase_keys, "halved": _halved,
+            "shared_phrases": _shared_phrases, "output_rows": output_rows, "valid_lrs": valid_lrs,
+            "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,
+            "token_cache": file_token_cache, "credit_cache": file_credit_cache, "phrase_cache": file_phrase_cache,
+            "bound_cache": file_bound_cache, "piece_cache": file_piece_cache, "keys": plan_keys,
+            "prog": plan_prog}))
+        print(f"Saved the plan file ({_plan_size:,} bytes).")
+    except Exception as e:
+        print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint so a same-setting re-run can open the

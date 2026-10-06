@@ -255,7 +255,7 @@ def test_settings_re_render_but_never_re_analyze():
     """
     import inspect
     from app import analyzer
-    run_src = inspect.getsource(analyzer.compute_run_signature)
+    run_src = inspect.getsource(analyzer.run_signature_parts)
     render_src = inspect.getsource(analyzer.compute_render_signature)
     for key in ("word_search_enabled", "word_search_category"):
         assert key in run_src, f"{key} missing from the run signature's non-analysis exclusions"

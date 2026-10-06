@@ -49,16 +49,25 @@ def other_orders(runs, tmp_path_factory):
     for case, name in ORDERED:
         language = cases.ALL_CASES[case][0]
         root = str(tmp_path_factory.mktemp(f"{case}-{name}"))
-        cases.build(root, case, _rp2_orders(language)[name])
+        cases.build(root, case, _orders(language)[name])
         cases.generate(root, case)
         out[(case, name)] = (root, read_run(root))
     return out
 
 
-# B: a move within NOW · C: Soon -> NOW's front · D: NOW -> 6+ Months (each RP-2's, test_run_signature_forms.py).
-ORDERED = [("rp2-ja", "B"), ("rp2-ja", "C"), ("rp2-ja", "D"), ("rp2-zh", "B"), ("rp2-zh", "C"), ("rp2-zh", "D"),
-           ("every-ja", "B"), ("every-ja", "D"), ("every-ja-2", "C"), ("every-ja-2", "D"),
-           ("every-ja-singles", "C")]
+# B: a move within NOW · C: Soon -> NOW's front · D: NOW -> 6+ Months (each RP-2's, test_run_signature_forms.py) ·
+# E: 6+ Months -> NOW's front (05 §1's Later -> NOW).
+ORDERED = [("rp2-ja", "B"), ("rp2-ja", "C"), ("rp2-ja", "D"), ("rp2-ja", "E"), ("rp2-zh", "B"), ("rp2-zh", "C"),
+           ("rp2-zh", "D"), ("rp2-zh", "E"), ("every-ja", "B"), ("every-ja", "D"), ("every-ja", "E"),
+           ("every-ja-2", "C"), ("every-ja-2", "D"), ("every-ja-singles", "C")]
+
+
+def _orders(language):
+    orders = _rp2_orders(language)
+    a = orders["A"]
+    later = [x for x in a if x[0] == "goal"][-1]
+    orders["E"] = [("now", later[1])] + [x for x in a if x != later]
+    return orders
 
 
 def _plan(root):
@@ -128,7 +137,7 @@ def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, c
     root, _run = runs[case]
     other_root, other = other_orders[(case, name)]
     plan, eng = _engine(root)
-    result = eng.replan(_order_of(plan, _rp2_orders(cases.ALL_CASES[case][0])[name]))
+    result = eng.replan(_order_of(plan, _orders(cases.ALL_CASES[case][0])[name]))
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
 
@@ -137,9 +146,14 @@ def _moves_to(eng, plan, target):
     """Move the engine's items one by one into `target`'s order ([(item_id, tier)]), as a user drags them: each item,
     front to back, placed after the one before it (the first at its tier's top)."""
     prev = None
-    for item, tier in target:
+    for i, (item, tier) in enumerate(target):
+        nxt = target[i + 1] if i + 1 < len(target) else None
         if prev is not None and prev[1] == tier:
             eng.move(item, tier, after_id=prev[0])
+        elif (nxt is not None and nxt[1] == tier and i % 2
+              and eng._tier[eng._f_of[nxt[0]]] == plan_engine._SLOT[tier]):
+            eng.move(item, tier, before_id=nxt[0])      # before the next one: placed at its tier's top all the same
+            eng.move(item, tier)
         else:
             eng.move(item, tier)
         prev = (item, tier)
@@ -150,10 +164,12 @@ def test_moves_that_make_another_order_give_that_orders_generate(runs, other_ord
     """The incremental path: from order A, the drags that make order B / C / D (one item at a time, each kind — a move
     within NOW, Soon to NOW's front, NOW to 6+ Months) leave the engine equal to that order's Generate."""
     root, _run = runs[case]
-    _other_root, other = other_orders[(case, name)]
+    other_root, other = other_orders[(case, name)]
     plan, eng = _engine(root)
-    _moves_to(eng, plan, _order_of(plan, _rp2_orders(cases.ALL_CASES[case][0])[name]))
-    _check_parity(eng.result(), other)
+    _moves_to(eng, plan, _order_of(plan, _orders(cases.ALL_CASES[case][0])[name]))
+    result = eng.result()
+    _check_parity(result, other)
+    _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
 
 
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh", "every-ja"])
@@ -189,11 +205,12 @@ def test_pins_change_no_column_and_come_back_oldest_first(runs):
     root, run = runs["rp2-ja"]
     plan, eng = _engine(root)
     items = [entry[0] for entry in plan.files]
+    goal = [entry[0] for entry in plan.files if entry[1] == "goal"][0]
     pins = [(items[5], "2026-10-06T10:00:00"), (items[1], "2026-10-06T09:00:00"), (items[3], "2026-10-06T09:00:00"),
-            ("Finished/a show I watched.srt", "2026-10-06T09:00:00")]
+            ("Finished/a show I watched.srt", "2026-10-06T09:00:00"), (goal, "2026-10-06T11:00:00")]
     result = eng.replan([(entry[0], entry[1]) for entry in plan.files], pins=pins)
     _check_parity(result, run)
-    assert result.pinned == [[items[1], items[3], "Finished/a show I watched.srt"], [items[5]]]
+    assert result.pinned == [[items[1], items[3], "Finished/a show I watched.srt"], [items[5]], [goal]]
     eng.move(items[3], "now")                      # a move keeps the pins and re-lists the group in the new order
     assert eng.result().pinned[0][:2] == [items[3], items[1]]
     eng.set_pins([])
@@ -303,6 +320,14 @@ def test_check_names_what_moved_since_the_plan(tmp_path):
     for entry in moved:
         entry[2], entry[3] = "LowPriority", 5
     assert check(signature_parts=dict(parts, files=moved)) is None
+    # A plan whose whole signature and parts disagree, or from before the parts were written: never a guess.
+    assert check(signature_parts=dict(parts, known=["moved"])) == ("replan-now", ("known",))
+    plan.header = dict(h, order_free_signature="stale")
+    assert check() == ("generate-first", "signature")
+    plan.header = {k: v for k, v in h.items() if k != "order_free_parts"}
+    assert check(signature_parts=dict(parts, known=["moved"])) == ("generate-first", "signature")
+    plan.header = h
+    assert check(signature_parts={"files": object()}) == ("generate-first", "signature")
     # What the engine can't replay exactly.
     for name, value, reason in (("target_coverage", 90, "coverage"), ("only_i_plus_one", True, "i+1"),
                                 ("shared_phrases", [0], "shared-phrase"),
@@ -373,6 +398,20 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
     refused("damaged")
     _write(bad, [header] + tables + files[1:] + files[:1])                  # files out of order
     refused("out of order")
+    # Valid JSON, wrong values (the adversary's hostile plans): refused whole, never a crash later.
+    keys_line = next(i for i, line in enumerate(tables) if "keys" in line)
+    sp_file = next(i for i, line in enumerate(files) if line["sp"])
+    for mutate, match in (
+            (lambda t, f: t[keys_line]["keys"][1].__setitem__(slice(0, 2), t[keys_line]["keys"][0][:2]), "twice"),
+            (lambda t, f: f[0].__setitem__("main", [f[0]["main"][0], 0] + f[0]["main"][2:]), "damaged"),
+            (lambda t, f: f[sp_file].__setitem__("sp", 7), "spellings"),
+            (lambda t, f: f[0]["prog"].__setitem__(0, "100"), "progressive"),
+            (lambda t, f: f[0]["prog"].__setitem__(6, [["x", 1, 2]]), "progressive"),
+            (lambda t, f: t[0][next(iter(t[0]))][0].__setitem__(1, ["now"]), "damaged")):
+        t2, f2 = json.loads(json.dumps(tables)), json.loads(json.dumps(files))
+        mutate(t2, f2)
+        _write(bad, [header] + t2 + f2)
+        refused(match)
     _write(bad, [header] + tables + files)
     assert plan_engine.load(bad).header["keys"] == header["keys"]
 
@@ -406,6 +445,8 @@ def test_the_engine_is_pure():
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == "[]"
     import ast
+    STDLIB = getattr(sys, "stdlib_module_names", None) or {      # Python 3.9 has no list: the ones these files use
+        "bisect", "gzip", "json", "zlib", "array", "hashlib", "re"}
     app_allowed = {"app", "app.plan_rules", "app.unicode_ranges", "app.jmdict_data"}
     for name in ("plan_engine.py", "plan_rules.py"):
         with open(os.path.join(cases.REPO, "app", name), encoding="utf-8") as f:
@@ -418,4 +459,4 @@ def test_the_engine_is_pure():
             else:
                 continue
             for module in found:
-                assert module.split(".")[0] in sys.stdlib_module_names or module in app_allowed, (name, module)
+                assert module.split(".")[0] in STDLIB or module in app_allowed, (name, module)

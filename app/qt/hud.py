@@ -243,25 +243,37 @@ class Probe(QObject):
             QTimer.singleShot(500, self._exercise)
 
     def _exercise(self):
-        """Ten tab switches and 500 bar updates in a burst (row 8's run), each from the event loop — with a Python
-        worker busy in bursts beside them, as the services' threads are (review A3)."""
-        import threading
+        """Row 8's run: ten tab switches, then 500 bar updates in a burst (one a millisecond), each from the event loop
+        and each timed on its own (`tab-switch`, `bar-update` spans: a step is one of them). The loop's stretches and the
+        late ticks are reported beside them: a burst of due timers is handled in one stretch, so a stretch can be many
+        steps. `SURASURA_SHELL_PROBE_BUSY=1` adds a Python worker busy in 20 ms runs — CPU work in a thread, which the
+        threading rule forbids (04 §4.1: processes do CPU work) — to show what it would cost (review A3)."""
+        if os.environ.get("SURASURA_SHELL_PROBE_BUSY") == "1":
+            import threading
 
-        def busy():
-            end = time.perf_counter() + 2.0
-            while time.perf_counter() < end:
-                t = time.perf_counter()
-                while time.perf_counter() - t < 0.02:     # 20 ms of pure Python, then a breath
-                    sum(range(200))
-                time.sleep(0.005)
-        threading.Thread(target=busy, name="hud-busy", daemon=True).start()
+            def busy():
+                end = time.perf_counter() + 2.0
+                while time.perf_counter() < end:
+                    t = time.perf_counter()
+                    while time.perf_counter() - t < 0.02:
+                        sum(range(200))
+                    time.sleep(0.005)
+            threading.Thread(target=busy, name="hud-busy", daemon=True).start()
+        hud = self.hud
+
+        def timed(name, fn):
+            if hud is None:
+                fn()
+                return
+            with hud.span(name):
+                fn()
         names = list(self.window.tab_buttons)
         for i in range(10):
-            QTimer.singleShot(40 * i, lambda n=names[i % len(names)]: self.window.show_tab(n))
+            QTimer.singleShot(40 * i, lambda n=names[i % len(names)]: timed("tab-switch", lambda: self.window.show_tab(n)))
         snap = self.window.services.status.snapshot()
         for i in range(500):
-            QTimer.singleShot(600 + i, lambda i=i: self.window.show_status(
-                snap._replace(lines=(f"{i} / 500",))))
+            QTimer.singleShot(600 + i, lambda i=i: timed("bar-update", lambda: self.window.show_status(
+                snap._replace(lines=(f"{i} / 500",)))))
 
     def _finish(self):
         self.result["memory"] = _memory_mb()

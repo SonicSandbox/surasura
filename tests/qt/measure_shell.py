@@ -27,7 +27,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def one_run(idle, hud):
+def one_run(idle, hud, busy=False, fontengine=""):
     root = tempfile.mkdtemp(prefix="w21-measure-")
     probe = os.path.join(root, "probe.json")
     import shutil                                   # the test root is also where bundled resources are read: the mark
@@ -38,6 +38,11 @@ def one_run(idle, hud):
     env.pop("SURASURA_FREEZE_MOTION", None)
     if hud:
         env.update(SURASURA_HUD="1", SURASURA_SHELL_PROBE_EXERCISE="1")
+    if busy:
+        env["SURASURA_SHELL_PROBE_BUSY"] = "1"
+    if fontengine:
+        env["QT_QPA_PLATFORM"] = "windows:fontengine=" + fontengine
+
     else:
         env.pop("SURASURA_HUD", None)
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "app_entry.py")], cwd=root, env=env,
@@ -55,10 +60,12 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--idle", type=float, default=5.0)
     ap.add_argument("--hud", action="store_true")
+    ap.add_argument("--busy", action="store_true", help="a CPU-bound Python worker beside the burst (worst case)")
+    ap.add_argument("--fontengine", default="", help="e.g. gdi: Qt's Windows font engine, for comparison")
     args = ap.parse_args()
     runs = []
     for _ in range(args.runs):
-        r = one_run(args.idle, args.hud)
+        r = one_run(args.idle, args.hud, args.busy, args.fontengine)
         print(json.dumps(r), flush=True)
         runs.append(r)
     ok = [r for r in runs if "error" not in r and r.get("first_frame_ms")]
@@ -78,6 +85,11 @@ def main():
         summary["frame_p95_ms"] = max(r["hud"]["frames"]["p95_ms"] for r in ok)
         summary["late_ticks_over_4ms"] = [r["hud"]["late"]["over_4ms"] for r in ok]
         summary["late_max_ms"] = max(r["hud"]["late"]["max_ms"] for r in ok)
+        for span in ("tab-switch", "bar-update"):
+            got = [r["hud"]["spans"].get(span) for r in ok if r["hud"]["spans"].get(span)]
+            if got:
+                summary[f"{span}_max_ms"] = max(g["max_ms"] for g in got)
+                summary[f"{span}_p95_ms"] = max(g["p95_ms"] for g in got)
     print("SUMMARY " + json.dumps(summary))
     return 0
 

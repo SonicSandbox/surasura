@@ -86,3 +86,40 @@ def test_the_walk_finds_a_dead_button_a_toggle_without_a_tip_and_a_nameless_icon
     icon_only.setToolTip("More: what else you can do with this item")
     found, _ = problems(window)
     assert not any("must name it first" in f or "no words" in f for f in found)
+
+
+# --- the guide's rules that a scan can hold (GUI_Design_Guidelines_Qt.md §3, §4) ----------------------------------- #
+import os
+import re
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The five modal dialogs 05 §5.4 allows are built by later steps; each will be named here as it lands.
+MODAL_ALLOWED = set()
+_MODAL = re.compile(r"\bQMessageBox\b|\.exec\(\)|\bQProcess\b")
+
+
+def _window_sources():
+    for where, dirs, files in os.walk(os.path.join(ROOT, "app", "qt")):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for name in files:
+            if name.endswith(".py"):
+                with open(os.path.join(where, name), encoding="utf-8") as f:
+                    yield name, f.read()
+
+
+def test_no_modal_dialog_and_no_qprocess_in_the_window():
+    # 05 §5.4: no modal dialogs but five named ones; 04 §4.1: children are started by the Qt-free services, never
+    # QProcess. (`app.exec()` — the event loop itself — is shell.main's, and is allowed.)
+    found = []
+    for name, source in _window_sources():
+        for n, line in enumerate(source.splitlines(), 1):
+            if _MODAL.search(line) and "app.exec()" not in line and (name, n) not in MODAL_ALLOWED:
+                found.append(f"{name}:{n}: {line.strip()}")
+    assert found == []
+
+
+def test_the_window_never_names_the_2x_folders():
+    # User-facing words are Current · Soon · Goal · Finished · New arrivals (D17 / D23), never the folder names.
+    with open(os.path.join(ROOT, "app", "qt", "strings.py"), encoding="utf-8") as f:
+        source = f.read()
+    assert not re.search(r"HighPriority|LowPriority|GoalContent", source)

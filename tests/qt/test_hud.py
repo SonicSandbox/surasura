@@ -87,3 +87,17 @@ def test_off_the_hud_installs_nothing(qapp, window, monkeypatch):
 def test_p95_reads_the_right_rank():
     assert hud.p95([]) == 0.0
     assert hud.p95(list(range(1, 101))) == 95
+
+
+def test_a_late_tick_shows_a_wait_the_steps_cannot_see(qapp, window):
+    # Review A3: a step's clock starts only once the GUI thread holds Python's lock again, so a wait for the lock is
+    # invisible to it; the 2 ms precise timer comes late instead. An 8 ms block of the loop must read as a late tick.
+    meter = hud.Hud(window, overlay=False).start()
+    try:
+        _run_loop(100)
+        QTimer.singleShot(20, lambda: time.sleep(0.008))
+        _run_loop(150)
+        r = meter.report()["late"]
+        assert r["n"] > 20 and r["over_4ms"] >= 1 and r["max_ms"] >= 5
+    finally:
+        meter.stop()

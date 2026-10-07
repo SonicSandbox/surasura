@@ -132,7 +132,8 @@ class Tooltips(QObject):
         return False
 
     def request(self, widget):
-        if self._target is widget and self.bubble.isVisible():
+        # Qt asks again on every pause of the mouse over the control (its own wait is 0): the first ask's clock runs.
+        if self._target is widget and (self.bubble.isVisible() or self._timer.isActive()):
             return
         self._target = widget
         wait = self.delay()

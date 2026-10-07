@@ -91,12 +91,6 @@ def test_the_palette_is_the_themes_and_links_are_the_accent(qapp):
         assert pal.color(QPalette.ColorRole.Text).name() == c["ink"]
         assert pal.color(QPalette.ColorRole.Link).name() == c["accent"]
         assert pal.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text).name() == c["ink-faint"]
-    # The dark scheme is asked for on purpose (Windows 10's caption follows it: P-title); offscreen can't hold it, so
-    # the ask is checked here and its effect on a real window by .w21/probe_title.py / capture.py --screen.
-    assert style._state.get("asked_dark") is True
-    from PyQt6.QtGui import QGuiApplication
-    if QGuiApplication.platformName() != "offscreen":
-        assert qapp.styleHints().colorScheme() == Qt.ColorScheme.Dark
 
 
 @pytest.mark.parametrize("theme_name", theme.THEMES)
@@ -169,7 +163,67 @@ def test_a_separator_is_a_plain_frame_in_the_line_colour(qapp):
     assert count(arr, theme.colours("hb")["line"], 2) >= 190
 
 
-def test_the_tooltip_waits_380_ms_then_60_within_500(qapp):
+def test_qt_itself_never_waits_before_a_tooltip(qapp):
+    # The bubble owns the 380 / 60 ms (tooltip.py); Qt waiting too doubled the hover delay to ~780 ms (review A2).
     ours = style._state["style"]
-    assert ours.styleHint(QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 380
+    assert ours.styleHint(QStyle.StyleHint.SH_ToolTip_WakeUpDelay) == 0
     assert ours.styleHint(QStyle.StyleHint.SH_ToolTip_FallAsleepDelay) == 500
+
+
+def test_every_apply_asks_for_the_dark_scheme_even_on_a_dark_system(qapp, monkeypatch):
+    # Windows 10's caption follows the scheme (P-title); asked only when the system wasn't dark, a later switch of
+    # Windows to Light would turn it white (review A4). Offscreen can't hold a scheme, so the ask itself is watched.
+    from PyQt6.QtGui import QStyleHints
+    asked = []
+    monkeypatch.setattr(style, "ask_dark", lambda hints: asked.append(hints))
+    monkeypatch.setattr(QStyleHints, "colorScheme", lambda self: Qt.ColorScheme.Dark)   # a system already dark
+    style.apply(qapp, "sky", "M", "ja")
+    style.apply(qapp, "sky", "M", "ja")
+    assert len(asked) == 2 and asked[0] is qapp.styleHints()
+    style._ask_dark(qapp.styleHints())                  # the real call runs on this Qt without error
+
+
+def test_an_item_views_check_and_a_menus_check_are_ours(qapp):
+    # Fusion would draw both in its own colours (review A10: S12): the accent fill / mark is SurasuraStyle's.
+    from PyQt6.QtCore import Qt as _Qt
+    from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QMenu
+    c = theme.colours("hb")
+    view = QListWidget()
+    item = QListWidgetItem("Clips")
+    item.setFlags(item.flags() | _Qt.ItemFlag.ItemIsUserCheckable)
+    item.setCheckState(_Qt.CheckState.Checked)
+    view.addItem(item)
+    assert count(_grab(view, 200, 60), c["accent"], 3) >= 40
+    menu = QMenu()
+    act = menu.addAction("Covers")
+    act.setCheckable(True)
+    act.setChecked(True)
+    act.triggered.connect(lambda: None)
+    assert count(_grab(menu, 220, 40), c["accent"], 3) >= 6
+
+
+def test_the_focus_ring_of_a_toggle_is_the_accent(qapp):
+    # PE_FrameFocusRect is SurasuraStyle's 2 px accent ring (review A10: S13), not Fusion's.
+    from PyQt6.QtCore import Qt as _Qt
+    c = theme.colours("hb")
+    box = QCheckBox("Clips")
+    before = count(_grab(box, 120, 30), c["accent"], 3)
+    box.setFocus(_Qt.FocusReason.TabFocusReason)
+    qapp.processEvents()
+    after = count(_grab(box, 120, 30), c["accent"], 3)
+    assert after - before >= 40
+
+
+def test_a_combos_open_list_is_themed(qapp):
+    # The list a combo opens is a separate top-level window: themed through the application, never Windows' white.
+    c = theme.colours("hb")
+    combo = QComboBox()
+    combo.addItems(["Blue", "Lighter blue", "Sapphire"])
+    _grab(combo, 160, 30)
+    combo.showPopup()
+    qapp.processEvents()
+    view = combo.view()
+    arr = rgb_array(view.grab())
+    assert count(arr, c["surface"], 2) + count(arr, c["raised"], 2) >= 0.5 * arr.shape[0] * arr.shape[1]
+    assert count(arr, "#ffffff", 4) < 0.01 * arr.shape[0] * arr.shape[1]
+    combo.hidePopup()

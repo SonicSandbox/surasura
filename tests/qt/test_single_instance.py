@@ -39,6 +39,7 @@ def test_the_name_carries_the_user_the_session_and_the_install(monkeypatch):
     monkeypatch.setenv("SURASURA_INSTANCE_NAME", "surasura-test-x")
     assert single.instance_name() == "surasura-test-x"
     assert single.lock_path().startswith(os.environ["SURASURA_TEST_ROOT"])
+    assert single._session_id() in os.path.basename(single.lock_path())     # per session, as the name (review A13)
 
 
 def test_a_second_start_hands_over_and_the_first_comes_forward(qapp):
@@ -101,6 +102,85 @@ def test_a_start_during_the_firsts_close_becomes_the_first(qapp):
     assert wait_until(lambda: not t.is_alive(), 10)
     assert result == [True] and second.outcome == "first"
     second.release()
+
+
+def test_a_start_that_connects_just_as_the_first_closes_becomes_the_first(qapp):
+    # The review's blocking race (A1): the second start's connection is pending when the first stops listening, so it
+    # never gets `ok` — it must go on waiting for the lock, not give up and leave the user with no window.
+    first = single.SingleInstance()
+    assert first.claim([])
+    second, result = single.SingleInstance(), []
+    t = _claim_in_thread(second, [], result)
+    assert wait_until(lambda: bool(first._clients), 5)      # accepted and greeted, its arguments not yet answered
+    first.stop_listening()                                  # the window starts closing
+    time.sleep(1.0)
+    first.release()                                         # ... and quits
+    assert wait_until(lambda: not t.is_alive(), 10)
+    assert result == [True] and second.outcome == "first"
+    second.release()
+
+
+def test_a_first_that_says_hello_but_never_ok_is_not_handed_over_to(qapp):
+    # A fake first: it holds the lock, accepts, says hello, and never answers. A start must not report "handed over"
+    # (it would exit and the user would have no window); it waits for the lock and, at its deadline, gives up.
+    from PyQt6.QtNetwork import QLocalServer
+    held = path_utils.try_lock(single.lock_path())
+    server = QLocalServer()
+    assert server.listen(os.environ["SURASURA_INSTANCE_NAME"])
+    accepted = []
+
+    def accept():
+        s = server.nextPendingConnection()
+        s.write(b"hello 1\n")
+        s.flush()
+        accepted.append(s)
+    server.newConnection.connect(accept)
+    try:
+        second, result = single.SingleInstance(), []
+        t = threading.Thread(target=lambda: result.append(second.claim([], wait=2)), daemon=True)
+        t.start()
+        assert wait_until(lambda: not t.is_alive(), 15)
+        assert result == [False] and second.outcome == "gave-up" and accepted
+    finally:
+        server.close()
+        path_utils.release_lock(held)
+
+
+def test_the_first_says_hello_with_its_pid_and_the_second_lets_it_come_forward(qapp, monkeypatch):
+    allowed = []
+    monkeypatch.setattr(single, "_allow_foreground", lambda pid: allowed.append(pid))
+    first = single.SingleInstance()
+    try:
+        assert first.claim([])
+        second, result = single.SingleInstance(), []
+        t = _claim_in_thread(second, [], result)
+        assert wait_until(lambda: not t.is_alive(), 10)
+        assert result == [False] and allowed == [str(os.getpid())]
+    finally:
+        first.release()
+
+
+def test_a_line_nested_past_pythons_limit_still_gets_its_answer(qapp):
+    from PyQt6.QtNetwork import QLocalSocket
+    first = single.SingleInstance()
+    heard = []
+    first.activated.connect(heard.append)
+    try:
+        assert first.claim([])
+        sock = QLocalSocket()
+        sock.connectToServer(first.name)
+        assert sock.waitForConnected(2000)
+        sock.write(b"[" * 5000 + b"]" * 5000 + b"\n")
+        sock.flush()
+        got = []
+
+        def read():
+            got.append(bytes(sock.readAll()))
+            return b"ok\n" in b"".join(got)
+        assert wait_until(read, 5)
+        assert heard == [[]]
+    finally:
+        first.release()
 
 
 def test_a_holder_that_never_listens_makes_a_start_give_up_not_open_a_second_window(qapp):

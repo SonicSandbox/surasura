@@ -19,7 +19,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PyQt6.QtGui import QGuiApplication, QHelpEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QWidget
+from PyQt6.QtWidgets import QApplication, QDialog, QWidget
 
 from app import path_utils, theme
 from app.cli import contract
@@ -189,17 +189,17 @@ def test_the_windows_place_and_tab_round_trip_and_never_touch_settings(qapp):
     win = shell.open_window(qapp, services)
     win.show()
     screen = QGuiApplication.primaryScreen().availableGeometry()
-    win.setGeometry(QRect(screen.left() + 40, screen.top() + 30, 1100, 700))
+    win.setGeometry(QRect(screen.left() + 40, screen.top() + 40, 1000, 700))     # (offscreen's screen: 800 × 800)
     win.show_tab("finished")
     win.close()
     services.shutdown(0.5)
     saved = json.load(open(shell.state_path(), encoding="utf-8"))
-    assert saved["tab"] == "finished" and saved["geometry"][2:] == [1100, 700]
+    assert saved["tab"] == "finished" and saved["geometry"][2:] == [1000, 700]
     assert (os.path.exists(settings_file) and open(settings_file, "rb").read()) == before
     services = shell.Services()
     again = shell.open_window(qapp, services)
     assert again.current_tab() == "finished"
-    assert (again.geometry().width(), again.geometry().height()) == (1100, 700)
+    assert (again.geometry().width(), again.geometry().height()) == (1000, 700)
     again.close()
     services.shutdown(0.5)
 
@@ -230,7 +230,132 @@ def test_fit_on_screens_keeps_a_visible_place_and_centres_a_lost_one():
     screens = [QRect(0, 0, 1920, 1040)]
     assert shell.fit_on_screens(QRect(100, 100, 1280, 800), screens) == QRect(100, 100, 1280, 800)
     lost = shell.fit_on_screens(QRect(5000, 100, 1280, 800), screens)
-    assert abs(lost.center().x() - 960) <= 2 and abs(lost.center().y() - 520) <= 2
+    assert abs(lost.center().x() - 960) <= 2 and abs(lost.center().y() - (520 + shell.CAPTION // 2)) <= 2
+
+
+def test_a_saved_place_is_made_usable_on_its_screen():
+    # Review A5: too big for the screen → shrunk to it; hanging off an edge → moved in; the title bar above the
+    # screen → brought down so it can be grabbed; a second screen keeps its own place.
+    screens = [QRect(0, 0, 1920, 1040), QRect(1920, 0, 1280, 1024)]
+    big = shell.fit_on_screens(QRect(0, 40, 3000, 2000), screens)
+    assert big.width() <= 1920 and big.height() <= 1040 - shell.CAPTION and QRect(0, 0, 1920, 1040).contains(big)
+    edge = shell.fit_on_screens(QRect(1500, 300, 1000, 700), screens[:1])
+    assert edge.right() <= 1919 and edge.width() == 1000
+    above = shell.fit_on_screens(QRect(300, 10, 1000, 700), screens)
+    assert above.top() >= shell.CAPTION
+    second = shell.fit_on_screens(QRect(2000, 100, 1000, 700), screens)
+    assert second == QRect(2000, 100, 1000, 700)
+
+
+@pytest.mark.parametrize("geometry", [[0, 0, 99999999999, 800], [0, 0, -5, 800], [0, 0, 1000.5, 700], "x",
+                                      [1, 2, 3], [True, 0, 1000, 700]])
+def test_a_damaged_saved_place_opens_the_window_at_the_default(qapp, geometry):
+    # Review A5: an out-of-range number used to raise in open_window, so the window never opened at all.
+    with open(shell.state_path(), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "geometry": geometry, "tab": "current"}, f)
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    assert win.geometry().width() >= theme.WINDOW_MIN[0]
+    win.close()
+    services.shutdown(0.5)
+
+
+def test_a_state_file_from_another_version_is_not_read(qapp):
+    with open(shell.state_path(), "w", encoding="utf-8") as f:
+        json.dump({"version": 2, "geometry": [10, 40, 1000, 700], "tab": "settings"}, f)
+    assert shell.read_state(shell.state_path()) == {}
+
+
+def test_the_state_file_is_replaced_whole_or_not_at_all(qapp, monkeypatch):
+    # Atomic (review A10: S6): a write that fails before its replace leaves the old file as it was.
+    path = shell.state_path()
+    shell.write_state(path, {"version": 1, "tab": "finished"})
+
+    def broken_replace(src, dst):
+        raise OSError("disk full")
+    monkeypatch.setattr(shell.os, "replace", broken_replace)
+    with pytest.raises(OSError):
+        shell.write_state(path, {"version": 1, "tab": "settings"})
+    assert json.load(open(path, encoding="utf-8"))["tab"] == "finished"
+
+
+def test_a_maximised_window_opens_maximised_and_comes_forward_maximised(qapp):
+    with open(shell.state_path(), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "geometry": [10, 40, 1000, 700], "maximized": True, "tab": "current"}, f)
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show_first()
+    assert win.isMaximized()
+    win.setWindowState(win.windowState() | Qt.WindowState.WindowMinimized)
+    win.bring_to_front()
+    assert win.isMaximized() and not win.isMinimized()          # review A6: never un-maximised
+    win.close()
+    services.shutdown(0.5)
+
+
+def test_closing_says_so_before_the_window_hides(qapp):
+    # Single instance stops listening on `closing` (review A10: S1, S2): the signal fires while still visible, and
+    # main()'s wiring connects it.
+    from app.qt import single
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    instance = single.SingleInstance()
+    assert instance.claim([])
+    shell.connect_instance(win, instance)
+    seen = []
+    win.closing.connect(lambda: seen.append((win.isVisible(), instance.server is None)))
+    win.close()
+    assert seen == [(True, True)] or seen == [(True, False)]
+    assert instance.server is None                             # stopped listening by the time close returned
+    assert seen[0][0] is True                                   # and closing came while the window was still shown
+    instance.release()
+    services.shutdown(0.5)
+
+
+def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch):
+    import sys
+    before_hook, before_interval = sys.excepthook, sys.getswitchinterval()
+    try:
+        shell.prepare_process()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        assert sys.excepthook is shell._log_unhandled
+    finally:
+        sys.excepthook, _ = before_hook, sys.setswitchinterval(before_interval)
+
+
+def test_quitting_flushes_settings_and_tells_the_jobs(qapp, monkeypatch):
+    services = shell.Services()
+    calls = []
+    monkeypatch.setattr(services.registry, "quit", lambda timeout=None: calls.append("jobs"))
+    monkeypatch.setattr(services.settings, "flush", lambda timeout=None: calls.append("settings") or False)
+    services.shutdown(0.1)
+    assert calls == ["jobs", "settings"]
+    log = os.path.join(path_utils.get_local_data_path(), "logs", "app_debug_log.txt")
+    assert "not written" in open(log, encoding="utf-8").read()     # review A11: a lost change is logged
+
+
+def test_after_the_window_closes_none_of_its_app_wide_filters_act(qapp):
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    win.close()
+    services.shutdown(0.5)
+    other = QWidget()
+    other.show()
+    QTest.keyClick(other, Qt.Key.Key_Escape)                    # no router left to close it
+    assert other.isVisible()
+    other.close()
+
+
+def test_the_logs_button_needs_a_folder(window):
+    window.show_status(_snap(failure="Command line (x): it failed", logs=None))
+    assert window.bar_failure.isVisibleTo(window) and not window.logs_button.isVisibleTo(window)
+
+
+def test_the_bars_lines_are_plain_text(window):
+    window.show_status(_snap(ankiweb="<b>AnkiWeb</b> synced"))
+    assert window.bar_ankiweb.textFormat() == Qt.TextFormat.PlainText
 
 
 # --- Esc and Back (✅ G1.2-2) ---------------------------------------------------------------------------------------- #
@@ -325,6 +450,38 @@ def test_the_bubble_waits_380_ms_then_60_within_half_a_second(window):
     assert t.delay() == 60
 
 
+def test_a_real_hover_shows_the_bubble_after_380_ms_not_twice_that(window):
+    # The mouse, not a hand-made tooltip event: Qt's own wait plus the bubble's is what a person sees (review A2: it
+    # was ~780 ms). Unfrozen, timed from the move to the bubble on screen.
+    import time
+    from app.qt import freeze
+    freeze.set_frozen(False)
+    window.activateWindow()
+    tab = window.tab_buttons["settings"]
+    t0 = time.monotonic()
+    QTest.mouseMove(tab, QPoint(tab.width() // 2, tab.height() // 2))
+    assert wait_until(lambda: window.tooltips.showing() is not None, 3)
+    shown_after = (time.monotonic() - t0) * 1000
+    assert 300 <= shown_after <= 600, shown_after
+
+
+def test_a_key_press_hides_the_bubble(window):
+    _hover(window.tab_buttons["finished"])
+    assert wait_until(lambda: window.tooltips.showing() is not None)
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_A)
+    assert window.tooltips.showing() is None
+
+
+def test_back_closes_an_open_menu(window):
+    from PyQt6.QtWidgets import QMenu
+    menu = QMenu(window)
+    menu.addAction("Move to top").triggered.connect(lambda: None)
+    menu.popup(window.mapToGlobal(QPoint(100, 100)))
+    assert wait_until(menu.isVisible)
+    QTest.mouseClick(menu, Qt.MouseButton.BackButton)
+    assert not menu.isVisible() and window.isVisible()
+
+
 def test_the_bubble_is_placed_inside_the_screen():
     from PyQt6.QtCore import QSize
     from app.qt.tooltip import place
@@ -333,3 +490,13 @@ def test_the_bubble_is_placed_inside_the_screen():
     assert p.x() + 200 <= 1000 and p.y() + 40 <= 400
     p = place(QSize(200, 40), QRect(100, 5, 80, 30), screen)            # at the top: flipped below
     assert p.y() >= 35
+
+
+def test_coming_forward_raises_and_activates_the_window(window):
+    # Offscreen has one active window whatever is asked (review S5 survived there): the calls themselves are checked.
+    calls = []
+    window.raise_ = lambda: calls.append("raise")
+    window.activateWindow = lambda: calls.append("activate")
+    window.showMinimized()
+    window.bring_to_front(["--from", "a second start"])
+    assert calls == ["raise", "activate"] and not window.isMinimized()

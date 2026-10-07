@@ -12,7 +12,6 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QThread
-from PyQt6.QtWidgets import QApplication
 
 from app.qt import bridge
 from app.services import jobs as jobs_module

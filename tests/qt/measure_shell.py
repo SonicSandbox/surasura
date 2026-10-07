@@ -30,6 +30,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 def one_run(idle, hud):
     root = tempfile.mkdtemp(prefix="w21-measure-")
     probe = os.path.join(root, "probe.json")
+    import shutil                                   # the test root is also where bundled resources are read: the mark
+    shutil.copytree(os.path.join(ROOT, "app", "assets"), os.path.join(root, "app", "assets"))
     env = dict(os.environ, SURASURA_TEST_ROOT=root, SURASURA_SHELL_PROBE=probe, SURASURA_SHELL_PROBE_IDLE=str(idle),
                SURASURA_INSTANCE_NAME=f"surasura-measure-{os.getpid()}-{os.path.basename(root)}")
     env.pop("QT_QPA_PLATFORM", None)
@@ -74,6 +76,8 @@ def main():
         summary["steps_over_4ms_after_first_paint"] = [r["hud"]["steps"]["over_4ms"] for r in ok]
         summary["step_max_ms"] = max(r["hud"]["steps"]["max_ms"] for r in ok)
         summary["frame_p95_ms"] = max(r["hud"]["frames"]["p95_ms"] for r in ok)
+        summary["late_ticks_over_4ms"] = [r["hud"]["late"]["over_4ms"] for r in ok]
+        summary["late_max_ms"] = max(r["hud"]["late"]["max_ms"] for r in ok)
     print("SUMMARY " + json.dumps(summary))
     return 0
 

@@ -6,8 +6,9 @@
 - **Fusion, pinned**, under a `QProxyStyle` (`SurasuraStyle`) that paints every indicator the stylesheet leaves to the
   style — a check box, a radio, a menu's check, an item view's check, the focus ring — in the theme's colours, so no
   control is ever painted by Windows (the stack pack's first trap: a Windows-blue radio in a themed window).
-- **The dark `QPalette`** from `theme.palette()`, as well as the stylesheet: Windows 10's dark title bar follows the
-  palette (measured), links take their colour from it, and Fusion draws the arrows with it.
+- **The dark `QPalette`** from `theme.palette()`, as well as the stylesheet: links take their colour from it, and
+  Fusion draws the arrows with it. **The dark colour scheme**, asked for on every apply: Windows 10's caption follows
+  the scheme, not the palette (P-title, W2.1 row 0: the same dark palette under Light drew a white bar).
 - Set on the **QApplication**, never on a window: a dialog or a menu made later is themed too.
 
 No colour is spelled here (tests/qt/test_style.py reads this folder): every one comes from `app/theme.py`.
@@ -18,7 +19,7 @@ from functools import lru_cache
 from PyQt6 import sip
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen
-from PyQt6.QtWidgets import QApplication, QFrame, QProxyStyle, QStyle, QStyleFactory, QWidget
+from PyQt6.QtWidgets import QFrame, QProxyStyle, QStyle, QStyleFactory
 
 from app import theme
 
@@ -173,7 +174,7 @@ QToolTip {{ background: {tip}; color: {c['ink']}; border: 1px solid {c['line-hi'
 
 
 class SurasuraStyle(QProxyStyle):
-    """Fusion, with every indicator painted in the theme's colours and the tooltip's timing (05 §5.4)."""
+    """Fusion, with every indicator painted in the theme's colours (the bubble owns the tooltip's timing)."""
 
     def __init__(self, theme_name=theme.DEFAULT_THEME):
         super().__init__(QStyleFactory.create("Fusion"))
@@ -186,7 +187,9 @@ class SurasuraStyle(QProxyStyle):
     # --- hints ---------------------------------------------------------------------------------------------- #
     def styleHint(self, hint, option=None, widget=None, returnData=None):
         if hint == QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
-            return theme.MOTION["tooltip-delay"]
+            # Qt's own wait before it asks for a tooltip: none — the bubble (tooltip.py) owns the 380 / 60 ms. Both
+            # waiting doubled it to ~780 ms (W2.1 review A2).
+            return 0
         if hint == QStyle.StyleHint.SH_ToolTip_FallAsleepDelay:
             return theme.MOTION["tooltip-again-within"]
         return super().styleHint(hint, option, widget, returnData)
@@ -311,6 +314,14 @@ def app_font(text_size, language="ja", script=None):
     return f
 
 
+def _ask_dark(hints):
+    if hasattr(hints, "setColorScheme"):                 # Qt 6.8+
+        hints.setColorScheme(Qt.ColorScheme.Dark)
+
+
+ask_dark = _ask_dark                                     # a seam: offscreen can't hold a scheme, so tests watch the ask
+
+
 def apply(app, theme_name=None, text_size=None, language=None, script=None):
     """Set the look on the QApplication: Fusion under SurasuraStyle, the dark palette, the font and the stylesheet.
     Call it before the first window is shown (and again for a live switch). -> milliseconds it took."""
@@ -320,10 +331,9 @@ def apply(app, theme_name=None, text_size=None, language=None, script=None):
     language = language or _state["language"]
     # The colour scheme, asked for on purpose: Windows 10's caption follows it, not the palette (P-title, W2.1 row 0:
     # the same dark palette under Light drew a white bar). Every theme is dark (01 §1.2 th).
-    hints = app.styleHints()
-    if hasattr(hints, "setColorScheme") and hints.colorScheme() != Qt.ColorScheme.Dark:
-        hints.setColorScheme(Qt.ColorScheme.Dark)
-        _state["asked_dark"] = True                  # (offscreen keeps answering Unknown: the ask is what's recorded)
+    # Asked every time, even when the system is dark already: an explicit ask holds when Windows later turns Light
+    # (only following the system, the caption would turn white then: W2.1 review A4).
+    ask_dark(app.styleHints())
     # One SurasuraStyle per application, kept here: under a stylesheet `app.style()` answers Qt's stylesheet wrapper,
     # not the style beneath it, and replacing the style a live stylesheet wraps brings the process down.
     ours = _state.get("style")

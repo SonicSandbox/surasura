@@ -6,7 +6,6 @@ than its two keys (S16, the services' rule), or loses a key another program wrot
 signature (a full Generate for a colour: tests/test_settings_signatures.py proves it doesn't).
 """
 import json
-import os
 
 import pytest
 

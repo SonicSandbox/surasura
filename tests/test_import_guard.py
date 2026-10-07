@@ -68,19 +68,45 @@ def test_no_file_outside_the_windows_folders_imports_qt():
 
 
 # --- The window's own imports (W2.1) ------------------------------------------------------------------------------- #
-ALLOWED_QT = {"QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg", "sip"}
-_QT_NAMES = re.compile(r"^\s*(?:from\s+PyQt6\.(\w+)\s+import|from\s+PyQt6\s+import\s+([\w ,]+)|import\s+PyQt6\.(\w+))",
-                       re.M)
+# Read as Python reads them (the syntax tree), not as text: a parenthesised list, two modules on one `import`, `;`,
+# a continued line, an import inside a function and `importlib.import_module("…")` all count (W2.1 review A7).
+ALLOWED_QT = {"PyQt6", "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets", "PyQt6.QtNetwork", "PyQt6.QtSvg",
+              "PyQt6.sip"}
+_DYNAMIC = {"import_module", "__import__"}
 
 
-def qt_modules_named(source):
-    """The PyQt6 modules a source imports: `from PyQt6.QtX import …`, `from PyQt6 import QtX, …`, `import PyQt6.QtX`."""
+def imports_of(source, module):
+    """Every module `source` (the file of `module`, dotted) imports, anywhere in it, as absolute dotted names."""
+    package = module.rsplit(".", 1)[0] if "." in module else ""
     names = set()
-    for dotted, listed, imported in _QT_NAMES.findall(source):
-        if listed:
-            names.update(n.strip() for n in listed.split(",") if n.strip())
-        names.update(n for n in (dotted, imported) if n)
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".") if package else []
+                parts = parts[:len(parts) - (node.level - 1)] if node.level > 1 else parts
+                base = ".".join(p for p in parts + ([base] if base else []) if p)
+            names.add(base)
+            names.update(f"{base}.{a.name}" for a in node.names if a.name != "*")
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) \
+                and isinstance(node.args[0].value, str):
+            fn = node.func
+            called = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if called in _DYNAMIC:
+                names.add(node.args[0].value)
     return names
+
+
+def _qt_names(names):
+    """The PyQt6 modules among `names` (`PyQt6.QtCore.QObject`, a name taken from a module, counts as its module)."""
+    return {".".join(n.split(".")[:2]) for n in names if n == "PyQt6" or n.startswith("PyQt6.")}
+
+
+def _module_of(path):
+    rel = os.path.relpath(path, ROOT)[:-3].replace(os.sep, ".")
+    return rel[:-9] if rel.endswith(".__init__") else rel
 
 
 def _window_files():
@@ -94,11 +120,34 @@ def _window_files():
     return files
 
 
-def test_the_reader_of_qt_imports_sees_every_spelling():
+def _headless_files():
+    """Every file that must never reach Qt: the app outside app/qt/, the modules outside their qt_*.py, the entry."""
+    files = [os.path.join(ROOT, "app_entry.py")]
+    for top in ("app", "modules"):
+        for where, dirs, names in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", "tests", "vendor")]
+            rel = os.path.relpath(where, ROOT).replace("\\", "/")
+            if rel == "app/qt" or rel.startswith("app/qt/"):
+                continue
+            files += [os.path.join(where, n) for n in names
+                      if n.endswith(".py") and not (top == "modules" and n.startswith("qt_"))]
+    return files
+
+
+def test_the_reader_of_imports_sees_every_spelling():
     # The check's own witness: each way of naming a module is read, so a QtQml or a WebEngine import can't slip by.
-    source = "\n".join(["from PyQt6.QtQml import QQmlEngine", "from PyQt6 import QtWebEngineWidgets, QtCore",
-                        "import PyQt6.QtMultimedia", "    from PyQt6.QtWidgets import QWidget"])
-    assert qt_modules_named(source) == {"QtQml", "QtWebEngineWidgets", "QtCore", "QtMultimedia", "QtWidgets"}
+    source = "\n".join([
+        "from PyQt6 import (QtCore,", "    QtQml)",
+        "import PyQt6.QtGui, PyQt6.QtWebEngineWidgets",
+        "import os; import PyQt6.QtMultimedia",
+        "from PyQt6.QtWidgets import \\", "    QWidget",
+        "def later():", "    from app.qt import shell", "    importlib.import_module('PyQt6.QtQuick')",
+        "    __import__('PyQt6.Qt3DCore')",
+        "from .qt import style",
+    ])
+    names = imports_of(source, "app.cli.verbs")
+    assert {"PyQt6.QtQml", "PyQt6.QtWebEngineWidgets", "PyQt6.QtMultimedia", "PyQt6.QtWidgets", "PyQt6.QtQuick",
+            "PyQt6.Qt3DCore", "app.qt", "app.qt.shell", "app.cli.qt", "app.cli.qt.style"} <= names
 
 
 def test_the_window_imports_only_the_qt_modules_the_stack_names():
@@ -108,10 +157,43 @@ def test_the_window_imports_only_the_qt_modules_the_stack_names():
     stray = {}
     for path in files:
         with open(path, encoding="utf-8") as f:
-            extra = qt_modules_named(f.read()) - ALLOWED_QT
+            extra = _qt_names(imports_of(f.read(), _module_of(path))) - ALLOWED_QT
         if extra:
             stray[os.path.relpath(path, ROOT)] = sorted(extra)
     assert stray == {}
+
+
+def test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_door():
+    """Nowhere outside app/qt/ (and modules' qt_*.py) imports PyQt6 or app.qt — inside a function, through importlib,
+    relatively — except app_entry.py's `_qt_window`, the default start's one door (01 §1.6)."""
+    found = {}
+    for path in _headless_files():
+        module = _module_of(path)
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+        tree = ast.parse(source)
+        if module == "app_entry":
+            door = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_qt_window"]
+            outside = [n for n in tree.body if n not in door]
+            source = "\n".join(ast.unparse(n) for n in outside)
+            assert door and imports_of(ast.unparse(door[0]), module) >= {"app.qt.shell"}
+        bad = {n for n in imports_of(source, module) if n == "PyQt6" or n.startswith(("PyQt6.", "app.qt"))}
+        if bad:
+            found[os.path.relpath(path, ROOT)] = sorted(bad)
+    assert found == {}
+
+
+def test_the_window_loads_only_the_allowed_qt_modules():
+    """Imported, not just named: every module of app/qt/ in a fresh interpreter, and the PyQt6 modules it pulled in."""
+    modules = sorted(_module_of(p) for p in _window_files() if os.sep + "app" + os.sep + "qt" + os.sep in p)
+    probe = "; ".join(["import sys, json", f"[__import__(m) for m in {modules!r}]",
+                       "print(json.dumps(sorted(m for m in sys.modules if m == 'PyQt6' or m.startswith('PyQt6.'))))"])
+    env = dict(os.environ, PYTHONPATH=ROOT, QT_QPA_PLATFORM="offscreen")
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    loaded = set(json.loads(proc.stdout.strip().splitlines()[-1]))
+    assert loaded and loaded <= ALLOWED_QT, sorted(loaded - ALLOWED_QT)
 
 
 def test_the_command_line_and_the_entry_never_reach_the_window_on_import():
@@ -125,17 +207,3 @@ def test_the_command_line_and_the_entry_never_reach_the_window_on_import():
                           timeout=120)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
-
-
-def test_app_entry_imports_the_window_only_inside_a_function():
-    # A module-level `import app.qt…` in app_entry.py would load Qt for every headless verb (the analyzer, the indexer,
-    # the store's helper) before the dispatch even looks at argv.
-    with open(os.path.join(ROOT, "app_entry.py"), encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-    top = []
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            top += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            top.append(node.module or "")
-    assert not [m for m in top if m == "PyQt6" or m.startswith(("PyQt6.", "app.qt"))]

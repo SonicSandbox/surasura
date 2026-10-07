@@ -111,3 +111,70 @@ def test_a_refusal_left_unforgiven_fails_the_test(tmp_path):
     assert proc.returncode != 0
     assert "1 passed, 1 error" in proc.stdout
     assert "a test tried to reach past this machine" in proc.stdout and "telemetry.example.org" in proc.stdout
+
+
+def test_a_datagram_past_this_machine_is_refused_and_one_to_loopback_is_not(network_guard):
+    # Review A8: UDP never calls connect — sendto is guarded too (a DNS query by hand, a telemetry ping).
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(b"x", ("127.0.0.1", 9))
+        with pytest.raises(NetworkRefused):
+            sock.sendto(b"x", ("8.8.8.8", 53))
+    finally:
+        sock.close()
+    assert network_guard.attempts == [("a datagram to", ("8.8.8.8", 53))]
+    network_guard.forgive(("8.8.8.8", 53))
+    assert network_guard.attempts == []
+
+
+def test_reverse_and_extended_lookups_are_refused(network_guard):
+    for call in (lambda: socket.gethostbyname_ex("example.org"), lambda: socket.gethostbyaddr("93.184.215.14"),
+                 lambda: socket.getnameinfo(("93.184.215.14", 80), 0)):
+        with pytest.raises(OSError):
+            call()
+    assert len(network_guard.attempts) == 3
+    network_guard.forgive()
+
+
+def test_only_the_name_windows_answers_itself_counts_as_this_machine():
+    # Review A8: names that would go to DNS on this PC are not loopback here.
+    assert _is_loopback("localhost") and not _is_loopback("localhost.localdomain")
+    assert not _is_loopback("ip6-localhost") and not _is_loopback("localhost.")
+
+
+def test_forgiving_one_address_keeps_the_others(network_guard):
+    with pytest.raises(OSError):
+        socket.getaddrinfo("example.com", 443)
+    with pytest.raises(OSError):
+        socket.getaddrinfo("example.net", 443)
+    network_guard.forgive("example.com")
+    assert network_guard.attempts == [("a name lookup of", "example.net")]
+    network_guard.forgive()
+
+
+def test_asyncios_windows_loop_is_guarded_too(network_guard):
+    # Review A8: the proactor connects with ConnectEx, never socket.connect.
+    import asyncio
+    if sys.platform != "win32":
+        pytest.skip("the proactor is Windows' loop")
+
+    async def reach(host):
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, 80), 5)
+        writer.close()
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    async def both():
+        r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 5)   # loopback: allowed
+        w.close()
+        with pytest.raises(OSError):
+            await reach("93.184.215.14")
+    try:
+        asyncio.run(both())
+    finally:
+        server.close()
+    assert [w for w, _ in network_guard.attempts] == ["a connection to"]
+    network_guard.forgive()

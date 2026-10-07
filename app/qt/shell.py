@@ -22,7 +22,7 @@ import sys
 import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontMetrics, QGuiApplication, QIcon, QLinearGradient, QPainter, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFontMetrics, QGuiApplication, QIcon, QLinearGradient, QPainter
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -58,7 +58,9 @@ class Services:
         except Exception as e:
             applog.log("shell", f"jobs at quit: {e}")
         try:
-            self.settings.flush(timeout)
+            if not self.settings.flush(timeout):           # a held settings lock: the change is lost, so say so
+                applog.log("shell", f"settings at quit: not written within {timeout} s (pending: "
+                                    f"{self.settings.pending()})")
         except Exception as e:
             applog.log("shell", f"settings at quit: {e}")
 
@@ -83,19 +85,43 @@ def write_state(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())                            # on disk before it replaces the old one
     os.replace(tmp, path)
 
 
+CAPTION = 32          # logical px above the client area Windows draws its title bar in: kept on screen to grab
+
+
+def valid_geometry(geo):
+    """A saved [x, y, w, h] as a QRect, or None when it isn't four sane integers (a hand-edited or damaged file: an
+    out-of-range number once stopped the window from ever opening, review A5)."""
+    if not (isinstance(geo, list) and len(geo) == 4 and all(type(v) is int for v in geo)):
+        return None
+    x, y, w, h = geo
+    if abs(x) > 1_000_000 or abs(y) > 1_000_000 or not (1 <= w <= 100_000) or not (1 <= h <= 100_000):
+        return None
+    return QRect(x, y, w, h)
+
+
 def fit_on_screens(rect, screens, default=DEFAULT_SIZE):
-    """`rect` (a saved QRect) if enough of it is on one of `screens` (available QRects) to grab; else the default size
-    (never larger than the first screen) centred on the first screen."""
+    """`rect` (a saved QRect, the client area) put where it can be used: on the screen most of its title strip is on
+    — no larger than that screen, moved inside it, its title bar on it; with no title strip on any screen, the
+    default size (never larger than the first screen) centred on the first screen."""
+    strip = QRect(rect.left(), rect.top() - CAPTION, rect.width(), CAPTION)
+    best, seen_w = None, 0
     for s in screens:
-        seen = rect.intersected(s)
-        if seen.width() >= 200 and seen.height() >= 100:
-            return QRect(rect)
-    first = screens[0] if screens else QRect(0, 0, *default)
-    w, h = min(default[0], first.width()), min(default[1], first.height())
-    return QRect(first.center().x() - w // 2, first.center().y() - h // 2, w, h)
+        seen = strip.intersected(s)
+        if seen.width() >= 200 and seen.height() >= CAPTION // 2 and seen.width() > seen_w:
+            best, seen_w = s, seen.width()
+    if best is None:
+        first = screens[0] if screens else QRect(0, 0, *default)
+        w, h = min(default[0], first.width()), min(default[1], first.height() - CAPTION)
+        return QRect(first.center().x() - w // 2, first.center().y() - h // 2 + CAPTION // 2, w, h)
+    w, h = min(rect.width(), best.width()), min(rect.height(), best.height() - CAPTION)
+    x = max(best.left(), min(rect.left(), best.right() - w + 1))
+    y = max(best.top() + CAPTION, min(rect.top(), best.bottom() - h + 1))
+    return QRect(x, y, w, h)
 
 
 # --- small parts ---------------------------------------------------------------------------------------------------- #
@@ -136,6 +162,31 @@ class Wordmark(QWidget):
         pen.setBrush(grad)
         p.setPen(pen)
         p.drawText(QPointF(x, base), second)
+        p.end()
+
+
+class Mark(QWidget):
+    """The mark, 34 px, painted from the icon at the device-pixel ratio of the screen it is on now (a pixmap scaled
+    once blurs when the window moves to a sharper monitor). Hidden when the icon isn't there."""
+
+    SIDE = 34
+
+    def __init__(self, icon_path, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mark")
+        self.setAccessibleName(strings.WORDMARK_NAME)
+        self.setFixedSize(self.SIDE, self.SIDE)
+        self._icon = QIcon(icon_path) if os.path.exists(icon_path) else None
+        self.setVisible(self._icon is not None)
+
+    def paintEvent(self, _event):
+        if self._icon is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        dpr = self.devicePixelRatioF() or 1.0
+        pix = self._icon.pixmap(QSize(self.SIDE, self.SIDE), dpr)
+        p.drawPixmap(self.rect(), pix)
         p.end()
 
 
@@ -292,20 +343,7 @@ class ShellWindow(QMainWindow):
         top, side, bottom = theme.SPACING["header"]
         row.setContentsMargins(side, top, side, bottom)
         row.setSpacing(12)
-        self.mark = QLabel(header)
-        self.mark.setObjectName("mark")
-        self.mark.setAccessibleName(strings.WORDMARK_NAME)
-        icon = path_utils.get_icon_path()
-        if os.path.exists(icon):
-            pix = QPixmap(icon)
-            dpr = self.devicePixelRatioF() or 1.0
-            pix = pix.scaled(int(34 * dpr), int(34 * dpr), Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
-            pix.setDevicePixelRatio(dpr)
-            self.mark.setPixmap(pix)
-        else:
-            self.mark.setVisible(False)
-        self.mark.setFixedSize(34, 34)
+        self.mark = Mark(path_utils.get_icon_path(), header)
         row.addWidget(self.mark)
         names = QVBoxLayout()
         names.setSpacing(0)
@@ -393,10 +431,12 @@ class ShellWindow(QMainWindow):
         row.addWidget(self.logs_button)
         self.bar_ankiweb = QLabel(footer)
         self.bar_ankiweb.setObjectName("barmark")
+        self.bar_ankiweb.setTextFormat(Qt.TextFormat.PlainText)       # a provider's words, never markup
         self.bar_ankiweb.setVisible(False)
         row.addWidget(self.bar_ankiweb)
         self.bar_connect = QLabel(footer)
         self.bar_connect.setObjectName("barmark")
+        self.bar_connect.setTextFormat(Qt.TextFormat.PlainText)
         self.bar_connect.setVisible(False)
         row.addWidget(self.bar_connect)
         self._logs_folder = None
@@ -487,9 +527,10 @@ class ShellWindow(QMainWindow):
 
     # --- showing, closing, remembering -------------------------------------------------------------------- #
     def bring_to_front(self, _args=None):
-        """A second start handed over: show this window, un-minimised, in front."""
-        if self.isMinimized():
-            self.showNormal()
+        """A second start handed over: show this window, un-minimised (still maximised if it was), in front."""
+        state = self.windowState()
+        if state & Qt.WindowState.WindowMinimized:
+            self.setWindowState(state & ~Qt.WindowState.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -514,11 +555,9 @@ class ShellWindow(QMainWindow):
         """Size, place and tab, before the first paint, with the tabs' signals blocked (a restored tab is not a
         click)."""
         screens = [s.availableGeometry() for s in QGuiApplication.screens()]
-        geo = state.get("geometry")
-        if isinstance(geo, list) and len(geo) == 4 and all(isinstance(v, int) for v in geo):
-            rect = QRect(*geo)
-        else:
-            rect = QRect(-100000, -100000, *DEFAULT_SIZE)  # nothing saved: off every screen, so the default, centred
+        rect = valid_geometry(state.get("geometry"))
+        if rect is None:
+            rect = QRect(-100000, -100000, *DEFAULT_SIZE)  # nothing usable saved: off every screen, so the default
         rect = fit_on_screens(rect, screens)
         rect.setWidth(max(rect.width(), theme.WINDOW_MIN[0]))
         rect.setHeight(max(rect.height(), theme.WINDOW_MIN[1]))
@@ -584,19 +623,36 @@ def _log_unhandled(kind, value, tb):
     sys.__stderr__ and sys.__stderr__.write(text)
 
 
+# Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
+# hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps a step's wait under the budget (W2.1 review A3).
+SWITCH_INTERVAL_S = 0.001
+
+
+def prepare_process():
+    """The window process's own settings: an exception escaping a slot is logged, never fatal (PyQt6 aborts
+    otherwise); Python's lock changes hands every millisecond."""
+    sys.excepthook = _log_unhandled
+    sys.setswitchinterval(SWITCH_INTERVAL_S)
+
+
+def connect_instance(window, instance):
+    """A later start brings this window forward; closing stops listening before the window hides (single.py)."""
+    instance.activated.connect(window.bring_to_front)
+    window.closing.connect(instance.stop_listening)
+
+
 def main(argv=None):
     """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked."""
     argv = list(sys.argv if argv is None else argv)
     from app.qt import hud as hud_module, single as single_module
     app = QApplication.instance() or QApplication(argv[:1])
-    sys.excepthook = _log_unhandled
+    prepare_process()
     instance = single_module.SingleInstance()
     if not instance.claim(argv[1:]):
         return 0
     services = Services()
     window = open_window(app, services)
-    instance.activated.connect(window.bring_to_front)
-    window.closing.connect(instance.stop_listening)
+    connect_instance(window, instance)
     hud = hud_module.Hud(window).start() if hud_module.wanted(argv) else None
     probe_file = os.environ.get("SURASURA_SHELL_PROBE")
     if probe_file:                                    # tests/qt/measure_shell.py: shown without taking the keyboard

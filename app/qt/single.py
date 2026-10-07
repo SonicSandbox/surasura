@@ -68,7 +68,9 @@ def instance_name():
 
 
 def lock_path():
-    return os.path.join(path_utils.get_local_data_path(), "window.lock")
+    """Per install (the local data folder) and per session, as the pipe's name is: a second session of the same user
+    opens its own window rather than waiting on one it can't reach (W2.1 review A13)."""
+    return os.path.join(path_utils.get_local_data_path(), f"window-{_session_id()}.lock")
 
 
 def _allow_foreground(pid):
@@ -95,29 +97,32 @@ class SingleInstance(QObject):
         self.server = None
         self.outcome = None                         # "first" · "handed-over" · "gave-up" (for the log and tests)
         self._clients = []                          # (socket, its bytes so far) for each start talking to us
+        self._closing = False                       # the window is closing: no start is answered any more
 
     # --- a start ------------------------------------------------------------------------------------------------ #
     def claim(self, args=(), wait=WAIT_FOR_FIRST_S):
         deadline = time.monotonic() + wait
         while True:
-            answer = self._hand_over(list(args))
-            if answer is not None:
-                self.outcome = "handed-over" if answer else "gave-up"
-                _log(f"another window is open: {'handed over' if answer else 'it did not answer'}")
+            # Only the first's `ok` ends a start as handed over. Anything short of it — nobody listening, or a first
+            # that accepted and then closed (it stops listening as its window closes) — goes on to the lock: the
+            # first's lock frees as it quits, and this start becomes the first (W2.1 review A1).
+            if self._hand_over(list(args)):
+                self.outcome = "handed-over"
+                _log("another window is open: handed over")
                 return False
             self._held = path_utils.try_lock(self.lock_file)
             if self._held is not None:
                 self._listen()
                 self.outcome = "first"
                 return True
-            if time.monotonic() >= deadline:          # a holder that never listens nor quits
+            if time.monotonic() >= deadline:          # a holder that never answers nor quits
                 self.outcome = "gave-up"
                 _log("another start holds the window's lock and never answered: not opening a second window")
                 return False
             time.sleep(0.1)
 
     def _hand_over(self, args):
-        """None: nobody is listening. True: the first acknowledged. False: it accepted but never answered."""
+        """True: the first acknowledged. None: nobody is listening. False: it accepted but never answered."""
         sock = QLocalSocket()
         sock.connectToServer(self.name)
         if not sock.waitForConnected(CONNECT_MS):
@@ -175,7 +180,7 @@ class SingleInstance(QObject):
     def _ready(self):
         sock = self.sender()
         i, buf = self._client(sock)
-        if buf is None:
+        if buf is None or self._closing:
             return
         buf.extend(bytes(sock.readAll()))
         if b"\n" not in buf:
@@ -186,7 +191,7 @@ class SingleInstance(QObject):
         try:
             args = json.loads(line.decode("utf-8"))
             args = [str(a) for a in args] if isinstance(args, list) else []
-        except ValueError:
+        except Exception:                               # not JSON, or nested past Python's limit: still answered
             args = []
         sock.write(b"ok\n")
         sock.flush()
@@ -202,7 +207,15 @@ class SingleInstance(QObject):
             sock.deleteLater()
 
     def stop_listening(self):
-        """At close, before the window hides: a start from now on waits for the lock instead of handing over."""
+        """At close, before the window hides: a start from now on waits for the lock instead of handing over — and a
+        start already talking to us is cut off unanswered, so it never hands over to a window going away."""
+        self._closing = True
+        for sock, _buf in list(self._clients):
+            try:
+                sock.abort()
+            except RuntimeError:
+                pass
+        self._clients = []
         if self.server is not None:
             self.server.close()
             self.server.deleteLater()

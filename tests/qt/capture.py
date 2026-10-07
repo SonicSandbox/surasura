@@ -21,6 +21,7 @@ ends with `ALL CAPTURES PASS` or exits 1.
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -96,7 +97,7 @@ def run_scale(scale, out_dir):
         from PyQt6.QtWidgets import QFrame
         seps = sorted(win.centralWidget().findChildren(QFrame, "separator"), key=lambda f: f.mapTo(win, QPoint(0, 0)).y())
         lines = [f.mapTo(win, QPoint(0, 0)).y() * dpr for f in seps]       # device rows where each 1 px line starts
-        H = arr.shape[0]
+
         y1, y2, y3 = (int(v) for v in lines[:3])
         regions = {"header": arr[: y1 - 1], "tabs": arr[y1 + 3: y2 - 1], "page": arr[y2 + 3: y3 - 1],
                    "footer": arr[y3 + 3:]}
@@ -121,8 +122,8 @@ def run_scale(scale, out_dir):
         for where, rows in seams.items():
             if not rows:
                 problems.append(f"the line {where} is missing")
-            elif len(rows) > 2:
-                problems.append(f"the line {where} is {len(rows)} rows")
+            elif len(rows) > math.ceil(scale / 100):          # 1 px is one row at 100 %, at most two up to 200 %
+                problems.append(f"the line {where} is {len(rows)} rows at {scale} %")
         if win.footer.geometry().bottom() > win.centralWidget().height() or win.footer.height() <= 0:
             problems.append("the bar is outside the window")
         results.append({"scale": scale, "theme": theme_name, "text_size": size, "window": [w, h], "dpr": dpr,
@@ -189,12 +190,16 @@ def run_screen(out_dir):
         arr = rgb_array(img)
         top = max(1, round(8 * dpi / 96))
         caption = arr[top: top + round(14 * dpi / 96), round(60 * dpi / 96): round(300 * dpi / 96)]
-        lum = (0.2126 * caption[:, :, 0] + 0.7152 * caption[:, :, 1] + 0.0722 * caption[:, :, 2]).mean()
+        luma = 0.2126 * caption[:, :, 0] + 0.7152 * caption[:, :, 1] + 0.0722 * caption[:, :, 2]
+        lum = luma.mean()
+        text = int((luma > 110).sum())                              # the title's letters: a real caption, not a blank
         problems = []
         if not ok:
             problems.append("PrintWindow failed")
         if lum > 80:
             problems.append(f"the title bar is light (mean {lum:.0f} / 255)")
+        if text < 20:
+            problems.append(f"no title text in the caption ({text} light pixels): a blank or black capture")
         if w < need[0] - 1 or h < need[1] - 1:
             problems.append(f"the capture {w}x{h} is smaller than the window at {dpi} dpi ({need[0]}x{need[1]}): a crop")
         out.update({"screen": True, "dpi": dpi, "size": [w, h], "logical_x_dpi": list(need),

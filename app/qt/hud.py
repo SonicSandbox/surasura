@@ -5,6 +5,9 @@ takes, measured in the running window.
   → *aboutToBlock*): one stretch holds every event it handled, so "no stretch over 4 ms" is "no step over 4 ms".
 - **Frames:** each update of the window (its update request, painted and flushed).
 - **Spans:** anything a view wraps in `hud.span(name)` (W2.2's painters), by name.
+- **Late ticks:** a precise 2 ms timer, and how late each tick came. A step's own clock starts only once the GUI thread
+  holds Python's lock again, so a wait *for* the lock (a busy worker thread) never shows as a long step; a tick that
+  comes over 4 ms late does show it (W2.1 review A3).
 
 Off (the default) it installs nothing and costs nothing. On with `SURASURA_HUD=1` or `--hud`: a small overlay in the
 window's top-right corner shows p95 / max per kind and how many steps went over 4 ms; `report()` hands the same to
@@ -20,9 +23,11 @@ from contextlib import contextmanager
 from PyQt6.QtCore import QAbstractEventDispatcher, QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QLabel
 
+from app import theme
 from app.qt import strings, style
 
 STEP_BUDGET_MS = 4.0
+TICK_MS = 2
 
 
 def p95(values):
@@ -40,6 +45,8 @@ class Hud(QObject):
         self.frames = []
         self.spans = {}
         self.over = []                              # (ms, when) of each step over the budget
+        self.late = []                              # how late each tick of the 2 ms timer came, ms
+        self._tick_at = None
         self._awake_at = None
         self._frame_at = None
         self.started = False
@@ -53,6 +60,11 @@ class Hud(QObject):
         dispatcher.awake.connect(self._awake)
         dispatcher.aboutToBlock.connect(self._block)
         self.window.installEventFilter(self)
+        self._ticker = QTimer(self)
+        self._ticker.setTimerType(Qt.TimerType.PreciseTimer)
+        self._ticker.setInterval(TICK_MS)
+        self._ticker.timeout.connect(self._tick)
+        self._ticker.start()
         if self._overlay:
             self.label = QLabel(self.window)
             self.label.setObjectName("hud")
@@ -60,7 +72,7 @@ class Hud(QObject):
             c = style.colours()
             self.label.setStyleSheet(f"QLabel#hud {{ background: {style.qss_colour(c['bg'])}; color: "
                                      f"{style.qss_colour(c['ink-dim'])}; border: 1px solid {style.qss_colour(c['line'])};"
-                                     f" padding: 3px 6px; font-family: Consolas; }}")
+                                     f" padding: 3px 6px; font-family: \"{theme.MONO[0]}\"; }}")
             self._refresh = QTimer(self)
             self._refresh.timeout.connect(self._show)
             self._refresh.start(500)
@@ -77,7 +89,15 @@ class Hud(QObject):
         except (TypeError, RuntimeError):
             pass
         self.window.removeEventFilter(self)
+        self._ticker.stop()
         self.started = False
+
+    def _tick(self):
+        now = time.perf_counter()
+        if self._tick_at is not None and now >= self.ignore_before:
+            self.late.append(max(0.0, (now - self._tick_at) * 1000 - TICK_MS))
+            del self.late[:-20000]
+        self._tick_at = now
 
     # --- measuring ---------------------------------------------------------------------------------------------- #
     def _awake(self):
@@ -126,6 +146,9 @@ class Hud(QObject):
         out["spans"] = {k: {"n": len(v), "p95_ms": round(p95(v), 2), "max_ms": round(max(v), 2)}
                         for k, v in self.spans.items()}
         out["over"] = [ms for ms, _ in self.over[-20:]]
+        out["late"] = {"n": len(self.late), "p95_ms": round(p95(self.late), 2),
+                       "max_ms": round(max(self.late, default=0.0), 2),
+                       "over_4ms": sum(1 for v in self.late if v > STEP_BUDGET_MS)}
         return out
 
     def _show(self):
@@ -220,7 +243,18 @@ class Probe(QObject):
             QTimer.singleShot(500, self._exercise)
 
     def _exercise(self):
-        """Ten tab switches and 500 bar updates in a burst (row 8's run), each from the event loop."""
+        """Ten tab switches and 500 bar updates in a burst (row 8's run), each from the event loop — with a Python
+        worker busy in bursts beside them, as the services' threads are (review A3)."""
+        import threading
+
+        def busy():
+            end = time.perf_counter() + 2.0
+            while time.perf_counter() < end:
+                t = time.perf_counter()
+                while time.perf_counter() - t < 0.02:     # 20 ms of pure Python, then a breath
+                    sum(range(200))
+                time.sleep(0.005)
+        threading.Thread(target=busy, name="hud-busy", daemon=True).start()
         names = list(self.window.tab_buttons)
         for i in range(10):
             QTimer.singleShot(40 * i, lambda n=names[i % len(names)]: self.window.show_tab(n))

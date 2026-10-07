@@ -733,6 +733,29 @@ def test_a_file_moved_to_another_folder_keeps_its_item(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_moved_into_a_folder_the_poll_cant_see_is_followed(language):
+    """9a with the scoped sync (row 3.1.8; L3.1's intent review #5): the window's poll stats only folders that hold
+    items, so a file moved from one into an empty folder shows only as gone where it was. The sync then looks at the
+    whole library in the same check — the old item went missing since the last check, as Sonic's rule asks — and
+    follows the move: the same item, its place kept, nothing added, nothing missing."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[1]
+    before = store.item(item)
+    old = before["rel_path"]
+    empty = f"GoalContent/{names(language)[112]}"
+    os.makedirs(os.path.join(data_dir, *empty.split("/")))
+    new = f"{empty}/{old.rsplit('/', 1)[-1]}"
+    _move_file(data_dir, old, new)
+    summary = store.sync_disk(folders=[old.rsplit("/", 1)[0]])
+    assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+    after = store.item(item)
+    assert after["rel_path"] == new and after["availability"] == "available"
+    assert (after["tier"], after["ord"]) == (before["tier"], before["ord"])
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_twins_are_asked_never_guessed(language):
     """9a, 06 §6.7: twins (one name, size and time in two folders, both gone, one back) — nothing is guessed: the file
     is held out of the library and asked (*Is this the one from …?*); later syncs skip it; `relink` answers with one,

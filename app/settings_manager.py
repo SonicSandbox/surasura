@@ -370,7 +370,8 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait:
         module_exists = False
 
     # 3. Strip internal/locked variables if necessary. `hide_satoru` left the defaults in 3.0 (the 悟 button left the
-    # app in 2.5, RD-A5; nothing reads the key): an old file's copy is still stripped, never written back.
+    # app in 2.5, RD-A5; nothing reads the key): an old file's copy is stripped for a build and wherever the Immersion
+    # Architect module is absent (every build); a source run with the module present writes it back, harmless.
     if clean_for_build or not module_exists:
         to_save.pop("hide_satoru", None)
 

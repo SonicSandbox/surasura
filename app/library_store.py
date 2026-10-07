@@ -190,6 +190,12 @@ def _below_tier(rel):
     return "/".join(parts)
 
 
+def _in_hato(rel):
+    """A file in hato's drop folder or a folder below it (as `_destination` and read-only mode read it)."""
+    dkey, hato = path_key(_rel_dir(_strip(rel))), path_key(HATO_FOLDER)
+    return dkey == hato or dkey.startswith(hato + "/")
+
+
 def folder_key_of(rel):
     """A work's folder key (L2.2 02 §2.6): `path_key` of the file's folder below its tier folder, so `Frieren/Season 1`
     in NOW and in 6+ Months is one title while `A/Season 1` and `B/Season 1` stay apart; None for a loose file."""
@@ -2098,6 +2104,7 @@ class Store:
                     self._settle_works(cmd)
             else:
                 item_id = row[0]
+                self._title_scanned_drop(cmd, item_id, rel, pairing)
             work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
             if work is not None:
                 holder = change if change is not None else self._change(cmd, "register")
@@ -2356,6 +2363,32 @@ class Store:
                     return work
         return None
 
+    def _title_scanned_drop(self, cmd, item_id, rel, record):
+        """A loose drop the folder scan found before hato's hand-off (✅ L3.1 call b; the intent review #2) sits in a
+        title of its own, named by its file: on the first hand-off the record's title takes it, as `register` places a
+        new drop (`_work_by_record`, else a new title named by its show). Only that title: alone, never paired, no id,
+        nothing of the user's in it. The emptied title goes in the helper's run (`tidy_works`)."""
+        if folder_key_of(rel) is not None or \
+                self.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (item_id,)).fetchone():
+            return
+        cur, title = self.conn.execute("SELECT work_id, title FROM items WHERE id = ?", (item_id,)).fetchone()
+        w = self._work_row(cur) if cur is not None else None
+        if w is None or w["title"] != title or w["title_by_user"] or w["media_type_by"] == "user" or \
+                w["cover_locked"] or w["cover_source"] == "user" or \
+                any(w[c] is not None for c in ("anilist_id", "tmdb_id", "youtube_channel")) or \
+                self.conn.execute("SELECT COUNT(*) FROM items WHERE work_id = ?", (cur,)).fetchone()[0] != 1:
+            return
+        target = self._work_by_record(record)
+        if target is None and _show_title(record):
+            target = self._new_work(_show_title(record), None, cmd)
+        if target is None or target == cur:
+            return
+        self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (target, item_id))
+        cmd.reworked.add(item_id)
+        cmd.feed([item_id])
+        cmd.fed_works.update((cur, target))
+        cmd.touch()
+
     def _fill_work(self, cmd, change, work_id, record, by="hato"):
         """What a record says of its work, never over the user's (03 §3.3): its ids where the work has none — an id
         another work holds makes the two one title (the lower id kept, G2.2-6); its show's title among the other titles;
@@ -2370,7 +2403,7 @@ class Store:
             other = self.conn.execute(f"SELECT id FROM works WHERE {col} = ? AND id != ?", (ids[col], work_id)).fetchone()
             if other is not None:
                 keep, drop = sorted((other[0], work_id))
-                self._merge_into(cmd, change, keep, [drop])
+                self._merge_into(cmd, change, keep, [drop], users_first=True)
                 work_id = keep
             else:
                 self._set_work_fields(cmd, change, work_id, {col: ids[col]})
@@ -2414,10 +2447,12 @@ class Store:
         row = cur.fetchone()
         return dict(zip([d[0] for d in cur.description], row)) if row else None
 
-    def _merge_into(self, cmd, change, keep_id, other_ids):
+    def _merge_into(self, cmd, change, keep_id, other_ids, users_first=False):
         """`merge_works`' body, inside a command: the others' items, ids, folder key, titles and — where the kept work
         has none of its own — media type and cover move to `keep_id`; the others go (a tombstone each). The kept
-        cover stays unless it is generated and another's isn't (05 §5.5)."""
+        cover stays unless it is generated and another's isn't (05 §5.5). `users_first` (a merge no one asked for: a
+        record's id another title holds, G2.2-6): the user's own name, type and cover on a merged-away title win over
+        the kept title's that aren't the user's (G4: nothing automatic changes them; L3.1's intent review #1)."""
         keep = self._work_row(keep_id)
         others = [w for w in (self._work_row(o) for o in other_ids if o != keep_id) if w]
         if keep is None or not others:
@@ -2430,6 +2465,7 @@ class Store:
             moved += [(r[0], o["id"]) for r in self.conn.execute("SELECT id FROM items WHERE work_id = ?", (o["id"],))]
         fields = {}
         titles = json.loads(keep["titles"] or "[]")
+        users_cover = lambda w: bool(w.get("cover_locked")) or w.get("cover_source") == "user"
         for o in others:
             for t in [o["title"]] + json.loads(o["titles"] or "[]"):
                 if t and t != keep["title"] and t not in titles:
@@ -2437,12 +2473,19 @@ class Store:
             for col in ("anilist_id", "tmdb_id", "youtube_channel", "folder_key"):
                 if keep[col] is None and fields.get(col) is None and o[col] is not None:
                     fields[col] = o[col]
-            if keep["media_type"] is None and "media_type" not in fields and o["media_type"] is not None:
+            users_type = users_first and o["media_type_by"] == "user" and \
+                "user" not in (keep["media_type_by"], fields.get("media_type_by"))
+            if o["media_type"] is not None and (users_type or (keep["media_type"] is None and "media_type" not in fields)):
                 fields["media_type"], fields["media_type_by"] = o["media_type"], o["media_type_by"]
-            if keep["cover_source"] in (None, "generated") and "cover_source" not in fields and \
-                    o["cover_source"] not in (None, "generated"):
+            users_art = users_first and users_cover(o) and not users_cover(keep) and not users_cover(fields)
+            if users_art or (keep["cover_source"] in (None, "generated") and "cover_source" not in fields and
+                             o["cover_source"] not in (None, "generated")):
                 for col in ("cover_source", "cover_ref", "cover_path", "cover_fetched_at", "cover_locked"):
                     fields[col] = o[col]
+            if users_first and o["title_by_user"] and not keep["title_by_user"] and "title" not in fields:
+                fields["title"], fields["title_by_user"] = o["title"], 1          # the user's name shows
+        if fields.get("title", keep["title"]) != keep["title"]:
+            titles = [t for t in titles if t != fields["title"]] + [keep["title"]]   # the kept name stays findable
         fields["titles"] = _dumps(titles)
         self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(keep_id, i) for i, _o in moved])
         change.works["items"] += [(i, o, keep_id) for i, o in moved]
@@ -5735,7 +5778,12 @@ def _store_sync_disk(self, walk=None, folders=None):
     walk = walk or (walk_folders(self.data_dir, scope) if scope else walk_library(self.data_dir))
     known, version = _known(self, scope)
     delta = _sync_delta(self, walk, known, scope)
-    hato = path_key(HATO_FOLDER)
+    if scope and delta["went"]:
+        # 9a: a file gone from a polled folder may have moved to a folder the poll can't see (one holding no item):
+        # the whole library is looked at in this same check, so the move is followed (the intent review #5)
+        scope, walk = None, walk_library(self.data_dir)
+        known, version = _known(self, None)
+        delta = _sync_delta(self, walk, known, None)
     asks = _rename_asks(self)
     live = [a for a in asks if os.path.exists(os.path.join(self.data_dir, _strip(str(a.get("rel", "")))))]
     if live != asks:                                       # a held-out file gone: its question goes with it
@@ -5800,7 +5848,7 @@ def _store_sync_disk(self, walk=None, folders=None):
         if new:
             prepared = [(rel, rel, key, entries[rel], (size, mtime_ns, "available")) for rel, key, size, mtime_ns in new]
             arrivals = cmd.meta.get("arrivals_on")
-            dests = [("end", "arrivals") if arrivals and path_key(_rel_dir(rel)) == hato else
+            dests = [("end", "arrivals") if arrivals and _in_hato(rel) else
                      self._destination(rel, entries[rel], TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now"), set())
                      for rel, _k, _s, _m in new]
             dest_tier = [d[2] if d[0] in ("after", "before") else d[1] for d in dests]
@@ -6009,6 +6057,10 @@ def read_only_schedule(language, data_dir, user_files_dir):
     lib = doc.get("surasura_library") if isinstance(doc.get("surasura_library"), dict) else {}
     held = [e for t in ANALYSED for e in lists[t] if isinstance(e, dict)]
     others = [e for key in ("graduated", "arrivals") for e in (lib.get(key) or []) if isinstance(e, dict)]
+    try:                                                   # a 3.0 copy's switch: a hato drop waits (K82)
+        waits = int(lib.get("store_schema") or 0) >= 2 and bool((lib.get("meta") or {}).get("arrivals_on"))
+    except (TypeError, ValueError, AttributeError):
+        waits = False
     known = {path_key(_strip(str(e.get("physical_path") or ""))) for e in held + others}
     with_items = {path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) for e in held + others}
     tops = {t: 0 for t in ANALYSED}
@@ -6028,6 +6080,8 @@ def read_only_schedule(language, data_dir, user_files_dir):
                      and path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) == dkey]
             return found[-1] if found else None
         if dkey == hato or dkey.startswith(hato + "/"):
+            if waits:
+                continue                                   # in New arrivals, as the store files it: never analysed
             where = ("top", "now")
         elif folder_dir in TIER_OF_FOLDER:
             where = ("top", TIER_OF_FOLDER[folder_dir])

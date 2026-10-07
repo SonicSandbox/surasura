@@ -153,6 +153,35 @@ def test_a_second_title_with_the_same_id_merges_into_the_first(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_merge_by_a_records_id_keeps_the_users_name_type_and_cover(language):
+    """G2.2-6 with G4 (L3.1's intent review #1): a record whose id another title holds makes the two one title, the
+    lower id kept — and what the user chose on the merged-away title (its name, *What is it?*, a locked cover) is what
+    the title shows; the kept title's own name stays among its other titles, so search still finds it."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    shows = [i for i in store.ids("soon") if store.item(i)["parent_folder"]]
+    pair = {_work(store, i): i for i in shows}
+    low, high = sorted(pair)[:2]
+    store.register(os.path.join(data_dir, store.item(pair[low])["rel_path"]), _record("u1", anilist_id=31,
+                                                                                      media_type="anime"))
+    store.set_cover(low, "anilist", ref="31", path="cache:31.jpg")
+    old_name = store._work_row(low)["title"]
+    store.rename_work(high, w[90])
+    store.set_media_type([high], "drama")
+    store.set_cover(high, "user", path="user:mine.jpg", locked=True)
+    store.register(os.path.join(data_dir, store.item(pair[high])["rel_path"]), _record("u2", anilist_id=31))
+    assert _work(store, pair[high]) == low
+    row = store._work_row(low)
+    assert (row["title"], row["title_by_user"]) == (w[90], 1), "the user's name"
+    assert store.media_type(low) == ("drama", "user")
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("user", "user:mine.jpg", 1)
+    assert old_name in json.loads(row["titles"]) and w[90] not in json.loads(row["titles"])
+    assert low in store.search(old_name)[0], "the kept name still finds it"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_only_match_is_asked_never_joined(language):
     """05 §5.3: two titles that share only a name (no id says they're one) are never joined by Add or the sync: they
     are listed as *Same title?* until the user answers — *Join* (`merge_works`) or *Keep apart* (`keep_apart`)."""
@@ -766,6 +795,81 @@ def test_the_sync_lands_a_hato_drop_in_new_arrivals(language):
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[106]}.srt")
     old = store.sync_disk()["added"][0]
     assert store.ids("now")[0] == old
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_hatos_hand_off_titles_a_drop_the_scan_found_first(language):
+    """✅ L3.1 call b, the intent review #2: the scan files a loose drop in a title of its own, named by its file; hato's
+    hand-off then names its show, so the drop joins that title (by its id, or its show's name) and an *after the show*
+    rule finds the show. A drop whose title the user already touched stays where the user put it."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    show = [i for i in store.ids("soon") if store.item(i)["parent_folder"]]
+    work = _work(store, show[0])
+    mates = [i for i in store.ids("soon") if _work(store, i) == work]
+    store.register(os.path.join(data_dir, store.item(mates[0])["rel_path"]), _record("h0", anilist_id=41))
+    drop = f"{ls.HATO_FOLDER}/{w[120]}.srt"
+    touch(data_dir, drop)
+    found = store.sync_disk()["added"][0]
+    scanned = _work(store, found)
+    assert store.item(found)["tier"] == "arrivals" and scanned != work
+    change = store.register(os.path.join(data_dir, drop), _record("h1", anilist_id=41, show={"title": w[121]}),
+                            rules={"hato": "after-show"})
+    assert _work(store, found) == work, "the show's title takes it"
+    assert change.rule == "after-show"
+    soon = store.ids("soon")
+    assert soon.index(found) == soon.index(mates[-1]) + 1, "after the show's last episode in Current"
+    assert scanned in store.tidy_works(), "the scan's own title goes in the helper's run"
+    named = f"{ls.HATO_FOLDER}/{w[122]}.srt"                     # a show only named: a title of that name
+    touch(data_dir, named)
+    second = store.sync_disk()["added"][0]
+    store.register(os.path.join(data_dir, named), _record("h2", show={"title": w[123]}))
+    assert store._work_row(_work(store, second))["title"] == w[123]
+    kept = f"{ls.HATO_FOLDER}/{w[124]}.srt"                      # the user named it first: never re-homed …
+    touch(data_dir, kept)
+    third = store.sync_disk()["added"][0]
+    store.rename_work(_work(store, third), w[125])
+    store.register(os.path.join(data_dir, kept), _record("h3", show={"title": w[121]}))
+    assert _work(store, third) != work and store._work_row(_work(store, third))["title"] == w[125]
+    store.register(os.path.join(data_dir, kept), _record("h4", anilist_id=41))   # … but one id is one title (G2.2-6)
+    row = store._work_row(_work(store, third))
+    assert _work(store, third) == work and (row["title"], row["title_by_user"]) == (w[125], 1), "the user's name"
+    typed = f"{ls.HATO_FOLDER}/{w[129]}.srt"                     # the user said what it is: it stays in its title
+    touch(data_dir, typed)
+    fourth = store.sync_disk()["added"][0]
+    own = _work(store, fourth)
+    store.set_media_type([own], "movie")
+    store.register(os.path.join(data_dir, typed), _record("h5", show={"title": w[121]}))
+    assert _work(store, fourth) == own
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_below_hatos_folder_waits_too_and_read_only_mode_agrees(language):
+    """K82 (the intent review #6): a file in a folder below hato's drop folder is a hato drop like one directly in it —
+    the scan files it in New arrivals; read-only mode, reading a 3.0 copy with New arrivals on, leaves an untracked
+    drop out of the lists Generate reads (it waits), and with New arrivals off puts it at NOW's top, as 2.x does."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    w = names(language)
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[126]}/{w[127]}.srt")
+    got = store.sync_disk()["added"][0]
+    assert store.item(got)["tier"] == "arrivals"
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    untracked = f"{ls.HATO_FOLDER}/{w[128]}.srt"
+    touch(data_dir, untracked)
+
+    def listed():
+        schedule = ls.read_only_schedule(language, data_dir, user_files_dir)
+        return [e.get("physical_path") for t in ls.ANALYSED for e in schedule[ls.TIERS[t][0]] if isinstance(e, dict)]
+    assert untracked not in listed(), "it waits"
+    store.set_library_options(arrivals_on=False)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    schedule = ls.read_only_schedule(language, data_dir, user_files_dir)
+    assert schedule[ls.TIERS["now"][0]][0]["physical_path"] == untracked, "2.x: NOW's top"
     store.close()
 
 

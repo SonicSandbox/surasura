@@ -34,6 +34,7 @@ from app import zh_script   # cheap: its tables decode only on the first convers
 from app import names       # cheap: its tables decode only when a Japanese word is first read
 from app.batch_gc import without_cycle_collection
 from app.unicode_ranges import HAN, KANA, KANA_LETTERS
+from app import plan_rules  # the rules a Generate and the fast re-plan share (Orth / Forms, the progressive pass)
 
 # Default Weights (Overwritten by settings.json if present)
 WEIGHT_HIGH = 10
@@ -1230,7 +1231,7 @@ def _sounds(words, fillers):
 # writes it so, and a known ぐっ makes ぐっと known. Only a kana adverb ending in っ directly followed by the case
 # particle と: 「バシッ」と, バシッ！と and 行っとく stay as they are; ポンと and くるりと, whose と is optional,
 # too.
-_SOKUON_ADVERB = re.compile(f"^[{KANA_LETTERS}ー]+[っッ]$")
+_SOKUON_ADVERB = plan_rules._SOKUON_ADVERB      # one pattern: _display_orth reads a sound word's と by it too
 
 
 def _join_sokuon_to(words, pos1s=None):
@@ -2378,81 +2379,10 @@ def _known_term(term):
     cut = _sanitize_term(term)
     return term.strip() if _JA_TARGET_RE.search(term.strip()[len(cut) + 1:]) else cut
 
-# JMdict's readings that end in と (app/jmdict_data.py's READINGS: どきっと, ぐっと, はっと), read once — which sound words a
-# dictionary writes with their と. Empty when the table can't be read: then every row shows its commonest spelling.
-_TO_READINGS = []
-
-
-def _jmdict_to_readings():
-    if not _TO_READINGS:
-        try:
-            from app import jmdict_data
-            readings = (line.partition("\t")[0] for line in jmdict_data.readings().split("\n"))
-            _TO_READINGS.append(frozenset(reading for reading in readings if reading.endswith("と")))
-        except Exception:
-            _TO_READINGS.append(frozenset())
-    return _TO_READINGS[0]
-
-
-def _hiragana(text):
-    """Katakana to hiragana, everything else as it is (anki_match.fold_kana): ドキッと -> どきっと."""
-    return "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in text)
-
-
-def _said_with_to(orths):
-    """{spelling: count} of a sound word said with と (ドキッと) on a row that holds it bare too (ドキッ — one row:
-    join_affixes' sound word + と), when JMdict lists the word with its と (どきっと); {} for every other row — a word
-    whose kana ends in と is no sound word (弟 beside おとうと keeps its commonest spelling)."""
-    with_to = [orth for orth in orths if orth and orth.endswith("と") and _SOKUON_ADVERB.match(orth[:-1])]
-    if not with_to:
-        return {}
-    bare = {_hiragana(orth) for orth in orths}
-    listed = _jmdict_to_readings()
-    return {orth: orths[orth] for orth in with_to if _hiragana(orth[:-1]) in bare and _hiragana(orth) in listed}
-
-
-def _display_orth(lemma, orths):
-    """The spelling to SHOW for a word: the commonest orthBase seen for it, else the lemma.
-
-    UniDic's lemma is a lexeme id, not a name. It deliberately merges every spelling of a word into
-    one headword — which is exactly what you want for counting (いう + 言う + 言える are one verb,
-    4,067 occurrences, not three words) and exactly what you do NOT want on a card, because the
-    headword is frequently a form nobody writes: 有る for ある, 呉れる for くれる, and — because
-    UniDic gives proper nouns a katakana lemma — スドウ for 須藤 and トットリ for 鳥取.
-
-    Measured on the live library: 23.7% of listed words that appear in the user's own content were
-    being named with a spelling that content never uses. So `Word` stays the identity and this is
-    the label. Ties fall back to the lemma rather than picking arbitrarily.
-
-    A sound word said with と and without is one row; it shows its と form whenever JMdict lists the word with its と —
-    ドキッと, ぐっと, はっと, as dictionaries and the cards made from the list write it — even where the library says it
-    bare more often (the user, 2026-10-01: "I want them on my cards with the と").
-    """
-    if not orths:
-        return lemma
-    best, best_n = None, 0
-    for orth, n in (_said_with_to(orths) or orths).items():
-        if orth and (n > best_n):
-            best, best_n = orth, n
-    return best or lemma
-
-# How many inflected forms the `Forms` column keeps per row. The report's Search tab matches them
-# as plain substrings, so a handful of the commonest is all it needs — the long tail is noise.
-FORMS_LIMIT = 8
-
-def _display_forms(lemma, orths, surfaces):
-    """The other spellings a word was actually met in, commonest first, joined with `|`.
-
-    Feeds the report's Search tab: typing 食べた finds the 食べる card only because 食べた really
-    occurred in the user's content, never because of a guessed de-inflection. The lemma and the
-    displayed orth are left out — they are already searchable as `Word` and `Orth`. NOT named
-    "Context ...": both report templates collect example sentences with startsWith('Context ').
-    """
-    if not surfaces:
-        return ""
-    shown = {lemma, _display_orth(lemma, orths)}
-    forms = [s for s, _ in sorted(surfaces.items(), key=lambda kv: -kv[1]) if s and s not in shown]
-    return "|".join(forms[:FORMS_LIMIT])
+# The spelling a row shows and the spellings it was met in: one rule, the analyzer's and the fast re-plan's
+# (app/plan_rules.py).
+from app.plan_rules import (FORMS_LIMIT, _jmdict_to_readings, _said_with_to,  # noqa: E402
+                            display_orth as _display_orth, display_forms as _display_forms)
 
 # A list line is compared with the lemma as it stands — the report's Ignore button writes lemmas (為る,
 # 其れ) — so a line typed the way Japanese is mostly written, in hiragana (する, ある, それ), ignored nothing.
@@ -3547,11 +3477,18 @@ def plan_lines(run):
         "target_coverage": run["target_coverage"], "only_i_plus_one": run["only_i_plus_one"],
         "max_contexts": n_contexts, "files": len(found_files), "keys": len(keys),
         "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
+        # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
+        # words, the word lists, files only removed — or anything else, a Generate first).
+        "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
     }
     yield _plan_json(header)
     prefix = os.path.join(data_dir, "")
+    signed = run["signature_parts"]["files"]
+    if [entry[0] for entry in signed] != [f[0] for f in found_files]:
+        raise ValueError("the signature's files aren't the run's")
+    # [rel_path, tier, the file's own digest]: the digest tells a re-plan which files are still the same (E1.3).
     files = [[(f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)).replace("\\", "/"),
-              _PLAN_TIERS.get(f[1], "goal")] for f in found_files]
+              _PLAN_TIERS.get(f[1], "goal"), plan_rules.file_digest(entry)] for f, entry in zip(found_files, signed)]
     for name, table in (("files", files),
                         ("keys", [[key[0], key[1], key in phrase_keys, key in run["halved"],
                                    word_stats[key]["total_count"]] for key in keys]),
@@ -4079,35 +4016,9 @@ def compute_run_signature(language, found_files, args, order_free=False):
     return signature_digest(run_signature_parts(language, found_files, args), order_free)
 
 
-# One encoder for every signature: sorted keys, the text as written, anything else by its str().
-_SIGNATURE_ENCODER = json.JSONEncoder(sort_keys=True, ensure_ascii=False, default=str)
-
-
-def signature_digest(parts, order_free=False, chunked=True):
-    """sha256 of the signature's parts (`run_signature_parts`) as sorted-key JSON, or None for none. `chunked`: encoded
-    chunk by chunk into the hash (`iterencode`) — the same text `json.dumps` writes, so the same digest, but no single
-    call holds the interpreter: the journey check runs this on a worker, and one `json.dumps` of a 20,000-file list
-    held the dashboard's thread 42 ms. The analyzer's own run has no other thread to wait: one call, `json.dumps`' C
-    encoder (`chunked=False`).
-
-    `order_free` (the plan file's, E1.1 01 §1): the files sorted by path, each without its label and weight — which
-    tier a file is in and where, the one thing a re-plan changes; which files, their contents and everything else stay
-    in it."""
-    if parts is None:
-        return None
-    try:
-        if order_free:
-            parts = dict(parts, files=sorted(([fp, sig, st] for fp, sig, _l, _w, st in parts["files"]),
-                                             key=lambda f: f[0]))
-        if not chunked:
-            return hashlib.sha256(_SIGNATURE_ENCODER.encode(parts).encode("utf-8")).hexdigest()
-        digest = hashlib.sha256()
-        for chunk in _SIGNATURE_ENCODER.iterencode(parts):
-            digest.update(chunk.encode("utf-8"))
-        return digest.hexdigest()
-    except Exception as e:
-        print(f"Warning: could not compute run signature: {e}")
-        return None
+# The run signature's digest: one encoder and one rule, the analyzer's and the fast re-plan's (app/plan_rules.py).
+_SIGNATURE_ENCODER = plan_rules.SIGNATURE_ENCODER
+signature_digest = plan_rules.signature_digest
 
 
 def run_signature_parts(language, found_files, args):
@@ -6088,105 +5999,100 @@ def main():
     plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
     plan_prog = []
     
-    for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
-        filename = os.path.basename(file_path)
-        # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
-        # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
-        # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
-        file_counter = file_token_cache.get(file_path)
-        if file_counter is None:
-            file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
+    def _progressive_files():
+        """Each file as the progressive pass reads it (`plan_rules.progressive_pass`), and the plan file's record of
+        it: the words not known before any file, in the file's order (their uses after pieces, and those a phrase
+        took), and the rare compounds' and the set phrases' credits."""
+        for file_path, _label, _weight, _source_type in found_files:
+            # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
+            # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
+            # cache-miss branch re-tokenizes, so behaviour is never wrong, only slower.
+            file_counter = file_token_cache.get(file_path)
+            if file_counter is None:
+                file_counter = Counter((l, r) for (l, r, s, o) in tokenizer.tokenize(extract_text(file_path, language)))
 
-        # 1. Calculate File Baselines
-        file_total_tokens = 0
-        file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
-        file_current_start_count = 0      # Baseline + Learned in previous files
+            file_total_tokens = 0
+            file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
+            # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
+            file_bound = file_bound_cache.get(file_path)
+            # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
+            file_pieces = file_piece_cache.get(file_path)
+            plan_tokens, plan_bound, plan_siblings = [], {}, {}
+            keys, counts, bounds = [], [], []
 
-        file_unknown_token_counts = Counter() # Count of each (lemma, reading) in THIS file
-        # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
-        file_bound = file_bound_cache.get(file_path)
-        # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
-        file_pieces = file_piece_cache.get(file_path)
-        plan_tokens, plan_bound, plan_siblings = [], {}, {}
+            for key, count in file_counter.items():
+                lemma = key[0]
+                file_total_tokens += count
 
-        for key, count in file_counter.items():
-            lemma = key[0]
-            file_total_tokens += count
-
-            # Check strictly against initial known list — known then in the session too (it starts from that list) —
-            # and a one-character word the list never offers: nothing to learn either (§ One-character words). The
-            # aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read here again asks.
-            known = word_state(key)
-            if known is None:
-                state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
-                          else 0) + (4 if _never(key) else 0))
-            else:
-                state = known[0]
-            if state & 5:
-                file_baseline_known_count += count
-                file_current_start_count += count
-                continue
-            if file_pieces and key in file_pieces:
-                file_baseline_known_count += file_pieces[key]
-                file_current_start_count += file_pieces[key]
-                count -= file_pieces[key]
-                if count <= 0:
-                    continue
-            if lemma in plan_lemmas:
-                k = plan_index.get(key)
-                if k is None:
-                    plan_siblings[lemma] = plan_siblings.get(lemma, 0) + count
+                # Check strictly against initial known list — known then in the session too (it starts from that
+                # list) — and a one-character word the list never offers: nothing to learn either (§ One-character
+                # words). The aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read
+                # here again asks.
+                known = word_state(key)
+                if known is None:
+                    state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
+                              else 0) + (4 if _never(key) else 0))
                 else:
-                    plan_tokens += (k, count)
-                    if file_bound and key in file_bound:
-                        plan_bound[k] = file_bound[key]
-            # Check against cumulative session known (includes previous files)
-            if key in session_known or lemma in session_lemmas:
-                file_current_start_count += count
-            elif file_bound is None or file_bound.get(key, 0) < count:
-                file_unknown_token_counts[key] += count
+                    state = known[0]
+                if state & 5:
+                    file_baseline_known_count += count
+                    continue
+                if file_pieces and key in file_pieces:
+                    file_baseline_known_count += file_pieces[key]
+                    count -= file_pieces[key]
+                    if count <= 0:
+                        continue
+                bound = file_bound.get(key, 0) if file_bound else 0
+                if lemma in plan_lemmas:
+                    k = plan_index.get(key)
+                    if k is None:
+                        plan_siblings[lemma] = plan_siblings.get(lemma, 0) + count
+                    else:
+                        plan_tokens += (k, count)
+                        if file_bound and key in file_bound:
+                            plan_bound[k] = file_bound[key]
+                keys.append(key)
+                counts.append(count)
+                bounds.append(bound)
 
-        plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
+            plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
 
-        # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
-        # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
-        file_credited = Counter()
-        for (lemma, reading), count in file_credit_cache.get(file_path, {}).items():
-            if not (lemma in ignore_list or _never((lemma, reading))
-                    or (lemma, reading) in session_known or lemma in session_lemmas):
-                file_credited[(lemma, reading)] += count
-                file_unknown_token_counts[(lemma, reading)] += count
-        # So is a set phrase met here — a row of its own, in the file it is first met in — which makes none of the
-        # file's tokens known either: learning 気がする adds nothing to what 気 and する already cover.
-        if phrase_keys:
-            for index, count in file_phrase_cache.get(file_path, {}).items():
-                phrase = _phrase_set.entry(index)
-                key = (phrase.word, phrase.reading)
-                if key in phrase_keys and key not in session_known:
-                    file_credited[key] += count
-                    file_unknown_token_counts[key] += count
-        
-        # 2. Identify and prepare unknown words
-        file_new_words = set()
-        file_rows_buffer = []
-        
-        for (lemma, reading), count in file_unknown_token_counts.items():
-            if valid_lrs is not None and (lemma, reading) not in valid_lrs:
-                continue
-                
-            # It's a new word for this progressive sequence
+            # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
+            # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
+            credits = [(key, count) for key, count in file_credit_cache.get(file_path, {}).items()
+                       if not (key[0] in ignore_list or _never(key))]
+            # So is a set phrase met here — a row of its own, in the file it is first met in — which makes none of the
+            # file's tokens known either: learning 気がする adds nothing to what 気 and する already cover.
+            phrases = []
+            if phrase_keys:
+                for index, count in file_phrase_cache.get(file_path, {}).items():
+                    phrase = _phrase_set.entry(index)
+                    key = (phrase.word, phrase.reading)
+                    if key in phrase_keys:
+                        phrases.append((key, count))
+            yield file_total_tokens, file_baseline_known_count, (keys, counts, bounds), (), credits, phrases
+
+    _no_stats = {"score": 0, "total_count": 0, "high_count": 0, "low_count": 0, "goal_count": 0,
+                 "final_context_1": "", "final_context_2": "", "final_context_3": ""}
+
+    def _listed(key):
+        if valid_lrs is not None and key not in valid_lrs:
+            return False
+        return word_stats.get(key, _no_stats)["total_count"] >= floor_count
+
+    def _rank(key):
+        stats = word_stats.get(key, _no_stats)
+        return stats["score"], stats["total_count"]
+
+    for seq_idx, ((file_path, _label, _weight, _source_type), (file_rows, baseline_pct, total)) in enumerate(zip(
+            found_files, plan_rules.progressive_pass(_progressive_files(), session_known, session_lemmas,
+                                                     itemgetter(0), _listed, _rank, args.target_coverage)), 1):
+        filename = os.path.basename(file_path)
+        for (lemma, reading), count, known_count, start_pct, end_pct in file_rows:
             tier_labels = get_tier_label(lemma, freq_data)
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
-            stats = word_stats.get((lemma, reading), {
-                "score": 0, "total_count": 0, 
-                "high_count": 0, "low_count": 0, "goal_count": 0,
-                "final_context_1": "", "final_context_2": "", "final_context_3": ""
-            })
-            
-            if stats["total_count"] < floor_count:
-                continue
-
-            file_rows_buffer.append({
+            stats = word_stats.get((lemma, reading), _no_stats)
+            row = {
                 "Sequence": seq_idx,
                 "Source File": filename,
                 "Word": lemma,
@@ -6206,60 +6112,21 @@ def main():
                 "Count (Low)": stats.get("low_count", 0),
                 "Count (Goal)": stats.get("goal_count", 0),
                 "Modality": _modality_of(lemma) or "",
-            })
-            
+            }
             # Dynamically attach all context strings currently tracked
             for k, v in stats.items():
                 if k.startswith("final_context_"):
                     # Map final_context_N -> Context N
-                    idx_str = k.replace("final_context_", "")
-                    file_rows_buffer[-1][f"Context {idx_str}"] = v
+                    row[f"Context {k.replace('final_context_', '')}"] = v
                 elif k.startswith("final_src_"):
                     # Map final_src_N -> Src N (the source file behind that example sentence)
-                    file_rows_buffer[-1][f"Src {k.replace('final_src_', '')}"] = v
-                    
-            file_new_words.add((lemma, reading))
-        
-        # 3. Sort by priority
-        # This determines the order we "learn" them to reach coverage
-        file_rows_buffer.sort(key=lambda x: (x["Score"], x["Occurrences (Global)"]), reverse=True)
-        
-        # 4. Calculate Progressive Understanding with Target Coverage
-        current_known = file_current_start_count
-        baseline_pct = (file_baseline_known_count / file_total_tokens * 100) if file_total_tokens > 0 else 0
-        
-        words_learned_this_file = set()
-        
-        for row in file_rows_buffer:
-            start_pct = (current_known / file_total_tokens * 100) if file_total_tokens > 0 else 0
-            
-            # Helper to check if we met target
-            if args.target_coverage > 0 and start_pct >= args.target_coverage:
-                # Target met for this file! valid to stop here.
-                # Words skipped here remain "unknown" for future files.
-                break
-
-            word_count_in_file = row["Occurrences (File)"]
-            current_known += word_count_in_file - file_credited[(row["Word"], row["Reading"])]
-            
-            end_pct = (current_known / file_total_tokens * 100) if file_total_tokens > 0 else 0
-            
-            row["Baseline %"] = round(baseline_pct, 2)
-            row["Current %"] = round(start_pct, 2)
-            row["New %"] = round(end_pct, 2)
-            row["Known Count"] = current_known
-            row["Total Count"] = file_total_tokens
-            
+                    row[f"Src {k.replace('final_src_', '')}"] = v
+            row["Baseline %"] = baseline_pct
+            row["Current %"] = start_pct
+            row["New %"] = end_pct
+            row["Known Count"] = known_count
+            row["Total Count"] = total
             progressive_rows.append(row)
-            
-            # Track what we actually learned
-            lemma = row["Word"]
-            reading = row["Reading"]
-            words_learned_this_file.add((lemma, reading))
-            
-        # After finishing the file, these words are now "Known" for the next file
-        session_known.update(words_learned_this_file)
-        session_lemmas.update([x[0] for x in words_learned_this_file])
         
     df_prog = pd.DataFrame(progressive_rows)
     if not df_prog.empty:
@@ -6314,6 +6181,7 @@ def main():
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "run_signature": _run_sig, "order_free_signature": signature_digest(_sig_parts, order_free=True,
                                                                                          chunked=False),
+            "signature_parts": _sig_parts,
             "library": _library, "weights": (WEIGHT_HIGH, WEIGHT_LOW, WEIGHT_GOAL), "floor": floor_count,
             "total_tokens": total_tokens, "phrase_rows": _phrase_set is not None,
             "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),

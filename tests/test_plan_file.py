@@ -248,7 +248,7 @@ def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
             for i in range(0, len(table), 2):
                 uses[table[i]] += table[i + 1]
     assert uses == [k[4] for k in plan["keys"]]
-    check_replay(plan, [(f, tier) for f, (_path, tier) in enumerate(plan["files"])], run)
+    check_replay(plan, [(f, tier) for f, (_path, tier, *_digest) in enumerate(plan["files"])], run)
 
 
 def test_the_japanese_plans_hold_set_phrases_half_scores_and_spelling_ties(runs):
@@ -286,7 +286,7 @@ def test_the_plan_replayed_in_another_order_is_that_orders_generate(runs, tmp_pa
     cases.build(root, case, order)
     cases.generate(root, case)
     other = read_run(root)
-    by_name = {path.rsplit("/", 1)[-1]: f for f, (path, _tier) in enumerate(plan["files"])}
+    by_name = {path.rsplit("/", 1)[-1]: f for f, (path, _tier, *_digest) in enumerate(plan["files"])}
     check_replay(plan, [(by_name[name], tier) for tier, name in order], other)
 
 

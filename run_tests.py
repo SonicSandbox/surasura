@@ -31,8 +31,8 @@ def _suites(project_root):
 # hook, SURASURA_TEST_TIMES), the file's size until there is one. How many shards: as many as fit in the memory free
 # now (one unsplit core process peaked at ~4.8 GB; each further shard adds ~0.5 GB; RESERVE_MB is left for the module
 # suites and the machine), at most SHARD_MAX and half the CPUs idle over half a second as it starts (two logical CPUs
-# share a core) — so a quiet machine gets more, one already running other test runs fewer. SURASURA_TEST_SHARDS=N chooses N (1: unsplit). Measurements: tracks/ship/notes/ in the
-# 3.0 planning folder (parallel-tests.md, Job 3).
+# share a core) — so a quiet machine gets more, one already running other test runs fewer. SURASURA_TEST_SHARDS=N
+# chooses N (1: unsplit).
 
 SHARD_MAX = 8
 CORE_PEAK_MB = 4800
@@ -173,7 +173,8 @@ def _run_shard(project_root, label, files, times_path):
         [sys.executable, "-m", "pytest", *files, "-ra", "-p", "no:cacheprovider"],
         cwd=project_root, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return label, result.returncode, _decode(result.stdout), time.perf_counter() - started
+    code = 0 if result.returncode == 5 else result.returncode     # 5: no tests in these files (a helper's), no failure
+    return label, code, _decode(result.stdout), time.perf_counter() - started
 
 
 def _decode(raw):
@@ -211,7 +212,9 @@ def run_all(project_root):
     suites = _suites(project_root)
     files = _core_files(project_root)
     cpus = os.cpu_count()
-    count = min(_shard_count(_free_memory_mb(), cpus, _idle_cpus(cpus)), len(files)) if len(files) > 1 else 1
+    chosen = os.environ.get("SURASURA_TEST_SHARDS", "").strip().isdigit()
+    idle = None if chosen or len(files) < 2 else _idle_cpus(cpus)        # half a second, spent only when it counts
+    count = min(_shard_count(_free_memory_mb(), cpus, idle), len(files)) if len(files) > 1 else 1
     shards = _shards(project_root, files, count) if count > 1 else []
     jobs = [(f"tests [{i}/{len(shards)}]", shard) for i, shard in enumerate(shards, 1)] or [("tests", None)]
     jobs += [(suite, None) for suite in suites[1:]]
@@ -226,19 +229,21 @@ def run_all(project_root):
     times_dir = tempfile.mkdtemp(prefix="surasura-times-")
     started = time.perf_counter()
     results = {}
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        futures = [pool.submit(_run_shard, project_root, label, files_, os.path.join(times_dir, f"{i}.json"))
-                   if files_ else pool.submit(_run_suite, project_root, label)
-                   for i, (label, files_) in enumerate(jobs)]
-        for future in as_completed(futures):
-            label, code, output, secs = future.result()
-            results[label] = (code, output, secs)
-            verdict = "PASS" if code == 0 else "FAIL"
-            print(f"  {verdict}  {label:<34} {secs:5.1f}s  {_last_line(output)}", flush=True)
-    wall = time.perf_counter() - started
-    if shards:
-        _save_times(project_root, [os.path.join(times_dir, f"{i}.json") for i in range(len(shards))])
-    shutil.rmtree(times_dir, ignore_errors=True)
+    try:
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            futures = [pool.submit(_run_shard, project_root, label, files_, os.path.join(times_dir, f"{i}.json"))
+                       if files_ else pool.submit(_run_suite, project_root, label)
+                       for i, (label, files_) in enumerate(jobs)]
+            for future in as_completed(futures):
+                label, code, output, secs = future.result()
+                results[label] = (code, output, secs)
+                verdict = "PASS" if code == 0 else "FAIL"
+                print(f"  {verdict}  {label:<34} {secs:5.1f}s  {_last_line(output)}", flush=True)
+        wall = time.perf_counter() - started
+        if shards:
+            _save_times(project_root, [os.path.join(times_dir, f"{i}.json") for i in range(len(shards))])
+    finally:
+        shutil.rmtree(times_dir, ignore_errors=True)
 
     failed_jobs = [label for label, _ in jobs if results[label][0] != 0]
     for label in failed_jobs:

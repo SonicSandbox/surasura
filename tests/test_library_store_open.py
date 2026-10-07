@@ -102,7 +102,7 @@ def test_only_the_helper_auto_checkpoints(language):
 # --- 2. busy at open --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_store_busy_for_half_a_second_still_opens(language):
+def test_a_store_busy_for_a_moment_still_opens(language):
     migrated(language).close()
     ready = threading.Event()
     # Half of the 1 s retry in a timed run (SURASURA_STORE_BENCH=1); 0.2 s beside other runs, where the holder's
@@ -279,6 +279,7 @@ db, lang, data, uf, out, n, mode = sys.argv[1:8]
 store = ls.Store(db, lang, data, uf, "helper" if mode == "checkpoint" else "window")
 spans = []
 i = 0
+deadline = time.monotonic() + 60
 while i < int(n):
     try:
         if mode == "checkpoint":
@@ -288,6 +289,8 @@ while i < int(n):
             with store._writing():
                 t0 = time.perf_counter(); store.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (1 + i % 5,)); t1 = time.perf_counter()
     except ls.StoreBusy:
+        if time.monotonic() > deadline:
+            raise                # a lock never let go is the fault this test is for: fail, never spin
         continue                 # 5 s without the lock on a loaded machine: "try again", as the app's callers do
     spans.append((t0, t1))
     i += 1
@@ -314,6 +317,7 @@ def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
     def thread_writer():
         s = ls.Store(db, language, data_dir, user_files_dir)
         done = 0
+        deadline = time.monotonic() + 60
         while done < 60:
             try:
                 with s._writing():
@@ -321,6 +325,8 @@ def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
                     s.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (2,))
                     spans.append((t0, time.perf_counter()))
             except ls.StoreBusy:
+                if time.monotonic() > deadline:
+                    raise            # never let go: the span count below fails the test
                 continue             # starved for 5 s beside other runs: try again; the test is about overlap
             done += 1
         s.close()
@@ -329,7 +335,7 @@ def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(90)
     for out, proc in procs:
         assert proc.wait(60) == 0
         spans += [tuple(s) for s in json.load(open(out))]

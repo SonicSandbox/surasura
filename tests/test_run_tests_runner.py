@@ -285,3 +285,11 @@ def test_a_shard_records_its_file_times_through_the_conftest(tmp_path):
     assert result.returncode == 0, result.stdout.decode("utf-8", "replace")
     recorded = json.loads(times.read_text(encoding="utf-8"))
     assert list(recorded) == ["tests/test_run_tests_runner.py"] and recorded["tests/test_run_tests_runner.py"] > 0
+
+
+@pytest.mark.parametrize("pytest_code, code", [(5, 0), (1, 1), (0, 0)])
+def test_a_shard_of_files_without_tests_passes(tmp_path, monkeypatch, pytest_code, code):
+    """A helper named test_*.py holds no tests: alone in a shard, pytest says 5 ("no tests collected"), not a failure."""
+    monkeypatch.setattr(run_tests.subprocess, "run",
+                        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, pytest_code, stdout=b"= no tests ran =\n"))
+    assert run_tests._run_shard(str(tmp_path), "tests [1/2]", ["tests/test_support.py"], "t.json")[1] == code

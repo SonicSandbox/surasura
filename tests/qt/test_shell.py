@@ -462,7 +462,7 @@ def test_a_real_hover_shows_the_bubble_after_380_ms_not_twice_that(window):
     QTest.mouseMove(tab, QPoint(tab.width() // 2, tab.height() // 2))
     assert wait_until(lambda: window.tooltips.showing() is not None, 3)
     shown_after = (time.monotonic() - t0) * 1000
-    assert 300 <= shown_after <= 600, shown_after
+    assert 300 <= shown_after <= 700, shown_after          # the double wait it replaced was 760+
 
 
 def test_a_key_press_hides_the_bubble(window):

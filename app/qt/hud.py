@@ -47,6 +47,7 @@ class Hud(QObject):
         self.over = []                              # (ms, when) of each step over the budget
         self.late = []                              # how late each tick of the 2 ms timer came, ms
         self._tick_at = None
+        self._discard = False
         self._awake_at = None
         self._frame_at = None
         self.started = False
@@ -110,9 +111,13 @@ class Hud(QObject):
         if self._awake_at is None:
             return
         now = time.perf_counter()
-        ms = (now - self._awake_at) * 1000
+        started = self._awake_at
+        ms = (now - started) * 1000
         self._awake_at = None
-        if now >= self.ignore_before:
+        if self._discard:                          # the measuring script's own work (scheduling its burst)
+            self._discard = False
+            return
+        if started >= self.ignore_before:          # stretches that began after the first paint (start-up excluded)
             self.steps.append(ms)
             if ms > STEP_BUDGET_MS:
                 self.over.append((round(ms, 2), now))
@@ -130,6 +135,11 @@ class Hud(QObject):
             self._frame_at = None
             del self.frames[:-5000]
 
+    def discard_current(self):
+        """Leave the stretch running now out of the count (the measuring script calls it around its own set-up)."""
+        self._discard = True
+        self._tick_at = None
+
     @contextmanager
     def span(self, name):
         t0 = time.perf_counter()
@@ -146,6 +156,7 @@ class Hud(QObject):
         out["spans"] = {k: {"n": len(v), "p95_ms": round(p95(v), 2), "max_ms": round(max(v), 2)}
                         for k, v in self.spans.items()}
         out["over"] = [ms for ms, _ in self.over[-20:]]
+        out["over_at_ms"] = [round((at - self.ignore_before) * 1000) for _, at in self.over[-20:]]   # after the first paint
         out["late"] = {"n": len(self.late), "p95_ms": round(p95(self.late), 2),
                        "max_ms": round(max(self.late, default=0.0), 2),
                        "over_4ms": sum(1 for v in self.late if v > STEP_BUDGET_MS)}
@@ -267,6 +278,8 @@ class Probe(QObject):
                 return
             with hud.span(name):
                 fn()
+        if hud is not None:
+            hud.discard_current()                  # scheduling 510 timers is the script's own work, not the window's
         names = list(self.window.tab_buttons)
         for i in range(10):
             QTimer.singleShot(40 * i, lambda n=names[i % len(names)]: timed("tab-switch", lambda: self.window.show_tab(n)))

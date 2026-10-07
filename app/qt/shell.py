@@ -653,8 +653,9 @@ def main(argv=None):
     services = Services()
     window = open_window(app, services)
     connect_instance(window, instance)
-    hud = hud_module.Hud(window).start() if hud_module.wanted(argv) else None
     probe_file = os.environ.get("SURASURA_SHELL_PROBE")
+    # (measuring, the HUD keeps its overlay off: the overlay's own first show would be timed as the window's)
+    hud = hud_module.Hud(window, overlay=not probe_file).start() if hud_module.wanted(argv) else None
     if probe_file:                                    # tests/qt/measure_shell.py: shown without taking the keyboard
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         hud_module.Probe(window, probe_file, hud=hud)

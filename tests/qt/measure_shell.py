@@ -38,13 +38,12 @@ def one_run(idle, hud, busy=False, fontengine=""):
     env.pop("SURASURA_FREEZE_MOTION", None)
     if hud:
         env.update(SURASURA_HUD="1", SURASURA_SHELL_PROBE_EXERCISE="1")
+    else:
+        env.pop("SURASURA_HUD", None)
     if busy:
         env["SURASURA_SHELL_PROBE_BUSY"] = "1"
     if fontengine:
         env["QT_QPA_PLATFORM"] = "windows:fontengine=" + fontengine
-
-    else:
-        env.pop("SURASURA_HUD", None)
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "app_entry.py")], cwd=root, env=env,
                           capture_output=True, text=True, timeout=idle + 60)
     if not os.path.exists(probe):

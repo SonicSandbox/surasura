@@ -159,7 +159,7 @@ def schema1_store(language, doc):
 def no_line(store):
     """2.x's placement, line-free: the Soon line's key taken out, so the tiers no longer follow it (schema 2 always
     holds one). Only for the tests that hold the store's placement to 2.4's frozen code; the line's own rule, on top of
-    every command, is tested in test_library_store_line.py."""
+    every command, is tested in test_library_store_commands.py (the Soon line)."""
     with store._writing():
         store.conn.execute("DELETE FROM meta WHERE key = 'soon_line'")
     return store

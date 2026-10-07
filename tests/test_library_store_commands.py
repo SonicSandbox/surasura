@@ -1691,3 +1691,185 @@ def test_set_tier_and_a_small_insert_timed_at_100k(language):
            each(20, lambda n: store.insert(next(seasons), "soon")), 50, per_item=0.00012)
     probe.close()
     store.close()
+
+
+# ================================================================================================ #
+# The Soon line (L3.1 row 3.1.3; the L2.2 pack 05 §5.1, 06 §6.4; ✅ Q2-4, G2.2-1)
+# ================================================================================================ #
+
+def _line_holds(store):
+    """Current's first `soon_line` rows are NOW and the rest Soon, every row counted (available or missing)."""
+    n = store.meta()["soon_line"]
+    current = _current(store)
+    return store.ids("now") == current[:n] and store.ids("soon") == current[n:]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_tiers_follow_the_line_after_every_command(language):
+    """05 §5.1: every command that changes Current ends with the tiers in step with the line — insert, register, move,
+    finish, Put back, a sync (new files, a file gone), an undo, set_soon_line — so the analyzer's tier weights are the
+    position's (K3) with no engine change."""
+    store = arrivals_off(migrated(language, shows=3, episodes=4))   # register lands in Current here
+    data_dir, _u = roots(language)
+    w = names(language)
+    store.set_soon_line(len(store.ids("now")) - 2)
+    assert _line_holds(store)
+    steps = [
+        ("insert at the top of NOW", lambda: store.insert([touch(data_dir, f"HighPriority/{w[60]}.srt")], "now")),
+        ("register", lambda: store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[61]}.srt"), {"content_key": "r1"})),
+        ("a drag from Soon to NOW's top", lambda: store.move([store.ids("soon")[-1]], "now")),
+        ("a drag from NOW into Soon", lambda: store.move([store.ids("now")[0]], "soon",
+                                                        after_id=store.ids("soon")[2])),
+        ("finish", lambda: store.set_tier([store.ids("now")[1]], "graduated")),
+        ("remove", lambda: store.remove([store.ids("now")[0]])),
+    ]
+    out = None
+    for label, step in steps:
+        out = step()
+        assert out is not None and _line_holds(store), label
+    assert store.restore(out.trash_ids) and _line_holds(store), "Put back"
+    os.remove(os.path.join(data_dir, store.item(store.ids("now")[0])["rel_path"]))
+    touch(data_dir, f"HighPriority/{w[62]}.srt")
+    assert store.sync_disk() and _line_holds(store), "a sync"
+    change = store.move([store.ids("goal")[0]], "now")
+    assert store.undo(change) and _line_holds(store), "an undo"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_above_the_line_pushes_the_boundary_item_below(language):
+    """G2.2-1 (the line stays at its count): a file added at the top of Current pushes the row that was n-th just below
+    the line — its words now count half — and the line stays at n; an item dragged across the line takes the tier of
+    where it lands while the boundary row crosses the other way (06 §6.4)."""
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, _u = roots(language)
+    n = store.meta()["soon_line"]
+    now, soon = store.ids("now"), store.ids("soon")
+    add = store.insert([touch(data_dir, f"HighPriority/{names(language)[63]}.srt")], "now")
+    assert store.meta()["soon_line"] == n
+    assert store.ids("now") == add.added + now[:-1] and store.ids("soon") == [now[-1]] + soon
+    dragged = store.ids("soon")[3]
+    store.move([dragged], "now", after_id=store.ids("now")[0])
+    assert store.item(dragged)["tier"] == "now" and store.ids("now")[1] == dragged
+    assert store.ids("soon")[0] == now[-2], "the row at the boundary crossed the other way"
+    assert store.meta()["soon_line"] == n and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drive_going_offline_moves_nothing_across_the_line(language):
+    """05 §5.1, 06 §6.4: missing rows count like any row, so files going missing (a drive offline) and coming back
+    change no tier — the list and Anki's order don't flip and flip back."""
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, _u = roots(language)
+    tiers = {t: store.ids(t) for t in ls.TIERS}
+    gone = store.ids("now")[:3]
+    paths = {i: os.path.join(data_dir, store.item(i)["rel_path"]) for i in gone}
+    saved = {i: open(path, "rb").read() for i, path in paths.items()}
+    for path in paths.values():
+        os.remove(path)
+    store.sync_disk()
+    assert all(store.item(i)["availability"] == "missing" for i in gone)
+    assert {t: store.ids(t) for t in ls.TIERS} == tiers
+    for i, path in paths.items():
+        with open(path, "wb") as f:
+            f.write(saved[i])
+    store.sync_disk()
+    assert {t: store.ids(t) for t in ls.TIERS} == tiers and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_open_no_longer_re_counts_the_line(language):
+    """05 §5.1 (row 3.1.3): from schema 2 the line is canonical — an open reads it as stored and changes nothing, the
+    fewer-rows case included (06 §6.4: all of Current is NOW, the line at its end, staying at n); 0 is allowed."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, user_files_dir = roots(language)
+    current = len(_current(store))
+    store.set_soon_line(current + 10)
+    version = store.meta()["state_version"]
+    store.close()
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.meta()["soon_line"] == current + 10 and store.meta()["state_version"] == version
+    assert len(store.ids("now")) == current and store.ids("soon") == []
+    store.set_soon_line(0)                                      # allowed: everything in Current is Soon
+    assert store.ids("now") == [] and len(store.ids("soon")) == current
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_set_soon_line_and_the_library_options_undo(language):
+    """04 §4.2: set_soon_line re-tiers the rows it crosses and its undo puts the old line and the rows back;
+    set_library_options writes the mine line and New arrivals, undone by the value check. Nothing goes to
+    settings.json (RD-S16)."""
+    store = migrated(language, shows=3, episodes=4)
+    tiers = {t: store.ids(t) for t in ls.TIERS}
+    n = store.meta()["soon_line"]
+    assert store.set_soon_line(n) is None, "the same line: nothing written"
+    change = store.set_soon_line(n + 5)
+    assert len(store.ids("now")) == n + 5 and store.ids("now")[n:] == tiers["soon"][:5]
+    store.undo(change)
+    assert store.meta()["soon_line"] == n and {t: store.ids(t) for t in ls.TIERS} == tiers
+    options = store.set_library_options(mine_line=12, arrivals_on=False)
+    assert (store.meta()["mine_line"], store.meta()["arrivals_on"]) == (12, 0)
+    assert store.set_library_options(mine_line=12) is None
+    store.undo(options)
+    assert (store.meta()["mine_line"], store.meta()["arrivals_on"]) == (ls.MINE_LINE_DEFAULT, 1)
+    with pytest.raises(ValueError):
+        store.set_soon_line(-1)
+    settings = os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json")
+    assert not os.path.exists(settings) or "soon_line" not in open(settings, encoding="utf-8").read()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_soons_top_is_the_first_slot_below_the_line(language):
+    """05 §5.1: "the top of Soon" is the first slot below the line, counted without the rows being placed — an item
+    sent there from NOW lands first in Soon, never bounced back above the line."""
+    store = migrated(language, shows=3, episodes=4)
+    now, soon = store.ids("now"), store.ids("soon")
+    store.move([now[0]], "soon")
+    assert store.ids("soon")[0] == now[0] and store.ids("now") == now[1:] + [soon[0]]
+    assert _line_holds(store)
+    demoted = store.ids("now")[2]
+    store.set_tier([demoted], "soon")
+    assert store.item(demoted)["tier"] == "soon" and _line_holds(store)
+    store.close()
+
+
+def test_generate_parity_line_at_the_tier_boundary(ja_resources_dir):
+    """K3 (08 §8.1 #1): weights by position need no engine change — with the line at NOW's count the analyzer's output
+    is `expected_output.csv`, byte for byte; dragging the line changes the weights through the tiers, and dragging it
+    back gives the same output again. No ENGINE_REVISION change rides on it."""
+    import shutil
+    import pandas as pd
+    from tests.test_library_store_readers import _run
+    root = os.environ["SURASURA_TEST_ROOT"]
+    env = {"root": root, "results": os.path.join(root, "results")}
+    os.makedirs(env["results"], exist_ok=True)
+    data_dir, user_files_dir = roots("ja")
+    high = os.path.join(data_dir, "HighPriority")
+    shutil.copytree(os.path.join(REPO, "samples", "ja", "HighPriority"), high)
+    os.makedirs(user_files_dir, exist_ok=True)
+    shutil.copy(os.path.join(ja_resources_dir, "KnownWord.json"), os.path.join(user_files_dir, "KnownWord.json"))
+    rows = [ls.make_entry(f"HighPriority/{n}", "Disk Sync", None, with_source_type=False) for n in sorted(os.listdir(high))]
+    write_manifest(user_files_dir, {"schedule": {"PHASE_1_NOW": rows, "PHASE_2_SOON": [], "PHASE_3_LATER": []}})
+    expected = pd.read_csv(os.path.join(ja_resources_dir, "expected_output.csv"))
+    expected = expected.sort_values(by="Word").reset_index(drop=True)
+
+    def generated():
+        _run(env, "ja")
+        out = pd.read_csv(os.path.join(env["results"], "priority_learning_list.csv"))
+        return out.sort_values(by="Word").reset_index(drop=True)
+    pd.testing.assert_frame_equal(generated(), expected, check_dtype=False)
+    store = ls.open_store("ja", data_dir, user_files_dir)
+    line = store.meta()["soon_line"]
+    assert line == len(rows) == len(store.ids("now"))
+    store.set_soon_line(line - 1)                               # one file below the line: it counts half
+    store.close()
+    assert not generated().equals(expected), "the line's position is the weight"
+    store = ls.open_store("ja", data_dir, user_files_dir)
+    store.set_soon_line(line)
+    store.close()
+    pd.testing.assert_frame_equal(generated(), expected, check_dtype=False)

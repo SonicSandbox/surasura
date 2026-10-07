@@ -11,6 +11,12 @@ writes, through `SURASURA_SHELL_PROBE`:
 - with `--hud`: the frame-time HUD over the run, after the first paint, while the window switches tabs ten times and
   takes 500 bar updates in a burst — the count of GUI-thread steps over 4 ms (row 8).
 
+- with `--phases` (M2.1 row D): where each run's first frame went — Python and `app_entry`, the imports, the
+  QApplication, the single-instance claim, the services, the look, the window, showing, the first paint, its flush — each
+  with the process's CPU, page faults, bytes read and the machine's idle share; then each phase's median and spread;
+- with `--hud`, also each late tick's cause (`hud.classify`: gc · step · gui-busy · gil · machine · timer).
+- `--gc-freeze` (an A/B for row D): the window's collector freezes its start-up objects after the first frame.
+
 The window is shown without taking the keyboard (it opens on this desktop for `--idle` seconds each run). Prints one
 JSON line per run and the medians. Budgets (BRIEF rule 12, on a mid-range laptop at 150 %): first frame ≤ 1 s, idle ≤
 ~250 MB, no step over 4 ms. This desktop's target is ≤ 0.4 s (a laptop is 2–3× slower: charter S8); the laptop's own
@@ -27,7 +33,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def one_run(idle, hud, busy=False, fontengine=""):
+def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False):
     root = tempfile.mkdtemp(prefix="w21-measure-")
     probe = os.path.join(root, "probe.json")
     import shutil                                   # the test root is also where bundled resources are read: the mark
@@ -42,6 +48,9 @@ def one_run(idle, hud, busy=False, fontengine=""):
         env.pop("SURASURA_HUD", None)
     if busy:
         env["SURASURA_SHELL_PROBE_BUSY"] = "1"
+    env.pop("SURASURA_GC_FREEZE", None)
+    if gc_freeze:
+        env["SURASURA_GC_FREEZE"] = "1"
     if fontengine:
         env["QT_QPA_PLATFORM"] = "windows:fontengine=" + fontengine
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "app_entry.py")], cwd=root, env=env,
@@ -61,11 +70,18 @@ def main():
     ap.add_argument("--hud", action="store_true")
     ap.add_argument("--busy", action="store_true", help="a CPU-bound Python worker beside the burst (worst case)")
     ap.add_argument("--fontengine", default="", help="e.g. gdi: Qt's Windows font engine, for comparison")
+    ap.add_argument("--phases", action="store_true", help="where the first frame went, phase by phase (M2.1 row D)")
+    ap.add_argument("--gc-freeze", action="store_true", help="A/B: freeze the collector's start-up objects")
     args = ap.parse_args()
     runs = []
     for _ in range(args.runs):
-        r = one_run(args.idle, args.hud, args.busy, args.fontengine)
+        r = one_run(args.idle, args.hud, args.busy, args.fontengine, args.gc_freeze)
         print(json.dumps(r), flush=True)
+        if args.phases and r.get("phases"):
+            print("  " + " · ".join(f"{p['phase']} {p['ms']}" + (f" (cpu {p['cpu_ms']}, idle {p['idle_share']}, "
+                                                                  f"faults {p.get('faults')}, read {p.get('read_kb')} KB)"
+                                                                  if p.get("cpu_ms") is not None else "")
+                                    for p in r["phases"]), flush=True)
         runs.append(r)
     ok = [r for r in runs if "error" not in r and r.get("first_frame_ms")]
     if not ok:
@@ -84,11 +100,24 @@ def main():
         summary["frame_p95_ms"] = max(r["hud"]["frames"]["p95_ms"] for r in ok)
         summary["late_ticks_over_4ms"] = [r["hud"]["late"]["over_4ms"] for r in ok]
         summary["late_max_ms"] = max(r["hud"]["late"]["max_ms"] for r in ok)
+        causes = {}
+        for r in ok:
+            for k, v in r["hud"]["late"].get("causes", {}).items():
+                causes[k] = causes.get(k, 0) + v
+        summary["late_causes"] = causes
         for span in ("tab-switch", "bar-update"):
             got = [r["hud"]["spans"].get(span) for r in ok if r["hud"]["spans"].get(span)]
             if got:
                 summary[f"{span}_max_ms"] = max(g["max_ms"] for g in got)
                 summary[f"{span}_p95_ms"] = max(g["p95_ms"] for g in got)
+    if args.phases:
+        names = [p["phase"] for p in ok[0].get("phases", [])]
+        summary["phases_median_ms"] = {}
+        for name in names:
+            got = [p["ms"] for r in ok for p in r.get("phases", []) if p["phase"] == name and p["ms"] is not None]
+            if got:
+                summary["phases_median_ms"][name] = [round(statistics.median(got), 1), round(min(got), 1),
+                                                     round(max(got), 1)]
     print("SUMMARY " + json.dumps(summary))
     return 0
 

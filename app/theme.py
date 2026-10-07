@@ -286,7 +286,7 @@ TYPE = {
     "page-heading": (17, 400), "panel-title": (16, 650), "dialog-title": (16, 650), "current-heading": (15, 650),
     "sheet-heading": (15, 650), "tray-heading": (14, 400), "needs-title": (14, 400), "help-mark": (14, 400),
     "row-title": (13.5, 600), "tab": (13.5, 600), "bucket": (13.5, 600), "settings-search": (13.5, 600),
-    "body": (13, 550), "button": (13, 550), "menu-item": (13, 550), "input": (12.5, 400), "hero-sub": (12.5, 400),
+    "body": (13, 550), "button": (13, 550), "button-sm": (12, 550), "menu-item": (13, 550), "input": (12.5, 400), "hero-sub": (12.5, 400),
     "segmented": (12.5, 400), "select": (12.5, 400), "number-field": (12.5, 400), "row-sub": (12, 400),
     "diff": (12, 400), "footer": (12, 400), "tooltip": (12, 500), "status-pill": (11.5, 600), "chip": (11.5, 600),
     "eyebrow": (11, 700), "badge": (11, 700), "mini": (11, 700), "group-label": (10.5, 700),
@@ -343,6 +343,7 @@ SHADOWS = {
     "toast": (0, 20, 40, -14, "#000000"), "tooltip": (0, 14, 32, -12, "#000000"),
     "sheet": (0, -30, 60, -20, "#000000"), "drag-ghost": (0, 24, 50, -12, "#000000cc"),
     "hero-cover": (0, 10, 26, -10, "#000000"), "primary-button": (0, 6, 18, -8, "accent"),
+    "bar-dot": (0, 0, 10, 0, "accent"),          # the bottom bar's dot glows (the mock's `.foot .dot`)
 }
 
 
@@ -356,6 +357,7 @@ def size(name, text_size=DEFAULT_TEXT_SIZE):
 EASE = (0.2, 0.7, 0.3, 1.0)              # cubic-bezier(.2, .7, .3, 1)
 FAST = 120                               # ms: hovers, the switch's track colour
 SLOW = 260                               # ms
+EASE_IN_OUT = (0.42, 0.0, 0.58, 1.0)     # CSS `ease-in-out`: the bar's pulse (the mock's `pulse 1.4s ease-in-out`)
 MOTION = MappingProxyType({
     "gap-slide": 190, "ghost-glide": 160, "ghost-removed": 150, "tray-fade": 140, "overlay-pop": 140,
     "tray-pop": 160, "side-panel": 260, "side-panel-shift": 24, "sheet": 260, "buckets": 260, "buckets-rise": 40,
@@ -364,6 +366,8 @@ MOTION = MappingProxyType({
     "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300, "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
+    # distances (px) the overlays travel as they open (M2.1; the mock's `pop` −4 px, `dlgin` +10 px)
+    "pop-shift": 4, "dialog-rise": 10, "toast-bottom": 48,
 })
 
 

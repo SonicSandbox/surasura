@@ -551,6 +551,7 @@ def test_the_dashboards_save_drops_nothing_from_the_file(library):
     ("logic.context.min_words", 6),
     ("app_theme", "sapphire"),               # the 3.0 window's look (W2.1): no run, no report
     ("text_size", "L"),
+    ("app_motion", "reduced"),               # the 3.0 window's motion (M2.1): no run, no report
 ])
 def test_app_and_importer_settings_never_change_the_run_signature(library, path, value):
     """The app's own (telemetry, automatic updates, the welcome guide), the importers' (the EPUB part size and its split,

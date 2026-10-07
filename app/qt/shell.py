@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, Q
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from app import path_utils, theme
-from app.qt import applog, bridge, strings, style, titlebar, tooltip
+from app.qt import applog, bridge, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
@@ -328,6 +328,12 @@ class ShellWindow(QMainWindow):
         self._poll.timeout.connect(self._poll_status)
         self._poll.start(POLL_MS)
 
+        # --- M2.1: the motion's mode (`app_motion`; Follow Windows hears its switch) and the toasts
+        motion.clock().mode.set_setting(settings.get("app_motion"))
+        motion.install_mode_filter(QApplication.instance())
+        self.bridge.settings_written.connect(self._settings_written)
+        self.toasts = toast.ToastHost(central)
+
         # app-wide behaviour
         app = QApplication.instance()
         self.router = EscapeRouter(self, parent=self)
@@ -407,7 +413,7 @@ class ShellWindow(QMainWindow):
         row = QHBoxLayout(footer)
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(10)
-        self.bar_dot = QLabel(strings.BAR_BUSY_GLYPH, footer)
+        self.bar_dot = motion.Spinner("pulse", footer)    # M2.1: the mock's pulsing dot while a job runs (G1.5-2)
         self.bar_dot.setObjectName("bardot")
         self.bar_dot.setProperty("busy", "false")
         self.bar_dot.setAccessibleName(strings.BAR_NAME)
@@ -472,9 +478,8 @@ class ShellWindow(QMainWindow):
 
     def show_status(self, snap):
         busy = bool(snap.lines)
-        if self.bar_dot.property("busy") != ("true" if busy else "false"):
-            self.bar_dot.setProperty("busy", "true" if busy else "false")
-            _repolish(self.bar_dot)
+        self.bar_dot.setProperty("busy", "true" if busy else "false")
+        self.bar_dot.set_running(busy)
         self.bar_line.set_full(" · ".join(snap.lines))
         failure = snap.failure or ""
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
@@ -493,6 +498,10 @@ class ShellWindow(QMainWindow):
         needs.setVisible(listed > 0)
         if listed == 0 and needs.isChecked():
             self.show_tab("current")
+
+    def _settings_written(self, keys):
+        if "app_motion" in keys:
+            motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
 
     def open_logs(self):
         folder = self._logs_folder
@@ -539,9 +548,13 @@ class ShellWindow(QMainWindow):
         super().paintEvent(event)
         if not self._first_painted:
             self._first_painted = True
+            hud.mark("painted")
             QTimer.singleShot(0, self._frame_flushed)         # after this frame is flushed
 
     def _frame_flushed(self):
+        if os.environ.get("SURASURA_GC_FREEZE") == "1":  # row D's A/B (measure_shell.py --gc-freeze)
+            import gc
+            gc.freeze()
         self.first_frame.emit()
 
     def showEvent(self, event):
@@ -613,7 +626,10 @@ def open_window(app, services, state_file=None):
     icon = path_utils.get_icon_path()
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
-    return ShellWindow(services, state_file=state_file)
+    hud.mark("look")
+    window = ShellWindow(services, state_file=state_file)
+    hud.mark("window")
+    return window
 
 
 def _log_unhandled(kind, value, tb):
@@ -644,13 +660,17 @@ def connect_instance(window, instance):
 def main(argv=None):
     """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked."""
     argv = list(sys.argv if argv is None else argv)
+    hud.mark("main")                                  # the probe's phases (M2.1 row D); nothing when it is off
     from app.qt import hud as hud_module, single as single_module
     app = QApplication.instance() or QApplication(argv[:1])
+    hud.mark("qapp")
     prepare_process()
     instance = single_module.SingleInstance()
     if not instance.claim(argv[1:]):
         return 0
+    hud.mark("claimed")
     services = Services()
+    hud.mark("services")
     window = open_window(app, services)
     connect_instance(window, instance)
     probe_file = os.environ.get("SURASURA_SHELL_PROBE")
@@ -660,6 +680,7 @@ def main(argv=None):
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         hud_module.Probe(window, probe_file, hud=hud)
     window.show_first()
+    hud.mark("shown")
     try:
         code = app.exec()
     finally:

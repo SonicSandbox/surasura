@@ -4054,6 +4054,7 @@ def run_signature_parts(language, found_files, args):
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
             "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
             "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
+            "app_motion",                   # the 3.0 window's motion (M2.1): no run or report reads it
             # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
             "connect_enabled", "placing_rules",
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck

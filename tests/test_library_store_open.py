@@ -278,14 +278,19 @@ from app import library_store as ls
 db, lang, data, uf, out, n, mode = sys.argv[1:8]
 store = ls.Store(db, lang, data, uf, "helper" if mode == "checkpoint" else "window")
 spans = []
-for i in range(int(n)):
-    if mode == "checkpoint":
-        with store._writing(begin=False):
-            t0 = time.perf_counter(); store.conn.execute("PRAGMA wal_check" + "point(PASSIVE)").fetchall(); t1 = time.perf_counter()
-    else:
-        with store._writing():
-            t0 = time.perf_counter(); store.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (1 + i % 5,)); t1 = time.perf_counter()
+i = 0
+while i < int(n):
+    try:
+        if mode == "checkpoint":
+            with store._writing(begin=False):
+                t0 = time.perf_counter(); store.conn.execute("PRAGMA wal_check" + "point(PASSIVE)").fetchall(); t1 = time.perf_counter()
+        else:
+            with store._writing():
+                t0 = time.perf_counter(); store.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (1 + i % 5,)); t1 = time.perf_counter()
+    except ls.StoreBusy:
+        continue                 # 5 s without the lock on a loaded machine: "try again", as the app's callers do
     spans.append((t0, t1))
+    i += 1
 store.close()
 json.dump(spans, open(out, "w"))
 """
@@ -293,7 +298,8 @@ json.dump(spans, open(out, "w"))
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
-    """Two processes and two threads writing while one checkpoints: no two critical sections overlap."""
+    """Two processes and two threads writing while one checkpoints: no two critical sections overlap. A writer
+    starved past the 5 s lock wait (three test runs at once did it) tries again, as the app's callers do."""
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
     db = store.db_path
@@ -307,11 +313,16 @@ def test_writers_and_a_checkpointer_never_overlap(language, tmp_path):
 
     def thread_writer():
         s = ls.Store(db, language, data_dir, user_files_dir)
-        for i in range(60):
-            with s._writing():
-                t0 = time.perf_counter()
-                s.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (2,))
-                spans.append((t0, time.perf_counter()))
+        done = 0
+        while done < 60:
+            try:
+                with s._writing():
+                    t0 = time.perf_counter()
+                    s.conn.execute("UPDATE items SET ord = ord WHERE id = ?", (2,))
+                    spans.append((t0, time.perf_counter()))
+            except ls.StoreBusy:
+                continue             # starved for 5 s beside other runs: try again; the test is about overlap
+            done += 1
         s.close()
 
     threads = [threading.Thread(target=thread_writer) for _ in range(2)]

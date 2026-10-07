@@ -499,6 +499,7 @@ def test_a_returning_2_4_0s_big_change_waits_for_the_user(language):
     cm.get_manifest_path = lambda: ls.manifest_path(user_files_dir)
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
+    time.sleep(0.02)        # a tick after the export (GitHub's clock: 15.6 ms): same size + one mtime would read as ours
     cm.save_manifest(manifest)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
     with ls.open_store(language, data_dir, user_files_dir) as store:

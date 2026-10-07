@@ -314,8 +314,12 @@ def load_index(csv_path, want_contexts=False):
     return tuple(build_index(csv_path, want_contexts=want_contexts))[:2]
 
 
-def build_index(csv_path, want_contexts=False, thresholds=None, only=None, language=None):
+def build_index(csv_path=None, want_contexts=False, thresholds=None, only=None, language=None, rows=None):
     """`Index(rank_of, contexts_of, marks_of, journey_of)` from an ordered Surasura list.
+
+    **From the CSV or from rows** (E1.1 02 §4): `rows`, when given, are the list's rows in order as dicts named like
+    the CSV's columns — the fast re-plan's (`plan_engine.Result.rows`) — and are read by the very same code below, so
+    the index from the engine's rows is the index from the CSV a Generate of that order writes.
 
     **Either list** (WP-M): `results/priority_learning_list.csv`, whose row order is raw leverage,
     or `results/progressive_learning_list.csv`, whose row order is file order then within-file score
@@ -380,7 +384,7 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
     words = []                  # each row's own word, by rank
     orths = []                  # each row's own spelling, by rank
     empty = Index(index, contexts, marks_of, journey_of, words, orths)
-    if not csv_path or not os.path.isfile(csv_path):
+    if rows is None and (not csv_path or not os.path.isfile(csv_path)):
         return empty
 
     wanted_marks = set(normalize_markers(only))
@@ -396,33 +400,38 @@ def build_index(csv_path, want_contexts=False, thresholds=None, only=None, langu
             if want_contexts and row_contexts:
                 contexts[key] = row_contexts
 
+    def _read(source):
+        for rank, row in enumerate(source):
+            row_contexts = None
+            if want_contexts:
+                # Read by NAME and in order, best first. A blank cell is skipped rather than
+                # offered as an empty sentence.
+                row_contexts = [str(row.get(column) or "").strip()
+                                for column in CONTEXT_COLUMNS]
+                row_contexts = [text for text in row_contexts if text]
+            marks = row_markers(row, limits)
+            ranked = not wanted_marks or bool(marks & wanted_marks)
+            # The journey's own sort key for this row: its file (`Sequence`, the progressive
+            # list only — 0 on the priority list), its `Score`, its total occurrences.
+            numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
+            lemma = normalize_word(row.get("Word"))
+            words.append(lemma)
+            orths.append(normalize_word(row.get("Orth")))
+            for column in ("Orth", "Word"):
+                key = normalize_word(row.get(column))
+                if not key or (japanese and len(key) == 1 and key != lemma):
+                    continue
+                _add(key, rank, row_contexts, marks, ranked, numbers)
+            forms = [normalize_word(form) for form in str(row.get("Forms") or "").split("|")]
+            forms = [form for form in forms if form and not (japanese and len(form) == 1)]
+            if forms:
+                later.append((rank, forms, row_contexts, marks, ranked, numbers))
     try:
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
-            for rank, row in enumerate(csv.DictReader(handle)):
-                row_contexts = None
-                if want_contexts:
-                    # Read by NAME and in order, best first. A blank cell is skipped rather than
-                    # offered as an empty sentence.
-                    row_contexts = [str(row.get(column) or "").strip()
-                                    for column in CONTEXT_COLUMNS]
-                    row_contexts = [text for text in row_contexts if text]
-                marks = row_markers(row, limits)
-                ranked = not wanted_marks or bool(marks & wanted_marks)
-                # The journey's own sort key for this row: its file (`Sequence`, the progressive
-                # list only — 0 on the priority list), its `Score`, its total occurrences.
-                numbers = (_count(row.get("Sequence")), _count(row.get("Score")), row_total(row))
-                lemma = normalize_word(row.get("Word"))
-                words.append(lemma)
-                orths.append(normalize_word(row.get("Orth")))
-                for column in ("Orth", "Word"):
-                    key = normalize_word(row.get(column))
-                    if not key or (japanese and len(key) == 1 and key != lemma):
-                        continue
-                    _add(key, rank, row_contexts, marks, ranked, numbers)
-                forms = [normalize_word(form) for form in str(row.get("Forms") or "").split("|")]
-                forms = [form for form in forms if form and not (japanese and len(form) == 1)]
-                if forms:
-                    later.append((rank, forms, row_contexts, marks, ranked, numbers))
+        if rows is not None:
+            _read(rows)
+        else:
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+                _read(csv.DictReader(handle))
     except (OSError, UnicodeError, csv.Error):
         # A truncated or unreadable list means "no matches", which the planner already handles by
         # leaving every card where it is. It must never mean "crash on the way to a write".

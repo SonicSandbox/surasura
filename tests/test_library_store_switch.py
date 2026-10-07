@@ -310,7 +310,7 @@ def test_an_update_staged_starts_no_helper_and_register_exits_5(language, real_s
         assert ls.update_staged()
         assert ls.spawn_maintain(language) is None
         rel = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[42]}.srt")
-        assert ls.register_headless(language, rel, None) == ls.EXIT_BUSY
+        assert ls.register_headless(language, rel, None).code == ls.EXIT_BUSY
     finally:
         updater.drop_update_lock(lock)
     assert not ls.update_staged()
@@ -502,6 +502,7 @@ def test_a_returning_2_4_0s_big_change_waits_for_the_user(language):
     cm.get_manifest_path = lambda: ls.manifest_path(user_files_dir)
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
+    time.sleep(0.02)        # a tick after the export (GitHub's clock: 15.6 ms): same size + one mtime would read as ours
     cm.save_manifest(manifest)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
     with ls.open_store(language, data_dir, user_files_dir) as store:

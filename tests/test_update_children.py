@@ -502,6 +502,9 @@ def test_no_anki_sync_starts_while_an_update_waits(dash, monkeypatch):
 
 _TK_CHILD = """
 import pathlib, sys, tkinter as tk
+sys.path.insert(0, sys.argv[3])
+from tests.quiet_windows import quiet_windows
+quiet_windows()                 # on its parent's desktop: the updater's window scan sees only that one
 out = pathlib.Path(sys.argv[1])
 root = tk.Tk()
 root.title("コンテンツマネージャー")
@@ -516,7 +519,8 @@ root.mainloop()
 
 def _tk_child(tmp_path, behaviour):
     out = tmp_path / f"{behaviour}.txt"
-    p = _REAL_POPEN([sys.executable, "-c", _TK_CHILD, str(out), behaviour])
+    p = _REAL_POPEN([sys.executable, "-c", _TK_CHILD, str(out), behaviour,
+                     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))])
     end = time.monotonic() + 15
     while not os.path.exists(str(out) + ".ready") and time.monotonic() < end:
         time.sleep(0.05)

@@ -24,12 +24,14 @@ Standard library only, no Tk; every call that talks to Anki runs on a worker.
 
 import json
 import os
+import threading
 import time
 
 from app import anki_connect
 
 STATE_NAME = "anki-sync.json"
 SESSION_GAP_S = 3600            # an hour with no Surasura write: the next write starts a new session (S1)
+S1_RETRY_S = 300                # a session's sync that failed is tried again at most this often
 REVIEW_RETRY_S = 30             # a pending sync that met a review looks again after this
 SETTING = "anki_sync_delay_min"
 DEFAULT_DELAY_MIN = 1
@@ -69,7 +71,7 @@ def read_state():
 def _write_state(state):
     """Atomically (temp + replace). A failure only costs a later extra sync; never raises."""
     path = _path()
-    temp = f"{path}.{os.getpid()}.tmp"
+    temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"     # two threads of one program never share one
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(temp, "w", encoding="utf-8") as f:
@@ -110,41 +112,61 @@ def _profile(url):
     return name if isinstance(name, str) else None
 
 
-def before_write(url, wait=None, cancel=None, on_wait=None):
-    """S1, before a write: one sync when this write starts a session -> what the sync answered ("synced",
-    "not-signed-in", "full-sync", "failed: …"), or None when no sync was due (or Anki can't be asked: the write
-    finds that out itself). Takes the Anki-write lock for the sync itself (`wait` / `cancel` / `on_wait` are its);
-    the caller holds no lock. A review in progress: no sync now, the session not started — the next write asks
-    again. Never raises."""
+def before_write(url, wait=None, cancel=None, on_wait=None, locked=False):
+    """S1, just before a write's first request: one sync when this write starts a session -> what the sync answered
+    ("synced", "not-signed-in", "full-sync", "failed: …"), or None when no sync was due (or Anki can't be asked: the
+    write finds that out itself). `locked`: the caller holds the Anki-write lock (Junban's run, its writes planned
+    and about to go: a run that writes nothing never syncs); else the sync takes it (`wait` / `cancel` / `on_wait`).
+    A review in progress: no sync now, the session not started — the next write asks again. A sync that failed
+    (AnkiWeb unreachable, a timeout) starts no session either: the next write tries again, at most every
+    S1_RETRY_S, so a write is never held up by a sync that keeps failing. Never raises."""
     try:
         profile = _profile(url)
         if profile is None:
             return None
-        now = time.time()
-        if not _new_session(read_state(), profile, now):
+        if not _new_session(read_state(), profile, time.time()):
             return None
+        if locked:
+            return _session_sync(url, profile)
         from app import locks
         try:
             held = anki_connect.writer(VERB, wait=wait, cancel=cancel, on_wait=on_wait)
         except locks.Busy:
             return None
         with held:
-            state = read_state()
-            now = time.time()
-            if not _new_session(state, profile, now):
-                return None                         # another program started this session while we waited
-            if anki_connect.reviewing(url):
-                return None
-            answer = anki_connect.sync(url)
-            now = time.time()
-            state.update(profile=profile, session_at=now, last_write=now, sync=answer.split(":")[0],
-                         sync_error=answer if answer.startswith("failed") else "")
-            if answer == "synced":
-                state.update(synced_at=now, front_pending=False)     # it carried every write before it
-            _write_state(state)
-            return answer
+            return _session_sync(url, profile)
     except Exception as e:                          # a sync never takes the write down with it
         return f"failed: {e}"
+
+
+def _session_sync(url, profile):
+    """S1's sync, holding the Anki-write lock: every decision taken again inside it."""
+    state = read_state()
+    now = time.time()
+    if not _new_session(state, profile, now):
+        return None                                 # another program started this session while we waited
+    if now - float(state.get("s1_failed_at") or 0) < S1_RETRY_S:
+        return None                                 # it failed a moment ago: not again yet
+    if anki_connect.reviewing(url):
+        return None
+    answer = anki_connect.sync(url)
+    now = time.time()
+    if answer.startswith("failed"):
+        state.update(s1_failed_at=now, sync="failed", sync_error=answer)
+        _write_state(state)
+        return answer
+    state.update(profile=profile, session_at=now, last_write=now, sync=answer, sync_error="", s1_failed_at=0)
+    if answer == "synced":
+        state.update(synced_at=now, front_pending=False)     # it carried every write before it
+    _write_state(state)
+    return answer
+
+
+def drop_pending():
+    """The preview switched off: a pending S3 sync is let go (nothing will run it; Anki's own sync on close carries
+    the order). Never raises."""
+    if read_state().get("front_pending"):
+        _update(front_pending=False)
 
 
 def wrote(front_changed, settings=None, now=None):

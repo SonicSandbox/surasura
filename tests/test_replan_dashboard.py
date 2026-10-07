@@ -103,9 +103,13 @@ def test_switched_on_a_host_starts_and_catches_up_and_off_again_it_stops(monkeyp
     d.replan_preview_changed()
     host = d._replan_host
     assert made and host.calls == ["catch-up"]
-    d.var_language.get.return_value = "zh"        # the language changes: a host for it
+    d.var_language.get.return_value = "zh"        # the language changes: the Japanese preview's host stops
     d._replan_start()
-    assert host.calls[-1] == "stop" and d._replan_host.language == "zh"
+    assert host.calls[-1] == "stop" and d._replan_host is None
+    monkeypatch.setattr(main_module.settings_manager, "load_settings",
+                        lambda: dict(ON, junban_replan_language="zh"))
+    d._replan_start()                             # switched on in the Chinese window: a host for Chinese
+    assert d._replan_host.language == "zh"
     monkeypatch.setattr(main_module.settings_manager, "load_settings", lambda: {"junban_replan_preview": False})
     d._replan_start()
     assert d._replan_host is None
@@ -172,3 +176,30 @@ def test_closing_waits_for_a_reorder_then_goes_on():
         host._busy = False
         assert d._replan_finishing() is False             # done: the close goes on
     assert host.calls == ["close", "stop"] and d._replan_host is None
+
+
+def test_a_dashboard_save_never_writes_the_previews_keys_into_a_file_without_them():
+    """Off = 2.5's settings.json too: the dashboard's save carries the switch, its language and the sync minute only
+    as the file holds them (JUNBAN_AS_WRITTEN, `as_written`) — never a default into a 2.5 user's file."""
+    from tests.test_settings_signatures import _dashboard_saved, _write
+    _write({"target_language": "ja"})
+    saved = _dashboard_saved()
+    for key in ("junban_replan_preview", "junban_replan_language", "anki_sync_delay_min"):
+        assert key not in saved, key
+    _write({"target_language": "ja", "junban_replan_preview": True, "junban_replan_language": "ja",
+            "anki_sync_delay_min": "off"})
+    saved = _dashboard_saved()
+    assert saved["junban_replan_preview"] is True and saved["junban_replan_language"] == "ja"
+    assert saved["anki_sync_delay_min"] == "off"
+
+
+def test_the_host_is_only_for_the_language_the_preview_was_switched_on_in(monkeypatch):
+    d = _dash(language="zh")
+    monkeypatch.setattr(main_module.settings_manager, "load_settings",
+                        lambda: dict(ON, junban_replan_language="ja"))
+    monkeypatch.setattr(replan_preview, "Host", lambda language, **kw: Host(language))
+    d._replan_start()
+    assert d.__dict__.get("_replan_host") is None          # a Chinese window never re-orders the Japanese deck
+    d.var_language.get.return_value = "ja"
+    d._replan_start()
+    assert d._replan_host.language == "ja"

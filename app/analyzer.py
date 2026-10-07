@@ -3570,11 +3570,11 @@ def _plan_json(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def _plan_is_this_runs(run_signature):
+def _plan_is_this_runs(run_signature, results_dir=None):
     """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question while the
     fast re-plan's preview is on (E1.2-1): a plan switched on, lost or damaged gets a full run, never the reuse."""
     from app import plan_engine
-    header = plan_engine.read_header(os.path.join(RESULTS_DIR, PLAN_FILE))
+    header = plan_engine.read_header(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE))
     return header is not None and header.get("run_signature") == run_signature
 
 
@@ -3951,7 +3951,7 @@ def journey_is_current(args, language):
             stored = store.get_meta("last_run_signature")
         finally:
             store.close()
-        current = stored == sig and read_run_stamp(results_dir) == sig
+        current = stored == sig and read_run_stamp(results_dir) == sig and _plan_kept(language, sig, results_dir)
         if current:
             record_analysed(language, library)
         return current
@@ -3987,9 +3987,22 @@ def journey_check(args, language):
         if not all(os.path.exists(os.path.join(results_dir, name)) for name in
                    ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
             return False
-        return _token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
+        return (_token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
+                and _plan_kept(language, sig, results_dir))
     except Exception:
         return None
+
+
+def _plan_kept(language, sig, results_dir):
+    """The analyzer's own reuse gate, asked as the window and the command line ask it: with the fast re-plan's
+    preview on for `language`, a run is current only with its plan file (E1.2-1). Off: always True."""
+    try:
+        from app import replan_preview
+        if not replan_preview.is_on(settings_manager.load_settings(), language):
+            return True
+    except Exception:
+        return True
+    return _plan_is_this_runs(sig, results_dir)
 
 
 def _token_store_meta(language, key):
@@ -4520,7 +4533,7 @@ def main():
     # (E1.2-1 = B, Sonic 2026-10-05): off, a Generate does exactly the work it did before the plan existed.
     try:
         from app import replan_preview as _replan_preview
-        _plan_on = _replan_preview.is_on(settings_manager.load_settings())
+        _plan_on = _replan_preview.is_on(settings_manager.load_settings(), language)
     except Exception:
         _plan_on = False
 

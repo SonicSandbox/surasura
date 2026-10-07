@@ -1033,27 +1033,37 @@ class ContentImporterApp:
 
     def _start_replan(self):
         """At open (and by a test): the host, when the preview is on — the plan and the engine loaded on its worker,
-        and a catch-up for a re-order another window left owed (04 §3)."""
-        try:
-            from app import replan_preview, settings_manager
-            settings = settings_manager.load_settings() or {}
-            if not replan_preview.is_on(settings):
-                return
-            self._replan_settings = settings
-            self._replan_lines = queue.Queue()
-            self._replan = replan_preview.Host(self.language, say=self._replan_lines.put)
-        except Exception as e:
-            print(f"Re-order as you move: not started ({e})")
-            self._replan = None
+        and a catch-up for a re-order another window left owed (04 §3). Decided on a thread of its own (the settings
+        read imports the optional modules: never on this thread); a test decides at once, on its own thread."""
+        self._replan_lines = queue.Queue()
+        self._replan_line, self._replan_ticks = "", 0
+        self._replan_decided = threading.Event()
+
+        def decide():
+            try:
+                from app import replan_preview, settings_manager
+                settings = settings_manager.load_settings() or {}
+                if replan_preview.is_on(settings, self.language) and not self.__dict__.get("_replan_closed"):
+                    host = replan_preview.Host(self.language, say=self._replan_lines.put)
+                    host.warm()
+                    host.catch_up()
+                    self._replan = host
+            except Exception as e:
+                print(f"Re-order as you move: not started ({e})")
+            finally:
+                self._replan_decided.set()
+        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._replan_gone(), add="+")
+        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+            decide()
             return
-        self._replan.warm()
-        self._replan.catch_up()
-        self._replan_line = ""
-        self._replan_ticks = 0
-        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._replan is not None
-                       and self._replan.stop(), add="+")
-        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
-            self.root.after(100, self._drain_replan)
+        threading.Thread(target=decide, name="replan-decide", daemon=True).start()
+        self.root.after(100, self._drain_replan)
+
+    def _replan_gone(self):
+        """The window is gone: its host stops, and one still being decided never starts."""
+        self._replan_closed = True
+        if self.__dict__.get("_replan") is not None:
+            self._replan.stop()
 
     def _replan_poke(self):
         if self.__dict__.get("_replan") is not None:
@@ -1066,6 +1076,8 @@ class ContentImporterApp:
                 return
         except Exception:
             return
+        if self._replan_decided.is_set() and self.__dict__.get("_replan") is None:
+            return                                       # off: the drain stops as soon as that is known
         changed = False
         try:
             while True:
@@ -1076,11 +1088,8 @@ class ContentImporterApp:
         self._replan_ticks += 1
         if changed or self._replan_ticks >= 10:
             self._replan_ticks = 0
-            try:
-                from app import anki_sync_rule
-                web = anki_sync_rule.status(self._replan_settings)
-            except Exception:
-                web = ""
+            host = self.__dict__.get("_replan")
+            web = host.web if host is not None else ""          # worked out on the host's worker: no file read here
             self.replan_var.set(" · ".join(part for part in (self._replan_line, web) if part))
         if not once:
             self.root.after(100, self._drain_replan)

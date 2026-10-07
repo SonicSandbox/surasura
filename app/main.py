@@ -213,7 +213,7 @@ class ToolTip:
 
 # Junban's keys a dashboard save carries only as settings.json holds them — never a default into a 2.5 user's file: the
 # fast re-plan's preview switch (E1.1 04 §1; 順's option, saved once touched).
-JUNBAN_AS_WRITTEN = ("junban_replan_preview",)
+JUNBAN_AS_WRITTEN = ("junban_replan_preview", "junban_replan_language")
 
 
 def carry_as_written(out, keys):
@@ -3641,10 +3641,13 @@ class MasterDashboardApp:
             from app import replan_preview
             settings = dict(settings_manager.load_settings() or {})
             settings["enable_junban"] = bool(self.var_enable_junban.get())
-            on = replan_preview.is_on(settings)
+            language = self.var_language.get() or "ja"
+            on = replan_preview.is_on(settings, language)
+            if settings.get(replan_preview.SWITCH) is not True:
+                from app import anki_sync_rule
+                anki_sync_rule.drop_pending()          # switched off: a pending sync is let go (Anki's close carries it)
         except Exception:
-            on = False
-        language = self.var_language.get() or "ja"
+            on, language = False, self.var_language.get() or "ja"
         host = self.__dict__.get("_replan_host")
         if host is not None and (not on or host.language != language):
             host.stop()
@@ -3666,7 +3669,8 @@ class MasterDashboardApp:
         """The preview's host re-orders for these settings (else 2.5's automatic reorder keeps its own switch)."""
         try:
             from app import replan_preview
-            return replan_preview.is_on(settings) and replan_preview.unavailable(settings) is None
+            return (replan_preview.is_on(settings, settings.get("target_language"))
+                    and replan_preview.unavailable(settings) is None)
         except Exception:
             return False
 

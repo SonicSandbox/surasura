@@ -499,3 +499,151 @@ def test_shadow_mode_logs_one_line_for_a_difference_and_none_without(lib, monkey
     monkeypatch.setattr(replan_preview, "_lists", tampered)
     host._shadow(previous, other)
     assert len(log) == 1 and "Score" in log[0]
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# The review's fixes (tracks/engine/reviews/E3.1-adversary.md)
+# --------------------------------------------------------------------------------------------------------------- #
+
+def test_the_preview_runs_only_for_the_language_it_was_switched_on_in():
+    """`junban_deck` is one key for both languages: a Chinese Generate or Content Manager must never re-order the
+    Japanese deck by the Chinese list (review #1)."""
+    on = {"junban_replan_preview": True, "enable_junban": True}
+    assert replan_preview.is_on(on, "ja") and not replan_preview.is_on(on, "zh")      # unsaid: Japanese
+    zh = dict(on, junban_replan_language="zh")
+    assert replan_preview.is_on(zh, "zh") and not replan_preview.is_on(zh, "ja")
+    assert replan_preview.is_on(zh)                          # no language asked: the switch alone
+
+
+def test_another_languages_host_never_touches_the_deck(lib):
+    root, store = lib
+    _settings_file(root, junban_replan_language="zh")
+    fake = _deck(root)
+    host, lines = _host()                                    # a Japanese window
+    with _patched(fake):
+        _move_later_to_top(store)
+        host._job("move")
+    assert not fake.requests and lines == []
+
+
+def test_tomorrows_cards_are_anki_first_once_the_first_request_lands(lib):
+    """Front first, per request (05 §5): after the move's first write request, Anki's first 20 new cards are the
+    plan's first 20 — whatever the rest of the job does after it."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+        fake.after_first_write = None
+        host._job("move")
+        rows = host._engine.result().rows("content")
+        _writes, stats = reposition.dry_run(_junban_settings(), job=spaced.Job(automatic=True, rows=rows))
+    planned = [row.card_id for row in stats["order"]][:20]
+    first = fake.after_first_write
+    assert first is not None
+    queue = [card_id for card_id, _due in sorted(first.items(), key=lambda pair: (pair[1], pair[0]))
+             if fake.cards[card_id]["type"] == 0][:20]
+    assert queue == planned
+
+
+def test_a_run_that_writes_nothing_never_syncs(lib):
+    """S1 just before the first request (review #5): a session whose first job finds Anki in order sends no sync."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        assert fake.syncs == 1
+        os.remove(anki_sync_rule._path())                    # a new session
+        fake.write_requests.clear()
+        host._job("generate")                                # re-orders from the plan: everything already in place
+    assert not fake.write_requests and fake.syncs == 1
+
+
+def test_a_newer_order_planned_meanwhile_runs_the_job_once_more(lib, monkeypatch):
+    """Two windows (review #3): when another job planned (or the user made) a newer order while this one was being
+    written, this write may have landed over it — one more job, owed or not."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    real = library_store.Store.record_planned
+
+    def planned_meanwhile(self, order_version, pins_version):
+        real(self, order_version + 1, pins_version)          # as if a newer order's job recorded first
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+        monkeypatch.setattr(library_store.Store, "record_planned", planned_meanwhile)
+        host._job("move")
+    assert host._force and "move" in host._want
+
+
+def test_the_catch_up_asks_anki_for_the_cards_a_run_places(lib):
+    """Suspended, buried and filtered-deck cards are never placed, so they never count as newly mined (review #4)."""
+    root, store = lib
+    fake = _deck(root)
+    dash, _ = _host(generate=lambda reason: None)
+    with _patched(fake):
+        dash._job("catch-up")
+        dash._anki_looked = -1e9
+        fake.requests.clear()
+        dash._job("catch-up")
+    queries = [r["params"]["query"] for r in fake.requests if r["action"] == "findCards"]
+    assert any("-is:suspended" in q and "-is:buried" in q and "-deck:filtered" in q for q in queries), queries
+
+
+def test_a_pending_sync_another_writer_armed_is_picked_up(lib):
+    """順's own run (or a window that closed) armed S3; the next job of any host schedules it (review #6)."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        anki_sync_rule.wrote(True, {"anki_sync_delay_min": 1})
+        host._sync_at = None
+        host._job("catch-up")
+    assert host._sync_at is not None
+
+
+def test_after_a_generate_a_plan_the_engine_stands_aside_from_reorders_from_the_list(lib, monkeypatch):
+    """Review #7: "Generate re-orders Anki" holds — with a stand-aside plan the step after a Generate runs from the
+    list itself, as 2.5's did."""
+    root, store = lib
+    fake = _deck(root)
+    monkeypatch.setattr(plan_engine, "stands_aside", lambda plan: "weights")
+    host, lines = _host()
+    with _patched(fake):
+        host._job("generate")
+    assert fake.write_requests and replan_preview.STAND_ASIDE["weights"] not in lines
+
+
+def test_a_review_beginning_mid_write_stops_the_automatic_job_between_requests(lib):
+    """04 §6 (review #9): an automatic job asks for a review before every request but the first; the rest wait."""
+    root, store = lib
+    _settings_file(root, junban_chunk_size=5)
+    fake = _deck(root)
+    real = fake._multi
+
+    def multi(actions):
+        replies = real(actions)
+        if any(a.get("action") == "setSpecificValueOfCard" for a in actions):
+            fake.reviewing = True                            # a review begins once the first request landed
+        return replies
+    fake._multi = multi
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert len(fake.write_requests) == 1, "it wrote on through the review"
+    assert host._retry_at is not None
+
+
+def test_auto_reorder_numbers_spaced_while_the_preview_is_on(lib):
+    """Rule 8 (review #8): the command line's `junban --auto` and 2.5's step number spaced while the preview is on."""
+    root, store = lib
+    fake = _deck(root)
+    from modules.junban import auto
+    with _patched(fake):
+        done = auto.reorder(_junban_settings(), list_current=True, positions_only=True)
+    assert done["outcome"] == "ran", done
+    assert done["report"].get("numbering"), "dense numbering with the preview on"

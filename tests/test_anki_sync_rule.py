@@ -53,6 +53,8 @@ class FakeAnki:
         if action == "sync":
             if not self.signed_in:
                 return None, "sync: auth not configured"
+            if getattr(self, "fail", False):
+                return None, "network error: AnkiWeb could not be reached"
             if self.full_sync:
                 return None, "Sync status 2 not one of [0, 1] - see SyncCollectionResponse.ChangesRequired"
             self.syncs += 1
@@ -311,3 +313,34 @@ def test_sync_stays_refused_everywhere_but_the_rules_call(anki):
         with pytest.raises(anki_connect.AnkiError):
             anki_connect.sync("http://example.com:8765")          # loopback only
     assert anki.syncs == 1
+
+
+def test_a_failed_session_sync_is_tried_again_but_never_holds_every_write_up(anki, clock):
+    """Review #15: a sync that failed (AnkiWeb unreachable) starts no session — the next write tries again — but at
+    most every S1_RETRY_S, so a write is never held up by a sync that keeps failing."""
+    anki.fail = True
+    assert anki_sync_rule.before_write(URL).startswith("failed")
+    tries = anki.actions.count("sync")
+    clock.at += 60
+    assert anki_sync_rule.before_write(URL) is None                    # not again so soon
+    assert anki.actions.count("sync") == tries
+    anki.fail = False
+    clock.at += anki_sync_rule.S1_RETRY_S
+    assert anki_sync_rule.before_write(URL) == "synced"
+    assert anki.syncs == 1
+
+
+def test_inside_the_lock_the_session_sync_takes_no_lock_of_its_own(anki, clock):
+    """Junban's run calls S1 holding the Anki-write lock, just before its first request (review #5)."""
+    with anki_connect.writer("a run"):
+        assert anki_sync_rule.before_write(URL, locked=True) == "synced"
+    assert anki.syncs == 1
+
+
+def test_switching_off_lets_a_pending_sync_go(anki, clock):
+    anki_sync_rule.before_write(URL)
+    anki_sync_rule.wrote(True, SETTINGS)
+    assert anki_sync_rule.due_at(SETTINGS) is not None
+    anki_sync_rule.drop_pending()
+    assert anki_sync_rule.due_at(SETTINGS) is None
+    assert not anki_sync_rule.status(SETTINGS).startswith("AnkiWeb: syncing in")

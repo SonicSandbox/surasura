@@ -68,6 +68,8 @@ def test_the_dashboard_opens_and_closes_with_every_module_removed():
     code, out, err = _without_modules("""
         import os
         os.environ["SURASURA_NO_UI_TIMERS"] = "1"
+        from tests.quiet_windows import quiet_windows
+        quiet_windows()                         # the dashboard on the tests' own desktop, as in the suite
         import tkinter as tk
         from app.main import MasterDashboardApp
         root = tk.Tk()

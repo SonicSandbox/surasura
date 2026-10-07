@@ -140,7 +140,7 @@ def before_write(url, wait=None, cancel=None, on_wait=None):
             state.update(profile=profile, session_at=now, last_write=now, sync=answer.split(":")[0],
                          sync_error=answer if answer.startswith("failed") else "")
             if answer == "synced":
-                state["synced_at"] = now
+                state.update(synced_at=now, front_pending=False)     # it carried every write before it
             _write_state(state)
             return answer
     except Exception as e:                          # a sync never takes the write down with it
@@ -153,7 +153,7 @@ def wrote(front_changed, settings=None, now=None):
     now = time.time() if now is None else now
     values = {"last_write": now}
     if front_changed:
-        values["front_at"] = now
+        values.update(front_at=now, front_pending=True)
     state = _update(**values)
     return due_at(settings, state)
 
@@ -162,11 +162,9 @@ def due_at(settings, state=None):
     """When the pending S3 sync is due (wall time), or None: none pending, already synced since, or "off"."""
     state = read_state() if state is None else state
     wait = delay_s(settings)
-    front = float(state.get("front_at") or 0)
-    if wait is None or not front or float(state.get("synced_at") or 0) >= front \
-            or float(state.get("settled_at") or 0) >= front:
+    if wait is None or state.get("front_pending") is not True:
         return None
-    return front + wait
+    return float(state.get("front_at") or 0) + wait
 
 
 def sync_if_due(url, settings, force=False, wait=None, cancel=None):
@@ -182,7 +180,7 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
             return None, due
         if not anki_connect.probe(url, timeout=3).get("ok"):
             # Anki closed after the write: its own sync on close (S2) carried the order. Nothing to send.
-            _update(settled_at=now)
+            _update(settled_at=now, front_pending=False)
             closed_seen(now)
             return "anki-closed", None
         if anki_connect.reviewing(url):
@@ -201,7 +199,7 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
             answer = anki_connect.sync(url)
             now = time.time()
             state = read_state()
-            state.update(settled_at=now, sync=answer.split(":")[0],
+            state.update(settled_at=now, front_pending=False, sync=answer.split(":")[0],
                          sync_error=answer if answer.startswith("failed") else "")
             if answer == "synced":
                 state["synced_at"] = now

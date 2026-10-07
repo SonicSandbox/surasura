@@ -78,13 +78,15 @@ def _generate(root):
 def lib(tmp_path, monkeypatch):
     """A generated library with the preview on, this test's data root: (root, store)."""
     root = str(tmp_path / "lib")
-    cases.build(root, CASE)
-    _settings_file(root)
-    _generate(root)
     env = cases.child_env(root)
     for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(name, env[name])
     monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    cases.build(root, CASE)
+    _settings_file(root)
+    from app.path_utils import ensure_data_setup
+    ensure_data_setup("ja")                      # what every window's open makes sure of (the word lists' files)
+    _generate(root)
     from app.path_utils import get_data_path, get_user_files_path
     store = library_store.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
     assert store is not None, "the Generate left no library store"

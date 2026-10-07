@@ -371,6 +371,8 @@ class Host:
             self._engine_for(store)
         finally:
             store.close()
+        from modules.junban import reposition
+        reposition.prepare(settings)                 # Junban's tables, the library map, the known words
 
     def _job(self, kind):
         """One job (04 §2.3): "move" (the CM's settle), "catch-up" (start, focus, the CM's open) or "generate"

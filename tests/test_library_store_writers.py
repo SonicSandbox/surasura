@@ -439,7 +439,15 @@ def test_open_and_focus_walk_on_the_worker_never_the_windows_thread(window, size
     # (20k), where an in-process count of walk_library would see none. Both are counted, with the thread asking.
     walks, in_process = [], []
     real_sync, real_walk = ls.sync_for_window, ls.walk_library
-    monkeypatch.setattr(ls, "sync_for_window", lambda s: walks.append(threading.current_thread()) or real_sync(s))
+
+    def counted(store, *args, **kwargs):
+        # Counted when it ends: a focus return asked while a sync still runs (20k: its own process, slower on a busy
+        # machine) shares one follow-up by design, so the next focus return waits for this one to finish.
+        try:
+            return real_sync(store, *args, **kwargs)
+        finally:
+            walks.append(threading.current_thread())
+    monkeypatch.setattr(ls, "sync_for_window", counted)
     monkeypatch.setattr(ls, "walk_library", lambda d: in_process.append(threading.current_thread()) or real_walk(d))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     t0 = time.perf_counter()

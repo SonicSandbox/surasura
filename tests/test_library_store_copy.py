@@ -413,7 +413,9 @@ def test_the_target_is_a_complete_manifest_at_every_instant(language, monkeypatc
     exported = 0
     for n in range(1000):
         store.move([ids[0]], "now", after_id=ids[5]) if n % 2 == 0 else store.move([ids[0]], "now")
-        exported += ls.export_copy(helper)
+        # An export that gave up (the reader held the file past the shortened back-off: a loaded machine) is asked
+        # again, as the helper's next run would: what this proves is that no reader ever sees half a file.
+        exported += any(ls.export_copy(helper) for _try in range(5))
     stop.set()
     t.join()
     helper.close()

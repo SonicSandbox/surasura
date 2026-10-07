@@ -174,7 +174,10 @@ def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, m
     install.mkdir()
     exe = install / "Surasura.exe"
     shutil.copy(sys.executable, exe)
-    stray = subprocess.Popen([str(exe), "-c", "import time; time.sleep(2)"])
+    # It runs until the test says so, not for a fixed 2 s: on a loaded machine the dashboard's steps above the listing
+    # took longer, and the program had ended before it was looked for.
+    go = tmp_path / "go"
+    stray = subprocess.Popen([str(exe), "-c", f"import os, time; [time.sleep(0.05) for _ in iter(lambda: os.path.exists({str(go)!r}), True)]"])
     procs.append(stray)
     monkeypatch.setattr(updater, "_install_images", lambda: [str(exe), str(install / "surasura-cli.exe")])
     dash._do_auto_update(MagicMock())
@@ -182,6 +185,7 @@ def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, m
     assert "Another Surasura window" in _texts(_wait_window(dash))
     assert [c["pid"] for c in updater.running_children([], images=[str(exe)])] == [stray.pid]
     assert dash.calls["armed"] == []
+    go.write_text("", encoding="utf-8")
     stray.wait(timeout=10)
     assert _pump(dash, lambda: dash.calls["armed"])
     assert dash.calls["destroyed"] == 1

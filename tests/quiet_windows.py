@@ -11,20 +11,55 @@ pytest process's main thread moves to the desktop, and every Tk window it opens 
 user's desktop: a window opened by another thread, and one a test opens in a child process (a child starts on its
 parent's first desktop) — such a child script calls `quiet_windows()` itself.
 
+Tk's start is retried when it fails to read one of its own library files (`steady_tk_start`).
+
 Qt (3.0's window) gets the same through `QT_QPA_PLATFORM=offscreen`, inherited by child processes too.
 `SURASURA_SHOW_TEST_WINDOWS=1` shows the windows again: to watch a GUI test, or to find the dialog a run that seems
 hung is waiting on (it waits there unseen). GitHub's runner shows nothing anyway: the desktop is left alone there.
 """
 import os
+import re
 import sys
+import time
 
 DESKTOP = "SurasuraTests"
 _held = []                                  # the desktop's handle, kept for the life of the process
 
 
+# Tk reads its own library files (init.tcl, tk.tcl, ttk's) as it starts. With dozens of test processes starting Tk at
+# once (three --all side by side, the core suite in shards) a read now and then fails: "couldn't read file
+# .../ttk/notebook.tcl: no such file or directory", "Can't find a usable tk.tcl" — the fault GitHub's runner shows
+# too. A window test then failed, or skipped itself as if Tk weren't installed.
+_TK_START_GLITCH = re.compile(r"usable (init|tk)\.tcl|couldn't read file|tcl_findLibrary")
+
+
+def steady_tk_start():
+    """Retry a Tk start that failed to read Tk's own files: 3 tries, 0.5 s apart; any other TclError at once."""
+    try:
+        import tkinter
+    except Exception:
+        return
+    real = tkinter.Tk.__init__
+    if getattr(real, "_steady", False):
+        return
+
+    def __init__(self, *args, **kwargs):
+        for attempt in range(3):
+            try:
+                return real(self, *args, **kwargs)
+            except tkinter.TclError as e:
+                if attempt == 2 or not _TK_START_GLITCH.search(str(e)):
+                    raise
+                time.sleep(0.5)
+    __init__._steady = True
+    tkinter.Tk.__init__ = __init__
+
+
 def quiet_windows():
-    """Move this thread's windows to the tests' own desktop (Windows), and Qt off-screen. Returns whether the
-    desktop was taken; anything that fails leaves the windows where they were, never fails a run."""
+    """Move this thread's windows to the tests' own desktop (Windows), and Qt off-screen; Tk's start steadied. Returns
+    whether the desktop was taken; anything that fails leaves the windows where they were, never fails a run."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        steady_tk_start()
     if os.environ.get("SURASURA_SHOW_TEST_WINDOWS") == "1":
         return False
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

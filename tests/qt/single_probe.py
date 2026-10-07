@@ -14,6 +14,14 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 from app.qt.single import SingleInstance  # noqa: E402
 
 app = QApplication(sys.argv[:1])
+# A start line: both starts claim at the same moment, however long each took to load Qt (a cold CI runner once took
+# longer than the first's whole hold, so the two never overlapped and both were, correctly, first).
+barrier = os.environ.get("PROBE_BARRIER")
+if barrier:
+    open(os.path.join(barrier, f"ready-{os.getpid()}"), "w").close()
+    deadline = time.monotonic() + 60
+    while len(os.listdir(barrier)) < int(os.environ.get("PROBE_PARTIES", "2")) and time.monotonic() < deadline:
+        time.sleep(0.005)
 instance = SingleInstance()
 if instance.claim(sys.argv[1:], wait=float(os.environ.get("PROBE_WAIT", "10"))):
     activations = []

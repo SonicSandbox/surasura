@@ -205,9 +205,11 @@ def test_two_starts_at_once_give_one_window(tmp_path):
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     outcomes = []
     for i in range(races):
+        barrier = tmp_path / f"start{i}"
+        barrier.mkdir()
         env = dict(os.environ, PYTHONPATH=root, SURASURA_TEST_ROOT=str(tmp_path / f"race{i}"),
-                   SURASURA_INSTANCE_NAME=f"surasura-race-{os.getpid()}-{i}-{time.time_ns()}", HOLD="2.5",
-                   QT_QPA_PLATFORM="offscreen")
+                   SURASURA_INSTANCE_NAME=f"surasura-race-{os.getpid()}-{i}-{time.time_ns()}", HOLD="3",
+                   QT_QPA_PLATFORM="offscreen", PROBE_BARRIER=str(barrier), PROBE_PARTIES="2")
         a, b = _start(env), _start(env)
         out = sorted(p.communicate(timeout=60)[0].strip() for p in (a, b))
         outcomes.append(out)

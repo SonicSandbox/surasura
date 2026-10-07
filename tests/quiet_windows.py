@@ -12,8 +12,8 @@ user's desktop: a window opened by another thread, and one a test opens in a chi
 parent's first desktop) — such a child script calls `quiet_windows()` itself.
 
 Qt (3.0's window) gets the same through `QT_QPA_PLATFORM=offscreen`, inherited by child processes too.
-`SURASURA_SHOW_TEST_WINDOWS=1` shows the windows again, to watch a GUI test. GitHub's runner shows nothing anyway:
-there it does nothing.
+`SURASURA_SHOW_TEST_WINDOWS=1` shows the windows again: to watch a GUI test, or to find the dialog a run that seems
+hung is waiting on (it waits there unseen). GitHub's runner shows nothing anyway: the desktop is left alone there.
 """
 import os
 import sys
@@ -38,9 +38,13 @@ def quiet_windows():
         user32.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD,
                                           wintypes.DWORD, ctypes.c_void_p]
         user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+        user32.CloseDesktop.argtypes = [wintypes.HANDLE]
         desktop = user32.CreateDesktopW(DESKTOP, None, None, 0, 0x10000000, None)    # GENERIC_ALL; opens it if there
-        if not desktop or not user32.SetThreadDesktop(desktop):
-            return False                    # this thread already has a window: it stays on the user's desktop
+        if not desktop:
+            return False
+        if not user32.SetThreadDesktop(desktop):    # this thread already has a window (or a hook): it stays put
+            user32.CloseDesktop(desktop)
+            return False
     except Exception:
         return False
     _held.append(desktop)

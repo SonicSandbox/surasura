@@ -116,12 +116,16 @@ SHIPPED = {"ja": ["Blacklist.txt", "IgnoreList.txt", "frequency_list_ja_global50
            "zh": ["Blacklist.txt", "IgnoreList.txt"]}
 
 
-def build(root, case, order=None):
+def build(root, case, order=None, preview=True):
     """A case's library under `root`, every file's mtime pinned. `order`: [(tier, name)] in place of the case's own
-    (the same files; RP-2's other orders)."""
+    (the same files; RP-2's other orders). `preview`: the fast re-plan's preview switched on in the root's
+    settings.json, so a Generate writes the plan file (E1.2-1: only then); False leaves no settings.json (2.5's run)."""
     language, library, shipped, _args = ALL_CASES[case]
     for sub in ("results", "appdata", "localappdata"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
+    if preview:
+        with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"junban_replan_preview": True}, f)
     shutil.copytree(os.path.join(REPO, "templates"), os.path.join(root, "templates"), dirs_exist_ok=True)
     data = os.path.join(root, "data", language)
     uf = os.path.join(root, "User Files", language)
@@ -179,14 +183,15 @@ def child_env(root):
     return env
 
 
-def generate(root, case, extra_env=None):
+def generate(root, case, extra_env=None, argv=None):
     """A full Generate of the case's library, as the dashboard runs it; the store's helper finished after. Returns
-    the analyzer's output (stdout + stderr)."""
+    the analyzer's output (stdout + stderr). `argv`: the analyzer's arguments in place of the case's (the
+    dashboard's own, `run_args.analyzer_args(…, headless=True)[1:]`)."""
     language, _library, _shipped_lists, args = ALL_CASES[case]
     env = child_env(root)
     env.update(extra_env or {})
-    cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
-           "--no-open"] + args
+    cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py")] + (
+        list(argv) if argv is not None else [f"--language={language}", "--static", "--no-open"] + args)
     p = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     out = p.stdout + "\n--- stderr ---\n" + p.stderr
     if p.returncode != 0:
@@ -267,7 +272,7 @@ def record(base_dir):
     for case in CASES:
         root = os.path.join(base_dir, case)
         shutil.rmtree(root, ignore_errors=True)
-        build(root, case)
+        build(root, case, preview=False)
         generate(root, case)
         hashes[case] = output_hashes(root)
         print(case, len(hashes[case]), "files")

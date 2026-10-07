@@ -211,6 +211,11 @@ class ToolTip:
         if tw:
             tw.destroy()
 
+# Junban's keys a dashboard save carries only as settings.json holds them — never a default into a 2.5 user's file: the
+# fast re-plan's preview switch (E1.1 04 §1; 順's option, saved once touched).
+JUNBAN_AS_WRITTEN = ("junban_replan_preview",)
+
+
 def carry_as_written(out, keys):
     """Copy each of `keys` that settings.json holds, as the file holds it, into `out` (a save being built): a key the
     user set is never dropped, and a default is never written into a file that lacks it. No file, or one that can't be
@@ -544,7 +549,8 @@ class MasterDashboardApp:
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
                                                self._maybe_anki_sync(), self._maybe_junban_auto(),
                                                self._maybe_auto_generate(), self._schedule_journey_state(),
-                                               self._schedule_maintain(), self._update_library_notice()))
+                                               self._schedule_maintain(), self._update_library_notice(),
+                                               self._replan_focus(), self._maybe_replan_generate()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
         # they fire, and a pending `after` whose Tcl command died with the interpreter keeps firing
         # into nothing (see the _no_ui_timers fixture in tests/conftest.py). Guarding the callback
@@ -567,6 +573,9 @@ class MasterDashboardApp:
 
             # Pick up words studied in Anki since last time (only if the user turned it on).
             self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
+
+            # The fast re-plan's preview, when 順's switch is on: a re-order left owed, cards no re-order placed.
+            self.root.after(2500, self._replan_start)
 
             # Whether the journey is up to date — the Generate button's border / check mark.
             self.root.after(1200, self._schedule_journey_state)
@@ -596,6 +605,7 @@ class MasterDashboardApp:
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
         # Known words are per language, and so are the chosen decks.
         self.var_language.trace_add("write", lambda *args: self._maybe_anki_sync(force=True))
+        self.var_language.trace_add("write", lambda *args: self.__dict__.get("_replan_host") and self._replan_start())
         # And so is the band preview: its numbers, and the band Automatic rarity locks the slider on,
         # come from that language's store. The indexer refreshes it only when the store has work to do,
         # so a switch to an up-to-date Chinese store kept the Japanese numbers — and the Japanese
@@ -3106,7 +3116,8 @@ class MasterDashboardApp:
             try:
                 import modules.junban as _junban
                 settings["enable_junban"] = self.var_enable_junban.get()
-                carried += [k for k in _junban.SETTINGS_DEFAULTS if k != "enable_junban"]
+                carried += [k for k in _junban.SETTINGS_DEFAULTS
+                            if k != "enable_junban" and k not in JUNBAN_AS_WRITTEN]
             except (ImportError, ModuleNotFoundError):
                 pass
             carried += ["anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"]
@@ -3114,7 +3125,9 @@ class MasterDashboardApp:
             # Carried only as the file holds them — a save never drops one the user set, and never writes a default
             # into a settings.json that lacks it (or one that can't be read)
             as_written = ["connect_mine_words", "connect_send_grammar", "connect_anki_miner_path",
-                          "connect_anki_miner_profile", "connect_enabled", "placing_rules"]
+                          "connect_anki_miner_profile", "connect_enabled", "placing_rules",
+                          # the sync rule's minute (E1.1 04 §3, 順's "Sync AnkiWeb") and the preview's switch
+                          "anki_sync_delay_min", *JUNBAN_AS_WRITTEN]
 
             def build():
                 # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
@@ -3400,11 +3413,14 @@ class MasterDashboardApp:
                 # An automatic Generate held back while this ran (the Content Manager, an importer, the
                 # indexer, a Generate) can go now. It does nothing unless one is waiting.
                 self.gui_queue.put(self._maybe_auto_generate)
+                self.gui_queue.put(self._replan_after_child)     # the fast re-plan's preview: catch up, its Generate
                     
         threading.Thread(target=task, daemon=True).start()
 
     def on_closing(self):
         """Coordinated shutdown: terminate all active sub-processes"""
+        if self._replan_finishing():
+            return                      # the fast re-plan's re-order or sync finishes first; this runs again after
         job = getattr(self, "_update_job", None)
         if job is not None:
             self._cancel_update(job, start_held=False)   # closing while an update waits: nothing armed, nothing started
@@ -3566,6 +3582,9 @@ class MasterDashboardApp:
         guards); this only schedules it.
         """
         import time
+        host = self.__dict__.get("_replan_host")
+        if host is not None and force:
+            host.after_generate()       # the fast re-plan's preview re-orders from the new plan (E1.1 04 §3)
         now = time.monotonic()
         if not force and now - self._last_junban_auto < 300:
             return
@@ -3576,6 +3595,8 @@ class MasterDashboardApp:
             return
         settings["target_language"] = self.var_language.get()
         settings["enable_junban"] = bool(self.var_enable_junban.get())     # the switch as shown, saved or not yet
+        if host is not None and self._replan_runs(settings):
+            settings["junban_auto_reorder"] = False     # the preview's host re-orders; the Backfill step stays
         if not auto.enabled(settings) or auto.blocked(settings, window=False):
             return
         window = getattr(self, "junban_window", None)
@@ -3606,6 +3627,121 @@ class MasterDashboardApp:
 
         self._junban_spinner(True)
         threading.Thread(target=work, daemon=True).start()
+
+    # --- the fast re-plan's preview (E1.1 04 §3; app/replan_preview.py) --------------------------------------------- #
+    # With 順's "Re-order Anki as I move content (preview)" on, this window catches up — a re-order the Content
+    # Manager left owed, cards Anki holds that no re-order placed — at start and on focus, re-orders after every
+    # Generate (the host's worker, 順 spinning), and runs the automatic Generate the preview asks for (moves made,
+    # switched on, the plan can't serve a move): quietly, shown working, never with the Content Manager open, never two.
+    # Off (the default): no host, 2.5's window.
+
+    def _replan_start(self):
+        """Start, stop or re-aim the host (startup, 順's switch, the language): one per language."""
+        try:
+            from app import replan_preview
+            settings = dict(settings_manager.load_settings() or {})
+            settings["enable_junban"] = bool(self.var_enable_junban.get())
+            on = replan_preview.is_on(settings)
+        except Exception:
+            on = False
+        language = self.var_language.get() or "ja"
+        host = self.__dict__.get("_replan_host")
+        if host is not None and (not on or host.language != language):
+            host.stop()
+            host = self._replan_host = None
+        if on and host is None:
+            host = self._replan_host = replan_preview.Host(
+                language, say=lambda line: self.gui_queue.put(lambda: self._replan_said(line)),
+                working=lambda busy: self.gui_queue.put(lambda: self._junban_spinner(busy)),
+                generate=lambda reason: self.gui_queue.put(lambda: self._want_replan_generate(reason)))
+        if host is not None:
+            self._replan_focus()
+
+    def replan_preview_changed(self):
+        """順's window: its "Re-order Anki as I move content" switch (or its sync choice) changed."""
+        self._replan_start()
+
+    @staticmethod
+    def _replan_runs(settings):
+        """The preview's host re-orders for these settings (else 2.5's automatic reorder keeps its own switch)."""
+        try:
+            from app import replan_preview
+            return replan_preview.is_on(settings) and replan_preview.unavailable(settings) is None
+        except Exception:
+            return False
+
+    def _child_running(self):
+        try:
+            return any(proc.poll() is None for proc in list(self.active_processes))
+        except Exception:
+            return True
+
+    def _replan_focus(self):
+        """The catch-up (04 §3): on focus and at start — not while a program of this window runs (the Content
+        Manager re-orders itself; a Generate's end re-orders)."""
+        host = self.__dict__.get("_replan_host")
+        if host is not None and not self._child_running():
+            host.catch_up()
+
+    def _replan_after_child(self):
+        """A program of this window ended (the Content Manager closing): catch up, and run a Generate that waited."""
+        self._replan_focus()
+        self._maybe_replan_generate()
+
+    def _replan_said(self, line):
+        """The host's line, in the bottom bar for a few seconds (the Content Manager shows its own)."""
+        if not line:
+            return
+        self.status_var.set(line)
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(6000, lambda: self.status_var.get() == line and self.status_var.set("Ready"))
+
+    def _want_replan_generate(self, reason):
+        self._replan_generate_reason = reason
+        self._maybe_replan_generate()
+
+    def _maybe_replan_generate(self):
+        """The preview's automatic Generate (04 §3, ✅ G1.5-2 / G1.5-5), when nothing holds it back: never with the
+        Content Manager (or any program of this window) open, never during a Generate or an update, never for the
+        other language. Quiet — the report written, not opened — and shown working: the check mark's spot spins,
+        the bottom bar says so. A request held back waits for focus or the next program's end."""
+        reason = self.__dict__.get("_replan_generate_reason")
+        host = self.__dict__.get("_replan_host")
+        if not reason or host is None or host.language != self.var_language.get():
+            return False
+        if self._generate_running is not None or updater.children_held() or self._child_running():
+            return False
+        if not self._library_has_content():
+            return False
+        self._replan_generate_reason = None
+        self.log_to_terminal("Re-order as you move: refreshing your list (Generate) so Anki follows your moves "
+                             "— the report is not opened.")
+        self.status_var.set("Refreshing your list (Generate)… · Anki is re-ordered when it's done")
+        self.run_analyzer(quiet=True)
+        if self._generate_running == "quiet":
+            self._generate_running = "automatic"
+            self._journey_spinner(True)                # the check mark's spot spins until it ends
+        return True
+
+    def _replan_finishing(self):
+        """Closing (04 §2.5): a re-order running or a sync pending finishes first — at most CLOSE_WAIT_S, the bottom
+        bar saying so — then `on_closing` runs again. False when nothing waits (closing goes on at once)."""
+        host = self.__dict__.get("_replan_host")
+        if host is None:
+            return False
+        import time
+        from app import replan_preview
+        deadline = self.__dict__.get("_replan_closing_at")
+        if deadline is None:
+            host.close()
+            deadline = self._replan_closing_at = time.monotonic() + replan_preview.CLOSE_WAIT_S
+            self.status_var.set("Finishing the re-order in Anki…")
+        if host.busy() and time.monotonic() < deadline and not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(100, self.on_closing)
+            return True
+        host.stop()
+        self._replan_host = None
+        return False
 
     def _tell_junban_list_changed(self):
         """After any Generate: an open 順 window that was waiting for an up-to-date list (its

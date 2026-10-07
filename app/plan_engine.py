@@ -24,6 +24,7 @@ live numbers (Score, counts, first places, *N new*, the priority order) up to da
 """
 import bisect
 import gzip
+import io
 import json
 import zlib
 from array import array
@@ -107,6 +108,26 @@ def load(path):
     plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file)
     _validate(plan)
     return plan
+
+
+def read_header(path):
+    """The plan file's header (its first line), or None when there is no readable plan of this format. The whole
+    stream is read through, so a damaged file (the gzip CRC, a cut-off end) is None too: what the analyzer asks
+    before it reuses a run with the preview on (E1.1 01 §7, E1.2-1), cheaper than `load` (nothing past the first
+    line is decoded)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        stream = gzip.GzipFile(fileobj=io.BytesIO(data))
+        first = stream.readline()
+        while stream.read(1 << 20):
+            pass
+        header = json.loads(first)
+    except (OSError, EOFError, zlib.error, ValueError):
+        return None
+    if not isinstance(header, dict) or header.get("format") != FORMAT:
+        return None
+    return header
 
 
 def _validate(plan):

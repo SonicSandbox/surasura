@@ -140,8 +140,9 @@ class ContentImporterApp:
         self.root.minsize(660, 675)
         self.root.configure(bg=BG_COLOR)
         
-        # Bind Escape key to close
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
+        # Bind Escape key to close (and the window's X: the same path — the fast re-plan's "finishing…" first)
+        self.root.bind("<Escape>", lambda e: self._close_window())
+        self.root.protocol("WM_DELETE_WINDOW", self._close_window)
         self.style = ttk.Style()
         self.apply_dark_theme()
         
@@ -167,6 +168,9 @@ class ContentImporterApp:
         self.target_folder_var.trace("w", self.on_folder_change)
         
         self.status_var = tk.StringVar(value="Ready")
+        # The fast re-plan's preview (E1.1 04, app/replan_preview.py): its own line at the bottom, right of the status.
+        self.replan_var = tk.StringVar(value="")
+        self._replan = None
         self.graduate_btn = None
         self.analyzed_filenames = set()
         self._last_stats_mtime = 0
@@ -201,6 +205,7 @@ class ContentImporterApp:
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):
             # Defer data loading slightly so the window appears instantly
             self.root.after(100, self._initial_load)
+            self.root.after(300, self._start_replan)
 
         # Re-read the library when the window gains focus (_on_focus_in). FocusIn also fires when a
         # dialog of ours closes; _DIALOGS holds it off then.
@@ -488,6 +493,8 @@ class ContentImporterApp:
                         self.status_var.set(f"{len(value['bad'])} file name(s) couldn't be read and were skipped.")
                 elif kind == "changed":
                     refresh = True
+                if kind in ("changed", "synced"):
+                    self._replan_poke()                  # another program's change, or the disk's: the order may move
         except queue.Empty:
             pass
         if self.__dict__.get("_store_waiting") and not self._store_building():
@@ -559,6 +566,7 @@ class ContentImporterApp:
             self.undo_btn.config(state=tk.NORMAL)
             self.undo_btn.tip_text = f"Undo: {label}"
         self._schedule_idle_export()
+        self._replan_poke()
 
     def _schedule_idle_export(self):
         job = self.__dict__.get("_idle_export_job")
@@ -1011,6 +1019,87 @@ class ContentImporterApp:
 
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, foreground="#888")
         status_bar.pack(side=tk.LEFT, pady=(15, 0))
+        # Empty unless 順's "Re-order Anki as I move content (preview)" is on.
+        self.replan_label = ttk.Label(main_frame, textvariable=self.replan_var, foreground="#888")
+        self.replan_label.pack(side=tk.RIGHT, pady=(15, 0))
+        self.create_tooltip(self.replan_label, "Re-order as you move (preview, set in 順): what Anki's re-order is doing. "
+                                               "AnkiWeb: Surasura's own sync requests only — not your reviews or Anki's "
+                                               "own syncs.")
+
+    # --- the fast re-plan's preview (E1.1 04 §2; app/replan_preview.py) -------------------------------------------- #
+    # With 順's "Re-order Anki as I move content (preview)" on, this window hosts the engine: a move restarts a 0.8 s
+    # settle, then one job on the host's worker re-plans and re-orders Anki's new cards, tomorrow's first, with the
+    # line at the bottom right saying what it does. Off (the default), or Junban removed: no host, 2.5's window.
+
+    def _start_replan(self):
+        """At open (and by a test): the host, when the preview is on — the plan and the engine loaded on its worker,
+        and a catch-up for a re-order another window left owed (04 §3)."""
+        try:
+            from app import replan_preview, settings_manager
+            settings = settings_manager.load_settings() or {}
+            if not replan_preview.is_on(settings):
+                return
+            self._replan_settings = settings
+            self._replan_lines = queue.Queue()
+            self._replan = replan_preview.Host(self.language, say=self._replan_lines.put)
+        except Exception as e:
+            print(f"Re-order as you move: not started ({e})")
+            self._replan = None
+            return
+        self._replan.warm()
+        self._replan.catch_up()
+        self._replan_line = ""
+        self._replan_ticks = 0
+        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._replan is not None
+                       and self._replan.stop(), add="+")
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            self.root.after(100, self._drain_replan)
+
+    def _replan_poke(self):
+        if self.__dict__.get("_replan") is not None:
+            self._replan.poke()
+
+    def _drain_replan(self, once=False):
+        """On this thread: the host's newest line, and the AnkiWeb part refreshed once a second (a small file read)."""
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+        changed = False
+        try:
+            while True:
+                self._replan_line = self._replan_lines.get_nowait()
+                changed = True
+        except queue.Empty:
+            pass
+        self._replan_ticks += 1
+        if changed or self._replan_ticks >= 10:
+            self._replan_ticks = 0
+            try:
+                from app import anki_sync_rule
+                web = anki_sync_rule.status(self._replan_settings)
+            except Exception:
+                web = ""
+            self.replan_var.set(" · ".join(part for part in (self._replan_line, web) if part))
+        if not once:
+            self.root.after(100, self._drain_replan)
+
+    def _close_window(self):
+        """Esc and the X: with a re-order running or about to run, it finishes first (04 §2.5: *finishing…*, at most
+        `replan_preview.CLOSE_WAIT_S`); a pending settle and a pending AnkiWeb sync run at once. Else at once."""
+        host = self.__dict__.get("_replan")
+        if host is not None and not self.__dict__.get("_closing_at"):
+            from app import replan_preview
+            host.close()
+            self._closing_at = time.monotonic() + replan_preview.CLOSE_WAIT_S
+            self.replan_var.set("Anki: finishing…")
+        if host is not None and host.busy() and time.monotonic() < self._closing_at:
+            self.root.after(100, self._close_window)
+            return
+        if host is not None:
+            host.stop()
+        self.root.destroy()
 
     def get_current_dir(self):
         folder_name = self.target_folder_var.get()
@@ -1783,6 +1872,7 @@ class ContentImporterApp:
             self.undo_btn.config(state=tk.NORMAL if changes else tk.DISABLED)
             self.undo_btn.tip_text = f"Undo: {changes[-1]['label']}" if changes else "Undo"
         self._schedule_idle_export()
+        self._replan_poke()
         self.refresh_file_list(force=True)
         self.status_var.set(f"Undid: {record['label']}" + (f" ({'; '.join(notes)})" if notes else ""))
 

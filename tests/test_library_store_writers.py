@@ -25,8 +25,8 @@ import tkinter as tk
 from app import library_store as ls
 from app import content_importer_gui as cig
 from app.content_importer_gui import ContentImporterApp
-from tests.test_library_store_support import (LANGUAGES, library, names, read_doc, roots, subprocess_env, touch,
-                                              write_manifest)
+from tests.test_library_store_support import (LANGUAGES, library, names, no_line, read_doc, roots, subprocess_env,
+                                              touch, write_manifest)
 
 BENCH = bool(os.environ.get("SURASURA_STORE_BENCH"))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -148,6 +148,7 @@ def test_no_order_or_tier_action_moves_a_file(window, language):
     leave every file where it is, with the same bytes (I3, L5: Sonic, "The store should never move any of the
     files")."""
     data_dir, _uf, _doc = _store_library(language)
+    no_line(ls.open_store(language, data_dir, _uf)).close()   # 2.x's tier actions, as 2.4 drew them (no Soon line)
     app = window(language)
     before = _snapshot(data_dir)
     now = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]

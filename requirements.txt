@@ -10,3 +10,5 @@ jieba
 pytest
 python-dotenv
 zstandard
+PyQt6==6.11.*
+PyQt6-Qt6==6.11.*

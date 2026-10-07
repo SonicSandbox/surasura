@@ -657,10 +657,14 @@ def build_subprocess_env(frozen=None):
     locale-encoded bytes: a source-mode script otherwise encodes stdout in the OS locale (cp1252 on
     Windows), turning e.g. an em-dash into byte 0x97 and crashing the capture with "invalid start
     byte". Also puts the project root on PYTHONPATH in source mode so `from app import ...` resolves.
+
+    Drops an inherited QT_QPA_PLATFORM (the window's spec 04 §4.1): a window started under a test harness's
+    `offscreen` platform would otherwise hand it to a child, and a child that opens a window draws it to nothing.
     """
     if frozen is None:
         frozen = is_frozen()
     env = os.environ.copy()
+    env.pop("QT_QPA_PLATFORM", None)
     env["PYTHONIOENCODING"] = "utf-8"
     if not frozen:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

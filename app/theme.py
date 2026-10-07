@@ -270,8 +270,10 @@ def palette(theme=DEFAULT_THEME):
 
 # --- Type ---------------------------------------------------------------------------------------------------------- #
 FAMILY = ("Segoe UI",)
-FAMILY_BY_LANGUAGE = {"ja": ("Yu Gothic UI", "Yu Gothic", "Meiryo"), "zh-hans": ("Microsoft YaHei UI",),
-                      "zh-hant": ("Microsoft JhengHei UI",)}
+# Windows' families first; then macOS's and Linux's (05 §5.11: other systems, 3.1–3.2), which Windows skips unread.
+FAMILY_BY_LANGUAGE = {"ja": ("Yu Gothic UI", "Yu Gothic", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP"),
+                      "zh-hans": ("Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC"),
+                      "zh-hant": ("Microsoft JhengHei UI", "PingFang TC", "Noto Sans CJK TC")}
 MONO = ("Consolas", "Cascadia Mono")
 LINE_HEIGHT = 1.45
 TEXT_SIZES = {"S": 1.0, "M": 1.15, "L": 1.3}

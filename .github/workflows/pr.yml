@@ -1,12 +1,15 @@
-# Every pull request runs the core tests on Windows. A pull request into 3.0-dev or 2.x-dev merges itself once the
-# tests pass and it carries the `reviewed` label, which the session adds after its local review; adding the label is what merges (the register is kept
-# outside this repo). A new push takes the label off: new commits need a new review. main takes only pull requests the
-# owner merges.
-name: PR checks
+# Every pull request's tests: the core suite on Windows, once per push (opened, a new push, reopened, ready for review),
+# never on a label or an edit. A pull request that changes only docs (docs/, any *.md) runs no Windows job. Merging is
+# pr-merge.yml's: a pull request into 3.0-dev or 2.x-dev merges itself when the session adds the `reviewed` label after
+# its local review (the register is kept outside this repo), if these tests passed on its head commit. A new push takes
+# the label off: new commits need a new review. main takes only pull requests the owner merges.
+name: PR tests
+# pr-merge.yml finds this pull request's run by this name and the head commit.
+run-name: "PR #${{ github.event.pull_request.number }} tests (into ${{ github.base_ref }})"
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
@@ -16,7 +19,38 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Docs only (every changed file, and every renamed one's old name, under docs/ or ending in .md, none in a tests/
+    # folder): no test run. Anything it can't tell for sure runs the tests.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          total=$(gh pr view "$PR" --repo "$REPO" --json changedFiles --jq .changedFiles)
+          awk '/^tests\// || /\/tests\// || !(/^docs\// || /\.md$/)' files.txt > code.txt
+          head -n 20 code.txt
+          lines=$(wc -l < files.txt); other=$(wc -l < code.txt)
+          # Docs only needs the whole list (the files API lists at most 3,000) and not one other file.
+          if [ "$lines" -gt 0 ] && [ "$total" -lt 3000 ] && [ "$lines" -ge "$total" ] && [ "$other" -eq 0 ]; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docs only ($total files): no test run."
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   tests:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}     # a failed check of the files runs them
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -30,6 +64,7 @@ jobs:
           pandas==2.0.0 numpy==1.25.2 fugashi==1.5.2 unidic-lite==1.0.8 pysrt==1.1.2 EbookLib==0.20
           beautifulsoup4==4.12.2 soupsieve==2.4 lxml==4.9.2 requests==2.28.2 tkinterdnd2==0.4.3 jieba==0.42.1
           pytest==9.0.2 python-dotenv==1.0.0 zstandard==0.25.0
+          PyQt6==6.11.0 PyQt6-Qt6==6.11.2 PyQt6-sip==13.13.0
       - name: The folders the tests expect
         shell: bash
         run: mkdir -p data/ja data/zh "User Files"
@@ -55,30 +90,3 @@ jobs:
         run: |
           gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --remove-label reviewed
           echo "::notice::New commits since the review: the reviewed label is off. Review again, then add it back."
-
-  merge:
-    needs: tests
-    if: >-
-      github.event.action == 'labeled' && github.event.label.name == 'reviewed' &&
-      (github.base_ref == '3.0-dev' || github.base_ref == '2.x-dev') &&
-      contains(github.event.pull_request.labels.*.name, 'reviewed')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Merge the tested commit, if the pull request still qualifies now
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          TESTED: ${{ github.event.pull_request.head.sha }}
-        run: |
-          read -r base head draft labelled < <(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isDraft,labels \
-            --jq '[.baseRefName, .headRefOid, (.isDraft|tostring), ([.labels[].name] | index("reviewed") != null | tostring)] | join(" ")')
-          echo "now: base=$base head=$head draft=$draft reviewed=$labelled; tested=$TESTED"
-          case "$base" in 3.0-dev|2.x-dev) ;; *) echo "::notice::base is $base, not an integration branch: not merging"; exit 0;; esac
-          if [ "$draft" != false ] || [ "$labelled" != true ] || [ "$head" != "$TESTED" ]; then
-            echo "::notice::changed since the tests ran: not merging"; exit 0
-          fi
-          gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$TESTED"

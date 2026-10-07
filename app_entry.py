@@ -32,6 +32,21 @@ if sys.platform == "win32":
 
 import multiprocessing
 
+
+def _qt_window():
+    """The 3.0 window's module (app/qt/shell.py), or None when PyQt6 isn't installed: then the Tk dashboard opens and
+    the log says why (a build or a checkout without the 3.0 line's dependency). Imported here, inside a function, so
+    no headless verb ever loads Qt (tests/test_import_guard.py)."""
+    try:
+        from app.qt import shell
+        return shell
+    except ImportError as e:
+        if (getattr(e, "name", None) or "").split(".")[0] == "PyQt6":
+            log_error(f"The window needs PyQt6, which isn't installed ({e}): opening the Tk dashboard")
+            return None
+        raise
+
+
 def main():
     # Force UTF-8 for stdout/stderr to avoid UnicodeEncodeError in frozen Windows builds
     if sys.platform == "win32":
@@ -46,6 +61,7 @@ def main():
     # --headless: another program started this subcommand (surasura-cli's generate, P0.3 02-contract §1). A crash is
     # logged and exits 1, never a Critical Error box; an unknown or missing command exits 2, never opens the dashboard.
     headless = "--headless" in sys.argv[1:]
+    use_tk = False
     if headless:
         sys.argv = [arg for arg in sys.argv if arg != "--headless"]
     try:
@@ -163,6 +179,10 @@ def main():
                     sys.exit(1)
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 sys.exit(patterns_build.main())
+            elif command == 'dashboard':
+                # The 2.x Tk dashboard, kept reachable on the 3.0 line until the window takes over its duties (W3.5
+                # retires it; W2.1 RUNBOOK G-1). Falls through to the default start below, in Tk.
+                use_tk = True
             else:
                 log_error(f"Unknown command: {command}")
 
@@ -170,16 +190,21 @@ def main():
             log_error("Headless: nothing to run; the dashboard never opens headless")
             sys.exit(2)
 
-        # Default: Run Main Dashboard
-        log_error("Launching Dashboard")
-        
-        # Telemetry Initialization
+        # Telemetry Initialization (either window)
         try:
             from app import telemetry
             telemetry.init()
         except Exception as e:
             log_error(f"Telemetry init failed: {e}")
 
+        # Default: the window. On the 3.0 line that is the PyQt6 window (W2.1, the window's spec 01 §1.6); the Tk
+        # dashboard opens for `dashboard`, or when PyQt6 is missing.
+        window = None if use_tk else _qt_window()
+        if window is not None:
+            log_error("Launching the window")
+            sys.exit(window.main(list(sys.argv)) or 0)
+
+        log_error("Launching Dashboard")
         from app import main as dashboard
         dashboard.main()
         

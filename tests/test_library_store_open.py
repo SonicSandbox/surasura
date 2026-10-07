@@ -105,13 +105,16 @@ def test_only_the_helper_auto_checkpoints(language):
 def test_a_store_busy_for_half_a_second_still_opens(language):
     migrated(language).close()
     ready = threading.Event()
-    t = threading.Thread(target=_hold_busy, args=(_db(language), 0.5, ready))
+    # Half of the 1 s retry in a timed run (SURASURA_STORE_BENCH=1); 0.2 s beside other runs, where the holder's
+    # release can come late (three --all at once once let 0.5 s run past the second).
+    busy = 0.5 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 0.2
+    t = threading.Thread(target=_hold_busy, args=(_db(language), busy, ready))
     t.start()
     ready.wait(5)
     data_dir, user_files_dir = roots(language)
     store = ls.open_store(language, data_dir, user_files_dir)
     t.join()
-    assert store is not None, "busy for 0.5 s is retried, not a lesser mode"
+    assert store is not None, f"busy for {busy} s is retried, not a lesser mode"
     store.close()
 
 

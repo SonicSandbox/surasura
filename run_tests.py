@@ -30,8 +30,8 @@ def _suites(project_root):
 # shard's files are packed by their last recorded times (debug/test_times.json, written by the shards' own conftest
 # hook, SURASURA_TEST_TIMES), the file's size until there is one. How many shards: as many as fit in the memory free
 # now (one unsplit core process peaked at ~4.8 GB; each further shard adds ~0.5 GB; RESERVE_MB is left for the module
-# suites and the machine), at most SHARD_MAX and the CPU count — so a quiet machine gets more, one already running
-# other test runs fewer. SURASURA_TEST_SHARDS=N chooses N (1: unsplit). Measurements: tracks/ship/notes/ in the
+# suites and the machine), at most SHARD_MAX and half the CPUs idle over half a second as it starts (two logical CPUs
+# share a core) — so a quiet machine gets more, one already running other test runs fewer. SURASURA_TEST_SHARDS=N chooses N (1: unsplit). Measurements: tracks/ship/notes/ in the
 # 3.0 planning folder (parallel-tests.md, Job 3).
 
 SHARD_MAX = 8
@@ -74,12 +74,37 @@ def _free_memory_mb():
         return None
 
 
-def _shard_count(free_mb, cpus):
+def _idle_cpus(cpus, seconds=0.5):
+    """How many of the `cpus` logical CPUs sat idle over the next `seconds`; None where it can't be read."""
+    def sample():
+        if sys.platform == "win32":
+            import ctypes
+            idle, kernel, user = (ctypes.c_ulonglong() for _ in range(3))
+            if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            return idle.value, kernel.value + user.value          # kernel time includes idle time
+        with open("/proc/stat") as f:
+            values = [int(v) for v in f.readline().split()[1:]]
+        return values[3] + values[4], sum(values)                 # idle + iowait, all
+    try:
+        first = sample()
+        time.sleep(seconds)
+        second = sample()
+    except (AttributeError, OSError, ValueError, IndexError):
+        return None
+    if not first or not second or second[1] <= first[1] or not cpus:
+        return None
+    return cpus * (second[0] - first[0]) / (second[1] - first[1])
+
+
+def _shard_count(free_mb, cpus, idle=None):
     """How many shards the core suite runs in (see above)."""
     forced = os.environ.get("SURASURA_TEST_SHARDS", "").strip()
     if forced.isdigit():
         return max(1, int(forced))
     cap = max(1, min(SHARD_MAX, cpus or 1))
+    if idle is not None:
+        cap = max(1, min(cap, int(idle // 2)))      # two logical CPUs a shard: they share a core
     if free_mb is None:
         return max(1, min(4, cap // 2))
     shards = 1
@@ -185,7 +210,8 @@ def run_all(project_root):
         sys.stdout.reconfigure(errors="backslashreplace")
     suites = _suites(project_root)
     files = _core_files(project_root)
-    count = min(_shard_count(_free_memory_mb(), os.cpu_count()), len(files)) if len(files) > 1 else 1
+    cpus = os.cpu_count()
+    count = min(_shard_count(_free_memory_mb(), cpus, _idle_cpus(cpus)), len(files)) if len(files) > 1 else 1
     shards = _shards(project_root, files, count) if count > 1 else []
     jobs = [(f"tests [{i}/{len(shards)}]", shard) for i, shard in enumerate(shards, 1)] or [("tests", None)]
     jobs += [(suite, None) for suite in suites[1:]]

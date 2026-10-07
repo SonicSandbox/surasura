@@ -173,12 +173,31 @@ def test_the_shard_count_follows_the_free_memory(monkeypatch, free_mb, cpus, sha
     assert run_tests._shard_count(free_mb, cpus) == shards
 
 
+@pytest.mark.parametrize("idle, shards", [
+    (23.5, 8),          # a quiet machine: memory decides
+    (11.0, 5),          # another run going: half the idle CPUs
+    (1.2, 1),           # two other runs filling the machine: unsplit
+    (None, 8),          # idle time unreadable: memory decides
+])
+def test_the_shard_count_follows_the_idle_cpus(monkeypatch, idle, shards):
+    """Three runs started together all see the memory free; the CPUs busy with runs already going are what the later
+    one sees first (three runs of 8 shards each were ~39 processes on 24 CPUs)."""
+    monkeypatch.delenv("SURASURA_TEST_SHARDS", raising=False)
+    assert run_tests._shard_count(24000, 24, idle) == shards
+
+
+def test_the_idle_cpus_are_read_from_this_machine():
+    """A real reading: some share of the CPUs, never more than there are."""
+    idle = run_tests._idle_cpus(4, seconds=0.05)
+    assert idle is None or 0 <= idle <= 4
+
+
 def test_the_shard_count_can_be_chosen(monkeypatch):
     """SURASURA_TEST_SHARDS=1 runs the core suite unsplit, as before (the split's proof compares the two)."""
     monkeypatch.setenv("SURASURA_TEST_SHARDS", "1")
     assert run_tests._shard_count(24000, 24) == 1
     monkeypatch.setenv("SURASURA_TEST_SHARDS", "3")
-    assert run_tests._shard_count(1000, 2) == 3
+    assert run_tests._shard_count(1000, 2, 0.5) == 3
 
 
 def test_shards_are_packed_by_the_recorded_times_each_file_once(tmp_path):
@@ -211,7 +230,8 @@ def test_the_core_suite_runs_in_shards_beside_the_module_suites(tmp_path, monkey
     root = str(tmp_path)
     _layout(root, {"junban": True})
     _core(root, {"test_a.py": 10, "test_b.py": 10, "test_c.py": 10})
-    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus: 3)
+    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus, idle: 3)
+    monkeypatch.setattr(run_tests, "_idle_cpus", lambda cpus: None)
     barrier = threading.Barrier(4, timeout=10)
     seen = []
 
@@ -237,7 +257,8 @@ def test_the_core_suite_runs_in_shards_beside_the_module_suites(tmp_path, monkey
 def test_a_failing_shard_fails_the_core_suite_and_prints_its_output(tmp_path, monkeypatch, capsys):
     root = str(tmp_path)
     _core(root, {"test_a.py": 10, "test_b.py": 10})
-    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus: 2)
+    monkeypatch.setattr(run_tests, "_shard_count", lambda free_mb, cpus, idle: 2)
+    monkeypatch.setattr(run_tests, "_idle_cpus", lambda cpus: None)
 
     def fake_shard(project_root, label, files, times_path):
         if files == ["tests/test_b.py"]:

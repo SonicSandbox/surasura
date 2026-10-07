@@ -1,4 +1,4 @@
-"""Connect's four settings (P1.3) and the dashboard's save: kept as the user set them, never written when they weren't
+"""Connect's settings (P1.3's four, P2.1's switch and placing rules) and the dashboard's save: kept as the user set them, never written when they weren't
 (intent review #7 — preview off, settings.json stays as 2.5 leaves it), and read by no run (never in a signature)."""
 import json
 import os
@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 from app import settings_manager
 from app.path_utils import get_user_file
 
-CONNECT = ("connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile")
+CONNECT = ("connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+           "connect_enabled", "placing_rules")
 
 
 def _write(values):
@@ -37,8 +38,10 @@ def test_a_dashboard_save_never_writes_connects_defaults():
 
 def test_a_dashboard_save_keeps_what_the_user_set():
     _write({"target_language": "ja", "connect_mine_words": "i1", "connect_send_grammar": False,
-            "connect_anki_miner_path": os.path.join("D:\\", "ツール", "AnkiMiner", "AnkiMiner.exe")})
+            "connect_anki_miner_path": os.path.join("D:\\", "ツール", "AnkiMiner", "AnkiMiner.exe"),
+            "connect_enabled": True, "placing_rules": {"hato": "top"}})
     saved = _dashboard_save()
+    assert saved["connect_enabled"] is True and saved["placing_rules"] == {"hato": "top"}
     assert saved["connect_mine_words"] == "i1" and saved["connect_send_grammar"] is False
     assert saved["connect_anki_miner_path"].endswith("AnkiMiner.exe")
     assert "connect_anki_miner_profile" not in saved

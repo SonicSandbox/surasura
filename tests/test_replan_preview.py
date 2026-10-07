@@ -647,3 +647,118 @@ def test_auto_reorder_numbers_spaced_while_the_preview_is_on(lib):
         done = auto.reorder(_junban_settings(), list_current=True, positions_only=True)
     assert done["outcome"] == "ran", done
     assert done["report"].get("numbering"), "dense numbering with the preview on"
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# The second review's fixes (tracks/engine/reviews/E3.1-adversary-2.md)
+# --------------------------------------------------------------------------------------------------------------- #
+
+def test_a_deck_changed_since_the_switch_stands_aside():
+    """Pass 2 A1: the deck is recorded with the switch; 順's deck changed since (in the other language's window)
+    and the preview stands aside, never re-ordering that deck by this language's list."""
+    on = {"junban_replan_preview": True, "enable_junban": True, "junban_scope": "deck", "junban_deck": "TheBank",
+          "junban_replan_deck": "TheBank"}
+    assert replan_preview.unavailable(on) is None
+    assert "deck changed" in replan_preview.unavailable(dict(on, junban_deck="中文"))
+    assert replan_preview.unavailable(dict(on, junban_replan_deck="")) is None     # a hand edit: no record, no check
+
+
+def test_after_a_failed_generate_nothing_is_written_from_a_list_that_isnt_this_librarys(lib):
+    """Pass 2 A2: a Generate that failed leaves the last run's list (maybe the other language's): the step after it
+    writes from a list only when it is this library's latest run."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host(generate=lambda reason: None)
+    os.remove(os.path.join(root, "results", analyzer.PLAN_FILE))     # as a failed Generate leaves no plan
+    with open(os.path.join(root, "results", "run_signature.txt"), "w", encoding="utf-8") as f:
+        f.write("another run")                                         # and the list is another run's
+    with _patched(fake):
+        host._job("generate")
+    assert not fake.write_requests
+    assert lines[-1] in (replan_preview.GENERATE_FIRST, "New content or settings: press Generate, then Anki is re-ordered")
+
+
+def test_a_refusal_only_the_user_can_clear_is_said_once_not_retried(lib):
+    """Pass 2 S3: an unfinished manual run refuses every automatic re-order (03 §9.7) — said, not retried every 20 s."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        undo.save([(cid, card["due"]) for cid, card in fake.cards.items()], ["TheBank"], language="ja")  # unfinished
+        _move_later_to_top(store)
+        host._job("move")
+    assert lines[-1].startswith("Anki not re-ordered:")
+    assert host._retry_at is None
+
+
+def test_with_anki_closed_the_journeys_generate_is_still_asked_for(lib):
+    """Pass 2 S4: moves made with Anki closed still refresh the list (the automatic Generate never waits on Anki)."""
+    root, store = lib
+    fake = _deck(root)
+    asked = []
+    dash, lines = _host(generate=asked.append)
+    with _patched(fake):
+        dash._job("catch-up")
+        _move_later_to_top(store)
+        fake.offline = True
+        dash._job("catch-up")
+    assert replan_preview.CLOSED in lines and asked == ["moves"]
+
+
+def test_a_generates_reorder_that_met_anki_closed_runs_at_the_next_catch_up(lib):
+    """Pass 2 S5: known words (or a band) changed, no move: the step after the Generate found Anki closed — the next
+    catch-up re-orders, though nothing is owed by the store."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host(generate=lambda reason: None)
+    with _patched(fake):
+        host._job("catch-up")
+        fake.offline = True
+        host._job("generate")
+        assert host._force
+        fake.offline = False
+        calls = []
+        real = host._replan
+        host._replan = lambda *a, **k: calls.append(a[5] if len(a) > 5 else k.get("kind")) or real(*a, **k)
+        host._job("catch-up")
+    assert calls == ["catch-up"]
+
+
+def test_an_owed_reorder_the_plan_cant_serve_is_looked_at_once_per_change(lib, monkeypatch):
+    """Pass 2 S6: new content not yet Generated: one look, one line — not a stat of every file at every focus."""
+    root, store = lib
+    fake = _deck(root)
+    dash, lines = _host(generate=lambda reason: None)
+    with _patched(fake):
+        dash._job("catch-up")
+        from app.path_utils import get_data_path
+        with open(os.path.join(get_data_path("ja"), "HighPriority", "new_episode.txt"), "w", encoding="utf-8") as f:
+            f.write("新しい話が始まった。\n")
+        library_store.sync_for_window(store)
+        dash._anki_looked = -1e9
+        dash._job("catch-up")
+        said, looks = len(lines), []
+        monkeypatch.setattr(dash, "_parts", lambda *a: looks.append(1))
+        dash._anki_looked = -1e9
+        dash._job("catch-up")
+    assert len(lines) == said and not looks
+
+
+def test_a_run_with_nothing_to_write_records_its_cards_as_placed(lib):
+    """Pass 2 N1: a run that finds every card in place records the ladder's `seen`, so a card mined into its place
+    doesn't make every later focus a job."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        extra, notes, _ = _collection([_list_words(root)[0]], dues=[999], deck=DECK, start=900)
+        for card in extra:
+            card["mod"] = 1_700_000_000
+            fake.cards[card["cardId"]] = card
+        for note in notes:
+            fake.notes[note["noteId"]] = note
+            fake.note_mods[note["noteId"]] = 1_700_000_000
+        host._job("generate")
+    assert undo.ladder("ja", [DECK])["seen"] >= extra[0]["cardId"]

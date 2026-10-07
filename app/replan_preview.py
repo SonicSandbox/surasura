@@ -27,11 +27,13 @@ Junban) is imported on the worker; the AnkiWeb indicator's words are worked out 
 
 import importlib.util
 import os
+import sys
 import threading
 import time
 
 SWITCH = "junban_replan_preview"
 LANGUAGE = "junban_replan_language"     # the language 順's switch was turned on in (its deck's): "" reads as "ja"
+DECK = "junban_replan_deck"             # the deck it was turned on for: 順's deck changed since -> it stands aside
 SETTLE_S = 0.8                  # 04 §2.2: the moves' settle
 RETRY_S = 20.0                  # Anki in a review, 順's window open, cards left by the re-check: look again
 DONE_S = 5.0                    # "tomorrow's cards placed" gives way to "up to date" after this
@@ -61,6 +63,8 @@ STAND_ASIDE = {
 
 def junban_present():
     """Is Junban installed? Asked without importing it (core never imports `modules/` at load: Backlog spec I2)."""
+    if sys.modules.get("modules.junban") is not None:       # load_settings imported it (its defaults)
+        return True
     try:
         return importlib.util.find_spec("modules.junban") is not None
     except (ImportError, ValueError):
@@ -95,6 +99,10 @@ def unavailable(settings):
         return "Not with Coverage selection: there the list's words depend on the order, so only Generate can tell."
     if settings.get("only_i_plus_one"):
         return "Not with 'Only i+1': there the list's words depend on the order, so only Generate can tell."
+    deck = str(settings.get(DECK) or "").strip()
+    if deck and deck != str(settings.get("junban_deck") or "").strip():
+        return (f"順's deck changed since this was switched on (for {deck}): switch it on again in 順, in the "
+                "language of the deck it should re-order.")
     return None
 
 
@@ -111,6 +119,11 @@ def places(plan, ids, result):
     after = len(result.sequence) + 1
     return {number: result.sequence.get(item_id, after) if item_id is not None else after
             for number, item_id in enumerate(ids, 1)}
+
+
+def anki_connect_reviewing(job):
+    """Did the run stop for a review (`set_due_checked`'s `stop_if` said so)?"""
+    return bool(getattr(job, "stopped_for_review", False))
 
 
 def _snapshot(store):
@@ -402,12 +415,30 @@ class Host:
             if plan is not None:
                 self._shadow(previous, plan)
             owed = True
-        if owed and not self._may_write(settings, kind):
-            return                                   # 順's window, an update, Anki closed or a review: said, retried
-        parts = self._parts(settings, store) if plan is not None else None
+        writable = owed and self._may_write(settings, kind)
+        if owed and not writable:
+            if kind == "generate":
+                self._force = True                   # Anki closed at the Generate's end: the next catch-up re-orders
+            if kind != "catch-up" or self._generate is None:
+                return                               # 順's window, an update, Anki closed or a review: said, retried
+        if kind == "catch-up" and owed:
+            # An owed re-order the plan can't serve (new content, a stand-aside plan, Anki closed) is looked at again
+            # only when the store, the plan or the run moved: focus comes often.
+            from app import analyzer
+            from app.path_utils import get_user_file
+            seen = ("owed", writable, tuple(sorted(versions.items())), self._plan_key,
+                    analyzer.read_run_stamp(get_user_file("results")))
+            if seen == self._seen:
+                return
+            self._seen = seen
+        parts = self._parts(settings, store)
         verdict = self._verdict(plan, parts, store) if plan is not None else ("generate-first", why)
-        if owed:
-            self._replan(settings, store, versions, order, verdict, kind)
+        if writable:
+            done = self._replan(settings, store, versions, order, verdict, kind, parts)
+            if done:
+                self._seen = None
+        elif verdict is not None and verdict[0] == "generate-first" and plan is not None and self._moved(store, order):
+            self._ask_generate(f"generate-first: {verdict[1]}")      # Anki closed: the list refreshes all the same
         if kind == "catch-up" and self._generate is not None:
             self._journey(plan, parts, verdict, store)
 
@@ -435,25 +466,40 @@ class Host:
             return False
         return True
 
-    def _replan(self, settings, store, versions, order, verdict, kind="move"):
+    def _replan(self, settings, store, versions, order, verdict, kind="move", parts=None):
+        """The re-order for `verdict` -> True when Anki now holds the order the store asks for."""
         from modules.junban import spaced
         if verdict is not None and verdict[0] in ("stand-aside", "generate-first") and kind == "generate":
-            # After a Generate the list itself is current: when the engine can't replay this plan (or none was
-            # written), the automatic step runs from the list, as 2.5's did (04 §1(b)).
-            self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
-            return
+            # After a Generate the list itself is current — when it is this library's latest run (a Generate that
+            # failed leaves the last one's, maybe the other language's): then, when the engine can't replay the plan
+            # (or none was written), the automatic step runs from the list, as 2.5's did (04 §1(b)).
+            from app import analyzer, plan_rules
+            from app.path_utils import get_user_file
+            try:
+                current = plan_rules.signature_digest(parts) == analyzer.read_run_stamp(get_user_file("results"))
+            except Exception:
+                current = False
+            if not current:
+                self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
+                return False
+            report = self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
+            if report is not None and report.get("ok") and not report.get("left") and not report.get("failures"):
+                store.record_planned(versions["order_version"], versions["pins_version"])
+                return True
+            return False
         if verdict is not None and verdict[0] == "stand-aside":
             self._tell(STAND_ASIDE.get(verdict[1], "Generate re-orders Anki this time"))
-            return
+            return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):
                 # Only new (or changed) content, nothing the plan holds moved: new episodes are the user's to place
                 # first (2.4's rule for the automatic Generate) — said, never run on its own.
                 self._tell(NEW_CONTENT)
-                return
-            self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
-            self._ask_generate(f"generate-first: {verdict[1]}")
-            return
+                return False
+            asked = self._ask_generate(f"generate-first: {verdict[1]}")
+            self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False
+                       else "New content or settings: press Generate, then Anki is re-ordered")
+            return False
         engine, ids = self._engine_for(store)
         ranked = sorted((order[key] + (item_id,) for key, item_id in self._plan_keys(ids) if key in order))
         result = engine.replan([(item_id, tier) for _rank, _place, tier, item_id in ranked])
@@ -461,7 +507,8 @@ class Host:
         rows = result.rows(mode if mode in ("content", "priority") else "content")
         job = spaced.Job(automatic=True, rows=rows, cards=self._card_map(), places=places(self._plan, ids, result))
         report = self._write(settings, job, kind)
-        if report is not None and report.get("ok") and not report.get("left") and not report.get("failures"):
+        done = bool(report is not None and report.get("ok") and not report.get("left") and not report.get("failures"))
+        if done:
             store.record_planned(versions["order_version"], versions["pins_version"])
             after = store.versions()
             if after["planned_order_version"] > versions["order_version"] or \
@@ -478,6 +525,7 @@ class Host:
             self._tell(REPLAN_THEN_GENERATE if self._generate is not None else REPLAN_THEN_GENERATE_CM)
             self._done_at = None
             self._ask_generate("replan-now: " + ",".join(verdict[1]))
+        return done
 
     def _plan_keys(self, ids):
         from app import library_store
@@ -494,7 +542,7 @@ class Host:
             if key in order:
                 now.append(order[key] + (key,))
         now = [(key, tier) for _rank, _place, tier, key in sorted(now)]
-        return now != [pair for pair in then if pair[0] in order]
+        return now != then                         # a file that left the counted tiers (Finished) is a move too
 
     def _card_map(self):
         if self._cards is None:
@@ -511,8 +559,8 @@ class Host:
         self._working(True)
         try:
             report = reposition.run(settings, progress=self._progress(job), refresh=False, wait=None,
-                                    cancel=self._cancel, on_wait=lambda holder: self._tell(BUSY),
-                                    verb=VERB, job=job)
+                                    cancel=self._cancel, verb=VERB, job=job,
+                                    on_wait=lambda holder: self._tell(anki_connect.waiting_line(holder)))
         finally:
             self._working(False)
         self._sync_at = self._due_sync(settings)
@@ -531,8 +579,9 @@ class Host:
             problems = report.get("problems") or ["it could not finish"]
             self._tell(f"Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order"
                        if written else f"Anki not re-ordered: {problems[0]}")
-            self._retry(kind)
-            return report
+            if written or report.get("failures"):
+                self._retry(kind)                    # Anki went away mid-write: again soon. A refusal only the user
+            return report                            # can clear (an unfinished run, a missing deck) waits for them
         self._said_done(report, job)
         if report.get("left"):
             self._retry("move")
@@ -564,13 +613,16 @@ class Host:
             line = f"Anki: tomorrow's {n} cards placed · {rest:,} more moved"
         else:
             line = f"Anki: {rest:,} cards moved · tomorrow's {n} already in place"
-        if report.get("left"):
+        if report.get("left") and anki_connect_reviewing(job):
+            line += " · the rest after your review"
+        elif report.get("left"):
             line += f" · {len(report['left'])} changed in Anki meanwhile, placed next"
         self._tell(line)
         if written:
             self._done_at = time.monotonic() + DONE_S
 
     def _retry(self, kind):
+        """Again in RETRY_S (a transient outcome: a review, a lock held, cards that changed mid-write)."""
         with self._lock:
             if not self._closing:
                 self._retry_at, self._retry_kind = time.monotonic() + RETRY_S, kind
@@ -580,17 +632,18 @@ class Host:
         it can't start yet, and a Generate that ran and still left a reason (it couldn't write the plan) is not
         asked for again until another run."""
         if self._generate is None:
-            return
+            return None
         from app import analyzer
         from app.path_utils import get_user_file
         asked = ("asked", analyzer.read_run_stamp(get_user_file("results")))
         if asked == self._asked:
-            return
+            return False                             # asked once for this run already
         self._asked = asked
         try:
             self._generate(reason)
         except Exception:
             pass
+        return True
 
     def _unplaced(self, settings):
         """New cards in the deck the last spaced run didn't place (03 §6: newly mined) — one `findCards`, at most

@@ -344,3 +344,25 @@ def test_switching_off_lets_a_pending_sync_go(anki, clock):
     anki_sync_rule.drop_pending()
     assert anki_sync_rule.due_at(SETTINGS) is None
     assert not anki_sync_rule.status(SETTINGS).startswith("AnkiWeb: syncing in")
+
+
+def test_a_new_days_session_sync_that_failed_is_tried_again_after_a_write(anki, clock):
+    """Pass 2 S1: the usual new session is the hour gap; a failed sync keeps it due though the write's `wrote()`
+    resets the gap — until a sync runs (at most every S1_RETRY_S)."""
+    anki_sync_rule.before_write(URL)
+    clock.at += anki_sync_rule.SESSION_GAP_S + 60                       # a new day
+    anki.fail = True
+    assert anki_sync_rule.before_write(URL).startswith("failed")
+    anki_sync_rule.wrote(False, SETTINGS)                               # the write went on
+    anki.fail = False
+    clock.at += anki_sync_rule.S1_RETRY_S + 1
+    assert anki_sync_rule.before_write(URL) == "synced"
+
+
+def test_a_pending_sync_older_than_its_session_is_not_sent(anki, clock):
+    """Pass 2 N8: Anki closed after the write (its own sync carried it), or long ago: not ours to send."""
+    anki_sync_rule.before_write(URL)
+    anki_sync_rule.wrote(True, SETTINGS)
+    clock.at += 30
+    anki_sync_rule.closed_seen()
+    assert anki_sync_rule.due_at(SETTINGS) is None

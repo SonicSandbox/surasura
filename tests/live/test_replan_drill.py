@@ -59,7 +59,20 @@ def _words(root, n):
                 words.append(key)
             if len(words) >= n:
                 break
+    base = list(words)
+    while len(words) < n:                     # more cards than words: a word mined twice (another sentence)
+        words.extend(base[: n - len(words)])
     return words[:n]
+
+
+def _devtest():
+    """Anki is on DevTest — asked again before every step that writes or syncs (the profile can change under a
+    long wait)."""
+    from app import anki_connect
+    try:
+        return anki_connect.invoke("getActiveProfile", URL, timeout=5) == "DevTest"
+    except Exception:
+        return False
 
 
 def _say(text):
@@ -119,15 +132,17 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
     words = _words(root, CARDS)
     with locks.take(anki_connect.WRITER_LOCK, "the E3.1 drill"):
         anki_connect.invoke("createDeck", URL, deck=DECK)
+        note_ids = []
         for start in range(0, len(words), 250):
             notes = [{"deckName": DECK, "modelName": "Basic", "tags": [TAG],
-                      "fields": {"Front": word, "Back": f"{word}を使った文。"},
-                      "options": {"allowDuplicate": True}} for word in words[start:start + 250]]
-            anki_connect.invoke("addNotes", URL, timeout=120, notes=notes)
+                      "fields": {"Front": word, "Back": f"{word}を使った文。（{start + i}）"},
+                      "options": {"allowDuplicate": True}} for i, word in enumerate(words[start:start + 250])]
+            note_ids += anki_connect.invoke("addNotes", URL, timeout=120, notes=notes)
         cards = anki_connect.find_cards(URL, f'deck:"{DECK}"')
         info = anki_connect.cards_info(URL, cards)
-        by_word = {row["fields"]["Front"]["value"]: row["cardId"] for row in info}
-        pairs = [(by_word[w], 1000 + i) for i, w in enumerate(reversed(words)) if w in by_word]
+        card_of = {row["note"]: row["cardId"] for row in info}
+        in_order = [card_of[n] for n in note_ids if n in card_of]       # one card a note, as the words go
+        pairs = [(card_id, 1000 + len(in_order) - 1 - i) for i, card_id in enumerate(in_order)]
         for start in range(0, len(pairs), 150):
             anki_connect.multi([{"action": "setSpecificValueOfCard",
                                  "params": {"card": c, "keys": ["due"], "newValues": [d]}}
@@ -148,6 +163,7 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
             time.sleep(2)
         summary["phone_done"] = os.path.exists(PHONE_DONE)
         _say(f"PHONE: done={summary['phone_done']}")
+    assert _devtest(), "Anki is no longer on DevTest: the drill stops here (its deck stays, said in the summary)"
 
     # --- the window ------------------------------------------------------------------------------------------- #
     import tkinter as tk
@@ -200,7 +216,9 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
         app._store_did(change, "Move")
         host = app.__dict__.get("_replan")
         ok = pump(tk_root, lambda: (app.__dict__.get("_replan") is not None and not app._replan.busy()
-                                    and any(e["sub"] == "setSpecificValueOfCard" for e in log[n0:])), 180)
+                                    and any(e["sub"] == "setSpecificValueOfCard" for e in log[n0:])), 60)
+        if not ok:                                           # a move that changes no card's place writes nothing
+            ok = app.__dict__.get("_replan") is not None and not app._replan.busy()
         host = app.__dict__.get("_replan")
         writes = [e for e in log[n0:] if e["sub"] == "setSpecificValueOfCard"]
         row = {"move": name, "ok": ok, "line": host.last if host else None,
@@ -220,8 +238,8 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
              ("within NOW, second → first", lambda s: (s.ids("now")[1], "now", s.ids("now")[0])),
              ("Soon's first → NOW's top", lambda s: (s.ids("soon")[0], "now", s.ids("now")[0])),
              ("NOW's top → 6+ Months' end", lambda s: (s.ids("now")[0], "goal", None)),
-             ("6+ Months' last → NOW's top (again)", lambda s: (s.ids("goal")[-1], "now", s.ids("now")[0]))]
-    tk_root = None
+             ("6+ Months' first → Soon's top", lambda s: (s.ids("goal")[0], "soon", s.ids("soon")[0]))]
+    tk_root = app = None
     try:
         # 1. The first window: its open's catch-up is the first job — S1, the one full spacing.
         tk_root, app = open_window()
@@ -234,13 +252,14 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
         summary["first_cards_written"] = sum(e["subs"] for e in log[n0:] if e["sub"] == "setSpecificValueOfCard")
         summary["first_syncs"] = [round(e["took"], 2) for e in log[n0:] if e["action"] == "sync"]
         reviewed = [row["cardId"] for row in anki_connect.cards_info(URL, cards) if row.get("type") != 0]
-        written = {c for e in log for c in e["cards"]}
+        written = {c for e in log[n0:] for c in e["cards"]}          # the preview's writes (not the set-up's)
         summary["phone_reviewed_cards"] = reviewed
         summary["phone_reviewed_written"] = sorted(set(reviewed) & written)
         _say(f"first job: {summary['first_job_s']} s, {summary['first_cards_written']} cards, syncs "
              f"{summary['first_syncs']}, reviewed on the phone {reviewed} (written: {summary['phone_reviewed_written']})")
         close(tk_root, app)
         # 2. A second window, moved at once: its engine and Junban's tables load inside that move.
+        assert _devtest(), "Anki left DevTest"
         tk_root, app = open_window()
         pump(tk_root, lambda: app.__dict__.get("_replan") is not None, 30)
         timed_move(tk_root, app, "cold: " + kinds[0][0], kinds[0][1])
@@ -258,16 +277,25 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
             pass
         # --- put back: the drill's deck deleted with its cards, read back ---------------------------------------- #
         monkeypatch.setattr(urllib.request, "urlopen", real)
-        with locks.take(anki_connect.WRITER_LOCK, "the E3.1 drill (clean-up)"):
-            if DECK in anki_connect.deck_names(URL):
-                anki_connect.invoke("deleteDecks", URL, decks=[DECK], cardsToo=True)
-            notes = anki_connect.find_notes(URL, f"tag:{TAG}")
-            if notes:
-                anki_connect.invoke("deleteNotes", URL, notes=notes)
-            if SYNC:
-                summary["cleanup_sync"] = anki_connect.sync(URL)     # the throwaway account loses the deck too
-        summary["left_after_cleanup"] = (len(anki_connect.find_notes(URL, f"tag:{TAG}"))
-                                         + (DECK in anki_connect.deck_names(URL)))
+        try:
+            host = app.__dict__.get("_replan") if app is not None else None
+            if host is not None:
+                host.stop()
+            if not _devtest():
+                raise RuntimeError("Anki is not on DevTest: nothing deleted, nothing synced — the deck stays")
+            with locks.take(anki_connect.WRITER_LOCK, "the E3.1 drill (clean-up)", wait=180):
+                if DECK in anki_connect.deck_names(URL):
+                    anki_connect.invoke("deleteDecks", URL, decks=[DECK], cardsToo=True)
+                notes = anki_connect.find_notes(URL, f"tag:{TAG}")
+                if notes:
+                    anki_connect.invoke("deleteNotes", URL, notes=notes)
+                if SYNC and _devtest():
+                    summary["cleanup_sync"] = anki_connect.sync(URL)     # the throwaway account loses the deck too
+            summary["left_after_cleanup"] = (len(anki_connect.find_notes(URL, f"tag:{TAG}"))
+                                             + (DECK in anki_connect.deck_names(URL)))
+        except Exception as e:
+            summary["cleanup_error"] = str(e)
+            summary["left_after_cleanup"] = -1
         path = os.path.join(OUT, time.strftime("drill-%Y%m%d-%H%M%S.json"))
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"summary": summary, "log": log}, f, ensure_ascii=False, indent=1)

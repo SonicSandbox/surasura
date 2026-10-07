@@ -213,7 +213,7 @@ class ToolTip:
 
 # Junban's keys a dashboard save carries only as settings.json holds them — never a default into a 2.5 user's file: the
 # fast re-plan's preview switch (E1.1 04 §1; 順's option, saved once touched).
-JUNBAN_AS_WRITTEN = ("junban_replan_preview", "junban_replan_language")
+JUNBAN_AS_WRITTEN = ("junban_replan_preview", "junban_replan_language", "junban_replan_deck")
 
 
 def carry_as_written(out, keys):
@@ -605,7 +605,7 @@ class MasterDashboardApp:
         self.var_language.trace_add("write", lambda *args: self.update_ui_for_language())
         # Known words are per language, and so are the chosen decks.
         self.var_language.trace_add("write", lambda *args: self._maybe_anki_sync(force=True))
-        self.var_language.trace_add("write", lambda *args: self.__dict__.get("_replan_host") and self._replan_start())
+        self.var_language.trace_add("write", lambda *args: self._replan_start())
         # And so is the band preview: its numbers, and the band Automatic rarity locks the slider on,
         # come from that language's store. The indexer refreshes it only when the store has work to do,
         # so a switch to an up-to-date Chinese store kept the Japanese numbers — and the Japanese
@@ -3724,6 +3724,7 @@ class MasterDashboardApp:
         self.run_analyzer(quiet=True)
         if self._generate_running == "quiet":
             self._generate_running = "automatic"
+            self._replan_generating = True
             self._journey_spinner(True)                # the check mark's spot spins until it ends
         return True
 
@@ -3874,7 +3875,9 @@ class MasterDashboardApp:
     def _journey_check_tip(self):
         """The check mark's tooltip — or, while the automatic Generate spins in its place, what runs."""
         if self._generate_running == "automatic":
-            return "Generating automatically — Anki brought in known words."
+            return ("Generating automatically — your list catches up with your moves (Re-order as you move)."
+                    if self.__dict__.get("_replan_generating") else
+                    "Generating automatically — Anki brought in known words.")
         return "Up to date — nothing has changed since your last Generate."
 
     def _journey_spinner(self, on):
@@ -4137,6 +4140,7 @@ class MasterDashboardApp:
         if self._generate_running == "automatic":
             self._journey_spinner(False)
         self._generate_running = None
+        self._replan_generating = False
         self._schedule_journey_state()
         if self._open_report_when_generated:
             self._open_report_when_generated = False

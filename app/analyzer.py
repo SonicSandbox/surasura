@@ -3570,11 +3570,22 @@ def _plan_json(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+_PLAN_HEADER = [None, None]
+
+
 def _plan_is_this_runs(run_signature, results_dir=None):
     """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question while the
     fast re-plan's preview is on (E1.2-1): a plan switched on, lost or damaged gets a full run, never the reuse."""
     from app import plan_engine
-    header = plan_engine.read_header(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE))
+    path = os.path.join(results_dir or RESULTS_DIR, PLAN_FILE)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (path, st.st_mtime_ns, st.st_size)
+    if _PLAN_HEADER[0] != key:                  # read (the whole stream, for its CRC) once per version of the file
+        _PLAN_HEADER[:] = [key, plan_engine.read_header(path)]
+    header = _PLAN_HEADER[1]
     return header is not None and header.get("run_signature") == run_signature
 
 

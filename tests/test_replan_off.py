@@ -94,3 +94,32 @@ def test_junban_removed_the_switch_is_read_as_off(tmp_path):
     assert p.returncode == 0, p.stderr[-3000:]
     assert not os.path.exists(_plan(root))
     assert cases.output_hashes(root) == _base()[case]
+
+
+def test_the_windows_up_to_date_check_asks_for_the_plan_too(tmp_path, monkeypatch):
+    """The window's ✓ and its reopen-only path (`journey_is_current`) ask what the analyzer's reuse gate asks: with
+    the preview on, a run without its plan file is not current, so a pressed Generate runs (review #12). Off: 2.5."""
+    case = "samples-ja"
+    root = str(tmp_path / case)
+    env = cases.child_env(root)
+    for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
+        monkeypatch.setenv(name, env[name])
+    cases.build(root, case)                                     # the switch on in settings.json
+    from app import run_args, settings_manager, token_index
+    argv = run_args.analyzer_args(settings_manager.load_settings(), "ja", headless=True)
+    cases.generate(root, case, argv=argv[1:])
+    # The child's token store holds the run's signature; this process's is the suite's own (conftest): stand it in.
+    stamp = analyzer.read_run_stamp(os.path.join(root, "results"))
+
+    class Meta:
+        def get_meta(self, key):
+            return stamp if key == "last_run_signature" else None
+
+        def close(self):
+            pass
+    monkeypatch.setattr(token_index, "open_store", lambda language: Meta())
+    assert analyzer.journey_is_current(argv, "ja") is True
+    os.remove(_plan(root))
+    assert analyzer.journey_is_current(argv, "ja") is False
+    _switch(root, False)
+    assert analyzer.journey_is_current(argv, "ja") is True     # off: the plan is nobody's business

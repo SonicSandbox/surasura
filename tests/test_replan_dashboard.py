@@ -184,7 +184,7 @@ def test_a_dashboard_save_never_writes_the_previews_keys_into_a_file_without_the
     from tests.test_settings_signatures import _dashboard_saved, _write
     _write({"target_language": "ja"})
     saved = _dashboard_saved()
-    for key in ("junban_replan_preview", "junban_replan_language", "anki_sync_delay_min"):
+    for key in ("junban_replan_preview", "junban_replan_language", "junban_replan_deck", "anki_sync_delay_min"):
         assert key not in saved, key
     _write({"target_language": "ja", "junban_replan_preview": True, "junban_replan_language": "ja",
             "anki_sync_delay_min": "off"})

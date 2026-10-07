@@ -99,7 +99,7 @@ def closed_seen(now=None):
 
 
 def _new_session(state, profile, now):
-    return (not state.get("session_at") or state.get("profile") != profile
+    return (not state.get("session_at") or state.get("profile") != profile or state.get("session_due") is True
             or state.get("closed_at", 0) > state.get("session_at", 0)
             or now - float(state.get("last_write") or state.get("session_at") or 0) > SESSION_GAP_S)
 
@@ -148,14 +148,18 @@ def _session_sync(url, profile):
     if now - float(state.get("s1_failed_at") or 0) < S1_RETRY_S:
         return None                                 # it failed a moment ago: not again yet
     if anki_connect.reviewing(url):
+        state.update(session_due=True, profile=profile)                # due still: the next write syncs
+        _write_state(state)
         return None
     answer = anki_connect.sync(url)
     now = time.time()
     if answer.startswith("failed"):
-        state.update(s1_failed_at=now, sync="failed", sync_error=answer)
+        # The session stays due (the hour gap, the next write's `wrote()`, never clear it) until a sync runs.
+        state.update(s1_failed_at=now, sync="failed", sync_error=answer, session_due=True, profile=profile)
         _write_state(state)
         return answer
-    state.update(profile=profile, session_at=now, last_write=now, sync=answer, sync_error="", s1_failed_at=0)
+    state.update(profile=profile, session_at=now, last_write=now, sync=answer, sync_error="", s1_failed_at=0,
+                 session_due=False)
     if answer == "synced":
         state.update(synced_at=now, front_pending=False)     # it carried every write before it
     _write_state(state)
@@ -186,7 +190,10 @@ def due_at(settings, state=None):
     wait = delay_s(settings)
     if wait is None or state.get("front_pending") is not True:
         return None
-    return float(state.get("front_at") or 0) + wait
+    front = float(state.get("front_at") or 0)
+    if front < float(state.get("closed_at") or 0) or time.time() - front > SESSION_GAP_S:
+        return None                     # Anki closed since (its own sync carried it), or long ago: not ours to send
+    return front + wait
 
 
 def sync_if_due(url, settings, force=False, wait=None, cancel=None):

@@ -1060,6 +1060,7 @@ class _Command:
         self.events = []      # (item_id, kind, explicit)
         self.explicit = {}    # item_id -> explicit, for its crossing events
         self.quiet = set()    # items that log no event at all (a back-fill registration, P2.1)
+        self.event_by = {}    # item_id -> who placed it last in this command, when not the command's `by`
         # Schema 2 (L3.1): what the command's settling step reads (`Store._settle`)
         self.tiers = set()    # tiers whose rows moved, came or went: Current's among them → the Soon line
         self.moved = set()    # items placed (moved, added, re-tiered, put back): their pieces are re-checked
@@ -1090,9 +1091,14 @@ class _Command:
         self.fed.update(ids)
         self.fed_works.update(works)
 
-    def event(self, item_id, kind, explicit):
-        self.events.append((item_id, kind, int(explicit)))
-        self.explicit.setdefault(item_id, int(explicit))
+    def event(self, item_id, kind, explicit, by=None):
+        """Log an event for `item_id`, as `by`'s (default: the command's). An explicit event makes the item's later
+        crossings of the mine line explicit too (a rule the user set is the user's own placement, D30)."""
+        self.events.append((item_id, kind, int(explicit), by))
+        if explicit:
+            self.explicit[item_id] = 1
+        else:
+            self.explicit.setdefault(item_id, 0)
 
     def finish(self):
         """Settle (the Soon line, the pieces, the feed: `Store._settle`), then write the versions and the log,
@@ -1107,17 +1113,19 @@ class _Command:
             now = set(after)
             for item_id in after:
                 if item_id not in before:
-                    self.events.append((item_id, "entered_mine_line", self.explicit.get(item_id, 0)))
+                    self.events.append((item_id, "entered_mine_line", self.explicit.get(item_id, 0),
+                                        self.event_by.get(item_id)))
             for item_id in self.mine_before:
                 if item_id not in now:
-                    self.events.append((item_id, "left_mine_line", self.explicit.get(item_id, 0)))
+                    self.events.append((item_id, "left_mine_line", self.explicit.get(item_id, 0),
+                                        self.event_by.get(item_id)))
             events = [e for e in self.events if e[0] not in self.quiet]
             if events:
                 at = _now()
                 store.conn.executemany(
                     "INSERT INTO placement_log (item_id, kind, by, explicit, state_version, at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    [(i, k, self.by, e, self.version, at) for i, k, e in events])
+                    [(i, k, b or self.by, e, self.version, at) for i, k, e, b in events])
         updates = [("state_version", self.version)]
         if self.bump_order:
             updates.append(("order_version", self.meta["order_version"] + 1))
@@ -1751,7 +1759,10 @@ class Store:
             self._put(tier, block, where, cmd.version)
             cmd.touch({r[1] for r in ordered} | {tier})
             for item_id in block:
-                cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit))
+                cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit),
+                          by if by != cmd.by else None)
+                if by != cmd.by:
+                    cmd.event_by[item_id] = by
             return change
 
     def _in_place(self, tier, ordered, before_id, after_id, end=False):
@@ -1775,68 +1786,61 @@ class Store:
             return bool(prv) and prv[0][0] == after_id
         return not prv
 
+    NUDGE_BATCH = 64
+
     def nudge(self, ids, direction):
         """▲▼ with today's group-jump rules (`move_items_in_manifest`) over the tier's order. "Visible"
         = in this tier and not missing, as the tree draws it. A non-contiguous selection becomes one
-        block. Returns the move's change, or None when nothing moves."""
+        block. Returns the move's change, or None when nothing moves. Reads only the rows between the selection
+        and the row it jumps past (L3.1, §12.4 #11: a ▲ read the whole tier, 20 ms at 20k)."""
         rows = self._rows(ids)
         if not rows:
             return None
         tier = min(rows.values(), key=lambda r: (r[2], r[0]))[1]
-        lst = self.conn.execute("SELECT id, parent_folder, availability FROM items WHERE tier = ? "
-                                "ORDER BY ord, id", (tier,)).fetchall()
-        wanted = set(ids)
-        moving_idx = [i for i, r in enumerate(lst) if r[0] in wanted]
-        if not moving_idx:
-            return None
-        visible = [i for i, r in enumerate(lst) if r[2] != "missing"]
-        visible_set = set(visible)
-        new = list(lst)
-        if direction == "up":
-            target = -1
-            for idx in reversed(visible):
-                if idx < moving_idx[0]:
-                    target = idx
-                    break
-            if target == -1:
-                return None
-            target_parent, moving_parent = lst[target][1], lst[moving_idx[0]][1]
-            if target_parent and target_parent != moving_parent:
-                while target > 0 and lst[target - 1][1] == target_parent:
-                    if target - 1 not in visible_set:
+        block = sorted((r for r in rows.values() if r[1] == tier), key=lambda r: (r[2], r[0]))
+        info = {r[0]: (r[4], r[6]) for r in block}            # id -> (parent_folder, availability)
+        up = direction == "up"
+        edge = block[0] if up else block[-1]
+        moving_parent = edge[4]
+        target = None
+        group = None
+        at = (edge[0], edge[2])
+        while True:
+            batch = self.conn.execute(
+                "SELECT id, ord, parent_folder, availability FROM items WHERE tier = ? AND (ord, id) {} (?, ?) "
+                "ORDER BY ord {d}, id {d} LIMIT ?".format("<" if up else ">", d="DESC" if up else "ASC"),
+                (tier, at[1], at[0], self.NUDGE_BATCH)).fetchall()
+            if not batch:
+                break
+            for item_id, ord_, parent, availability in batch:
+                at = (item_id, ord_)
+                if item_id in info:
+                    continue
+                if target is None:
+                    if availability == "missing":
+                        continue
+                    target = item_id
+                    if not parent or parent == moving_parent:
+                        group = None
                         break
-                    target -= 1
-            block = [lst[i] for i in moving_idx]
-            for i in reversed(moving_idx):
-                del new[i]
-            new[target:target] = block
-        else:
-            target = -1
-            for idx in visible:
-                if idx > moving_idx[-1]:
-                    target = idx
-                    break
-            if target == -1:
-                return None
-            target_parent, moving_parent = lst[target][1], lst[moving_idx[-1]][1]
-            if target_parent and target_parent != moving_parent:
-                while target < len(lst) - 1 and lst[target + 1][1] == target_parent:
-                    if target + 1 not in visible_set:
-                        break
-                    target += 1
-            block = [lst[i] for i in moving_idx]
-            for i in reversed(moving_idx):
-                del new[i]
-            at = target - len(block) + 1
-            new[at:at] = block
-        if [r[0] for r in new] == [r[0] for r in lst]:
+                    group = parent
+                    continue
+                # extending the target's group: the same parent, visible, next to it
+                if parent == group and availability != "missing":
+                    target = item_id
+                    continue
+                group = None
+                break
+            else:
+                continue
+            if group is None:
+                break
+        if target is None:
             return None
-        block_ids = [r[0] for r in block]
-        start = [r[0] for r in new].index(block_ids[0])
-        end = start + len(block_ids)
-        if end < len(new):
-            return self.move(block_ids, tier, before_id=new[end][0])
-        return self.move(block_ids, tier, after_id=new[start - 1][0])
+        moving = [r[0] for r in block]
+        if up:
+            return self.move(moving, tier, before_id=target)
+        return self.move(moving, tier, after_id=target)
 
     def _tier_top(self, tier, excl):
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
@@ -1896,7 +1900,9 @@ class Store:
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
                 cmd.event(item_id, "finished" if tier == "graduated" else "placed",
-                          int(by == "user" if explicit is None else explicit))
+                          int(by == "user" if explicit is None else explicit), by if by != cmd.by else None)
+                if by != cmd.by:
+                    cmd.event_by[item_id] = by
             return change
 
     # --- adding files -------------------------------------------------------------------------- #
@@ -2047,7 +2053,7 @@ class Store:
         row = self.conn.execute("SELECT rel_key FROM items WHERE id = ?", (item_id,)).fetchone()
         return row is not None and self._takeover(row[0], started_at) == item_id
 
-    def register(self, path, pairing, backfill=False):
+    def register(self, path, pairing, backfill=False, rules=None):
         """hato's command (headless): find the item for `path` (a sync may have made it) or add it — in
         `arrivals` when `meta.arrivals_on`; else a file in hato's drop folder at the top of NOW (Q4-11,
         through 2.x); else by §6.10 rule 3 (Q4-9) — and write its pairing (`pairing["content_key"]`, the
@@ -2058,7 +2064,12 @@ class Store:
         under the data folder raises `NotInLibrary` before anything is written (3.0's Sources widen this).
         `backfill` (P3.2: pairings hato made before Connect was on) attaches and places as above but logs no
         placement event for the item, so nothing is ever mined because of it (✅ G1.1-2's watermark). The events
-        are logged as the record's `producer`'s (`_producer`: "hato" when it names none), never explicit."""
+        are logged as the record's `producer`'s (`_producer`: "hato" when it names none), never explicit.
+
+        3.0 (L3.1): the record names its title first (`_work_by_record`: its ids, then its show), and an item that
+        waits in New arrivals is placed by the user's rule for its source in the same command (`placing_rules`,
+        05 §5.12: logged as the source's, explicit — D30); `rules` = {source: target} as the caller read them from
+        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule."""
         content_key = pairing["content_key"]
         rel = library_rel(self.data_dir, path)
         if rel is None:
@@ -2095,6 +2106,13 @@ class Store:
                     change = holder
             if backfill:
                 cmd.quiet.add(item_id)
+            elif rules and self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0] == \
+                    "arrivals":
+                placed = self._apply_rule(item_id, pairing, rules)
+                if placed and change is None:
+                    change = self._change(cmd, "register")
+                if placed:
+                    change.rule = placed
             old = self.conn.execute("SELECT item_id, pairing, paired_at FROM pairings WHERE content_key = ?",
                                     (content_key,)).fetchone()
             record = json.dumps(pairing, sort_keys=True, ensure_ascii=False)
@@ -2321,10 +2339,21 @@ class Store:
         title = _show_title(record)
         if title:
             key = search_fold(title, self.language)
-            row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
-                                    "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
-            if row:
-                return row[0]
+            mine = _episode(record)
+            season = mine[0] if mine else (record.get("show") or {}).get("season") or 1
+            for (work,) in self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) "
+                                             "> 0 ORDER BY id", ("\n" + key + "\n",)).fetchall():
+                seasons = set()
+                for (text,) in self.conn.execute("SELECT pairing FROM pairings WHERE item_id IN "
+                                                 "(SELECT id FROM items WHERE work_id = ?)", (work,)):
+                    try:
+                        ep = _episode(json.loads(text))
+                    except ValueError:
+                        continue
+                    if ep is not None:
+                        seasons.add(ep[0])
+                if not seasons or season in seasons:            # another season is another title
+                    return work
         return None
 
     def _fill_work(self, cmd, change, work_id, record, by="hato"):
@@ -3051,6 +3080,460 @@ class Store:
             out.options = [(k, change_new, back[k]) for k, _o, change_new in change.options if k in back]
         return out, skipped
 
+    # --- per-source placing (05 §5.12) and place (04 §4.2) ------------------------------------------- #
+
+    def _apply_rule(self, item_id, record, rules):
+        """Place an item waiting in New arrivals by its source's rule, inside the caller's command -> the target it
+        was placed by, or None (it waits). The placement is the user's own (D30): logged as the source's, explicit."""
+        found = _rule_for(record, rules)
+        if found is None:
+            return None
+        source, target = found
+        return target if self._place_one(item_id, target, record, source, 1) else None
+
+    def _place_one(self, item_id, where, record, by, explicit):
+        if where == "finished":
+            return self.finish([item_id], by=by, explicit=explicit) is not None
+        if where == "after-show":
+            spot = self._after_show(item_id, record)
+            if spot is None:
+                return False
+            tier, before_id, after_id = spot
+            return self.move([item_id], tier, before_id=before_id, after_id=after_id, by=by,
+                             explicit=explicit) is not None
+        tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
+        if tier is None:
+            raise ValueError(f"unknown place {where!r}")
+        return self.move([item_id], tier, by=by, explicit=explicit) is not None
+
+    def place(self, item_ids, where, by="user", explicit=None):
+        """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
+        episode before it in Current (before its next one when only later ones are there), a title only in Finished
+        or 6+ Months goes to the top of Current (Q4-9), a title with nothing anywhere stays where it is; `top`, `goal`,
+        `finished` — the rule targets. One command; undone as a move. Returns the change, or None."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        explicit = int(by == "user") if explicit is None else explicit
+        with self._command("place", by) as cmd:
+            record = None
+            if where == "after-show":
+                row = self.conn.execute("SELECT pairing FROM pairings WHERE item_id = ? ORDER BY paired_at DESC "
+                                        "LIMIT 1", (ids[0],)).fetchone()
+                record = json.loads(row[0]) if row else None
+                spot = self._after_show(ids[0], record, excl=set(ids))
+                if spot is None:
+                    return None
+                tier, before_id, after_id = spot
+                return self.move(ids, tier, before_id=before_id, after_id=after_id, by=by, explicit=explicit)
+            if where == "finished":
+                return self.finish(ids, by=by, explicit=explicit)
+            tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
+            if tier is None:
+                raise ValueError(f"unknown place {where!r}")
+            return self.move(ids, tier, by=by, explicit=explicit)
+
+    def _after_show(self, item_id, record, excl=()):
+        """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
+        Its title's other items, by the episode numbers their records name (the same season); without numbers, after
+        the title's last item in Current."""
+        work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
+        if work is None or work[0] is None:
+            return None
+        mine = _episode(record)
+        others = [r for r in self.conn.execute("SELECT id, tier, ord FROM items WHERE work_id = ? AND id != ?",
+                                               (work[0], item_id)) if r[0] not in excl]
+        if not others:
+            return None
+        episodes = {}
+        for other, text in self.conn.execute("SELECT item_id, pairing FROM pairings WHERE item_id IN "
+                                             "(SELECT id FROM items WHERE work_id = ?)", (work[0],)):
+            try:
+                ep = _episode(json.loads(text))
+            except ValueError:
+                continue
+            if ep is not None and (mine is None or ep[0] == mine[0]):
+                episodes[other] = ep[1]
+        current = [r for r in others if r[1] in CURRENT]
+        if not current:
+            if all(r[1] in ("graduated", "goal") for r in others):
+                return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
+            return None
+        order = lambda r: (TIERS[r[1]][3], r[2], r[0])           # noqa: E731
+        if mine is not None and all(r[0] in episodes for r in current):
+            earlier = [r for r in current if episodes[r[0]] < mine[1]]
+            if earlier:
+                prev = max(earlier, key=lambda r: (episodes[r[0]], order(r)))
+                return (prev[1], None, prev[0])
+            nxt = min(current, key=lambda r: (episodes[r[0]], order(r)))
+            return (nxt[1], nxt[0], None)
+        last = max(current, key=order)
+        return (last[1], None, last[0])
+
+    # --- Finished (05 §5.7–5.8): never a known word, never a card deleted ------------------------------ #
+
+    def finish(self, item_ids, keep_cards=True, by="user", explicit=None):
+        """To Finished (the `graduated` tier), dated now (04 §4.2, D23). `keep_cards=False` — the toast's *Take its new
+        cards out* (D14) — leaves the title's cards out of the learning order and ends its pin (G2.2-8: the later click
+        wins); Anki's side and its record in `anki_changes` are the re-plan's. Writes no known word and deletes no card:
+        nothing here touches KnownWord.json, the token store or Anki (Q2-5, Q2-6). A missing item finishes like any.
+        Undo puts the rows, their date and their cards' place back."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        with self._command("finish", by) as cmd:
+            change = self.set_tier(ids, "graduated", by=by, explicit=explicit)
+            status = []
+            if not keep_cards:
+                marks = ",".join("?" * len(ids))
+                for item_id, order, pinned in self.conn.execute(
+                        f"SELECT id, in_learning_order, pinned FROM items WHERE id IN ({marks})", ids).fetchall():
+                    if order != 0:
+                        status.append((item_id, "in_learning_order", order, 0))
+                    if pinned is not None:
+                        status.append((item_id, "pinned", pinned, None))
+                for item_id, column, _old, new in status:
+                    self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (new, item_id))
+                cmd.feed(i for i, _c, _o, _n in status)
+                if status:
+                    cmd.touch(pins=any(c == "pinned" for _i, c, _o, _n in status))
+            if change is None and not status:
+                return None
+            if change is None:
+                change = self._change(cmd, "finish")
+            change.kind = "finish"
+            change.status = status
+            return change
+
+    def _undo_finish(self, cmd, change):
+        out, skipped = self._replace(cmd, change) if change.items else (self._change(cmd, "undo"), [])
+        if change.status:
+            _o, more = self._undo_status(cmd, change)
+            skipped = list(skipped) + list(more)
+        return out, skipped
+
+    def ask_mining(self, item_ids, asked=True):
+        """*Mine it too* (the finishing toast, W1.2 §8.2): when the user asked Connect to mine a Finished item; Connect
+        reads it and its receipt answers it. Undo by the value check."""
+        return self._status("ask_mining", list(item_ids), "mine_asked", _now() if asked else None)
+
+    def import_finished(self, paths):
+        """The Finished importer's command (05 §5.8), after its copying job: each file — one the job copied into
+        `Graduated/`, or one already in the library — lands in Finished dated *Earlier* (`graduated_at` NULL), its work
+        found or made by its folder, with a piece; never counted (Finished isn't analysed), never a known word. One
+        command; undone as an Add (the copies to the trash by the caller's file code)."""
+        rels = []
+        for path in paths:
+            rel = library_rel(self.data_dir, path)
+            if rel is None:
+                raise NotInLibrary(f"not in the library: {path}")
+            rels.append(rel)
+        prepared = self._prepare(rels, None, "Finished Import")
+        with self._command("import_finished") as cmd:
+            change = self._change(cmd, "import_finished")
+            new, moving, seen = [], [], set()
+            for item in prepared:
+                if item[2] in seen:
+                    continue
+                seen.add(item[2])
+                row = self.conn.execute("SELECT id, tier FROM items WHERE rel_key = ?", (item[2],)).fetchone()
+                if row is None:
+                    new.append(item)
+                elif row[1] != "graduated":
+                    moving.append(row[0])
+            if not new and not moving:
+                return None
+            if moving:
+                rows = self._rows(moving)
+                self._before(change, list(rows.values()))
+                self._put("graduated", moving, ("end",), cmd.version)
+                self.conn.executemany("UPDATE items SET graduated_at = NULL WHERE id = ?", [(i,) for i in moving])
+                cmd.touch({r[1] for r in rows.values()})
+            if new:
+                change.added = self._add_rows([it + ("graduated",) for it in new], cmd.version)
+                self._put("graduated", change.added, ("end",), cmd.version)
+            cmd.touch({"graduated"})
+            for item_id in moving + change.added:
+                cmd.event(item_id, "finished", 1)
+            return change
+
+    def _undo_import(self, cmd, change, trashed_paths):
+        out, skipped = self._replace(cmd, change) if change.items else (self._change(cmd, "undo"), [])
+        if change.added:
+            rows = self._rows(change.added)
+            ok = [i for i in change.added if i in rows and rows[i][3] == change.version]
+            gone = [i for i in change.added if i not in ok]
+            if trashed_paths and any(i in gone for i in trashed_paths):
+                raise StoreConflict("an item changed since its file was moved; nothing was undone")
+            if ok:
+                self._remove_as(ok, trashed_paths, 1)
+            skipped = list(skipped) + list(gone)
+        return out, skipped
+
+    # --- per title (05 §5.4–5.5): media type and cover ---------------------------------------------- #
+
+    def set_media_type(self, work_ids, media_type):
+        """*What is it?* for the selected titles (05 §5.4): the user's, never overwritten by hato, a sync or a merge;
+        None clears it back to the guess. Undo by the value check."""
+        if media_type is not None and media_type not in MEDIA_TYPES:
+            raise ValueError(f"unknown media type {media_type!r}")
+        with self._command("set_media_type") as cmd:
+            change = self._change(cmd, "set_media_type")
+            by = "user" if media_type is not None else None
+            done = [self._set_work_fields(cmd, change, w, {"media_type": media_type, "media_type_by": by})
+                    for w in dict.fromkeys(work_ids)]
+            return change if any(done) else None
+
+    def media_type(self, work_id):
+        """(type, by) a title shows (05 §5.4): its stored type ('user' or 'hato'), else the guess with by None — or
+        (None, None), which the window shows as *Video* (G2.2-5)."""
+        row = self.conn.execute("SELECT media_type, media_type_by, anilist_id, tmdb_id FROM works WHERE id = ?",
+                                (work_id,)).fetchone()
+        if row is None:
+            return None, None
+        if row[0] is not None:
+            return row[0], row[1]
+        counts = {}
+        for (source,) in self.conn.execute("SELECT source_type FROM items WHERE work_id = ?", (work_id,)):
+            kind = infer_source_type("", declared=source) if source else None
+            counts[kind] = counts.get(kind, 0) + 1
+        return media_type_guess(counts, row[2], row[3]), None
+
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False):
+        """A title's cover record (05 §5.5). The fetch (the window's services, `locked=False`) is refused — nothing
+        written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a generated cover*
+        (`locked=True`) always writes. `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
+        user's, in User Files/<lang>/covers/, kept by the window with a dated backup on replace). Undo by the value
+        check. Returns the change, or None (refused, or nothing new)."""
+        if source not in COVER_SOURCES:
+            raise ValueError(f"unknown cover source {source!r}")
+        if path is not None and not str(path).startswith(("cache:", "user:")):
+            raise ValueError("a cover's path is 'cache:<name>' or 'user:<name>'")
+        with self._command("set_cover") as cmd:
+            row = self.conn.execute("SELECT cover_locked FROM works WHERE id = ?", (work_id,)).fetchone()
+            if row is None or (row[0] and not locked):
+                return None
+            change = self._change(cmd, "set_cover")
+            fetched = _now() if not locked and path and str(path).startswith("cache:") else None
+            done = self._set_work_fields(cmd, change, work_id, {
+                "cover_source": source, "cover_ref": ref, "cover_path": path, "cover_fetched_at": fetched,
+                "cover_locked": 1 if locked else 0})
+            return change if done else None
+
+    def forget_downloaded_covers(self):
+        """*Remove downloaded covers* (05 §5.5): the fetched, unlocked covers' paths cleared (the window empties the
+        cache folder); a locked or user-picked cover is untouched (user data). No undo: the cache is re-fetchable.
+        Returns the works cleared."""
+        with self._command("forget_downloaded_covers") as cmd:
+            ids = [r[0] for r in self.conn.execute("SELECT id FROM works WHERE cover_locked = 0 AND cover_path LIKE "
+                                                   "'cache:%'")]
+            if not ids:
+                return []
+            self.conn.executemany("UPDATE works SET cover_path = NULL, cover_fetched_at = NULL WHERE id = ?",
+                                  [(w,) for w in ids])
+            cmd.fed_works.update(ids)
+            cmd.touch()
+            return ids
+
+    # --- the pin's readers (05 §5.6) and Connect's made words (04 §4.3 #7) ---------------------------- #
+
+    def pinned(self):
+        """*Study its cards first* (05 §5.6): `[Pin(item_id, rel_path, tier, pinned_at)]` for pinned items still in
+        the library, any tier (Finished too), the oldest pin first, in one read transaction — the re-plan's input
+        (E3.1, on its worker: `[(p.item_id, p.pinned_at) for p in store.pinned()]`). A trash row's pin acts only after
+        Put back."""
+        with self._reading():
+            rows = self.conn.execute("SELECT id, rel_path, tier, pinned FROM items WHERE pinned IS NOT NULL "
+                                     "ORDER BY pinned, id").fetchall()
+        return [Pin(*r) for r in rows]
+
+    def cards_of(self, item_ids):
+        """{item_id: [note ids]} the store knows for each item (05 §5.6): its Anki links and the notes Connect made
+        for it (`made_words`), sorted; Haya's match by a card's source field adds the cards mined before Connect."""
+        ids = list(dict.fromkeys(item_ids))
+        out = {i: set() for i in ids}
+        with self._reading():
+            for chunk in _chunks(ids, 500):
+                marks = ",".join("?" * len(chunk))
+                for item_id, note in self.conn.execute(f"SELECT item_id, note_id FROM anki_links WHERE item_id IN "
+                                                       f"({marks})", chunk):
+                    out[item_id].add(note)
+                if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_words'").fetchone():
+                    for item_id, notes in self.conn.execute(f"SELECT item_id, note_ids FROM made_words WHERE item_id "
+                                                            f"IN ({marks})", chunk):
+                        try:
+                            out[item_id].update(int(n) for n in json.loads(notes))
+                        except (ValueError, TypeError):
+                            continue
+        return {i: sorted(v) for i, v in out.items()}
+
+    def record_made(self, item_id, made, batch=None):
+        """Connect's record of the words it made cards for (N15, 04 §4.3 #7): [(word, [note ids])] for an item, one
+        short write per batch (role `connect`); a word already recorded for the item keeps its first record — it is
+        never made again automatically, even when its notes were deleted (G1.3-4). An item removed meanwhile is
+        recorded too (Put back finds it). A status write: `state_version` only. Returns the words recorded."""
+        rows = [(item_id, str(w), _dumps([int(n) for n in notes]), _now(), batch) for w, notes in made if w]
+        if not rows:
+            return []
+        with self._command("record_made", "connect") as cmd:
+            for sql in ADDED_TABLES_SQL:
+                self.conn.execute(sql)
+            have = {r[0] for r in self.conn.execute("SELECT word FROM made_words WHERE item_id = ?", (item_id,))}
+            fresh = [r for r in rows if r[1] not in have]
+            if not fresh:
+                return []
+            self.conn.executemany("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) "
+                                  "VALUES (?, ?, ?, ?, ?)", fresh)
+            cmd.touch()
+            return [r[1] for r in fresh]
+
+    def made(self, item_id):
+        """{word: [note ids]} Connect made cards for, for one item (N15)."""
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_words'").fetchone():
+            return {}
+        return {w: json.loads(n) for w, n in self.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?",
+                                                               (item_id,))}
+
+    def record_anki_changes(self, changes):
+        """The re-plan's record of the cards it changed for an item (05 §5.7, D14): [(item_id, action, [note ids],
+        before, after)], one short write; *Put back* restores exactly these, never more. Returns the record ids."""
+        rows = [(item_id, action, _dumps([int(n) for n in notes]), _dumps(before), _dumps(after), _now())
+                for item_id, action, notes, before, after in changes]
+        if not rows:
+            return []
+        with self._command("record_anki_changes", "connect") as cmd:
+            first = self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM anki_changes").fetchone()[0] + 1
+            self.conn.executemany("INSERT INTO anki_changes (item_id, action, notes, before, after, at) "
+                                  "VALUES (?, ?, ?, ?, ?, ?)", rows)
+            cmd.touch()
+            return list(range(first, first + len(rows)))
+
+    def anki_changes_of(self, item_ids):
+        """The open (not yet reverted) card changes recorded for these items, oldest first: what *Put back* restores."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return []
+        cur = self.conn.execute(f"SELECT id, item_id, action, notes, before, after, at FROM anki_changes WHERE "
+                                f"reverted_at IS NULL AND item_id IN ({','.join('?' * len(ids))}) ORDER BY id", ids)
+        out = []
+        for r in cur.fetchall():
+            row = dict(zip(("id", "item_id", "action", "notes", "before", "after", "at"), r))
+            for key in ("notes", "before", "after"):
+                try:
+                    row[key] = json.loads(row[key]) if row[key] is not None else None
+                except ValueError:
+                    pass
+            out.append(row)
+        return out
+
+    def mark_anki_reverted(self, change_ids):
+        """The re-plan put those cards back (Put back): their records are closed, kept. Returns how many."""
+        ids = list(dict.fromkeys(change_ids))
+        if not ids:
+            return 0
+        with self._command("mark_anki_reverted", "connect") as cmd:
+            n = self.conn.execute(f"UPDATE anki_changes SET reverted_at = ? WHERE reverted_at IS NULL AND id IN "
+                                  f"({','.join('?' * len(ids))})", [_now()] + ids).rowcount
+            if n:
+                cmd.touch()
+            return n
+
+    # --- moved files followed (9a, 05 §5.9) and gone files' text (9b, 05 §5.10) ----------------------- #
+
+    def rename_asks(self):
+        """9a's open questions for *Needs you* — *Is this the one from …?*: [{rel, size, mtime_ns, candidates}]."""
+        return _rename_asks(self)
+
+    def relink(self, item_id, path):
+        """A missing item pointed at a file (9a's answer, the window's *Link a file*): the same id, tier, place,
+        piece, work, ✓, pin, Anki links, pairing and made words, now at `path`; its open question goes. Undo points it
+        back. Returns the change, or None (already there, or the item is gone)."""
+        rel = library_rel(self.data_dir, path)
+        if rel is None:
+            raise NotInLibrary(f"not in the library: {path}")
+        st = _stat(os.path.join(self.data_dir, rel))
+        if st is None:
+            raise ValueError(f"no file at {rel}")
+        with self._command("relink") as cmd:
+            row = self.conn.execute("SELECT rel_path, rel_key, size, mtime_ns, availability, tier FROM items "
+                                    "WHERE id = ?", (item_id,)).fetchone()
+            if row is None or row[1] == path_key(rel):
+                return None
+            holder = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone()
+            if holder is not None:
+                raise StoreConflict(f"{rel} is in the library already")
+            change = self._change(cmd, "relink")
+            change.relink = {"id": item_id, "old": list(row[:5]), "new": rel}
+            self._repoint(item_id, rel, st.st_size, st.st_mtime_ns)
+            self._drop_ask(rel)
+            cmd.touch({row[5]}, availability=row[4] != "available")
+            return change
+
+    def _drop_ask(self, rel):
+        asks = _rename_asks(self)
+        kept = [a for a in asks if path_key(a.get("rel", "")) != path_key(rel)]
+        if kept != asks:
+            self._set_meta({"rename_asks": _dumps(kept), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+
+    def _undo_relink(self, cmd, change):
+        out = self._change(cmd, "undo")
+        info = change.relink
+        row = self.conn.execute("SELECT rel_path, tier FROM items WHERE id = ?", (info["id"],)).fetchone()
+        if row is None or row[0] != info["new"]:
+            return out, [info["id"]]
+        old_rel, _key, size, mtime_ns, _availability = info["old"]
+        self._repoint(info["id"], old_rel, size, mtime_ns)
+        if not os.path.exists(os.path.join(self.data_dir, _strip(old_rel))):
+            self.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (info["id"],))
+        cmd.touch({row[1]}, availability=True)
+        return out, []
+
+    def its_new(self, path):
+        """9a's other answer, *It's new*: its question goes and the file joins the library as any new file does
+        (§6.10 rule 3) — the items it was asked about stay missing. Returns the sync's summary."""
+        rel = library_rel(self.data_dir, path)
+        if rel is None:
+            raise NotInLibrary(f"not in the library: {path}")
+        with self._writing():
+            self._drop_ask(rel)
+        return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None)
+
+    def text_lists(self):
+        """9b (05 §5.10): (counted, kept) — the paths, relative to data/<lang>, whose text the token store keeps. Counted:
+        the analysed tiers' items, a missing one too (it keeps counting until the user decides). Kept, never counted:
+        Finished, New arrivals, and removed items whose sentences weren't forgotten (`trash.text_forgotten` 0). The token
+        store (E2.2) takes these two lists in place of a run's one list: it keeps a kept file's text (in
+        `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
+        with self._reading():
+            counted = [r[0] for r in self.conn.execute(
+                "SELECT rel_path FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY tier, ord, id")]
+            kept = [r[0] for r in self.conn.execute(
+                "SELECT rel_path FROM items WHERE tier IN ('graduated', 'arrivals') ORDER BY tier, ord, id")]
+            kept += [r[0] for r in self.conn.execute(
+                "SELECT rel_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 ORDER BY id")]
+        have = {path_key(r) for r in counted}
+        out, seen = [], set()
+        for rel in kept:
+            key = path_key(rel)
+            if key not in have and key not in seen:
+                seen.add(key)
+                out.append(rel)
+        return counted, out
+
+    def forget_text(self, item_ids):
+        """*This file is junk — forget its sentences too* (G2.2-3, at Remove, off by default): the removed items'
+        trash rows say so, and the token store (E2.2) drops their kept text. No undo (the dialog says so). Returns how
+        many trash rows were marked."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return 0
+        with self._command("forget_text") as cmd:
+            n = self.conn.execute(f"UPDATE trash SET text_forgotten = 1 WHERE restored_at IS NULL AND text_forgotten = 0 "
+                                  f"AND item_id IN ({','.join('?' * len(ids))})", ids).rowcount
+            if n:
+                cmd.touch()
+            return n
+
     def set_watched(self, ids, watched=True):
         """The store's Watched record (✅ G1.1-5)."""
         return self._status("set_watched", ids, "watched", 1 if watched else 0)
@@ -3187,7 +3670,7 @@ class Store:
     def undo_check(self, change):
         """Read before any file work (Undo-Add checks before touching a file): (ids that can be undone,
         ids changed since by someone else)."""
-        ids = change.added if change.kind in ("insert", "insert_at", "register", "restore") \
+        ids = change.added if change.kind in ("insert", "insert_at", "register", "restore", "import_finished") \
             else [it["id"] for it in change.items]
         rows = self._rows(ids)
         ok = [i for i in ids if i in rows and rows[i][3] == change.version]
@@ -3238,6 +3721,12 @@ class Store:
                 out = self.restore(waiting, rel_paths, by="undo", kind="undo",
                                    explicit_of=lambda i: explicit.get(i, 1))
                 skipped = [t for t in change.trash_ids if t not in waiting]
+            elif kind == "relink":
+                out, skipped = self._undo_relink(cmd, change)
+            elif kind == "finish":
+                out, skipped = self._undo_finish(cmd, change)
+            elif kind == "import_finished":
+                out, skipped = self._undo_import(cmd, change, trashed_paths)
             elif getattr(change, "options", None):
                 out, skipped = self._undo_options(cmd, change)
             elif change.status:
@@ -3287,7 +3776,7 @@ class Store:
         cmd = self._cmd
         events_before = len(cmd.events)
         out = self.remove(ids, trashed_paths, by="undo", kind="undo_add")
-        cmd.events[events_before:] = [(i, k, explicit) for i, k, _e in cmd.events[events_before:]]
+        cmd.events[events_before:] = [(i, k, explicit, b) for i, k, _e, b in cmd.events[events_before:]]
         for item in out.items:
             item["explicit"] = explicit
         return out
@@ -3775,6 +4264,73 @@ def _work_ids_of(record):
     if isinstance(c, str) and c.strip():
         out["youtube_channel"] = c.strip()
     return out
+
+
+Pin = namedtuple("Pin", "item_id rel_path tier pinned_at")
+PLACING_TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
+
+
+def _placing_rules():
+    """The user's placing rules (`placing_rules` in settings.json, 05 §5.12; empty = every arrival waits, RD-S16).
+    Read only, never written here."""
+    try:
+        from app.settings_manager import load_settings
+        rules = load_settings().get("placing_rules")
+    except Exception:
+        return {}
+    return rules if isinstance(rules, dict) else {}
+
+
+def _rule_for(record, rules):
+    """(source, target) of the rule for a record's arrival, or None: it waits (05 §5.12, `app/connect/rules.py`'s
+    rule). Sources: `<producer>:<channel id>` before the producer's own line; targets PLACING_TARGETS."""
+    if not isinstance(rules, dict) or not rules:
+        return None
+    producer = str((record or {}).get("producer") or "hato").strip() if isinstance(record, dict) else "hato"
+    channel = (record or {}).get("channel_id") if isinstance(record, dict) else None
+    for source in ([f"{producer}:{channel}"] if channel else []) + [producer]:
+        target = rules.get(source)
+        if target == "wait":
+            return None
+        if target in PLACING_TARGETS:
+            return source, target
+    return None
+
+
+def _episode(record):
+    """(season, episode) a record's show names — none named is the first season — or None."""
+    show = record.get("show") if isinstance(record, dict) else None
+    if not isinstance(show, dict):
+        return None
+    episode, season = show.get("episode"), show.get("season")
+    if isinstance(episode, bool) or not isinstance(episode, (int, float)):
+        return None
+    if isinstance(season, str) and season.strip().isdigit():
+        season = int(season.strip())
+    return (season if isinstance(season, int) and not isinstance(season, bool) else 1, episode)
+
+
+def media_type_guess(counts, anilist_id=None, tmdb_id=None):
+    """A title's type when nobody said (05 §5.4), from its items' source types ({type: count}) and its ids: YouTube
+    or bilibili → youtube; an epub → book; text → text; subtitles → anime with an AniList id, drama with a TMDB `tv:`
+    id, movie with `movie:`; anything else None (*Video*, G2.2-5). Computed on read, never stored."""
+    if not counts:
+        return None
+    kind = max(counts, key=lambda k: (counts[k], k or ""))
+    if kind in ("youtube", "bilibili"):
+        return "youtube"
+    if kind == "epub":
+        return "book"
+    if kind == "text":
+        return "text"
+    if kind == "subtitle":
+        if tmdb_id and str(tmdb_id).startswith("movie:"):
+            return "movie"
+        if anilist_id:
+            return "anime"
+        if tmdb_id and str(tmdb_id).startswith("tv:"):
+            return "drama"
+    return None
 
 
 def _show_title(record):
@@ -5067,18 +5623,45 @@ def reset_walk(data_dir):
     return out
 
 
-def _known(store):
-    """{key: (id, rel_path, tier, availability, size, mtime_ns)} and state_version, in one read."""
+def _known(store, scope=None):
+    """{key: (id, rel_path, tier, availability, size, mtime_ns)} and state_version, in one read; with `scope` (folders
+    relative to data/<lang>), only the items under them (the `items_key` index: no scan of the library)."""
     with store._reading():
-        rows = store.conn.execute("SELECT rel_key, id, rel_path, tier, availability, size, mtime_ns FROM items").fetchall()
+        if scope is None:
+            rows = store.conn.execute("SELECT rel_key, id, rel_path, tier, availability, size, mtime_ns FROM items").fetchall()
+        else:
+            rows = []
+            for top in _scope_tops(scope):
+                rows += store.conn.execute("SELECT rel_key, id, rel_path, tier, availability, size, mtime_ns FROM items "
+                                           "WHERE rel_key > ? AND rel_key < ?", (top, top[:-1] + "0")).fetchall()
         version = store._meta()["state_version"]
     return {r[0]: r[1:] for r in rows}, version
 
 
-def _sync_delta(store, walk, known):
-    """What a sync would change, computed outside any transaction (§6.10)."""
+def _scope_tops(folders):
+    """The scope's key prefixes ('highpriority/frieren/'), a folder inside another listed one dropped."""
+    tops = sorted({path_key(_strip(f).rstrip("/")) + "/" for f in folders if f and _strip(f).strip("/")})
+    return [t for n, t in enumerate(tops) if not any(t.startswith(o) for o in tops[:n])]
+
+
+def walk_folders(data_dir, folders):
+    """The walk of a scoped sync: each folder (relative to data/<lang>) and everything under it, content files only,
+    as `walk_library` lists them; a folder gone is an empty walk (its items go missing)."""
+    files, bad = [], []
+    by_top = {path_key(_strip(f).rstrip("/")) + "/": _strip(f).rstrip("/") for f in folders if f}
+    for top in _scope_tops(folders):
+        folder = by_top[top]
+        f, b = walk_tree(os.path.join(data_dir, *folder.split("/")), folder)
+        files += f
+        bad += b
+    return {"files": files, "bad": bad}
+
+
+def _sync_delta(store, walk, known, scope=None):
+    """What a sync would change, computed outside any transaction (§6.10); with `scope`, only within those folders
+    (`known` read with the same scope): an item outside them is never looked at."""
     data_dir = store.data_dir
-    walked_tops = [path_key(FOLDER_OF_TIER[t]) + "/" for t in ANALYSED]
+    walked_tops = _scope_tops(scope) if scope is not None else [path_key(FOLDER_OF_TIER[t]) + "/" for t in ANALYSED]
     seen, fresh, respell, refresh = set(), [], [], []
     for rel, size, mtime_ns in walk["files"]:
         key = path_key(rel)
@@ -5118,22 +5701,65 @@ def _sync_delta(store, walk, known):
             renames.append((cands[0][0], rel, size, mtime_ns))
         else:
             new.append((rel, key, size, mtime_ns))
+    # rule 2b (9a, L2.2 05 §5.9): an untracked file + exactly ONE item anywhere in the library with the same file
+    # name, size and modified time that went missing in this sync is that item, moved; two or more are asked, never
+    # guessed (the file is held out until the user answers: `relink` or `its_new`)
+    asked = {path_key(a.get("rel", "")) for a in _rename_asks(store)}
+    by_name = {}
+    for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
+        if item_id in went_set and item_id not in used:
+            by_name.setdefault(path_key(_strip(rel).rsplit("/", 1)[-1]), []).append((item_id, size, mtime_ns))
+    still, asks = [], []
+    for rel, key, size, mtime_ns in new:
+        if key in asked:
+            continue                                               # held out: its question waits for the user
+        cands = [c for c in by_name.get(path_key(rel.rsplit("/", 1)[-1]), [])
+                 if c[1] == size and c[2] == mtime_ns and c[0] not in used]
+        if len(cands) == 1:
+            used.add(cands[0][0])
+            renames.append((cands[0][0], rel, size, mtime_ns))
+        elif cands:
+            asks.append({"rel": rel, "size": size, "mtime_ns": mtime_ns, "candidates": sorted(c[0] for c in cands)})
+        else:
+            still.append((rel, key, size, mtime_ns))
     went = [i for i in went if i not in used]
-    return {"new": new, "renames": renames, "respell": respell, "went": went, "came": came, "refresh": refresh}
+    return {"new": still, "renames": renames, "respell": respell, "went": went, "came": came, "refresh": refresh,
+            "asks": asks}
+
+
+def _rename_asks(store):
+    """9a's open questions (`meta.rename_asks`): [{rel, size, mtime_ns, candidates}], bookkeeping the copy carries."""
+    row = store.conn.execute("SELECT value FROM meta WHERE key = 'rename_asks'").fetchone()
+    try:
+        asks = json.loads(row[0]) if row else []
+    except ValueError:
+        return []
+    return [a for a in asks if isinstance(a, dict)] if isinstance(asks, list) else []
 
 
 def _store_walk(self):
     return walk_library(self.data_dir)
 
 
-def _store_sync_disk(self, walk=None):
+def _store_sync_disk(self, walk=None, folders=None):
     """The disk sync (§6.10): files nothing tracks join the library by rule 3; renames keep their place;
     missing files are marked, never removed. No delta → no write lock, no commit. Returns a summary
-    {"added", "renamed", "missing", "back", "bad"} or None when nothing changed."""
-    walk = walk or walk_library(self.data_dir)
-    known, version = _known(self)
-    delta = _sync_delta(self, walk, known)
-    structural = delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"]
+    {"added", "renamed", "missing", "back", "bad"} or None when nothing changed. `folders`: only those folders
+    (relative to data/<lang>) and what is under them — the ones the window's poll saw change (`DiskPoll.changed`,
+    L3.1: a hato drop costs its folder's walk, not the library's)."""
+    scope = list(folders) if folders else None
+    walk = walk or (walk_folders(self.data_dir, scope) if scope else walk_library(self.data_dir))
+    known, version = _known(self, scope)
+    delta = _sync_delta(self, walk, known, scope)
+    hato = path_key(HATO_FOLDER)
+    rules = _placing_rules() if any(path_key(_rel_dir(r[0])) == hato for r in delta["new"]) else {}
+    asks = _rename_asks(self)
+    live = [a for a in asks if os.path.exists(os.path.join(self.data_dir, _strip(str(a.get("rel", "")))))]
+    if live != asks:                                       # a held-out file gone: its question goes with it
+        with self._writing():
+            self._set_meta({"rename_asks": _dumps(live), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+    structural = delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"] or \
+        delta["asks"]
     if not structural:
         if delta["refresh"]:
             with self._writing():                                  # bookkeeping the copy carries (§6.6)
@@ -5145,13 +5771,19 @@ def _store_sync_disk(self, walk=None):
                for rel, _k, _s, _m in delta["new"]}
     with self._command("sync", "sync") as cmd:
         if cmd.meta["state_version"] != version:
-            known, _v = _known(self)
-            delta = _sync_delta(self, walk, known)
+            known, _v = _known(self, scope)
+            delta = _sync_delta(self, walk, known, scope)
             for rel, _k, _s, _m in delta["new"]:
                 if rel not in entries:
                     entries[rel] = make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(self.data_dir, rel),
                                                                                      marker_cache))
-        summary = {"added": [], "renamed": [], "missing": [], "back": [], "bad": list(walk.get("bad", []))}
+        summary = {"added": [], "renamed": [], "missing": [], "back": [], "bad": list(walk.get("bad", [])),
+                   "asked": [a["rel"] for a in delta["asks"]]}
+        if delta["asks"]:                                      # bookkeeping the copy carries (9a)
+            have = _rename_asks(self)
+            keys = {path_key(a["rel"]) for a in have}
+            self._set_meta({"rename_asks": _dumps(have + [a for a in delta["asks"] if path_key(a["rel"]) not in keys]),
+                            "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         exists = lambda rel: os.path.exists(os.path.join(self.data_dir, _strip(rel)))
         rows = self._rows([r[0] for r in delta["renames"]] + [r[0] for r in delta["respell"]] + delta["went"] + delta["came"])
         tiers = set()
@@ -5184,7 +5816,9 @@ def _store_sync_disk(self, walk=None):
                if exists(rel) and not self.conn.execute("SELECT 1 FROM items WHERE rel_key = ?", (key,)).fetchone()]
         if new:
             prepared = [(rel, rel, key, entries[rel], (size, mtime_ns, "available")) for rel, key, size, mtime_ns in new]
-            dests = [self._destination(rel, entries[rel], TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now"), set())
+            arrivals = cmd.meta.get("arrivals_on")
+            dests = [("end", "arrivals") if arrivals and path_key(_rel_dir(rel)) == hato else
+                     self._destination(rel, entries[rel], TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now"), set())
                      for rel, _k, _s, _m in new]
             dest_tier = [d[2] if d[0] in ("after", "before") else d[1] for d in dests]
             ids = self._add_rows([p + (t,) for p, t in zip(prepared, dest_tier)], cmd.version)
@@ -5196,9 +5830,15 @@ def _store_sync_disk(self, walk=None):
                 self._put(t, group, where, cmd.version)
             tiers |= set(dest_tier)
             summary["added"] = ids
+            if rules:                                          # K82: as `register` places a drop waiting there
+                cmd.touch(tiers)
+                self._settle_works(cmd)
+                for item_id, t in zip(ids, dest_tier):
+                    if t == "arrivals":
+                        self._apply_rule(item_id, {"producer": "hato"}, rules)
         if tiers:
             cmd.touch(tiers)
-        if not (summary["added"] or summary["renamed"] or gone or back):
+        if not (summary["added"] or summary["renamed"] or gone or back or summary["asked"]):
             if delta["refresh"]:
                 cmd.changed = False
             return None
@@ -5295,6 +5935,7 @@ class DiskPoll:
         self.token = None
         self.folders = []
         self.stats = None
+        self.changed = []                # the folders whose modified time moved at the last check: `sync_disk(folders=)`
 
     def check(self):
         with self.store._reading():
@@ -5309,9 +5950,9 @@ class DiskPoll:
                 stats[folder] = os.stat(os.path.join(self.store.data_dir, folder)).st_mtime_ns
             except OSError:
                 stats[folder] = None
-        changed = self.stats is not None and any(f in self.stats and self.stats[f] != v for f, v in stats.items())
+        self.changed = [f for f, v in stats.items() if self.stats is not None and f in self.stats and self.stats[f] != v]
         self.stats = stats
-        return changed
+        return bool(self.changed)
 
 
 def _store_has_content(self):
@@ -5440,16 +6081,16 @@ BUILD_SPAWN_EVERY = 60.0          # s: "no store yet" spawns the builder at most
 _build_spawned = {}
 
 
-def sync_for_window(store):
+def sync_for_window(store, folders=None):
     """`sync_disk` for a window's process (the dashboard's journey check, the Content Manager), called on a
     worker. At 100k a sync on a worker thread still stalled the window 20–60 ms through the interpreter
     lock, whatever the switch interval (§12.1), so from `SYNC_IN_PROCESS_AT` items the sync runs in a
     process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None."""
     count = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     if count < SYNC_IN_PROCESS_AT:
-        return store.sync_disk()
+        return store.sync_disk(folders=folders)
     import subprocess
-    args = _helper_args(store.language, "sync")
+    args = _helper_args(store.language, "sync") + [a for f in (folders or ()) for a in ("--folder", f)]
     flags = 0x08000000 if sys.platform == "win32" else 0                # CREATE_NO_WINDOW
     subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT)
@@ -5499,7 +6140,8 @@ def read_only_view(language, data_dir, user_files_dir):
             schedule, versions = store.schedule(with_versions=True)
             known, _version = _known(store)
         delta = _sync_delta(store, walk, known)
-        pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"])
+        pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"] or
+                   delta["asks"])
         return "store", schedule, versions, pending
     except sqlite3.Error:
         return "unknown", None, None, False
@@ -5742,6 +6384,49 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
 # file (I3). Tk-free, so Phase 2's Content Manager calls these instead of its own copies.
 # ------------------------------------------------------------------------------------------------ #
 
+def copy_into_finished(data_dir, sources, progress=None, cancel=None):
+    """The Finished importer's job (05 §5.8, run off the window's thread, outside the write lock): each content file
+    picked — or in a folder picked, the folder keeping its name — copied into `data/<lang>/Graduated/`, which the disk
+    sync never walks; a file already in the library is listed as it is, never copied. A taken name copies as
+    `name_1.ext`; nothing is overwritten, the user's files stay where they were. `progress(done, total)`; `cancel()`
+    True stops between files. Returns the paths relative to the data folder, for `Store.import_finished`."""
+    import shutil
+    plan = []
+    for source in sources:
+        rel = library_rel(data_dir, source) if os.path.isabs(source) else None
+        if rel is not None and os.path.exists(os.path.join(data_dir, rel)):
+            if os.path.isfile(os.path.join(data_dir, rel)):
+                plan.append((None, rel))
+            continue
+        if os.path.isdir(source):
+            base = os.path.basename(os.path.normpath(source))
+            for folder, _dirs, files in sorted(os.walk(source)):
+                for name in sorted(files):
+                    if is_content_name(name):
+                        inner = os.path.relpath(os.path.join(folder, name), source).replace("\\", "/")
+                        plan.append((os.path.join(folder, name), f"{GRADUATED_FOLDER}/{base}/{inner}"))
+        elif os.path.isfile(source) and is_content_name(source):
+            plan.append((source, f"{GRADUATED_FOLDER}/{os.path.basename(source)}"))
+    out = []
+    for n, (src, rel) in enumerate(plan):
+        if cancel is not None and cancel():
+            break
+        if src is not None:
+            stem, ext = os.path.splitext(rel)
+            candidate, k = rel, 0
+            while os.path.exists(os.path.join(data_dir, *candidate.split("/"))):
+                k += 1
+                candidate = f"{stem}_{k}{ext}"
+            dst = os.path.join(data_dir, *candidate.split("/"))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            rel = candidate
+        out.append(rel)
+        if progress is not None:
+            progress(n + 1, len(plan))
+    return out
+
+
 def trash_file(data_dir, rel):
     """A user's Remove or Undo-Add: the file to `data/<lang>/.trash/<base>_<stamp><ext>` (never
     `rmtree`), its 30-day clock restarted. Returns the trashed path relative to data/<lang>, or None
@@ -5842,7 +6527,7 @@ def strip_graduated_block(user_files_dir, language, rels):
 # What `register_headless` answers (P2.1, the command line's `register`): `code` (EXIT_*); for a registration, the
 # item (`file_id`), where it is (`landed`: now-top · arrivals · show · already; `tier`, its 1-based `position` there)
 # and what became of the pairing (`pairing`: new · same · replaced). The fields after `code` are None otherwise.
-Registered = namedtuple("Registered", "code file_id landed tier position pairing")
+Registered = namedtuple("Registered", "code file_id landed tier position pairing rule", defaults=(None,))
 
 
 def _registered(code):
@@ -5850,7 +6535,7 @@ def _registered(code):
 
 
 def register_headless(language, path, pairing, data_dir=None, user_files_dir=None, backfill=False, looks=1,
-                      reader=None):
+                      reader=None, rules=None):
     """`register` as hato's command line calls it: 5 while an update is staged (`looks`: how many looks at the
     update lock, `update_staged`); with no store yet, the store is built headless when a usable manifest exists (as
     Generate would), else 4 "needs you" and nothing written (the file still lands as today; only the pairing waits
@@ -5886,7 +6571,7 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         if reader:
             store.register_reader(reader)
         try:
-            change = store.register(rel, pairing, backfill=backfill)
+            change = store.register(rel, pairing, backfill=backfill, rules=rules)
         except NotInLibrary:
             return _registered(EXIT_BAD_DATA)
         # The change's own item (a move or remove after the commit can't lose it); a pairing already there: by its path
@@ -5901,7 +6586,10 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
         landed = "already"
     before = getattr(change, "pairing_before", None)
     paired = "same" if before is None else "new" if before[1] is None else "replaced"
-    return Registered(EXIT_DONE, item_id, landed, tier, position, paired)
+    rule = getattr(change, "rule", None)
+    if rule and landed != "already":
+        landed = "arrivals"                                    # where it landed; the rule placed it from there
+    return Registered(EXIT_DONE, item_id, landed, tier, position, paired, rule)
 
 
 def main(argv=None):
@@ -5919,12 +6607,13 @@ def main(argv=None):
     m.add_argument("--retry", action="store_true", help="retry a failed migration (Try again)")
     y = sub.add_parser("sync")
     y.add_argument("--language", required=True)
+    y.add_argument("--folder", action="append", help="only this folder (relative to data/<lang>); repeatable")
     try:
         args = parser.parse_args(argv)
     except SystemExit:
         return EXIT_USAGE
     if args.command == "sync":
-        return sync_process(args.language)
+        return sync_process(args.language, args.folder)
     if args.command != "maintain":
         return EXIT_USAGE
     try:
@@ -5934,7 +6623,7 @@ def main(argv=None):
         return EXIT_FAILED
 
 
-def sync_process(language):
+def sync_process(language, folders=None):
     """`sync`: a window's `sync_disk` in a process of its own (`sync_for_window`, a large library). 0 when
     something changed, 3 nothing, 4 no ready store, 5 an update staged, 1 failed. Dialog-free."""
     from app.path_utils import get_data_path, get_user_files_path
@@ -5945,7 +6634,7 @@ def sync_process(language):
         if store is None:
             return EXIT_NEEDS_YOU
         with store:
-            return EXIT_DONE if store.sync_disk() else EXIT_NOTHING
+            return EXIT_DONE if store.sync_disk(folders=folders) else EXIT_NOTHING
     except Exception:
         return EXIT_FAILED
 

@@ -26,7 +26,6 @@ DEFAULT_SETTINGS = {
     "zen_limit": 50,
     "onboarding_completed": False,
     "open_count": 0,
-    "hide_satoru": True,  # This is the "internal" default
     "only_i_plus_one": False,
     "ensure_audio_example": False,
     "add_graduated_words": True,
@@ -370,7 +369,8 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait:
     except (ImportError, ModuleNotFoundError):
         module_exists = False
 
-    # 3. Strip internal/locked variables if necessary
+    # 3. Strip internal/locked variables if necessary. `hide_satoru` left the defaults in 3.0 (the 悟 button left the
+    # app in 2.5, RD-A5; nothing reads the key): an old file's copy is still stripped, never written back.
     if clean_for_build or not module_exists:
         to_save.pop("hide_satoru", None)
 

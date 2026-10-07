@@ -813,7 +813,7 @@ def test_log_register_is_hatos_and_never_explicit(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_log_sync_reset_and_reimport_write_crossings_only(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))            # New arrivals off: a hato drop lands in Current (Q4-11)
     data_dir, user_files_dir = roots(language)
     store.register_reader("connect")
     mark = _last_log(store)
@@ -1873,3 +1873,104 @@ def test_generate_parity_line_at_the_tier_boundary(ja_resources_dir):
     store.set_soon_line(line)
     store.close()
     pd.testing.assert_frame_equal(generated(), expected, check_dtype=False)
+
+
+# ================================================================================================ #
+# The deferred smoothness items (L3.1 row 3.1.8; §12.4 #11)
+# ================================================================================================ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_sync_walks_only_the_folders_the_poll_saw(language):
+    """§12.4 #11: the window's poll names the folders whose time moved, and the sync walks only those — a hato drop
+    costs its folder's walk, not the library's (5 s at 200k). Within them it does what a whole sync does; outside them
+    nothing is looked at until a whole sync (a focus, Refresh) runs."""
+    store = migrated(language, shows=3, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    poll = ls.DiskPoll(store)
+    assert poll.check() is False and poll.changed == []
+    show = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    elsewhere = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    time.sleep(0.05)                                            # the folder's modified time must move
+    touch(data_dir, f"{folder}/{w[110]}.srt")
+    os.remove(os.path.join(data_dir, store.item(elsewhere)["rel_path"]))   # a change outside the folder polled
+    assert poll.check() is True
+    assert folder in poll.changed
+    summary = store.sync_disk(folders=[folder])
+    assert [store.item(i)["rel_path"] for i in summary["added"]] == [f"{folder}/{w[110]}.srt"]
+    assert summary["missing"] == [] and store.item(elsewhere)["availability"] == "available", "not walked"
+    assert store.sync_disk()["missing"] == [elsewhere], "a whole sync takes in the rest"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scoped_sync_in_another_process_and_a_vanished_folder(language):
+    """The large-library path (`sync_for_window` from 20k items runs the sync in a process of its own) carries the
+    folders too; a show folder renamed shows as its parent's change, and each of its files is followed to the new name
+    (9a: the same name, size and time, exactly one item gone) — the same items, nothing added."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("now") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    members = [i for i in store.ids("now") if store.item(i)["rel_path"].startswith(folder + "/")]
+    os.rename(os.path.join(data_dir, *folder.split("/")), os.path.join(data_dir, *folder.split("/")) + "_renamed")
+    summary = store.sync_disk(folders=[folder.split("/", 1)[0]])
+    assert sorted(summary["renamed"]) == sorted(members) and summary["added"] == [], \
+        "a folder renamed: each file followed (9a), the same items"
+    assert all(store.item(i)["rel_path"].startswith(folder + "_renamed/") for i in members)
+    assert ls.main(["sync", "--language", language, "--folder", folder.split("/", 1)[0]]) in (ls.EXIT_NOTHING,
+                                                                                              ls.EXIT_DONE)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_nudge_reads_only_the_rows_it_needs(language):
+    """§12.4 #11: ▲▼ read the whole tier (20 ms at 20k). Now it reads the rows between the selection and the row it
+    jumps past: at 20k the statements a ▲ sends touch a few dozen rows, and the result is today's group-jump rule
+    (the property test against 2.4's code holds it there)."""
+    store = big_store(language, 20_000)
+    ids = store.ids("goal")
+    target = ids[len(ids) // 2]
+    rows_read = []
+    store.conn.set_trace_callback(lambda sql: rows_read.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
+    t0 = time.perf_counter()
+    change = store.nudge([target], "up")
+    took = time.perf_counter() - t0
+    store.conn.set_trace_callback(None)
+    assert change is not None
+    new = store.ids("goal")
+    assert new.index(target) < ids.index(target)
+    assert not any("ORDER BY ord, id" in s and "LIMIT" not in s and "tier = " in s for s in rows_read), \
+        "no statement reads the whole tier"
+    if BENCH:
+        _record(f"nudge {language} 20k: {took * 1000:.2f} ms")
+        assert took < 0.010, took
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_whole_tier_move_within_20_percent_of_12_1(language):
+    """§12.1's whole-tier move (6+ Months, 54,500 rows at 100k, there and back) took 1.50–1.67 s of work; the feed's
+    column, its index and the pieces' upkeep may add at most 20 % (L2.2 04 §4.1's cost model). Timed run only."""
+    if not BENCH:
+        pytest.skip("the 100k timing runs in the timed proof only")
+    store = big_store(language, 100_000)
+    store.register_reader("connect")
+    probe = _FlushProbe(os.path.dirname(store.db_path))
+    largest = max(ls.ANALYSED, key=lambda t: len(store.ids(t)))
+    whole = store.ids(largest)
+    other = "soon" if largest != "soon" else "goal"
+    works = []
+    for _ in range(3):
+        for tier in (other, largest):
+            probe()
+            t0 = time.perf_counter()
+            store.move(whole, tier)
+            works.append(time.perf_counter() - t0 - probe.times[-1])
+    work = sorted(works)[len(works) // 2]
+    _record(f"whole-tier move {language} 100k ({len(whole)} items): work p50 {work:.2f} s (budget {1.67 * 1.2:.2f} s)")
+    assert work <= 1.67 * 1.2, work
+    assert store.ids(largest) == whole and pieces_ok(store) is None
+    probe.close()
+    store.close()

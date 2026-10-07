@@ -399,3 +399,438 @@ def test_search_200k_under_20ms(language):
         print(f"\nsearch {language} {n}: median {median * 1000:.1f} ms")
         assert median <= 0.020, median
     store.close()
+
+
+# ================================================================================================ #
+# Media type, covers, the pin, Finished, placing (L3.1 row 3.1.5; the L2.2 pack 05 §5.4–5.8, 5.12)
+# ================================================================================================ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_users_media_type_is_never_overwritten(language):
+    """05 §5.4, 06 §6.6: the user's *What is it?* is per title and wins — a hato record saying otherwise, a sync and a
+    merge leave it; clearing it gives the guess back; undo by the value check."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("now") if store.item(i)["parent_folder"])
+    work = _work(store, show)
+    change = store.set_media_type([work], "drama")
+    assert store.media_type(work) == ("drama", "user")
+    store.register(os.path.join(data_dir, store.item(show)["rel_path"]), _record("km", media_type="anime"))
+    other = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    store.merge_works(work, [_work(store, other)])
+    store.sync_disk()
+    assert store.media_type(work) == ("drama", "user")
+    store.undo(change)
+    assert store.media_type(work)[1] is None, "back to the guess"
+    with pytest.raises(ValueError):
+        store.set_media_type([work], "podcastz")
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_every_episode_shows_its_titles_type(language):
+    """05 §5.4: the type is the title's — every episode of it reads the same, so *What is it?* is answered once; a type
+    hato's record carries is kept as hato's (until the user says)."""
+    store = migrated(language, shows=2, episodes=4)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+    work = _work(store, show)
+    episodes = [i for t in ls.TIERS for i in store.ids(t) if _work(store, i) == work]
+    store.register(os.path.join(data_dir, store.item(show)["rel_path"]), _record("kt", media_type="anime"))
+    assert {store.media_type(_work(store, i)) for i in episodes} == {("anime", "hato")}
+    store.set_media_type([work], "movie")
+    assert {store.media_type(_work(store, i)) for i in episodes} == {("movie", "user")}
+    store.close()
+
+
+def test_the_guess_by_source_and_record():
+    """05 §5.4's table (the guess, computed, never stored): YouTube / bilibili → youtube; epub → book; text → text;
+    subtitles → anime with an AniList id, drama with a TMDB tv: id, movie with movie:; else None (*Video*, G2.2-5)."""
+    guess = ls.media_type_guess
+    assert guess({"youtube": 3}) == guess({"bilibili": 1}) == "youtube"
+    assert guess({"epub": 2}) == "book" and guess({"text": 5}) == "text"
+    assert guess({"subtitle": 12}, anilist_id=154587) == "anime"
+    assert guess({"subtitle": 12}, tmdb_id="tv:1396") == "drama"
+    assert guess({"subtitle": 1}, tmdb_id="movie:603") == "movie"
+    assert guess({"subtitle": 12}) is None and guess({}) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_locked_cover_refuses_the_fetch(language):
+    """05 §5.5, 06 §6.6: the fetch fills an unlocked cover; once the user chose one (locked), a fetch landing later is
+    refused — no write, no error — and the user's choice undoes by the value check."""
+    store = migrated(language)
+    work = _work(store, store.ids("now")[0])
+    fetched = store.set_cover(work, "anilist", ref="154587", path="cache:154587.jpg")
+    assert fetched is not None
+    row = store._work_row(work)
+    assert (row["cover_source"], row["cover_locked"]) == ("anilist", 0) and row["cover_fetched_at"]
+    mine = store.set_cover(work, "user", path="user:frieren.png", locked=True)
+    assert store.set_cover(work, "tmdb", ref="tv:209867", path="cache:209867.jpg") is None, "refused"
+    assert store._work_row(work)["cover_path"] == "user:frieren.png"
+    store.undo(mine)
+    assert store._work_row(work)["cover_path"] == "cache:154587.jpg" and store._work_row(work)["cover_locked"] == 0
+    with pytest.raises(ValueError):
+        store.set_cover(work, "user", path="C:/Users/x.png", locked=True)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_forget_downloaded_keeps_user_images(language):
+    """05 §5.5: *Remove downloaded covers* clears the fetched, unlocked covers' paths; a user's image (user data) and a
+    locked choice stay."""
+    store = migrated(language, shows=3, episodes=2)
+    works = sorted({_work(store, i) for i in store.ids("now") + store.ids("soon")})[:3]
+    store.set_cover(works[0], "anilist", ref="1", path="cache:1.jpg")
+    store.set_cover(works[1], "user", path="user:mine.png", locked=True)
+    store.set_cover(works[2], "anilist", ref="2", path="cache:2.jpg", locked=True)
+    assert store.forget_downloaded_covers() == [works[0]]
+    assert store._work_row(works[0])["cover_path"] is None
+    assert store._work_row(works[1])["cover_path"] == "user:mine.png"
+    assert store._work_row(works[2])["cover_path"] == "cache:2.jpg"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_nothing_automatic_writes_pinned(language):
+    """05 §5.6 (G1.6-10: "nothing is automatic"): only the user's pin, unpin and *Take its new cards out* write the
+    pin — a register, a sync, a re-import, Connect's receipt and made words, a merge, the line, Reset, the upgrade's
+    tidy leave every pinned item's pin as it was; a new episode of a pinned title is not pinned."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, user_files_dir = roots(language)
+    show = next(i for i in store.ids("now") if store.item(i)["parent_folder"])
+    work = _work(store, show)
+    episodes = [i for t in ls.TIERS for i in store.ids(t) if _work(store, i) == work]
+    store.pin(episodes)
+    pins = {i: store.item(i)["pinned"] for i in episodes}
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    new = store.register(touch(data_dir, f"{folder}/{names(language)[88]}.srt"), _record("kp")).added[0]
+    store.receipt(show, "2026-10-06T11:00:00Z")
+    store.record_made(show, [(names(language)[5], [1700000000009])], "b9")
+    store.sync_disk()
+    store.set_soon_line(1)
+    store.merge_works(work, [_work(store, store.ids("goal")[0])])
+    store.reset_order()
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store.tidy_works()
+    assert {i: store.item(i)["pinned"] for i in episodes} == pins
+    assert store.item(new)["pinned"] is None, "a new episode of a pinned title: not pinned"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_pin_survives_finish_put_back_and_rebuild(language):
+    """05 §5.6: the pin goes on through Finish ("stays on through Finish"), Remove → Put back and a rebuild from the
+    copy; `pinned()` lists it in any tier, the oldest pin first, with what the re-plan needs."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    a, b = store.ids("now")[:2]
+    store.pin([a])
+    store.pin([b])
+    stamp = store.item(a)["pinned"]
+    store.finish([a])
+    removed = store.remove([b])
+    store.restore(removed.trash_ids)
+    pins = store.pinned()
+    assert [(p.item_id, p.tier, p.pinned_at) for p in pins] == [(a, "graduated", stamp),
+                                                                 (b, store.item(b)["tier"], store.item(b)["pinned"])]
+    assert pins[0].rel_path == store.item(a)["rel_path"]
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    db = store.db_path
+    store.close()
+    for suffix in ("", "-wal", "-shm"):
+        if os.path.exists(db + suffix):
+            os.rename(db + suffix, db + suffix + ".elsewhere")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert [(p.item_id, p.pinned_at) for p in store.pinned()] == [(a, stamp), (b, pins[1].pinned_at)]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_taking_cards_out_ends_the_pin(language):
+    """G2.2-8 (the later click wins): *Take its new cards out* at Finish — or after it — ends the pin and leaves the
+    cards out of the learning order; its undo puts the pin and the cards' place back."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    store.pin([a, b])
+    stamp = store.item(a)["pinned"]
+    change = store.finish([a], keep_cards=False)
+    assert store.item(a)["tier"] == "graduated" and store.item(a)["pinned"] is None
+    assert store.item(a)["in_learning_order"] == 0
+    store.undo(change)
+    assert store.item(a)["tier"] == "now" and store.item(a)["pinned"] == stamp and store.item(a)["in_learning_order"] == 1
+    store.finish([b])
+    later = store.finish([b], keep_cards=False)                 # the toast's button, after Finish
+    assert later is not None and store.item(b)["pinned"] is None and store.item(b)["tier"] == "graduated"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_finish_never_writes_a_known_word_or_a_card(language):
+    """Q2-5, Q2-6 (05 §5.7): Finish moves the item to Finished, dated now, and writes nothing else — KnownWord.json,
+    the word lists and the Anki records the store holds are unchanged byte for byte, in either keep-cards choice."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    known = os.path.join(user_files_dir, "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump({"words": [names(language)[1], names(language)[2]]}, f, ensure_ascii=False)
+    with store._writing():
+        store.conn.execute("INSERT INTO anki_links VALUES (?, 1700000000100, 'connect', 't')", (store.ids("now")[0],))
+    before = (open(known, "rb").read(), store.conn.execute("SELECT * FROM anki_links").fetchall(),
+              store.conn.execute("SELECT * FROM anki_changes").fetchall())
+    a, b = store.ids("now")[:2]
+    store.finish([a])
+    store.finish([b], keep_cards=False)
+    assert store.item(a)["tier"] == store.item(b)["tier"] == "graduated" and store.item(a)["graduated_at"]
+    after = (open(known, "rb").read(), store.conn.execute("SELECT * FROM anki_links").fetchall(),
+             store.conn.execute("SELECT * FROM anki_changes").fetchall())
+    assert after == before
+    assert a not in [e["physical_path"] for e in store.schedule()["PHASE_1_NOW"]], "not analysed: never counted"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_put_back_restores_exactly_the_recorded_card_changes(language):
+    """05 §5.7 (D14's recorded default): the re-plan records every card it changes at Finish in `anki_changes`; Put
+    back reads exactly the open records of those items — never another item's, never one already reverted — and marks
+    them reverted. The store keeps the record; Anki's side is the re-plan's."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    store.finish([a, b], keep_cards=False)
+    ids = store.record_anki_changes([(a, "suspend", [11, 12], {"queue": 0}, {"queue": -1}),
+                                     (b, "suspend", [13], {"queue": 0}, {"queue": -1})])
+    open_a = store.anki_changes_of([a])
+    assert [(r["item_id"], r["notes"]) for r in open_a] == [(a, [11, 12])]
+    store.move([a], "now")                                      # Put back
+    assert store.mark_anki_reverted([r["id"] for r in open_a]) == 1
+    assert store.anki_changes_of([a]) == [] and [r["notes"] for r in store.anki_changes_of([b])] == [[13]]
+    assert len(ids) == 2
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_mine_it_too_is_answered_by_the_receipt(language):
+    """05 §5.7 (A2 #31): *Mine it too* records when the user asked; Connect reads it and its receipt answers it (the
+    window shows asked-and-not-mined); undo by the value check."""
+    store = migrated(language)
+    item = store.ids("now")[0]
+    store.finish([item])
+    asked = store.ask_mining([item])
+    row = store.item(item)
+    assert row["mine_asked"] and row["mined_at"] is None
+    store.receipt(item, "2026-10-06T12:30:00Z")
+    row = store.item(item)
+    assert row["mined_at"] == "2026-10-06T12:30:00Z" and row["mined_at"] >= "2026" and row["mine_asked"]
+    store.undo(asked)
+    assert store.item(item)["mine_asked"] is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_import_finished_copies_outside_the_write_lock_and_never_re_adds(language, tmp_path):
+    """05 §5.8: the importer's copying job (no store, no lock) copies files from outside the library into Graduated/,
+    folders keeping their name; one short command records them in Finished, dated *Earlier*, each with its work and a
+    piece; a file already in the library goes to Finished in the store only; the disk sync never re-adds them; one
+    undo takes them out as an Add."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    outside = tmp_path / "finished-before"
+    season = outside / w[90]
+    season.mkdir(parents=True)
+    for n in (1, 2):
+        (season / f"{w[90]}_第{n:02d}話.srt").write_text(f"{w[91]} {n}\n", encoding="utf-8")
+    single = outside / f"{w[92]}.txt"
+    single.write_text(w[93] + "\n", encoding="utf-8")
+    already = store.ids("soon")[0]
+    copied = ls.copy_into_finished(data_dir, [str(season), str(single),
+                                              os.path.join(data_dir, store.item(already)["rel_path"])])
+    assert sorted(copied) == sorted([f"Graduated/{w[90]}/{w[90]}_第01話.srt", f"Graduated/{w[90]}/{w[90]}_第02話.srt",
+                                     f"Graduated/{w[92]}.txt", store.item(already)["rel_path"]])
+    assert season.exists(), "a copy: the user's files stay where they were"
+    change = store.import_finished(copied)
+    assert len(change.added) == 3 and store.item(already)["tier"] == "graduated"
+    for item in change.added + [already]:
+        row = store.item(item)
+        assert row["tier"] == "graduated" and row["graduated_at"] is None and row["work_id"] and row["piece_id"]
+    assert _work(store, change.added[0]) == _work(store, change.added[1]) != _work(store, change.added[2])
+    assert store.sync_disk() is None, "never walked, never re-added"
+    assert store.import_finished(copied) is None
+    store.undo(change)
+    assert all(store.item(i) is None for i in change.added) and store.item(already)["tier"] == "soon"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_each_rule_target_for_hato_youtube_a_channel_and_another_tool(language):
+    """05 §5.12 (Q2-3, G1.2-12): `register` places a drop waiting in New arrivals by the user's rule for its source —
+    hato, YouTube, one channel (`youtube:<id>` over `youtube`), another tool by its producer name — in the same command:
+    top (Current's first row), soon (the first slot below the line), goal, finished, after-show; `wait` and no rule
+    leave it in New arrivals."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    rules = {"hato": "top", "youtube": "goal", "youtube:UC123": "soon", "my-tool": "finished", "another": "wait"}
+    top = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt"), _record("r1"), rules=rules)
+    assert store.ids("now")[0] == top.added[0] and top.rule == "top"
+    yt = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[95]}.srt"), _record("r2", producer="youtube"), rules=rules)
+    assert store.ids("goal")[0] == yt.added[0]
+    ch = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[96]}.srt"),
+                        _record("r3", producer="youtube", channel_id="UC123"), rules=rules)
+    assert store.ids("soon")[0] == ch.added[0], "the channel's line wins; Soon's first row"
+    done = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[97]}.srt"), _record("r4", producer="my-tool"),
+                          rules=rules)
+    assert store.item(done.added[0])["tier"] == "graduated"
+    waits = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[98]}.srt"), _record("r5", producer="another"),
+                           rules=rules)
+    assert store.ids("arrivals") == waits.added
+    show = next(i for i in store.ids("soon") if store.item(i)["parent_folder"] and i != ch.added[0])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    last = [i for i in store.ids("soon") if store.item(i)["rel_path"].rsplit("/", 1)[0] == folder][-1]
+    after = store.register(touch(data_dir, f"{folder}/{w[99]}.srt"), _record("r6", producer="tool"),
+                           rules={"tool": "after-show"})
+    soon = store.ids("soon")
+    assert soon[soon.index(last) + 1] == after.added[0], "after its title's last episode in Current"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rules_off_means_new_arrivals(language):
+    """D30, RD-S16: with no rule (the default: `placing_rules` empty in settings.json) every drop waits in New
+    arrivals — nothing places itself, nothing writes settings.json; a back-fill places by no rule."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    settings = os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json")
+    before = open(settings, "rb").read() if os.path.exists(settings) else None
+    one = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[100]}.srt"), _record("o1"))
+    two = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[101]}.srt"), _record("o2"), backfill=True,
+                         rules={"hato": "top"})
+    assert store.ids("arrivals") == one.added + two.added
+    assert (open(settings, "rb").read() if os.path.exists(settings) else None) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rule_placement_is_the_users_own_and_mined(language):
+    """D30, P1.5-8: a rule the user turned on places the drop as the user's own action — logged as its source's,
+    explicit — so it enters the mine line like any of the user's placements; without a rule it waits, logged as the
+    producer's, never explicit, and nothing mines it there."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    store.register_reader("connect")
+    mark = store.conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
+    placed = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[102]}.srt"), _record("m1"),
+                            rules={"hato": "top"}).added[0]
+    waiting = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[103]}.srt"), _record("m2"),
+                             rules={}).added[0]
+    log = [tuple(r) for r in store.conn.execute("SELECT item_id, kind, by, explicit FROM placement_log WHERE id > ? "
+                                                "ORDER BY id", (mark,))]
+    assert (placed, "placed", "hato", 1) in log and (placed, "entered_mine_line", "hato", 1) in log
+    assert [e for e in log if e[0] == waiting] == [(waiting, "placed", "hato", 0)]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_sync_lands_a_hato_drop_in_new_arrivals(language):
+    """Michi's P2.1 review #6 (K82): with New arrivals on, a file the disk sync finds in hato's drop folder before its
+    `register` waits in New arrivals and goes through the placing rules as `register` does; a later register pairs it
+    where it is. With them off, 2.x's rule: the top of NOW (Q4-11)."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[104]}.srt")
+    first = store.sync_disk()["added"][0]
+    assert store.item(first)["tier"] == "arrivals"
+    change = store.register(os.path.join(data_dir, ls.HATO_FOLDER, f"{w[104]}.srt"), _record("s1"))
+    assert change.added == [] and store.item(first)["tier"] == "arrivals"
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[105]}.srt")
+    import unittest.mock as mock
+    with mock.patch.object(ls, "_placing_rules", return_value={"hato": "top"}):
+        ruled = store.sync_disk()["added"][0]
+    assert store.ids("now")[0] == ruled
+    store.set_library_options(arrivals_on=False)
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[106]}.srt")
+    old = store.sync_disk()["added"][0]
+    assert store.ids("now")[0] == old
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_place_soon_and_after_show(language):
+    """04 §4.2: `place --where soon` is the first slot below the Soon line; `after-show` goes after the title's episode
+    before it in Current, before the next when only later episodes are there, and to Current's top when its title is
+    only in Finished or 6+ Months (Q4-9). Each is one undoable command."""
+    store = migrated(language, shows=2, episodes=4)
+    now = store.ids("now")
+    change = store.place([now[0]], "soon")
+    assert store.ids("soon")[0] == now[0]
+    store.undo(change)
+    assert store.ids("now") == now
+    goal_show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+    work = _work(store, goal_show[0])
+    mates = [i for i in goal_show if _work(store, i) == work]
+    placed = store.place([mates[-1]], "after-show")
+    assert store.ids("now")[0] == mates[-1], "its title only in 6+ Months: Current's top"
+    soon_show = [i for i in store.ids("soon") if store.item(i)["parent_folder"]]
+    mates = [i for i in soon_show if _work(store, i) == _work(store, soon_show[0])]
+    store.move([mates[1]], "goal")
+    store.place([mates[1]], "after-show")
+    soon = store.ids("soon")
+    assert soon[soon.index(mates[-1]) + 1] == mates[1], "after the title's last item in Current (no episode numbers)"
+    assert placed is not None and pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_cards_of_and_made_words(language):
+    """05 §5.6, 04 §4.3 #7: `cards_of` = an item's Anki links ∪ the notes Connect made for it; `record_made` keeps a
+    word's first record (never made again, even with its notes deleted) and records for an item removed meanwhile."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    with store._writing():
+        store.conn.execute("INSERT INTO anki_links VALUES (?, 500, 'miner', 't')", (a,))
+    assert store.record_made(a, [(names(language)[1], [501, 502]), (names(language)[2], [503])], "b1") == \
+        [names(language)[1], names(language)[2]]
+    assert store.record_made(a, [(names(language)[1], [999])], "b2") == []
+    assert store.cards_of([a, b]) == {a: [500, 501, 502, 503], b: []}
+    assert store.made(a)[names(language)[1]] == [501, 502]
+    store.remove([b])
+    assert store.record_made(b, [(names(language)[3], [504])], "b3") == [names(language)[3]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_register_headless_applies_the_callers_rules_and_says_so(language):
+    """05 §5.12 (3.0: the rule inside `register`, the command line's own step goes): `register_headless(rules=)` —
+    the rules the caller read from settings.json — places the drop in the same command and answers which rule did;
+    without rules it waits, as before."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    store.close()
+    placed = ls.register_headless(language, touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[116]}.srt"),
+                                  _record("h1"), data_dir, user_files_dir, rules={"hato": "top"})
+    assert (placed.landed, placed.rule, placed.tier, placed.position) == ("arrivals", "top", "now", 1)
+    waits = ls.register_headless(language, touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[117]}.srt"),
+                                 _record("h2"), data_dir, user_files_dir)
+    assert (waits.landed, waits.rule, waits.tier) == ("arrivals", None, "arrivals")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_another_season_is_another_title(language):
+    """W1.2 §1.3 (a season is a title, its own cover): a record naming the same show in another season starts a title
+    of its own; no season named is the first."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    one = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[118]}.srt"),
+                         _record("s1", show={"title": "Example Show", "season": 1, "episode": 4})).added[0]
+    two = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[119]}.srt"),
+                         _record("s2", show={"title": "Example Show", "season": 2, "episode": 1})).added[0]
+    plain = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[120]}.srt"),
+                           _record("s3", show={"title": "Example Show", "season": None, "episode": 5})).added[0]
+    assert _work(store, one) != _work(store, two) and _work(store, plain) == _work(store, one)
+    store.close()

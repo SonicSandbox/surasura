@@ -98,6 +98,9 @@ def test_a_hato_drop_turns_the_check_off_and_leads_the_next_generate(language):
     journey check's sync (the ✓ turns off), at the top of NOW, and the next Generate reads it first."""
     from app import analyzer
     data_dir, _uf, _doc = _store_library(language)
+    store = ls.open_store(language, data_dir, _uf)
+    store.set_library_options(arrivals_on=False)          # New arrivals off: the drop lands in NOW (2.x, Q4-11)
+    store.close()
     argv = _generated(language)
     assert analyzer.journey_is_current(argv, language) is True
     rel = f"{ls.HATO_FOLDER}/{names(language)[40]}.srt"

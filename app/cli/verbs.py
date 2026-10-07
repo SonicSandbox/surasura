@@ -638,6 +638,13 @@ def _junban_dry_run(lang, junban_settings, reposition):
             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}
 
 
+def _reviewing(report):
+    """Did Junban or Backfill stop because you are reviewing — asked again inside the writer's hold, or by the writer
+    lock after a wait (`anki_connect.REVIEWING`)? Then it's `anki-busy`, never another program's `busy`."""
+    from app import anki_connect
+    return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
+
+
 def _junban_auto(args, lang, junban_settings, auto):
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False)
@@ -664,7 +671,7 @@ def _junban_auto(args, lang, junban_settings, auto):
                        ask="choose a deck in 順")
     if outcome == "anki-closed":
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
-    if outcome == "reviewing":
+    if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
         raise CliError("anki-busy", "You're reviewing in Anki. Surasura reorders once you've finished.")
     if outcome == "busy":
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
@@ -787,6 +794,8 @@ def backfill(args):
                                    wait=args.wait or 0.0, verb="surasura-cli backfill")
     finally:
         session.close()
+    if report.get("reviewing") or (report.get("busy") and _reviewing(report)):
+        raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
     if report.get("busy"):
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])

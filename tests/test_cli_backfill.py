@@ -163,6 +163,24 @@ def test_never_while_you_review(anki):
     assert code == 3 and line["code"] == "anki-busy" and anki.fake.note_writes == []
 
 
+def test_a_review_started_while_it_planned_is_never_written_into(anki):
+    """The verb asks before it plans; planning takes seconds, so Backfill asks again inside the writer's hold, right
+    before its snapshot (review P1.4-adversary #4): `anki-busy`, nothing written, no run snapshot."""
+    from modules.junban import undo
+    seen = []
+
+    def answer(self):
+        seen.append(1)
+        return len(seen) > 1
+    anki.fake.__class__ = type("ReviewStartsLater", (type(anki.fake),),
+                               {"reviewing": property(answer, lambda self, value: None)})
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", TAG)
+    assert code == 3 and line["code"] == "anki-busy", line
+    assert len(seen) == 2 and anki.fake.note_writes == []
+    assert not os.path.isdir(undo.runs_folder("ja")) or os.listdir(undo.runs_folder("ja")) == []
+
+
 def test_never_while_the_backfill_window_is_open(anki):
     gui = pytest.importorskip("modules.junban.backfill_gui")
     window = SimpleNamespace(_closing=False, _window_lock=None, _window_lock_guard=threading.Lock(),

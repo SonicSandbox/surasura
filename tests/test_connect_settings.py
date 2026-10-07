@@ -42,3 +42,17 @@ def test_a_dashboard_save_keeps_what_the_user_set():
     assert saved["connect_mine_words"] == "i1" and saved["connect_send_grammar"] is False
     assert saved["connect_anki_miner_path"].endswith("AnkiMiner.exe")
     assert "connect_anki_miner_profile" not in saved
+
+
+def test_a_dashboard_save_never_writes_junbans_preview_keys_and_keeps_them_once_set():
+    """P1.4-1's two keys show in 順 only while Connect's preview is on: a dashboard save never writes their defaults
+    into a settings.json without them (review P1.4-adversary #6), and keeps what the user set."""
+    import pytest
+    pytest.importorskip("modules.junban")
+    _write({"target_language": "ja", "enable_junban": True, "junban_deck": "TheBank"})
+    saved = _dashboard_save()
+    assert saved["junban_deck"] == "TheBank", "Junban's other keys are carried as before"
+    assert "junban_own_tag" not in saved and "junban_order_all" not in saved
+    _write({"target_language": "ja", "enable_junban": True, "junban_own_tag": "immersion", "junban_order_all": True})
+    saved = _dashboard_save()
+    assert saved["junban_own_tag"] == "immersion" and saved["junban_order_all"] is True

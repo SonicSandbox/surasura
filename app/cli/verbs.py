@@ -619,23 +619,43 @@ def junban(args):
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
+    job = numbering_job(junban_settings)
     if args.dry_run:
-        return _junban_dry_run(lang, junban_settings, reposition)
-    return _junban_auto(args, lang, junban_settings, auto)
+        return _junban_dry_run(lang, junban_settings, reposition, job)[0]
+    return _junban_auto(args, lang, junban_settings, auto, job)[0]
 
 
-def _junban_dry_run(lang, junban_settings, reposition):
+def numbering_job(junban_settings):
+    """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
+    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
+    on (`junban_replan_preview`, its switch in 順: E3.1); None — 2.5's dense block — while it's off, so the command line
+    and the window never renumber each other's deck."""
+    if (junban_settings or {}).get("junban_replan_preview") is not True:
+        return None
+    from modules.junban import spaced
+    return spaced.Job(automatic=True)
+
+
+def _numbering(stats, job):
+    """How the run numbered its cards, for `resort`'s answer: `dense` (2.5's block), `full` (a deck spaced out at
+    once) or `delta` (only what changed)."""
+    if job is None:
+        return "dense"
+    return str(((stats or {}).get("numbering") or {}).get("kind") or "dense").lower()
+
+
+def _junban_dry_run(lang, junban_settings, reposition, job=None):
     from app import anki_connect
     if not anki_connect.probe(reposition._url(junban_settings)).get("ok"):
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     try:
-        writes, stats = reposition.dry_run(junban_settings)
+        writes, stats = reposition.dry_run(junban_settings, job=job)
     except reposition.AnkiError as e:
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     if stats.get("problems"):
         raise CliError("needs-you", stats["problems"][0], ask=stats["problems"][0])
-    return {"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
-            "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}
+    return ({"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
+             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}, stats)
 
 
 def _reviewing(report):
@@ -645,11 +665,12 @@ def _reviewing(report):
     return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
 
 
-def _junban_auto(args, lang, junban_settings, auto):
+def _junban_auto(args, lang, junban_settings, auto, job=None):
+    """The automatic reorder, headless -> (its answer, the run's stats or {})."""
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False)
     if why is not None:
-        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}
+        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}, {}
     # The 順 window holds `junban-window` while open: looked at (never held, so a window opened meanwhile still takes
     # it), and waited for up to --wait.
     deadline = time.monotonic() + max(0.0, args.wait or 0.0)
@@ -664,7 +685,7 @@ def _junban_auto(args, lang, junban_settings, auto):
     from modules.junban import connect, undo
     run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
     done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
-                        run_id=run_id)
+                        run_id=run_id, job=job)
     outcome, report = done["outcome"], done.get("report") or {}
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
@@ -678,7 +699,7 @@ def _junban_auto(args, lang, junban_settings, auto):
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
     if outcome == "list-stale":
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
-                "skipped": "the list is out of date: Generate first"}
+                "skipped": "the list is out of date: Generate first"}, {}
     if outcome in ("refused", "failed"):
         problem = (report.get("problems") or [done.get("error") or "it could not finish"])[0]
         raise CliError("failed", f"Junban did not make any changes: {problem}")
@@ -689,8 +710,49 @@ def _junban_auto(args, lang, junban_settings, auto):
         undo_id = run_id if snapshot else None
     else:
         undo_id = os.path.basename(snapshot) if snapshot and written else None
-    return {"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
-            "not_on_list": stats.get("unmatched", 0), "undo": undo_id}
+    return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
+             "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+
+
+# --------------------------------------------------------------------------- #
+# resort (P2.2; P0.3 03-verbs: "Junban pins on spaced numbers"; HC-N7 as amended)
+# --------------------------------------------------------------------------- #
+def resort_args(parser):
+    add_language(parser)
+    add_wait(parser)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="the re-sort the 順 window would preview, numbered as the run would; writes nothing")
+
+
+def resort(args):
+    """Re-sort Anki's new cards now: one Junban run over its one deck — the cards of the items you chose *Study its
+    cards first* for go first (3.0; none in 2.x, ✅ E1.3-3), then Junban's order — positions only, numbered by the one
+    rule every writer follows (`numbering_job`). Un-pinning is the store's `unpin`, never this (HC-N7 as amended:
+    nothing pins or un-pins by itself). The automatic reorder's body (`junban --auto`): every guard, and its own run
+    snapshot while the Connect preview is on. 2.x: only while that preview is on (P0.3 04 §5)."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    idle = {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "pinned_first": 0, "numbering": None,
+            "undo": None}
+    if loaded.get("connect_enabled") is not True:
+        return dict(idle, skipped="the Connect preview is off")
+    try:
+        from modules.junban import auto, reposition
+    except ImportError:
+        return dict(idle, skipped="junban absent")
+    junban_settings = _junban_settings(loaded, lang)
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return dict(idle, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
+    job = numbering_job(junban_settings)
+    if args.dry_run:
+        answer, stats = _junban_dry_run(lang, junban_settings, reposition, job)
+    else:
+        answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
+    if answer.get("skipped"):
+        return dict(idle, **answer)
+    answer.update(pinned_first=int((stats or {}).get("pinned") or 0), numbering=_numbering(stats, job))
+    return answer
 
 
 # --------------------------------------------------------------------------- #

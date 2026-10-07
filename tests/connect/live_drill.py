@@ -29,12 +29,14 @@ def _args():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--profile", required=True)
     ap.add_argument("--deck", required=True)
-    ap.add_argument("--anki-miner", required=True, help="Anki Miner's program")
-    home = ap.add_mutually_exclusive_group(required=True)
+    ap.add_argument("--steps", default=None,
+                    help="P1.4's drill instead (row 1.4.9): junban,backfill on test notes of its own — no Anki Miner")
+    ap.add_argument("--anki-miner", help="Anki Miner's program")
+    home = ap.add_mutually_exclusive_group()
     home.add_argument("--am-home", help="a test copy's home (ANKI_MINER_HOME)")
     home.add_argument("--own", action="store_true", help="the user's own Anki Miner and home (his recorded OK only)")
-    ap.add_argument("--subtitle", required=True)
-    ap.add_argument("--video", required=True)
+    ap.add_argument("--subtitle")
+    ap.add_argument("--video")
     ap.add_argument("--words", type=int, default=5, help="how many words to make cards for")
     ap.add_argument("--url", default="http://127.0.0.1:8765")
     ap.add_argument("--root", default=os.path.join(REPO, ".p13-drill"),
@@ -49,8 +51,12 @@ def refuse(why):
 
 def main():
     a = _args()
-    if a.profile != "DevTest" or a.deck != "DevTest":
+    if a.profile != "DevTest" or not a.deck.endswith("DevTest"):
         refuse("the drill runs on the DevTest profile and deck only")
+    if a.steps:
+        return drill_p14(a)
+    if a.deck != "DevTest" or not a.anki_miner or not a.subtitle or not a.video or not (a.am_home or a.own):
+        refuse("P1.3's drill needs --deck DevTest, --anki-miner, --am-home or --own, --subtitle and --video")
     own = os.path.realpath(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "AnkiMiner"))
     if not a.own:
         home = os.path.realpath(a.am_home)
@@ -136,6 +142,120 @@ def main():
         return 1
     if not made or after != selected:
         print("FAILED: " + ("no card was made" if not made else "the selected profile changed"))
+        return 1
+    print("DRILL PASSED")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# P1.4's drill (row 1.4.9): Junban and Backfill as Connect runs them, on test notes of its own
+# --------------------------------------------------------------------------- #
+# (word, its sentence with no bold mark): words of the fixture list, conjugated where a verb is (K56)
+P14_NOTES = [("冒険", "冒険が始まった。"), ("散歩", "毎朝散歩した。"), ("走る", "毎朝公園まで走った。"),
+             ("図書館", "図書館で本を読んだ。"), ("眼鏡", "新しい眼鏡を買った。")]
+
+
+def drill_p14(a):
+    """`--steps junban,backfill`: on DevTest only, holding Anki's machine lock (with-lock.sh anki) and with Sonic's OK.
+
+    Adds five new notes tagged `surasura::connect::test-<run id>` to the deck, then — Surasura in a scratch root, the
+    Connect preview on — runs Connect's ordering step (`auto.reorder`, positions only, its own snapshot) and Connect's
+    Backfill of the tag (the source field, K40), checks what each wrote, puts both back by their run snapshots and
+    checks every card of the deck sits where it sat before. Then deletes the tagged notes and counts them back to 0."""
+    import csv
+    import json
+    import shutil
+    root = os.path.abspath(a.root.replace(".p13-drill", ".p14-drill"))
+    if os.path.isdir(root):
+        shutil.rmtree(root)
+    os.makedirs(os.path.join(root, "results"))
+    os.makedirs(os.path.join(root, "User Files", "ja"))
+    os.environ["SURASURA_TEST_ROOT"] = root
+    os.environ["APPDATA"] = os.path.join(root, "appdata")     # no one's token store or パターン data: a scratch one
+    os.environ.pop("SURASURA_NO_ANKI_SYNC", None)
+    sys.path.insert(0, REPO)
+    from app import anki_connect
+    from modules.junban import auto, backfill, reposition, undo
+
+    steps = {s.strip() for s in a.steps.split(",") if s.strip()}
+    active = anki_connect.invoke("getActiveProfile", a.url, timeout=10)
+    if active != a.profile:
+        refuse(f'Anki is open on profile "{active}", not {a.profile}')
+    models = anki_connect.invoke("modelNames", a.url) or []
+    if "Lapis" not in models:
+        refuse("DevTest has no Lapis note type")
+    lapis = anki_connect.invoke("modelFieldNames", a.url, modelName="Lapis") or []
+    source_field = next((f for f in ("MiscInfo", "MigakuCardId") if f in lapis), None)
+    shutil.copy2(os.path.join(REPO, "tests", "Test Resources", "ja", "expected_output.csv"),
+                 os.path.join(root, "results", "priority_learning_list.csv"))
+    with open(os.path.join(root, "results", "priority_learning_list.csv"), "a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        for word, _sentence in P14_NOTES:       # every drill word on the list, at its back
+            writer.writerow([word, word] + [""] * 3)
+    settings = {"target_language": "ja", "anki_connect_url": a.url, "connect_enabled": True, "enable_junban": True,
+                "junban_scope": "deck", "junban_deck": a.deck, "junban_order": "priority", "junban_unlisted": "back",
+                "junban_backfill_deck": a.deck, "junban_backfill_fills": ["patterns"]}
+    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False)
+    from app import settings_manager
+    loaded = dict(settings_manager.load_settings(), target_language="ja")
+
+    run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    tag = f"surasura::connect::test-{run_id}"
+    before = {}
+    for card in anki_connect.cards_info(a.url, anki_connect.find_cards(a.url, f'deck:"{a.deck}" is:new')):
+        before[card["cardId"]] = (card["due"], card["queue"])
+    notes = [{"deckName": a.deck, "modelName": "Lapis", "tags": [tag],
+              "fields": {lapis[0]: word, **({"Sentence": sentence} if "Sentence" in lapis else {})},
+              "options": {"allowDuplicate": True}} for word, sentence in P14_NOTES]
+    failed = []
+    try:
+        with anki_connect.writer("P1.4 drill: test notes", wait=60):
+            made = [n for n in anki_connect.invoke("addNotes", a.url, notes=notes) or [] if isinstance(n, int)]
+        print(f"Anki {active} · deck {a.deck} · {tag} · {len(made)} test notes made")
+        if "junban" in steps:
+            reorder_id = undo.new_run_id("reorder")
+            done = auto.reorder(loaded, list_current=True, positions_only=True, run_id=reorder_id)
+            report = done.get("report") or {}
+            print(f"junban --auto: {done['outcome']} · moved {len(report.get('written') or [])} · undo {reorder_id}")
+            if done["outcome"] != "ran" or any((report.get("later") or {}).values()):
+                failed.append(f"junban: {done['outcome']} {report.get('later')}")
+            put = reposition.restore_run(loaded, reorder_id, wait=60)
+            print(f"  restore: {put['message']}")
+            if not put["ok"]:
+                failed.append(f"junban restore: {put['problems']}")
+        if "backfill" in steps:
+            session = backfill.Session(loaded)
+            fill_id = undo.new_run_id("backfill")
+            source = ("Surasura P1.4 drill · " + run_id, "Lapis", source_field) if source_field else None
+            try:
+                report = backfill.run_named(loaded, session, made, source=source, run_id=fill_id, wait=60)
+            finally:
+                session.close()
+            print(f"backfill: {report['message']} · skipped {report['skipped']} · undo {fill_id}")
+            if not report["ok"] or (source and not report["filled"]):
+                failed.append(f"backfill: {report}")
+            put = backfill.restore_run(loaded, fill_id, wait=60)
+            print(f"  restore: {put['message']}")
+            if not put["ok"]:
+                failed.append(f"backfill restore: {put['problems']}")
+        now = {card["cardId"]: (card["due"], card["queue"]) for card in
+               anki_connect.cards_info(a.url, list(before))}
+        moved = sorted(c for c, was in before.items() if now.get(c) != was)
+        print(f"the deck's own {len(before)} new cards: {len(moved)} not back where they were")
+        if moved:
+            failed.append(f"cards not back: {moved[:10]}")
+    finally:
+        with anki_connect.writer("P1.4 drill teardown", wait=60):
+            ids = anki_connect.find_notes(a.url, f'"tag:{tag}"')
+            if ids:
+                anki_connect.invoke("deleteNotes", a.url, notes=ids)
+        left = anki_connect.find_notes(a.url, f'"tag:{tag}"')
+        print(f"deleted {len(ids)}; left with the tag: {len(left)}")
+        if left:
+            failed.append(f"notes left with {tag}: {left}")
+    if failed:
+        print("FAILED: " + " | ".join(failed))
         return 1
     print("DRILL PASSED")
     return 0

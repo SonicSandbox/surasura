@@ -224,6 +224,7 @@ def _junban_panel_save(**changes):
                             _ready_first_value=lambda: s["junban_ready_first"],
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
+                            _own_values=lambda: {},         # P1.4-1's row: absent with the Connect preview off
                             _write=MagicMock())
     JunbanGui._save_scope(panel)
     panel._write.assert_not_called()
@@ -829,6 +830,7 @@ PLACED = {
     "junban_backfill_fields": "neither", "junban_backfill_fills": "neither", "junban_backfill_note_languages": "neither",
     "junban_backfill_replace": "neither", "junban_chunk_size": "neither", "junban_deck": "neither",
     "junban_frequency_field": "neither", "junban_later_flag": "neither", "junban_later_suspend": "neither",
+    "junban_own_tag": "neither", "junban_order_all": "neither",      # P1.4-1: Junban reads them, no run does
     "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
     "junban_tag_markers": "neither", "junban_unlisted": "neither",

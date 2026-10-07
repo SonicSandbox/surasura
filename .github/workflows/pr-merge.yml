@@ -1,0 +1,65 @@
+# Adding the `reviewed` label merges a pull request into 3.0-dev or 2.x-dev, on ubuntu, without running the tests
+# again: the session adds it after its local review (the register is kept outside this repo). It merges the head commit
+# only if pr.yml's run on that commit passed (docs only: that run passed with no test job), and only if the pull
+# request still carries the label, isn't a draft and hasn't moved. A label added before the tests pass, or on a draft,
+# merges nothing and is taken off again: add it once they have. main takes only pull requests the owner merges.
+name: PR merge
+run-name: "PR #${{ github.event.pull_request.number }} merge (into ${{ github.base_ref }})"
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    if: >-
+      github.event.label.name == 'reviewed' &&
+      (github.base_ref == '3.0-dev' || github.base_ref == '2.x-dev')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the head commit, if its tests passed and the pull request still qualifies now
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LABELLED: ${{ github.event.pull_request.head.sha }}
+        run: |
+          read -r base head draft labelled < <(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isDraft,labels \
+            --jq '[.baseRefName, .headRefOid, (.isDraft|tostring), ([.labels[].name] | index("reviewed") != null | tostring)] | join(" ")')
+          echo "now: base=$base head=$head draft=$draft reviewed=$labelled; labelled at $LABELLED"
+          refuse() {     # the label comes off, so adding it again is a new `labeled` event
+            gh pr edit "$PR" --repo "$REPO" --remove-label reviewed || true
+            echo "::error::$1: not merging, and the reviewed label is off. Add it again once that's fixed."; exit 1
+          }
+          case "$base" in 3.0-dev|2.x-dev) ;; *) echo "::notice::base is $base, not an integration branch: not merging"; exit 0;; esac
+          if [ "$labelled" != true ] || [ "$head" != "$LABELLED" ]; then
+            echo "::notice::changed since the label was added (a new push takes it off): not merging"; exit 0
+          fi
+          if [ "$draft" != false ]; then refuse "a draft"; fi
+          # pr.yml's newest run for this pull request (by its run name) on this head commit, into this base.
+          read -r run status conclusion < <(gh api "repos/$REPO/actions/workflows/pr.yml/runs?event=pull_request&head_sha=$head&per_page=100" \
+            --jq "[.workflow_runs[] | select(.display_title == \"PR #$PR tests (into $base)\")] | (max_by(.run_number) // {}) | \"\(.id // \"none\") \(.status // \"-\") \(.conclusion // \"-\")\"")
+          echo "tests: run $run, $status, $conclusion"
+          if [ "$run" = none ]; then
+            refuse "no test run of $head into $base yet (wait for it to pass; if the base changed, or it ran before this workflow, close and reopen the pull request)"
+          fi
+          if [ "$status" != completed ] || [ "$conclusion" != success ]; then
+            refuse "the tests on $head into $base haven't passed (run $run: $status, $conclusion)"
+          fi
+          tests=$(gh api "repos/$REPO/actions/runs/$run/jobs" --jq '[.jobs[] | select(.name == "tests") | .conclusion] | join(" ")')
+          case "$tests" in
+            success) echo "the tests passed on $head (run $run)";;
+            skipped) echo "docs only: no test run needed (run $run)";;
+            *) refuse "run $run's tests job: '$tests'";;
+          esac
+          gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$head" || refuse "the merge failed (see above)"

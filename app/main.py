@@ -211,9 +211,11 @@ class ToolTip:
         if tw:
             tw.destroy()
 
-# Junban's keys a dashboard save carries only as settings.json holds them — never a default into a 2.5 user's file: the
-# fast re-plan's preview switch (E1.1 04 §1; 順's option, saved once touched).
-JUNBAN_AS_WRITTEN = ("junban_replan_preview", "junban_replan_language", "junban_replan_deck")
+# Junban's keys a dashboard save carries only as settings.json holds them — never a default into a 2.5 user's file:
+# Connect's preview's (P1.4-1: your own cards' tag, "order all"; shown in 順 only while it is on) and the fast
+# re-plan's preview switch, its language and deck (E1.1 04 §1; 順's option, saved once touched).
+JUNBAN_AS_WRITTEN = ("junban_own_tag", "junban_order_all",
+                     "junban_replan_preview", "junban_replan_language", "junban_replan_deck")
 
 
 def carry_as_written(out, keys):
@@ -3126,7 +3128,7 @@ class MasterDashboardApp:
             # into a settings.json that lacks it (or one that can't be read)
             as_written = ["connect_mine_words", "connect_send_grammar", "connect_anki_miner_path",
                           "connect_anki_miner_profile", "connect_enabled", "placing_rules",
-                          # the sync rule's minute (E1.1 04 §3, 順's "Sync AnkiWeb") and the preview's switch
+                          # the sync rule's minute (E1.1 04 §3, 順's "Sync AnkiWeb") and Junban's as-written keys
                           "anki_sync_delay_min", *JUNBAN_AS_WRITTEN]
 
             def build():

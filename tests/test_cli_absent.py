@@ -53,6 +53,8 @@ def test_the_command_line_runs_with_every_module_removed():
     for how in ("--dry-run", "--auto"):
         code, line = _cli_without_modules("junban", how)
         assert code == 0 and line["skipped"] == "junban absent" and line["moves"] == 0, (how, line)
+    code, line = _cli_without_modules("backfill", "--tag", "surasura::connect::job-1")         # P1.4 row 1.4.7
+    assert code == 0 and line["skipped"] == "backfill absent" and line["filled"] == 0, line
     code, line = _cli_without_modules("generate")
     assert code == 0 and line["ran"] is True
     code, line = _cli_without_modules("list", "--limit", "3")

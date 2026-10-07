@@ -638,6 +638,13 @@ def _junban_dry_run(lang, junban_settings, reposition):
             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}
 
 
+def _reviewing(report):
+    """Did Junban or Backfill stop because you are reviewing — asked again inside the writer's hold, or by the writer
+    lock after a wait (`anki_connect.REVIEWING`)? Then it's `anki-busy`, never another program's `busy`."""
+    from app import anki_connect
+    return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
+
+
 def _junban_auto(args, lang, junban_settings, auto):
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False)
@@ -653,14 +660,18 @@ def _junban_auto(args, lang, junban_settings, auto):
                                       "it's closed.")
         time.sleep(locks.POLL)
     argv = run_args.analyzer_args(junban_settings, lang, headless=True)
-    done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True)
+    # Connect's preview (P1.4 row 1.4.2): the run keeps a snapshot of its own, never the window's Restore point.
+    from modules.junban import connect, undo
+    run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
+    done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
+                        run_id=run_id)
     outcome, report = done["outcome"], done.get("report") or {}
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
                        ask="choose a deck in 順")
     if outcome == "anki-closed":
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
-    if outcome == "reviewing":
+    if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
         raise CliError("anki-busy", "You're reviewing in Anki. Surasura reorders once you've finished.")
     if outcome == "busy":
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
@@ -674,9 +685,127 @@ def _junban_auto(args, lang, junban_settings, auto):
     stats = report.get("stats") or {}
     written = report.get("written") or []
     snapshot = report.get("snapshot")
+    if run_id is not None:
+        undo_id = run_id if snapshot else None
+    else:
+        undo_id = os.path.basename(snapshot) if snapshot and written else None
     return {"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
-            "not_on_list": stats.get("unmatched", 0),
-            "undo": os.path.basename(snapshot) if snapshot and written else None}
+            "not_on_list": stats.get("unmatched", 0), "undo": undo_id}
+
+
+# --------------------------------------------------------------------------- #
+# backfill (P1.4 row 1.4.7)
+# --------------------------------------------------------------------------- #
+def backfill_args(parser):
+    add_language(parser)
+    add_wait(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--tag", help="the notes carrying this tag (a Connect job's: surasura::connect::<job>)")
+    which.add_argument("--notes", help="note ids, comma-separated")
+    parser.add_argument("--dry-run", action="store_true", help="what it would fill; writes nothing")
+
+
+def _note_ids(text):
+    ids = []
+    for part in str(text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise CliError("usage", f"--notes takes note ids, comma-separated: {part!r} isn't one.")
+        ids.append(int(part))
+    if not ids:
+        raise CliError("usage", "--notes names no note.")
+    return ids
+
+
+def _job_source(tag, lang):
+    """`(source text, note type, field)` for a Connect job's notes (K40), read from the job's own run folder: the video
+    its run file names (the show is its folder, the episode its name) and the source field Anki Miner's settings export
+    maps — or None when the tag is no job's, or the folder doesn't say."""
+    from app.connect import fields, runfile
+    if not str(tag or "").lower().startswith(runfile.TAG_PREFIX):
+        return None
+    job = tag[len(runfile.TAG_PREFIX):]
+    if not job or not all(ch.isalnum() or ch in "-_" for ch in job):
+        return None
+    run_dir = os.path.join(_connect_folder(), "runs", job)
+    try:
+        with open(os.path.join(run_dir, "run-1.json"), "r", encoding="utf-8") as f:
+            video = (json.load(f).get("episodes") or [{}])[0].get("video_file")
+        with open(os.path.join(run_dir, "settings-export.json"), "r", encoding="utf-8") as f:
+            export = json.load(f)
+        mapping = fields.from_export(export, lang)
+    except (OSError, ValueError, AttributeError, IndexError, fields.NeedsYou):
+        return None
+    from modules.junban import backfill as filling
+    text = filling.source_text(video)
+    return (text, mapping.note_type, mapping.source) if text and mapping.source else None
+
+
+def backfill(args):
+    """Backfill for the notes a Connect job made (`--tag`) or named ones (`--notes`): new cards only, empty fields
+    only, Backfill's one deck, the source field (K40); its own undo snapshot. Only while the Connect preview is on;
+    never while the Backfill window is open, on "All decks" or while you review; each note re-read before it's written
+    (§7.2). Junban not installed: `skipped` (RD-S10)."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    out = {"language": lang, "notes": 0, "filled": 0, "undo": None}
+    try:
+        from modules.junban import backfill as filling, connect, undo
+    except ImportError:
+        return dict(out, skipped="backfill absent")
+    if not connect.preview_on(loaded):
+        return dict(out, skipped="the Connect preview is off")
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
+        return dict(out, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
+    ids = _note_ids(args.notes) if args.notes is not None else None
+    fill_settings = _junban_settings(loaded, lang)
+    if not filling._deck(fill_settings):
+        raise CliError("needs-you", "Backfill runs for one deck only: choose one in the Backfill window.",
+                       ask="choose a deck in Backfill")
+    from app import anki_connect, locks
+    deadline = time.monotonic() + max(0.0, args.wait or 0.0)
+    while locks.in_use("backfill-window"):
+        if time.monotonic() >= deadline:
+            raise contract.busy_error("backfill-window", locks.read_holder("backfill-window"),
+                                      "The Backfill window is open: Surasura leaves the fill to you there. Try again "
+                                      "once it's closed.")
+        time.sleep(locks.POLL)
+    url = filling._url(fill_settings)
+    if not anki_connect.probe(url).get("ok"):
+        raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
+    try:
+        if anki_connect.invoke("guiReviewActive", url, timeout=5) is True:
+            raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
+        if ids is None:
+            ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')
+    except anki_connect.AnkiError as e:
+        raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
+    out["notes"] = len(ids)
+    if not ids:
+        return dict(out, skipped={})
+    source = _job_source(args.tag, lang) if args.tag else None
+    run_id = None if args.dry_run else undo.new_run_id("backfill", lang)
+    session = filling.Session(fill_settings)
+    try:
+        report = filling.run_named(fill_settings, session, ids, source=source, dry_run=args.dry_run, run_id=run_id,
+                                   wait=args.wait or 0.0, verb="surasura-cli backfill")
+    finally:
+        session.close()
+    if report.get("reviewing") or (report.get("busy") and _reviewing(report)):
+        raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
+    if report.get("busy"):
+        raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
+                                  (report.get("problems") or ["Another program is writing to Anki."])[0])
+    if not report.get("ok"):
+        problem = (report.get("problems") or ["it could not finish"])[0]
+        raise CliError("failed", f"Nothing was filled: {problem}")
+    if args.dry_run:
+        return dict(out, filled=report.get("planned", 0), skipped=report.get("skipped") or {}, dry_run=True)
+    return dict(out, filled=len(report.get("filled") or []), skipped=report.get("skipped") or {},
+                undo=report.get("undo"))
 
 
 

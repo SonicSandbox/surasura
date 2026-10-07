@@ -99,7 +99,9 @@ def test_the_quick_verbs_load_nothing_heavy_and_no_tokenizer(generated, argv):
     assert code == 0 and not loaded & set(NOT_EVEN_TEXT), loaded
 
 
-@pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"]])
+@pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"],
+                                  ["backfill", "--tag", "surasura::connect::job-1"],
+                                  ["backfill", "--notes", "1789712000000", "--dry-run"]])
 def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated, argv):
     """`generate` with nothing changed answers without pandas; the Anki verbs reach Anki through the standard library
     (here with Anki switched off for the run, as the suites keep it)."""

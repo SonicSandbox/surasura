@@ -1,6 +1,7 @@
 
 import csv
 import importlib
+import json
 import os
 import shutil
 import sys
@@ -320,6 +321,20 @@ def _isolate_analyzer_module_state():
 
 _PROF = {"file": None, "writer": None, "t0": None, "prev_rss": 0.0, "n": 0, "outcome": {}}
 
+# Each test file's time (setup + call + teardown), written at the end of the session to SURASURA_TEST_TIMES when
+# `run_tests.py --all` runs the core suite in shards: it packs the next run's shards by them.
+_TIMES = {"path": os.environ.get("SURASURA_TEST_TIMES"), "files": {}}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _TIMES["path"]:
+        return
+    try:
+        with open(_TIMES["path"], "w", encoding="utf-8") as f:
+            json.dump(_TIMES["files"], f)
+    except OSError:
+        pass
+
 
 def _init_proc_stats():
     """Bind the psapi/kernel32 calls once. Returns a callable, or None where unavailable.
@@ -410,6 +425,9 @@ def pytest_runtest_logstart(nodeid, location):
 
 
 def pytest_runtest_logreport(report):
+    if _TIMES["path"]:
+        path = report.nodeid.split("::")[0]
+        _TIMES["files"][path] = _TIMES["files"].get(path, 0.0) + report.duration
     # Worst outcome across setup/call/teardown wins.
     if report.failed:
         _PROF["outcome"][report.nodeid] = "FAILED"

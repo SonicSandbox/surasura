@@ -174,7 +174,10 @@ def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, m
     install.mkdir()
     exe = install / "Surasura.exe"
     shutil.copy(sys.executable, exe)
-    stray = subprocess.Popen([str(exe), "-c", "import time; time.sleep(2)"])
+    # It runs until the test says so, not for a fixed 2 s: on a loaded machine the dashboard's steps above the listing
+    # took longer, and the program had ended before it was looked for.
+    go = tmp_path / "go"
+    stray = subprocess.Popen([str(exe), "-c", f"import os, time; [time.sleep(0.05) for _ in iter(lambda: os.path.exists({str(go)!r}), True)]"])
     procs.append(stray)
     monkeypatch.setattr(updater, "_install_images", lambda: [str(exe), str(install / "surasura-cli.exe")])
     dash._do_auto_update(MagicMock())
@@ -182,6 +185,7 @@ def test_the_update_waits_for_a_process_found_only_by_its_program(dash, procs, m
     assert "Another Surasura window" in _texts(_wait_window(dash))
     assert [c["pid"] for c in updater.running_children([], images=[str(exe)])] == [stray.pid]
     assert dash.calls["armed"] == []
+    go.write_text("", encoding="utf-8")
     stray.wait(timeout=10)
     assert _pump(dash, lambda: dash.calls["armed"])
     assert dash.calls["destroyed"] == 1
@@ -502,6 +506,9 @@ def test_no_anki_sync_starts_while_an_update_waits(dash, monkeypatch):
 
 _TK_CHILD = """
 import pathlib, sys, tkinter as tk
+sys.path.insert(0, sys.argv[3])
+from tests.quiet_windows import quiet_windows
+quiet_windows()                 # on its parent's desktop: the updater's window scan sees only that one
 out = pathlib.Path(sys.argv[1])
 root = tk.Tk()
 root.title("コンテンツマネージャー")
@@ -516,7 +523,8 @@ root.mainloop()
 
 def _tk_child(tmp_path, behaviour):
     out = tmp_path / f"{behaviour}.txt"
-    p = _REAL_POPEN([sys.executable, "-c", _TK_CHILD, str(out), behaviour])
+    p = _REAL_POPEN([sys.executable, "-c", _TK_CHILD, str(out), behaviour,
+                     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))])
     end = time.monotonic() + 15
     while not os.path.exists(str(out) + ".ready") and time.monotonic() < end:
         time.sleep(0.05)

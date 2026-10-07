@@ -21,13 +21,18 @@ GRAMMAR = {"だ", "です", "為る", "の", "は", "を", "に", "が", "て", 
 
 
 @pytest.fixture(scope="module")
-def words():
+def words(tmp_path_factory):
+    # A module fixture runs before each test's own root (conftest): without one of its own, reading the episode read
+    # the user's real token store for the library's name tables, and every copy's run read the same one.
+    patch = pytest.MonkeyPatch()
+    patch.setenv("SURASURA_TEST_ROOT", str(tmp_path_factory.mktemp("words_root")))
     analyzer.SANITIZE_JA = True
     try:
         read = cues.read(EPISODE, "ja")
         chosen = pick.pick(read, cues.tokens(read, "ja"), "ja", lambda key: key[0] in GRAMMAR, mode="unknown")
     finally:
         analyzer.SANITIZE_JA = False
+        patch.undo()
     return chosen["words"][:6]
 
 

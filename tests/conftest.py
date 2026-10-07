@@ -1,6 +1,7 @@
 
 import csv
 import importlib
+import json
 import os
 import shutil
 import sys
@@ -12,7 +13,10 @@ from unittest.mock import patch
 # Ensure the project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.quiet_windows import quiet_windows
 from tests.tk_on_github import skip_tk_tests
+
+quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
 
 def pytest_collection_modifyitems(items):
@@ -189,6 +193,26 @@ def _isolate_token_store(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_destroyed_default_root():
+    """A test that makes its root tkinter's default with `monkeypatch.setattr(tk, "_default_root", root)` right after
+    `tk.Tk()` has it put back at teardown as `root` itself (Tk() had just made it the default), destroyed by then —
+    nine files do. A later file's Font() or Variable() with no master then fails "application has been destroyed",
+    but only when no other Tk was made in between: the core suite in shards met it (test_undo_logic after
+    test_ignore_names). Before each test, a destroyed default root is cleared (before, not after: monkeypatch's own
+    teardown, which puts it back, can run after any other fixture's)."""
+    try:
+        import tkinter
+    except ImportError:
+        return
+    root = getattr(tkinter, "_default_root", None)
+    if root is not None:
+        try:
+            root.tk.call("winfo", "exists", ".")
+        except tkinter.TclError:
+            tkinter._default_root = None
+
+
+@pytest.fixture(autouse=True)
 def store_helper_spawns(monkeypatch):
     """The library store's helper (`library_store.spawn_maintain`) is a DETACHED process: started by a test's
     Generate, Content Manager or dashboard, it would outlive the test and write into a test root being torn
@@ -205,6 +229,24 @@ def real_store_helper(store_helper_spawns, monkeypatch):
     """Undo `store_helper_spawns` for one test: `spawn_maintain` starts the real helper."""
     from app import library_store
     monkeypatch.setattr(library_store, "spawn_maintain", _REAL_SPAWN_MAINTAIN)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guards_for_shared_windows():
+    """The guards above — no UI timers, indexer, Anki sync or update check, no store helper — held for the whole
+    session as well: a window a test class builds once (setUpClass) or a module fixture builds is made before any
+    function fixture runs, so it had none of them. The Content Manager of test_content_manager_layer_a.py started
+    the real store helper and its own worker thread: the helper built a store mid-test (sooner on a loaded machine),
+    and from then on the samples flow's sync went to the worker while the test read NOW at once — it failed one run
+    in two beside other test runs."""
+    mp = pytest.MonkeyPatch()
+    for name in ("SURASURA_NO_UI_TIMERS", "SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC",
+                 "SURASURA_NO_UPDATE_CHECK"):
+        mp.setenv(name, "1")
+    from app import library_store
+    mp.setattr(library_store, "spawn_maintain", lambda language, *extra: None)
+    yield
+    mp.undo()
 
 
 @pytest.fixture(autouse=True)
@@ -317,6 +359,20 @@ def _isolate_analyzer_module_state():
 
 _PROF = {"file": None, "writer": None, "t0": None, "prev_rss": 0.0, "n": 0, "outcome": {}}
 
+# Each test file's time (setup + call + teardown), written at the end of the session to SURASURA_TEST_TIMES when
+# `run_tests.py --all` runs the core suite in shards: it packs the next run's shards by them.
+_TIMES = {"path": os.environ.get("SURASURA_TEST_TIMES"), "files": {}}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _TIMES["path"]:
+        return
+    try:
+        with open(_TIMES["path"], "w", encoding="utf-8") as f:
+            json.dump(_TIMES["files"], f)
+    except OSError:
+        pass
+
 
 def _init_proc_stats():
     """Bind the psapi/kernel32 calls once. Returns a callable, or None where unavailable.
@@ -407,6 +463,9 @@ def pytest_runtest_logstart(nodeid, location):
 
 
 def pytest_runtest_logreport(report):
+    if _TIMES["path"]:
+        path = report.nodeid.split("::")[0]
+        _TIMES["files"][path] = _TIMES["files"].get(path, 0.0) + report.duration
     # Worst outcome across setup/call/teardown wins.
     if report.failed:
         _PROF["outcome"][report.nodeid] = "FAILED"

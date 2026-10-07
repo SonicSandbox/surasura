@@ -397,16 +397,22 @@ class Engine:
         # in that order within the file (words before phrases, as the rank needs).
         self._uses = []
         files_of = [[] for _ in range(n)]
+        idx_in = [[] for _ in range(n)]
         for f, line in enumerate(plan.per_file):
             ks, us = array("i"), array("i")
             for table in (line["main"], line["ph"]):
                 ks.extend(table[0::2])
                 us.extend(table[1::2])
-            for k in ks:
+            for i, k in enumerate(ks):
                 files_of[k].append(f)
+                idx_in[k].append(i)
             self._uses.append((ks, us))
         self._files_of = [array("i", fs) for fs in files_of]
         self._common = frozenset(k for k in range(n) if len(files_of[k]) > _SHORT)
+        self._rare_held = sum(len(files_of[k]) for k in range(n) if k not in self._common)
+        # A rare key's place among each of its files' keys (parallel to `_files_of`): its first file's is its
+        # insertion order (`_numbers`). None for a common key, which the walk finds.
+        self._idx_in = [None if k in self._common else array("i", idx_in[k]) for k in range(n)]
         self._prog = [self._prog_file(line) for line in plan.per_file]   # the progressive pass's input
         self._ties = {tie[0]: tie for tie in plan.ties}
         self._sp = {}
@@ -464,8 +470,11 @@ class Engine:
         by_tier = ([0] * n, [0] * n, [0] * n)
         first = [None] * n
         first_idx = [0] * n                 # the word's place among its first file's words: a Generate's insertion order
-        unseen = set(self._common)          # the common keys no file in the order has held yet
         uses = self._uses
+        # First files: the walk below finds the common keys', each rare key looks among its own files after it — unless
+        # the order holds fewer uses than the rare keys have plan files (most items left out): then the walk finds all.
+        walk_all = sum(len(uses[f][0]) for f in fs) < self._rare_held
+        unseen = set(range(n)) if walk_all else set(self._common)   # the keys the walk still looks for
         # One pass over every use (most of a re-plan's time): each tier's counts only; the weights are whole numbers
         # (stands_aside), so the Score summed from the tiers' counts is the Score summed use by use.
         for f, slot in zip(fs, tiers):
@@ -475,20 +484,28 @@ class Engine:
                 c[k] += u
             if unseen and not unseen.isdisjoint(ks):
                 for i, k in enumerate(ks):
-                    if k in unseen and first[k] is None:     # a rare key's first file may be one the walk skipped
+                    if k in unseen:                  # never a rare key while it walks for the common ones only:
+                                                     # the walk skips files, a rare key's first may be one of them
                         first[k] = f
                         first_idx[k] = i
                 unseen.difference_update(ks)
-        # The rare keys (and a common one no file in the order holds): each one's first file in the order, from its own.
-        pos = self._pos
-        for k in range(n):
+        # The rare keys (and a common one no file in the order holds): each one's first file in the order, from its own
+        # files' places in the order (a file left out is placed after every one in it).
+        missing = len(fs)
+        seq = [missing] * n_files
+        for i, f in enumerate(fs):
+            seq[f] = i
+        place = seq.__getitem__
+        for k in () if walk_all else range(n):
             if first[k] is not None:
                 continue
-            held = [f for f in self._files_of[k] if pos[f] is not None]
-            if held:
-                f = min(held, key=pos.__getitem__)
+            held = self._files_of[k]
+            i = min(map(place, held), default=missing)
+            if i < missing:
+                f = fs[i]
                 first[k] = f
-                first_idx[k] = uses[f][0].index(k)
+                idx = self._idx_in[k]
+                first_idx[k] = uses[f][0].index(k) if idx is None else idx[held.index(f)]
         w0, w1, w2 = self._w
         now, soon, goal = by_tier
         raw = [w0 * a + w1 * b + w2 * c for a, b, c in zip(now, soon, goal)]

@@ -737,22 +737,31 @@ def test_a_rule_placement_is_the_users_own_and_mined(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_sync_lands_a_hato_drop_in_new_arrivals(language):
-    """Michi's P2.1 review #6 (K82): with New arrivals on, a file the disk sync finds in hato's drop folder before its
-    `register` waits in New arrivals and goes through the placing rules as `register` does; a later register pairs it
-    where it is. With them off, 2.x's rule: the top of NOW (Q4-11)."""
+    """Michi's P2.1 review #6 (K82), ✅ L3.1 call b: with New arrivals on, a file the disk sync finds in hato's drop
+    folder before its `register` waits in New arrivals by no rule — even with a rule for hato turned on in
+    settings.json — so a show's own rule gets its turn: only hato's hand-off (`register`, which knows the show) applies
+    the placing rules, and a drop whose hand-off never comes keeps waiting. With them off, 2.x's rule: the top of NOW
+    (Q4-11)."""
+    from app.path_utils import get_user_file
     store = migrated(language)
     data_dir, _u = roots(language)
     w = names(language)
+    with open(get_user_file("settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"placing_rules": {"hato": "top"}}, f)
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[104]}.srt")
     first = store.sync_disk()["added"][0]
-    assert store.item(first)["tier"] == "arrivals"
+    assert store.item(first)["tier"] == "arrivals", "the scan applies no rule"
     change = store.register(os.path.join(data_dir, ls.HATO_FOLDER, f"{w[104]}.srt"), _record("s1"))
-    assert change.added == [] and store.item(first)["tier"] == "arrivals"
+    assert change.added == [] and store.item(first)["tier"] == "arrivals", "a hand-off without rules: it waits"
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[105]}.srt")
-    import unittest.mock as mock
-    with mock.patch.object(ls, "_placing_rules", return_value={"hato": "top"}):
-        ruled = store.sync_disk()["added"][0]
-    assert store.ids("now")[0] == ruled
+    ruled = store.sync_disk()["added"][0]
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[107]}.srt")
+    never = store.sync_disk()["added"][0]
+    assert store.ids("arrivals")[-2:] == [ruled, never]
+    change = store.register(os.path.join(data_dir, ls.HATO_FOLDER, f"{w[105]}.srt"), _record("s2"),
+                            rules={"hato": "top"})
+    assert change.rule == "top" and store.ids("now")[0] == ruled, "hato's hand-off places it by the caller's rules"
+    assert store.item(never)["tier"] == "arrivals", "no hand-off: it waits"
     store.set_library_options(arrivals_on=False)
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[106]}.srt")
     old = store.sync_disk()["added"][0]

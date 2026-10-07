@@ -218,25 +218,51 @@ def test_a_feed_read_holds_only_what_changed_and_a_new_epoch_reads_all(language)
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_unregister_reader_returns_the_library_to_logging_nothing(language):
-    """Michi's P2.1 review #19 (P3.1's switch): a reader switched off is gone, so no command logs again, its rows
-    leave the log and the copy; switched on again its watermark starts past every id ever logged (✅ G1.1-2)."""
+    """Michi's P2.1 review #19 (P3.1's switch), ✅ L3.1 call c: a reader switched off is gone, so no command logs
+    again; the log's rows stay (who placed what is kept), the copy carries them, and the helper's run ages them out
+    after 30 days with no reader left; switched on again its watermark starts past every id ever logged (✅ G1.1-2)."""
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
+    count = lambda: store.conn.execute("SELECT COUNT(*) FROM placement_log").fetchone()[0]
     store.register_reader("connect")
     store.move([store.ids("soon")[0]], "now")
-    assert store.conn.execute("SELECT COUNT(*) FROM placement_log").fetchone()[0] > 0
+    kept = count()
+    assert kept > 0
     last = store.conn.execute("SELECT MAX(id) FROM placement_log").fetchone()[0]
     assert store.unregister_reader("connect") is True and store.unregister_reader("connect") is False
     store.move([store.ids("soon")[0]], "now")
-    assert store.conn.execute("SELECT COUNT(*) FROM placement_log").fetchone()[0] == 0, "nothing logged, rows gone"
+    assert count() == kept, "nothing logged, and the rows already there stay"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert count() == kept, "younger than 30 days: the helper keeps them"
     lib = read_doc(user_files_dir)["surasura_library"]
-    assert lib["tables"]["placement_log"]["rows"] == [] and not any(k.startswith("reader") for k in lib["meta"])
+    assert len(lib["tables"]["placement_log"]["rows"]) == kept and not any(k.startswith("reader") for k in lib["meta"])
+    with store._writing():                                       # 31 days on: the helper ages them out
+        store.conn.execute("UPDATE placement_log SET at = ?", (time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 31 * 86400)),))
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert count() == 0
     store.register_reader("connect")
     assert store.meta()["reader:connect"] >= last, "never reads an event from before"
     store.move([store.ids("soon")[0]], "now")
     rows, gap = store.read_events("connect")
     assert rows and not gap and min(r[0] for r in rows) > last
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reader_switched_off_leaves_the_others_rows_to_the_prune(language):
+    """✅ L3.1 call c: switching one reader off deletes no row, even those every reader left has read; the prune
+    then deletes what the readers left have passed, as before."""
+    store = migrated(language)
+    count = lambda: store.conn.execute("SELECT COUNT(*) FROM placement_log").fetchone()[0]
+    store.register_reader("connect")
+    store.register_reader("other")
+    store.move([store.ids("soon")[0]], "now")
+    events, _gap = store.read_events("other")
+    store.advance_reader("other", events[-1][0])
+    kept = count()
+    assert store.unregister_reader("connect") is True and count() == kept, "nothing deleted by the switch"
+    assert store.prune_log() == kept and count() == 0, "'other' has read them all: the prune takes them"
     store.close()
 
 

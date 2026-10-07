@@ -3609,20 +3609,16 @@ class Store:
 
     def unregister_reader(self, name):
         """A reader switched off (Connect's preview, P3.1): its watermark goes. With no reader left nothing is
-        logged any more and the log's rows go too, so the copy stops carrying them; `log_seq` keeps the last id, so ids
-        are never reused and a reader switched on again starts past it (✅ G1.1-2). Bookkeeping: no version moves.
-        False when no such reader was set."""
+        logged any more; the log's rows stay — who placed what is kept — until `prune_log`'s 30 days age them out
+        (✅ L3.1 call c), and the copy carries them meanwhile. `log_seq` keeps the last id, so ids are never reused and
+        a reader switched on again starts past it (✅ G1.1-2). Bookkeeping: no version moves. False when no such
+        reader was set."""
         with self._writing():
             meta = self._meta()
             if f"reader:{name}" not in meta:
                 return False
             seq = self._log_seq()
             self.conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (f"reader:{name}", f"reader_epoch:{name}"))
-            marks = [int(v) for k, v in meta.items() if k.startswith("reader:") and k != f"reader:{name}"]
-            if marks:
-                self.conn.execute("DELETE FROM placement_log WHERE id <= ?", (min(marks),))
-            else:
-                self.conn.execute("DELETE FROM placement_log")
             self._set_meta({"log_seq": seq, "copy_dirty": int(meta.get("copy_dirty") or 0) + 1})
             return True
 
@@ -3650,19 +3646,17 @@ class Store:
         return rows, gap
 
     def prune_log(self, now=None):
-        """In the helper's run: delete events every reader has passed, or older than 30 days."""
+        """In the helper's run: delete events every reader has passed, or older than 30 days; with no reader left
+        (`unregister_reader`), only those older than 30 days (✅ L3.1 call c)."""
         with self._writing():
             meta = self._meta()
             marks = [v for k, v in meta.items() if k.startswith("reader:")]
-            if not marks:
-                return 0
-            limit = min(marks) + 1
             cutoff = time.strftime("%Y-%m-%dT%H:%M:%S",
                                    time.gmtime((now or time.time()) - LOG_KEEP_DAYS * 86400))
             young = self.conn.execute("SELECT MIN(id) FROM placement_log WHERE at >= ?", (cutoff,)).fetchone()[0]
             if young is None:
                 young = self._log_seq() + 1
-            bound = max(limit, young)   # passed by every reader, or older than 30 days (§12: as built)
+            bound = max(min(marks) + 1, young) if marks else young   # §12: as built; L3.1 call c
             return self.conn.execute("DELETE FROM placement_log WHERE id < ?", (bound,)).rowcount
 
     # --- undo (§6.11) ---------------------------------------------------------------------------- #
@@ -4268,17 +4262,6 @@ def _work_ids_of(record):
 
 Pin = namedtuple("Pin", "item_id rel_path tier pinned_at")
 PLACING_TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
-
-
-def _placing_rules():
-    """The user's placing rules (`placing_rules` in settings.json, 05 §5.12; empty = every arrival waits, RD-S16).
-    Read only, never written here."""
-    try:
-        from app.settings_manager import load_settings
-        rules = load_settings().get("placing_rules")
-    except Exception:
-        return {}
-    return rules if isinstance(rules, dict) else {}
 
 
 def _rule_for(record, rules):
@@ -5540,7 +5523,8 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
         if export:
             did = export_copy(store) or did
             _cleanup_temps(manifest_path(user_files_dir))
-        if store.meta().get("reader:connect") is not None or any(k.startswith("reader:") for k in store.meta()):
+        if any(k.startswith("reader:") for k in store.meta()) or \
+                store.conn.execute("SELECT 1 FROM placement_log LIMIT 1").fetchone():   # a reader off: rows age out
             did = bool(store.prune_log()) or did
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
@@ -5752,7 +5736,6 @@ def _store_sync_disk(self, walk=None, folders=None):
     known, version = _known(self, scope)
     delta = _sync_delta(self, walk, known, scope)
     hato = path_key(HATO_FOLDER)
-    rules = _placing_rules() if any(path_key(_rel_dir(r[0])) == hato for r in delta["new"]) else {}
     asks = _rename_asks(self)
     live = [a for a in asks if os.path.exists(os.path.join(self.data_dir, _strip(str(a.get("rel", "")))))]
     if live != asks:                                       # a held-out file gone: its question goes with it
@@ -5830,12 +5813,8 @@ def _store_sync_disk(self, walk=None, folders=None):
                 self._put(t, group, where, cmd.version)
             tiers |= set(dest_tier)
             summary["added"] = ids
-            if rules:                                          # K82: as `register` places a drop waiting there
-                cmd.touch(tiers)
-                self._settle_works(cmd)
-                for item_id, t in zip(ids, dest_tier):
-                    if t == "arrivals":
-                        self._apply_rule(item_id, {"producer": "hato"}, rules)
+            # K82, ✅ L3.1 call b: a hato drop waits in New arrivals by no rule; only hato's hand-off (`register`,
+            # which knows the show) applies the placing rules, and a drop whose hand-off never comes waits there.
         if tiers:
             cmd.touch(tiers)
         if not (summary["added"] or summary["renamed"] or gone or back or summary["asked"]):

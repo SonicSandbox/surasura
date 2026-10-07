@@ -193,6 +193,26 @@ def _isolate_token_store(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_destroyed_default_root():
+    """A test that makes its root tkinter's default with `monkeypatch.setattr(tk, "_default_root", root)` right after
+    `tk.Tk()` has it put back at teardown as `root` itself (Tk() had just made it the default), destroyed by then —
+    nine files do. A later file's Font() or Variable() with no master then fails "application has been destroyed",
+    but only when no other Tk was made in between: the core suite in shards met it (test_undo_logic after
+    test_ignore_names). Before each test, a destroyed default root is cleared (before, not after: monkeypatch's own
+    teardown, which puts it back, can run after any other fixture's)."""
+    try:
+        import tkinter
+    except ImportError:
+        return
+    root = getattr(tkinter, "_default_root", None)
+    if root is not None:
+        try:
+            root.tk.call("winfo", "exists", ".")
+        except tkinter.TclError:
+            tkinter._default_root = None
+
+
+@pytest.fixture(autouse=True)
 def store_helper_spawns(monkeypatch):
     """The library store's helper (`library_store.spawn_maintain`) is a DETACHED process: started by a test's
     Generate, Content Manager or dashboard, it would outlive the test and write into a test root being torn

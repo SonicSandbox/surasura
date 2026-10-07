@@ -4135,6 +4135,7 @@ def run_signature_parts(language, found_files, args):
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
             "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
+            "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",

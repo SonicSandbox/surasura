@@ -47,6 +47,11 @@ DEFAULT_SETTINGS = {
     # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
     # signature (analyzer._NON_ANALYSIS_SETTINGS).
     "index_pool_workers": None,
+    # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: "hb" Blue,
+    # "sky" Lighter blue, "sapphire" Sapphire) and text size ("S" / "M" / "L"). Set on the window before its first paint.
+    # Never in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
+    "app_theme": "hb",
+    "text_size": "M",
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run

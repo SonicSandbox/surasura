@@ -4,7 +4,7 @@ This guide explains how to package Surasura into a standalone Windows app with P
 
 ## Prerequisites
 
-1.  Python 3.9+ (the shipped builds bundle Python 3.11).
+1.  Python 3.10+ (the shipped builds bundle Python 3.11).
 2.  Dependencies installed:
     ```bash
     pip install -r requirements.txt

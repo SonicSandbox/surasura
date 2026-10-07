@@ -1031,6 +1031,8 @@ class Change:
         self.notes = []
         self.repieced = []    # (item_id, old piece, new piece) the settling step wrote (schema 2)
         self.options = []     # set_soon_line / set_library_options: [(key, old, new)]
+        self.works = None     # works' commands: {"rows": [work rows before], "items": [(id, old, new)],
+                              #                   "fields": [(work_id, column, old, new)], "created": [ids]}
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
@@ -2076,8 +2078,21 @@ class Store:
                     change = self._add(prepared, TIER_OF_FOLDER.get(first, "now"), "show", None, None, None,
                                        "register", by, 0)
                 item_id = change.added[0]
+                work = self._work_by_record(pairing)            # the record names its title first (K81)
+                if work is None and _show_title(pairing) and folder_key_of(rel) is None:
+                    work = self._new_work(_show_title(pairing), None, cmd)     # a loose drop: titled by its show
+                if work is not None:
+                    self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+                else:
+                    self._settle_works(cmd)
             else:
                 item_id = row[0]
+            work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+            if work is not None:
+                holder = change if change is not None else self._change(cmd, "register")
+                self._fill_work(cmd, holder, work, pairing)
+                if change is None and holder.works is not None:
+                    change = holder
             if backfill:
                 cmd.quiet.add(item_id)
             old = self.conn.execute("SELECT item_id, pairing, paired_at FROM pairings WHERE content_key = ?",
@@ -2293,6 +2308,281 @@ class Store:
             cache[fk] = wid
         return wid
 
+    def _work_by_record(self, record):
+        """A record's work (05 §5.3 (1)–(2), `register`'s only): the work holding its AniList / TMDB id (or YouTube
+        channel), else one whose folded title or other title is its show's title; None."""
+        ids = _work_ids_of(record)
+        for col in ("anilist_id", "tmdb_id", "youtube_channel"):
+            if ids[col] is not None:
+                row = self.conn.execute(f"SELECT id FROM works WHERE {col} = ? ORDER BY id LIMIT 1",
+                                        (ids[col],)).fetchone()
+                if row:
+                    return row[0]
+        title = _show_title(record)
+        if title:
+            key = search_fold(title, self.language)
+            row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
+                                    "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
+            if row:
+                return row[0]
+        return None
+
+    def _fill_work(self, cmd, change, work_id, record, by="hato"):
+        """What a record says of its work, never over the user's (03 §3.3): its ids where the work has none — an id
+        another work holds makes the two one title (the lower id kept, G2.2-6); its show's title among the other titles;
+        its media type unless the user chose one. Returns the work the record's item now belongs to."""
+        ids = _work_ids_of(record)
+        for col in ("anilist_id", "tmdb_id", "youtube_channel"):
+            if ids[col] is None:
+                continue
+            current = self.conn.execute(f"SELECT {col} FROM works WHERE id = ?", (work_id,)).fetchone()[0]
+            if current is not None:
+                continue                                        # the work's own id stays (a record never re-points it)
+            other = self.conn.execute(f"SELECT id FROM works WHERE {col} = ? AND id != ?", (ids[col], work_id)).fetchone()
+            if other is not None:
+                keep, drop = sorted((other[0], work_id))
+                self._merge_into(cmd, change, keep, [drop])
+                work_id = keep
+            else:
+                self._set_work_fields(cmd, change, work_id, {col: ids[col]})
+        title = _show_title(record)
+        row = self.conn.execute("SELECT title, titles, media_type_by FROM works WHERE id = ?", (work_id,)).fetchone()
+        titles = json.loads(row[1] or "[]")
+        if title and title != row[0] and title not in titles:
+            self._set_work_fields(cmd, change, work_id, {"titles": _dumps(titles + [title])})
+        kind = record.get("media_type") if isinstance(record, dict) else None
+        if kind in MEDIA_TYPES and row[2] != "user":
+            self._set_work_fields(cmd, change, work_id, {"media_type": kind, "media_type_by": by})
+        return work_id
+
+    def _set_work_fields(self, cmd, change, work_id, fields):
+        """Write a work's columns, keeping each old value for undo (the value check) and its search key in step."""
+        cols = list(fields)
+        row = self.conn.execute(f"SELECT {', '.join(cols)} FROM works WHERE id = ?", (work_id,)).fetchone()
+        if row is None:
+            return False
+        changed = {c: v for c, old, v in zip(cols, row, [fields[c] for c in cols]) if old != v}
+        if not changed:
+            return False
+        if change.works is None:
+            change.works = {"rows": [], "items": [], "fields": [], "created": []}
+        change.works["fields"] += [(work_id, c, old, fields[c]) for c, old in zip(cols, row) if c in changed]
+        self.conn.execute(f"UPDATE works SET {', '.join(c + ' = ?' for c in changed)} WHERE id = ?",
+                          list(changed.values()) + [work_id])
+        if {"title", "titles"} & set(changed):
+            self._rekey_work(work_id)
+        cmd.fed_works.add(work_id)
+        cmd.touch()
+        return True
+
+    def _rekey_work(self, work_id):
+        title, titles = self.conn.execute("SELECT title, titles FROM works WHERE id = ?", (work_id,)).fetchone()
+        self.conn.execute("UPDATE works SET search_key = ? WHERE id = ?",
+                          (_work_search_key(title, json.loads(titles or "[]"), self.language), work_id))
+
+    def _work_row(self, work_id):
+        cur = self.conn.execute("SELECT * FROM works WHERE id = ?", (work_id,))
+        row = cur.fetchone()
+        return dict(zip([d[0] for d in cur.description], row)) if row else None
+
+    def _merge_into(self, cmd, change, keep_id, other_ids):
+        """`merge_works`' body, inside a command: the others' items, ids, folder key, titles and — where the kept work
+        has none of its own — media type and cover move to `keep_id`; the others go (a tombstone each). The kept
+        cover stays unless it is generated and another's isn't (05 §5.5)."""
+        keep = self._work_row(keep_id)
+        others = [w for w in (self._work_row(o) for o in other_ids if o != keep_id) if w]
+        if keep is None or not others:
+            return False
+        if change.works is None:
+            change.works = {"rows": [], "items": [], "fields": [], "created": []}
+        change.works["rows"] += [dict(o) for o in others]          # the kept work's own changes go in "fields"
+        moved = []
+        for o in others:
+            moved += [(r[0], o["id"]) for r in self.conn.execute("SELECT id FROM items WHERE work_id = ?", (o["id"],))]
+        fields = {}
+        titles = json.loads(keep["titles"] or "[]")
+        for o in others:
+            for t in [o["title"]] + json.loads(o["titles"] or "[]"):
+                if t and t != keep["title"] and t not in titles:
+                    titles.append(t)
+            for col in ("anilist_id", "tmdb_id", "youtube_channel", "folder_key"):
+                if keep[col] is None and fields.get(col) is None and o[col] is not None:
+                    fields[col] = o[col]
+            if keep["media_type"] is None and "media_type" not in fields and o["media_type"] is not None:
+                fields["media_type"], fields["media_type_by"] = o["media_type"], o["media_type_by"]
+            if keep["cover_source"] in (None, "generated") and "cover_source" not in fields and \
+                    o["cover_source"] not in (None, "generated"):
+                for col in ("cover_source", "cover_ref", "cover_path", "cover_fetched_at", "cover_locked"):
+                    fields[col] = o[col]
+        fields["titles"] = _dumps(titles)
+        self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(keep_id, i) for i, _o in moved])
+        change.works["items"] += [(i, o, keep_id) for i, o in moved]
+        cmd.feed(i for i, _o in moved)
+        self.conn.executemany("UPDATE works SET anilist_id = NULL, tmdb_id = NULL, youtube_channel = NULL WHERE id = ?",
+                              [(o["id"],) for o in others])           # the unique ids free before the kept takes them
+        self._set_work_fields(cmd, change, keep_id, fields)
+        self.conn.executemany("DELETE FROM works WHERE id = ?", [(o["id"],) for o in others])
+        cmd.gone += [("work", o["id"]) for o in others]
+        cmd.fed_works.add(keep_id)
+        cmd.touch()
+        return True
+
+    def rename_work(self, work_id, title):
+        """The user's name for a title (03 §3.3 #2): `title_by_user` set, so no record, match or sync renames it; the
+        old name stays among the other titles (search still finds it). Undo by the value check."""
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("a title needs a name")
+        with self._command("rename_work") as cmd:
+            row = self._work_row(work_id)
+            if row is None or (row["title"] == title and row["title_by_user"]):
+                return None
+            change = self._change(cmd, "rename_work")
+            titles = json.loads(row["titles"] or "[]")
+            if row["title"] != title and row["title"] not in titles:
+                titles.append(row["title"])
+            titles = [t for t in titles if t != title]
+            self._set_work_fields(cmd, change, work_id, {"title": title, "title_by_user": 1, "titles": _dumps(titles)})
+            return change
+
+    def merge_works(self, keep_id, other_ids):
+        """*Same title as …* (04 §4.2): the others' items and ids move to `keep_id` and the others go. Pieces stay as
+        they are (each is still one title's). Undo restores the works and each item's work."""
+        with self._command("merge_works") as cmd:
+            change = self._change(cmd, "merge_works")
+            if not self._merge_into(cmd, change, keep_id, list(dict.fromkeys(other_ids))):
+                return None
+            self._drop_apart(keep_id, other_ids)
+            return change
+
+    def split_work(self, item_ids, title):
+        """*Not part of this title* (04 §4.2): a new title for these items (no folder key: new files in their folder
+        keep joining the title they were in); the pieces they leave split where the title changes. Undo merges back."""
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("a title needs a name")
+        with self._command("split_work") as cmd:
+            rows = self.conn.execute(f"SELECT id, work_id FROM items WHERE id IN ({','.join('?' * len(item_ids))})",
+                                     list(item_ids)).fetchall() if item_ids else []
+            if not rows:
+                return None
+            change = self._change(cmd, "split_work")
+            change.works = {"rows": [], "items": [], "fields": [], "created": []}
+            new = self._new_work(title, None, cmd)
+            self.conn.execute("UPDATE works SET title_by_user = 1 WHERE id = ?", (new,))
+            change.works["created"].append(new)
+            self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(new, i) for i, _w in rows])
+            change.works["items"] += [(i, w, new) for i, w in rows]
+            cmd.reworked.update(i for i, _w in rows)
+            cmd.feed(i for i, _w in rows)
+            cmd.touch()
+            return change
+
+    def _undo_works(self, cmd, change):
+        """Undo a works' command by the value check (§6.11): each field back where it still holds what the command
+        wrote (the kept work's ids first, so the merged works can take theirs back); the works a merge took out back as
+        they were; items back where they still sit in the work it gave them; a work it made goes once empty."""
+        out = self._change(cmd, "undo")
+        works = change.works
+        skipped = []
+        for work_id, col, old, new in reversed(works["fields"]):
+            row = self.conn.execute(f"SELECT {col} FROM works WHERE id = ?", (work_id,)).fetchone()
+            if row is not None and row[0] == new:
+                self.conn.execute(f"UPDATE works SET {col} = ? WHERE id = ?", (old, work_id))
+                self._rekey_work(work_id)
+                cmd.fed_works.add(work_id)
+        for row in works["rows"]:
+            if self.conn.execute("SELECT 1 FROM works WHERE id = ?", (row["id"],)).fetchone():
+                continue
+            ids = {c: row[c] for c in ("anilist_id", "tmdb_id", "youtube_channel") if row[c] is not None}
+            held = [c for c, v in ids.items()
+                    if self.conn.execute(f"SELECT 1 FROM works WHERE {c} = ?", (v,)).fetchone()]
+            row = dict(row, **{c: None for c in held})         # an id taken again since stays with its holder
+            self.conn.execute(f"INSERT INTO works ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
+                              list(row.values()))
+            self.conn.execute("DELETE FROM gone WHERE kind = 'work' AND id = ?", (row["id"],))
+            cmd.fed_works.add(row["id"])
+        back = []
+        for item_id, old, new in works["items"]:
+            now = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
+            if now is not None and now[0] == new and \
+                    self.conn.execute("SELECT 1 FROM works WHERE id = ?", (old,)).fetchone():
+                back.append((old, item_id))
+            else:
+                skipped.append(item_id)
+        if back:
+            self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", back)
+            cmd.reworked.update(i for _o, i in back)
+            cmd.feed(i for _o, i in back)
+        for work_id in works["created"]:
+            if not self.conn.execute("SELECT 1 FROM items WHERE work_id = ?", (work_id,)).fetchone():
+                self.conn.execute("DELETE FROM works WHERE id = ?", (work_id,))
+                cmd.gone.append(("work", work_id))
+        cmd.touch()
+        return out, skipped
+
+    def keep_apart(self, work_ids):
+        """*Keep apart* (05 §5.3): the user's answer that titles sharing a name are different titles — *Same title?*
+        stops asking about them. Bookkeeping the copy carries (`meta.kept_apart`)."""
+        ids = sorted({int(w) for w in work_ids})
+        if len(ids) < 2:
+            return False
+        with self._writing():
+            pairs = json.loads(self._meta().get("kept_apart") or "[]")
+            new = [[a, b] for n, a in enumerate(ids) for b in ids[n + 1:] if [a, b] not in pairs]
+            if not new:
+                return False
+            self._set_meta({"kept_apart": _dumps(pairs + new), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+        return True
+
+    def _drop_apart(self, keep_id, other_ids):
+        pairs = json.loads(self._meta().get("kept_apart") or "[]")
+        gone = set(other_ids)
+        kept = [p for p in pairs if not gone & set(p)]
+        if kept != pairs:
+            self._set_meta({"kept_apart": _dumps(kept)})
+
+    def same_titles(self):
+        """*Same title?* (05 §5.3, G2.2-6): groups of works whose folded titles are equal and whose ids don't already
+        say they're different, never joined automatically; minus the pairs the user kept apart. Derived on read."""
+        apart = {tuple(p) for p in json.loads(self._meta().get("kept_apart") or "[]")}
+        groups = {}
+        for work_id, key, anilist, tmdb in self.conn.execute("SELECT id, search_key, anilist_id, tmdb_id FROM works "
+                                                             "ORDER BY id"):
+            title = key.split("\n", 1)[0]
+            if title:
+                groups.setdefault(title, []).append((work_id, anilist, tmdb))
+        out = []
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            ids = [m[0] for m in members]
+            distinct = len({m[1] for m in members if m[1] is not None}) > 1 or \
+                len({m[2] for m in members if m[2] is not None}) > 1
+            if distinct:
+                continue
+            if all((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]):
+                continue
+            out.append(ids)
+        return out
+
+    def search(self, query, tiers=("now", "soon", "goal", "arrivals", "graduated")):
+        """The window's search (05 §5.3), on its reader worker: (work ids, item ids) whose folded key holds the folded
+        query, the works first — over Current, 6+ Months, New arrivals and Finished. Romaji finds a title only through a
+        romaji title among its other titles (G2.2-4: no converter)."""
+        key = search_fold(query, self.language)
+        if not key:
+            return [], []
+        tiers = [t for t in tiers if t in TIERS]
+        marks = ",".join("?" * len(tiers))
+        with self._reading():
+            works = [r[0] for r in self.conn.execute(
+                f"SELECT id FROM works WHERE instr(search_key, ?) > 0 AND id IN "
+                f"(SELECT work_id FROM items WHERE tier IN ({marks})) ORDER BY id", [key] + tiers)]
+            items = [r[0] for r in self.conn.execute(
+                f"SELECT id FROM items WHERE tier IN ({marks}) AND instr(search_key, ?) > 0 ORDER BY id", tiers + [key])]
+        return works, items
+
     def _settle_works(self, cmd):
         """Items the command added (or put back from a work merged away) get their work by their folder."""
         if not cmd.moved:
@@ -2441,6 +2731,26 @@ class Store:
                     for i in ids:
                         ends[i] = info[i][0]
             near = self._near(ends, view)
+            # a whole piece put back beside a piece of its own title becomes part of it (05 §5.2 #4: a season put
+            # back together); an undo's pieces stay as they were
+            for p, ids in by_piece.items():
+                if any(i in cmd.hints for i in ids) or not whole.get(p):
+                    continue
+                firsts = [i for i in ids if i in near and near[i][0][1] != p]
+                lasts = [i for i in ids if i in near and near[i][1][1] != p]
+                if len(firsts) != 1 or len(lasts) != 1:
+                    continue                                    # not one run: the split below decides
+                work = info[ids[0]][2]
+                before, after = near[firsts[0]][0], near[lasts[0]][1]
+                into = before[1] if before[1] is not None and before[2] == work else \
+                    after[1] if after[1] is not None and after[2] == work else None
+                if into is None or into == p:
+                    continue
+                self._set_pieces(cmd, [(into, i) for i in ids])
+                cmd.repieced += [(i, p, into) for i in ids]
+                cmd.pieces_left.add(p)
+                for i in ids:
+                    info[i][1] = into
             # runs of new items: side by side in one tier, one work
             runs, in_run = [], set()
             for start in fresh:
@@ -2599,38 +2909,68 @@ class Store:
             return change
 
     def join(self, piece_ids):
-        """One piece of adjacent pieces in one tier: every item takes the first piece's id. Nothing moves."""
+        """One piece of several pieces of one title (05 §5.2 #6): the other pieces' items move to just after the first
+        piece's last item — "a join across sections lands where the target part is" (W1.2 §8.2), across tiers or
+        with other items between — and become one piece; one command, one undo. A join of two titles' pieces is
+        refused: make them one title first (`merge_works`)."""
         piece_ids = list(dict.fromkeys(piece_ids))
         if len(piece_ids) < 2:
             return None
         with self._command("join") as cmd:
-            items = []
+            members = {}
             for p in piece_ids:
-                items += [(p,) + tuple(r) for r in self._piece_items(p)]
-            tiers = {r[2] for r in items}
-            if len(tiers) != 1:
-                raise ValueError("pieces to join must be in one tier")
-            tier = tiers.pop()
-            ordered = sorted(items, key=lambda r: (r[3], r[1]))
-            first, last = ordered[0], ordered[-1]
-            count = self.conn.execute(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
-                "LIMIT ?)", (tier, first[3], first[1], last[3], last[1], len(ordered) + 1)).fetchone()[0]
-            if count != len(ordered):
-                raise ValueError("pieces to join must be adjacent")
+                rows = self.conn.execute("SELECT id, tier, ord, changed_in, work_id FROM items WHERE piece_id = ?",
+                                         (p,)).fetchall()
+                members[p] = sorted(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
             target = piece_ids[0]
-            moved = [r for r in items if r[0] != target]
-            self.conn.executemany("UPDATE items SET piece_id = ?, changed_in = ? WHERE id = ?",
-                                  [(target, cmd.version, r[1]) for r in moved])
-            cmd.feed(r[1] for r in moved)
-            gone = [self.conn.execute("SELECT id, title, kind, created_at FROM pieces WHERE id = ?", (p,)).fetchone()
-                    for p in piece_ids[1:]]
-            self.conn.executemany("DELETE FROM pieces WHERE id = ?", [(p,) for p in piece_ids[1:]])
+            if not members[target]:
+                raise ValueError("the piece to join onto is gone")
+            if len({r[4] for p in piece_ids for r in members[p]}) > 1:
+                raise ValueError("these are different titles — make them one title first")
+            others = [p for p in piece_ids[1:] if members[p]]
+            moving = [r for p in others for r in members[p]]
+            if not moving:
+                return None
+            last = members[target][-1]
+            tier = last[1]
+            nxt = self._beyond(tier, (last[0], last[2]), set(), 1, len(moving))
             change = self._change(cmd, "join")
-            change.pieces = {"items": [(r[1], r[0], r[4]) for r in moved], "created": [],
+            if [r[0] for r in nxt] != [r[0] for r in moving] or any(r[1] != tier for r in moving):
+                rows = self._rows([r[0] for r in moving])
+                self._before(change, list(rows.values()))
+                self._put(tier, [r[0] for r in moving], ("after", last[0]), cmd.version)
+                cmd.touch({r[1] for r in moving} | {tier})
+            self.conn.executemany("UPDATE items SET piece_id = ?, changed_in = ? WHERE id = ?",
+                                  [(target, cmd.version, r[0]) for r in moving])
+            for r in moving:
+                cmd.hints[r[0]] = target
+            cmd.feed(r[0] for r in moving)
+            gone = [self.conn.execute("SELECT id, title, kind, created_at FROM pieces WHERE id = ?", (p,)).fetchone()
+                    for p in others]
+            self.conn.executemany("DELETE FROM pieces WHERE id = ?", [(p,) for p in others])
+            change.pieces = {"items": [(r[0], p, r[3]) for p in others for r in members[p]], "created": [],
                              "deleted": [tuple(g) for g in gone if g]}
             cmd.touch()
             return change
+
+    def _undo_join(self, cmd, change):
+        """A join that moved items: the pieces it emptied come back, the moved items go back where they stood and into
+        the pieces they came from (`_replace`'s hints), the others take their pieces back by `changed_in`."""
+        ids = [t[0] for t in change.pieces["items"]]
+        rows = self._rows(ids)
+        if not any(i in rows and rows[i][3] == change.version for i in ids):
+            return self._change(cmd, "undo"), ids               # all changed since: nothing to put back
+        for piece in change.pieces["deleted"]:
+            self.conn.execute("INSERT OR IGNORE INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)", piece)
+            cmd.pieces_left.add(piece[0])                       # gone again at the end if nothing came back to it
+        cmd.touch()
+        moved = {it["id"] for it in change.items}
+        out, skipped = self._replace(cmd, change) if change.items else (self._change(cmd, "undo"), [])
+        rest = dict(change.pieces, items=[t for t in change.pieces["items"] if t[0] not in moved], deleted=[])
+        holder = Change(change.kind, change.epoch, change.version)
+        holder.pieces = rest
+        _o, more = self._undo_pieces(cmd, holder)
+        return out, list(skipped) + list(more)
 
     # --- status writes (§6.6): state_version only; undo by the value check ----------------------- #
 
@@ -2902,6 +3242,10 @@ class Store:
                 out, skipped = self._undo_options(cmd, change)
             elif change.status:
                 out, skipped = self._undo_status(cmd, change)
+            elif kind == "join" and change.pieces is not None:
+                out, skipped = self._undo_join(cmd, change)
+            elif change.works is not None:
+                out, skipped = self._undo_works(cmd, change)
             elif change.pieces is not None:
                 out, skipped = self._undo_pieces(cmd, change)
             elif kind == "reset":
@@ -2974,16 +3318,26 @@ class Store:
         rows = self._rows([i for i, _p, _c in items])
         ok = [(i, p, c) for i, p, c in items if i in rows and rows[i][3] == change.version]
         skipped = [i for i, _p, _c in items if i not in {o[0] for o in ok}]
+        if not ok:
+            return out, skipped
         for piece in change.pieces["deleted"]:
             self.conn.execute("INSERT OR IGNORE INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)", piece)
+            cmd.pieces_left.add(piece[0])
+        there = {r[0] for r in self.conn.execute(f"SELECT id FROM pieces WHERE id IN ({','.join('?' * len(ok))})",
+                                                 [p for _i, p, _c in ok])}
+        skipped += [i for i, p, _c in ok if p not in there]     # its piece emptied and went since
+        ok = [(i, p, c) for i, p, c in ok if p in there]
+        cmd.pieces_left.update(rows[i][10] for i, _p, _c in ok if rows[i][10] is not None)   # left: gone if emptied
         self.conn.executemany("UPDATE items SET piece_id = ?, changed_in = ? WHERE id = ?",
                               [(p, c, i) for i, p, c in ok])
+        for i, p, _c in ok:                                     # the settling step checks the piece is one run again
+            cmd.hints[i] = p
+            cmd.reworked.add(i)
         cmd.feed(i for i, _p, _c in ok)
         for piece in change.pieces["created"]:
             if not self.conn.execute("SELECT 1 FROM items WHERE piece_id = ?", (piece,)).fetchone():
                 self.conn.execute("DELETE FROM pieces WHERE id = ?", (piece,))
-        if ok or change.pieces["deleted"]:
-            cmd.touch()
+        cmd.touch()
         return out, skipped
 
     def _replace(self, cmd, change):
@@ -3421,6 +3775,13 @@ def _work_ids_of(record):
     if isinstance(c, str) and c.strip():
         out["youtube_channel"] = c.strip()
     return out
+
+
+def _show_title(record):
+    """The show's title a record names (`show.title`, 09-hato-layer §1), or None."""
+    show = record.get("show") if isinstance(record, dict) else None
+    title = show.get("title") if isinstance(show, dict) else None
+    return title.strip() if isinstance(title, str) and title.strip() else None
 
 
 def _work_search_key(title, titles, language):

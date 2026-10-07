@@ -605,6 +605,7 @@ def test_the_return_from_2_4_0s_content_manager(language):
     cm._store_mode, cm._store = (lambda: "json"), (lambda: None)   # 2.4.0's code: 2.5's JSON mode
     manifest = cm.load_manifest()
     manifest["schedule"]["PHASE_3_LATER"].reverse()
+    time.sleep(0.02)        # a tick after the export (GitHub's clock: 15.6 ms): same size + one mtime would read as ours
     cm.save_manifest(manifest)
     assert "surasura_library" in read_doc(user_files_dir)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU

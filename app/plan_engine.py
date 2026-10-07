@@ -397,7 +397,7 @@ class Engine:
         # in that order within the file (words before phrases, as the rank needs).
         self._uses = []
         files_of = [[] for _ in range(n)]
-        idx_in = [[] for _ in range(n)]
+        idx_in = [array("i") for _ in range(n)]
         for f, line in enumerate(plan.per_file):
             ks, us = array("i"), array("i")
             for table in (line["main"], line["ph"]):
@@ -412,7 +412,7 @@ class Engine:
         self._rare_held = sum(len(files_of[k]) for k in range(n) if k not in self._common)
         # A rare key's place among each of its files' keys (parallel to `_files_of`): its first file's is its
         # insertion order (`_numbers`). None for a common key, which the walk finds.
-        self._idx_in = [None if k in self._common else array("i", idx_in[k]) for k in range(n)]
+        self._idx_in = [None if k in self._common else idx_in[k] for k in range(n)]
         self._prog = [self._prog_file(line) for line in plan.per_file]   # the progressive pass's input
         self._ties = {tie[0]: tie for tie in plan.ties}
         self._sp = {}

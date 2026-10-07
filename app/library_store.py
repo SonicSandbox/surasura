@@ -560,6 +560,15 @@ SCHEMA_2_SQL = (
     "CREATE INDEX items_piece ON items (piece_id)",
 )
 
+# The change feed (L2.2 04 §4.1): what a window reads of each changed row
+FEED_POLL = 0.1                  # s: a window looks at `PRAGMA data_version` this often (its store worker)
+FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
+                    "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
+                    "in_learning_order", "added_at", "feed_in")
+FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
+                    "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
+                    "cover_locked", "feed_in")
+
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7); `works` without its derived
 # columns (WORK_NOT_COPIED: a rebuild re-derives them)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
@@ -1439,6 +1448,82 @@ class Store:
         out = dict(zip([d[0] for d in cur.description], row))
         out["entry"] = json.loads(out["entry"])
         return out
+
+    # --- the change feed (L2.2 04 §4.1): a window's store worker reads it, never the GUI thread -------- #
+
+    def data_version(self):
+        """SQLite's `PRAGMA data_version` on this connection: it moves when another connection commits (the
+        window's poll, every `FEED_POLL` s: ~5 µs when nothing changed)."""
+        return self.conn.execute("PRAGMA data_version").fetchone()[0]
+
+    def read_feed(self, seen=None, epoch=None):
+        """What changed since the window last read (04 §4.1 #4), in one read transaction: a dict with `full`
+        (True: every item and work — the first read, a new epoch, or `seen` older than the tombstones kept,
+        `feed_floor`), `epoch`, `version` (the window's next `seen`), `items` and `works` (rows of FEED_ITEM_FIELDS /
+        FEED_WORK_FIELDS as dicts: every row when full, else those whose `feed_in` > `seen`), `gone` ([(kind, id)] left
+        since) and `options` (the Soon line, the mine line, New arrivals). Applying it by id is idempotent: a window's
+        own commits come back through it too."""
+        item_cols = ", ".join(FEED_ITEM_FIELDS)
+        work_cols = ", ".join(FEED_WORK_FIELDS)
+        with self._reading():
+            meta = self._meta()
+            version, now_epoch = meta["state_version"], meta["epoch"]
+            full = seen is None or epoch != now_epoch or seen < int(meta.get("feed_floor") or 0)
+            if full:
+                items = self.conn.execute(f"SELECT {item_cols} FROM items").fetchall()
+                works = self.conn.execute(f"SELECT {work_cols} FROM works").fetchall()
+                gone = []
+            else:
+                items = self.conn.execute(f"SELECT {item_cols} FROM items WHERE feed_in > ?", (seen,)).fetchall()
+                works = self.conn.execute(f"SELECT {work_cols} FROM works WHERE feed_in > ?", (seen,)).fetchall()
+                gone = [tuple(r) for r in self.conn.execute("SELECT kind, id FROM gone WHERE feed_in > ? ORDER BY feed_in",
+                                                            (seen,))]
+        return {"full": full, "epoch": now_epoch, "version": version,
+                "items": [dict(zip(FEED_ITEM_FIELDS, r)) for r in items],
+                "works": [dict(zip(FEED_WORK_FIELDS, r)) for r in works], "gone": gone,
+                "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
+                            "arrivals_on": meta.get("arrivals_on", 0)}}
+
+    def prune_gone(self, now=None):
+        """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest
+        version they held — a window that hasn't read since then re-reads in full. Bookkeeping: no version moves.
+        Returns how many went."""
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime((now or time.time()) - FEED_KEEP))
+        with self._writing():
+            newest = self.conn.execute("SELECT MAX(feed_in) FROM gone WHERE at < ?", (cutoff,)).fetchone()[0]
+            if newest is None:
+                return 0
+            floor = max(int(self._meta().get("feed_floor") or 0), int(newest))
+            n = self.conn.execute("DELETE FROM gone WHERE at < ?", (cutoff,)).rowcount
+            self._set_meta({"feed_floor": floor})
+            return n
+
+    def tidy_works(self):
+        """In the helper's run (06 §6.5): a work with no item and no trash row of one (Put back would find it) goes,
+        a tombstone in its place. One command (the window reads the tombstone). Returns the ids that went."""
+        empty = [r[0] for r in self.conn.execute("SELECT id FROM works WHERE id NOT IN "
+                                                 "(SELECT work_id FROM items WHERE work_id IS NOT NULL)")]
+        if not empty:
+            return []
+        held = set()
+        for (state,) in self.conn.execute("SELECT item_state FROM trash WHERE restored_at IS NULL"):
+            try:
+                work = json.loads(state)["columns"].get("work_id")
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if work is not None:
+                held.add(work)
+        empty = [w for w in empty if w not in held]
+        if not empty:
+            return []
+        with self._command("tidy_works", "sync") as cmd:
+            gone = [w for w in empty if not self.conn.execute("SELECT 1 FROM items WHERE work_id = ?", (w,)).fetchone()]
+            if not gone:
+                return []
+            self.conn.executemany("DELETE FROM works WHERE id = ?", [(w,) for w in gone])
+            cmd.gone += [("work", w) for w in gone]
+            cmd.touch()
+            return gone
 
     def place_of(self, item_id):
         """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
@@ -2698,6 +2783,25 @@ class Store:
             if f"reader:{name}" not in self._meta():
                 self._set_meta({f"reader:{name}": self._log_seq(), f"reader_epoch:{name}": self._meta()["epoch"],
                                 "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+
+    def unregister_reader(self, name):
+        """A reader switched off (Connect's preview, P3.1): its watermark goes. With no reader left nothing is
+        logged any more and the log's rows go too, so the copy stops carrying them; `log_seq` keeps the last id, so ids
+        are never reused and a reader switched on again starts past it (✅ G1.1-2). Bookkeeping: no version moves.
+        False when no such reader was set."""
+        with self._writing():
+            meta = self._meta()
+            if f"reader:{name}" not in meta:
+                return False
+            seq = self._log_seq()
+            self.conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (f"reader:{name}", f"reader_epoch:{name}"))
+            marks = [int(v) for k, v in meta.items() if k.startswith("reader:") and k != f"reader:{name}"]
+            if marks:
+                self.conn.execute("DELETE FROM placement_log WHERE id <= ?", (min(marks),))
+            else:
+                self.conn.execute("DELETE FROM placement_log")
+            self._set_meta({"log_seq": seq, "copy_dirty": int(meta.get("copy_dirty") or 0) + 1})
+            return True
 
     def advance_reader(self, name, log_id):
         """Bookkeeping the copy carries: no version moves, `copy_dirty` set."""
@@ -4521,6 +4625,8 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             _cleanup_temps(manifest_path(user_files_dir))
         if store.meta().get("reader:connect") is not None or any(k.startswith("reader:") for k in store.meta()):
             did = bool(store.prune_log()) or did
+        did = bool(store.prune_gone()) or did
+        did = bool(store.tidy_works()) or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:

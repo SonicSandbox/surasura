@@ -8,6 +8,7 @@ real Japanese and Chinese words taken from tests/Test Resources/ (ja = zh: every
 import json
 import os
 import re
+import time
 
 from app import library_store as ls
 
@@ -53,12 +54,23 @@ def entry(rel, origin="Manual Import", source_type="subtitle"):
 
 
 def write_manifest(user_files_dir, doc):
-    """As today's `save_manifest` writes it: indent=2, raw UTF-8, text mode (CRLF on Windows)."""
+    """As today's `save_manifest` writes it: indent=2, raw UTF-8, text mode (CRLF on Windows).
+
+    The store knows its own copy by its stat (mtime + size, §6.7). A real outside writer comes seconds after the
+    copy it replaces; here it can come within one clock tick (GitHub's runner ticks every 15.6 ms) at the same size
+    (a move only reorders), and the store would take it for its own copy, unchanged. So it's written again until
+    its stat differs from the file it replaced."""
     os.makedirs(user_files_dir, exist_ok=True)
     path = ls.manifest_path(user_files_dir)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=2, ensure_ascii=False)
-    return path
+    before = ls._stat(path)
+    deadline = time.perf_counter() + 1
+    while True:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2, ensure_ascii=False)
+        if before is None or ls._stat_str(ls._stat(path)) != ls._stat_str(before):
+            return path
+        assert time.perf_counter() < deadline, "the clock never moved"
+        time.sleep(0.001)
 
 
 def read_doc(user_files_dir):

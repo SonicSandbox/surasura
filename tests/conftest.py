@@ -12,7 +12,10 @@ from unittest.mock import patch
 # Ensure the project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.quiet_windows import quiet_windows
 from tests.tk_on_github import skip_tk_tests
+
+quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
 
 def pytest_collection_modifyitems(items):

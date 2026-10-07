@@ -21,8 +21,8 @@ import time
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, big_store, entry, library, migrated, names, paths, roots,
-                                              subprocess_env, touch, write_manifest)
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, library, migrated, names,
+                                              no_line, paths, pieces_ok, roots, subprocess_env, touch, write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
@@ -202,7 +202,7 @@ class Model:
 
 
 def _run_property(language, steps, seed):
-    store = migrated(language, shows=4, episodes=5, loose=2)
+    store = no_line(migrated(language, shows=4, episodes=5, loose=2))     # 2.4's placement, the line's rule aside
     data_dir, user_files_dir = roots(language)
     from tests.test_library_store_support import read_doc
     doc = read_doc(user_files_dir)
@@ -278,6 +278,7 @@ def _run_property(language, steps, seed):
             store.set_tier(sids, target or "graduated")
         else:
             continue
+        assert pieces_ok(store) is None, f"step {step}: {op} broke a piece: {pieces_ok(store)}"
         for t in ls.ANALYSED:
             assert store.ids(t) == model.ids(t), f"step {step}: {op} diverged in {t}"
     store.close()
@@ -303,13 +304,15 @@ def test_undo_proof_add_then_a_drag_then_undo_the_add(language):
     rel = "HighPriority/" + names(language)[40] + "/" + names(language)[41] + ".srt"
     add = store.insert([touch(data_dir, rel)], "now")
     new_id = add.added[0]
+    pushed = store.ids("soon")[0]                  # 3.0: the Soon line stays put, NOW's last row crossed it (G2.2-1)
     now = store.ids("now")
     drag = store.move([now[-1]], "now", before_id=now[1])
     dragged = store.ids("now")
     undone = store.undo(add)
     assert undone.notes == []
     assert new_id not in store.ids("now")
-    assert store.ids("now") == [i for i in dragged if i != new_id], "the drag must survive the Add's undo"
+    assert store.ids("now") == [i for i in dragged if i != new_id] + [pushed], \
+        "the drag must survive the Add's undo (and the row the Add pushed below the line comes back)"
     assert drag is not None
     store.close()
 
@@ -795,7 +798,7 @@ def test_log_set_tier_remove_restore(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_log_register_is_hatos_and_never_explicit(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))              # a drop at the top of NOW: it enters the mine line
     data_dir, _u = roots(language)
     store.register_reader("connect")
     mark = _last_log(store)
@@ -1028,7 +1031,7 @@ def test_insert_at_before_and_after_an_anchor(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_register_finds_a_synced_row_or_adds_one(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))              # first 2.x's rule (Q4-11), then New arrivals (D30)
     data_dir, _u = roots(language)
     w = names(language)
     rel = f"HighPriority/{w[1]}/{w[90]}.srt"
@@ -1081,7 +1084,7 @@ def test_register_with_no_store(language):
     assert ls.register_headless(language, path, {"content_key": "built"}, data_dir, user_files_dir).code == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert store.conn.execute("SELECT COUNT(*) FROM pairings").fetchone()[0] == 1
-    assert store.ids("now")[0] == store.item_id(f"{ls.HATO_FOLDER}/{w[94]}.srt")
+    assert store.ids("arrivals") == [store.item_id(f"{ls.HATO_FOLDER}/{w[94]}.srt")], "3.0: it waits (D30)"
     store.close()
 
 
@@ -1489,7 +1492,9 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         store.move([item], "soon", after_id=anchor)
         times.append(time.perf_counter() - t0)
         log_rows = _last_log(store) - logs
-        assert store.conn.total_changes - before == 1 + log_rows + 2      # the item, its log rows, 2 versions
+        # the item, its log rows, 2 versions — and its piece (schema 2, 05 §5.2): it leaves its show's piece and takes
+        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, at most 11 episodes)
+        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 11
     if BENCH:
         work = statistics.median(t - f for t, f in zip(times, probe.times))
         _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "

@@ -216,6 +216,9 @@ def test_a_register_that_builds_the_store_still_queues_the_drop():
     h.write_settings(connect_enabled=True)
     data_dir, user_files = c.dirs()
     assert ls.maintain("ja", data_dir, user_files, from_folders=True) == ls.EXIT_DONE
+    with c.store() as s:                                     # New arrivals off: a drop lands at the top of NOW (L3.1:
+        s.set_library_options(arrivals_on=False)             # 3.0 builds a library with them on), and the copy
+    assert ls.maintain("ja", data_dir, user_files) == ls.EXIT_DONE   # carries the switch to the rebuild
     os.remove(ls.library_db_path("ja", data_dir))            # the manifest stays: the store is rebuilt from it
     for side in ("-wal", "-shm"):
         if os.path.exists(ls.library_db_path("ja", data_dir) + side):

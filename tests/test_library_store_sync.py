@@ -21,8 +21,9 @@ import unicodedata
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, big_store, entry, laptop_library, library, migrated,
-                                              names, read_doc, roots, subprocess_env, touch, write_manifest)
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, laptop_library, library,
+                                              migrated, names, no_line, read_doc, roots, subprocess_env, touch,
+                                              write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
@@ -88,7 +89,7 @@ def _add_files(language, data_dir, specs):
 def test_parity_on_today_shaped_folders(language):
     """Each folder in its tier: the same rows and placement as today's sync, except exactly the cases rule 3
     lists (a show with no row in NOW or Soon → the top of NOW; hato's drops at the top of NOW)."""
-    store = migrated(language, shows=3, episodes=4)
+    store = arrivals_off(no_line(migrated(language, shows=3, episodes=4)))     # 2.4's sync, before the line
     data_dir, user_files_dir = roots(language)
     doc = read_doc(user_files_dir)
     w = names(language)
@@ -123,7 +124,7 @@ def test_parity_on_the_laptop_shaped_library(language):
     data_dir, user_files_dir, doc = laptop_library(language)
     write_manifest(user_files_dir, doc)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    store = ls.open_store(language, data_dir, user_files_dir)
+    store = arrivals_off(no_line(ls.open_store(language, data_dir, user_files_dir)))   # 2.4's sync, before the line
     w = names(language)
     later = doc["schedule"]["PHASE_3_LATER"]
     soon = doc["schedule"]["PHASE_2_SOON"]
@@ -171,7 +172,7 @@ def test_graduated_files_are_never_re_added(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_hatos_drops_land_at_the_top_of_now(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))                   # with New arrivals off (2.x's rule, Q4-11)
     data_dir, _u = roots(language)
     w = names(language)
     touch(data_dir, f"{ls.HATO_FOLDER}/{w[60]}.srt")
@@ -204,7 +205,7 @@ def _three_ways(store, data_dir, rel_for, tab):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_show_with_rows_in_soon_and_6_months(language):
-    store = migrated(language, shows=2, episodes=4)
+    store = arrivals_off(migrated(language, shows=2, episodes=4))   # register places by rule 3 (arrivals off)
     data_dir, _u = roots(language)
     goal_show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]][:4]
     store.set_tier(goal_show[:2], "soon")                       # the show now sits in Soon and 6+ Months
@@ -235,7 +236,7 @@ def test_a_new_episode_follows_its_demoted_show(language):
 @pytest.mark.parametrize("where", ["goal", "graduated"])
 def test_q4_9_a_show_with_no_row_in_now_or_soon(language, where):
     """✅ G1.1-14, Q4-9 always: the top of NOW, for a sync, register and an Add on any tab."""
-    store = migrated(language, shows=6, episodes=2)
+    store = arrivals_off(migrated(language, shows=6, episodes=2))   # register places by rule 3 (arrivals off)
     data_dir, _u = roots(language)
     goal = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
     shows = [goal[n:n + 2] for n in range(0, 12, 2)]          # a fresh show for each way and tab

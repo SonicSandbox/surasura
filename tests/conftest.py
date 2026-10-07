@@ -231,6 +231,24 @@ def real_store_helper(store_helper_spawns, monkeypatch):
     monkeypatch.setattr(library_store, "spawn_maintain", _REAL_SPAWN_MAINTAIN)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _guards_for_shared_windows():
+    """The guards above — no UI timers, indexer, Anki sync or update check, no store helper — held for the whole
+    session as well: a window a test class builds once (setUpClass) or a module fixture builds is made before any
+    function fixture runs, so it had none of them. The Content Manager of test_content_manager_layer_a.py started
+    the real store helper and its own worker thread: the helper built a store mid-test (sooner on a loaded machine),
+    and from then on the samples flow's sync went to the worker while the test read NOW at once — it failed one run
+    in two beside other test runs."""
+    mp = pytest.MonkeyPatch()
+    for name in ("SURASURA_NO_UI_TIMERS", "SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC",
+                 "SURASURA_NO_UPDATE_CHECK"):
+        mp.setenv(name, "1")
+    from app import library_store
+    mp.setattr(library_store, "spawn_maintain", lambda language, *extra: None)
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def _forget_names_tables():
     """The library's name tables a process applies (app/names.py) are read from the token store once and kept for a

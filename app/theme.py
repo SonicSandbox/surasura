@@ -113,6 +113,11 @@ MIXES = {
     "star-fill": (766, ("mix", "accent-2", 10, "transparent", None)),
     "badge-new": (777, ("mix", "accent", 13, "transparent", None)),
 }
+# --- W2.2: the first screens ----------------------------------------------------------------------------------- #
+# The "Studying its cards first" pill's inset ring (mock.html :777, the line's second mix: found at W2.2).
+MIXES["study-first-ring"] = (777, ("mix", "accent", 30, "transparent", None))
+# --- end W2.2 -------------------------------------------------------------------------------------------------------- #
+
 # Opaque versions of the alpha mixes, laid on the ground the mock shows them on (research/09's table).
 OVER = {"header-top": "bg", "status-in": "surface", "status-mining": "surface", "source-hato": "surface",
         "source-youtube": "surface", "source-anilist": "surface"}
@@ -293,6 +298,14 @@ TYPE = {
     "source-chip": (10.5, 650), "key-hint": (10.5, 700), "new-per-episode": (10, 600),
 }
 LETTER_SPACING_EM = {"eyebrow": 0.12, "group-label": 0.1}
+# --- W2.2: the type roles the mock draws that A4 didn't name (the anatomy digest, tracks/window/work/w22) ---------- #
+TYPE.update({
+    "subline": (11.5, 400), "position": (12, 400), "month": (11.5, 700), "goal-label": (13, 650),
+    "disk-mark": (11, 650), "episode-label": (13, 400), "date": (12, 400), "cover-title": (7, 700),
+    "cover-title-large": (12, 700),
+})
+LETTER_SPACING_EM.update({"month": 0.1, "cover-title": 0.06, "cover-title-large": 0.06})
+# --- end W2.2 -------------------------------------------------------------------------------------------------------- #
 
 
 def font_families(language="ja", script=None):
@@ -365,6 +378,32 @@ MOTION = MappingProxyType({
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
 })
+
+
+# --- W2.2: the generated cover (the fallback and the offline look, 05 §5.6; mock.html `pieceCover`) --------------- #
+def _hsl(h, s_, l_):
+    """CSS hsl() -> `#rrggbb` (h in degrees, s and l 0–1)."""
+    h = (h % 360) / 360.0
+    def f(n):
+        k = (n + h * 12) % 12
+        a = s_ * min(l_, 1 - l_)
+        return 255.0 * (l_ - a * max(-1.0, min(k - 3, 9 - k, 1.0)))
+    return hex_of(f(0), f(8), f(4))
+
+
+def title_hue(title):
+    """The mock's hue for a title with no cover: (h·31 + code point) mod 360 over its characters."""
+    h = 0
+    for ch in title or "":
+        h = (h * 31 + ord(ch)) % 360
+    return h
+
+
+def generated_cover(title):
+    """(top, bottom) of a title's painted cover: a 160° gradient from hsl(h 45% 30%) to hsl(h+40 40% 16%)."""
+    h = title_hue(title)
+    return _hsl(h, 0.45, 0.30), _hsl(h + 40, 0.40, 0.16)
+# --- end W2.2 -------------------------------------------------------------------------------------------------------- #
 
 
 def tokens(theme=DEFAULT_THEME, text_size=DEFAULT_TEXT_SIZE):

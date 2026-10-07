@@ -101,9 +101,10 @@ def test_every_blue_mix_equals_the_browsers_within_one_step(name, expected):
 
 
 def test_every_mix_the_mock_computes_is_worked_out_for_every_theme():
-    """All 40 `color-mix` uses in the look test's mock.html (43 named mixes: a line can hold two), each per theme, and
-    each theme's differs from Blue's wherever a themed token goes in."""
-    assert len(theme.MIXES) == 43
+    """All 40 `color-mix` uses in the look test's mock.html (44 named mixes: a line can hold two — :777's second, the
+    *Studying its cards first* ring, found at W2.2), each per theme, and each theme's differs from Blue's wherever a
+    themed token goes in."""
+    assert len(theme.MIXES) == 44
     for t in theme.THEMES:
         for name in theme.MIXES:
             assert re.fullmatch(r"#[0-9a-f]{6}([0-9a-f]{2})?", theme.colours(t)[name]), (t, name)
@@ -199,3 +200,14 @@ def test_percentages_out_of_range_are_refused_and_over_100_scale_down():
     with pytest.raises(ValueError):
         theme.mix("#62b6f2", -5, "#111419")
     assert theme.mix("#62b6f2", 60, "#111419", 60) == theme.mix("#62b6f2", 50, "#111419", 50)
+
+
+def test_a_generated_cover_is_the_mocks_gradient_for_its_titles_hue():
+    """A title with no cover gets the mock's painted one (W2.2): hsl(h 45% 30%) → hsl(h+40 40% 16%), h from the title.
+    The same title always gives the same cover; two titles, two hues."""
+    top, bottom = theme.generated_cover("星降る街の小さな工房")
+    assert re.fullmatch(r"#[0-9a-f]{6}", top) and re.fullmatch(r"#[0-9a-f]{6}", bottom)
+    assert theme.generated_cover("星降る街の小さな工房") == (top, bottom)
+    assert theme.generated_cover("海辺の図书室") != (top, bottom)
+    assert theme._hsl(0, 1.0, 0.5) == "#ff0000" and theme._hsl(120, 1.0, 0.25) == "#008000"
+    assert theme.title_hue("") == 0 and 0 <= theme.title_hue("雷鸣之剑与见习魔女") < 360

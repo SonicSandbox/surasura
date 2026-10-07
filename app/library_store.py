@@ -35,12 +35,14 @@ import json
 import ntpath
 import os
 import random
+import re
 import sqlite3
 import sys
 import threading
 import time
 import unicodedata
 import uuid
+from collections import namedtuple
 from contextlib import contextmanager
 
 if __name__ == "__main__" and __package__ is None:
@@ -87,8 +89,9 @@ MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 SKIP_NAMES = ("master_manifest.json", "_order.json", "desktop.ini")
 
-# maintain's exit codes (spec §6.7)
+# maintain's exit codes (spec §6.7); register_headless adds 6: the path can't be registered (not in the library)
 EXIT_DONE, EXIT_FAILED, EXIT_USAGE, EXIT_NOTHING, EXIT_NEEDS_YOU, EXIT_BUSY = 0, 1, 2, 3, 4, 5
+EXIT_BAD_DATA = 6
 
 LOCK_TIMEOUT = 5.0               # the write lock and SQLite's busy wait
 LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
@@ -125,6 +128,10 @@ class StoreConflict(StoreError):
 
 class UndoRefused(StoreError):
     """An undo record from another epoch (a rebuild or Repair happened since, §6.6)."""
+
+
+class NotInLibrary(StoreError):
+    """`register` was handed a path outside the library's data folder: refused before anything is written."""
 
 
 # ------------------------------------------------------------------------------------------------ #
@@ -454,9 +461,21 @@ SCHEMA_SQL = (
       at TEXT NOT NULL)""",
 )
 
+# Tables added without a schema change (L2.2 §2.2): an older Surasura ignores a table it doesn't know, so each is
+# made IF NOT EXISTS wherever tables are written, and goes out in the copy only where it exists.
+ADDED_TABLES_SQL = (
+    """CREATE TABLE IF NOT EXISTS made_words (
+      item_id  INTEGER NOT NULL,
+      word     TEXT NOT NULL,
+      note_ids TEXT NOT NULL,
+      made_at  TEXT NOT NULL,
+      batch    TEXT,
+      PRIMARY KEY (item_id, word))""",
+)
+
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log")
+               "placement_log", "made_words")
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order")
 
@@ -568,6 +587,8 @@ def _probe(db_path, busy_wait):
                 return "json", "not ready"
             row = conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone()
             if row is None:
+                if conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone():
+                    return "read-only", NEWER_COPY                  # the helper met a newer store's copy (G2.2-7)
                 failed = conn.execute("SELECT value FROM meta WHERE key = 'migration_failed'").fetchone()
                 return "json", ("migration failed" if failed else "not ready")
             return "store", None
@@ -766,6 +787,45 @@ def _dumps(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+_PRODUCER = re.compile(r"[a-z0-9_-]{1,32}")
+_NOT_PRODUCERS = ("user", "undo", "sync")       # the names a person, an undo and a disk sync are logged under
+
+
+def _producer(pairing):
+    """Who registered (the record's `producer`), as the placement log records it: a short name (lowercase letters,
+    digits, - or _, up to 32) that isn't a person's, an undo's, a sync's or a rule's, else "hato" — it lands in the
+    copy and the log."""
+    name = pairing.get("producer") if isinstance(pairing, dict) else None
+    if isinstance(name, str) and _PRODUCER.fullmatch(name) and name not in _NOT_PRODUCERS \
+            and not name.startswith("rule"):
+        return name
+    return "hato"
+
+
+def library_rel(data_dir, path):
+    """`path` (absolute, or relative to the data folder) as the data folder's normalised relative path ('/'), or None
+    when it isn't under it: another drive, a drive-relative path (D:foo.srt), `..`, the folder itself. 3.0's Sources
+    (roots) widen this."""
+    if not os.path.isabs(path) and os.path.splitdrive(path)[0]:
+        return None
+    try:
+        rel = os.path.relpath(path, data_dir) if os.path.isabs(path) else path
+    except ValueError:              # os.path.relpath across drives (Windows)
+        return None
+    rel = os.path.normpath(rel).replace("\\", "/")
+    if rel in (".", "..") or rel.startswith("../") or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        return None
+    return rel
+
+
+def _same_record(text, pairing):
+    """A stored pairing row and a record: equal by value, whatever order the row's keys were written in."""
+    try:
+        return json.loads(text) == pairing
+    except ValueError:
+        return False
+
+
 def _rel_dir(rel):
     return rel.rsplit("/", 1)[0] if "/" in rel else ""
 
@@ -906,6 +966,7 @@ class _Command:
         self.mine_before = store._mine_ids(self.mine_n) if self.logging else None
         self.events = []      # (item_id, kind, explicit)
         self.explicit = {}    # item_id -> explicit, for its crossing events
+        self.quiet = set()    # items that log no event at all (a back-fill registration, P2.1)
 
     def touch(self, tiers=(), order=False, availability=False, pins=False):
         """Record a change: any tier in `tiers` that is analysed bumps `order_version`."""
@@ -936,12 +997,13 @@ class _Command:
             for item_id in self.mine_before:
                 if item_id not in now:
                     self.events.append((item_id, "left_mine_line", self.explicit.get(item_id, 0)))
-            if self.events:
+            events = [e for e in self.events if e[0] not in self.quiet]
+            if events:
                 at = _now()
                 store.conn.executemany(
                     "INSERT INTO placement_log (item_id, kind, by, explicit, state_version, at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    [(i, k, self.by, e, self.version, at) for i, k, e in self.events])
+                    [(i, k, self.by, e, self.version, at) for i, k, e in events])
         updates = [("state_version", self.version)]
         if self.bump_order:
             updates.append(("order_version", self.meta["order_version"] + 1))
@@ -1272,6 +1334,16 @@ class Store:
         out["entry"] = json.loads(out["entry"])
         return out
 
+    def place_of(self, item_id):
+        """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
+        with self._reading():
+            row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                return None, None
+            above = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = ? AND (ord < ? OR (ord = ? AND id < ?))",
+                                      (row[0], row[1], row[1], item_id)).fetchone()[0]
+        return row[0], above + 1
+
     def item_id(self, rel_path):
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel_path),)).fetchone()
         return row[0] if row else None
@@ -1329,6 +1401,10 @@ class Store:
         if os.path.isabs(path):
             path = os.path.relpath(path, self.data_dir)
         return path.replace("\\", "/")
+
+    def _in_library(self, path):
+        """Does `path` lie under the data folder? (`library_rel`)"""
+        return library_rel(self.data_dir, path) is not None
 
     # --- order primitives (§6.5) ----------------------------------------------------------------- #
 
@@ -1440,18 +1516,20 @@ class Store:
 
     # --- commands (§6.6) ------------------------------------------------------------------------- #
 
-    def move(self, ids, tier, before_id=None, after_id=None, check=None):
+    def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None):
         """Drag: the block keeps its current relative order and lands contiguous before or after the
         anchor (neither = the top of `tier`). A tier change is Demote / Promote without moving files.
         A no-op — an anchor inside `ids`, or every item already in `tier` in the same sequence —
-        commits nothing and returns None."""
+        commits nothing and returns None. `by`: who placed it, as the placement log records it (a
+        program's name from the command line's `place --source`, ✅ G1.3-5); explicit when "user", or as
+        `explicit` says (a placing rule the user turned on is the user's own action, D30)."""
         ids = list(dict.fromkeys(ids))
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
         anchor = before_id if before_id is not None else after_id
         if anchor is not None and anchor in ids:
             return None
-        with self._command("move") as cmd:
+        with self._command("move", by) as cmd:
             self._recheck(check)
             rows = self._rows(ids)
             if not rows:
@@ -1471,7 +1549,7 @@ class Store:
             self._put(tier, block, where, cmd.version)
             cmd.touch({r[1] for r in ordered} | {tier})
             for item_id in block:
-                cmd.event(item_id, "placed", 1)
+                cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit))
             return change
 
     def _in_place(self, tier, ordered, before_id, after_id):
@@ -1563,13 +1641,14 @@ class Store:
                 return row
         return None
 
-    def set_tier(self, ids, tier, check=None):
+    def set_tier(self, ids, tier, check=None, by="user", explicit=None):
         """Graduate (→ graduated, `graduated_at` set), Demote, Promote — no file moves (L5). Each item
-        lands after its folder's last row in the new tier, else at the top, in the order given."""
+        lands after its folder's last row in the new tier, else at the top, in the order given. `by` as
+        `move`'s (the command line's `finish --source`)."""
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
         ids = list(dict.fromkeys(ids))
-        with self._command("set_tier") as cmd:
+        with self._command("set_tier", by) as cmd:
             self._recheck(check)
             rows = self._rows(ids)
             moving = [i for i in ids if i in rows and rows[i][1] != tier]
@@ -1591,7 +1670,8 @@ class Store:
                                       [(_now(), i) for i in moving])
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
-                cmd.event(item_id, "finished" if tier == "graduated" else "placed", 1)
+                cmd.event(item_id, "finished" if tier == "graduated" else "placed",
+                          int(by == "user" if explicit is None else explicit))
             return change
 
     # --- adding files -------------------------------------------------------------------------- #
@@ -1740,32 +1820,45 @@ class Store:
         row = self.conn.execute("SELECT rel_key FROM items WHERE id = ?", (item_id,)).fetchone()
         return row is not None and self._takeover(row[0], started_at) == item_id
 
-    def register(self, path, pairing):
+    def register(self, path, pairing, backfill=False):
         """hato's command (headless): find the item for `path` (a sync may have made it) or add it — in
         `arrivals` when `meta.arrivals_on`; else a file in hato's drop folder at the top of NOW (Q4-11,
         through 2.x); else by §6.10 rule 3 (Q4-9) — and write its pairing (`pairing["content_key"]`, the
-        record verbatim). An added item undoes as an Add; a pairing alone leaves `changed_in`."""
+        record verbatim). An added item undoes as an Add; a pairing alone leaves `changed_in`.
+
+        The record is written with its keys sorted and compared by its parsed value, so the same record in
+        another key order (or a row written before keys were sorted) is the same: nothing written. A path not
+        under the data folder raises `NotInLibrary` before anything is written (3.0's Sources widen this).
+        `backfill` (P3.2: pairings hato made before Connect was on) attaches and places as above but logs no
+        placement event for the item, so nothing is ever mined because of it (✅ G1.1-2's watermark). The events
+        are logged as the record's `producer`'s (`_producer`: "hato" when it names none), never explicit."""
         content_key = pairing["content_key"]
-        prepared = self._prepare([path], None, "hato")
-        with self._command("register", "hato") as cmd:
+        rel = library_rel(self.data_dir, path)
+        if rel is None:
+            raise NotInLibrary(f"not in the library: {path}")
+        prepared = self._prepare([rel], None, "hato")     # normalised: one key per file (a/../b.srt is b.srt)
+        by = _producer(pairing)
+        with self._command("register", by) as cmd:
             meta = cmd.meta
             _p, rel, key, entry, fp = prepared[0]
             row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
             change = None
             if row is None:
                 if meta.get("arrivals_on"):
-                    change = self._add(prepared, "arrivals", "end", None, None, None, "register", "hato", 0)
+                    change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
                 else:
                     first = rel.split("/", 1)[0]
                     change = self._add(prepared, TIER_OF_FOLDER.get(first, "now"), "show", None, None, None,
-                                       "register", "hato", 0)
+                                       "register", by, 0)
                 item_id = change.added[0]
             else:
                 item_id = row[0]
+            if backfill:
+                cmd.quiet.add(item_id)
             old = self.conn.execute("SELECT item_id, pairing, paired_at FROM pairings WHERE content_key = ?",
                                     (content_key,)).fetchone()
-            record = _dumps(pairing)
-            if old is not None and old[0] == item_id and old[1] == record:
+            record = json.dumps(pairing, sort_keys=True, ensure_ascii=False)
+            if old is not None and old[0] == item_id and _same_record(old[1], pairing):
                 return change
             self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
                               "VALUES (?, ?, ?, ?)", (content_key, item_id, record, _now()))
@@ -2306,7 +2399,10 @@ class Store:
             names = [d[0] for d in cur.description]
             rows = [dict(zip(names, r)) for r in cur.fetchall()]
             tables = {}
+            present = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             for name in COPY_TABLES:
+                if name not in present:                            # an added table this store hasn't made yet
+                    continue
                 c = self.conn.execute(f"SELECT * FROM {name} ORDER BY rowid")
                 tables[name] = {"fields": [d[0] for d in c.description], "rows": [list(r) for r in c.fetchall()]}
             log_seq = self._log_seq()
@@ -2324,8 +2420,9 @@ class Store:
             doc[key] = value
         lib_meta = {"epoch": meta["epoch"], "log_seq": log_seq, "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
                     "arrivals_on": meta.get("arrivals_on", 0)}
-        if "soon_line" in meta:
-            lib_meta["soon_line"] = meta["soon_line"]
+        for key in ("soon_line", "auto_band"):
+            if key in meta:
+                lib_meta[key] = meta[key]
         for key, value in meta.items():
             if key.startswith("reader"):
                 lib_meta[key] = value
@@ -2405,6 +2502,22 @@ class _Norm:
         self.extra = {}
         self.lib = None
         self.report = []
+
+
+NEWER_COPY = "made by a newer Surasura"
+
+
+def copy_is_newer(doc):
+    """Was this copy written by a newer store (its `surasura_library` names a later schema or format)? Such a copy
+    may carry tables and fields this version doesn't know: it is never rebuilt from, re-imported or repaired from
+    here, and never overwritten (L2.2 G2.2-7)."""
+    lib = doc.get("surasura_library") if isinstance(doc, dict) else None
+    if not isinstance(lib, dict):
+        return False
+    try:
+        return int(lib.get("store_schema") or 0) > STORE_SCHEMA or int(lib.get("format") or 0) > COPY_FORMAT
+    except (TypeError, ValueError):
+        return True                                    # a schema this version can't read: never built from
 
 
 def normalise(doc, platform=sys.platform):
@@ -2597,6 +2710,8 @@ def _write_image(store, image, meta):
     items (keys 1024, 2048, … per tier), every other table, the id sequences (K30) and `meta`."""
     conn = store.conn
     now = _now()
+    for sql in ADDED_TABLES_SQL:
+        conn.execute(sql)
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -2638,11 +2753,17 @@ def _write_image(store, image, meta):
             col = t["fields"].index("item_id")
             kept = {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in have]}
             _insert_rows(conn, name, kept)
+    t = tables.get("made_words")                               # outlives Remove: an item or its trash row
+    if t and t["rows"]:
+        col = t["fields"].index("item_id")
+        known = have | {r[0] for r in conn.execute("SELECT item_id FROM trash")}
+        _insert_rows(conn, "made_words", {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in known]})
     # K30: AUTOINCREMENT learns only from the rows a table holds; ids are never reused.
     highest = max([0] + list(have) + [r[0] for r in conn.execute(
         "SELECT MAX(item_id) FROM trash UNION ALL SELECT MAX(item_id) FROM placement_log "
         "UNION ALL SELECT MAX(item_id) FROM pairings UNION ALL SELECT MAX(item_id) FROM anki_links "
-        "UNION ALL SELECT MAX(item_id) FROM anki_changes") if r[0] is not None])
+        "UNION ALL SELECT MAX(item_id) FROM anki_changes UNION ALL SELECT MAX(item_id) FROM made_words")
+        if r[0] is not None])
     _set_seq(conn, "items", highest)
     marks = [v for k, v in meta.items() if k.startswith("reader:")]
     log_high = conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
@@ -2744,7 +2865,7 @@ def _copy_meta_block(lib):
     meta = {}
     block = lib.get("meta") if isinstance(lib, dict) else None
     if isinstance(block, dict):
-        for key in ("soon_line", "mine_line", "arrivals_on", "log_seq"):
+        for key in ("soon_line", "mine_line", "arrivals_on", "log_seq", "auto_band"):
             if key in block:
                 meta[key] = block[key]
         for key, value in block.items():
@@ -2879,8 +3000,10 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
     meta["last_export_stat"] = read_stat or ""
     with store._writing():
         if keep_store_id:
-            for name in ("anki_links", "pairings", "placement_log", "trash", "exclusions", "anki_changes",
-                         "items", "pieces", "roots", "meta"):
+            for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
+                store.conn.execute(sql)
+            for name in ("anki_links", "pairings", "made_words", "placement_log", "trash", "exclusions",
+                         "anki_changes", "items", "pieces", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)
         if not sha_ok:
@@ -3244,6 +3367,8 @@ def export_copy(store):
         except ManifestUnreadable:
             return False
         lib = other.get("surasura_library") if other else None
+        if copy_is_newer(other):
+            return False                                           # a newer store's copy is never overwritten here
         if not (isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
                 and isinstance(lib.get("version"), int) and lib["version"] < meta["state_version"]
                 and lib.get("content_sha") == content_sha(other)):
@@ -3263,6 +3388,12 @@ def export_copy(store):
     return True
 
 
+def _forget_newer_copy_seen(store):
+    """The newer copy is gone or replaced: exports may resume (bookkeeping, no version moves)."""
+    with store._writing():
+        store.conn.execute("DELETE FROM meta WHERE key = 'newer_copy_seen'")
+
+
 def _check_copy(store, retry_wait=1.0):
     """Step 2 of `maintain`: has the JSON changed without the store? Returns what was done."""
     target = manifest_path(store.user_files_dir)
@@ -3272,7 +3403,11 @@ def _check_copy(store, retry_wait=1.0):
     if pending and st is not None and json.loads(pending).get("stat") == _stat_str(st):
         return "pending"                                       # a question is waiting for the user
     if st is None or _stat_str(st) == meta.get("last_export_stat"):
+        if meta.get("newer_copy_seen") is not None:
+            _forget_newer_copy_seen(store)
         return "same"
+    if meta.get("newer_copy_seen") == _stat_str(st):
+        return "newer"                                         # unchanged since we last read it: not again
     doc, read_stat, problem = read_manifest(target)
     if doc is None:
         time.sleep(retry_wait)                                     # a program halfway through saving it?
@@ -3280,6 +3415,11 @@ def _check_copy(store, retry_wait=1.0):
         if doc is None:
             backup_to_trash(target, move=True)
             return "set aside"
+    if copy_is_newer(doc):
+        store.bookkeeping({"newer_copy_seen": read_stat})      # export_due stays quiet while it sits there
+        return "newer"                     # never re-imported or rebuilt from here; export won't overwrite it either
+    if meta.get("newer_copy_seen") is not None:
+        _forget_newer_copy_seen(store)
     lib = doc.get("surasura_library")
     ours = isinstance(lib, dict) and lib.get("store_id") == meta["store_id"]
     if ours and lib.get("content_sha") == content_sha(doc):
@@ -3408,6 +3548,15 @@ def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
                 doc, read_stat, problem = read_manifest(target)
             except ManifestUnreadable:
                 return EXIT_FAILED                                 # retried, never treated as damage
+        newer = doc is not None and copy_is_newer(doc)
+        if newer or store.meta().get("newer_copy") is not None:
+            with store._writing():                                 # read-only on that copy until it's ours again
+                if newer:
+                    store._set_meta({"newer_copy": _dumps({"stat": read_stat, "at": _now()})})
+                else:
+                    store.conn.execute("DELETE FROM meta WHERE key = 'newer_copy'")
+            if newer:
+                return EXIT_NEEDS_YOU
         try:
             if doc is not None and isinstance(doc.get("surasura_library"), dict):
                 _rebuild(store, user_files_dir, doc, read_stat)
@@ -3501,7 +3650,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             return EXIT_NEEDS_YOU
         if found == "backup failed":
             return EXIT_FAILED
-        did = did or found not in ("same", "stale", "unchanged")
+        did = did or found not in ("same", "stale", "unchanged", "newer")
         if export:
             did = export_copy(store) or did
             _cleanup_temps(manifest_path(user_files_dir))
@@ -3839,6 +3988,8 @@ def _store_export_due(self):
     """Has the store something the copy lacks (the trigger rule, §6.7)? Read cheaply, no file I/O."""
     with self._reading():
         meta = self._meta()
+    if meta.get("newer_copy_seen") is not None:
+        return False                       # a newer store's copy sits there: nothing may be exported over it
     return meta["state_version"] != meta.get("last_export_version") or bool(meta.get("copy_dirty"))
 
 
@@ -3853,8 +4004,12 @@ def maintain_due(store, handed=""):
     last export, or a copy someone else rewrote whose stat this process hasn't already handed to a helper
     (`handed`). Returns (due, the copy's stat)."""
     seen = store.copy_stat()
-    if store.meta().get("reimport_pending"):
+    meta = store.meta()
+    if meta.get("reimport_pending"):
         return False, seen                       # the helper would only wait for the same answer (exit 4)
+    newer = meta.get("newer_copy_seen")
+    if newer is not None:                        # a newer store's copy: due only once it changes or goes
+        return seen != newer and (not seen or seen != handed), seen     # gone ("") is always due
     if store.export_due():
         return True, seen
     return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen
@@ -3975,7 +4130,11 @@ def read_only_view(language, data_dir, user_files_dir):
         renamed or gone): the walk a sync would make, its delta computed and never applied;
       * ("json", None, None, False): no ready store — the file is the list, as every reader takes it;
       * ("unknown", None, None, False): a store that can't be read this way now (damaged, made by a newer Surasura,
-        busy, an I/O error)."""
+        busy, an I/O error).
+
+    The disk is walked first, then the schedule, the versions and the rows the delta compares are read in one
+    transaction: a sync committing in between is in all three or in none, so `pending` and the schedule always
+    describe the same state."""
     db_path = library_db_path(language, data_dir)
     if not os.path.exists(db_path):
         return "json", None, None, False
@@ -3992,20 +4151,81 @@ def read_only_view(language, data_dir, user_files_dir):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version > STORE_SCHEMA:
             return "unknown", None, None, False
+        if conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone():
+            return "unknown", None, None, False                # read-only on a newer store's copy (G2.2-7)
         if version < STORE_SCHEMA or conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone() is None:
             return "json", None, None, False
         store = Store.__new__(Store)            # a reader on this connection: no write lock, nothing opened for writing
         store.db_path, store.language, store.data_dir, store.user_files_dir = db_path, language, data_dir, user_files_dir
         store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
-        schedule, versions = store.schedule(with_versions=True)
-        known, _version = _known(store)
-        delta = _sync_delta(store, walk_library(data_dir), known)
+        walk = walk_library(data_dir)
+        with store._reading():
+            schedule, versions = store.schedule(with_versions=True)
+            known, _version = _known(store)
+        delta = _sync_delta(store, walk, known)
         pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"])
         return "store", schedule, versions, pending
     except sqlite3.Error:
         return "unknown", None, None, False
     finally:
         conn.close()
+
+
+def read_auto_band(language, data_dir):
+    """Q4-3: the band Automatic rarity last chose, as this library's store remembers it (`meta.auto_band`), or None —
+    no ready store, read-only, nothing remembered. A `mode=ro` look: never built, never waits."""
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
+        return None
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=0.5)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'auto_band'").fetchone()
+        finally:
+            conn.close()
+        value = json.loads(row[0]) if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return None
+    return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
+
+
+def record_auto_band(language, data_dir, user_files_dir, band, words):
+    """Remember the band Automatic rarity chose (bookkeeping: no version moves; the copy carries it). Never into
+    settings.json (S16). False when there is no store to write (JSON mode, read-only): the run then had today's rule."""
+    try:
+        store = open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
+    except StoreError:
+        return False
+    if store is None:
+        return False
+    try:
+        with store:
+            store.bookkeeping({"auto_band": _dumps({"band": band, "words": words, "at": _now()})}, copy_carries=True)
+        return True
+    except (StoreError, sqlite3.Error):
+        return False
+
+
+def forget_auto_band(language, data_dir, user_files_dir):
+    """Automatic rarity is off: forget its band, so switching it on again starts from today's rule, not a band chosen
+    months ago. A read first; written only when there is a band to forget."""
+    if read_auto_band(language, data_dir) is None:
+        return False
+    try:
+        store = open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
+    except StoreError:
+        return False
+    if store is None:
+        return False
+    try:
+        with store:
+            with store._writing():
+                store.conn.execute("DELETE FROM meta WHERE key = 'auto_band'")
+                store._set_meta({"copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+        return True
+    except (StoreError, sqlite3.Error):
+        return False
 
 
 def spawn_build_if_waiting(language, data_dir, user_files_dir):
@@ -4016,10 +4236,11 @@ def spawn_build_if_waiting(language, data_dir, user_files_dir):
     if now - _build_spawned.get(language, -BUILD_SPAWN_EVERY) < BUILD_SPAWN_EVERY:
         return None
     try:
-        mode, _reason = check_mode(language, data_dir, busy_wait=0.0)
+        mode, reason = check_mode(language, data_dir, busy_wait=0.0)
     except StoreError:
         return None
-    if mode != "json" or not os.path.exists(manifest_path(user_files_dir)):
+    newer = mode == "read-only" and reason == NEWER_COPY   # the helper notices a copy put back or deleted
+    if not newer and (mode != "json" or not os.path.exists(manifest_path(user_files_dir))):
         return None
     _build_spawned[language] = now
     return spawn_maintain(language)
@@ -4083,6 +4304,9 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             doc, read_stat, _p = read_manifest(target)
         except ManifestUnreadable:
             return EXIT_FAILED                                    # a lock or a placeholder: retried
+        if copy_is_newer(doc):
+            print(f"Repair refused: the library's copy was {NEWER_COPY}; open it there to repair it.")
+            return EXIT_NEEDS_YOU                                 # nothing renamed: a newer copy is never rebuilt from
         try:
             backup_to_trash(target, move=doc is None)
         except OSError:
@@ -4150,7 +4374,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
         meta.update(_manifest_meta(norm))
         meta.update(_copy_meta_block(lib))
     for key in ("manifest_metadata", "manifest_extra", "manifest_schedule_extra", "soon_line", "mine_line",
-                "arrivals_on"):
+                "arrivals_on", "auto_band"):
         if key in dmeta and from_db("meta") and not plain:
             meta[key] = dmeta[key]
     for key, value in dmeta.items():
@@ -4278,15 +4502,31 @@ def strip_graduated_block(user_files_dir, language, rels):
 # register with no store yet (✅ G1.1-6), and the command line
 # ------------------------------------------------------------------------------------------------ #
 
-def register_headless(language, path, pairing, data_dir=None, user_files_dir=None):
-    """`register` as hato's command line calls it: 5 while an update is staged; with no store yet, the
-    store is built headless when a usable manifest exists (as Generate would), else 4 "needs you" and
-    nothing written (the file still lands as today; only the pairing waits for a retry)."""
+# What `register_headless` answers (P2.1, the command line's `register`): `code` (EXIT_*); for a registration, the
+# item (`file_id`), where it is (`landed`: now-top · arrivals · show · already; `tier`, its 1-based `position` there)
+# and what became of the pairing (`pairing`: new · same · replaced). The fields after `code` are None otherwise.
+Registered = namedtuple("Registered", "code file_id landed tier position pairing")
+
+
+def _registered(code):
+    return Registered(code, None, None, None, None, None)
+
+
+def register_headless(language, path, pairing, data_dir=None, user_files_dir=None, backfill=False, looks=1,
+                      reader=None):
+    """`register` as hato's command line calls it: 5 while an update is staged (`looks`: how many looks at the
+    update lock, `update_staged`); with no store yet, the store is built headless when a usable manifest exists (as
+    Generate would), else 4 "needs you" and nothing written (the file still lands as today; only the pairing waits
+    for a retry); 6 for a path outside the library. `reader`: a placement-log reader set (once) before the
+    registration — Connect's watermark, so a store this call builds logs the drop too. Returns a `Registered`."""
     from app.path_utils import get_data_path, get_user_files_path
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
-    if update_staged():
-        return EXIT_BUSY
+    if update_staged(looks=looks):
+        return _registered(EXIT_BUSY)
+    rel = library_rel(data_dir, path)
+    if rel is None:
+        return _registered(EXIT_BAD_DATA)          # refused before anything is written, a store's build included
     store = open_store(language, data_dir, user_files_dir, role="register")
     if store is None:
         mode, _reason = check_mode(language, data_dir)
@@ -4298,16 +4538,33 @@ def register_headless(language, path, pairing, data_dir=None, user_files_dir=Non
             except ManifestUnreadable:
                 usable = False
         if not usable:
-            return EXIT_NEEDS_YOU
+            return _registered(EXIT_NEEDS_YOU)
         code = maintain(language, data_dir, user_files_dir, export=False)
         if code not in (EXIT_DONE, EXIT_NOTHING):
-            return code
+            return _registered(code)
         store = open_store(language, data_dir, user_files_dir, role="register")
         if store is None:
-            return EXIT_NEEDS_YOU
+            return _registered(EXIT_NEEDS_YOU)
     with store:
-        store.register(path, pairing)
-    return EXIT_DONE
+        if reader:
+            store.register_reader(reader)
+        try:
+            change = store.register(rel, pairing, backfill=backfill)
+        except NotInLibrary:
+            return _registered(EXIT_BAD_DATA)
+        # The change's own item (a move or remove after the commit can't lose it); a pairing already there: by its path
+        item_id = getattr(change, "pairing_item", None) or (change.added[0] if change is not None and change.added
+                                                             else store.item_id(rel))
+        tier, position = store.place_of(item_id)
+    if change is not None and change.added:
+        dkey, hato = path_key(_rel_dir(rel)), path_key(HATO_FOLDER)
+        landed = "arrivals" if tier == "arrivals" else \
+            "now-top" if dkey == hato or dkey.startswith(hato + "/") else "show"
+    else:
+        landed = "already"
+    before = getattr(change, "pairing_before", None)
+    paired = "same" if before is None else "new" if before[1] is None else "replaced"
+    return Registered(EXIT_DONE, item_id, landed, tier, position, paired)
 
 
 def main(argv=None):

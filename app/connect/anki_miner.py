@@ -9,8 +9,9 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
 - `version`, `profiles`, `check`, `settings_export` — read before every batch, never cached (E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
-  version and `features` read again, the profile checked, the whitelist file rewritten (N10, until Z-1), the run file
-  written (`runfile`), `mine` called, its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
+  version and `features` read again, the profile chosen (`choose_profile`), the whitelist file rewritten (N10, until
+  Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and reading — Z-2), `mine` called,
+  its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
   `duplicate`, `not_found`, `no_definition`, `media_failed`, `refused`, `not_attempted`, `uncertain`. Each returned
   `line_start` is checked against the one sent: off by more than 0.05 s, the card took another line, and the row says
   so. Then the cards made for names get `surasura::name` (G1.3: Anki Miner's tags belong to an episode, never to one
@@ -39,9 +40,12 @@ EXE = "AnkiMiner.exe"
 CREATE_NO_WINDOW = 0x08000000
 WINERROR_VIRUS = 225            # "Operation did not complete successfully because the file contains a virus"
 
-# Anki Miner's `features` names (Z-4), and the ask each answers
-FEATURES = {"named-words-whitelisted": "Z-1", "word-from-line": "Z-2", "settings-import": "Z-3",
-            runfile.SENTENCE_RULES_OFF: "Z-4"}
+# Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
+# here is a later addition: ignored until Surasura knows it.
+FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "settings-import": "Z-3",
+            runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
+            runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
+            "script-fold": "Z-12", "beside-window": "Z-13"}
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
@@ -208,6 +212,18 @@ def profile_id(listed, name):
     return None
 
 
+def choose_profile(info, listed, name):
+    """The Anki Miner profile Connect mines with: the id of the one `connect_anki_miner_profile` names when Anki Miner
+    has it; else, once every named word is whitelisted (Z-1, 3.7), None — Anki Miner's active profile, your usual one
+    (Sonic, 2026-10-07: the separate profile is optional). Before Z-1 the named profile is needed (its whitelist is how
+    the named words pass the name lists, IS-R3, N10): AnkiMinerError `needs-you` when it's missing (E9)."""
+    found = profile_id(listed, name) if name else None
+    if found is not None or "Z-1" in features(info):
+        return found
+    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name or "Surasura"}". Make it once in Anki '
+                         "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
+
+
 # --------------------------------------------------------------------------- #
 # The whitelist file (N10): until Z-1, how the named words pass Anki Miner's name lists
 # --------------------------------------------------------------------------- #
@@ -263,18 +279,21 @@ def read_result(run_dir, run_id, name=None, before=()):
         raise AnkiMinerError("crashed", f"Anki Miner's result couldn't be read: {e}") from None
 
 
-def outcomes(words, rows, run_failed=False):
-    """Surasura's outcome for each picked word (pick's `words`), from one run's result rows — one row per entry, in
-    the run file's order: [{word, reading, outcome, note_id, mined_form, line_start, returned_start, other_line,
-    statuses}]. A word sent as two entries takes the better one. No rows at all (the run wrote no result) is
-    `uncertain` when the run failed (it may have written to Anki), `not_attempted` otherwise."""
+def outcomes(words, rows, run_failed=False, features=()):
+    """Surasura's outcome for each picked word (pick's `words`), from one run's result rows — one row per entry
+    (`runfile.entries` under these `features`), in the run file's order: [{word, reading, outcome, note_id, mined_form,
+    line_start, returned_start, other_line, from_line, filter, statuses}]. A word sent as two entries takes the better
+    one. `from_line`: made from its line (Z-2, counted as made); `filter`: why Anki Miner dropped it, where it says
+    (Z-6, `duplicate-expression`). No rows at all (the run wrote no result) is `uncertain` when the run failed (it may
+    have written to Anki), `not_attempted` otherwise."""
     rows, out, at = list(rows or ()), [], 0
     for word in words:
-        mine = rows[at:at + len(word["sent"])]
-        at += len(word["sent"])
+        names = runfile.entries(word, features)
+        mine = rows[at:at + len(names)]
+        at += len(names)
         # a row that isn't the entry it stands for (another build's order or count) proves nothing: uncertain
         statuses = [OUTCOMES.get(row.get("status"), "uncertain") if row.get("word") == name else "uncertain"
-                    for row, name in zip(mine, word["sent"])] or ["uncertain" if run_failed else "not_attempted"]
+                    for row, name in zip(mine, names)] or ["uncertain" if run_failed else "not_attempted"]
         outcome = min(statuses, key=_BEST.index)
         row = next((r for r, s in zip(mine, statuses) if s == outcome), {})
         returned = row.get("line_start")
@@ -282,19 +301,18 @@ def outcomes(words, rows, run_failed=False):
         out.append({"word": word["word"], "reading": word["reading"], "outcome": outcome,
                     "note_id": row.get("note_id"), "mined_form": row.get("mined_form"),
                     "line_start": word["line_start"], "returned_start": returned, "other_line": other,
+                    "from_line": row.get("from_line") is True, "filter": row.get("filter"),
                     "statuses": {r.get("word"): r.get("status") for r in mine}})
     return out
 
 
 def preflight(path, language, profile_name):
     """Before every batch (E9, E10): what this Anki Miner is (`version`, never cached), the id of the profile Connect
-    mines with, and its `check` for the language. Raises AnkiMinerError: `needs-you` when the profile is missing,
-    `anki-closed` when Anki isn't reachable, `setup` naming what Anki Miner's own setup lacks."""
+    mines with (`choose_profile`; None: the active one), and its `check` for the language. Raises AnkiMinerError:
+    `needs-you` when an Anki Miner before 3.7 has no such profile, `anki-closed` when Anki isn't reachable, `setup`
+    naming what Anki Miner's own setup lacks."""
     info = version(path)
-    profile = profile_id(profiles(path), profile_name)
-    if profile is None:
-        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{profile_name}". Make it once in Anki '
-                             "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
+    profile = choose_profile(info, profiles(path), profile_name)
     ready = check(path, language, profile)
     items = {item.get("name"): item for item in ready.get("items") or ()}
     if items.get("anki") and not items["anki"].get("ok"):
@@ -351,15 +369,14 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout):
     info, profile = preflight(path, language, profile_name)
-    asks = features(info)
-    names = [name for word in words for name in word["sent"]]
+    asks, named = features(info), info.get("features")
     if "Z-1" not in asks:
-        write_whitelist(language, names)
+        write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     run_id = f"{job}-{attempt}"
-    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words),
+    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named),
                               tags=runfile.job_tag(job), subtitle_offset=subtitle_offset)
     data = runfile.build(run_dir, language, [episode], profile=profile,
-                         run_config=runfile.config(mapping, info.get("app"), info.get("features")))
+                         run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
@@ -380,14 +397,14 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         result = read_result(run_dir, run_id, before=before)
         if result is None:
             raise
-        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True))
+        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named))
         return done
     run = next((r for r in verdict.get("runs") or [] if r.get("run_id") == run_id), None)
     if not verdict.get("ok") and run is None:
         result = read_result(run_dir, run_id, before=before) if verdict.get("error") == "INTERNAL" else None
         if result is None:
             _result(verdict)                # a refusal of the whole call: busy, anki-closed, refused, setup …
-        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True))
+        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named))
         return done
     if run is not None and not run.get("ok") and not run.get("file") and run.get("error") in BEFORE_ANKI:
         # stopped before anything reached Anki (a video or subtitle it can't read, Anki gone at its own check,
@@ -395,7 +412,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         raise AnkiMinerError(KINDS.get(run["error"], "failed"), run.get("message") or run["error"], code=run["error"])
     result = read_result(run_dir, run_id, run["file"]) if run is not None and run.get("file") else None
     done.update(run=run, result=result,
-                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok")))
+                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named))
     return done
 
 
@@ -428,5 +445,5 @@ def uncertain_by_tag(url, job, words, word_field):
         out.append({"word": word["word"], "reading": word["reading"],
                     "outcome": "made" if note_id is not None else "uncertain", "note_id": note_id,
                     "mined_form": None, "line_start": word["line_start"], "returned_start": None,
-                    "other_line": False, "statuses": {}})
+                    "other_line": False, "from_line": False, "filter": None, "statuses": {}})
     return out

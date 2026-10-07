@@ -25,7 +25,8 @@ into this one, at most 2 each side, with gaps up to 2 s.
 The card front (IS:233–236): a verb, adjective or helper verb by its dictionary form as written, anything else exactly
 as written; Surasura's `Word` goes as a second entry when it differs and no word in the episode is written that way
 (the homograph guard: 帰る's Word is 返る); never for a set phrase, whose front is the occurrence's own words with the
-last in its dictionary form (`phrases.spellings`).
+last in its dictionary form (`phrases.spellings`). An Anki Miner that makes a word from its line (3.7, Z-2) gets the
+card front alone, with `surface` and `front_reading` (`runfile.entries`, `runfile.word_requests`).
 
 Each word carries a predicted class (IS:247–255): why Anki Miner may not find it. A predicted miss is still sent: it
 costs nothing (no media is cut for a word his parse doesn't hold), and a later Anki Miner may find it.
@@ -91,6 +92,22 @@ def card_front(token):
     if node is not None and node.feature.pos1 in CONJUGATED:
         return node.feature.orthBase or token.orth
     return token.written
+
+
+def front_reading(occurrence, key, language):
+    """The reading the card front is said with on this line, in hiragana as Anki Miner writes readings — or None (Anki
+    Miner then reads it itself). A set phrase: its row's reading (the dictionary's, キガツク); a word: its occurrence's
+    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: やっぱり, never its lemma's
+    やはり; 言っ, いう); a joined word: the reading the join gives it (日本人, にほんじん). Chinese keeps none."""
+    if language != "ja":
+        return None
+    from app import anki_match
+    node = occurrence.token.node
+    if not occurrence.phrase and node is None:
+        return None
+    reading = key[1] if occurrence.phrase else getattr(node.feature, "kanaBase", None)
+    reading = reading if isinstance(reading, str) and reading not in ("", "*") else None
+    return anki_match.fold_kana(reading) if reading else None
 
 
 def predicted_class(token, phrase=False, neighbours=()):
@@ -263,6 +280,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             sent.append(key[0])     # Surasura's Word as well, where no word here is written so (IS:235)
         words.append({
             "word": key[0], "reading": key[1], "orth": best.orth, "surface": best.surface, "sent": sent,
+            "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
             "line_start": seconds(cue.start), "line_end": seconds(cue.end), "line_text": cue.text,
             "line_expansion": line_expansion(cues, best.cue),

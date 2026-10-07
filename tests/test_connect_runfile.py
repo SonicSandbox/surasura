@@ -99,3 +99,80 @@ def test_rewriting_a_run_file_replaces_it_whole(tmp_path):
     data = json.load(open(path, encoding="utf-8"))
     assert not any(k in data["config"] for k in runfile.SENTENCE_KEYS)
     assert [p for p in os.listdir(os.path.dirname(path)) if p.endswith(".tmp")] == []
+
+
+# --------------------------------------------------------------------------- #
+# Anki Miner 3.7.0 (P1.3-AM37): what its `features` name, and only then
+# --------------------------------------------------------------------------- #
+FEATURES_37 = ["sentence-rules-off", "bold-target", "named-words-whitelisted", "script-fold", "filter-names",
+               "word-from-line", "dry-run", "render", "media", "settings-import", "setup", "fetch", "beside-window"]
+# pick's words as 3.7 is sent them: the word as its line writes it, and its card front's reading in hiragana
+WORDS_37 = [
+    {"word": "図書館", "sent": ["図書館"], "surface": "図書館", "front_reading": "としょかん", "line_start": 90.0,
+     "line_expansion": [0, 1]},
+    {"word": "下さる", "sent": ["くださる", "下さる"], "surface": "ください", "front_reading": "くださる",
+     "line_start": 103.0, "line_expansion": [2, 0]},
+    {"word": "借りる", "sent": ["借りる"], "surface": "借り", "front_reading": "かりる", "line_start": 116.4,
+     "line_expansion": [0, 0]},
+]
+
+
+def test_on_37_each_word_goes_once_with_the_word_as_written_and_its_reading():
+    # Z-2: a second name (Surasura's Word) could be made from the same line as a second card; one entry a word
+    requests = runfile.word_requests(WORDS_37, FEATURES_37)
+    assert [r["word"] for r in requests] == ["図書館", "くださる", "借りる"]
+    assert "surface" not in requests[0]                             # written as its front: nothing to add
+    assert requests[1] == {"word": "くださる", "line_start": 103.0, "line_expansion": [2, 0], "surface": "ください",
+                           "reading": "くださる"}
+    assert requests[2]["surface"] == "借り" and requests[2]["reading"] == "かりる"
+
+
+def test_before_37_the_words_go_as_before_with_no_new_keys():
+    requests = runfile.word_requests(WORDS_37, ["named-words-whitelisted", "sentence-rules-off"])
+    assert [r["word"] for r in requests] == ["図書館", "くださる", "下さる", "借りる"]
+    assert all(set(r) == {"word", "line_start", "line_expansion"} for r in requests)
+
+
+def test_a_word_with_no_reading_or_an_empty_surface_goes_without_them():
+    # Chinese keeps no reading; a blank surface would be Anki Miner's BAD_RUN_FILE
+    words = [{"word": "夜市", "sent": ["夜市"], "surface": " ", "front_reading": None, "line_start": 3.0,
+              "line_expansion": [0, 0]}]
+    (request,) = runfile.word_requests(words, FEATURES_37)
+    assert set(request) == {"word", "line_start", "line_expansion"}
+
+
+@pytest.mark.parametrize("features, bold", [([], False), (["named-words-whitelisted"], False), (FEATURES_37, True)])
+def test_the_target_is_bolded_only_where_anki_miner_takes_it(features, bold):
+    config = runfile.config(MAPPING, "3.7.0", features)
+    assert config.get("bold_target_in_sentence") is (True if bold else None)
+    assert set(config) <= runfile.CONFIG_KEYS
+
+
+def test_a_37_run_file_with_bold_a_dry_run_and_surface_round_trips(tmp_path):
+    episode = runfile.episode("job-7-1", str(tmp_path / "第01話.mkv"), str(tmp_path / "第01話.ja.ass"),
+                              runfile.word_requests(WORDS_37, FEATURES_37), tags=runfile.job_tag("job-7"))
+    data = runfile.build(str(tmp_path / "runs" / "job-7"), "ja", [episode],
+                         run_config=runfile.config(MAPPING, "3.7.0", FEATURES_37), dry_run=True)
+    assert "profile" not in data                                    # Anki Miner's active profile
+    path = runfile.write(str(tmp_path / "runs" / "job-7" / "run-1.json"), data)
+    written = json.load(open(path, encoding="utf-8"))
+    assert written["dry_run"] is True and written["config"]["bold_target_in_sentence"] is True
+    assert not any(k in written["config"] for k in runfile.SENTENCE_KEYS)
+    assert "dry_run" not in runfile.build(str(tmp_path), "ja", [episode])     # a real run says nothing of it
+
+
+@pytest.mark.parametrize("change, says", [
+    (lambda d: d.update(dry_run="yes"), "dry_run"),
+    (lambda d: d["episodes"][0]["words"][1].update(surface="  "), "surface"),
+    (lambda d: d["episodes"][0]["words"][1].update(reading=""), "reading"),
+    (lambda d: d["episodes"][0]["words"][0].update(line_text=" "), "line_text"),
+])
+def test_what_37_would_refuse_is_never_written(tmp_path, change, says):
+    episode = runfile.episode("job-7-1", str(tmp_path / "a.mkv"), str(tmp_path / "a.ass"),
+                              runfile.word_requests(WORDS_37, FEATURES_37))
+    data = runfile.build(str(tmp_path / "runs"), "ja", [episode], run_config=runfile.config(MAPPING, "3.7.0",
+                                                                                             FEATURES_37))
+    change(data)
+    with pytest.raises(runfile.RunFileError, match=says):
+        runfile.write(str(tmp_path / "run.json"), data)
+    assert not (tmp_path / "run.json").exists()

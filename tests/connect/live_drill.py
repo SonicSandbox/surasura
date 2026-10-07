@@ -19,6 +19,7 @@ selected profile is read before and after: the drill changes none of its setting
 """
 import argparse
 import datetime
+import json
 import os
 import sys
 
@@ -38,6 +39,10 @@ def _args():
     ap.add_argument("--subtitle")
     ap.add_argument("--video")
     ap.add_argument("--words", type=int, default=5, help="how many words to make cards for")
+    ap.add_argument("--want", default="", help="words (Surasura's Word, comma-separated) taken first, whatever their "
+                                               "predicted class: P1.3-AM37's one-card-a-word proof (事 beside 仕事)")
+    ap.add_argument("--am-profile", default="Surasura",
+                    help="the Anki Miner profile (connect_anki_miner_profile); from 3.7 a missing one is the active")
     ap.add_argument("--url", default="http://127.0.0.1:8765")
     ap.add_argument("--root", default=os.path.join(REPO, ".p13-drill"),
                     help="Surasura's scratch root (its whitelist file is <root>/local/connect/whitelist-ja.txt)")
@@ -82,8 +87,10 @@ def main():
 
     analyzer.SANITIZE_JA = True
     read = cues.read(a.subtitle, "ja")
-    chosen = pick.pick(read, cues.tokens(read, "ja"), "ja", lambda key: False, mode="unknown")
-    words = [w for w in chosen["words"] if w["predicted_class"] is None][:a.words]
+    want = [w for w in a.want.split(",") if w]
+    known = (lambda key: key[0] not in want) if want else (lambda key: False)
+    chosen = pick.pick(read, cues.tokens(read, "ja"), "ja", known, mode="unknown")
+    words = [w for w in chosen["words"] if want or w["predicted_class"] is None][:a.words]
     if not words:
         refuse("the subtitle gave no words to make cards from")
     run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -93,11 +100,13 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
 
     miner = a.anki_miner
+    info = anki_miner.version(miner)
     listed = anki_miner.profiles(miner)
     selected = [p.get("id") for p in listed if p.get("active")]
-    profile = anki_miner.profile_id(listed, "Surasura")
-    if profile is None:
-        refuse('Anki Miner has no "Surasura" profile')
+    try:
+        profile = anki_miner.choose_profile(info, listed, a.am_profile)     # None: the active one (3.7, Z-1)
+    except anki_miner.AnkiMinerError as e:
+        refuse(e.message)
     export = os.path.join(run_dir, "export.json")
     try:
         mapping = fields.from_export(anki_miner.settings_export(miner, "ja", export, profile))
@@ -110,7 +119,6 @@ def main():
 
     # The profile's own deck may not be in DevTest: its `check` is read for what the run itself needs (Anki, the
     # dictionary, ffmpeg); deck and note type are checked here, against DevTest, as the run's config names them.
-    info = anki_miner.version(miner)
     ready = anki_miner.check(miner, "ja", profile)
     missing = [i.get("name") for i in ready.get("items") or ()
                if not i.get("ok") and i.get("name") not in ("deck", "note_type", "fields")]
@@ -124,11 +132,23 @@ def main():
                                  timeout=30 * 60)
     for o in done["outcomes"]:
         print(f"  {o['outcome']:13} {o['word']:10} note {o['note_id']}  line {o['line_start']} -> "
-              f"{o['returned_start']}{'  (another line)' if o['other_line'] else ''}")
+              f"{o['returned_start']}{'  (another line)' if o['other_line'] else ''}"
+              f"{'  (made from its line)' if o.get('from_line') else ''}")
     made = [o for o in done["outcomes"] if o["outcome"] == "made"]
 
-    # Teardown, counted
+    # One card a word (P1.3-AM37): the notes the job's tag finds are exactly the words made, one each
+    from app import anki_match
     query = anki_miner.tag_query(tag)
+    entries = json.load(open(done["run_file"], encoding="utf-8"))["episodes"][0]["words"]
+    tagged = anki_connect.notes_info(a.url, anki_connect.find_notes(a.url, query))
+    fronts = [anki_match.card_word(((n.get("fields") or {}).get(mapping.word) or {}).get("value") or "")
+              for n in tagged]
+    twice = sorted({f for f in fronts if fronts.count(f) > 1})
+    print(f"entries sent {len(entries)} for {len(words)} words; notes with the tag {len(tagged)} "
+          f"(made {len(made)}); a front on two notes: {twice or 'none'}")
+    one_each = len(tagged) == len(made) and not twice
+
+    # Teardown, counted
     with anki_connect.writer("P1.3 proof run teardown", wait=60):
         ids = anki_connect.find_notes(a.url, query)
         if ids:
@@ -140,8 +160,9 @@ def main():
     if left:
         print(f"FAILED: notes left with {tag}: {left}")
         return 1
-    if not made or after != selected:
-        print("FAILED: " + ("no card was made" if not made else "the selected profile changed"))
+    if not made or after != selected or not one_each:
+        print("FAILED: " + ("no card was made" if not made else "the selected profile changed" if after != selected
+                            else "a word has two cards, or a card no word sent"))
         return 1
     print("DRILL PASSED")
     return 0
@@ -163,7 +184,6 @@ def drill_p14(a):
     Backfill of the tag (the source field, K40), checks what each wrote, puts both back by their run snapshots and
     checks every card of the deck sits where it sat before. Then deletes the tagged notes and counts them back to 0."""
     import csv
-    import json
     import shutil
     root = os.path.abspath(a.root.replace(".p13-drill", ".p14-drill"))
     if os.path.isdir(root):

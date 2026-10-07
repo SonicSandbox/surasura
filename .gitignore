@@ -35,6 +35,7 @@ surasura_v*.zip
 # never in the repo root.
 debug/testlog.txt
 debug/testprofile*.csv
+debug/test_times.json
 # Anki collection snapshots and run settings taken while developing the junban module
 # (dev artifacts; they hold the developer's own deck and note contents)
 debug/anki_*.json

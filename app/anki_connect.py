@@ -73,6 +73,7 @@ AUTOMATIC_STEP = "the automatic 順 step"
 READ_ACTIONS = frozenset({
     "version", "requestPermission", "apiReflect", "deckNames", "modelNames", "modelFieldNames",
     "findCards", "findNotes", "cardsInfo", "notesInfo", "cardsToNotes", "getDeckConfig", "areSuspended",
+    "cardsModTime", "notesModTime",         # the fast re-plan's warm card map (E1.1 03 §3.2): reads only
     "guiReviewActive", "getActiveProfile", "getProfiles",
     "reloadCollection", "guiDeckBrowser",
 })

@@ -3699,6 +3699,8 @@ def _build_analysis_parser():
     # The dashboard's automatic Generate (after the Anki sync adds known words): write the report,
     # do not open it. Not an analysis input, so it stays out of compute_run_signature.
     parser.add_argument("--no-open", action="store_true", help="Write the report but do not open it")
+    # The window's progress (W1.3): P0.3's JSON lines on stdout. Not an analysis input: out of compute_run_signature.
+    parser.add_argument("--progress-json", action="store_true", help="Print progress as JSON lines (the window's)")
     return parser
 
 
@@ -4132,6 +4134,7 @@ def run_signature_parts(language, found_files, args):
             "source_display",   # badge rendering only — re-renders (see compute_render_signature)
             "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
             "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
+            "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
             # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
             # and field picks themselves must not force a re-analysis on every click.
             "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
@@ -4365,6 +4368,103 @@ def _report_written(path, since):
     return False
 
 
+# --progress-json (W1.3; the window's spec 04 §4.2, P0.3 02 §2): the run's steps as JSON lines on stdout, ASCII-escaped
+# and flushed — {"type":"progress","step":…,"done":…,"total":…} — then one {"type":"result",…} or {"type":"error",…},
+# always last. The analyzer's own lines stay as they are; without the flag nothing here prints.
+#
+# A cancel: the window that started the run names a file in SURASURA_CANCEL_FILE and makes it to cancel. The run looks
+# for it (a stat) at each step and before each file it tokenizes, and stops there as long as it hasn't reached *Writing
+# your list* — nothing of results/ written but the stamp it dropped as it started — answering the `cancelled` error
+# line (GENERATE_CANCELLED). From *Writing your list* on it finishes: the CSV writes aren't atomic, and only the run
+# itself knows which step it is in (W1.3 adversary #6, #7). (Not stdin: on Windows a thread waiting on a pipe stalls
+# the run's other calls on it.)
+PROGRESS_STEPS = ("Reading your files", "Counting words", "Picking sentences", "Writing your list",
+                  "Writing the journey")
+WRITING_STEPS = ("Writing your list", "Writing the journey")
+GENERATE_CANCELLED = 76
+_PROGRESS = {"on": False, "ran": False, "cancel_file": None, "writing": False}
+
+
+class _GenerateCancelled(BaseException):
+    """The window cancelled the run before it wrote anything (a BaseException: no `except Exception` swallows it)."""
+
+
+def _progress_line(record):
+    if _PROGRESS["on"]:
+        print(json.dumps(record, ensure_ascii=True), flush=True)
+
+
+def _cancel_point():
+    """Stop here if the window asked, and nothing is being written yet."""
+    if _PROGRESS["cancel_file"] and not _PROGRESS["writing"] and os.path.exists(_PROGRESS["cancel_file"]):
+        raise _GenerateCancelled()
+
+
+def _progress(step, done=None, total=None):
+    if _PROGRESS["on"]:
+        _cancel_point()
+        if step in WRITING_STEPS:
+            _PROGRESS["writing"] = True
+        _progress_line({"type": "progress", "step": step, "done": done, "total": total})
+
+
+def _cancellable(tokenize_file):
+    """The reconcile's tokenizer with a cancel point before each file (--progress-json only)."""
+    if not _PROGRESS["on"]:
+        return tokenize_file
+
+    def tokenize(path):
+        _cancel_point()
+        return tokenize_file(path)
+    return tokenize
+
+
+def _reporting_progress(run):
+    """The result or error line after the run, with --progress-json (outermost: the busy answer, a cancel and a crash
+    too). Without the flag the run is untouched: an exception goes on as it always did."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        on = "--progress-json" in sys.argv[1:]
+        _PROGRESS.update(on=on, ran=False, writing=False,
+                         cancel_file=(os.environ.get("SURASURA_CANCEL_FILE") or None) if on else None)
+        try:
+            code = run(*args, **kwargs)
+        except _GenerateCancelled:
+            _progress_line({"type": "error", "contract": 1, "ok": False, "code": "cancelled",
+                            "message": "Generate was cancelled before your list was written."})
+            return GENERATE_CANCELLED
+        except BaseException as e:
+            if not on:
+                raise
+            if isinstance(e, SystemExit):
+                sys.stderr.flush()
+                _progress_line({"type": "error", "contract": 1, "ok": False,
+                                "code": "usage" if e.code not in (0, None) else "failed",
+                                "message": "Generate's options weren't understood."})
+                raise
+            import traceback
+            traceback.print_exc()                       # the traceback first: the error line is always last
+            sys.stderr.flush()
+            _progress_line({"type": "error", "contract": 1, "ok": False, "code": "failed",
+                            "message": f"Generate stopped: {e}"})
+            return 1
+        if code == RESULTS_BUSY:
+            _progress_line({"type": "error", "contract": 1, "ok": False, "code": "busy", "lock": "results",
+                            "message": "Another Surasura program is writing your list; nothing was changed."})
+        elif code:
+            _progress_line({"type": "error", "contract": 1, "ok": False, "code": "partial",
+                            "message": "Your list was written, but the report couldn't be."})
+        else:
+            record = {"type": "result", "contract": 1, "ok": True, "ran": _PROGRESS["ran"]}
+            if not _PROGRESS["ran"]:
+                record["skipped"] = "report only" if "--static-only" in sys.argv else "nothing changed"
+            _progress_line(record)
+        return code
+    return wrapper
+
+
 def _holding_results(run):
     """Run `run` holding the `results` lock; still held by another program after the wait -> RESULTS_BUSY."""
     import functools
@@ -4396,6 +4496,7 @@ def _holding_results(run):
     return wrapper
 
 
+@_reporting_progress
 @without_cycle_collection
 @_holding_results
 def main():
@@ -4587,6 +4688,7 @@ def main():
             and _store.get_meta("last_run_signature") == _run_sig
             and read_run_stamp(RESULTS_DIR) == _run_sig):   # ...and results/ is THIS run's (above)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
+        _progress("Writing the journey")    # the sidecars and a re-render write results/: a cancel waits for the end
         record_analysed(language, _library, data_dir, user_files_dir)
         # A completed run is being reused; make sure the Content Manager sidecars exist and are
         # current (backfills them from word_stats.json on the first skip after an update). One-time.
@@ -4629,6 +4731,8 @@ def main():
     # A real run is about to replace results/. Drop the stamp first, so a run that dies part-way
     # leaves outputs that no skip will ever mistake for a finished run. Re-stamped at the end.
     _set_run_stamp(RESULTS_DIR, None)
+    _PROGRESS["ran"] = True
+    _progress("Reading your files", 0, len(found_files))
 
     # --- Past the skip: this is a real run, so NOW load the heavy content the skip check above
     #     deliberately avoided (tokenizer, known-words normalization, ignore lists, frequency lists). ---
@@ -4644,7 +4748,8 @@ def main():
     if _store is not None:
         try:
             _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
-                             _token_index.make_tokenizer(language, reinforce=args.reinforce, script=script),
+                             _cancellable(_token_index.make_tokenizer(language, reinforce=args.reinforce,
+                                                                      script=script)),
                              build_signature=_token_index.build_signature(language, args.reinforce, script))
         except Exception as e:
             print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
@@ -5009,6 +5114,7 @@ def main():
 
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
+        _progress("Reading your files", seq_idx - 1, len(found_files))
         try:
             print(f"Processing {os.path.basename(file_path)}...")
         except UnicodeEncodeError:
@@ -5419,6 +5525,8 @@ def main():
                  for lemma, spelled in by_lemma.items()), key=lambda row: (-row[2], row[1]))[:UNLISTED_SHOWN]
 
     # (The token store stays open until the end of the run so we can record the run-signature.)
+    _progress("Reading your files", len(found_files), len(found_files))
+    _progress("Counting words")
 
     for entry in word_stats.values():
         entry.pop("_plan", None)        # the plan file's per-file records (above): no output carries them
@@ -5580,6 +5688,7 @@ def main():
                    if (r["Word"], r["Reading"]) in phrase_keys}
     rolling_known_phrases = set()
 
+    _progress("Picking sentences")
     output_rows = []
     for r in preliminary_rows:
         target_lr = (r["Word"], r["Reading"])
@@ -5781,6 +5890,7 @@ def main():
             del r["_FirstContext"]
         output_rows.append(r)
         
+    _progress("Writing your list")          # results/ is written from here on: a cancel waits for the end (W1.3)
     df = pd.DataFrame(output_rows)
     # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
     # than tested with `in locals()`, which copies every local of this function on each test (a word, per file).
@@ -6243,6 +6353,7 @@ def main():
     # --- VISUALIZER REMOVED ---
             
     # --- STATIC GENERATION ---
+    _progress("Writing the journey")
     if args.static:
         try:
             try:

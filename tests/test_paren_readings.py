@@ -291,7 +291,8 @@ def test_the_settings_row_saves_loads_and_shows_for_japanese_only(monkeypatch):
         with open(_settings_file(), encoding="utf-8") as handle:
             saved = json.load(handle)
         assert saved["logic"]["paren_readings"] == "any"
-        assert saved["logic"]["sentence_boundaries"], "the rest of the logic block is kept"
+        assert settings_manager.load_settings()["logic"]["sentence_boundaries"], \
+        "the rest of the logic block is kept (the dashboard writes only its own keys, W1.3: the rest read back as every run reads it)"
         assert launches(), "the choice changed what every book reads: re-index"
 
         app.var_language.set("zh")

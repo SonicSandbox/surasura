@@ -43,6 +43,10 @@ DEFAULT_SETTINGS = {
     # sentence. Off keeps the Yomitan popup clean — the file is still in each sentence's hover.
     # Export-only: never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
     "sentence_dictionary_source": False,
+    # The token store's tokenizing pool (token_index.pool_size): None = sized from the CPU count and memory, 0 = one
+    # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
+    # signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "index_pool_workers": None,
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run

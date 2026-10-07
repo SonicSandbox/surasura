@@ -32,6 +32,7 @@ import json
 import hashlib
 import zlib
 import sqlite3
+import time
 from collections import Counter
 from operator import itemgetter
 
@@ -240,7 +241,18 @@ def open_store(language, path=None):
     def _connect():
         c = sqlite3.connect(db_path, timeout=5.0)
         try:
-            c.execute("PRAGMA journal_mode=WAL")
+            # A new file's switch to WAL answers "database is locked" at once — no busy timeout — while another
+            # connection makes the same file (two first opens: Generate and the indexer on a first run). Asked
+            # again until the busy timeout, as any other wait for the file.
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    c.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as e:
+                    if not _locked(e) or time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.02)
             c.execute("PRAGMA busy_timeout=5000")
             c.execute("PRAGMA synchronous=NORMAL")
             _ensure_schema(c)
@@ -251,10 +263,19 @@ def open_store(language, path=None):
 
     try:
         return Store(_connect(), language)
-    except sqlite3.DatabaseError:
+    except sqlite3.DatabaseError as e:
+        if _locked(e):
+            raise                       # busy, not damaged: another program has the file — never delete it
         # Corrupt DB -> delete + rebuild (it's a regenerable cache).
         _delete_db(db_path)
         return Store(_connect(), language)
+
+
+def _locked(error):
+    """SQLite's "database is locked" / "busy": another connection holds the file (an OperationalError, which is a
+    DatabaseError too — never a sign of a damaged file)."""
+    text = str(error).lower()
+    return isinstance(error, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
 
 
 # --------------------------------------------------------------------------- #
@@ -577,7 +598,7 @@ class Store:
             [(*split_key(key), n, n) for key, n in counts.items()],
         )
 
-    def reconcile(self, files, tokenize_file, build_signature=None):
+    def reconcile(self, files, tokenize_file, build_signature=None, workers=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -592,6 +613,11 @@ class Store:
         cached tokenization is stale -> drop it all and rebuild. (Callers MUST pass a CONSISTENT
         signature — the analyzer and the background indexer both derive it from the same setting —
         or the store would thrash, each rebuilding what the other just wrote.)
+
+        `workers`: how many processes tokenize the changed files (W1.3, `pool_workers`): None decides — the tokenizing
+        pool in the indexer only (the process holding the `indexer` lock), one process everywhere else; 0 or 1, one
+        process. Every file's tokens are the same either way, and this process alone writes the store, file by file in
+        the files' order.
         """
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
@@ -624,6 +650,7 @@ class Store:
                     changed = True
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta.
+            todo = []
             for key, realpath in current.items():
                 try:
                     mtime, size = file_signature(realpath)
@@ -632,24 +659,30 @@ class Store:
                 row = existing.get(key)
                 if row is not None and row["mtime"] == mtime and row["size"] == size:
                     continue  # unchanged — no tokenization
-                result = tokenize_file(realpath)   # {"sentences": [...], "counts": Counter}
-                counts = {k: n for k, n in result["counts"].items() if n > 0}
-                bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
-                total = sum(counts.values())
-                if row is not None:  # changed: subtract the stale contribution first
-                    delta.subtract(_decode_counts(row["counts"]))
-                    pieces.subtract(_decode_counts(row["bound"]))
-                delta.update(counts)
-                pieces.update(bound)
-                names = result.get("names")
-                cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    (key, mtime, size, total, _encode_counts(counts),
-                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
-                     _encode_counts(bound) if bound else None),
-                )
-                changed = True
+                todo.append((key, realpath, mtime, size, row))
+            tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
+            try:
+                for (key, realpath, mtime, size, row), result in zip(todo, tokenized):
+                    # result: {"sentences": [...], "counts": Counter}
+                    counts = {k: n for k, n in result["counts"].items() if n > 0}
+                    bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
+                    total = sum(counts.values())
+                    if row is not None:  # changed: subtract the stale contribution first
+                        delta.subtract(_decode_counts(row["counts"]))
+                        pieces.subtract(_decode_counts(row["bound"]))
+                    delta.update(counts)
+                    pieces.update(bound)
+                    names = result.get("names")
+                    cur.execute(
+                        "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (key, mtime, size, total, _encode_counts(counts),
+                         _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
+                         _encode_counts(bound) if bound else None),
+                    )
+                    changed = True
+            finally:
+                tokenized.close()                 # the pool's workers end here, before the tables below
 
             self._apply(cur, delta)
             cur.execute("DELETE FROM aggregate WHERE count <= 0")  # prune emptied words
@@ -1238,6 +1271,123 @@ def _switched_off(language, key):
         return False
 
 
+# --------------------------------------------------------------------------- #
+# The tokenizing pool (W1.3; the window's spec 04 §4.2; research/11, 11-W3: 3.3× on 4 workers, 67 MB each)
+# --------------------------------------------------------------------------- #
+# The indexer tokenizes the changed files in worker processes when there are enough of them to pay for the workers'
+# start: each worker builds the same tokenizer from the parent's settings, the results come back in the files' order
+# (never as they finish), and only the parent writes the store. `index_pool_workers` in settings.json: None (the
+# default) sizes it from the CPU count and the free memory, 0 is one process, N is N workers.
+POOL_MIN_FILES = 64          # fewer changed files: one process (a worker's start costs about what 60 files do)
+POOL_MAX_WORKERS = 4         # the laptop: 4 cores (research/11 §5)
+POOL_WORKER_MB = 100         # measured 67 MB private per worker; the rest is headroom
+POOL_BATCH_PER_WORKER = 8    # files handed out at a time per worker: what can wait for the writer is bounded
+_POOL_WORKER = {}
+
+
+def _free_memory_mb():
+    """Physical memory free now, in MB (None when it can't be told)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = _Status()
+            status.dwLength = ctypes.sizeof(_Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullAvailPhys // (1024 * 1024)
+            return None
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
+    except Exception:
+        return None
+
+
+def pool_workers(n_files, setting=None, cpus=None, free_mb=None):
+    """How many processes tokenize `n_files` changed files: 1 is this process alone. `setting`: settings.json's
+    `index_pool_workers` (None = automatic: half the logical CPUs, at most 4, at most what a quarter of the free memory
+    holds, and only from POOL_MIN_FILES files; N asks for N, never more than the CPUs, the files or what half the free
+    memory holds)."""
+    if n_files < 2:
+        return 1
+    if setting is not None:
+        try:
+            setting = int(setting)
+        except (TypeError, ValueError, OverflowError):
+            setting = None
+    cpus = cpus if cpus is not None else (os.cpu_count() or 1)
+    free_mb = free_mb if free_mb is not None else _free_memory_mb()
+    if setting is not None:
+        size = min(setting, n_files, cpus)
+        if free_mb is not None:
+            size = min(size, max(1, int(free_mb * 0.5) // POOL_WORKER_MB))
+        return max(1, size)
+    if n_files < POOL_MIN_FILES:
+        return 1
+    size = min(POOL_MAX_WORKERS, max(1, cpus // 2))
+    if free_mb is not None:
+        size = min(size, max(1, int(free_mb * 0.25) // POOL_WORKER_MB))
+    return size if size >= 2 else 1
+
+
+def _pool_start(language, reinforce, script, logic):
+    """A worker's start: the parent's tokenizer settings, then the same tokenizer (`make_tokenizer`). A worker never
+    outlives its parent: on Windows a killed indexer leaves its pool's pipe open, and the workers would wait on it, so
+    each one watches the parent's process handle and ends with it."""
+    import multiprocessing
+    import threading
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        def watch():
+            parent.join()
+            os._exit(1)
+        threading.Thread(target=watch, name="pool-parent-watch", daemon=True).start()
+    from app import analyzer
+    analyzer.LOGIC.clear()
+    analyzer.LOGIC.update(logic)
+    _POOL_WORKER["tokenize"] = make_tokenizer(language, reinforce, script)
+
+
+def _pool_tokenize(path):
+    return _POOL_WORKER["tokenize"](path)
+
+
+def _tokenized(paths, tokenize_file, workers):
+    """Each path's tokenization, in `paths`' order: here, or in a pool of worker processes (see `reconcile`)."""
+    spec = getattr(tokenize_file, "pool_spec", None)
+    size = 1
+    if spec is not None and len(paths) >= 2:
+        if workers is None:
+            from app import locks
+            if locks.held_in_process("indexer"):
+                try:
+                    from app import settings_manager
+                    setting = settings_manager.load_settings().get("index_pool_workers")
+                except Exception:
+                    setting = None
+                size = pool_workers(len(paths), setting)
+        else:
+            size = pool_workers(len(paths), workers)
+    if size <= 1:
+        for path in paths:
+            yield tokenize_file(path)
+        return
+    import copy
+    import multiprocessing
+    from app import analyzer
+    print(f"Indexer: tokenizing {len(paths)} files in {size} processes.")
+    context = multiprocessing.get_context("spawn")
+    batch = size * POOL_BATCH_PER_WORKER       # results waiting for the writer: a bounded few, never the library
+    with context.Pool(size, initializer=_pool_start, initargs=spec + (copy.deepcopy(analyzer.LOGIC),)) as pool:
+        for start in range(0, len(paths), batch):
+            for result in pool.imap(_pool_tokenize, paths[start:start + batch], chunksize=4):
+                yield result
+
+
 def make_tokenizer(language, reinforce=False, script="asis"):
     """Build the default `tokenize_file(path) -> {"sentences", "counts"}`, reusing the analyzer's
     real tokenizer + text extraction so the store matches what a run would produce.
@@ -1287,6 +1437,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
             result["bound"] = bound
         return result
 
+    tokenize_file.pool_spec = (language, reinforce, script)      # a pool's worker builds the same tokenizer
     return tokenize_file
 
 

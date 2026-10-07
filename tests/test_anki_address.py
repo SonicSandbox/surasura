@@ -119,12 +119,14 @@ class TestTheDashboardsReads(_DashboardHarness):
 
 # --- the source guard -------------------------------------------------------------------------------- #
 # Where the two keys may be named in code: `address()` itself, the core default, the run signature's
-# non-analysis list and the dashboard's save (which writes `address()`'s answer under the one key).
+# non-analysis list, where each setting belongs (`PLACED`, W1.3) and the dashboard's save (which writes `address()`'s
+# answer under the one key and takes the 2.x key out: it writes only its own keys onto the file as it is, W1.3).
 _ALLOWED = {
     os.path.join("app", "anki_connect.py"): 2,
     os.path.join("app", "settings_manager.py"): 1,
     os.path.join("app", "analyzer.py"): 1,
-    os.path.join("app", "main.py"): 1,
+    os.path.join("app", "settings_placement.py"): 1,
+    os.path.join("app", "main.py"): 2,
 }
 _KEY = re.compile(r"""["'](anki_connect_url|junban_url)["']""")
 

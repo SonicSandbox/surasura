@@ -232,7 +232,8 @@ def test_the_checkbox_sits_below_phrases_and_titles_saves_loads_and_re_indexes(m
         with open(settings_file, encoding="utf-8") as handle:
             logic = json.load(handle)["logic"]
         assert logic["pronoun_bases"] is False
-        assert logic["phrases_and_titles"] is True and logic["sentence_boundaries"], "the rest of the block is kept"
+        assert logic["phrases_and_titles"] is True and settings_manager.load_settings()["logic"]["sentence_boundaries"], \
+            "the rest of the block is kept (the dashboard writes only its own keys, W1.3: the rest read back as every run reads it)"
         assert ti.build_signature("ja") == built + "|pronoun_bases=off"
         assert launches(), "every file reads differently: re-index"
 

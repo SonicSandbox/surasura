@@ -12,6 +12,9 @@ from typing import Optional
 from app import __version__
 from app.update_checker import get_update_info, classify_update, parse_version
 from app import settings_manager
+from app.services import generate as generate_service
+from app.services import jobs as jobs_service
+from app.services import settings as settings_service
 from app import updater
 from app import word_selection
 from app import token_index
@@ -210,6 +213,24 @@ class ToolTip:
         self.tip_window = None
         if tw:
             tw.destroy()
+
+# The window's services (W1.3): one job registry and one Generate controller per dashboard, made on first use (a test's
+# stand-in window gets real ones too).
+_CHILD_KINDS = {"indexer.py": "indexer", "analyzer.py": "generate", "sentence_corpus.py": "sentence-corpus"}
+
+
+def _window_services(app):
+    """(job registry, Generate controller) of `app`."""
+    registry = getattr(app, "job_registry", None)
+    if not isinstance(registry, jobs_service.JobRegistry):
+        registry = app.job_registry = jobs_service.JobRegistry()
+    controller = getattr(app, "generate_controller", None)
+    if not isinstance(controller, generate_service.GenerateController):
+        closing = getattr(app, "_closing_event", None)
+        controller = app.generate_controller = generate_service.GenerateController(
+            registry, closing=closing if isinstance(closing, threading.Event) else None, settle=0)
+    return registry, controller
+
 
 class MasterDashboardApp:
     # Per-sentence source badge in the report: stored key -> the label shown in Advanced Settings.
@@ -442,9 +463,13 @@ class MasterDashboardApp:
 
         # Settings are written off this thread, under the `settings` lock (P0.3 04 §2): queued and retried, never
         # dropped. A child process, a journey check or closing the window flushes it first (`_flush_settings`).
-        self._settings_writer = settings_manager.SettingsWriter(
-            on_saved=lambda _s: self.gui_queue.put(self._on_settings_saved),
-            on_error=lambda _e: self.gui_queue.put(lambda: self.status_var.set(self.SETTINGS_WAIT_LINE)))
+        self.settings_service = settings_service.SettingsService(
+            on_error=lambda _e: self.gui_queue.put(lambda: self.status_var.set(self.SETTINGS_WAIT_LINE)), load=False)
+        self.settings_service.subscribe(lambda _keys: self.gui_queue.put(self._on_settings_saved))
+        self._settings_writer = self.settings_service.writer
+        if not os.environ.get("SURASURA_NO_UI_TIMERS"):
+            # Its copy of the file, read on a worker: a later get() on this thread is a copy in memory.
+            threading.Thread(target=self.settings_service.reload, name="settings-load", daemon=True).start()
         # Set when the window closes: a worker still waiting on a lock (a background Generate's) stops.
         self._closing_event = threading.Event()
 
@@ -3013,8 +3038,8 @@ class MasterDashboardApp:
                 }
             }
 
-            # Persist YouTube settings only when the optional module is present, so a build
-            # without it never writes those keys back into settings.json.
+            # Each optional module's switch only when the module is there, so a build without it never gains its key;
+            # Speech's only once the user has revealed it (the `enable_koe` line they add themselves).
             try:
                 import modules.youtube_downloader  # noqa: F401
                 settings["enable_youtube_transcripts"] = self.var_enable_youtube.get()
@@ -3022,73 +3047,54 @@ class MasterDashboardApp:
                 settings["youtube_risk_acknowledged"] = getattr(self, "youtube_risk_acknowledged", False)
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # The speech module ships inside the app but stays hidden until the user adds the
-            # `enable_koe` line to settings.json themselves. Nothing about it is written back
-            # unless that line is already there — otherwise the first save would scatter koe_*
-            # keys through every user's settings and the feature would announce itself.
-            carried = []        # (key, also when absent from the file) — read from the file as it is when written
             try:
                 import modules.koe as _koe
                 if _koe.is_revealed():
                     settings["enable_koe"] = self.var_enable_koe.get()
-                    carried += ["koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_port", "koe_daily_cap"]
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # Reels: the toggle plus whichever of its own tunables the user already has. Written
-            # only when the module imports, so a build without it never gains those keys — and the
-            # module's own defaults are carried through rather than reset on every save.
             try:
-                import modules.reels as _reels
+                import modules.reels  # noqa: F401
                 settings["enable_reels"] = self.var_enable_reels.get()
-                carried += [k for k in _reels.SETTINGS_DEFAULTS if k != "enable_reels"]
             except (ImportError, ModuleNotFoundError):
                 pass
-
-            # Junban: the same shape as Reels — the toggle plus whichever of the module's own
-            # tunables the user already has, written only when the module imports so a build
-            # without it never gains those keys. The carry-through matters because the panel writes
-            # junban_deck / junban_scope itself and this dict is rebuilt from scratch on every save.
             try:
-                import modules.junban as _junban
+                import modules.junban  # noqa: F401
                 settings["enable_junban"] = self.var_enable_junban.get()
-                carried += [k for k in _junban.SETTINGS_DEFAULTS if k != "enable_junban"]
             except (ImportError, ModuleNotFoundError):
                 pass
-            carried += ["anki_sync_decks", "anki_sync_fields", "anki_sync_include_suspended"]
 
-            def build():
-                # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's
-                # decks and fields) are carried through from DISK, not from `cur`: `cur` is this
-                # dashboard's snapshot from its own last load/save, so carrying from it silently
-                # reverted — or dropped — whatever a panel had saved since. Read when the file is
-                # written, inside the lock, so a panel's save just before is carried too.
-                try:
-                    panel = settings_manager.load_settings() or cur
-                except Exception:
-                    panel = cur
-                out = dict(settings)
-                for key in carried:
-                    if key in panel:
-                        out[key] = panel[key]
-                # The Anki window owns these (core keys, so always written). The address is the one every
-                # Anki caller reads (`anki_connect.address`), so a hand-edited 2.x `junban_url` carries over
-                # here and the file then holds one address.
+            # Only the dashboard's own keys go to settings.json, onto the file as it is (the settings service, W1.3):
+            # every other window's and module's keys — Junban's deck, the Anki window's decks, a hand edit, a key this
+            # version doesn't know — stay as the file holds them, never carried, reverted or dropped.
+            changes = {k: v for k, v in settings.items() if k != "logic"}
+            changes.update({f"logic.{k}": settings["logic"][k] for k in MasterDashboardApp.OWN_LOGIC_KEYS})
+            changes.update({f"logic.selection.{k}": settings["logic"]["selection"][k] for k in ("band", "auto")})
+            changes.update({f"logic.context.{k}": settings["logic"]["context"][k]
+                            for k in ("min_chars", "preferred_max_chars", "max_contexts")})
+
+            def anki_address(on_disk):
+                # The Anki window owns the address; a hand-edited 2.x `junban_url` becomes the one address every
+                # Anki caller reads (`anki_connect.address`), so the file then holds one. And a 2.x update's
+                # `failed_update_version`, read at start into the update's own state, leaves the file.
                 from app import anki_connect
-                out["anki_connect_url"] = anki_connect.address(panel)
-                return out
+                on_disk["anki_connect_url"] = anki_connect.address(on_disk)
+                on_disk.pop("junban_url", None)
+                on_disk.pop("failed_update_version", None)
 
-            writer = getattr(self, "_settings_writer", None)
-            if isinstance(writer, settings_manager.SettingsWriter) and not os.environ.get("SURASURA_NO_UI_TIMERS"):
-                writer.submit(build)            # written on its worker; the journey check follows (_on_settings_saved)
-                self._current_settings = {**cur, **settings}
-            else:
-                built = build()
-                settings_manager.save_settings(built)
-                self._current_settings = built
-                # An analysis setting may have changed what Generate would compute — re-check the button.
+            service = getattr(self, "settings_service", None)
+            if not isinstance(service, settings_service.SettingsService):
+                writer = getattr(self, "_settings_writer", None)
+                service = self.settings_service = settings_service.SettingsService(
+                    load=False, writer=writer if isinstance(writer, settings_manager.SettingsWriter) else None)
+            if os.environ.get("SURASURA_NO_UI_TIMERS"):
+                # Under test nothing drains the queue: written here at once, and the button re-checked here.
+                service.set(changes, update=anki_address, now=True)
+                self._current_settings = settings_service.thaw(service.get())
                 self._schedule_journey_state()
+            else:
+                service.set(changes, update=anki_address)  # written on its worker; the journey check follows
+                self._current_settings = {**cur, **settings}
 
             # Update UI state (enable/disable language specific options). Skipped for band-slider
             # saves — a commonness-band change never affects the language-dependent UI, and the
@@ -3157,6 +3163,10 @@ class MasterDashboardApp:
             messagebox.showerror("Error", f"Could not open the parsing guide: {e}")
             
     SETTINGS_WAIT_LINE = "Saving your settings waits for another Surasura program…"
+    # The `logic` keys the dashboard's own widgets set (save_settings writes these and no other logic key).
+    OWN_LOGIC_KEYS = ("inline_completed_files", "hide_audio_button", "paren_readings", "names_katakana",
+                      "names_recurring", "names_kanji", "names_work_terms", "phrases_and_titles", "pronoun_bases",
+                      "phrase_rows", "ignore_names")
 
     def _on_settings_saved(self):
         """The settings writer wrote: the journey check follows, and its waiting line (if shown) goes."""
@@ -3208,7 +3218,7 @@ class MasterDashboardApp:
         settings_manager.flush_keys(timeout)        # the other windows' saves that met a held lock
 
     def run_command_async(self, cmd, desc, capture_output=False, show_spinner=False, on_complete=None,
-                          clear_log=True, on_exit=None, extra_env=None):
+                          clear_log=True, on_exit=None, extra_env=None, on_process=None, on_end=None):
         """Runs a command with optional output redirection to the terminal.
 
         on_complete: optional zero-arg callable run on the GUI thread after the process exits
@@ -3217,12 +3227,14 @@ class MasterDashboardApp:
         extra_env: variables for this command's process only (the analyzer's wait for `results`).
         on_exit: like on_complete, but run however the command ends — also when it could not be
         started at all (Generate's "one is running" must never stick).
+        on_process(popen) / on_end(returncode or None): for an owner that follows the child (Generate's controller,
+        W1.3); a command without one is recorded in the window's job registry for as long as it runs.
         Whenever a command ends, an automatic Generate waiting for it gets its chance
         (_maybe_auto_generate).
         While an update waits for Surasura's programs (K75) nothing new starts: the command is kept and starts if the
         update is cancelled."""
         if updater.defer_child(lambda: self.run_command_async(cmd, desc, capture_output, show_spinner, on_complete,
-                                                              clear_log, on_exit, extra_env)):
+                                                              clear_log, on_exit, extra_env, on_process, on_end)):
             self.status_var.set(f"{desc} will start if the update is cancelled.")
             return
         
@@ -3243,7 +3255,13 @@ class MasterDashboardApp:
         
         self.gui_queue.put(_start_loading)
 
+        job = None
+        if on_end is None:
+            job = _window_services(self)[0].record(_CHILD_KINDS.get(cmd[0], "child"), desc)
+        process = None
+
         def task():
+            nonlocal process
             self._flush_settings()          # every child reads settings.json: the newest choice first
             # Dispatch Mapping for Frozen Environment
             SCRIPT_MAP = {
@@ -3303,6 +3321,8 @@ class MasterDashboardApp:
                 # Register process for coordinated shutdown (and named for an update's wait, K75)
                 process.surasura_desc = desc
                 self.active_processes.append(process)
+                if on_process is not None:
+                    on_process(process)
                 
                 if capture_output and process.stdout:
                     for line in process.stdout:
@@ -3336,6 +3356,11 @@ class MasterDashboardApp:
                         self.spinner.stop()
                         self.spinner.pack_forget()
                 self.gui_queue.put(_stop_loading)
+                returncode = process.returncode if process is not None else None
+                if on_end is not None:
+                    on_end(returncode)
+                if job is not None:
+                    job.finish(ok=returncode == 0, message=None if returncode == 0 else f"{desc} ended ({returncode})")
                 if on_exit:
                     self.gui_queue.put(on_exit)
                 # An automatic Generate held back while this ran (the Content Manager, an importer, the
@@ -3870,58 +3895,41 @@ class MasterDashboardApp:
         self._start_analyzer(args, quiet=False)
 
     def _start_analyzer(self, args, quiet):
-        """Start the analyzer, once no other program's Generate holds `results` (P0.3 04 §2): a headless one
-        (`surasura-cli generate`) is waited for on a worker, with a line in the bottom bar, never a box; this thread
-        never waits. The analyzer takes the lock itself, so the two can never write results/ together."""
+        """Start the analyzer through the Generate controller (W1.3, `app/services/generate.py`): its run waits on a
+        worker until no other program's Generate holds `results` (P0.3 04 §2) — a line in the bottom bar, never a box;
+        closing the window while it waits starts nothing — and it is the `generate` job in the window's registry. This
+        thread never waits. The dashboard starts the child itself (`run_command_async`: its log, spinner and the
+        update's wait); the analyzer takes the lock itself, so the two can never write results/ together."""
         self._generate_running = "quiet" if quiet else "manual"
+        _registry, controller = _window_services(self)
+        caller = threading.current_thread()
 
-        def wait_for_results():
-            from app import locks
-            try:
-                if locks.read_holder("results") is None and locks.unopenable("results"):
-                    return True             # no program to wait for: the analyzer's own take says why (its log)
-                with locks.take("results", "Generate (waiting)", wait=None, cancel=self._closing_event,
-                                on_wait=lambda _holder: self.gui_queue.put(
-                                    lambda: self.status_var.set("Waiting for a background Generate…"))):
-                    pass
-            except locks.Cancelled:
-                return False                # the window closed while it waited: nothing starts
-            except Exception:
-                pass                        # the lock can't be read here: the analyzer decides
-            return True
+        def launch(run):
+            self._generate_run = run        # its end is told again by _on_generate_exit (the first report counts)
 
-        def start():
-            self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
-                                   capture_output=True, show_spinner=not quiet, clear_log=not quiet,
-                                   on_complete=lambda: (self._refresh_band_preview(force=True),
-                                                        self._maybe_junban_auto(force=True),
-                                                        self._schedule_journey_state(),
-                                                        self._tell_junban_list_changed()),
-                                   on_exit=self._on_generate_exit,
-                                   # It has waited its turn already; started in the moment another program's
-                                   # Generate also starts, it waits for that one (closing the window ends it).
-                                   extra_env={"SURASURA_RESULTS_WAIT": "forever"})
+            def start():
+                self.run_command_async(args, "Analyzer (automatic)" if quiet else "Analyzer",
+                                       capture_output=True, show_spinner=not quiet, clear_log=not quiet,
+                                       on_complete=lambda: (self._refresh_band_preview(force=True),
+                                                            self._maybe_junban_auto(force=True),
+                                                            self._schedule_journey_state(),
+                                                            self._tell_junban_list_changed()),
+                                       on_exit=self._on_generate_exit,
+                                       # It has waited its turn already; started in the moment another program's
+                                       # Generate also starts, it waits for that one (closing the window ends it).
+                                       extra_env={"SURASURA_RESULTS_WAIT": "forever"},
+                                       on_process=run.started, on_end=run.ended)
+            if run.inline and threading.current_thread() is caller:
+                start()                     # under test nothing drains the queue: a free lock starts it here
+            else:
+                self.gui_queue.put(start)
 
-        def go():
-            if not wait_for_results():
-                return
-            self.gui_queue.put(start)
-
-        if os.environ.get("SURASURA_NO_UI_TIMERS"):
-            # Under test nothing drains the queue: a free lock starts the analyzer here, at once; a held one is
-            # waited for on a worker, as in use.
-            from app import locks
-            try:
-                with locks.take("results", "Generate (waiting)"):
-                    pass
-            except locks.Busy:
-                threading.Thread(target=go, daemon=True).start()
-                return
-            except Exception:
-                pass
-            start()
-            return
-        threading.Thread(target=go, daemon=True).start()
+        # Under test (no UI timers) a free `results` is taken here and the analyzer starts at once; a held one is
+        # waited for on a worker, as in use.
+        controller.request(None, argv=args, quiet=quiet, settle=0, launcher=launch,
+                           on_wait=lambda _holder: self.gui_queue.put(
+                               lambda: self.status_var.set("Waiting for a background Generate…")),
+                           cancel_event=self._closing_event, inline=bool(os.environ.get("SURASURA_NO_UI_TIMERS")))
 
     def _on_generate_exit(self):
         """However a Generate ended — finished, failed, or never started — the next one may run. The
@@ -3930,6 +3938,9 @@ class MasterDashboardApp:
         Generate, which reopens the report at once when the journey is up to date."""
         if self._generate_running == "automatic":
             self._journey_spinner(False)
+        run, self._generate_run = getattr(self, "_generate_run", None), None
+        if isinstance(run, generate_service.Run):
+            run.ended(getattr(run.proc, "returncode", None))      # the controller's job ends (if not told already)
         self._generate_running = None
         self._schedule_journey_state()
         if self._open_report_when_generated:

@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import word_selection
+from app import settings_manager, word_selection
 
 
 def _ladder(*counts):
@@ -161,7 +161,7 @@ class TestTurningItOn(_Dashboard):
         saved = self._saved_selection()
         self.assertIs(saved["auto"], True)
         self.assertEqual(saved["band"], "very_rare")
-        self.assertEqual(saved["auto_max_words"], 850)      # rides through the rebuilt block
+        self.assertEqual(settings_manager.load_settings()["logic"]["selection"]["auto_max_words"], 850)   # kept: the dashboard writes only its own keys (W1.3)
         self.assertEqual(self.band_writes, [])
 
 

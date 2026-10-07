@@ -436,7 +436,10 @@ def test_2_5_needs_no_new_runtime():
     package 2.4.0 already imported (app/anki_utils.py, the .anki21b reader); the store is standard library only."""
     with open(os.path.join(REPO, "requirements.txt"), encoding="utf-8") as f:
         lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
-    assert [l for l in lines if l not in REQUIREMENTS_2_4_0] == ["zstandard"]
+    # The 3.0 line adds the window's PyQt6 at W2.1 (the window's spec 01 §1.1, K52; approved Q3-8): 3.0 is a new
+    # install, never this in-place update, and its window is the only code that imports Qt. 2.x keeps the 2.5 rule.
+    window = ["PyQt6==6.11.*", "PyQt6-Qt6==6.11.*"]
+    assert [l for l in lines if l not in REQUIREMENTS_2_4_0 and l not in window] == ["zstandard"]
     assert all(l in lines for l in REQUIREMENTS_2_4_0)
     import ast
     tree = ast.parse(open(ls.__file__, encoding="utf-8").read())

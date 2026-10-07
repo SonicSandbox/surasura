@@ -1,5 +1,5 @@
 # <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 
 *For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
 
@@ -127,7 +127,7 @@ Drag them into your immersion order across the **NOW · Soon · 6+ months** tabs
 If you prefer to run Surasura from source rather than using the pre-built executable:
 
 ### 1. Requirements
-- Python 3.9 or higher.
+- Python 3.10 or higher.
 - (Windows only) Ensure `tkinter` is installed (usually bundled with Python).
 
 ### 2. Setup

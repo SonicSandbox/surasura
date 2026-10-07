@@ -14,12 +14,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.quiet_windows import quiet_windows
 from tests.tk_on_github import skip_tk_tests
+from tests.network_guard import around_a_test
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
 
 def pytest_collection_modifyitems(items):
     skip_tk_tests(items)                    # GitHub's runner only: the Tk window tests run in the local --all
+
+
+@pytest.fixture(autouse=True)
+def network_guard():
+    """Every test stays on this machine (the window's spec 07 §7.3; tests/network_guard.py): a connection or a name
+    lookup past loopback is refused as the app meets it offline, and the test fails at its end naming the address.
+    The fixture's value is the guard: a test that provokes a refusal on purpose reads `attempts`, then `forgive()`s."""
+    yield from around_a_test()
 
 @pytest.fixture
 def test_resources_dir():

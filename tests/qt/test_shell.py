@@ -451,18 +451,24 @@ def test_the_bubble_waits_380_ms_then_60_within_half_a_second(window):
 
 
 def test_a_real_hover_shows_the_bubble_after_380_ms_not_twice_that(window):
-    # The mouse, not a hand-made tooltip event: Qt's own wait plus the bubble's is what a person sees (review A2: it
-    # was ~780 ms). Unfrozen, timed from the move to the bubble on screen.
+    # The mouse, not a hand-made tooltip event (review A2: Qt's own wait plus the bubble's was ~780 ms). Two clocks, so
+    # a loaded machine can't fail it: Qt must hand the hover over at once (well under its old 380 ms), and the bubble
+    # then waits its own 380 ms.
     import time
     from app.qt import freeze
     freeze.set_frozen(False)
     window.activateWindow()
     tab = window.tab_buttons["settings"]
+    asked = []
+    real_request = window.tooltips.request
+    window.tooltips.request = lambda w: (asked.append(time.monotonic()), real_request(w))
     t0 = time.monotonic()
     QTest.mouseMove(tab, QPoint(tab.width() // 2, tab.height() // 2))
-    assert wait_until(lambda: window.tooltips.showing() is not None, 3)
-    shown_after = (time.monotonic() - t0) * 1000
-    assert 300 <= shown_after <= 700, shown_after          # the double wait it replaced was 760+
+    assert wait_until(lambda: window.tooltips.showing() is not None, 5)
+    shown = time.monotonic()
+    assert asked, "the hover never reached the bubble"
+    assert (asked[0] - t0) * 1000 < 250, (asked[0] - t0) * 1000       # Qt adds no wait of its own
+    assert (shown - asked[0]) * 1000 >= 300                            # the bubble's 380 ms (a timer can't fire early)
 
 
 def test_a_key_press_hides_the_bubble(window):

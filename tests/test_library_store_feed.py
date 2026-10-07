@@ -128,6 +128,11 @@ def test_undo_advances_feed_in_not_back(language):
     assert item["changed_in"] == old_changed, "undo restores changed_in"
     assert item["feed_in"] > moved and item["feed_in"] == store.meta()["state_version"], "and advances feed_in"
     assert store.ids("goal") == goal
+    loose = next(i for i in goal if not store.item(i)["parent_folder"])     # a piece of its own: no piece changes
+    change = store.move([loose], "goal")
+    moved = store.item(loose)["feed_in"]
+    store.undo(change)
+    assert store.item(loose)["feed_in"] > moved, "the undo's own placement stamps the row"
     store.close()
 
 

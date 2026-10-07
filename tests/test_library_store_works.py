@@ -231,8 +231,9 @@ def test_pieces_follow_their_rules(language):
             shows.append(p)
     p1, p2 = shows[0], shows[1]
     m1, m2 = _members(store, p1), _members(store, p2)
-    store.move(m1, "goal")                                      # the whole piece to the top: its id stays
-    assert _members(store, p1) == m1
+    assert store.move(m1, "goal", after_id=store.ids("goal")[-1]) is not None   # the whole piece to the end
+    assert _members(store, p1) == m1, "a whole piece moved keeps its id"
+    store.move(m1, "goal")                                      # and back to the top
     loose = next(i for i in goal if not store.item(i)["parent_folder"])
     store.move([loose], "goal", after_id=m2[1])                 # a foreign drop inside p2: split there
     assert _members(store, p2) == m2[:2] and _piece(store, m2[2]) == _piece(store, m2[3]) != p2

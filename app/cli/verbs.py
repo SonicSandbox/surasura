@@ -947,6 +947,21 @@ def _job_id(args):
     return job
 
 
+def _level_job(job, lang):
+    """Connect's ledger job a `--job` names (its id), when it is a level job of this language (P2.2) -> its row; else
+    None. Never creates the ledger."""
+    if not job or not str(job).isdigit():
+        return None
+    from app.connect import ledger
+    if not os.path.exists(ledger.path()):
+        return None
+    with ledger.Ledger() as book:
+        row = book.job_by_id(int(job))
+    if row is None or row.get("kind") != ledger.LEVEL or row.get("language") != lang:
+        return None
+    return row
+
+
 def _connect_folder():
     from app.path_utils import get_local_data_path
     return os.path.join(get_local_data_path(), "connect")
@@ -1016,6 +1031,11 @@ def pick(args):
         raise CliError("bad-data", f"There's no video at {args.video}.")
     job = _job_id(args)
     listed = _listed(args, lang)
+    level_job = _level_job(args.job, lang)
+    if level_job is not None:
+        # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
+        from app.connect import level
+        mode, listed = "list", (level.restrict(listed, level_job) if listed is not None else None)
     if mode == "list" and listed is None:
         raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
 

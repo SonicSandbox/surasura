@@ -397,6 +397,8 @@ def connect(args):
                     continue                                    # no store (JSON mode, read-only): nothing written
                 with store:
                     got = _store_write(lambda: inbox.consume(store, lang), 10.0)
+                    if rounds == 1:
+                        out[lang]["level"] = _level(store, lang, loaded)     # P2.2: once a run, after the inbox
                 mine = out[lang]
                 mine["queued"] += got["queued"]
                 mine["dropped"] += got["dropped"]
@@ -406,6 +408,45 @@ def connect(args):
         if not any(_pending(lang) for lang in languages):
             break
     return {"languages": out, "rounds": rounds}
+
+
+def _level(store, lang, loaded):
+    """P2.2, the level raise's look (`app/connect/level.py`) on the list `results/` holds for this language: the
+    newly listed words of the episodes already mined, top 20 first, as `level` jobs; None when there's no list of it
+    to read (another language's, none yet, a Generate writing it)."""
+    from app.connect import level
+    read = _read_list(lang)
+    if read is None:
+        return None
+    signature, listed, file_words = read
+    return level.check(store, lang, listed, signature, file_words, mode=loaded.get("connect_mine_words") or "list")
+
+
+def _read_list(lang):
+    """(the run signature, the list's keys {(Word, Reading)}, `file_words.json`) of the last Generate, read under
+    `results` (a Generate writing them is waited for 5 s, then left to the next look) — or None."""
+    from app.cli import verbs
+    try:
+        with contract.take_lock("results", "Connect reading the list", wait=5.0):
+            holds = verbs._results_language()
+            folder = verbs._results_dir()
+            path = os.path.join(folder, verbs.PRIORITY_CSV)
+            if (holds and holds != lang) or not os.path.exists(path):
+                return None
+            signature = verbs.read_run_stamp_here()
+            if signature is None:
+                return None                         # a Generate that didn't finish: its list may be cut short
+            rows = verbs._read_rows(path)
+            try:
+                with open(os.path.join(folder, "file_words.json"), "r", encoding="utf-8") as f:
+                    file_words = json.load(f)
+            except (OSError, ValueError):
+                file_words = {}
+    except CliError:
+        return None
+    if not isinstance(file_words, dict):
+        file_words = {}
+    return signature, {(row.get("Word", ""), row.get("Reading", "")) for row in rows}, file_words
 
 
 def _pending(lang):

@@ -564,6 +564,7 @@ SCHEMA_2_SQL = (
     "CREATE INDEX items_work ON items (work_id)",
     "CREATE INDEX items_feed ON items (feed_in)",
     "CREATE INDEX items_piece ON items (piece_id)",
+    "CREATE INDEX items_search ON items (search_key)",     # the search scans these keys, never the wide rows (§12.8)
 )
 
 # The change feed (L2.2 04 §4.1): what a window reads of each changed row
@@ -1666,8 +1667,9 @@ class Store:
         cmd.moved.update(ids)
         cmd.fed_inline.update(ids)
         cmd.tiers.add(tier)
-        if others:                                             # a re-space moves no row in the order: no feed
-            self.conn.executemany("UPDATE items SET ord = ? WHERE id = ?", [(k, i) for i, k in others])
+        if others:          # a re-space: each row carries its new key to the windows (§12.8)
+            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
+                                  [(k, cmd.version, i) for i, k in others])
 
     def _respace(self, tier, ids, lo, hi, excl):
         """Local re-space (§6.5): up to 16 rows each side of the gap, renumbered with the placed items
@@ -1717,8 +1719,9 @@ class Store:
         placed_ids = [m[-1] for m in moves]
         self._cmd.moved.update(placed_ids)
         self._cmd.fed_inline.update(placed_ids)
-        if others:
-            self.conn.executemany("UPDATE items SET ord = ? WHERE id = ?", others)
+        if others:                                             # re-spaced keys reach the windows too (§12.8)
+            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
+                                  [(k, self._cmd.version, i) for k, i in others])
 
     def _seqs(self, tiers):
         """({tier: _Seq}, {id: ord}) for the given tiers, as they stand."""
@@ -2295,6 +2298,8 @@ class Store:
         one tier (05 §5.2); each row it changed carries its version in `feed_in`, each row it took out a tombstone
         (04 §4.1). Called by `_Command.finish` before the versions and the log, so the log sees the settled order."""
         self._settle_works(cmd)
+        if (cmd.meta.get("rename_asks") or "[]") != "[]":
+            self._tidy_asks()
         if cmd.line_set or cmd.tiers & set(CURRENT):
             self._keep_line(cmd)
         self._fix_pieces(cmd)
@@ -2646,14 +2651,23 @@ class Store:
         if not key:
             return [], []
         tiers = [t for t in tiers if t in TIERS]
+        if not tiers:
+            return [], []
         marks = ",".join("?" * len(tiers))
-        with self._reading():
+        with self._reading():      # the keys alone are scanned (`items_search`); a hit's tier read only for a subset
             works = [r[0] for r in self.conn.execute(
-                f"SELECT id FROM works WHERE instr(search_key, ?) > 0 AND id IN "
-                f"(SELECT work_id FROM items WHERE tier IN ({marks})) ORDER BY id", [key] + tiers)]
-            items = [r[0] for r in self.conn.execute(
-                f"SELECT id FROM items WHERE tier IN ({marks}) AND instr(search_key, ?) > 0 ORDER BY id", tiers + [key])]
-        return works, items
+                f"SELECT id FROM works w WHERE instr(search_key, ?) > 0 AND EXISTS "
+                f"(SELECT 1 FROM items i WHERE i.work_id = w.id AND i.tier IN ({marks})) ORDER BY id", [key] + tiers)]
+            try:
+                items = [r[0] for r in self.conn.execute(
+                    "SELECT id FROM items INDEXED BY items_search WHERE instr(search_key, ?) > 0", (key,))]
+            except sqlite3.OperationalError:                   # a store built before the index (development only)
+                items = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE instr(search_key, ?) > 0", (key,))]
+            if set(tiers) != set(TIERS):
+                wanted = set(tiers)
+                items = [i for c in _chunks(items, 500) for i, t in self.conn.execute(
+                    f"SELECT id, tier FROM items WHERE id IN ({','.join('?' * len(c))})", c) if t in wanted]
+        return works, sorted(items)
 
     def _settle_works(self, cmd):
         """Items the command added (or put back from a work merged away) get their work by their folder."""
@@ -2901,22 +2915,27 @@ class Store:
         if len(members) <= 1:
             return
 
+        first, last = members[0], members[-1]
+        span = None                # {id: position} of the rows from its first member to its last, read at once
+        if view is None and first[1] == last[1]:
+            rows = conn.execute("SELECT id FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
+                                "ORDER BY ord, id LIMIT ?", (first[1], first[2], first[0], last[2], last[0],
+                                                             4 * len(members) + 64)).fetchall()
+            if rows and rows[-1][0] == last[0]:                # a piece scattered wider than that: one look per gap
+                if len(rows) == len(members) and len({m[3] for m in members}) == 1:
+                    return
+                span = {r[0]: n for n, r in enumerate(rows)}
+
         def gap(a, b):
             if a[1] != b[1] or a[3] != b[3]:
                 return True
+            if span is not None:
+                return span[b[0]] != span[a[0]] + 1
             if view is not None and a[1] in view:
                 index = view[a[1]][0]
                 return index[b[0]][0] != index[a[0]][0] + 1
             return conn.execute("SELECT 1 FROM items WHERE tier = ? AND (ord, id) > (?, ?) AND (ord, id) < (?, ?) "
                                 "LIMIT 1", (a[1], a[2], a[0], b[2], b[0])).fetchone() is not None
-
-        first, last = members[0], members[-1]
-        if view is None and first[1] == last[1] and len({m[3] for m in members}) == 1:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
-                "LIMIT ?)", (first[1], first[2], first[0], last[2], last[0], len(members) + 1)).fetchone()[0]
-            if count == len(members):
-                return
         runs, run = [], [members[0]]
         for a, b in zip(members, members[1:]):
             if gap(a, b):
@@ -3337,8 +3356,8 @@ class Store:
         if row[0] is not None:
             return row[0], row[1]
         counts = {}
-        for (source,) in self.conn.execute("SELECT source_type FROM items WHERE work_id = ?", (work_id,)):
-            kind = infer_source_type("", declared=source) if source else None
+        for source, rel in self.conn.execute("SELECT source_type, rel_path FROM items WHERE work_id = ?", (work_id,)):
+            kind = infer_source_type(rel or "", declared=source)      # no type stamped (Reset): its extension (§12.8)
             counts[kind] = counts.get(kind, 0) + 1
         return media_type_guess(counts, row[2], row[3]), None
 
@@ -3512,6 +3531,22 @@ class Store:
             cmd.touch({row[5]}, availability=row[4] != "available")
             return change
 
+    def _tidy_asks(self):
+        """9a's questions kept true (§12.8), in the settling step: a question goes once its file is an item
+        (Add or hato's hand-off took it in as new), and once none of its candidates is a missing item any more; a
+        candidate back, relinked or gone leaves its questions. Bookkeeping the copy carries."""
+        asks = _rename_asks(self)
+        kept = []
+        for a in asks:
+            if self.conn.execute("SELECT 1 FROM items WHERE rel_key = ?", (path_key(str(a.get("rel", ""))),)).fetchone():
+                continue
+            cands = [c for c in a.get("candidates") or [] if self.conn.execute(
+                "SELECT 1 FROM items WHERE id = ? AND availability = 'missing'", (c,)).fetchone()]
+            if cands:
+                kept.append(dict(a, candidates=cands))
+        if kept != asks:
+            self._set_meta({"rename_asks": _dumps(kept), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+
     def _drop_ask(self, rel):
         asks = _rename_asks(self)
         kept = [a for a in asks if path_key(a.get("rel", "")) != path_key(rel)]
@@ -3525,6 +3560,9 @@ class Store:
         if row is None or row[0] != info["new"]:
             return out, [info["id"]]
         old_rel, _key, size, mtime_ns, _availability = info["old"]
+        if self.conn.execute("SELECT 1 FROM items WHERE rel_key = ? AND id != ?",
+                             (path_key(old_rel), info["id"])).fetchone():
+            return out, [info["id"]]                           # its old path is another item's now (§12.8)
         self._repoint(info["id"], old_rel, size, mtime_ns)
         if not os.path.exists(os.path.join(self.data_dir, _strip(old_rel))):
             self.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (info["id"],))
@@ -4259,13 +4297,19 @@ def _upgrade_1_to_2(store):
     upgrade's version; checked before it commits. `epoch` stays (ids, order and tiers untouched)."""
     conn = store.conn
     before = _order_snapshot(conn)
+    later = [sql for sql in SCHEMA_2_SQL if sql.startswith("CREATE INDEX items_")]
     for sql in ADDED_TABLES_SQL + SCHEMA_2_SQL:
-        conn.execute(sql)
+        if sql not in later:
+            conn.execute(sql)
     meta = store._meta()
     if "migrated_at" not in meta:
+        for sql in later:
+            conn.execute(sql)
         return                                                 # never built (no rows): the build seeds it
     version = meta["state_version"] + 1
     _seed_schema2(store, version)
+    for sql in later:              # built once over the seeded rows, not kept up through 200k updates (§12.8)
+        conn.execute(sql)
     now_count = conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
     store._set_meta({"state_version": version, "soon_line": now_count, "arrivals_on": 1,
                      "copy_dirty": int(meta.get("copy_dirty") or 0) + 1})
@@ -4396,11 +4440,13 @@ def _seed_schema2(store, version):
     next_work = _next_id(conn, "works")
     rows = conn.execute("SELECT id, rel_path, tier, title, work_id, piece_id FROM items").fetchall()
     item_work = {}
+    fk_of = {}                                                  # one folder's key, worked out once
     for item_id, rel, tier, title, work_id, _piece in rows:
         if work_id in works:
             item_work[item_id] = work_id
             continue
-        fk = folder_key_of(rel)
+        folder = _rel_dir(_strip(rel))
+        fk = fk_of[folder] if folder in fk_of else fk_of.setdefault(folder, folder_key_of(rel))
         wid = by_key.get(fk) if fk is not None else None
         if wid is None:
             wid = next_work
@@ -5153,9 +5199,9 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
                                       [(tier, plan[i], cmd.version, i) for i in placed])
                 cmd.moved.update(placed)
                 cmd.feed(placed)
-                others = [(k, i) for i, k in plan.items() if i not in placed]
-                if others:
-                    self.conn.executemany("UPDATE items SET ord = ? WHERE id = ?", others)
+                others = [(k, cmd.version, i) for i, k in plan.items() if i not in placed]
+                if others:                                     # re-spaced keys reach the windows too (§12.8)
+                    self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?", others)
         for it in items.values():
             if it.new_tier == "graduated":
                 self.conn.execute("UPDATE items SET graduated_at = ? WHERE id = ?", (now, it.id))
@@ -5902,7 +5948,9 @@ def _store_reset_order(self, walk=None):
         rows = self.conn.execute("SELECT id, rel_key, tier, ord, changed_in, rel_path, availability "
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
-        untracked = [rel for rel in order if path_key(rel) not in known]
+        known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
+        arrivals = cmd.meta.get("arrivals_on")
+        untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))]
         prepared = [(rel, rel, path_key(rel), make_entry(rel, "Reset", with_source_type=False),
                      _fingerprint(self.data_dir, rel), TIER_OF_FOLDER[rel.split("/", 1)[0]]) for rel in untracked]
         new_ids = self._add_rows(prepared, cmd.version) if prepared else []
@@ -6428,8 +6476,14 @@ def copy_into_finished(data_dir, sources, progress=None, cancel=None):
     for source in sources:
         rel = library_rel(data_dir, source) if os.path.isabs(source) else None
         if rel is not None and os.path.exists(os.path.join(data_dir, rel)):
-            if os.path.isfile(os.path.join(data_dir, rel)):
+            full = os.path.join(data_dir, rel)
+            if os.path.isfile(full):
                 plan.append((None, rel))
+            else:                                  # a folder in the library: its files as they are (§12.8)
+                for folder, _dirs, files in sorted(os.walk(full)):
+                    for name in sorted(files):
+                        if is_content_name(name):
+                            plan.append((None, library_rel(data_dir, os.path.join(folder, name))))
             continue
         if os.path.isdir(source):
             base = os.path.basename(os.path.normpath(source))

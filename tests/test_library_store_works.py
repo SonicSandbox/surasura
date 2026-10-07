@@ -153,6 +153,23 @@ def test_a_second_title_with_the_same_id_merges_into_the_first(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("block", [150, 250])
+def test_a_large_foreign_drop_splits_the_run_it_lands_in(language, block):
+    """05 §5.2 rule 5 for a block: dropped inside a title's run, the run splits there — whether the piece is checked gap
+    by gap (150 rows land inside a 12-episode run: wider than the one look at its span) or from the tier's order a big
+    move reads once (250 rows)."""
+    store = big_store(language, 2000)
+    soon = store.ids("soon")
+    piece_of = lambda i: store.item(i)["piece_id"]                 # noqa: E731
+    a = next(i for n, i in enumerate(soon[:-1]) if piece_of(i) is not None and piece_of(soon[n + 1]) == piece_of(i))
+    b = soon[soon.index(a) + 1]
+    store.move(store.ids("goal")[:block], "soon", after_id=a)
+    assert piece_of(a) != piece_of(b)
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_merge_by_a_records_id_keeps_the_users_name_type_and_cover(language):
     """G2.2-6 with G4 (L3.1's intent review #1): a record whose id another title holds makes the two one title, the
     lower id kept — and what the user chose on the merged-away title (its name, *What is it?*, a locked cover) is what
@@ -654,6 +671,39 @@ def test_mine_it_too_is_answered_by_the_receipt(language):
     assert row["mined_at"] == "2026-10-06T12:30:00Z" and row["mined_at"] >= "2026" and row["mine_asked"]
     store.undo(asked)
     assert store.item(item)["mine_asked"] is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_picked_inside_the_library_lists_its_files_as_they_are(language):
+    """05 §5.8, L3.1's adversarial review: a folder already in the library picked in the Finished importer is never copied — its
+    content files are listed as they are, so `import_finished` takes them to Finished in the store only."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    inside = sorted(store.item(i)["rel_path"] for t in ls.TIERS for i in store.ids(t)
+                    if store.item(i)["rel_path"].startswith(folder + "/"))
+    listed = ls.copy_into_finished(data_dir, [os.path.join(data_dir, *folder.split("/"))])
+    assert sorted(listed) == inside and inside
+    change = store.import_finished(listed)
+    assert all(store.item(store.item_id(r))["tier"] == "graduated" for r in inside) and change.added == []
+    assert not os.path.exists(os.path.join(data_dir, ls.GRADUATED_FOLDER, folder.rsplit("/", 1)[-1])), "nothing copied"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_without_stamped_types_is_guessed_by_its_files(language):
+    """05 §5.4, L3.1's adversarial review: items Reset or a rebuild added carry no source type; the guess reads their files'
+    extensions, so subtitles with an AniList id show *Anime*, not *Video*."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    work = _work(store, show)
+    with store._writing():
+        store.conn.execute("UPDATE items SET source_type = NULL WHERE work_id = ?", (work,))
+        store.conn.execute("UPDATE works SET anilist_id = 77 WHERE id = ?", (work,))
+    assert store.media_type(work) == ("anime", None)
     store.close()
 
 

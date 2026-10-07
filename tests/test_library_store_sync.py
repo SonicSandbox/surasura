@@ -791,6 +791,60 @@ def test_twins_are_asked_never_guessed(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_undoing_a_relink_whose_old_path_is_taken_again_is_skipped(language):
+    """L3.1's adversarial review: an item relinked to another file; its old file comes back and the sync takes it in as an item
+    of its own; Undo of the relink can't point the item back at a path another item holds — it skips, with a note,
+    never a database error; the item stays at its new file."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    item = store.ids("soon")[0]
+    old = store.item(item)["rel_path"]
+    os.remove(os.path.join(data_dir, old))
+    store.sync_disk()
+    change = store.relink(item, touch(data_dir, f"GoalContent/{w[115]}/{w[116]}.srt"))
+    touch(data_dir, old)
+    back = store.sync_disk()["added"]
+    assert [store.item(i)["rel_path"] for i in back] == [old]
+    out = store.undo(change)
+    assert out is not None and out.notes, "skipped, with a note"
+    assert store.item(item)["rel_path"] == f"GoalContent/{w[115]}/{w[116]}.srt"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_question_goes_once_its_file_or_its_candidates_are_settled(language):
+    """L3.1's adversarial review: 9a's questions never go stale — Reset leaves a held-out file out (its question waits);
+    adding that file by hand answers it (it is new); relinking a twin elsewhere takes it off the other questions, and a
+    question with no candidate still missing goes."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+    b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+    mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+    os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+    store.sync_disk()
+    os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+    back = f"GoalContent/{w[114]}/same.srt"
+    _move_file(data_dir, store.item(a)["rel_path"], back)
+    assert store.sync_disk()["asked"] == [back]
+    store.reset_order()
+    assert store.item_id(back) is None and store.rename_asks()[0]["rel"] == back, "Reset leaves it to the question"
+    store.insert([os.path.join(data_dir, back)], "goal")
+    assert store.rename_asks() == [], "added by hand: it is new"
+    other = f"GoalContent/{w[117]}/same.srt"                     # a second question about the same twins
+    with store._writing():
+        store._set_meta({"rename_asks": json.dumps([{"rel": other, "size": 5, "mtime_ns": mtime,
+                                                     "candidates": [a, b]}])})
+    store.relink(a, touch(data_dir, f"GoalContent/{w[118]}/x.srt"))
+    assert store.rename_asks()[0]["candidates"] == [b], "a relinked twin leaves the other questions"
+    store.relink(b, touch(data_dir, f"GoalContent/{w[119]}/y.srt"))
+    assert store.rename_asks() == [], "no candidate still missing: the question goes"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_read_only_view_follows_a_moved_file(language):
     """§12.5: `read_only_view` (surasura-cli status) follows 9a with no change of its own — a file moved across
     folders, not yet synced, is pending; once synced, it isn't."""

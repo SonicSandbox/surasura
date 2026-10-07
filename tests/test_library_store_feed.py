@@ -90,27 +90,31 @@ def test_every_writer_advances_feed_in(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_re_space_alone_stamps_nothing(language):
-    """04 §4.1 rule 1: re-spacing order keys moves no row in the order, so it stamps no row (a whole window of
-    neighbours would otherwise be sent to every window for one drag)."""
+def test_a_window_reading_the_feed_keeps_the_true_order_through_a_re_space(language):
+    """04 §4.1 as built (L3.1's adversarial review): the feed carries each row's key, so the keys a re-space gives a drag's
+    neighbours are sent with that drag — a window that applies only what the feed sends keeps the store's order, drag
+    after drag, through every re-space (the same gap halved until the keys run out), in every tier."""
     store = migrated(language, shows=3, episodes=6)
+    first = store.read_feed()
+    model = {r["id"]: (r["tier"], r["ord"]) for r in first["items"]}
+    seen, epoch = first["version"], first["epoch"]
     ids = store.ids("goal")
-    for n in range(200):                                        # the same gap halved until the keys re-space
+    respaced = 0
+    for n in range(200):
         ords = dict(store.conn.execute("SELECT id, ord FROM items WHERE tier = 'goal'"))
-        pieces = dict(store.conn.execute("SELECT id, piece_id FROM items"))
-        before = _feeds(store)
         item = ids[-1 - n % 2]
         store.move([item], "goal", after_id=ids[0])
         now = dict(store.conn.execute("SELECT id, ord FROM items WHERE tier = 'goal'"))
-        repieced = {i for i, p in store.conn.execute("SELECT id, piece_id FROM items") if pieces.get(i) != p}
-        respaced = {i for i in now if i != item and now[i] != ords[i]} - repieced
-        if len(respaced) >= 2:
-            stamped, _v = _stamped(store, before)
-            assert item in stamped
-            assert not respaced & set(stamped), "a row the re-space alone moved is never stamped"
-            break
-    else:
-        pytest.fail("no re-space in 200 halvings")
+        respaced += sum(1 for i in now if i != item and now[i] != ords[i])
+        feed = store.read_feed(seen, epoch)
+        assert not feed["full"]
+        for r in feed["items"]:
+            model[r["id"]] = (r["tier"], r["ord"])
+        seen = feed["version"]
+        for tier in ls.ANALYSED:
+            drawn = sorted((v[1], i) for i, v in model.items() if v[0] == tier)
+            assert [i for _o, i in drawn] == store.ids(tier), (n, tier)
+    assert respaced, "no re-space in 200 halvings"
     store.close()
 
 

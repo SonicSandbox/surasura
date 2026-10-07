@@ -869,7 +869,8 @@ def _schema2_state(store, language):
         store.conn.execute("UPDATE works SET title = ?, title_by_user = 1, titles = ?, media_type = 'drama', "
                            "media_type_by = 'user', anilist_id = 154587 WHERE id = ?",
                            (w[20], json.dumps([w[21]], ensure_ascii=False), work))
-        store.conn.execute("UPDATE items SET mine_asked = '2026-10-06T12:00:00Z' WHERE id = ?", (item,))
+        store.conn.execute("UPDATE items SET mine_asked = '2026-10-06T12:00:00Z', availability = 'missing' WHERE id = ?",
+                           (item,))                    # a question's candidate is a missing item (else it is tidied)
         store.conn.execute("INSERT INTO made_words VALUES (?, ?, '[1700000000003]', '2026-10-06T01:00:00', 'b3')",
                            (item, w[22]))
         store.conn.execute("UPDATE trash SET text_forgotten = 1 WHERE item_id = ?", (removed,))

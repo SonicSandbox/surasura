@@ -47,6 +47,14 @@ DEFAULT_SETTINGS = {
     # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
     # signature (analyzer._NON_ANALYSIS_SETTINGS).
     "index_pool_workers": None,
+    # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
+    # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
+    # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:
+    # empty = every arrival waits). Sources: a record's producer ("hato"), "<producer>:<channel id>"; targets: wait ·
+    # top · after-show · soon · goal · finished (app/connect/rules.py; the store's L2.2 05 §5.12). Read only by the
+    # command line and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_enabled": False,
+    "placing_rules": {},
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
     # per language ({"ja": [...], "zh": [...]}); copy these dicts before mutating (load_settings
     # deep-copies the defaults, but a caller holding the loaded dict shares it). Never in the run
@@ -66,6 +74,16 @@ DEFAULT_SETTINGS = {
     # in known words. Only then — new episodes are the user's to order first. Never in the run
     # signature.
     "anki_auto_generate": False,
+    # Surasura Connect's mine path (P1.3; docs/agent instructions/3.0/P1.3-mine-path/): which words of an episode
+    # become cards (`list`: on your list, not known, no card yet · `unknown`: every word you don't know · `i1`: only
+    # words with a line whose other words you know), whether grammar words go too (names follow logic.ignore_names:
+    # G1.3), where Anki Miner is ("" = found by its installer's key) and the Anki Miner profile Connect mines with.
+    # Read only by
+    # `surasura-cli pick` and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "connect_mine_words": "list",
+    "connect_send_grammar": True,
+    "connect_anki_miner_path": "",
+    "connect_anki_miner_profile": "Surasura",
     "logic": {
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:

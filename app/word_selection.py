@@ -27,6 +27,9 @@ DEFAULT_BANDS_PPM = dict(_SELECTION_DEFAULTS["bands_ppm"])
 DEFAULT_MIN_COUNT = _SELECTION_DEFAULTS["min_count"]
 MINUTES_PER_FILE = _SELECTION_DEFAULTS["minutes_per_file"]
 DEFAULT_AUTO_MAX_WORDS = _SELECTION_DEFAULTS["auto_max_words"]
+# Q4-3's second threshold: a band Automatic chose is kept until its list grows past this (never below the first line),
+# so a list near 850 doesn't flip back and forth with every episode added or word learned.
+DEFAULT_AUTO_STEP_BACK_WORDS = 1100
 
 # Slider order = the band keys in their defined order ('native', the min_count baseline, last).
 BANDS_ORDER = list(DEFAULT_BANDS_PPM.keys())
@@ -97,13 +100,18 @@ def _ranked(unknown):
     return counts, [0, *accumulate(counts)]
 
 
-def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None):
+def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None, remembered=None,
+              step_back_words=DEFAULT_AUTO_STEP_BACK_WORDS):
     """Automatic rarity (logic.selection.auto): the RAREST band whose list holds `max_words` words or
     fewer — the same word counts the slider shows (band_previews). Learning shrinks every band, so the
     choice moves on by itself; new content can grow a band past the line again, and then it steps back
     — worked out fresh on every run, it always describes the list you have. A collapsed tail (Very
     Rare == Native) picks Native, the band the slider still shows. If even the first band (Core) holds
-    more, the first band. None when there is no preview: the caller keeps the band it has."""
+    more, the first band. None when there is no preview: the caller keeps the band it has.
+
+    `remembered` (Q4-3, the band this library's store remembers Automatic last chose): a rarer band at or under the
+    line is still taken; otherwise the remembered band stays while its list holds `step_back_words` words or fewer
+    (never below `max_words`), and only above that does it step back. No remembered band: the rule above, as ever."""
     if not previews:
         return None
     bands = bands or BANDS_ORDER
@@ -111,6 +119,9 @@ def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None):
     for band in bands:
         if band in previews and previews[band]["word_count"] <= max_words:
             chosen = band
+    if remembered in bands and remembered in previews and bands.index(chosen) < bands.index(remembered):
+        if previews[remembered]["word_count"] <= max(step_back_words, max_words):
+            return remembered
     return chosen
 
 

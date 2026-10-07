@@ -232,6 +232,22 @@ def _window_services(app):
     return registry, controller
 
 
+def carry_as_written(out, keys):
+    """Copy each of `keys` that settings.json holds, as the file holds it, into `out` (a save being built): a key the
+    user set is never dropped, and a default is never written into a file that lacks it. No file, or one that can't be
+    read, holds none of them."""
+    try:
+        from app.path_utils import get_user_file, read_text
+        as_is = json.loads(read_text(get_user_file("settings.json")))
+    except Exception:
+        as_is = {}
+    if isinstance(as_is, dict):
+        for key in keys:
+            if key in as_is:
+                out[key] = as_is[key]
+    return out
+
+
 class MasterDashboardApp:
     # Per-sentence source badge in the report: stored key -> the label shown in Advanced Settings.
     SOURCE_DISPLAY_LABELS = {
@@ -585,6 +601,9 @@ class MasterDashboardApp:
             self.root.after(1500, self._maybe_maintain)
             self.root.after(1600, self._update_library_notice)
 
+            # Connect's preview on: name what another program (hato) added while Surasura was closed (P2.1 row 2.1.7)
+            self.root.after(2500, self._arrivals_notice)
+
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
         # would otherwise go online.
@@ -858,6 +877,13 @@ class MasterDashboardApp:
         n = self._auto_max_words()
         return f"{n:,}" if isinstance(n, (int, float)) else str(n)
 
+    def _auto_step_back_text(self):
+        """Q4-3's second line as the tooltips say it: 1,100, or the first line when a hand edit put it higher."""
+        try:
+            return f"{max(word_selection.DEFAULT_AUTO_STEP_BACK_WORDS, int(self._auto_max_words())):,}"
+        except (TypeError, ValueError):
+            return f"{word_selection.DEFAULT_AUTO_STEP_BACK_WORDS:,}"
+
     def _auto_band_choice(self):
         """The band automatic rarity picks from the current preview — word_selection.auto_band over the
         numbers the slider shows, the rule the analyzer applies on the same ones (I3) — or None before
@@ -866,7 +892,8 @@ class MasterDashboardApp:
         if not self._band_previews:
             return None
         try:
-            return word_selection.auto_band(self._band_previews, self._auto_max_words())
+            return word_selection.auto_band(self._band_previews, self._auto_max_words(),
+                                            remembered=getattr(self, "_auto_remembered", None))
         except Exception:
             return self.var_band.get()
 
@@ -994,6 +1021,12 @@ class MasterDashboardApp:
         touch any tk widget; it only returns the {band: preview} dict (or None). The distribution is
         token_index.preview_frequencies: the analyzer's automatic rarity decides from the same one."""
         try:
+            try:                       # Q4-3: the band Automatic last chose, read here, never on the window's thread
+                from app import library_store
+                from app.path_utils import get_data_path
+                self._auto_remembered = library_store.read_auto_band(lang, get_data_path(lang))
+            except Exception:
+                self._auto_remembered = None
             store = token_index.open_store(lang)
             try:
                 from app.path_utils import get_user_files_path
@@ -1378,6 +1411,24 @@ class MasterDashboardApp:
                 print(f"Library store helper check: {e}")
         threading.Thread(target=work, daemon=True).start()
 
+    def _arrivals_notice(self):
+        """With Connect's preview on: on a worker, the items another program registered while Surasura was closed,
+        named once in the bottom bar (`app/connect/notice.py`). With it off nothing of Connect's is imported."""
+        if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+        lang = self.var_language.get() or "ja"
+
+        def work():
+            try:
+                from app.connect import notice
+                line = notice.at_open(lang)
+            except Exception as e:
+                print(f"Arrivals notice: {e}")
+                return
+            if line:
+                self.gui_queue.put(lambda: self.status_var.set(line))
+        threading.Thread(target=work, daemon=True).start()
+
     def _library_handle(self, lang):
         """This thread's long-lived library store handle for `lang` (Library_Store_Spec §6.2), or None
         outside store mode. The mode is re-checked on every call (cheap: no scans, never waits here)."""
@@ -1521,7 +1572,8 @@ class MasterDashboardApp:
         # why and where to turn that off.
         ToolTip(self.band_slider, lambda: (
                 f"Chosen for you by Automatic rarity: the rarest band with {self._auto_max_words_text()} "
-                "words or fewer. To choose it yourself, turn off Automatic rarity in "
+                f"words or fewer, kept until its list passes {self._auto_step_back_text()}. "
+                "To choose it yourself, turn off Automatic rarity in "
                 "Settings → Sentences & Logic."
                 if self.var_auto_band.get() else
                 "Which words to include, by how common they are in your library:\n\n"
@@ -2078,7 +2130,8 @@ class MasterDashboardApp:
         chk_auto_band.pack(anchor=tk.W)
         ToolTip(chk_auto_band, lambda: (
             f"Picks the Rarity band for you: the rarest band with {self._auto_max_words_text()} words or "
-            "fewer. It moves on by itself as you learn. The slider on the main window is locked while "
+            f"fewer, and keeps it until its list passes {self._auto_step_back_text()}, so your list doesn't "
+            "flip back and forth. It moves on by itself as you learn. The slider on the main window is locked while "
             "this is on. By Commonness only."))
 
 
@@ -3394,6 +3447,13 @@ class MasterDashboardApp:
         self.root.destroy()
         # What the settings writer still holds is written before the process ends (the window is gone: nothing waits).
         self._flush_settings(timeout=10.0)
+        # Connect's preview on: what arrived while the window was open was seen here — never named at the next start
+        if (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            try:
+                from app.connect import notice
+                notice.at_close(self.var_language.get() or "ja")
+            except Exception as e:
+                print(f"Arrivals notice at close: {e}")
         # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
         # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
         try:

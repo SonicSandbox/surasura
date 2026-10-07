@@ -1075,10 +1075,10 @@ def test_register_with_no_store(language):
     data_dir, user_files_dir, doc = library(language)
     w = names(language)
     path = touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt")
-    assert ls.register_headless(language, path, {"content_key": "none"}, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    assert ls.register_headless(language, path, {"content_key": "none"}, data_dir, user_files_dir).code == ls.EXIT_NEEDS_YOU
     assert not os.path.exists(ls.library_db_path(language, data_dir)), "nothing written"
     write_manifest(user_files_dir, doc)
-    assert ls.register_headless(language, path, {"content_key": "built"}, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert ls.register_headless(language, path, {"content_key": "built"}, data_dir, user_files_dir).code == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert store.conn.execute("SELECT COUNT(*) FROM pairings").fetchone()[0] == 1
     assert store.ids("now")[0] == store.item_id(f"{ls.HATO_FOLDER}/{w[94]}.srt")

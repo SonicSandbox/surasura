@@ -145,7 +145,7 @@ def status(args):
         "junban": "present" if _module_present("modules.junban.reposition") else "absent",
         "backfill": "present" if _module_present("modules.junban.backfill") else "absent",
         "indexer": "busy" if _in_use("indexer") else "idle",
-        "update_staged": bool(library_store.update_staged()),
+        "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
 
@@ -218,10 +218,13 @@ def _read_rows(path):
 
 def list_words(args):
     """The list as the last Generate left it (results/), read under the `results` lock so a Generate never hands it
-    over half-written."""
+    over half-written. `--file <subtitle> --order encounter` reads the subtitle itself (P1.3): the list's words it
+    holds, in the order first said, each with that line's start and end."""
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
+    if args.file is not None and args.order == "encounter" and str(args.file).lower().endswith(SUBTITLES):
+        return _file_encounter(args, loaded, lang)
     with contract.take_lock("results", "reading the list", wait=args.wait):
         holds = _results_language()
         if holds and holds != lang:
@@ -255,6 +258,92 @@ def list_words(args):
         words.append(word)
     out["words"] = words
     return out
+
+
+SUBTITLES = (".srt", ".ass", ".ssa")
+
+
+def _reading(loaded, lang):
+    """The analyzer's globals as a run sets them, and (tokenizer, script) for reading this language's text as a
+    Generate reads it."""
+    from app import analyzer, zh_script
+    analyzer.SANITIZE_JA = (lang == "ja")
+    analyzer.SKIP_SINGLE_CHARS = bool(loaded.get("exclude_single", True))
+    analyzer.LOGIC.update(loaded.get("logic") or {})
+    script = zh_script.effective(lang, loaded.get("zh_script", "asis"))
+    tokenizer = analyzer.ChineseTokenizer(script=script) if lang == "zh" else analyzer.JapaneseTokenizer()
+    return tokenizer, script
+
+
+def _phrase_set(loaded, lang):
+    if lang != "ja" or not (loaded.get("logic") or {}).get("phrase_rows", True):
+        return None
+    from app import phrases
+    return phrases.load()
+
+
+def _the_librarys_file(lang, path):
+    """Is `path` the library's one file of its name (so the journey's rows for that name are its own)?"""
+    from app.path_utils import get_data_path
+    name, found = os.path.basename(path), []
+    for folder, _dirs, files in os.walk(get_data_path(lang)):
+        if name in files:
+            found.append(os.path.join(folder, name))
+            if len(found) > 1:
+                return False
+    return len(found) == 1 and os.path.normcase(os.path.abspath(found[0])) == os.path.normcase(os.path.abspath(path))
+
+
+def _file_encounter(args, loaded, lang):
+    """One subtitle's list words in the order first said, read from the file itself by the cue reader (so a file is
+    the path given, never a file name two shows share): each with `start` / `end` (seconds) of the line it is first
+    said on, how often the file says it, and `new` — whether this file is where the journey first meets it (null
+    when the file isn't the library's one file of its name: the journey keys files by name)."""
+    from app import cues
+    from app.connect import pick as picking
+    if not os.path.isfile(args.file):
+        raise CliError("bad-data", f"There's no subtitle at {args.file}.")
+    with contract.take_lock("results", "reading the list", wait=args.wait):
+        holds = _results_language()
+        if holds and holds != lang:
+            return {"language": lang, "file": os.path.abspath(args.file), "words": [], "skipped": f"results hold {holds}"}
+        if read_run_stamp_here() is None and os.path.exists(os.path.join(_results_dir(), PRIORITY_CSV)):
+            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
+        rows = _read_rows(os.path.join(_results_dir(), PRIORITY_CSV))
+        journey = _read_rows(os.path.join(_results_dir(), PROGRESSIVE_CSV))
+    listed = {}
+    for row in rows:
+        listed.setdefault((row.get("Word", ""), row.get("Reading", "")), row)
+    # The journey names a file by its name only: `new` is told only for the library's one file of that name, this one
+    name = os.path.basename(args.file)
+    new = None
+    if _the_librarys_file(lang, args.file):
+        new = {(row.get("Word", ""), row.get("Reading", "")) for row in journey if row.get("Source File") == name}
+    tokenizer, script = _reading(loaded, lang)
+    try:
+        read = cues.read(args.file, lang)
+    except (OSError, UnicodeDecodeError) as e:
+        raise CliError("bad-data", f"The subtitle can't be read: {e}") from None
+    found, _new_in = picking.occurrences(read, cues.tokens(read, lang, script, tokenizer), lang, lambda key: False,
+                                         bool(loaded.get("exclude_single", True)), _phrase_set(loaded, lang))
+    uses, first = {}, {}
+    for o in found:
+        if o.key in listed:
+            uses[o.key] = uses.get(o.key, 0) + 1
+            first.setdefault(o.key, o)
+    kind = _kinds(lang)
+    words = []
+    met = {key: n for n, key in enumerate(first)}
+    for key, o in sorted(first.items(), key=lambda item: (item[1].cue, met[item[0]])):
+        if args.limit is not None and len(words) >= args.limit:
+            break
+        row, cue = listed[key], read[o.cue]
+        words.append({"word": key[0], "orth": row.get("Orth") or key[0], "reading": key[1],
+                      "score": _int(row.get("Score")), "occurrences": _int(row.get("Occurrences")),
+                      "kind": kind(key[0]), "file_order": len(words) + 1, "file_occurrences": uses[key],
+                      "start": cues.seconds(cue.start), "end": cues.seconds(cue.end),
+                      "new": None if new is None else key in new})
+    return {"language": lang, "file": os.path.abspath(args.file), "words": words}
 
 
 # --------------------------------------------------------------------------- #
@@ -588,3 +677,204 @@ def _junban_auto(args, lang, junban_settings, auto):
     return {"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
             "not_on_list": stats.get("unmatched", 0),
             "undo": os.path.basename(snapshot) if snapshot and written else None}
+
+
+
+# --------------------------------------------------------------------------- #
+# pick (P1.3)
+# --------------------------------------------------------------------------- #
+MINE_WORDS = ("list", "unknown", "i1")
+
+# The caller's kinds of failure (app/connect/anki_miner.py) -> the contract's codes (02 §3)
+_MINER_CODES = {"busy": "anki-miner-busy", "writer-busy": "busy", "reviewing": "anki-busy",
+                "anki-closed": "anki-closed", "quarantined": "needs-you",
+                "unknown-version": "needs-you", "needs-you": "needs-you", "setup": "needs-you",
+                "refused": "failed", "crashed": "failed", "timeout": "failed", "failed": "failed",
+                "unreadable": "bad-data", "cancelled": "failed", "absent": "failed"}
+
+
+def pick_args(parser):
+    import argparse
+    add_language(parser)
+    add_wait(parser)
+    parser.add_argument("--file", required=True, help="the subtitle (.srt, .ass, .ssa)")
+    parser.add_argument("--video", default=None,
+                        help="the episode's video: with it, the run file for Anki Miner is written too")
+    parser.add_argument("--words", choices=MINE_WORDS, default=None,
+                        help="list (your list's words), unknown (every word you don't know) or i1 (only words with a "
+                             "line whose other words you know); default: Surasura's setting")
+    parser.add_argument("--job", default=None, help=argparse.SUPPRESS)     # Connect names its jobs (P2.4)
+
+
+def _miner_error(e):
+    code = _MINER_CODES.get(e.kind, "failed")
+    return CliError(code, e.message, anki_miner=e.kind, **({"ask": e.message} if code == "needs-you" else {}))
+
+
+def _listed(args, lang):
+    """{(Word, Reading): its place on the list} from the last Generate's list, read under `results`; None when
+    results/ hold no list of this language."""
+    with contract.take_lock("results", "reading the list", wait=args.wait):
+        holds = _results_language()
+        path = os.path.join(_results_dir(), PRIORITY_CSV)
+        if (holds and holds != lang) or not os.path.exists(path):
+            return None
+        if read_run_stamp_here() is None:
+            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
+        rows = _read_rows(path)
+    out = {}
+    for row in rows:
+        out.setdefault((row.get("Word", ""), row.get("Reading", "")), len(out))
+    return out
+
+
+def _known_test(lang, tokenizer, script):
+    """`is_known((lemma, reading))` by the analyzer's rule (the YouTube preview's): known, or on an ignore list."""
+    from app import analyzer
+    from app.path_utils import get_user_files_path
+    folder = get_user_files_path(lang)
+    cached = _cached_known(lang, script)
+    if cached is None:
+        try:
+            cached = analyzer.load_known_words(os.path.join(folder, "KnownWord.json"), tokenizer)
+        except (ValueError, UnicodeDecodeError) as e:
+            raise CliError("bad-data", "Your known words (KnownWord.json) can't be read; nothing was changed.",
+                           detail=str(e)) from None
+    tuples, lemmas = cached
+    ignore = set()
+    for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
+        ignore |= analyzer.load_simple_list(os.path.join(folder, name), script, lang)
+    ignore |= analyzer.load_ignored_entries(folder, script, lang)
+    return lambda key: key in tuples or key[0] in lemmas or key[0] in ignore
+
+
+def _job_id(args):
+    from app.connect import runfile
+    job = args.job or datetime.datetime.now().strftime("pick-%Y%m%d-%H%M%S")
+    if not runfile.RUN_ID.fullmatch(f"{job}-9999"):           # room for any attempt's run id
+        raise CliError("usage", "A job name may hold only letters, digits, - and _ (at most 60).")
+    return job
+
+
+def _connect_folder():
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), "connect")
+
+
+def _anki_miner_setup(loaded, lang, run_dir):
+    """(Anki Miner's version answer, the profile's id, its field mapping) for the run file — or None when Anki Miner
+    isn't installed (E7: the mine step is skipped, never an error)."""
+    from app.connect import anki_miner, fields
+    miner = anki_miner.find(loaded)
+    if miner is None:
+        return None
+    name = loaded.get("connect_anki_miner_profile") or "Surasura"
+    try:
+        info = anki_miner.version(miner)
+        profile = anki_miner.profile_id(anki_miner.profiles(miner), name)
+        if profile is None:
+            raise anki_miner.AnkiMinerError(
+                "needs-you", f'Anki Miner has no profile called "{name}". Make it once in Anki Miner (a copy of your '
+                "profile, its whitelist on), as Surasura's Connections page shows.")
+        os.makedirs(run_dir, exist_ok=True)
+        mapping = fields.from_export(
+            anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)
+    except anki_miner.AnkiMinerError as e:
+        raise _miner_error(e) from None
+    except fields.NeedsYou as e:
+        raise CliError("needs-you", e.message, ask=e.message) from None
+    _check_note_type(loaded, mapping)
+    return info, profile, mapping
+
+
+def _check_note_type(loaded, mapping):
+    """The note type Anki Miner fills must take its mapping (the word field first): asked of Anki when it answers;
+    when it doesn't, Anki Miner's own `check` asks again before it mines."""
+    from app import anki_connect
+    from app.connect import fields
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return
+    url = anki_connect.address(loaded)
+    if not anki_connect.probe(url, timeout=2).get("ok"):
+        return
+    try:
+        model_fields = anki_connect.invoke("modelFieldNames", url, modelName=mapping.note_type)
+    except anki_connect.AnkiError:
+        model_fields = None
+    try:
+        fields.check_note_type(mapping, model_fields)
+    except fields.NeedsYou as e:
+        raise CliError("needs-you", e.message, ask=e.message) from None
+
+
+def pick(args):
+    """The words of one subtitle to make cards from, each with its line (start + end), the words left out and why,
+    and — given the video and an installed Anki Miner — the run file for its `--api mine` (P1.3 row 1.3.3). Writes
+    only the run file, under local data (`connect/runs/<job>/`)."""
+    from app import cues
+    from app.connect import pick as picking, runfile
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    mode = args.words or loaded.get("connect_mine_words") or "list"
+    if mode not in MINE_WORDS:
+        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or i1.")
+    if not os.path.isfile(args.file):
+        raise CliError("bad-data", f"There's no subtitle at {args.file}.")
+    if args.video is not None and not os.path.isfile(args.video):
+        raise CliError("bad-data", f"There's no video at {args.video}.")
+    job = _job_id(args)
+    listed = _listed(args, lang)
+    if mode == "list" and listed is None:
+        raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
+
+    # The episode's words, read as a Generate reads them (the cue reader cleans TV captions as it does); Anki Miner is
+    # handed the job's copy (row 1.3.2: reading rows and arrows off) — the same lines at the same times
+    from app import caption_clean
+    tokenizer, script = _reading(loaded, lang)
+    contract.emit_progress("reading the subtitle", 0, 3)
+    run_dir = os.path.join(_connect_folder(), "runs", job)
+    try:
+        subtitle = caption_clean.copy_for(args.file, run_dir, lang)
+        read = cues.read(args.file, lang)
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        raise CliError("bad-data", f"The subtitle can't be read: {e}") from None
+    tokens = cues.tokens(read, lang, script, tokenizer)
+    is_known = _known_test(lang, tokenizer, script)
+    phrase_set = _phrase_set(loaded, lang)
+
+    out = {"language": lang, "file": os.path.abspath(args.file), "subtitle": os.path.abspath(subtitle), "mode": mode,
+           "job": job, "run_file": None}
+    setup = None
+    if args.video is not None:
+        contract.emit_progress("asking Anki Miner", 1, 3)
+        setup = _anki_miner_setup(loaded, lang, run_dir)
+        if setup is None:
+            out["skipped"] = "anki miner absent"
+
+    contract.emit_progress("choosing the words and their lines", 2, 3)
+    keys, source = picking.carded(lang, loaded, [setup[2].deck] if setup else ())
+    from app import analyzer
+    view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
+    chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
+                          readable=view.readable if lang == "ja" else None,
+                          ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
+                          send_grammar=bool(loaded.get("connect_send_grammar", True)),
+                          skip_single=bool(loaded.get("exclude_single", True)), phrase_set=phrase_set)
+    out.update(chosen, cards_from=source)
+    if setup is not None:
+        info, profile, mapping = setup
+        out["anki_miner"] = {"app": info.get("app"), "features": info.get("features") or []}
+        if not chosen["words"]:
+            out["skipped"] = "no words to make cards from"
+        else:
+            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"]),
+                                      tags=runfile.job_tag(job))
+            data = runfile.build(run_dir, lang, [episode], profile=profile,
+                                 run_config=runfile.config(mapping, info.get("app"), info.get("features")))
+            try:
+                out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
+            except runfile.RunFileError as e:
+                raise CliError("bad-data", f"The run file for Anki Miner couldn't be written: {e}") from None
+    contract.emit_progress("done", 3, 3)
+    return out

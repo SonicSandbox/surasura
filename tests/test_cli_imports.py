@@ -105,3 +105,55 @@ def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated
     (here with Anki switched off for the run, as the suites keep it)."""
     code, loaded = _loaded(argv, generated)
     assert code == 0 and not loaded & set(NOT_HEAVY), loaded
+
+
+@pytest.mark.parametrize("argv", [["pick", "--file", "{library}/phrases_sample.srt"],
+                                  ["pick", "--file", "{library}/phrases_sample.srt", "--words", "unknown"],
+                                  ["list", "--file", "{library}/phrases_sample.srt", "--order", "encounter"]])
+def test_pick_and_a_subtitles_list_read_text_but_load_no_gui_toolkit_pandas_or_network_library(generated, argv):
+    """P1.3: `pick` is a quick verb in what it loads (no Tk, Qt, pandas, requests); it reads a subtitle, so the
+    tokenizer loads — and nothing of Connect's beyond what it calls."""
+    library = os.path.join(generated, "data", "ja", "HighPriority")
+    code, loaded = _loaded([a.replace("{library}", library) for a in argv], generated)
+    assert code == 0 and not loaded & set(NOT_HEAVY), loaded
+
+
+def test_nothing_of_connect_loads_unless_a_verb_needs_it(tmp_path):
+    # Preview off is 2.5: a call that isn't pick or a subtitle's list never imports app.connect or app.cues
+    script = textwrap.dedent("""
+        import json, sys
+        from app.cli import __main__ as cli
+        for argv in (["--version"], ["status"], ["list"], ["known"], ["nope"]):
+            cli.main(argv)
+        sys.stdout.write("\\n" + json.dumps(sorted(m for m in sys.modules if m.startswith(("app.connect", "app.cues"))))
+                         + "\\n")
+    """)
+    environment = dict(os.environ, PYTHONPATH=PROJECT_ROOT, SURASURA_TEST_ROOT=str(tmp_path))
+    proc = subprocess.run([sys.executable, "-c", script], cwd=str(tmp_path), env=environment,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    assert json.loads(proc.stdout.decode("ascii").splitlines()[-1]) == []
+
+
+# --------------------------------------------------------------------------- #
+# P2.1's verbs (row 2.1.8): `register`, `place`, `finish` and `connect --consume-only` are quick — no tokenizer either
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def paired_library():
+    """A library with its store, Connect on, and one hato drop with its pairing record on disk."""
+    from tests import cli_helpers as h
+    from tests import connect_helpers as c
+    c.library()
+    record = c.write_record(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
+    return h.root(), record
+
+
+@pytest.mark.parametrize("argv, exit_code", [
+    (["register", "--pairing", "{record}"], 0),
+    (["place", "--file", "1", "--to", "soon", "--source", "test"], 0),
+    (["finish", "--file", "1", "--source", "test"], 2),            # held to 3.0
+    (["connect", "--consume-only"], 0),
+])
+def test_p2_1s_verbs_load_nothing_heavy_and_no_tokenizer(paired_library, argv, exit_code):
+    root, record = paired_library
+    code, loaded = _loaded([a.replace("{record}", record) for a in argv], root)
+    assert code == exit_code and not loaded & set(NOT_EVEN_TEXT), loaded

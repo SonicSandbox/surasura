@@ -65,8 +65,8 @@ STRINGS = {
     "in_anki": "{n} in Anki", "mined": "Mined", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
-    "deleted": "Cards deleted", "deleted_n": "Cards deleted · {n}",
-    "tip_deleted": "Its cards were deleted in Anki, so it isn't mined again unless you ask",
+    "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
+    "tip_deleted": "It was mined, but none of its cards are in Anki now: it isn't mined again unless you ask",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     "tip_mining": "Making its cards now",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -80,6 +80,7 @@ STRINGS = {
     "play": "{verb} {name} in your {player} (the {word} beside its subtitle file)",
     "play_online": "Its video is online: opening it from here comes in a later build",
     "play_missing": "No {word} on disk — link one to {verb_l} it from here (Needs you, in a later build)",
+    "play_missing_plain": "No {word} on disk, so it can't {verb_l} from here",
     "play_removed": "Its {word} was removed — link it to {verb_l} it from here (Needs you, in a later build)",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
     "ep": "Ep {n}", "part": "Part {n}", "num": "#{n}", "eps": "Ep {a}–{b}", "parts": "Parts {a}–{b}",
@@ -282,23 +283,24 @@ def status_of(eps, word, line_n):
     k = len(mined)
     cards = sum(e.cards for e in eps)
     # mined, then its cards deleted by the learner: never made again unless asked (Sonic, 2026-10-07), so not Waiting
-    deleted = [e for e in eps if e.deleted and not (e.cards or e.mined)]
-    unmined = [e for e in eps if not (e.cards or e.mined or e.deleted)]
+    deleted = [e for e in eps if getattr(e, "deleted", False) and not (e.cards or e.mined)]
+    unmined = [e for e in eps if not (e.cards or e.mined or getattr(e, "deleted", False))]
     ready = [e for e in unmined if not e.missing]
-    missing = [e for e in eps if e.missing and not e.removed]
+    missing = [e for e in eps if e.missing and not e.removed and not getattr(e, "deleted", False)]   # waits on nothing
     removed = [e for e in eps if e.removed]
     top_missing = [e for e in missing if e.in_top]
     Word = word[:1].upper() + word[1:]
-    if not unmined and deleted and not k:                          # every item's cards deleted: plain, no Anki mark
-        st = Status("deleted", STRINGS["deleted"] if n == 1 else STRINGS["deleted_n"].format(n=len(deleted)),
-                    STRINGS["tip_deleted"], "faint")
+    n -= len(deleted)                                              # k/n counts what can still be in Anki
+    if any(e.mining for e in eps):                                 # an asked-for mining outranks a deletion
+        label = STRINGS["mining"] if n <= 1 else STRINGS["mining_kn"].format(k=k, n=n)
+        st = Status("mining", label, STRINGS["tip_mining"], "accent")
+    elif not unmined and deleted and not k:                        # mined, its cards gone: plain, no Anki mark
+        st = Status("deleted", STRINGS["deleted"] if len(deleted) == 1 else
+                    STRINGS["deleted_n"].format(n=len(deleted)), STRINGS["tip_deleted"], "faint")
     elif not unmined:                                              # every item mined (or its cards deleted)
         label = STRINGS["in_anki"].format(n=cards) if cards else STRINGS["mined"]
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
-    elif any(e.mining for e in eps):
-        label = STRINGS["mining"] if n == 1 else STRINGS["mining_kn"].format(k=k, n=n)
-        st = Status("mining", label, STRINGS["tip_mining"], "accent")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -352,7 +354,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing)
-    deleted = bool(item.get("mined_at")) and not mined
+    asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
+    deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
     online = item.get("source_type") in ("youtube", "bilibili")
@@ -361,7 +364,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
     if online:
         tip = STRINGS["play_online"]
     elif missing:
-        tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
+        tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing_plain"] if deleted else
+               STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
     else:
         tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word], word=word)
     return ep._replace(status=st, mark=mark, play_tip=tip)

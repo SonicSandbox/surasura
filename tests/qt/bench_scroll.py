@@ -223,13 +223,6 @@ def main_child(a):
         with hud.span("paint-row"):
             real_paint(self, p, option, index)
     delegate_cls.paint = paint
-    view_cls = type(lst)
-    real_layout = view_cls.doItemsLayout
-
-    def do_items_layout(self):
-        with hud.span("layout"):
-            real_layout(self)
-    view_cls.doItemsLayout = do_items_layout
     real_show = window.show_library
 
     def show_library(view):

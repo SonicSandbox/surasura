@@ -19,6 +19,7 @@ window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answe
 
 Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`play_requested`); a row opens and closes.
 """
+import time
 from collections import OrderedDict
 
 from PyQt6.QtCore import (QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
@@ -412,8 +413,14 @@ class RowsModel(QAbstractListModel):
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
 SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
 EPISODES_KEPT = 64                                   # painted episode rows, kept apart: opening rows never pushes rows out
+SPRITE_MB = {"row": 64, "ep": 16}                    # and by bytes, per list: a row is ~2 MB at 250 % (W2.2 review B-2)
 WARM_AHEAD = 8                                       # rows past each edge of the screen painted ahead, in idle moments
-WARM_IDLE_MS = 60                                    # how long the list rests (no scroll, no refresh) before it does
+WARM_IDLE_MS = 250                                   # how long the list rests (no scroll, no refresh) before it does —
+#                                                      longer than the gap between a wheel's notches (review B-8)
+
+
+def _size(pix):
+    return pix.width() * pix.height() * 4
 
 
 class RowDelegate(QStyledItemDelegate):
@@ -425,12 +432,14 @@ class RowDelegate(QStyledItemDelegate):
         self.warmed = 0                              # rows drawn ahead, before they came on screen (`warm`)
         self._warming = False
         self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
+        self._bytes = {"row": 0, "ep": 0}
 
     def _sprite(self, kind, payload, lines, size, dpr, hovered, draw, ident=None, ground="bg"):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its lines, its width, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these."""
-        cache, kept = (self._sprites["ep"], EPISODES_KEPT) if kind == "ep" else (self._sprites["row"], SPRITES_KEPT)
+        name = "ep" if kind == "ep" else "row"
+        cache, kept = self._sprites[name], EPISODES_KEPT if kind == "ep" else SPRITES_KEPT
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
                hovered)
         hit = cache.get(key)
@@ -449,10 +458,14 @@ class RowDelegate(QStyledItemDelegate):
             self.warmed += 1
         else:
             self.renders += 1
+        old = cache.pop(key, None)
+        if old is not None:
+            self._bytes[name] -= _size(old[2])
         cache[key] = (payload, lines, pix)
-        cache.move_to_end(key)
-        while len(cache) > kept:
-            cache.popitem(last=False)
+        self._bytes[name] += _size(pix)
+        cap = SPRITE_MB[name] * 1024 * 1024
+        while len(cache) > 1 and (len(cache) > kept or self._bytes[name] > cap):
+            self._bytes[name] -= _size(cache.popitem(last=False)[1][2])
         return pix
 
     # sizes ------------------------------------------------------------------------------------------------------ #
@@ -1169,6 +1182,7 @@ class RowsView(QListView):
         self._hover = None
         self._restore = None
         self.warm_like = None                        # the shown list, while this one is hidden (its width and height)
+        self._moved = 0.0                            # when it last scrolled or changed (`_rest`)
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         # a row's first paint (its text laid out, its cover drawn: up to ~15 ms, bench 7) moved out of the scroll's
         # frames: once the list rests, the rows just past the screen are painted ahead, one per turn of the loop
@@ -1229,6 +1243,7 @@ class RowsView(QListView):
                 self._restore = None
 
     def _rest(self, *_args):
+        self._moved = time.monotonic()
         self._warm.setInterval(WARM_IDLE_MS)
         self._warm.start()
 
@@ -1239,6 +1254,11 @@ class RowsView(QListView):
         if not n:
             return
         if not self.isVisible():
+            like = self.warm_like
+            if like is not None and like.isVisible() and (like._warm.isActive() or
+                                                          time.monotonic() - like._moved < WARM_IDLE_MS / 1000):
+                self._rest()                         # the shown list first: it is moving, or warming its own rows (B-3)
+                return
             if self._warm_hidden():
                 self._warm.setInterval(0)
                 self._warm.start()
@@ -1262,17 +1282,21 @@ class RowsView(QListView):
         like = self.warm_like
         if like is None or like is self or not like.isVisible():
             return False
-        width, room = like.viewport().width(), like.viewport().height()
+        room = like.window().height()                # this list may stand taller (Current has the Goal strip under it)
         dpr = like.viewport().devicePixelRatioF() or 1.0
-        model, top = self.model(), 0
-        for r in range(model.rowCount()):
-            idx = model.index(r, 0)
-            h = self.delegate.sizeHint(None, idx).height()
-            if self.delegate.warm(idx, dpr, QRect(0, top, width, h)):
+        model, heights, total = self.model(), [], 0
+        for r in range(model.rowCount()):            # its first screen's rows, and whether it will have a scroll bar
+            heights.append(self.delegate.sizeHint(None, model.index(r, 0)).height())
+            total += heights[-1]
+            if total >= room:
+                break
+        bar = like.width() - like.viewport().width() if like.verticalScrollBar().isVisible() else             self.verticalScrollBar().sizeHint().width()
+        width = like.width() - (bar if total > like.viewport().height() else 0)       # review B-4
+        top = 0
+        for r, h in enumerate(heights):
+            if self.delegate.warm(model.index(r, 0), dpr, QRect(0, top, width, h)):
                 return True
             top += h
-            if top >= room:
-                break
         return False
 
     def showEvent(self, event):

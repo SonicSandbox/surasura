@@ -419,19 +419,33 @@ def test_a_receipt_without_cards_shows_nothing_from_anki():
 
 def test_a_file_whose_cards_were_deleted_is_not_waiting_and_never_in_needs_you():
     """Sonic (2026-10-07, the shelf): a card the learner deletes is never made again unless they ask. A file mined
-    whose cards are gone is therefore not *Waiting* (nothing will mine it), says so plainly (no Anki mark), and never
-    asks for its missing video in Needs you; the file beside it with no receipt still waits."""
+    whose cards are gone is therefore not *Waiting* (nothing will mine it), says so plainly in words true whatever
+    removed them (no Anki mark), and never asks for its missing video — not in Needs you, not by a mark, not in ▶'s
+    tip; the file beside it with no receipt still waits, and k/n counts only what can still be in Anki."""
     receipt = {"mined_at": "2026-10-01T00:00:00Z"}
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3),
                        {0: receipt, 1: dict(receipt, availability="missing")})])
     view = vr.build(items, WORKS, {}, cards={})
     row = view.rows[0]
     assert [e.status.kind for e in row.episodes] == ["deleted", "deleted", "waiting"]
-    assert row.episodes[0].status.label == "Cards deleted" and row.episodes[0].status.tone == "faint"
+    assert row.episodes[0].status.label == "No cards in Anki" and row.episodes[0].status.tone == "faint"
     assert row.status.kind == "waiting"                        # the third file still mines by itself
     assert not view.needs                                      # the missing one waits on nothing
+    assert row.mark is None and row.episodes[1].mark is None
+    assert "Needs you" not in row.episodes[1].play_tip
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {0: receipt, 1: receipt, 2: receipt})])
     row = vr.build(items, WORKS, {}, cards={}).rows[0]
-    assert row.status.kind == "deleted" and row.status.label == "Cards deleted · 3"
+    assert row.status.kind == "deleted" and row.status.label == "No cards in Anki · 3"
     row = vr.build(items, WORKS, {}, cards={2: 4}).rows[0]     # one file's cards still there: in Anki, by its cards
     assert row.status.kind == "in_anki" and row.status.label == "4 in Anki"
+    # asked to mine again: it is being mined (mining outranks the deletion), and an ask after the receipt undoes it
+    row = vr.build(items, WORKS, {}, cards={}, mining=[1]).rows[0]
+    assert row.episodes[0].status.kind == "mining" and row.status.kind == "mining"
+    asked = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2),
+                       {0: dict(receipt, mine_asked="2026-10-05T00:00:00Z"), 1: receipt})])
+    row = vr.build(asked, WORKS, {}, cards={}).rows[0]
+    assert row.episodes[0].status.kind == "waiting" and row.episodes[1].status.kind == "deleted"
+    # k/n leaves the deleted files out: one in Anki, one deleted, one ready in the top → 1/2 · Waiting
+    mixed = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {0: receipt, 1: receipt})])
+    row = vr.build(mixed, WORKS, {}, cards={1: 3}).rows[0]
+    assert row.status.kind == "waiting" and row.status.label == "1/2 · Waiting"

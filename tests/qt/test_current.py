@@ -547,6 +547,8 @@ def test_an_open_row_repaints_from_pixmaps_and_opening_rows_never_pushes_the_clo
         renders = lst.delegate.renders
         lst.viewport().repaint()                               # the open row again: its head and episodes are reused
         assert lst.delegate.renders == renders
+        key = lst.model().entries[i][1].key
+        assert any(k[1] == (key, "open") for k in lst.delegate._sprites["row"])     # the head is a pixmap (B-9)
         lst.toggle(lst.model().index(i, 0))
         lst.doItemsLayout()
         lst.viewport().repaint()
@@ -562,10 +564,24 @@ def test_a_hidden_tabs_first_screen_is_painted_ahead_so_its_first_switch_draws_n
     fin = win.page_widgets["finished"].list
     assert not fin.isVisible() and fin.model().rowCount() > 0
     assert wait_until(lambda: fin.delegate.warmed >= 3)
-    for _ in range(20):
-        QApplication.processEvents()
+    assert wait_until(lambda: not fin._warm.isActive())        # one row a turn, until its first screen is done
     win.show_tab("finished")
     QApplication.processEvents()
     fin.viewport().repaint()
     assert fin.delegate.paints > 0
     assert fin.delegate.renders == 0
+
+
+def test_the_painted_rows_are_kept_within_their_byte_budget(seeded, monkeypatch):
+    """Review B-2: kept by count alone, the painted rows outgrew the idle budget at 250 % (~2 MB a row). A list keeps
+    its pixmaps within `SPRITE_MB` too, oldest out first."""
+    monkeypatch.setitem(rows.SPRITE_MB, "row", 1)            # 1 MB: a few rows at this size
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    bar = lst.verticalScrollBar()
+    for v in range(0, min(bar.maximum(), 4000), 200):
+        bar.setValue(v)
+        lst.viewport().repaint()
+    d = lst.delegate
+    assert d._bytes["row"] <= 1024 * 1024 or len(d._sprites["row"]) == 1
+    assert d._bytes["row"] == sum(rows._size(v[2]) for v in d._sprites["row"].values())

@@ -280,6 +280,18 @@ def main_child(a):
             result["rows_live_ms"] = round(hud_module._process_age_ms() or 0, 1)
             result["rows"] = len(view.rows)
             QTimer.singleShot(400, phase_scroll)
+    # each list's refresh: when, how long, how ("same" / "relayout" / "reset") and how many rows changed — set beside
+    # the long steps of the phases that refresh (W2.2 round 4: what an arrival's and a writer's long steps hold)
+    entries_log = []
+    real_set_entries = rows_module.RowsView.set_entries
+
+    def set_entries(self_, entries):
+        t0 = time.perf_counter()
+        how = real_set_entries(self_, entries)
+        entries_log.append((t0, (time.perf_counter() - t0) * 1000, how, len(self_.model().changed),
+                            self_.accessibleName()))
+        return how
+    rows_module.RowsView.set_entries = set_entries
     window.library_bridge.library_changed.disconnect(window.show_library)
     window.library_bridge.library_changed.connect(show_library)
 
@@ -461,7 +473,12 @@ def main_child(a):
             steps = [(ms, at) for ms, at in hud.over if t0 <= at <= t1]
             during = [ms for ms, at in steps                # a GUI step that ended inside a reader step (or 1 ms after)
                       if any(r0 <= at <= r0 + rms / 1000 + 0.001 for _n, r0, rms in reader_log)]
+            near = []                                    # the refreshes inside each long step (ended within it)
+            for ms, at in sorted(steps, reverse=True)[:6]:
+                near.append((round(ms, 1), [(how, round(sm, 2), n, nm[:8]) for e0, sm, how, n, nm in entries_log
+                                            if at - ms / 1000 - 0.001 <= e0 <= at]))
             per[name] = {"s": round(t1 - t0, 2), "over_4ms": len(over), "max_ms": max(over, default=0.0),
+                         "longest": near,
                          "gc": [(g, ms, th) for g, ms, th, at in gc_log if t0 <= at <= t1 and ms > 2],
                          "over_during_reader": len(during),
                          "reader": [(n, round(ms, 2)) for n, r0, ms in reader_log if t0 <= r0 <= t1 and ms > 2][:30]}

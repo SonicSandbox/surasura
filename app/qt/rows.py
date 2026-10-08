@@ -438,6 +438,15 @@ def _size(pix):
     return pix.width() * pix.height() * 4
 
 
+def _same_but_index(old, new):
+    """The same row in another place: a `view_rows.Row` that only `_replace(index=…)` made (every other field the same
+    object). Its pixmap holds no number (`_paint_number` draws it over), so the pixmap still fits."""
+    fields = getattr(new, "_fields", None)
+    if fields is None or type(old) is not type(new) or "index" not in fields:
+        return False
+    return all(a is b for name, a, b in zip(fields, old, new) if name != "index")
+
+
 class RowDelegate(QStyledItemDelegate):
     def __init__(self, view):
         super().__init__(view)
@@ -447,6 +456,7 @@ class RowDelegate(QStyledItemDelegate):
         self.warmed = 0                              # rows drawn ahead, before they came on screen (`warm`)
         self._warming = False
         self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
+        self._hints = {}                             # (id(entry), open) -> (entry, look, QSize): `sizeHint`
         self._bytes = {"row": 0, "ep": 0}
 
     def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None):
@@ -468,7 +478,9 @@ class RowDelegate(QStyledItemDelegate):
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
                hovered)
         hit = cache.get(key)
-        if hit is not None and hit[0] is payload:
+        if hit is not None and (hit[0] is payload or _same_but_index(hit[0], payload)):
+            if hit[0] is not payload:
+                cache[key] = (payload, hit[1])           # the moved row: the next look is by identity again
             cache.move_to_end(key)
             return hit[1]
         pix = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
@@ -497,14 +509,35 @@ class RowDelegate(QStyledItemDelegate):
     def _lines_h(self, lines):
         return len(lines) * round(15 * fz() + 6)
 
+    def _entry(self, index):
+        """The entry at `index`, read from the model's list (no trip through a QVariant: `index.data(ROW_ROLE)` costs
+        a conversion each way, and a relayout asks every row)."""
+        entries = self.view.model().entries
+        row = index.row()
+        return entries[row] if 0 <= row < len(entries) else None
+
     def sizeHint(self, option, index):
-        entry = index.data(ROW_ROLE)
+        """An entry's height, kept per entry object, open or not, and look: a relayout (a row opened, a file arrived)
+        asks every row, and at a few hundred rows working each out again was most of its ~2.5 ms (W2.2 round 4)."""
+        entry = self._entry(index)
         if entry is None:
             return QSize(0, 0)
+        is_open = self.view.model().open_key == getattr(entry[1], "key", None)
+        key = (id(entry), is_open)
+        hit = self._hints.get(key)
+        look = style.current()
+        if hit is not None and hit[0] is entry and hit[1] == look:
+            return hit[2]
+        size = self._size_hint(entry, is_open)
+        if len(self._hints) > 4 * max(64, len(self.view.model().entries)):
+            self._hints.clear()                      # entries let go long ago: never more than a few lists' worth
+        self._hints[key] = (entry, look, size)
+        return size
+
+    def _size_hint(self, entry, is_open):
         kind, payload, lines = entry
         f = fz()
         gap = theme.SPACING["list-gap"]
-        is_open = self.view.model().open_key == getattr(payload, "key", None)
         if kind == HERO:
             h = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
             if is_open:
@@ -718,7 +751,7 @@ class RowDelegate(QStyledItemDelegate):
 
     # painting --------------------------------------------------------------------------------------------------- #
     def paint(self, p, option, index):
-        entry = index.data(ROW_ROLE)
+        entry = self._entry(index)
         if entry is None:
             return
         self.paints += 1
@@ -745,6 +778,8 @@ class RowDelegate(QStyledItemDelegate):
             pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
             if pix is not None:
                 p.drawPixmap(body.topLeft(), pix)
+            if kind == ROW:
+                self._paint_number(p, payload, body, dpr)
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
                 if kind == ROW and not hovered:
@@ -787,7 +822,7 @@ class RowDelegate(QStyledItemDelegate):
                      self._lines_h(lines))
         local = QRect(0, 0, body.width(), body.height())
         pix = self._sprite(kind, payload, body.size(), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines),
+                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines, number=False),
                            to=None if p is None else (p, body.topLeft()))
         return pix, body
 
@@ -805,10 +840,13 @@ class RowDelegate(QStyledItemDelegate):
         p.drawRoundedRect(QRectF(body), radius, radius)
         p.restore()
         pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False),
+                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False,
+                                                     number=False),
                            ident=(row.key, "open"), to=(p, body.topLeft()))
         if pix is not None:
             p.drawPixmap(body.topLeft(), pix)
+        if kind == ROW:
+            self._paint_number(p, row, body, dpr)
         if focused:
             self._focus_ring(p, body, radius)
             if kind == ROW and not hovered:
@@ -848,7 +886,7 @@ class RowDelegate(QStyledItemDelegate):
         `rect`: where it will stand (a hidden list's, laid out as the shown list is)."""
         if not ROW_PIXMAPS:
             return False
-        entry = index.data(ROW_ROLE)
+        entry = self._entry(index)
         if entry is None or entry[0] not in (HERO, ROW, FINISHED):
             return False
         kind, payload, lines = entry
@@ -868,7 +906,7 @@ class RowDelegate(QStyledItemDelegate):
         toggle was one long step, its episodes' first paints)."""
         if not ROW_PIXMAPS:
             return False
-        entry = index.data(ROW_ROLE)
+        entry = self._entry(index)
         if entry is None or entry[0] not in (HERO, ROW):
             return False
         kind, row, lines = entry
@@ -938,7 +976,7 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=(), episodes=True):
+    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=(), episodes=True, number=True):
         f = fz()
         h = round(theme.SIZES["row"] * f)
         line = QRect(body.left(), body.top(), body.width(), h)
@@ -952,9 +990,8 @@ class RowDelegate(QStyledItemDelegate):
             self._focus_ring(p, body, radius)
         x = line.left() + 4
         pos_w = round(20 * f)
-        if kind == ROW:
-            TEXT.draw(p, x, line.center().y(), str(row.index), "position", pos_w, c("ink-faint"), align="right",
-                      dpr=dpr)
+        if kind == ROW and number:
+            self._paint_number(p, row, body, dpr)
         x += pos_w + 12
         cw, ch = round(theme.SIZES["row-cover-w"] * f), round(theme.SIZES["row-cover-h"] * f)
         crect = QRect(x, line.center().y() - ch // 2, cw, ch)
@@ -990,6 +1027,14 @@ class RowDelegate(QStyledItemDelegate):
         if is_open and episodes:
             area = QRect(body.left(), line.bottom() + 1, body.width(), body.bottom() - line.bottom())
             self._paint_episodes(p, row, area, dpr, lines=lines)
+
+    def _paint_number(self, p, row, body, dpr):
+        """A row's place in Current, drawn over its pixmap (never inside it): a file arriving above moves every number,
+        and with the number inside, every row on screen was drawn again (~21 ms an arrival, bench 10; review B-5)."""
+        f = fz()
+        h = round(theme.SIZES["row"] * f)
+        TEXT.draw(p, body.left() + 4, body.top() + h // 2, str(row.index), "position", round(20 * f), c("ink-faint"),
+                  align="right", dpr=dpr)
 
     def _paint_studying(self, p, x, y_mid, dpr):
         f = fz()

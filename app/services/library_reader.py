@@ -37,7 +37,7 @@ from app.services import view_rows
 POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
-CACHE_VERSION = 2                # 2: keyed (store id, epoch, state version, plan version)
+CACHE_VERSION = 3                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`
 
 
 def cache_path(language):
@@ -157,8 +157,9 @@ class LibraryReader:
         self._mode = (mode, reason)
         version, numbers = self.numbers()
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None:
-                self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))
+            if changed_mode or self._view is None or version != self._numbers_version:
+                self._numbers_version = version         # the numbers' own version: a new one empties the row cache
+                self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))   # (review B-12)
             return
         dv = h.data_version()
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S

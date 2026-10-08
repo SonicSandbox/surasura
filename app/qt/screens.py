@@ -13,7 +13,7 @@ import re
 import sys
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QDesktopServices, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app import path_utils, theme
@@ -94,6 +94,7 @@ class GoalStrip(QWidget):
         super().__init__(parent)
         self.setObjectName("goalstrip")
         self.goal = None
+        self._pix = self._pix_key = None             # painted once into a pixmap, reused until it or its look changes
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(strings.GOAL_NAME)
 
@@ -112,11 +113,26 @@ class GoalStrip(QWidget):
         self.update()
 
     def paintEvent(self, _event):
+        """Blits its pixmap: a tab switch or a window repaint draws nothing afresh here (0.4–0.5 ms a paint at 150 %,
+        W2.2 profile 2026-10-08)."""
         if self.goal is None:
             return
-        f = rows.fz()
         dpr = self.devicePixelRatioF() or 1.0
+        key = (self.goal, self.width(), self.height(), dpr, style.current())
+        if key != self._pix_key:
+            pix = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+            pix.setDevicePixelRatio(dpr)
+            pix.fill(rows.c("bg"))                   # the page's ground: text keeps its subpixel smoothing
+            q = QPainter(pix)
+            self._draw(q, dpr)
+            q.end()
+            self._pix, self._pix_key = pix, key
         p = QPainter(self)
+        p.drawPixmap(0, 0, self._pix)
+        p.end()
+
+    def _draw(self, p, dpr):
+        f = rows.fz()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         box = QRectF(24.5, 8.5, self.width() - 49, theme.SIZES["goal-strip"] * f - 1)
@@ -139,7 +155,6 @@ class GoalStrip(QWidget):
                 p.drawPixmap(r.topLeft(), rows.cover(title, round(cw), round(ch), dpr))
             x += len(self.goal.covers) * (cw - 7) + 7 + 12
         rows.TEXT.draw(p, x, mid, self.goal.line, "row-sub", box.right() - x - 14, rows.c("ink-faint"), dpr=dpr)
-        p.end()
 
 
 # --- the pages ------------------------------------------------------------------------------------------------------ #

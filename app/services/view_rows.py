@@ -15,7 +15,9 @@ frozen `View`:
   first to bring (summed).
 - **One status vocabulary** for a row, the hero's next episode and an open row's episodes (the mock's `stHTML`, in its
   order): ✓ *N in Anki* · *Mining* · *Waiting* · ✓ *k/n · Mine rest* · *Mine* · *No video* / *Video removed* — and the
-  on-disk mark (⌀ N) beside it when something isn't there. Status is a glyph and a label (and a tone the painter maps
+  on-disk mark (⌀ N) beside it when something isn't there. *In Anki* only while its cards are there (Sonic, 2026-10-07):
+  a file mined whose cards are all gone reads a faint *No cards in Anki* (Sonic's shelf ruling: never *Waiting*, never
+  mined again unless asked; an asked-for mining outranks it). Status is a glyph and a label (and a tone the painter maps
   to a colour), never colour alone.
 - Goal's strip, Finished by month (newest first; no date → *Earlier*), Needs you's entries (each show with files the top
   20 waits on that aren't on disk), the badges, the header's subline, each row's accessible text, and the section's
@@ -62,7 +64,7 @@ View = namedtuple("View", "language mode reason state busy loading cached rows l
 STRINGS = {
     "dash": "—",
     # a status's words (its glyph is painted beside them: check · spinner · hourglass · card-plus · no-video)
-    "in_anki": "{n} in Anki", "mined": "Mined", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
+    "in_anki": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -298,7 +300,7 @@ def status_of(eps, word, line_n):
         st = Status("deleted", STRINGS["deleted"] if len(deleted) == 1 else
                     STRINGS["deleted_n"].format(n=len(deleted)), STRINGS["tip_deleted"], "faint")
     elif not unmined:                                              # every item mined (or its cards deleted)
-        label = STRINGS["in_anki"].format(n=cards) if cards else STRINGS["mined"]
+        label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
     elif any(e.in_top for e in ready):
@@ -372,7 +374,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
 
 
 class _Shim:
-    """An episode as `status_of` reads it (`mined` is the receipt or cards)."""
+    """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
     __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted")
 
     def __init__(self, ep, mined):
@@ -384,7 +386,9 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     media = work.get("media_type")
-    if media is None:                                # nobody typed it: the store's guess, from this piece's files
+    if media is None and guessed is not None and work:   # nobody typed it: the store's guess, from the title's files
+        media = guessed.of(work)                         # (L3.1's rule; review IK-24)
+    elif media is None:                                  # no title: from this piece's files
         counts = {}
         for it in piece:
             counts[it.get("source_type")] = counts.get(it.get("source_type"), 0) + 1
@@ -453,13 +457,16 @@ class RowCache:
         self.rows = {}
         self.version = None
         self.hits = self.misses = 0
+        self.same_global = False                      # set by `begin`: nothing global moved since the last build
+        self._glob = self._cards = None
+        self._next = {}
 
     def begin(self, version, cards=None, mining=None, in_top=None, line_n=None):
         if version != self.version:
             self.rows = {}
             self.version = version
         glob = (id(cards), frozenset(mining or ()), frozenset(in_top or ()), line_n)
-        self.same_global = glob == getattr(self, "_glob", None) and cards is getattr(self, "_cards", None)
+        self.same_global = glob == self._glob and cards is self._cards
         self._glob, self._cards = glob, cards
         self._next = {}
 
@@ -519,6 +526,24 @@ def _current_items(items):
     return ordered_tier(items, "now") + ordered_tier(items, "soon")
 
 
+class _Guesses:
+    """A title's media type when nobody said (`media_type_guess` over **all** its files, as L3.1's store guesses it):
+    the files counted by title in one pass, once a build, and only when a row that isn't cached asks. A cached row keeps
+    its guess until its own files or its title change (another piece's new file type rarely moves a title's)."""
+
+    def __init__(self, items):
+        self.items = items
+        self.counts = None
+
+    def of(self, work):
+        if self.counts is None:
+            self.counts = {}
+            for r in self.items.values():
+                c = self.counts.setdefault(r.get("work_id"), {})
+                c[r.get("source_type")] = c.get(r.get("source_type"), 0) + 1
+        return media_type_guess(self.counts.get(work.get("id")), work.get("anilist_id"), work.get("tmdb_id"))
+
+
 def _mine_ids(current, n):
     """The store's `_mine_ids`: the top `n` available files of Current, in order."""
     out = []
@@ -558,7 +583,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 break
     if cache is not None:
         cache.begin(cache_version, cards, mining, in_top, line_n)
-    guessed = {}
+    guessed = _Guesses(items)
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):

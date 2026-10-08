@@ -11,8 +11,10 @@ taking the keyboard, in a temp `SURASURA_TEST_ROOT` (nothing of the developer's 
 the stand-in, loaded on the reader's thread (as the real store is opened there). The HUD (`app/qt/hud.py`) watches every
 GUI-thread stretch and frame after the first paint while the child:
   1. waits for the live rows (the first frame may come first, from nothing or the cache);
-  2. scrolls Current for 5 s at 60 Hz, 40 px a step, down then up;
-  3. opens and closes 20 rows, one every 120 ms;
+  2. scrolls Current: 5 s at 60 Hz, 40 px a step, down then up — unbroken; with another program writing (a watched mark
+     every 0.3 s, from a process of its own); resting 1 s at its turn; then as a wheel turns, notch by notch (bursts of
+     3–5 notches 60 ms apart, a 0.4 s pause between: review B-8);
+  3. opens and closes 20 rows: the pointer rests on each (0.3 s), it opens, then closes;
   4. switches tabs ten times;
   5. takes an outside commit (a hato drop at the top of Current) and repaints it;
   6. sits idle for 5 s; then reports memory and quits.
@@ -46,13 +48,26 @@ def save_seed(files, share, path, language="ja"):
     return seed.files
 
 
+def system_scale():
+    """This desktop's own scaling (1.5 at 150 %): `QT_SCALE_FACTOR` multiplies it, so a run at `--scale` % sets
+    scale / 100 / system (as `capture.py` and `bench_motion.py` do). Until 2026-10-08 this bench set scale / 100 alone:
+    bench 9's "100 / 150 / 250 %" ran at 150 / 225 / 375 % on this 150 % desktop."""
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return ctypes.windll.user32.GetDpiForSystem() / 96.0
+    except Exception:
+        return 1.0
+
+
 def run_child(seed_path, out_path, scale, root):
     env = dict(os.environ)
     env.pop("QT_QPA_PLATFORM", None)
     env["SURASURA_TEST_ROOT"] = root
-    env["QT_SCALE_FACTOR"] = str(scale / 100.0) if scale else env.get("QT_SCALE_FACTOR", "")
-    if not env["QT_SCALE_FACTOR"]:
-        env.pop("QT_SCALE_FACTOR")
+    if scale:
+        env["QT_SCALE_FACTOR"] = f"{scale / 100 / system_scale():.6f}"
+    else:
+        env.pop("QT_SCALE_FACTOR", None)
     env["SURASURA_FREEZE_MOTION"] = "1"
     env["SURASURA_READER_GC_FREEZE"] = "1" if GC_FREEZE else "0"
     cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--out", out_path]
@@ -128,6 +143,21 @@ class _LazyOpener:
         self.library = None
         self.numbers_table = {}
         self.mining_ids = ()
+        self.inbox = None                                # another process's commits (a Pipe), applied as it polls
+        self.pending = []                                # commits from this process, applied the same way
+
+    def _drain(self):
+        """Another program's commits land between two polls, as a real store's would (the writer's own work — building
+        them, its collector — runs in its process; here only the store's side of a commit runs, on the reader's
+        thread)."""
+        while self.pending:
+            self.library.commit(**self.pending.pop(0))
+        conn = self.inbox
+        try:
+            while conn is not None and conn.poll():
+                self.library.commit(**conn.recv())
+        except (EOFError, OSError):                      # the writer has stopped: its end of the pipe is closed
+            self.inbox = None
 
     def _load(self):
         if self._opener is None:
@@ -148,7 +178,15 @@ class _LazyOpener:
         return mode
 
     def handle(self):
-        return self._load().handle()
+        h = self._load().handle()
+        if h is not None and not getattr(h, "drains", False):
+            real = h.data_version
+
+            def data_version():
+                self._drain()
+                return real()
+            h.data_version, h.drains = data_version, True
+        return h
 
     def fallback_handle(self):
         return self._load().fallback_handle()
@@ -250,19 +288,16 @@ def main_child(a):
         bar.setValue(0)
         # the second pass: another program writes while the person scrolls (review A-17) — a watched mark every 300 ms,
         # so the reader rebuilds the view on its thread while this one paints
-        stop_writes = threading.Event()
-        result.setdefault("scroll_commits", 0)
-
-        def writer():
-            lib = opener.library
-            ids = [r["id"] for r in lib.items() if r["tier"] == "now"][:50]
-            k = 0
-            while not stop_writes.wait(0.3):
-                lib.commit(items=[{"id": ids[k % len(ids)], "watched": k % 2}])
-                result["scroll_commits"] += 1
-                k += 1
+        writer = None
         if writes:
-            threading.Thread(target=writer, name="scroll-writer", daemon=True).start()
+            import multiprocessing
+            ids = [r["id"] for r in opener.library.items() if r["tier"] == "now"][:50]
+            mine, theirs = multiprocessing.Pipe(duplex=False)
+            writer = multiprocessing.Process(target=write_watched, args=(theirs, ids), name="scroll-writer",
+                                             daemon=True)
+            writer.start()
+            opener.inbox = mine
+            result["scroll_commits_from"] = opener.library._meta["state_version"]
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -281,24 +316,71 @@ def main_child(a):
                     QTimer.singleShot(1000, lambda: timer.start(16))
             if state["n"] >= 300:
                 timer.stop()
-                stop_writes.set()
+                if writer is not None:
+                    writer.terminate()
+                    opener.inbox = None
+                    result["scroll_commits"] = opener.library._meta["state_version"] - result["scroll_commits_from"]
                 mark(name, end=True)
-                QTimer.singleShot(300, phase_open if rest else (lambda: phase_scroll(rest=True)) if writes else
+                QTimer.singleShot(300, phase_notches if rest else (lambda: phase_scroll(rest=True)) if writes else
                                   (lambda: phase_scroll(writes=True)))
         timer.timeout.connect(step)
         timer.start(16)
 
+    def phase_notches():
+        # a wheel turned by a person (review B-8): bursts of 3–5 notches 60 ms apart (a notch = 3 single steps, as
+        # QAbstractScrollArea scrolls one), a 0.4 s pause between — down for ~6 s, then up for ~6 s
+        import random
+        mark("scroll-notches")
+        bar = lst.verticalScrollBar()
+        bar.setValue(0)
+        rng = random.Random(11)
+        at, plan = 0, []
+        for direction in (1, -1):
+            end = at + 6000
+            while at < end:
+                for _ in range(rng.randint(3, 5)):
+                    plan.append((at, direction))
+                    at += 60
+                at += 400
+        for when, direction in plan:
+            def notch(direction=direction):
+                with hud.span("scroll-step"):
+                    bar.setValue(max(0, min(bar.maximum(), bar.value() + direction * 3 * bar.singleStep())))
+            QTimer.singleShot(when, notch)
+        QTimer.singleShot(at + 100, lambda: mark("scroll-notches", end=True))
+        QTimer.singleShot(at + 400, phase_open)
+
     def phase_open():
+        # the pointer comes to rest on a row (0.3 s: its hover is drawn, its episodes painted ahead), the row opens,
+        # then closes; the next row
+        from PyQt6.QtCore import QEvent, QPointF
+        from PyQt6.QtGui import QHoverEvent, QMouseEvent
         mark("open")
         lst.verticalScrollBar().setValue(0)
         n = min(20, lst.model().rowCount())
-        for i in range(n * 2):
-            def toggle(i=i):
-                with hud.span("toggle"):
-                    lst.toggle(lst.model().index((i // 2) % n, 0))
-            QTimer.singleShot(120 * i, toggle)
-        QTimer.singleShot(120 * n * 2 + 200, lambda: mark("open", end=True))
-        QTimer.singleShot(120 * n * 2 + 300, phase_tabs)
+        last = [QPointF(-1, -1)]
+
+        def hover(i):
+            rect = lst.visualRect(lst.model().index(i, 0))
+            pos = QPointF(rect.left() + rect.width() * 0.4, rect.top() + 20)
+            vp = lst.viewport()
+            with hud.span("hover"):
+                QApplication.sendEvent(vp, QHoverEvent(QEvent.Type.HoverMove, pos, QPointF(vp.mapToGlobal(pos)),
+                                                       last[0]))
+                QApplication.sendEvent(vp, QMouseEvent(QEvent.Type.MouseMove, pos, QPointF(vp.mapToGlobal(pos)),
+                                                       Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                                       Qt.KeyboardModifier.NoModifier))
+            last[0] = pos
+        for i in range(n):
+            t = 600 * i
+            QTimer.singleShot(t, lambda i=i: hover(i))
+            for dt in (300, 420):
+                def toggle(i=i):
+                    with hud.span("toggle"):
+                        lst.toggle(lst.model().index(i, 0))
+                QTimer.singleShot(t + dt, toggle)
+        QTimer.singleShot(600 * n + 200, lambda: mark("open", end=True))
+        QTimer.singleShot(600 * n + 300, phase_tabs)
 
     def phase_tabs():
         mark("tabs")
@@ -313,19 +395,16 @@ def main_child(a):
         QTimer.singleShot(150 * len(names) + 300, phase_outside)
 
     def phase_outside():
-        # another program's commit (a hato drop): made on a thread of its own, as another process would
+        # another program's commit (a hato drop): it lands between two of the reader's polls, as a real store's would
         mark("outside")
         lib = opener.library
-
-        def writer():
-            items = lib.items()
-            first = min((r for r in items if r["tier"] == "now"), key=lambda r: r["ord"])
-            new_id = max(r["id"] for r in items) + 1
-            result["outside_at"] = time.perf_counter()
-            lib.commit(items=[dict(first, id=new_id, ord=first["ord"] - 512, piece_id=10 ** 9,
-                                   rel_path="HighPriority/Hato/outside - 01.srt", title="outside - 01.srt")],
-                       order=True)
-        threading.Thread(target=writer, name="outside-writer", daemon=True).start()
+        items = lib.items()
+        first = min((r for r in items if r["tier"] == "now"), key=lambda r: r["ord"])
+        new_id = max(r["id"] for r in items) + 1
+        result["outside_at"] = time.perf_counter()
+        opener.pending.append({"items": [dict(first, id=new_id, ord=first["ord"] - 512, piece_id=10 ** 9,
+                                              rel_path="HighPriority/Hato/outside - 01.srt",
+                                              title="outside - 01.srt")], "order": True})
 
         def landed():
             entries = lst.model().entries
@@ -357,6 +436,7 @@ def main_child(a):
         result["gc_over_2ms"] = [(g, ms, th) for g, ms, th, _at in gc_log if ms > 2]
         result["gc_count"] = len(gc_log)
         result["paints"] = lst.delegate.paints if hasattr(lst.delegate, "paints") else None
+        result["dpr"] = lst.viewport().devicePixelRatioF()
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(result, f)
         app.quit()
@@ -369,12 +449,21 @@ def main_child(a):
         services.shutdown(1.0)
 
 
+def write_watched(conn, ids):
+    """The scroll pass's other program, in a process of its own: a watched mark every 0.3 s (review A-17)."""
+    k = 0
+    while True:
+        time.sleep(0.3)
+        conn.send({"items": [{"id": ids[k % len(ids)], "watched": k % 2}]})
+        k += 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--files", type=int, default=20000)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--current-share", type=float, default=None)
-    ap.add_argument("--scale", type=int, default=0, help="QT_SCALE_FACTOR × 100 (0: Windows' own scaling)")
+    ap.add_argument("--scale", type=int, default=0, help="the screen's scaling in % (0: Windows' own)")
     ap.add_argument("--language", default="ja")
     ap.add_argument("--out", default=None)
     ap.add_argument("--gc-freeze", action="store_true", help="the reader freezes the collector after each view (A/B)")

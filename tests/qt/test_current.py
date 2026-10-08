@@ -586,4 +586,39 @@ def test_the_painted_rows_are_kept_within_their_byte_budget(seeded, monkeypatch)
         lst.viewport().repaint()
     d = lst.delegate
     assert d._bytes["row"] <= 1024 * 1024 or len(d._sprites["row"]) == 1
-    assert d._bytes["row"] == sum(rows._size(v[2]) for v in d._sprites["row"].values())
+    assert d._bytes["row"] == sum(rows._size(v[1]) for v in d._sprites["row"].values())
+
+
+def test_a_scroll_step_repaints_only_the_strip_that_came_into_view(seeded):
+    """Profile 2026-10-08: every 40 px scroll step repainted the whole list (~10 rows, every frame ~2–3 ms at 150 %):
+    the app's style sheet turned the viewport's autoFillBackground off when it polished it, so Qt couldn't move the
+    pixels already drawn. The viewport is opaque now (it fills its own ground where it paints): a step paints only the
+    strip that came into view, and the gaps between rows still get the list's ground."""
+    from PyQt6.QtCore import QEvent, QObject
+
+    class Regions(QObject):
+        def __init__(self):
+            super().__init__()
+            self.heights = []
+
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Paint:
+                self.heights.append(ev.region().boundingRect().height())
+            return False
+
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    vp = lst.viewport()
+    win.style().unpolish(vp)                                   # polished again, as a theme change does
+    win.style().polish(vp)
+    regions = Regions()
+    vp.installEventFilter(regions)
+    bar = lst.verticalScrollBar()
+    bar.setValue(400)
+    for _ in range(5):
+        QApplication.processEvents()
+    regions.heights = []
+    bar.setValue(440)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert regions.heights and max(regions.heights) <= 40 + 2, (regions.heights, vp.height())

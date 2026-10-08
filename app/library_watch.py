@@ -105,12 +105,13 @@ def ignored(rel):
 def folders_of(root, rel, action=1):
     """The folder a report on `rel` asks to sync: `rel` itself when it is a folder now (a folder copied, moved or
     renamed in arrives as one report; its scoped sync takes what is under it), else its parent (a file added, changed,
-    removed or renamed there; a sub-folder gone). A folder's own "modified" report asks for nothing: Windows sends it
-    whenever something inside changes, and that change has its own report (syncing the folder would widen a drop
-    into a show's folder to the whole tier)."""
+    removed or renamed there; a sub-folder gone) — a top-level folder gone is itself (a tier folder renamed away or
+    deleted sends that one report: its scoped sync marks its items missing). A folder's own "modified" report asks for
+    nothing: Windows sends it whenever something inside changes, and that change has its own report (syncing the
+    folder would widen a drop into a show's folder to the whole tier)."""
     if os.path.isdir(os.path.join(root, *rel.split("/"))):
         return [] if action == FILE_ACTION_MODIFIED else [rel]
-    return [rel.rsplit("/", 1)[0] if "/" in rel else ""]
+    return [rel.rsplit("/", 1)[0] if "/" in rel else rel]
 
 
 class TreeWatch:
@@ -125,7 +126,8 @@ class TreeWatch:
         self.root = root
         self.buffer = buffer
         self.settle = settle
-        self.under = tuple(under) if under else None          # only reports under these top-level folders count
+        # only reports under these top-level folders count (as Windows compares names: any case)
+        self.under = tuple(u.lower() for u in under) if under else None
         self.subtree = True                                   # the whole tree
         self.notify = 0x1 | 0x2 | 0x8 | 0x10                  # names, folders, size, last write
         self.state = "closed"
@@ -162,6 +164,11 @@ class TreeWatch:
         self._k32, self._handle = k32, handle
         self._io = k32.CreateEventW(None, True, False, None)            # the read's completion (manual reset)
         self._stop = k32.CreateEventW(None, True, False, None)          # close() asks the thread to end
+        if not self._io or not self._stop:
+            self.state = "watching"                                     # so close() releases what was made
+            self.close()
+            self.state, self.error = "fallback", _last_error()
+            return False
         self.state = "watching"
         self._thread = threading.Thread(target=self._run, name="library-watch", daemon=True)
         self._thread.start()
@@ -247,6 +254,18 @@ class TreeWatch:
         return bool(k32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(got), False))
 
     def _run(self):
+        """The watch thread. However it ends — close() asked, the read failed, Windows' wait failed, an error here —
+        a watch that wasn't closed reads "ended" and wakes the window, so its retry and the slow look take over."""
+        try:
+            self._loop()
+        except Exception as exc:                                # a report it couldn't read: the watch ends, never silent
+            self.error = repr(exc)
+        finally:
+            if self.state == "watching":
+                self.state = "ended"
+                self._changed.set()
+
+    def _loop(self):
         import ctypes
         import ctypes.wintypes as wt
         buf = ctypes.create_string_buffer(self.buffer)
@@ -281,7 +300,7 @@ class TreeWatch:
         with self._lock:
             for action, name in reports:
                 rel = name.replace("\\", "/")
-                if ignored(rel) or (self.under and rel.split("/", 1)[0] not in self.under):
+                if ignored(rel) or (self.under and rel.split("/", 1)[0].lower() not in self.under):
                     continue
                 for folder in folders_of(self.root, rel, action):
                     if not folder:
@@ -372,9 +391,35 @@ class Lookout:
         return started
 
     @property
+    def deaf(self):
+        """No bell to hear other processes by (no slot free, not Windows, or its thread ended)."""
+        return self.db_path is not None and (self.bell is None or self.bell.slot is None or not self.bell.alive)
+
+    @property
     def slow(self):
-        """No watch (or no bell to hear other processes by): the slow look stands in, in front only."""
-        return not self.tree.alive or (self.db_path is not None and (self.bell is None or self.bell.slot is None))
+        """No watch (or no bell): the slow look stands in, in front only."""
+        return not self.tree.alive or self.deaf
+
+    def _broken(self):
+        """Something to try again (Windows only): the tree watch, the copy's watch or the bell."""
+        return watchable() and (self.tree.state != "watching" or self.deaf or
+                                (self.copy is not None and not self.copy.alive))
+
+    def _retry(self, moved=False):
+        """Start again whatever isn't running (the tree watch too when its root `moved`). -> (the tree watch was
+        restarted, the copy's watch was restarted): each missed what happened meanwhile."""
+        tree = copy = False
+        if not watchable():
+            return tree, copy
+        if self.tree.state != "watching" or not self.tree.alive or moved:
+            tree = self._start_tree()
+        if self.copy is not None and not self.copy.alive:
+            copy = self.copy.start()
+        if self.deaf:
+            if self.bell is not None:
+                self.bell.close()
+            self.bell = Bell(self.db_path, self.wake.set)
+        return tree, copy
 
     def set_front(self, front):
         """The window's thread: in front or not. Coming to the front in fallback wakes the worker for its look."""
@@ -387,17 +432,8 @@ class Lookout:
         give the copy's watch and the bell another try. -> True when the tree watch was restarted."""
         now = self.clock() if now is None else now
         self._last_try = now
-        restarted = False
-        if watchable():
-            if not self.tree.alive or _identity(self.tree.root) != self._root:
-                restarted = self._start_tree()
-            if self.copy is not None and not self.copy.alive:
-                self.copy.start()
-            if self.db_path and (self.bell is None or self.bell.slot is None):
-                if self.bell is not None:
-                    self.bell.close()
-                self.bell = Bell(self.db_path, self.wake.set)
-        return restarted
+        moved = watchable() and self.tree.alive and _identity(self.tree.root) != self._root
+        return self._retry(moved)[0]
 
     def looked(self, now=None):
         """A full look just ran: the round restarts its hour, and one under way is dropped (the look covered it)."""
@@ -413,7 +449,7 @@ class Lookout:
             settle = self.tree.due(now)
             if settle is not None:
                 due.append(now + settle)
-        elif watchable():
+        if self._broken():
             due.append(self._last_try + RETRY_S)
         if self.slow and self.front:
             due.append(now if self._last_slow is None else self._last_slow + SLOW_S)
@@ -432,9 +468,10 @@ class Lookout:
         now = self.clock() if now is None else now
         folders, full = self.tree.take(now)
         copy = bool(self.copy is not None and self.copy.take(now)[1])
-        if self.tree.state != "watching" and watchable() and now - self._last_try >= RETRY_S:
+        if self._broken() and now - self._last_try >= RETRY_S:
             self._last_try = now
-            full = self._start_tree() or full
+            tree, again = self._retry()
+            full, copy = full or tree, copy or again
         slow = self.slow and self.front and (self._last_slow is None or now - self._last_slow >= SLOW_S)
         if slow:
             self._last_slow = now
@@ -586,6 +623,10 @@ class Bell:
                 self.on_ring()
             except Exception:
                 pass
+
+    @property
+    def alive(self):
+        return self._thread is not None and self._thread.is_alive()
 
     def close(self):
         if self._stop:

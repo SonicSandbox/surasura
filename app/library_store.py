@@ -644,6 +644,7 @@ def mark_damaged(db_path, detail):
             f.write(f"{_now()}\n{detail}\n")
     except OSError:
         pass
+    library_watch.ring(db_path)          # a window sleeping on its watch looks again and turns read-only (L3.2)
 
 
 def quick_check(conn, db_path):
@@ -1320,8 +1321,8 @@ class Store:
                 self.conn.execute("PRAGMA query_only=1")
             finally:
                 self._wlock.release()
-        if committed:
-            library_watch.ring(self.db_path)          # every writer's commit wakes the windows listening (L3.2)
+                if committed:
+                    library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
 
     def checkpoint(self):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""
@@ -6194,6 +6195,9 @@ class Round:
                     if availability == "available":
                         held[key] = (size, mtime_ns)
                     lo = key
+                else:
+                    if len(rows) < 256:
+                        return held                        # the last page
 
 
 def _store_has_content(self):

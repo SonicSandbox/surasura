@@ -448,7 +448,7 @@ class ContentImporterApp:
         handed = posted = None
         try:
             while not self._worker_stop.is_set():
-                if lookout is None:
+                if lookout is None or store is None:     # no store to watch yet, or the last pass failed
                     self._worker_wake.wait(STORE_POLL_S)
                     self._worker_wake.clear()
                 else:
@@ -469,7 +469,14 @@ class ContentImporterApp:
                         store = self._opener().handle()
                         token = store.token()
                         # The watch first, then the open's walk: a change while it runs is reported, never lost.
-                        lookout = self._lookout = self._make_lookout(store)
+                        # A pass that failed keeps its watch (made once, not every STORE_POLL_S); its round reads
+                        # the store handle open now.
+                        if lookout is None or lookout.db_path != store.db_path:
+                            if lookout is not None:
+                                lookout.close()
+                            lookout = self._lookout = self._make_lookout(store)
+                        lookout.make_round = lambda s=store: library_store.Round(s)
+                        lookout.set_front(self._front)   # a focus change while it was made reached no lookout
                         # The tree was drawn before this token: a change made in between is checked against the
                         # versions it was drawn at (the fast path redraws only if they moved).
                         self._worker_results.put(("check", None, 0.0))
@@ -513,9 +520,7 @@ class ContentImporterApp:
                 except Exception as e:
                     self._worker_results.put(("error", str(e), 0.0))
                     self._sync_wanted = True             # asked again at the next check, not left for a focus
-                    if lookout is not None:
-                        lookout.close()                  # checked every STORE_POLL_S until a store opens again
-                    store = poll = token = lookout = self._lookout = None
+                    store = poll = token = None          # tried again every STORE_POLL_S, the watch kept
         finally:
             if lookout is not None:
                 lookout.close()

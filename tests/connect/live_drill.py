@@ -119,9 +119,10 @@ def main():
 
     # The profile's own deck may not be in DevTest: its `check` is read for what the run itself needs (Anki, the
     # dictionary, ffmpeg); deck and note type are checked here, against DevTest, as the run's config names them.
+    # 3.7's yt_dlp and speech_model are for its `fetch` and never count toward `ready` (API.md, check).
     ready = anki_miner.check(miner, "ja", profile)
     missing = [i.get("name") for i in ready.get("items") or ()
-               if not i.get("ok") and i.get("name") not in ("deck", "note_type", "fields")]
+               if not i.get("ok") and i.get("name") not in ("deck", "note_type", "fields", "yt_dlp", "speech_model")]
     if missing:
         refuse(f"Anki Miner isn't ready: {', '.join(missing)}")
     anki_miner.preflight = lambda path, language, name: (info, profile)

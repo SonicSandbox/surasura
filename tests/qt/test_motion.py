@@ -577,7 +577,9 @@ def test_the_pulse_dims_to_a_third_at_its_half(clock, stage):
     spin.set_running(True)
     clock.advance(1)
     assert spin.pulse_opacity() == pytest.approx(1.0, abs=0.01)
-    clock.advance(theme.MOTION["footer-pulse"] / 2 - 1)
+    clock.advance(theme.MOTION["footer-pulse"] / 4 - 1)               # a quarter: halfway down, on ease-in-out
+    assert spin.pulse_opacity() == pytest.approx(1.0 - 0.65 * 0.5, abs=0.02)
+    clock.advance(theme.MOTION["footer-pulse"] / 4)
     assert spin.pulse_opacity() == pytest.approx(0.35, abs=0.01)
     c = _alone(spin).pixelColor(spin.width() // 2, spin.height() // 2)
     # the dot at .35 over its glow at .35: about two fifths covered, never the full dot

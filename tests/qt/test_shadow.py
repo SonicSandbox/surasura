@@ -37,9 +37,10 @@ def _draw(name, rect, size=(1000, 1000), dpr=1.0):
 
 
 def _expected(name, rect, x, y):
-    """The closed form at pixel (x, y): α · Fx · Fy, each the share of a Gaussian over the shadow's box."""
+    """The closed form at pixel (x, y): α · Fx · Fy, each the share of a Gaussian over the shadow's box — from the
+    token's own numbers (CSS: σ = blur / 2), never the module's."""
     box = shadow.shape(QRectF(*rect), name)
-    s = shadow.sigma(name)
+    s = theme.SHADOWS[name][2] / 2.0
     a = shadow.spec(name)[4].alpha()
     return a * shadow.profile(x + 0.5, box.left(), box.right(), s) * shadow.profile(y + 0.5, box.top(), box.bottom(), s)
 

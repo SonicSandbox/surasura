@@ -798,6 +798,9 @@ class OverlayOpening:
     def press(self, event):
         """A press (left, right, middle) on the opening overlay: finish it, then give the press to what the user saw
         under the pointer, at its place now. -> True when it was taken."""
+        if self._pieces is not None:               # nothing of it on screen yet: the press is what's there; it shows after
+            QTimer.singleShot(0, self.finish)
+            return False
         content = self.content_global()
         at = event.globalPosition().toPoint()
         if content.isNull() or not content.contains(at):

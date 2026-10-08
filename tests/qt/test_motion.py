@@ -784,6 +784,25 @@ def test_a_key_while_the_opening_is_prepared_shows_it_at_once_and_goes_to_the_fi
     assert opening.ghost is None and card.isVisible()          # no motion after it showed
 
 
+def test_a_press_while_the_opening_is_prepared_shows_it_and_goes_to_what_the_user_saw(clock, stage, split):
+    # intent keeper K6: in the 2-3 ms it is prepared nothing of the overlay is on screen yet: the press is the row's
+    # under it (what the user saw), and the overlay shows at once, its opening done
+    below = QPushButton("下の行", stage)
+    below.setGeometry(200, 120, 320, 30)                       # where the card will be
+    below.show()
+    hits = []
+    below.clicked.connect(lambda: hits.append(1))
+    card = Card(stage)
+    opening = card.open()
+    at = below.geometry().center()
+    win = stage.windowHandle()
+    QTest.mousePress(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    from tests.qt.conftest import wait_until
+    assert wait_until(lambda: opening.ended, 2) and card.isVisible() and opening.ghost is None
+    QTest.mouseRelease(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    assert hits == [1] and card.clicks == [] and not _filters_left(opening)
+
+
 def test_a_page_hidden_while_the_opening_is_prepared_shows_it_as_asked_without_the_motion(clock, stage, split):
     page = QWidget(stage)
     page.setGeometry(0, 0, 900, 640)

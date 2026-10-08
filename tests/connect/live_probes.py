@@ -56,6 +56,8 @@ def main():
 
     if anki_steps and not devtest():
         sys.exit("REFUSED: Anki isn't open on DevTest")
+    held = anki_connect.writer("P2.4 probes", wait=30)       # the GUI actions and the test notes write Anki
+    held.__enter__()
     tag = "surasura::connect::test-p24probe-" + time.strftime("%Y%m%d%H%M%S")
 
     if "profile" in steps:
@@ -103,6 +105,7 @@ def main():
         out["tag"] = {"before_delete": found, "after_delete": after, "by_nid_after": by_id}
         say("tag", out["tag"])
 
+    held.__exit__(None, None, None)
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 

@@ -393,6 +393,10 @@ class MasterDashboardApp:
         # automatic Generate away for the first minutes after every boot.
         self._last_anki_sync = float("-inf")
         self._anki_spin_job = None
+        # Connect's session start (P2.3, `_connect_session`): the last look at Anki, and whether one is running.
+        self._connect_looked = float("-inf")
+        self._connect_looking = False
+        self._connect_opened = False        # the window's first look (the only one that may open Anki) has run
         # Junban's automatic reorder (a test option in settings.json) — the same shape as the sync.
         self._junban_auto_lock = threading.Lock()
         self._last_junban_auto = float("-inf")
@@ -547,7 +551,8 @@ class MasterDashboardApp:
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
         self.root.bind("<FocusIn>", lambda e: (self._maybe_launch_indexer(), self._update_generate_state(),
-                                               self._maybe_anki_sync(), self._maybe_junban_auto(),
+                                               self._connect_session(), self._maybe_anki_sync(),
+                                               self._maybe_junban_auto(),
                                                self._maybe_auto_generate(), self._schedule_journey_state(),
                                                self._schedule_maintain(), self._update_library_notice()))
         # Deferred startup timers are skipped under test — a test destroys the window long before
@@ -569,6 +574,10 @@ class MasterDashboardApp:
 
             # Reconcile the result of any update applied since we last ran (toast / manual-retry).
             self.root.after(800, self.reconcile_update_result)
+
+            # Connect's preview on: a session starts — Anki seen open gets the session's sync, or with Open Anki for me
+            # on, Anki closed is opened for you (P2.3). Before the known-words sync below.
+            self.root.after(1800, lambda: self._connect_session(opening=True))
 
             # Pick up words studied in Anki since last time (only if the user turned it on).
             self.root.after(2000, lambda: self._maybe_anki_sync(force=True))
@@ -1407,6 +1416,66 @@ class MasterDashboardApp:
                 return
             if line:
                 self.gui_queue.put(lambda: self.status_var.set(line))
+        threading.Thread(target=work, daemon=True).start()
+
+    CONNECT_LOOK_EVERY = 60     # seconds between two of Connect's looks at Anki on focus (FocusIn fires per widget)
+
+    def _connect_session(self, opening=False):
+        """Connect's preview on (P2.3; ✅ Q4-4, Q4-16): a session's start, looked at on a worker — at the window's start
+        (`opening`) and when it comes back into focus, at most once a minute (`anki_session.at_window`, which 3.0's
+        window calls too). Anki seen closed is recorded, so the next look starts a session with a sync; at the window's
+        start, with *Open Anki for me* on, a closed Anki is opened for you — never at any other moment, never after
+        mining; Anki open and a session starting: its one sync, so your phone's reviews are in before anything reads
+        or writes Anki, then the known-words sync (when it's on) and a Connect kick. Off: nothing, and nothing of
+        Connect's is imported."""
+        if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return
+        s = getattr(self, "_current_settings", None) or {}
+        if not s.get("connect_enabled"):
+            return
+        import time
+        now = time.monotonic()
+        if not opening and (not self._connect_opened or now - self._connect_looked < self.CONNECT_LOOK_EVERY):
+            return                      # a focus before the window's first look never takes its place
+        if self._connect_looking:
+            return
+        self._connect_looked, self._connect_looking, self._connect_opened = now, True, True
+        try:
+            s = settings_manager.load_settings() or s
+        except Exception:
+            pass
+
+        def say(line):
+            self.gui_queue.put(lambda: self.status_var.set(line))
+
+        def work():
+            done = None
+            try:
+                from app.connect import anki_session
+                done = anki_session.at_window(dict(s), opening=opening, say=say)
+            except Exception as e:
+                print(f"Connect's session: {e}")
+            finally:
+                self._connect_looking = False
+            sync = (done or {}).get("sync")
+            if sync == "synced" and done.get("opened"):
+                say("Anki is open and synced: your phone's reviews are in.")
+            if sync == "synced":
+                # Your phone's reviews are in: read the words you know now, and let Connect see what's waiting
+                self.gui_queue.put(lambda: self._maybe_anki_sync(force=True))
+                try:
+                    from app.connect import kick
+                    kick.kick(s)
+                except Exception as e:
+                    print(f"Connect wasn't started: {e}")
+            elif sync == "not-signed-in":
+                say("Anki isn't signed in to AnkiWeb, so your phone won't get Surasura's cards and order until it is.")
+            elif sync == "full-sync":
+                say("AnkiWeb wants a full sync, which only you can choose: open Anki and click Sync.")
+            elif sync and sync.startswith("failed"):
+                say("Anki couldn't sync with AnkiWeb just now. Surasura asks again later.")
+            elif done and done.get("opened") and done.get("anki") != "open":
+                say("Anki didn't open within two minutes. Open it yourself when you're ready.")
         threading.Thread(target=work, daemon=True).start()
 
     def _library_handle(self, lang):

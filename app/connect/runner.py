@@ -365,6 +365,10 @@ def _mine(steps, ledger, lang, job, record=True):
         wait = _blocked(steps, lang, "mining")
         if wait is not None:
             raise wait
+        if not ledger.batches(jid):         # P2.4 Part B: the cap before a job's first batch, never mid-episode
+            wait = _at_cap(steps, ledger, lang, todo)
+            if wait is not None:
+                raise wait
         attempt = (ledger.job_by_id(jid).get("attempt") or 0) + 1
         ledger.set_state(jid, "mining")
         ledger.start_batch(jid, attempt, steps.run_dir(job))
@@ -408,6 +412,13 @@ def _mine(steps, ledger, lang, job, record=True):
         except Wait as w:
             w.resume = "mining"
             raise
+    lines = [(o["note_id"], o["line_start"], o["line_end"], o["sentence"]) for o in ledger.outcomes(jid)
+             if o["outcome"] == "made" and o["note_id"] is not None]
+    try:
+        steps.name_media(lang, job, picked, lines)      # P2.4-4: one file a line, before Anki's next sync
+    except Wait as w:
+        w.resume = "mining"
+        raise
     ledger.set_state(jid, "filling")
 
 
@@ -417,6 +428,22 @@ def _fail_mining(steps, ledger, lang, job):
     ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice while "
                 "making its cards. Look in Anki for the cards it made.", item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
+
+
+def _at_cap(steps, ledger, lang, todo):
+    """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
+    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go."""
+    cap = steps.cap()
+    if not cap:
+        return None
+    count = steps.waiting_count(lang)
+    if count is None or count < cap:
+        return None
+    if steps.shelve(lang, ledger, todo, count, cap):
+        count = steps.waiting_count(lang)
+        if count is not None and count < cap:
+            return None
+    return Wait(f"Your {count} cards are waiting: Connect makes more as you study them.", resume="mining")
 
 
 def _outcome(ledger, jid, word):
@@ -670,6 +697,120 @@ class Steps:
                 raise Wait(e.message) from None
             raise Needs("generate", f"Generate didn't finish, so Connect waits for a current list. {e.message}") \
                 from None
+        self._shelved = set()
+        try:
+            self.notes_gone(lang)
+            self.shelf_session(lang, ledger)
+        except Exception:                   # never a reason not to mine: looked at again next run
+            log.exception("Connect's shelf look or deleted-notes check didn't finish")
+
+    # --- P2.4 Part B: the cap, the shelf, media names, deleted cards ------------------------------------------- #
+    def _anki(self):
+        from app.connect import shelf
+        return shelf.AnkiConnectAnki(self.url)
+
+    def cap(self):
+        """`connect_backlog_cap` (default 300); 0 or not a number: no cap."""
+        try:
+            return max(0, int(self.loaded.get("connect_backlog_cap", 300)))
+        except (TypeError, ValueError):
+            return 300
+
+    def waiting_count(self, lang):
+        from app import anki_connect
+        from app.connect import shelf
+        try:
+            return shelf.waiting_count(self._anki())
+        except anki_connect.AnkiError:
+            raise Wait(ANKI_CLOSED, resume="mining") from None
+
+    def _list_order(self, lang):
+        """{(Word, Reading): place} in the list's own order (Junban's), or None."""
+        from app.cli import verbs
+        from app.cli.contract import CliError
+        try:
+            return verbs._listed(SimpleNamespace(wait=WAIT_S), lang)
+        except CliError:
+            return None
+
+    def shelve(self, lang, ledger, todo, count, cap):
+        """At the cap, once a run per language: the shelf's plan (a big gap only), shelved -> how many."""
+        from app.connect import shelf
+        if lang in getattr(self, "_shelved", set()):
+            return 0
+        self._shelved = getattr(self, "_shelved", set()) | {lang}
+        order = self._list_order(lang) or {}
+        ranks = shelf.ranks(order)
+        with self._open(lang) as store:
+            made = shelf.made_notes(store)
+            pinned = shelf.pinned_items(store)
+        anki = self._anki()
+        waiting = shelf.cards(anki, shelf.WAITING_QUERY, made)
+        for card in waiting:
+            card.rank = ranks.get(card.word, shelf.NOT_LISTED)
+        needed = [ranks.get(w["word"], shelf.NOT_LISTED) for w in todo]
+        chosen = shelf.plan(waiting, needed, cap, count, pinned)
+        if not chosen:
+            return 0
+        try:
+            shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
+        except shelf.Reviewing:
+            raise Wait(REVIEWING, resume="mining") from None
+        return len(chosen)
+
+    def shelf_session(self, lang, ledger):
+        """Once a run: a shelved card you un-suspended loses its tag; a shelved word the top 20 needs comes back."""
+        from app.connect import library, shelf
+        anki = self._anki()
+        shelf.tidy(anki, ledger)
+        with self._open(lang) as store:
+            made = shelf.made_notes(store)
+            finished = shelf.finished_items(store, made)
+            line = library.mine_line(store)
+            names = {i: os.path.basename((store.item(i) or {}).get("rel_path") or "") for i in line}
+        from app.cli import connect_verbs
+        read = connect_verbs._read_list(lang)
+        file_words = (read[2] if read else {}) or {}
+        holder = {}
+        for item in line:
+            for word in file_words.get(names.get(item), ()) or ():
+                holder.setdefault(word, item)
+        shelved = shelf.cards(anki, f"{shelf.SHELVED_QUERY} is:suspended", made)
+        back = [c for c in shelved if c.word in holder]
+        if back:
+            shelf.bring_back(anki, ledger, lang, back, finished, holder.get)
+
+    def notes_gone(self, lang):
+        """Row 2.4.14: the store's note ids (yours and Connect's) checked against Anki once a run; the gone ones
+        told to the store (a no-op until the store has `notes_gone`). Nothing when Anki doesn't answer."""
+        from app.connect import library, shelf
+        with self._open(lang) as store:
+            if getattr(store, "notes_gone", None) is None:
+                return []
+            ids = library.note_ids(store)
+        gone = shelf.gone_notes(self._anki(), ids)
+        if gone:
+            with self._open(lang) as store:
+                library.notes_gone(store, gone)
+        return gone
+
+    def name_media(self, lang, job, picked, lines):
+        """P2.4-4: the batch's clip and picture renamed by the line (`media_names.rename`)."""
+        from app.connect import media_names
+        mapping = getattr(self, "_mapping", None)
+        fields = getattr(mapping, "fields", None) or {}
+        if not lines or not fields:
+            return None
+        pairing = self.pairing(lang, job) or {}
+        key = pairing.get("content_key")
+        if not key:
+            with self._open(lang) as store:
+                key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
+        try:
+            return media_names.rename(media_names.AnkiConnectMedia(self.url), lines, key, fields.get("audio"),
+                                      fields.get("picture"))
+        except media_names.Reviewing:
+            raise Wait(REVIEWING, resume="mining") from None
 
     def run_dir(self, job):
         from app.cli.verbs import _connect_folder

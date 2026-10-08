@@ -215,6 +215,23 @@ class FakeSteps:
         if "backfill" in (self.plan.get("absent") or ()):
             raise runner.Skip("backfill absent")
 
+    # --- P2.4 Part B: the cap, the shelf, media names
+    def cap(self):
+        return self.plan.get("cap")
+
+    def waiting_count(self, lang):
+        """Connect's waiting cards: the plan's `waiting` (cards made before) + the notes made here − the shelved."""
+        return int(self.plan.get("waiting", 0)) + len(self.anki.words()) - int(self.plan.get("shelved", 0))
+
+    def shelve(self, lang, ledger, todo, count, cap):
+        self.log.append(("shelve", count, cap, [w["word"] for w in todo]))
+        frees = int(self.plan.pop("shelf_frees", 0))       # once a run, as the real shelf
+        self.plan["shelved"] = int(self.plan.get("shelved", 0)) + frees
+        return frees
+
+    def name_media(self, lang, job, picked, lines):
+        self.log.append(("name_media", job["item_id"], len(lines)))
+
     def order(self, lang, job):
         self.log.append(("order", job["item_id"]))
         self._kill("order")

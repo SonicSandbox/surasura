@@ -264,7 +264,7 @@ def paint_pill(p, status, rect, dpr=1.0):
         p.setPen(QPen(style.qcolor(col["status-part-ring"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
-    elif status.kind == "mine":
+    elif status.kind in ("mine", "deleted"):
         p.setPen(QPen(style.qcolor(col["line-hi"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
@@ -411,6 +411,7 @@ class RowsModel(QAbstractListModel):
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
 SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
+EPISODES_KEPT = 64                                   # painted episode rows, kept apart: opening rows never pushes rows out
 WARM_AHEAD = 8                                       # rows past each edge of the screen painted ahead, in idle moments
 WARM_IDLE_MS = 60                                    # how long the list rests (no scroll, no refresh) before it does
 
@@ -423,17 +424,18 @@ class RowDelegate(QStyledItemDelegate):
         self.renders = 0                             # rows drawn into a pixmap (tests: a repaint reuses them)
         self.warmed = 0                              # rows drawn ahead, before they came on screen (`warm`)
         self._warming = False
-        self._sprites = OrderedDict()
+        self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
 
     def _sprite(self, kind, payload, lines, size, dpr, hovered, draw, ident=None, ground="bg"):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its lines, its width, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these."""
+        cache, kept = (self._sprites["ep"], EPISODES_KEPT) if kind == "ep" else (self._sprites["row"], SPRITES_KEPT)
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
                hovered)
-        hit = self._sprites.get(key)
+        hit = cache.get(key)
         if hit is not None and hit[0] is payload and hit[1] == lines:
-            self._sprites.move_to_end(key)
+            cache.move_to_end(key)
             return hit[2]
         pix = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
         pix.setDevicePixelRatio(dpr)
@@ -447,10 +449,10 @@ class RowDelegate(QStyledItemDelegate):
             self.warmed += 1
         else:
             self.renders += 1
-        self._sprites[key] = (payload, lines, pix)
-        self._sprites.move_to_end(key)
-        while len(self._sprites) > SPRITES_KEPT:
-            self._sprites.popitem(last=False)
+        cache[key] = (payload, lines, pix)
+        cache.move_to_end(key)
+        while len(cache) > kept:
+            cache.popitem(last=False)
         return pix
 
     # sizes ------------------------------------------------------------------------------------------------------ #
@@ -710,7 +712,7 @@ class RowDelegate(QStyledItemDelegate):
                                               round(theme.SIZES["row"] * fz())), kind)
                     self._paint_play_button(p, self._play_rect(cols["acts"]), payload.can_play)
         elif kind in (ROW, FINISHED):
-            self._paint_row(p, kind, payload, body, hovered, focused, dpr, lines)
+            self._paint_open_row(p, kind, payload, body, hovered, focused, dpr, lines)
         elif kind == MONTH:
             TEXT.draw(p, rect.left() + 4, rect.bottom() - round(11.5 * fz() * 0.9) - 4, payload.upper(), "month",
                       rect.width() - 8, c("ink-faint"), dpr=dpr)
@@ -746,8 +748,35 @@ class RowDelegate(QStyledItemDelegate):
                            lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines))
         return pix, body
 
-    def warm(self, index, dpr):
-        """Paint a closed row's pixmap ahead of its first paint (the list's idle moments): -> whether it drew one."""
+    def _paint_open_row(self, p, kind, row, body, hovered, focused, dpr, lines):
+        """An open row: its head painted once into a pixmap (its top corners rounded on the list's ground), the ground
+        under it filled, then the episodes (each its own pixmap) — opening a row costs a relayout and blits, and a
+        repaint of an open row draws nothing afresh."""
+        h = round(theme.SIZES["row"] * fz())
+        local = QRect(0, 0, body.width(), body.height())
+        pix = self._sprite(kind, row, lines, QSize(body.width(), h), dpr, hovered,
+                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False),
+                           ident=(row.key, "open"))
+        p.drawPixmap(body.topLeft(), pix)
+        radius = theme.RADII["r-sm"]
+        rest = QRect(body.left(), body.top() + h, body.width(), body.height() - h)
+        p.save()
+        p.setClipRect(rest)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("surface"))
+        p.drawRoundedRect(QRectF(body), radius, radius)
+        p.restore()
+        if focused:
+            self._focus_ring(p, body, radius)
+            if kind == ROW and not hovered:
+                cols = self.columns(QRect(body.left(), body.top(), body.width(), h), kind)
+                self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
+        if kind == ROW:
+            self._paint_episodes(p, row, rest, dpr, lines=lines)
+
+    def warm(self, index, dpr, rect=None):
+        """Paint a closed row's pixmap ahead of its first paint (the list's idle moments): -> whether it drew one.
+        `rect`: where it will stand (a hidden list's, laid out as the shown list is)."""
         entry = index.data(ROW_ROLE)
         if entry is None or entry[0] not in (HERO, ROW, FINISHED):
             return False
@@ -757,7 +786,7 @@ class RowDelegate(QStyledItemDelegate):
         before = self.warmed
         self._warming = True
         try:
-            self._closed(kind, payload, lines, self.view.visualRect(index), dpr, False)
+            self._closed(kind, payload, lines, self.view.visualRect(index) if rect is None else rect, dpr, False)
         finally:
             self._warming = False
         return self.warmed != before
@@ -802,7 +831,7 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=()):
+    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=(), episodes=True):
         f = fz()
         h = round(theme.SIZES["row"] * f)
         line = QRect(body.left(), body.top(), body.width(), h)
@@ -851,7 +880,7 @@ class RowDelegate(QStyledItemDelegate):
             paint_mark(p, row.mark, mk_rect.right() + 1, line.center().y(), dpr)
         if kind == ROW and (hovered or focused):
             self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
-        if is_open:
+        if is_open and episodes:
             area = QRect(body.left(), line.bottom() + 1, body.width(), body.bottom() - line.bottom())
             self._paint_episodes(p, row, area, dpr, lines=lines)
 
@@ -1139,6 +1168,7 @@ class RowsView(QListView):
         self.verticalScrollBar().setSingleStep(round(theme.SIZES["row"] * fz() / 2))
         self._hover = None
         self._restore = None
+        self.warm_like = None                        # the shown list, while this one is hidden (its width and height)
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         # a row's first paint (its text laid out, its cover drawn: up to ~15 ms, bench 7) moved out of the scroll's
         # frames: once the list rests, the rows just past the screen are painted ahead, one per turn of the loop
@@ -1206,7 +1236,12 @@ class RowsView(QListView):
         """Paint one row ahead (the next below the screen first, then above); again on the next turn until done."""
         model = self.model()
         n = model.rowCount()
-        if not n or not self.isVisible():
+        if not n:
+            return
+        if not self.isVisible():
+            if self._warm_hidden():
+                self._warm.setInterval(0)
+                self._warm.start()
             return
         first = self.indexAt(QPoint(4, 1))
         last = self.indexAt(QPoint(4, self.viewport().height() - 2))
@@ -1220,6 +1255,25 @@ class RowsView(QListView):
                 self._warm.setInterval(0)                # the next one on the loop's next turn
                 self._warm.start()
                 return
+
+    def _warm_hidden(self):
+        """A hidden list (another tab): its first screen painted ahead, one row a turn, at the shown list's width — the
+        tab's first switch then blits. A width that comes out different (a scroll bar more or less) only misses."""
+        like = self.warm_like
+        if like is None or like is self or not like.isVisible():
+            return False
+        width, room = like.viewport().width(), like.viewport().height()
+        dpr = like.viewport().devicePixelRatioF() or 1.0
+        model, top = self.model(), 0
+        for r in range(model.rowCount()):
+            idx = model.index(r, 0)
+            h = self.delegate.sizeHint(None, idx).height()
+            if self.delegate.warm(idx, dpr, QRect(0, top, width, h)):
+                return True
+            top += h
+            if top >= room:
+                break
+        return False
 
     def showEvent(self, event):
         super().showEvent(event)

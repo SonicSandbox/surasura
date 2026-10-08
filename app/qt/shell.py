@@ -427,6 +427,17 @@ class ShellWindow(QMainWindow):
         if self._library_needs != len(view.needs):
             self._library_needs = len(view.needs)
             self.show_status(self.services.status.snapshot())
+        self._warm_hidden_pages()
+
+    def _warm_hidden_pages(self):
+        """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
+        shown = self.pages.currentWidget()
+        like = getattr(shown, "list", None)
+        for page in self.page_widgets.values():
+            lst = getattr(page, "list", None)
+            if lst is not None and page is not shown:
+                lst.warm_like = like
+                lst._rest()
     # --- end W2.2 ---------------------------------------------------------------------------------------------- #
 
     def _waiting_page(self, name):
@@ -500,6 +511,8 @@ class ShellWindow(QMainWindow):
         if not button.isChecked():
             button.setChecked(True)
         self.pages.setCurrentWidget(self.page_widgets[name])
+        if self.services.library is not None:                 # W2.2: the other tabs' first screens, ahead
+            self._warm_hidden_pages()
 
     def current_tab(self):
         for name, b in self.tab_buttons.items():

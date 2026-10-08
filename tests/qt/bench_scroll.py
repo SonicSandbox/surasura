@@ -223,6 +223,13 @@ def main_child(a):
         with hud.span("paint-row"):
             real_paint(self, p, option, index)
     delegate_cls.paint = paint
+    view_cls = type(lst)
+    real_layout = view_cls.doItemsLayout
+
+    def do_items_layout(self):
+        with hud.span("layout"):
+            real_layout(self)
+    view_cls.doItemsLayout = do_items_layout
     real_show = window.show_library
 
     def show_library(view):
@@ -241,8 +248,10 @@ def main_child(a):
     window.first_frame.connect(first_frame)
 
     # the phases ----------------------------------------------------------------------------------------------------- #
-    def phase_scroll(writes=False):
-        name = "scroll-writes" if writes else "scroll"
+    def phase_scroll(writes=False, rest=False):
+        # three passes: unbroken; another program writing; and one that rests 1 s at its turn, as a person does (the
+        # rows past the screen are painted ahead then)
+        name = "scroll-rest" if rest else "scroll-writes" if writes else "scroll"
         mark(name)
         bar = lst.verticalScrollBar()
         bar.setValue(0)
@@ -274,11 +283,15 @@ def main_child(a):
             state["n"] += 1
             if state["n"] == 150:
                 state["dir"] = -1
+                if rest:
+                    timer.stop()
+                    QTimer.singleShot(1000, lambda: timer.start(16))
             if state["n"] >= 300:
                 timer.stop()
                 stop_writes.set()
                 mark(name, end=True)
-                QTimer.singleShot(300, phase_open if writes else (lambda: phase_scroll(writes=True)))
+                QTimer.singleShot(300, phase_open if rest else (lambda: phase_scroll(rest=True)) if writes else
+                                  (lambda: phase_scroll(writes=True)))
         timer.timeout.connect(step)
         timer.start(16)
 

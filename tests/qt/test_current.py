@@ -528,3 +528,44 @@ def test_the_rows_just_past_the_screen_are_painted_ahead_when_the_list_rests(see
     bar.setValue(bar.value() + round(theme.SIZES["row"] * rows.fz()))    # one row down: the next row comes in
     lst.viewport().repaint()
     assert lst.delegate.renders == renders
+
+
+def test_an_open_row_repaints_from_pixmaps_and_opening_rows_never_pushes_the_closed_ones_out(seeded):
+    """Bench 8: every opening was a long step — the open row's head was drawn afresh on each paint, and its episodes'
+    pixmaps shared one cache with the rows, so opening rows pushed the closed rows on screen out. The open row's head is
+    now a pixmap too, and episodes keep a cache of their own: a repaint of an open row, and of the rows after closing
+    it again, draws nothing afresh."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    openable = [i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and len(e[1].episodes) >= 2][:6]
+    assert len(openable) >= 3
+    for i in openable:                                         # open and close several: their episodes fill a cache
+        lst.toggle(lst.model().index(i, 0))
+        lst.doItemsLayout()
+        lst.viewport().repaint()
+        renders = lst.delegate.renders
+        lst.viewport().repaint()                               # the open row again: its head and episodes are reused
+        assert lst.delegate.renders == renders
+        lst.toggle(lst.model().index(i, 0))
+        lst.doItemsLayout()
+        lst.viewport().repaint()
+    renders = lst.delegate.renders
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders                     # every closed row on screen still in its cache
+
+
+def test_a_hidden_tabs_first_screen_is_painted_ahead_so_its_first_switch_draws_no_row(seeded):
+    """Bench 8: a tab's first switch drew its whole first screen in one step. While Finished is hidden, its first
+    screen is painted ahead at Current's width, one row a turn; switching to it then draws no row afresh."""
+    seed, win = seeded(files=2000)
+    fin = win.page_widgets["finished"].list
+    assert not fin.isVisible() and fin.model().rowCount() > 0
+    assert wait_until(lambda: fin.delegate.warmed >= 3)
+    for _ in range(20):
+        QApplication.processEvents()
+    win.show_tab("finished")
+    QApplication.processEvents()
+    fin.viewport().repaint()
+    assert fin.delegate.paints > 0
+    assert fin.delegate.renders == 0

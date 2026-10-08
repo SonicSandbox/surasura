@@ -163,8 +163,9 @@ def child(rounds):
         timed(motion.OverlayOpening, "_compose", "open-compose")
         timed(motion.OverlayOpening, "_snapshot", "open-snapshot")      # M2.1-1 (b): the pieces, each its own step
         timed(motion.OverlayOpening, "_go", "open-go")
-        timed(motion, "_take_lift", "lift-take")
-        timed(motion._Lift, "paintEvent", "lift-paint")
+        timed(motion.OverlayOpening, "_lift_place", "lift-place")   # M2.1-3: the lift's pieces
+        timed(motion._Lift, "paint", "lift-paint")
+        timed(motion._Lift, "flush", "lift-flush")
         timed(motion, "_show", "overlay-show")
         timed(motion, "_give_back", "lift-give-back")
         list_paint = QListView.paintEvent
@@ -197,8 +198,20 @@ def child(rounds):
                 steps.append(("close", kind, widget, None))
             steps.append(("toast", "rise", None, None))
             steps.append(("toast-close", "rise", None, None))
-        window.bar_dot.set_running(True)
-        meter.discard_current()
+        # a person clicks in the window in front: the lift is used only then (the final adversary's first finding). The bench shows it without
+        # activation; Windows may refuse a background process the foreground, so the bench then says so and takes the
+        # lifted path as in front (the lift paints and moves the same; only its stacking over other programs differs)
+        window.raise_()
+        window.activateWindow()
+
+        def begin():
+            results["active"] = QApplication.activeWindow() is window
+            if not results["active"] and motion._lifted():
+                motion._in_front = lambda top: True
+            results["in_front_forced"] = not results["active"]
+            window.bar_dot.set_running(True)
+            meter.discard_current()
+            run()
 
         def run(i=0):
             if i >= len(steps):
@@ -250,7 +263,7 @@ def child(rounds):
             probe.result["bench"] = results
             probe._finish()
 
-        run()
+        QTimer.singleShot(300, begin)                # (activation comes through the loop)
 
     return shell.main(["bench-motion"])
 
@@ -289,7 +302,8 @@ def verdict(r):
             "frames_by_kind": tags, "overlays_n": len(overlays),
             "frame_p95_worst_ms": worst_p95, "frame_max_worst_ms": worst_max, "step_max_ms": b.get("step_max_ms"),
             "steps_over_1_6ms": b.get("steps_over_desktop"), "steps_over_4ms": b.get("steps_over_4ms"),
-            "idle_wakes": b.get("idle_wakes"), "late": r.get("hud", {}).get("late", {}).get("causes"),
+            "idle_wakes": b.get("idle_wakes"), "active": b.get("active"), "in_front_forced": b.get("in_front_forced"),
+            "late": r.get("hud", {}).get("late", {}).get("causes"),
             "late_max_ms": r.get("hud", {}).get("late", {}).get("max_ms"),
             "clock": r.get("hud", {}).get("anim"), "spans": r.get("hud", {}).get("spans"),
             "desktop_targets_met": ok}

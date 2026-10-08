@@ -24,7 +24,8 @@ from collections import deque
 from PyQt6 import sip
 from PyQt6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt,
                           QTimer, pyqtSignal)
-from PyQt6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPixmap
+from PyQt6.QtGui import (QBackingStore, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPixmap, QRegion,
+                         QSurfaceFormat, QWindow)
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app import theme
@@ -438,11 +439,12 @@ def _in_front(top):
 
 
 # How an in-window overlay's opening is prepared (M2.1-1, Sonic 2026-10-08: "Split it as you said"): in pieces — the
-# overlay drawn (its snapshot); for the ghost, its shadow added (the picture); the picture shown and the motion started
-# (a lift paints the shadow and the snapshot itself, in its own paint: no picture composed) — each in a pass of the GUI
-# thread's loop of its own, the thread waiting PIECE_GAP_MS between them (input and paints come in between), instead of
-# one step of 4-10 ms on this desktop (perhaps 10-25 ms on the laptop). The motion starts 2-3 ms later. None = split on
-# real time, one step on a test's time (a test reads the opening at once); True / False = force.
+# overlay drawn (its snapshot); for the ghost, its shadow added (the picture); for a lift, its window placed, the shadow
+# and the snapshot painted into its backing store, that picture handed to Windows while it is hidden (M2.1-3); the
+# picture shown and the motion started — each in a pass of the GUI thread's loop of its own, the thread waiting
+# PIECE_GAP_MS between them (input and paints come in between), instead of one step of 4-10 ms on this desktop (perhaps
+# 10-25 ms on the laptop). The motion starts a few ms later. None = split on real time, one step on a test's time (a test
+# reads the opening at once); True / False = force.
 SPLIT = None
 PIECE_GAP_MS = 1
 
@@ -453,48 +455,58 @@ def _split():
     return not clock().test_time
 
 
-class _Lift(QWidget):
+class _Lift(QWindow):
     """The opening overlay lifted: its shadow and snapshot in a window of its own, above the main window and owned by it,
-    see-through, never taking input or focus. Painted once, in its own paint (no picture composed first: M2.1-1); each
-    frame only its opacity and place change."""
+    see-through, never taking input or focus. A window and its backing store (M2.1-3, measured 2026-10-08), not a widget:
+    a widget's show paints it and flushes the whole see-through window in that one pass of the loop (8 ms at 150 % for a
+    scrim; Qt's Windows plugin exposes a see-through window itself as it shows, qwindowswindow.cpp fireFullExpose); here
+    the paint (into the backing store), the flush (the picture handed to Windows while the lift is hidden) and the show
+    are three pieces, each a pass of its own. Painted once an opening; each frame only its opacity and place change."""
 
     def __init__(self, opening, owner):
-        super().__init__(owner, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                         | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.NoDropShadowWindowHint
-                         | Qt.WindowType.WindowDoesNotAcceptFocus)
-        self.opening = opening
+        super().__init__()
+        QObject.setParent(self, owner)             # goes with its window (a child QObject, not a child window)
+        fmt = QSurfaceFormat()
+        fmt.setAlphaBufferSize(8)                  # see-through: a layered window, its picture handed over whole
+        self.setFormat(fmt)
+        self.setFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                      | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.NoDropShadowWindowHint
+                      | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setObjectName("motionLift")
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._painted = False                      # painted since it was last shown
+        self.owner = owner
+        self.opening = opening
+        self.store = QBackingStore(self)
+        self._flushed_hidden = False                    # flushed while hidden: the show's expose finds it there already
 
-    def showEvent(self, event):
-        self._painted = False
-        super().showEvent(event)
-
-    def event(self, event):
-        # Painted once a show (M2.1-2, measured 2026-10-08). Qt paints a shown window twice: Windows sends a see-through
-        # (layered) window no WM_PAINT, so Qt's Windows plugin exposes it itself as it shows (qwindowswindow.cpp,
-        # setVisible -> fireFullExpose) and that paint is the one put on screen; QWidgetPrivate::show_sys also posts every
-        # shown widget an UpdateLater of its whole rect (qwidget.cpp: the paint a child, which gets no expose, needs).
-        # Here it repaints the same picture (~1 ms at 150 %, 4+ at 250 %). Dropped once the expose has painted it; one
-        # that comes first (no paint yet) goes through, and the expose then finds nothing to paint. (PyQt6 gives the
-        # event no region; a lift's picture never changes while it is shown, so the one after a paint is that repaint.)
-        if event.type() == QEvent.Type.UpdateLater and self._painted:
-            self._painted = False                  # (only the one: a later UpdateLater paints as usual)
-            return True
-        return super().event(event)
-
-    def paintEvent(self, _event):
+    def paint(self):
+        """Its picture drawn into its backing store (nothing reaches the screen): the shadow and the snapshot — or
+        nothing, resting in the pool or once its opening has ended (its overlay is shown under it and may be gone:
+        review H4)."""
+        self.setTransientParent(self.owner.windowHandle())   # above its window, owned by it
+        self.create()
+        size = self.size()
+        self.store.resize(size)
+        self.store.beginPaint(QRegion(QRect(QPoint(), size)))   # (a see-through store starts each paint clear)
         o = self.opening
-        if o is None or o.pixmap is None or o.ended:   # (resting in the pool; or its overlay is shown under it, which
-                                                       # may be gone: nothing of it is drawn — review H4)
+        if o is not None and o.pixmap is not None and not o.ended:
+            p = QPainter(self.store.paintDevice())
+            o._draw(p)
+            p.end()
+        self.store.endPaint()
+
+    def flush(self):
+        """The painted picture handed to Windows (while hidden: it shows with the window)."""
+        self.store.flush(QRegion(QRect(QPoint(), self.size())))
+        self._flushed_hidden = not self.isVisible()
+
+    def exposeEvent(self, _event):
+        if not self.isExposed():
             return
-        p = QPainter(self)                         # (a see-through window's backing store starts clear)
-        o._draw(p)
-        p.end()
-        self._painted = True
+        if self._flushed_hidden:                        # its show: the picture flushed before is on screen with it
+            self._flushed_hidden = False
+            return
+        self.paint()                               # exposed again (a screen change): drawn as it is now
+        self.flush()
 
 
 # The lifts kept for the next opening in the same window (row 7): making a top-level window is a native window's birth
@@ -507,7 +519,7 @@ def _take_lift(opening, top):
     free = _LIFTS.get(id(top))
     while free:
         lift = free.pop()
-        if not sip.isdeleted(lift) and lift.parentWidget() is top:
+        if not sip.isdeleted(lift) and lift.owner is top:
             lift.opening = opening
             return lift
     return _Lift(opening, top)
@@ -519,7 +531,7 @@ def _give_back(lift):
         return
     lift.hide()
     lift.opening = None
-    top = lift.parentWidget()
+    top = lift.owner if not sip.isdeleted(lift.owner) else None
     free = _LIFTS.setdefault(id(top), []) if top is not None else None
     if free is None or len(free) >= LIFTS_KEPT:
         lift.deleteLater()
@@ -631,7 +643,8 @@ class OverlayOpening:
         self._finisher = _InputFinisher(self)      # a key or a press while it is prepared shows it at once
         QApplication.instance().installEventFilter(self._finisher)
         self._lifts = _lifted()
-        self._pieces = deque((self._snapshot, self._go) if self._lifts else (self._snapshot, self._picture, self._go))
+        self._pieces = deque((self._snapshot, self._lift_place, self._lift_paint, self._lift_flush, self._go)
+                             if self._lifts else (self._snapshot, self._picture, self._go))
         if _split():
             self._next_piece()
         else:
@@ -688,8 +701,34 @@ class OverlayOpening:
 
     def _picture(self):
         """The second, for the painted ghost only (it repaints each frame): its shadow added under it, in one picture.
-        A lift paints the two itself, in its own paint."""
+        A lift paints the two itself, into its own backing store."""
         self.picture = self._compose(self._size)
+
+    def _lift_place(self):
+        """A lift's second piece: its window taken (a kept one, hidden) and placed where the motion starts, see-through.
+        A window not in front is opened with the painted ghost instead (`_go`)."""
+        w = self.widget
+        parent = w.parentWidget()
+        if parent is None or not parent.isVisible() or self._top.isMinimized():
+            self._pieces = deque((self._go,))      # its page went or it is minimised: `_go` shows it as asked
+            return
+        if not _in_front(self._top):
+            self._lifts = False
+            self._pieces = deque((self._picture, self._go))
+            return
+        self._lift_at = parent.mapToGlobal(self._area.topLeft())   # the picture's place at the end, global
+        self._origin = QPoint(0, 0)
+        self.lift = _take_lift(self, self._top)
+        self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
+        self.lift.setOpacity(0.0)
+
+    def _lift_paint(self):
+        """The third: the shadow and the snapshot drawn into the lift's backing store (nothing on screen yet)."""
+        self.lift.paint()
+
+    def _lift_flush(self):
+        """The fourth: the picture handed to Windows while the lift is hidden, so its show is only a show."""
+        self.lift.flush()
 
     def _go(self):
         """The last: the picture shown where the motion starts, and the motion started — unless its page went while it
@@ -701,15 +740,13 @@ class OverlayOpening:
             self._cut_short()
             return
         if self._lifts and not _in_front(self._top):
-            self._lifts = False
+            self._lifts = False                    # (behind another program's since it was placed: the ghost after all)
+            lift, self.lift = self.lift, None
+            if lift is not None:
+                _give_back(lift)
             self.picture = self._compose(self._size)
         if self._lifts:
-            self._lift_at = parent.mapToGlobal(area.topLeft())   # the picture's place at the end, global
-            self._origin = QPoint(0, 0)
-            self.lift = _take_lift(self, self._top)
-            self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
-            self.lift.setWindowOpacity(0.0)
-            self.lift.show()
+            self.lift.show()                       # (painted and flushed already: Windows shows its picture)
             owner = self.lift
         else:
             travel = area.united(area.translated(self.delta))    # the ghost: everywhere the picture goes
@@ -728,7 +765,7 @@ class OverlayOpening:
     def content_global(self):
         """Where the overlay itself is on the screen now, while it opens."""
         if self.lift is not None and not sip.isdeleted(self.lift):
-            return QRect(self.lift.pos() + self.target_in_picture, self.widget_size)
+            return QRect(self.lift.position() + self.target_in_picture, self.widget_size)
         g = self.ghost
         if g is not None and not sip.isdeleted(g):
             r = g.content_rect()
@@ -782,8 +819,8 @@ class OverlayOpening:
                     self.anim.stop()               # its page went (a tab switch): cut short, as a ghost would be
                 return
             if not sip.isdeleted(lift):
-                lift.setWindowOpacity(v)           # the compositor blends it: nothing here repaints
-                lift.move(self._lift_at + self._offset(v))
+                lift.setOpacity(v)                 # the compositor blends it: nothing here repaints
+                lift.setPosition(self._lift_at + self._offset(v))
             return
         g = self.ghost
         if g is None or sip.isdeleted(g):

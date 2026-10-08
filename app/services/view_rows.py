@@ -569,10 +569,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
     goal_items = tiers["goal"]
-    goal_works = []
-    for r in goal_items:
-        if r.get("work_id") not in goal_works:
-            goal_works.append(r.get("work_id"))
+    goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in` was
+    # quadratic: ~90 ms a build at 20,000 files, bench 7)
     covers = tuple((works.get(w) or {}).get("title") or "" for w in goal_works[:9])
     if goal_items:
         g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(goal_works) == 1 else \

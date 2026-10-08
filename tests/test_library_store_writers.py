@@ -731,3 +731,77 @@ def test_another_windows_change_waits_for_a_drag_to_end(window, language, monkey
     assert _tree_paths(app) == shown, "redrawn mid-drag"
     app.on_drag_stop(types.SimpleNamespace(y=-1))                # released over nothing
     assert _pump(app, lambda: _tree_paths(app) != shown, timeout=2.0)
+
+
+# --- L3.2 The library watched, not checked ---------------------------------------------------------------- #
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows' change reports")
+
+
+def _settled_window(window, language, monkeypatch):
+    """A store-mode window whose open has walked and whose watch is up (its worker idle from here)."""
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)) and app.__dict__.get("_lookout") is not None
+                 and app._open_walked, timeout=10)
+    _pump(app, lambda: False, timeout=0.5)                       # the open's own commit's ring, drained
+    return app
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_idle_watched_window_never_wakes_its_worker(window, language, monkeypatch):
+    """The old poll woke the worker twice a second, all day; watched, an idle window's worker sleeps until the
+    hourly round (the Tk drain's 100 ms timer is the window's own, counted apart)."""
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.tree.alive and not lookout.slow
+    assert lookout.timeout() > 3000                              # the next thing due: the round, an hour away
+    before = lookout.wakes
+    _pump(app, lambda: False, timeout=1.5)
+    assert lookout.wakes == before, f"{lookout.wakes - before} wake-ups idle"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_dropped_into_a_folder_without_items_shows_through_the_watch(window, language, monkeypatch):
+    """The old poll only stat'ed folders that hold items: a drop into a new show folder waited for a focus. The
+    watch reports it; its folder alone is synced (a scoped sync), and the tree shows it."""
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # only the watch may bring it in here
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    word = names(language)[30]
+    rel = f"HighPriority/{word}/{word}_第01話.srt"           # NOW: the tab the tree shows
+    t0 = time.monotonic()
+    touch(app.data_root, rel, f"{word}\n")
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "a drop into a new folder never showed"
+    took = time.monotonic() - t0
+    assert [f"HighPriority/{word}"] in scoped, scoped              # its folder, never the whole library
+    assert took < (1.0 if BENCH else 5.0), took
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_without_a_watch_the_slow_look_runs_in_front_only(window, language, monkeypatch):
+    """No watch (macOS / Linux, a drive that can't report): the folders are looked at every SLOW_S while the
+    window is in front, never behind or minimized; a drop is still found while in front."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.slow and lookout.tree.state == "fallback"
+    app._set_front(True)                                         # in front (the test's window may never get focus)
+    _pump(app, lambda: lookout.slow_looks >= 3, timeout=3.0)
+    assert lookout.slow_looks >= 3
+    app._set_front(False)                                        # behind, or minimized (<Unmap>)
+    _pump(app, lambda: False, timeout=0.3)
+    behind = lookout.slow_looks
+    _pump(app, lambda: False, timeout=1.0)
+    assert lookout.slow_looks == behind, "looked while behind"
+    app._set_front(True)
+    rel = _tree_paths(app)[0]
+    os.remove(os.path.join(app.data_root, *rel.split("/")))
+    assert _pump(app, lambda: rel not in _tree_paths(app), timeout=3.0), "the slow look never found the change"

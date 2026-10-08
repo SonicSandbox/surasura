@@ -14,7 +14,7 @@ import pytest
 
 from app import library_store as ls
 from app import library_watch as lw
-from tests.test_library_store_support import LANGUAGES, library, names, touch
+from tests.test_library_store_support import LANGUAGES, library, migrated, names, touch
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows' change reports")
 TIER_FOLDERS = tuple(ls.FOLDER_OF_TIER[t] for t in ls.ANALYSED)
@@ -271,7 +271,6 @@ def test_one_ring_from_another_process_wakes_every_listening_window(tmp_path):
 @windows_only
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_every_committed_write_rings_and_a_no_write_never_does(language):
-    from tests.test_library_store_support import migrated
     store = migrated(language)
     bell = lw.Bell(store.db_path, lambda: None)
     try:
@@ -290,7 +289,6 @@ def test_every_committed_write_rings_and_a_no_write_never_does(language):
 
 @windows_only
 def test_a_ring_that_fails_never_fails_the_commit(monkeypatch):
-    from tests.test_library_store_support import migrated
     store = migrated("zh")
     try:
         monkeypatch.setattr(lw, "_k32", lambda: (_ for _ in ()).throw(OSError("kernel32 gone")))
@@ -322,3 +320,274 @@ def test_off_windows_the_bell_is_silent(monkeypatch, tmp_path):
     monkeypatch.setattr(lw, "_k32", lambda: pytest.fail("kernel32 loaded off Windows"))
     assert lw.ring(str(tmp_path / "x.db")) == 0
     assert lw.Bell(str(tmp_path / "x.db"), lambda: None).slot is None
+
+
+# --- the hourly round, the slow look, the retry and the copy's watch ------------------------------------- #
+
+def _full_round(store):
+    """Every batch of one full round, the folders it hands back, in order."""
+    rnd = ls.Round(store)
+    found = []
+    while not rnd.done:
+        found += rnd.step()
+    return found
+
+
+def test_a_round_finds_a_file_dropped_into_a_folder_that_holds_no_item():
+    # The old poll never looked at a folder with no item in it, so a file dropped there went unseen. A synced
+    # library gives a round nothing to report; the new folder's file is the only thing it can find.
+    store = migrated("ja")
+    try:
+        assert _full_round(store) == []
+        folder = f"{ls.FOLDER_OF_TIER['now']}/新しい番組"
+        touch(store.data_dir, f"{folder}/第01話.srt", "新しい番組 1\n")
+        assert _full_round(store) == [folder]
+    finally:
+        store.close()
+
+
+def test_a_round_batch_lists_at_most_max_folders(tmp_path):
+    # Why: the hourly round is spread over many small batches so a big library never holds the window's thread;
+    # a batch that lists past its folder cap defeats that. max_s is generous here, so only the cap can stop a batch.
+    store = migrated("ja", shows=3, episodes=2, loose=1)
+    try:
+        rnd = ls.Round(store)
+        k = 2
+        for _ in range(200):                  # a bound: the queue must empty long before this
+            if rnd.done:
+                break
+            before = rnd.listed
+            rnd.step(max_folders=k, max_s=60.0)
+            n, _seconds = rnd.batches[-1]
+            assert n <= k, rnd.batches[-1]
+            assert rnd.listed - before <= k
+        assert rnd.done
+        full = ls.Round(store)                # the same folders in one batch: the round covers every one of them
+        full.step(max_s=60.0)
+        assert full.done
+        assert rnd.listed == full.listed and rnd.listed > k
+    finally:
+        store.close()
+
+
+def test_a_round_batch_stops_when_its_time_is_up_but_always_lists_one_folder():
+    # The hourly round (L3.2) works a batch at a time so a window never freezes: the time check stops a batch
+    # even when `max_folders` is large. A fake clock (0.03 s a call) keeps the test instant and exact.
+    store = migrated("ja")
+    try:
+        whole = ls.Round(store)
+        while not whole.done:
+            whole.step(max_s=10)
+        total = whole.listed
+        assert total > 3                                   # enough folders for a time limit to bite
+
+        ticks = [0.0]
+
+        def clock():
+            now = ticks[0]
+            ticks[0] += 0.03
+            return now
+
+        timed = ls.Round(store)
+        timed.step(max_folders=10_000, max_s=0.05, clock=clock)
+        assert 1 <= timed.listed <= 3                      # stopped after a few folders, not all of them
+        assert timed.listed < total
+        assert timed.batches[-1][0] == timed.listed
+
+        # Time already up at the first folder: that one is still listed, and no more.
+        ticks[0] = 0.0
+        instant = ls.Round(store)
+        instant.step(max_folders=10_000, max_s=0.0, clock=clock)
+        assert instant.listed == 1
+    finally:
+        store.close()
+
+
+def test_a_missing_item_whose_file_is_still_on_disk_makes_its_folder_differ():
+    # why: only available items count as held, so a file the store marks missing is one it doesn't hold
+    store = migrated("ja")
+    try:
+        assert _full_round(store) == []                 # the synced store is quiet first (the mutant's baseline)
+        item = store.ids("now")[0]
+        rel = store.item(item)["rel_path"]
+        folder = rel.rsplit("/", 1)[0]
+        with store._writing():
+            store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (item,))
+        assert os.path.exists(os.path.join(store.data_dir, *rel.split("/")))   # the file really is still there
+        assert folder in _full_round(store)
+    finally:
+        store.close()
+
+
+def test_an_available_item_whose_file_was_deleted_makes_its_folder_differ():
+    # why: a held item with no file on disk is a difference the round must report for a scoped sync
+    store = migrated("zh")
+    try:
+        assert _full_round(store) == []
+        item = store.ids("now")[0]
+        rel = store.item(item)["rel_path"]
+        folder = rel.rsplit("/", 1)[0]
+        os.remove(os.path.join(store.data_dir, *rel.split("/")))
+        assert folder in _full_round(store)
+    finally:
+        store.close()
+
+
+def test_the_slow_look_runs_only_in_front_and_at_most_once_per_slow_s(monkeypatch):
+    # Off Windows there is no tree watch, so the slow look stands in for it: it runs while the window is in front,
+    # at most once per SLOW_S (a fake hour: 360 looks in front), and never behind — a background window never polls.
+    monkeypatch.setattr(lw.sys, "platform", "linux")
+    store = migrated("ja")
+    now = [1000.0]
+    look = lw.Lookout(store.data_dir, db_path=store.db_path, clock=lambda: now[0]).open()
+    try:
+        look.set_front(False)
+        behind = 0
+        for k in range(3600):
+            now[0] = 1000.0 + k
+            behind += look.jobs(now=now[0]).slow
+        assert behind == 0 and look.slow_looks == 0
+
+        look.set_front(True)
+        looks = []
+        for k in range(3600):
+            now[0] = 5000.0 + k
+            if look.jobs(now=now[0]).slow:
+                looks.append(now[0])
+        assert len(looks) == 3600 // lw.SLOW_S
+        assert all(b - a >= lw.SLOW_S for a, b in zip(looks, looks[1:]))
+    finally:
+        look.close()
+        store.close()
+
+
+# --- the window's focus (Windows) ------------------------------------------------------------------------- #
+
+@windows_only
+def test_a_root_renamed_away_is_noticed_on_focus_and_watched_again_once_back(tmp_path):
+    # Windows sends no report for the watched folder's own rename, so focus() compares the folder at the path with
+    # the one watched: renamed away, the watch falls back; a folder put back at the path is watched again.
+    now = [1000.0]
+    data_dir = str(tmp_path / "ライブラリ")
+    os.makedirs(os.path.join(data_dir, "LowPriority", "番組"))
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0]).open()
+    try:
+        assert lk.tree.state == "watching"
+        os.rename(data_dir, str(tmp_path / "ライブラリ_退避"))
+        assert lk.focus(now=now[0]) is False and lk.tree.state == "fallback"
+        os.makedirs(data_dir)
+        assert lk.focus(now=now[0]) is True and lk.tree.state == "watching"
+    finally:
+        lk.close()
+
+
+@windows_only
+def test_focus_without_a_rename_leaves_the_watch_alone(tmp_path):
+    # The same folder at the path: focus() restarts nothing, so the watch thread that is running stays the one.
+    now = [1000.0]
+    data_dir = str(tmp_path / "ライブラリ")
+    os.makedirs(os.path.join(data_dir, "LowPriority", "番組"))
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0]).open()
+    try:
+        thread = lk.tree._thread
+        assert lk.focus(now=now[0]) is False
+        assert lk.tree.state == "watching" and lk.tree._thread is thread
+    finally:
+        lk.close()
+
+
+def test_the_round_waits_an_hour_then_hands_out_one_batch_every_two_seconds():
+    # The hourly round (L3.2) on a fake clock: due an hour after the last full look, then one batch per ROUND_GAP_S.
+    # A batch in the same two seconds is refused (a gap-less round would hand the same Round back at +0.5 s), and a
+    # full look drops a round under way and restarts the hour.
+    store = migrated("ja")
+    now = [1000.0]
+    rounds = []
+
+    def make_round():
+        rounds.append(ls.Round(store))
+        return rounds[-1]
+
+    lk = lw.Lookout(store.data_dir, make_round=make_round, clock=lambda: now[0]).open()
+    lk.set_front(False)                                   # no slow look: its wait would hide the round's own
+    try:
+        assert lk.jobs(now=now[0]).round is None
+        now[0] = 1000.0 + lw.ROUND_S
+        first = lk.jobs(now=now[0]).round
+        assert isinstance(first, ls.Round)
+        now[0] += 0.5
+        assert lk.jobs(now=now[0]).round is None          # inside the gap: no batch
+        now[0] = 1000.0 + lw.ROUND_S + lw.ROUND_GAP_S
+        assert lk.jobs(now=now[0]).round is first         # the gap has passed: the same round's next batch
+        lk.looked(now=now[0])
+        assert lk.jobs(now=now[0]).round is None          # the full look covered it: no round under way
+        assert abs(lk.timeout(now=now[0]) - lw.ROUND_S) < 1.0
+    finally:
+        lk.close()
+        store.close()
+
+
+@windows_only
+def test_a_failed_watch_is_retried_after_retry_s_and_then_asks_one_full_look(tmp_path):
+    # A library folder that doesn't exist yet can't be watched, so the watch falls back. It is retried only once
+    # RETRY_S has passed, and the restart asks one full look: the watch missed what happened while it was down.
+    now = [1000.0]
+    data_dir = str(tmp_path / "ライブラリ")
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0]).open()
+    try:
+        assert lk.tree.state == "fallback"
+        os.makedirs(data_dir)
+        now[0] += lw.RETRY_S - 1                              # just short of the retry: still no watch, no full look
+        early = lk.jobs(now=now[0])
+        assert lk.tree.state == "fallback" and early.full is False
+        now[0] += 1                                           # RETRY_S exactly: the watch starts and asks one full look
+        late = lk.jobs(now=now[0])
+        assert lk.tree.state == "watching" and late.full is True
+    finally:
+        lk.close()
+
+
+@windows_only
+def test_the_copy_watch_wakes_on_the_copy_saved_by_rename_and_not_on_other_files(tmp_path):
+    # The library's copy is saved by a rename (temp file + os.replace), which Windows reports at once; a write to any
+    # other file in the same folder must not look at the copy, or every KnownWord save would re-read the library.
+    folder = tmp_path / "番組"
+    folder.mkdir()
+    w = lw.FileWatch(str(folder), ["master_manifest.json"])
+    assert w.start(), (w.state, w.error)
+    try:
+        (folder / "KnownWord.json").write_text('{"語": 1}', encoding="utf-8")
+        w.wait(0.5)                                       # bounded: proving an absence
+        folders, full = w.take()
+        assert folders == [] and not full
+        tmp = folder / "master_manifest.json.tmp"
+        tmp.write_text('{"order": []}', encoding="utf-8")
+        os.replace(str(tmp), str(folder / "master_manifest.json"))
+        folders, full = _settled(w, full=True)
+        assert folders == set() and full
+    finally:
+        w.close()
+
+
+@windows_only
+def test_a_window_with_no_bell_slot_keeps_the_slow_look_until_focus_finds_one(tmp_path):
+    # A ninth window watches its tree but can't hear other processes, so it keeps the slow look; the first focus
+    # after a slot frees (the window coming back) takes that slot, and the slow look stops.
+    data_dir, _u, _doc = library("ja")
+    db = str(tmp_path / "library_ja_fedcba9876543210.db")
+    now = [1000.0]
+    holders = [lw.Bell(db, lambda: None) for _ in range(lw.BELL_SLOTS)]
+    w = None
+    try:
+        assert all(b.slot is not None for b in holders)
+        w = lw.Lookout(data_dir, under=TIER_FOLDERS, db_path=db, clock=lambda: now[0]).open()
+        assert w.tree.alive and w.bell.slot is None         # watching, yet no slot
+        assert w.slow                                       # so the slow look stands in
+        holders[3].close()
+        w.focus(now=now[0])
+        assert w.bell.slot == 3 and not w.slow              # the freed slot is the window's now
+    finally:
+        if w is not None:
+            w.close()
+        for b in holders:
+            b.close()

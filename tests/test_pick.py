@@ -156,6 +156,51 @@ def test_a_verb_goes_by_its_dictionary_form_as_written_anything_else_exactly_as_
     assert words["図書カード"]["sent"] == ["図書カード"]           # a joined word, whole (IS-R2)
 
 
+def test_the_card_fronts_reading_is_said_as_its_line_says_it_in_hiragana():
+    # P1.3-AM37: Anki Miner 3.7 takes a word's `reading` as the card's own (it picks the dictionary entry), so it is
+    # the occurrence's dictionary-form kana as Anki Miner reads a front itself, never the row's lemma reading
+    read, tokens = _read(SAMPLE)
+    words = _by_word(pick.pick(read, tokens, "ja", _known(), mode="unknown"))
+    said = words["矢張り"]                                               # the file says やっぱ
+    assert said["reading"] == "ヤハリ" and said["front_reading"] == said["surface"] != "やはり"
+    assert words["反応"]["front_reading"] == "はんのう"
+    assert words["家庭教師"]["front_reading"] == "かていきょうし"         # a joined word: the join's reading
+    read, tokens = _read(EPISODE)
+    words = _by_word(pick.pick(read, tokens, "ja", _known(), mode="unknown"))
+    assert words["借りる"]["front_reading"] == "かりる"                   # 借り(たい): its dictionary form's
+    assert words["下さる"]["front_reading"] == "くださる" and words["下さる"]["surface"].startswith("くださ")
+
+
+def test_a_form_anki_miner_folds_goes_by_its_lemma(tmp_path):
+    # Review #3 (P1.3-AM37): UniDic reads a potential, ra-nuki or classical form as its lemma's word; its own
+    # dictionary form (行ける) is a word of no one's, and Anki Miner folds it to the lemma too. One entry, the lemma.
+    path = _srt(tmp_path, [(1, 3, "明日は行けるよ。"), (4, 6, "やっと辿り着けた。"), (7, 9, "ここから海が見れる。"),
+                           (10, 12, "美しき花よ。")])
+    read, tokens = _read(path)
+    words = _by_word(pick.pick(read, tokens, "ja", _known("明日", "は", "よ", "やっと", "た", "此処", "から", "海", "が",
+                                                          "花"), mode="unknown"))
+    for word, reading in (("行く", "いく"), ("辿り着く", "たどりつく"), ("見る", "みる"), ("美しい", "うつくしい")):
+        assert words[word]["sent"] == [word] and words[word]["front_reading"] == reading, words[word]
+    assert words["行く"]["surface"] == "行ける"                     # the line's own spelling, for Anki Miner's search
+
+
+def test_a_chinese_word_carries_no_reading():
+    read = cues.read(NIGHT_MARKET, "zh")
+    chosen = pick.pick(read, cues.tokens(read, "zh", script="s"), "zh", _known("我", "的", "是"), mode="unknown")
+    assert chosen["words"] and all(w["front_reading"] is None for w in chosen["words"])
+
+
+def test_a_set_phrase_reads_as_the_dictionary_reads_it():
+    loaded = phrases.load()
+    if loaded is None:
+        pytest.skip("no phrase data in this build")
+    read, tokens = _read(PHRASES)
+    phrase = loaded.entry(loaded.of_word("腑に落ちる"))
+    (word,) = pick.pick(read, tokens, "ja", _known(), mode="list", listed={(phrase.word, phrase.reading): 0},
+                        phrase_set=loaded)["words"]
+    assert word["front_reading"] == "ふにおちる" and word["surface"].startswith("腑に落ち")
+
+
 def test_the_homograph_guard_keeps_word_out_when_the_episode_writes_it(tmp_path):
     # いい's Word is 良い; with 良い written in the episode, sending 良い could make that line's card instead
     path = _srt(tmp_path, [(1, 3, "それはいいね。"), (4, 6, "天気が良い日は散歩する。")])

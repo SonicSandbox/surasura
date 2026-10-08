@@ -467,15 +467,67 @@ def test_a_cached_row_follows_its_untyped_titles_guess_when_another_piece_change
     """A title nobody typed is guessed from all its files (L3.1's rule), so a new file in another piece of the same
     title can move the type of a piece the cache would otherwise hand back unchanged: piece A's own items and work are
     the same objects in both builds, yet its row must say *Book* once B's four EPUBs make the title one (the reviews'
-    2026-10-08 finding: a cached row kept the old type)."""
+    2026-10-08 finding: a cached row kept the old type). Both builds share one `cards` dict, so nothing global moves and
+    the cache's fast path is the one that must notice the new guess."""
     work(8, "月明かりの航路", media=None)
     items = items_of([("now", 8, 1, [f"月明かりの航路 0{k} 夜の港.srt" for k in range(1, 3)], {}),
                       ("now", 8, 2, ["月明かりの航路 03 霧の海峡.srt"], {})])
     cache = vr.RowCache()
-    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    # one non-empty dict for both builds (`build` swaps an empty `{}` for a new one; `same_global` needs the same), and
+    # the mine line at 0 keeps the set above it empty in both builds (the new files would otherwise change it)
+    shared_cards, no_line = {99: 0}, {"mine_line": 0}
+    first = vr.build(items, WORKS, no_line, numbers=(1, {}), cards=shared_cards, cache=cache)
     assert first.rows[0].media != "book"                  # two subtitles and one more: the title reads as video
     for k in range(4):                                    # piece B gains four EPUBs: the title's guess becomes a book
         items[4 + k] = dict(items[3], id=4 + k, source_type="epub", rel_path=f"HighPriority/月明かりの航路 04-{k} 章.epub",
                             title=f"月明かりの航路 04-{k} 章.epub", ord=4096.0 + 1024.0 * k)
-    second = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    second = vr.build(items, WORKS, no_line, numbers=(1, {}), cards=shared_cards, cache=cache)
+    assert cache.same_global                              # the fast path is the one under test, not a rebuild by accident
     assert second.rows[0].media == "book"                 # A's row is rebuilt, not the cached one with the old type
+
+
+def test_an_untyped_titles_file_types_are_counted_once_and_kept_between_builds(monkeypatch):
+    """Review C-6: the title's guess counts each file's type once, not on every window refresh. A build over the same
+    rows counts none again (the reader's RowCache keeps the counts), and replacing one row's dict counts only that row,
+    so a refresh stays cheap on a library of thousands of files while the guess stays right (both pieces are books)."""
+    real_kind = vr._kind
+    calls = []
+
+    def spy(item):
+        calls.append(item)
+        return real_kind(item)
+
+    monkeypatch.setattr(vr, "_kind", spy)
+    work(9, "潮風の旅日記", media=None)
+    items = items_of([("now", 9, 10, ["潮風の旅日記 上.epub", "潮風の旅日記 中.epub"],
+                       {0: {"source_type": "epub"}, 1: {"source_type": "epub"}}),
+                      ("now", 9, 11, ["潮風の旅日記 下.epub"], {0: {"source_type": "epub"}})])
+    cache = vr.RowCache()
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert len(calls) == 3                                # the first build counts each of the three files once
+    assert {r.media for r in first.rows} == {"book"}
+    calls.clear()
+    second = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert calls == []                                    # nothing changed: no file is counted again
+    assert {r.media for r in second.rows} == {"book"}
+    items[2] = dict(items[2])                             # the feed replaces one row's dict (same content)
+    calls.clear()
+    third = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert len(calls) == 1 and calls[0] is items[2]       # only the replaced row is counted again
+    assert {r.media for r in third.rows} == {"book"}
+
+
+def test_an_unstamped_file_is_counted_by_its_extension_as_the_store_does():
+    """IK-29: a file nobody stamped (source_type None) is counted by its extension, as the store counts it. A .srt under
+    a title with an AniList id reads as anime, a .txt reads as text (Open), and a piece whose work is not on the list
+    reads its own files the same way. Without this an unstamped file counts as no kind at all and shows as video."""
+    work(9, "月明かりの航路の続き", media=None, anilist=77)
+    work(10, "港町の朝市メモ", media=None)
+    items = items_of([("now", 9, 9, ["月明かりの航路の続き 01 夜明け.srt", "月明かりの航路の続き 02 潮騒.srt"],
+                       {k: {"source_type": None} for k in range(2)}),
+                      ("now", 10, 10, ["港町の朝市メモ 01 魚河岸.txt"], {0: {"source_type": None}}),
+                      ("now", 99, 11, ["雪解けの便り 01 春風.txt"], {0: {"source_type": None}})])
+    rows = {r.piece_id: r for r in vr.build(items, WORKS, {}).rows}
+    assert rows[9].media == "anime"                       # a title nobody typed: its .srt files and its id
+    assert rows[10].media == "text" and rows[10].verb == "Open"
+    assert rows[11].media == "text"                       # no work on the list: this piece's own .txt file

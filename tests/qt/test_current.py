@@ -760,7 +760,7 @@ def test_the_hover_warm_stops_once_its_episodes_would_push_out_what_it_drew(seed
     """Bench 9 follow-up: the hover warm paints episodes ahead only within half the episodes' cache. Past that, each
     one drawn would evict one drawn before, call after call, so the warm must stop (return False) within a few calls,
     and the episodes' cache stays inside its cap."""
-    monkeypatch.setitem(rows.SPRITE_MB, "ep", 1)              # 1 MB: half of it is the warm's budget
+    monkeypatch.setitem(rows.SPRITE_MB, "ep", 0.25)          # 0.25 MB: half of it (128 KB) is less than two episodes
     seed, win = seeded(files=2000)
     lst = current(win)
     d = lst.delegate
@@ -769,5 +769,121 @@ def test_the_hover_warm_stops_once_its_episodes_would_push_out_what_it_drew(seed
     calls = 0
     while calls < 8 and d.warm_episodes(index, 1.0, 1 << 20):   # a large room: only the budget can stop it
         calls += 1
-    assert calls < 8, ("the warm drew on every call: each episode evicts the one before", d._bytes["ep"])
-    assert d._bytes["ep"] <= 1024 * 1024
+    assert calls <= 2, ("the warm drew past its budget: without it all 6+ episodes would be drawn", calls)
+    assert d._bytes["ep"] <= 0.25 * 1024 * 1024
+
+
+def test_a_hidden_list_keeps_the_screen_it_was_scrolled_to_not_its_top(seeded):
+    """Review C-1: a list left scrolled several screens down keeps that screen while it is hidden, not its top. Warmed
+    from the top instead, the screen the learner left would be drawn afresh on the way back to it."""
+    seed, win = seeded(files=2000)
+    fin = win.page_widgets["finished"].list
+    win.show_tab("finished")
+    QApplication.processEvents()
+    fin.verticalScrollBar().setValue(3 * fin.viewport().height())
+    fin.viewport().repaint()
+    assert fin.verticalScrollBar().value() >= 2 * fin.viewport().height()   # really scrolled, not left at the top
+    assert wait_until(lambda: not fin._warm.isActive(), 10)
+    top = fin.indexAt(QPoint(4, 1))
+    assert top.isValid()
+    top_key = fin.model().entries[top.row()][1].key
+    win.show_tab("current")                                                  # Finished is hidden now
+    assert wait_until(lambda: not fin._warm.isActive(), 10)                  # its hidden warm has run its course
+    assert any(k[1] == top_key for k in fin.delegate._sprites["row"])        # the row at its scroll place is kept
+    renders = fin.delegate.renders
+    win.show_tab("finished")
+    QApplication.processEvents()
+    fin.viewport().repaint()
+    assert fin.delegate.paints > 0
+    assert fin.delegate.renders == renders                                   # switching back draws no row afresh
+
+
+def test_a_stale_hover_warms_nothing_while_the_list_is_still_moving_and_warms_once_it_rests(seeded, monkeypatch):
+    """Review C-4: a wheel scroll moves no pointer, so the row a hover names can be a screen away from the pointer. While
+    the list is still moving, that hover must paint nothing: a warm there is work the learner never sees, competing with
+    the scroll. It waits (`_hover_warm` re-arms) and warms once the list has rested."""
+    monkeypatch.setattr(rows, "WARM_IDLE_MS", 1000)     # a wide margin: the wait must be real, not a race
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    i = next(i for i, e in enumerate(lst.model().entries)
+             if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
+    row = lst.model().entries[i][1]
+    ids = {(ep.id, False) for ep in row.episodes}
+    before = lst.delegate.warmed
+    lst._hover = i
+    lst._rest()                                          # the list has just moved
+    lst._warm_hovered()                                  # at once: still moving, so nothing is painted
+    assert lst.delegate.warmed == before
+    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])
+    assert lst._hover_warm.isActive()                    # re-armed for when the list rests
+    assert wait_until(lambda: any(k[1] in ids for k in lst.delegate._sprites["ep"]), 10)
+
+
+def test_a_user_scroll_step_lands_on_a_whole_device_pixel_so_the_drawn_rows_move(seeded, monkeypatch):
+    """Review C-2: a step that isn't a whole device pixel (a drag, a notch, an arrow) makes Qt repaint the whole list
+    instead of moving the pixels already drawn (1, 7, 13 px at 150 % painted 514 px). The step is snapped away from
+    where it was to a multiple of the ratio's whole step, so a learner's scroll stays smooth at every text scale."""
+    from PyQt6.QtWidgets import QAbstractSlider
+
+    assert [rows.whole_step(d) for d in (1.0, 1.25, 1.5, 1.75, 2.0, 2.5)] == [1, 4, 2, 4, 1, 2]
+
+    seed, win = seeded(files=2000)
+    bar = current(win).verticalScrollBar()
+    monkeypatch.setattr(rows, "whole_step", lambda dpr: 4)
+    bar.setSingleStep(7)
+    bar.setValue(400)
+    bar.triggerAction(QAbstractSlider.SliderAction.SliderSingleStepAdd)
+    assert bar.value() == 408                                  # 407 snapped up to the next multiple of 4
+    bar.setValue(400)
+    bar.triggerAction(QAbstractSlider.SliderAction.SliderSingleStepSub)
+    assert bar.value() == 392                                  # 393 snapped down to the multiple below
+
+
+def test_a_list_at_rest_lets_go_of_pixmaps_of_another_screen_ratio(seeded):
+    """Review C-5: a row pixmap painted at another screen ratio (a window dragged to a monitor at another scale) can
+    never be drawn again on this screen, so a list at rest must let it go, with its bytes counted out. Kept, it would
+    hold memory the screen can't use, and the byte count would drift from what is really held."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    d = lst.delegate
+    assert d._sprites["row"], "the first screen should have painted rows to test with"
+    original = next(k for k in d._sprites["row"] if k[4] == 1.0 and k[5] == style.current())
+    payload, pix = d._sprites["row"][original]
+    other = original[:4] + (2.0,) + original[5:]              # the same row, painted for a 200 % screen
+    d._sprites["row"][other] = (payload, pix)
+    d._bytes["row"] += rows._size(pix)
+    d.keep_only(lst.model().entries, 1.0, original[2])
+    assert other not in d._sprites["row"], "a pixmap of another screen ratio is kept at rest"
+    assert original in d._sprites["row"], "the pixmap for this screen was let go"
+    assert d._bytes["row"] == sum(rows._size(v[1]) for v in d._sprites["row"].values())
+
+
+def test_a_stale_hover_scrolled_off_screen_warms_no_episodes_once_the_list_rests(seeded):
+    """Review C-4: a wheel scroll moves no pointer, so the hover can still name a row the list has scrolled past. Nobody
+    sees that row's episodes, and painting them would only push out what is on screen, so a stale hover off screen
+    warms nothing once the list rests."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    bar = lst.verticalScrollBar()
+    vp = lst.viewport()
+    model = lst.model()
+    i = next(i for i, e in enumerate(model.entries)
+             if e[0] == rows.ROW and len(e[1].episodes) >= 2 and e[1].key != model.open_key)
+    ids = {(ep.id, False) for ep in model.entries[i][1].episodes}
+    index = model.index(i, 0)
+    bar.setValue(bar.value() + lst.visualRect(index).top())             # the row at the top of the screen...
+    bar.setValue(bar.value() + 2 * vp.height())                         # ...then scrolled well past it
+    for _ in range(5):
+        QApplication.processEvents()
+    assert not lst.visualRect(index).intersects(vp.rect())              # precondition: the row is off screen
+    assert wait_until(lambda: not lst._warm.isActive())                 # the list's own warm has run out
+    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])    # nothing of this row painted so far
+    before = lst.delegate.warmed
+    lst._hover = i                                                      # the pointer's hover, left behind by the wheel
+    lst._moved = 0.0                                                    # the list rested long ago
+    lst._warm_hovered()
+    assert lst.delegate.warmed == before
+    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])

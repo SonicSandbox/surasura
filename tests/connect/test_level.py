@@ -56,7 +56,9 @@ def _level_jobs():
 
 def test_a_raise_mines_only_the_new_words_of_mined_episodes_top_first_one_card_per_word():
     (a, fa), (b, fb), (d, fd) = _line()
-    _mine(a, d)                                   # b is in the line but not mined yet
+    _mine(a, d)                                   # b is in the line but not mined yet: its job waits
+    with Ledger() as ledger:
+        ledger.queue("ja", b, "user", None)
     files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
     assert _check(BEFORE, "run-1", files)["first"] is True          # the first look records, mines nothing
     assert _level_jobs() == []
@@ -69,6 +71,17 @@ def test_a_raise_mines_only_the_new_words_of_mined_episodes_top_first_one_card_p
     assert all(j["state"] == "queued" and j["source"] == "level" for j in jobs.values())
     with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "a moved list owes a re-sort"
+
+
+def test_an_unmined_episode_with_no_job_takes_no_word_from_one_below():
+    """An episode in the line that Connect will never mine as it stands (placed before Connect was on: no job) holds
+    no word back: the mined one below it gets the word."""
+    (a, fa), (b, fb), (d, fd) = _line()
+    _mine(a, d)
+    files = {fa: [], fb: ["老婆"], fd: ["老婆"]}
+    _check(BEFORE, "run-1", files)
+    assert _check(RAISED, "run-2", files)["queued"] == [d]
+    assert [j["words"] for j in _level_jobs()] == [[("老婆", "ロウバ")]]
 
 
 def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():

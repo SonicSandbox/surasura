@@ -159,8 +159,9 @@ def _anki_profile(url, answered, record, keep, use_open):
                   f'Switch Anki to "{mine}", or have Connect use "{open_now}" from now on'), open_now
 
 
-def _ankiweb():
-    """E4: what Surasura's own syncs found (the sync rule's state), and the note on Anki's own sync on close."""
+def _ankiweb(record=None):
+    """E4: what Surasura's own syncs found (the sync rule's state), and the note on Anki's own sync on close; E6:
+    Connect's sync failed three sync points in a row (`anki_session.failing`, counted in the setup record)."""
     note = ("Anki sends Surasura's new order to AnkiWeb when it closes if its Preferences → Syncing → \"Synchronize "
             "automatically on profile open/close\" is on (Surasura can't see that setting).")
     try:
@@ -175,6 +176,11 @@ def _ankiweb():
     if answer == "full-sync":
         return _check("ankiweb", NEEDS_YOU, "AnkiWeb wants a full sync, which only you can choose.",
                       "In Anki: click Sync and choose", blocks=False)
+    from app.connect import anki_session
+    if anki_session.failing(record):
+        return _check("ankiweb", NEEDS_YOU, "Anki couldn't sync with AnkiWeb the last three times Surasura asked, so "
+                      "your phone may be missing Surasura's cards and order.",
+                      "In Anki: click Sync and see what it says", blocks=False)
     if answer == "failed":
         return _check("ankiweb", OK, "The last sync with AnkiWeb failed; Surasura tries again when the next one is "
                       "due. " + note, blocks=False)
@@ -358,7 +364,7 @@ def checks(settings, language, keep=None, use_open_profile=False):
     url = anki_connect.address(settings)
     anki, answered = _anki(url, bool(settings.get("connect_enabled") and settings.get("connect_open_anki")))
     profile, open_now = _anki_profile(url, answered, record, keep, use_open_profile)
-    out = [anki, profile, _ankiweb(), _first_known_sync(settings, language)]
+    out = [anki, profile, _ankiweb(record), _first_known_sync(settings, language)]
     miner, found = _anki_miner(settings, language, answered)
     out += miner + _modules() + _open_anki(settings)
     written = False

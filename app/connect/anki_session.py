@@ -14,6 +14,10 @@ its one state file per user — so a session never syncs twice, whichever Surasu
   session, and a pending S3 sync is never sent after it.
 - **S3:** `after_write` after Connect's writes (`front_changed`: a write that changed tomorrow's cards starts the
   wait; mining lower down doesn't); `settle` — a headless process waits for its pending sync before it exits.
+- **E6, a sync that keeps failing:** each of Connect's sync points that asked AnkiWeb counts in the setup record
+  (`sync_failures`, Connect's own: the rule's state stays E3.1's) — a failed sync adds one, any other answer starts
+  again; three in a row, and the setup checks' AnkiWeb line is *Needs you* (`setup._ankiweb`). Fewer are a status line,
+  retried at the next sync point.
 - ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is the one caller of `open_anki.start`,
   at the window's start only, never after mining and never from Connect, hato or a command-line verb.
 
@@ -30,6 +34,7 @@ SETTLE_MAX_DELAY_S = 10 * 60    # … nor a delay longer than this: a longer one
                                 # that looks, or to Anki's own sync on close (S2)
 OPENING_EVERY_S = 5             # after Open Anki for me started Anki: a look this often …
 OPENING_WAIT_S = 120            # … for up to this long
+FAILS_TO_ASK = 3                # 06-edges E6: three sync points in a row whose sync failed → Needs you
 
 
 def on(settings):
@@ -64,6 +69,34 @@ def look(url):
     return "open"
 
 
+def counted(answer):
+    """06-edges E6: one of Connect's sync points and what its sync answered, counted in the setup record
+    (`sync_failures`): `failed: …` adds one; `synced`, `not-signed-in` or `full-sync` (AnkiWeb answered: the last two
+    are named by the setup checks themselves) starts again; None or `anki-closed` (no sync was asked) counts nothing.
+    -> the answer, as it was. Never raises: a count lost costs only a later *Needs you*."""
+    if not isinstance(answer, str) or answer == "anki-closed":
+        return answer
+    try:
+        from app.connect import setup
+        record = setup.read_record()
+        before = record.get("sync_failures") or 0
+        failures = (before if isinstance(before, int) else 0) + 1 if answer.startswith("failed") else 0
+        if failures != before:
+            setup.write_record(dict(record, sync_failures=failures))
+    except Exception:
+        pass
+    return answer
+
+
+def failing(record=None):
+    """E6: has Connect's sync failed FAILS_TO_ASK sync points in a row?"""
+    if record is None:
+        from app.connect import setup
+        record = setup.read_record()
+    count = (record or {}).get("sync_failures")
+    return isinstance(count, int) and not isinstance(count, bool) and count >= FAILS_TO_ASK
+
+
 def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
     """S1 now: the session's sync when this starts a session -> what it answered (`synced` · `not-signed-in` ·
     `full-sync` · `failed: …`), or None (Connect off, no session starting, Anki closed or busy, a review in progress —
@@ -74,7 +107,7 @@ def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
     from app import anki_connect, anki_sync_rule
     if look(url) != "open":
         return None
-    return anki_sync_rule.before_write(url, wait=wait, cancel=cancel)
+    return counted(anki_sync_rule.before_write(url, wait=wait, cancel=cancel))
 
 
 def waiting(url, settings):
@@ -159,7 +192,7 @@ def settle(url, settings, cancel=None, sleep=time.sleep, clock=time.time):
     while True:
         answer, next_look = anki_sync_rule.sync_if_due(url, settings, cancel=cancel)
         if next_look is None:
-            return answer
+            return counted(answer)
         if (cancel is not None and cancel.is_set()) or clock() >= limit:
             return None
         sleep(max(0.2, min(next_look - clock(), 5.0, limit - clock())))

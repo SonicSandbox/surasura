@@ -1,5 +1,6 @@
 """When Surasura asks Anki to sync with AnkiWeb — the sync rule (E1.1 04 §3, S1–S4; Sonic's Q4-4 and G1.5-7; one rule
-with Connect, P1.5's N11). Only while the fast re-plan's preview is on: off, nothing here runs and no sync is asked.
+with Connect, P1.5's N11). Only while the fast re-plan's preview is on, or Connect's: off, nothing here runs and no
+sync is asked.
 
   S1 · a session's first write — before Surasura's first Anki write of a session, one sync, so reviews made on another
        device arrive first: a position written over a card studied on the phone would otherwise win the next sync

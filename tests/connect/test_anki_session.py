@@ -373,3 +373,105 @@ def test_anki_that_never_answers_is_waited_for_two_minutes_then_left(anki, clock
                                   clock=clock.time)
     assert done == {"anki": "closed", "opened": True, "sync": None}
     assert anki_session.OPENING_WAIT_S <= clock.at - start <= anki_session.OPENING_WAIT_S + anki_session.OPENING_EVERY_S
+
+
+# --------------------------------------------------------------------------- #
+# E6: a sync that keeps failing (06-edges: Needs you only after three sync points in a row)
+# --------------------------------------------------------------------------- #
+def _ankiweb_check(monkeypatch):
+    """The setup check as it reads now, without asking Anki (the switch is on only while the checks are read: a
+    session's begin is itself off under it)."""
+    monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")
+    try:
+        return next(c for c in setup.checks(ON, "ja")["checks"] if c["id"] == "ankiweb")
+    finally:
+        monkeypatch.delenv("SURASURA_NO_ANKI_SYNC")
+
+
+def test_three_failed_sync_points_in_a_row_need_you(anki, clock, monkeypatch):
+    # Why: one or two failed syncs are only a status line; the third in a row is what asks you to look (E6)
+    anki.fail = True
+    for point in (1, 2, 3):
+        if point > 1:
+            clock.at += anki_sync_rule.S1_RETRY_S + 1
+        assert anki_session.begin(URL, ON).startswith("failed")
+        if point < 3:
+            assert not anki_session.failing(), f"not asked after {point} failed sync point(s)"
+            assert _ankiweb_check(monkeypatch)["state"] == "ok"
+    assert anki_session.failing()
+    assert setup.read_record()["sync_failures"] == 3
+    check = _ankiweb_check(monkeypatch)
+    assert check["state"] == "needs-you" and check["blocks"] is False and "Sync" in check["do"]
+
+
+def test_a_sync_that_works_starts_the_count_again(anki, clock, monkeypatch):
+    # Why: "three in a row" — a sync AnkiWeb answers in between resets the count, so a flaky week never asks you (E6)
+    anki.fail = True
+    anki_session.begin(URL, ON)
+    clock.at += anki_sync_rule.S1_RETRY_S + 1
+    anki_session.begin(URL, ON)
+    assert setup.read_record()["sync_failures"] == 2
+
+    anki.fail = False
+    clock.at += anki_sync_rule.S1_RETRY_S + 1
+    assert anki_session.begin(URL, ON) == "synced"
+    assert setup.read_record()["sync_failures"] == 0
+
+    # a new session (an hour with no Surasura write) — the count has to build up from nothing again
+    clock.at += anki_sync_rule.SESSION_GAP_S + 1
+    anki.fail = True
+    assert anki_session.begin(URL, ON).startswith("failed")
+    clock.at += anki_sync_rule.S1_RETRY_S + 1
+    assert anki_session.begin(URL, ON).startswith("failed")
+    assert not anki_session.failing() and setup.read_record()["sync_failures"] == 2
+    assert _ankiweb_check(monkeypatch)["state"] == "ok"
+    clock.at += anki_sync_rule.S1_RETRY_S + 1
+    assert anki_session.begin(URL, ON).startswith("failed")
+    assert anki_session.failing() and setup.read_record()["sync_failures"] == 3
+
+
+def test_counted_counts_only_answers_from_ankiweb():
+    # Why: only a sync AnkiWeb answered counts; a closed Anki or no sync at all counts nothing and changes nothing (E6)
+    setup.write_record({"sync_failures": 2})
+    assert anki_session.counted(None) is None
+    assert anki_session.counted("anki-closed") == "anki-closed"
+    assert setup.read_record()["sync_failures"] == 2
+
+    assert anki_session.counted("failed: x") == "failed: x"
+    assert setup.read_record()["sync_failures"] == 3
+
+    for answer in ("not-signed-in", "synced", "full-sync"):
+        setup.write_record({"sync_failures": 2})
+        assert anki_session.counted(answer) == answer
+        assert setup.read_record()["sync_failures"] == 0, f"{answer!r} starts the count again"
+
+
+def test_failing_reads_only_a_whole_number():
+    # Why: the count is ours and an int; a bool or a string in the record is not three failures (E6)
+    assert anki_session.failing({"sync_failures": 3}) is True
+    assert anki_session.failing({"sync_failures": 2}) is False
+    assert anki_session.failing({}) is False
+    assert anki_session.failing({"sync_failures": True}) is False
+    assert anki_session.failing({"sync_failures": "3"}) is False
+
+
+def test_connect_off_counts_nothing(anki, clock):
+    # Why: with Connect's preview off nothing is asked of Anki, so no failure is ever counted (E6)
+    off = dict(ON, connect_enabled=False)
+    anki.fail = True
+    for point in (1, 2, 3):
+        if point > 1:
+            clock.at += anki_sync_rule.S1_RETRY_S + 1
+        assert anki_session.begin(URL, off) is None
+    assert (setup.read_record().get("sync_failures") or 0) < 1
+    assert anki.actions == []
+
+
+def test_a_pending_sync_that_fails_counts_as_a_sync_point_too(anki, clock):
+    # Why: S3's sync, sent by `settle` before a headless process exits, is one of Connect's sync points as much as a
+    # session's start (E6: "three sync points in a row")
+    anki_session.begin(URL, ON)
+    anki_session.after_write(ON, True)
+    anki.fail = True
+    assert anki_session.settle(URL, ON, sleep=clock.sleep, clock=clock.time).startswith("failed")
+    assert setup.read_record()["sync_failures"] == 1

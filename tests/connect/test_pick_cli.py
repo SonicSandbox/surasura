@@ -61,6 +61,28 @@ def test_with_the_video_the_run_file_is_written_from_anki_miners_own_settings(li
     assert "mine" not in fake_miner.commands()          # pick writes the run file; it never mines
 
 
+def test_on_anki_miner_37_the_run_file_has_one_entry_a_word_and_needs_no_surasura_profile(library, fake_miner):
+    # P1.3-AM37: every named word whitelisted (Z-1) -> your active profile, by its id; a word made from its line
+    # (Z-2) -> one entry a word, with the word as written (and a reading where Anki Miner may not find it); the bold
+    # in the run's config (Z-5)
+    from tests.connect.fake_anki_miner import FEATURES_37
+    subtitle, video = library
+    h.write_settings(connect_anki_miner_path=fake_miner.path)
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "default", "name": "Default", "active": True}])
+    code, lines = h.run_cli("pick", "--file", subtitle, "--video", video, "--words", "unknown", "--job", "job-37")
+    result = h.answer(lines)
+    assert code == 0 and result["run_file"], result
+    assert result["anki_miner"]["app"] == "3.7.0" and result["anki_miner"]["profile"] == "default"
+    data = json.load(open(result["run_file"], encoding="utf-8"))
+    assert data["profile"] == "default" and data["config"]["bold_target_in_sentence"] is True
+    entries = data["episodes"][0]["words"]
+    assert all(len(w["sent"]) == 1 for w in result["words"])
+    assert [e["word"] for e in entries] == [w["sent"][0] for w in result["words"]]
+    assert all(e.get("reading") == (w["front_reading"] if w["predicted_class"] else None)
+               for e, w in zip(entries, result["words"]))
+    assert "mine" not in fake_miner.commands()
+
+
 def test_pick_with_no_anki_miner_installed_still_picks_and_says_it_skipped(library, tmp_path):
     subtitle, video = library
     h.write_settings(connect_anki_miner_path=str(tmp_path / "nowhere" / "AnkiMiner.exe"))

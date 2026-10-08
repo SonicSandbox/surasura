@@ -212,6 +212,7 @@ def test_close_terminates_children_destroys_the_window_then_maintains():
     order = []
     app = MagicMock()
     app._update_job = None
+    app._replan_finishing.return_value = False      # no fast re-plan preview waiting to finish (E3.1)
     child = MagicMock()
     child.poll.return_value = None
     child.terminate.side_effect = lambda: order.append("terminate")

@@ -998,11 +998,7 @@ def _anki_miner_setup(loaded, lang, run_dir):
     name = loaded.get("connect_anki_miner_profile") or "Surasura"
     try:
         info = anki_miner.version(miner)
-        profile = anki_miner.profile_id(anki_miner.profiles(miner), name)
-        if profile is None:
-            raise anki_miner.AnkiMinerError(
-                "needs-you", f'Anki Miner has no profile called "{name}". Make it once in Anki Miner (a copy of your '
-                "profile, its whitelist on), as Surasura's Connections page shows.")
+        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
         os.makedirs(run_dir, exist_ok=True)
         mapping = fields.from_export(
             anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)
@@ -1096,14 +1092,17 @@ def pick(args):
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup
-        out["anki_miner"] = {"app": info.get("app"), "features": info.get("features") or []}
+        named = info.get("features") or []
+        out["anki_miner"] = {"app": info.get("app"), "features": named, "profile": profile}
+        for word in chosen["words"]:
+            word["sent"] = runfile.entries(word, named)         # the names the run file carries (Z-2: one a word)
         if not chosen["words"]:
             out["skipped"] = "no words to make cards from"
         else:
-            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"]),
+            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"], named),
                                       tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
-                                 run_config=runfile.config(mapping, info.get("app"), info.get("features")))
+                                 run_config=runfile.config(mapping, info.get("app"), named))
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

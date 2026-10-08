@@ -80,9 +80,13 @@ class Drill:
         if not os.path.isdir(os.path.join(self.root, "templates")):
             shutil.copytree(os.path.join(REPO, "templates"), os.path.join(self.root, "templates"))
         settings = {"target_language": "ja", "connect_enabled": True, "anki_connect_url": self.a.url,
-                    "anki_sync_decks": {"ja": ["DevTest"]}, "enable_junban": True, "junban_deck": "DevTest",
+                    "anki_sync_decks": {"ja": ["DevTest"]}, "anki_sync_fields": {"ja": ["Expression"]},
+                    "enable_junban": True, "junban_deck": "DevTest",
                     "junban_backfill_deck": "DevTest", "connect_anki_miner_path": os.path.abspath(self.a.anki_miner),
-                    "anki_sync_delay_min": 1}
+                    "anki_sync_delay_min": 1,
+                    # every word the suite's known words don't hold: the short public episode lists none (all but a
+                    # few of its words are known), so its cards are its unknown words
+                    "connect_mine_words": "unknown"}
         with open(os.path.join(self.root, "settings.json"), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False)
         from app import library_store
@@ -94,6 +98,10 @@ class Drill:
         with store:
             store.bookkeeping({"mine_line": 20}, copy_carries=True)
             library.ensure_reader(store)
+        # The person's own first "Sync now" (the known-words gate: never read behind their back), on the drill deck
+        from app import anki_sync
+        first = anki_sync.sync("ja", self.a.url, ["DevTest"], ["Expression"])
+        assert first.error is None, first.error
 
     def drop(self):
         """A hato-style drop: the subtitle copied into hato's folder (its own bytes), registered with a `timed`

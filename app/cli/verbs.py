@@ -419,6 +419,31 @@ def known(args):
 
 
 # --------------------------------------------------------------------------- #
+# Connect's Anki session, for the verbs that read or write Anki (P2.3 row 2.3.5)
+# --------------------------------------------------------------------------- #
+def _session(loaded):
+    """`app/connect/anki_session` while Connect's preview is on (✅ Q4-1, Q4-4: the session's one sync before Connect
+    reads what you studied or writes Anki), else None — off, nothing of Connect's is imported and every request is as
+    before; never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
+    if not (loaded or {}).get("connect_enabled") or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return None
+    from app.connect import anki_session
+    return anki_session
+
+
+def _sync_pending(loaded, due):
+    """A writer verb left the rule's S3 sync pending (`due`, its wall time): kick Connect, whose run sends it before it
+    exits (`connect` → `anki_session.settle`), so this verb never waits a minute for it."""
+    if due is None:
+        return
+    try:
+        from app.connect import kick
+        kick.kick(loaded)
+    except Exception:                   # Connect not started: the next Surasura program that looks sends it
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # known-sync
 # --------------------------------------------------------------------------- #
 def known_sync_args(parser):
@@ -429,7 +454,8 @@ def known_sync_args(parser):
 
 def known_sync(args):
     """New known words from Anki into KnownWord.json (append-only), and the decks' new cards into the backlog — the
-    window's automatic sync, with its gates (`anki_sync.may_sync`), under the `known-words-<lang>` lock."""
+    window's automatic sync, with its gates (`anki_sync.may_sync`), under the `known-words-<lang>` lock. Connect's
+    preview on: its session's sync first, so the phone's reviews are in before what you studied is read (P2.3)."""
     from app import anki_connect, anki_sync
     loaded = settings()
     lang = language(args, loaded)
@@ -445,6 +471,9 @@ def known_sync(args):
     decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
     fields = list((loaded.get("anki_sync_fields") or {}).get(lang) or [])
     url = anki_connect.address(loaded)
+    session = _session(loaded)
+    if session is not None:
+        session.begin(url, loaded)      # S1, eagerly (Q4-1's fresh state): before the known-words lock is taken
     with contract.take_lock(anki_sync.known_lock_name(lang), "surasura-cli known-sync", wait=args.wait):
         try:
             anki_sync._read_known_file(lang)
@@ -684,8 +713,11 @@ def _junban_auto(args, lang, junban_settings, auto, job=None):
         time.sleep(locks.POLL)
     argv = run_args.analyzer_args(junban_settings, lang, headless=True)
     # Connect's preview (P1.4 row 1.4.2): the run keeps a snapshot of its own, never the window's Restore point.
-    from modules.junban import connect, undo
+    from modules.junban import connect, reposition, undo
     run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
+    session, url = _session(junban_settings), reposition._url(junban_settings)
+    if session is not None:
+        session.begin(url, junban_settings)     # S1 before the run reads Anki (P2.3): the phone's reviews come first
     done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
                         run_id=run_id, job=job)
     outcome, report = done["outcome"], done.get("report") or {}
@@ -708,6 +740,12 @@ def _junban_auto(args, lang, junban_settings, auto, job=None):
     stats = report.get("stats") or {}
     written = report.get("written") or []
     snapshot = report.get("snapshot")
+    if session is not None and written:
+        # S3's clock: a spaced run (a job) told the rule itself; a dense one is read here, by the re-plan's own test
+        from app import anki_sync_rule
+        due = (anki_sync_rule.due_at(junban_settings) if job is not None else session.after_write(
+            junban_settings, session.front_changed(report, session.per_day(url, junban_settings.get("junban_deck")))))
+        _sync_pending(junban_settings, due)
     if run_id is not None:
         undo_id = run_id if snapshot else None
     else:
@@ -850,6 +888,9 @@ def backfill(args):
     url = filling._url(fill_settings)
     if not anki_connect.probe(url).get("ok"):
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
+    anki_session = None if args.dry_run else _session(fill_settings)
+    if anki_session is not None:
+        anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
     try:
         if anki_connect.invoke("guiReviewActive", url, timeout=5) is True:
             raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
@@ -878,6 +919,9 @@ def backfill(args):
         raise CliError("failed", f"Nothing was filled: {problem}")
     if args.dry_run:
         return dict(out, filled=report.get("planned", 0), skipped=report.get("skipped") or {}, dry_run=True)
+    if anki_session is not None and report.get("filled"):
+        # The session's last write; fields never change tomorrow's cards (an S3 already pending still kicks Connect)
+        _sync_pending(fill_settings, anki_session.after_write(fill_settings, False))
     return dict(out, filled=len(report.get("filled") or []), skipped=report.get("skipped") or {},
                 undo=report.get("undo"))
 

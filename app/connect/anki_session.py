@@ -94,7 +94,7 @@ def failing(record=None):
         from app.connect import setup
         record = setup.read_record()
     count = (record or {}).get("sync_failures")
-    return isinstance(count, int) and not isinstance(count, bool) and count >= FAILS_TO_ASK
+    return isinstance(count, int) and count >= FAILS_TO_ASK
 
 
 def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):

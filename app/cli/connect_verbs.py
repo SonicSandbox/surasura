@@ -407,6 +407,13 @@ def connect(args):
                 mine["missed"] += got["missed"]
         if not any(_pending(lang) for lang in languages):
             break
+    # A sync a writer verb left pending (S3) is sent before Connect exits, never once Anki has closed (P2.3; E1.1 04
+    # §3: a pending sync never dies with its process). Outside Connect's lock: a kick meanwhile starts a reader.
+    from app.cli.verbs import _session
+    session = _session(loaded)
+    if session is not None:
+        from app import anki_connect
+        session.settle(anki_connect.address(loaded), loaded)
     return {"languages": out, "rounds": rounds}
 
 

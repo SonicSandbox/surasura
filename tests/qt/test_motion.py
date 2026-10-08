@@ -760,6 +760,44 @@ def test_a_lifted_opening_ends_when_its_page_goes_or_its_window_moves(clock, sta
     assert motion.opening_of(card) is None and card.isVisible()
 
 
+def test_a_minimised_window_opens_its_overlay_at_once_with_no_lift_and_no_ghost(clock, stage, lifted, monkeypatch):
+    # why (M2.1-A1): a minimised window has nothing on screen to lift or to ghost over; the overlay is shown as asked
+    # and the opening is over, at once, as its last piece runs
+    started = []                                                 # records the opening (it has ended by open()'s return)
+    real_start = motion.OverlayOpening.start
+
+    def recording_start(self):
+        started.append(self)
+        return real_start(self)
+
+    monkeypatch.setattr(motion.OverlayOpening, "start", recording_start)
+    stage.showMinimized()
+    QApplication.processEvents()
+    if not stage.isMinimized():
+        stage.setWindowState(Qt.WindowState.WindowMinimized)
+    assert stage.isMinimized()
+    card = Card(stage, "up")
+    card.open()
+    assert len(started) == 1
+    opening = started[0]
+    assert opening.ended and motion.opening_of(card) is None
+    assert opening.lift is None and opening.ghost is None
+    assert not card.isHidden()
+
+
+def test_a_window_not_in_front_opens_with_the_painted_ghost_not_a_lift(clock, stage, lifted, monkeypatch):
+    # why (M2.1-A2): a lift is a window of its own and would show over another program's window, so a window behind
+    # another program's is opened with the painted stand-in even though lifting is chosen; it still ends with the overlay
+    monkeypatch.setattr(motion, "_in_front", lambda top: False)
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    assert motion.opening_of(card) is opening
+    assert opening.ghost is not None and opening.lift is None
+    clock.advance(400)
+    assert card.isVisible() and motion.opening_of(card) is None
+
+
 def test_a_painted_opening_survives_a_window_move_and_a_resize_lands_it(clock, stage):
     # why: a painted opening's ghost is a child of the window, so a move carries it along and the picture still fits:
     # only a resize (the picture no longer fits) lands it. The lifted move lands at once (the test above).
@@ -799,6 +837,20 @@ def test_a_normal_end_keeps_the_lift_one_frame_after_the_overlay(clock, stage, l
     clock.advance(400)
     assert card.isVisible() and lift.isVisible()
     assert wait_until(lambda: not lift.isVisible(), 2)
+
+
+def test_an_overlay_hidden_in_the_lifts_last_frame_gives_the_lift_back_at_once(clock, stage, lifted):
+    # why (M2.1-A3): a normal end keeps the lift one frame; if the overlay is hidden in that frame (Esc closing it), the
+    # lift is given back right then, not a frame later. Checked with no clock advance and no wait: nothing may pass time.
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    lift = opening.lift                                          # read before the end: the opening drops its lift at once
+    assert lift is not None
+    clock.advance(400)
+    assert card.isVisible() and lift.isVisible()                 # the lift is still up in its one frame (the contrast)
+    card.hide()
+    assert not lift.isVisible() and lift.opening is None         # given back in the same call, no frame to wait for
 
 
 def test_a_lifted_opening_hands_its_window_to_the_next_opening(clock, stage, lifted):

@@ -206,8 +206,10 @@ def run_screens(scale, out_dir):
             sub = rgb_array(page.grab())
             problems = []
             area = sub.shape[0] * sub.shape[1]
-            if count(sub, c["bg"], TOL) < 0.3 * area:
-                problems.append(f"{screen}: the page's ground is under 30 %")
+            if count(sub, c["bg"], TOL) + count(sub, c["surface"], TOL) < 0.3 * area:
+                problems.append(f"{screen}: the page's ground (bg, an open row's surface) is under 30 %")
+            if count(sub, "#000000", 0) > 0.01 * area:
+                problems.append(f"{screen}: black (unpainted) areas")
             for o in others:
                 if o != c["bg"] and count(sub, o, 1) > 0.005 * area:
                     problems.append(f"{screen}: another theme's ground")
@@ -247,6 +249,8 @@ def run_screens(scale, out_dir):
         sub = rgb_array(page.grab())
         if count(sub, theme.colours("hb")["bg"], TOL) < 0.3 * sub.shape[0] * sub.shape[1]:
             problems.append(f"{label}: the page's ground is under 30 %")
+        if count(sub, "#000000", 0) > 0.01 * sub.shape[0] * sub.shape[1]:
+            problems.append(f"{label}: black (unpainted) areas")
         if label == "read-only" and not (page.state_bar.isVisible() and page.state_bar.text()):
             problems.append("read-only: no bar saying why")
         if label == "empty" and page.list.model().entries[0][0] != rows.EMPTY:

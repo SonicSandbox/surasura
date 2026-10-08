@@ -1093,10 +1093,10 @@ class RowsView(QListView):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setMouseTracking(True)
         self.setFrameShape(QListView.Shape.NoFrame)
-        # an opaque ground: a scroll then moves the pixels already drawn and paints only the strip that came into
-        # view (a see-through viewport is repainted whole on every scroll step)
+        # an opaque ground (filled by Qt, the theme's `bg`): a scroll then moves the pixels already drawn and paints
+        # only the strip that came into view (a see-through viewport is repainted whole on every scroll step). Not
+        # WA_OpaquePaintEvent: the gaps between rows and the space under the last are Qt's to fill.
         self.viewport().setAutoFillBackground(True)
-        self.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSpacing(0)
         self.setLayoutMode(LAYOUT_MODE)

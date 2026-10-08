@@ -469,6 +469,32 @@ def test_every_end_tears_the_opening_down_a_hidden_page_an_error_a_stop(clock, s
     assert motion.opening_of(card) is None and not _filters_left(opening)
 
 
+def test_a_piece_that_raises_on_a_tests_time_is_reported_the_overlay_shown_and_the_opening_over(clock, stage, qt_errors,
+                                                                                            monkeypatch):
+    # why: on a test's time the pieces run inside open(); a piece's error must not escape open(), must reach the
+    # error hook, and must leave no opening and no app-wide filter behind, and the overlay must open again later
+    seen = []
+
+    def snapshot_that_raises(self):
+        seen.append(self)                                       # the opening, to check its filter afterwards
+        raise ValueError("a piece's bug")
+    monkeypatch.setattr(motion.OverlayOpening, "_snapshot", snapshot_that_raises)
+    card = Card(stage, "slide")
+    card.open()
+    opening = seen[0]
+    assert qt_errors and qt_errors[0][0] is ValueError
+    qt_errors.clear()
+    assert opening.ended and not opening.live                   # the opening is over
+    assert motion.opening_of(card) is None and not _filters_left(opening)
+    assert card.isVisible()                                     # shown at once, without the motion
+    monkeypatch.undo()
+    card.hide()
+    assert card.open() is not None                              # and it opens again
+    clock.advance(400)
+    assert motion.opening_of(card) is None and card.isVisible()
+    assert not qt_errors
+
+
 def test_a_finisher_whose_opening_is_over_removes_itself_and_lets_the_key_through(clock, stage, qapp):
     # why: a finisher left on the app after its opening ended would sit on every key and press of the whole app
     from PyQt6.QtCore import QEvent
@@ -733,6 +759,47 @@ def test_a_lifted_opening_ends_when_its_page_goes_or_its_window_moves(clock, sta
     assert motion.opening_of(card) is None and card.isVisible()
 
 
+def test_a_painted_opening_survives_a_window_move_and_a_resize_lands_it(clock, stage):
+    # why: a painted opening's ghost is a child of the window, so a move carries it along and the picture still fits:
+    # only a resize (the picture no longer fits) lands it. The lifted move lands at once (the test above).
+    card = Card(stage, "slide")
+    opening = card.open()
+    clock.advance(32)
+    assert opening.ghost is not None and opening.lift is None    # painted: the default when nothing is lifted
+    stage.move(stage.pos() + QPoint(30, 0))                      # the window moved under the ghost: still opening
+    QApplication.processEvents()
+    assert motion.opening_of(card) is opening and opening.live
+    stage.resize(stage.width() + 40, stage.height())             # the picture no longer fits: it lands at once
+    QApplication.processEvents()
+    assert motion.opening_of(card) is None and card.isVisible()
+
+
+def test_a_window_moved_under_a_lift_gives_the_lift_back_at_once(clock, stage, lifted):
+    # why (M2.1-H9): the lift is a window left at the old place; a move from under it lands the opening, so the lift is
+    # hidden now, not a frame later (that frame is only the no-flash wait of a normal end, checked next)
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    lift = opening.lift
+    assert lift is not None and lift.isVisible()                 # so the hidden check below can't pass on a lift never shown
+    stage.move(stage.pos() + QPoint(30, 0))
+    QApplication.processEvents()
+    assert not lift.isVisible() and lift.opening is None
+
+
+def test_a_normal_end_keeps_the_lift_one_frame_after_the_overlay(clock, stage, lifted):
+    from tests.qt.conftest import wait_until
+    # why (M2.1-H9): the overlay must paint before its lift goes, so a normal end keeps the lift visible until the next frame
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    lift = opening.lift                                          # read before the end: the opening drops its lift at once
+    assert lift is not None
+    clock.advance(400)
+    assert card.isVisible() and lift.isVisible()
+    assert wait_until(lambda: not lift.isVisible(), 2)
+
+
 def test_a_lifted_opening_hands_its_window_to_the_next_opening(clock, stage, lifted):
     from tests.qt.conftest import wait_until
     # why: making a top-level window each time costs a native window's birth; a kept one is only shown again
@@ -748,6 +815,27 @@ def test_a_lifted_opening_hands_its_window_to_the_next_opening(clock, stage, lif
     assert o2.lift is lift and lift.opening is o2 and lift.isVisible()
     clock.advance(400)
     assert card2.isVisible()
+
+
+def test_a_lift_whose_opening_has_ended_paints_nothing_until_it_is_given_back(clock, stage, lifted):
+    # why (M2.1-H4): once the opening ends its overlay is shown under the lift and may already be gone, so the lift's
+    # last frame must draw nothing; during the opening the same pixel is the picture (the contrast keeps this honest)
+    card = Card(stage, "up")
+    opening = card.open()
+    lift = opening.lift
+    centre = QPoint(opening.target_in_picture.x() + opening.widget_size.width() // 2,
+                    opening.target_in_picture.y() + opening.widget_size.height() // 2)
+
+    def alpha_at_centre():
+        pic = lift.grab().toImage()
+        return pic.pixelColor(round(centre.x() * pic.devicePixelRatio()),
+                              round(centre.y() * pic.devicePixelRatio())).alpha()
+    clock.advance(120)                                           # mid-opening: the lift shows its picture
+    assert alpha_at_centre() == 255
+    clock.advance(280)                                           # the opening ends; the lift is not given back yet
+    assert card.isVisible() and motion.opening_of(card) is None
+    assert lift.isVisible() and lift.opening is opening
+    assert alpha_at_centre() == 0
 
 
 def test_a_lift_paints_once_a_show_and_still_repaints_when_asked(clock, stage, lifted, split, monkeypatch):

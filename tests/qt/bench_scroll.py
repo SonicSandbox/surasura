@@ -194,6 +194,21 @@ def main_child(a):
             gc_log.append((info["generation"], round((time.perf_counter() - t0) * 1000, 2),
                            threading.current_thread().name, t0))
     gc.callbacks.append(on_gc)
+    # the reader's own steps (on its thread): when a GUI step runs long while one of them runs, Python's lock is the
+    # likely cause (Kura's L3.1 verifier: a worker's long read stalls the window through it)
+    reader_log = []
+
+    def timed_step(name, fn):
+        def run(*args, **kw):
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kw)
+            finally:
+                reader_log.append((name, t0, (time.perf_counter() - t0) * 1000))
+        return run
+    for name in ("_merge", "_card_counts", "_build", "_write_cache", "_sorted_tiers"):
+        if hasattr(reader, name):
+            setattr(reader, name, timed_step(name, getattr(reader, name)))
     from app.qt import rows as rows_module
     real_cover = rows_module.cover
 
@@ -325,8 +340,13 @@ def main_child(a):
             if t0 is None or t1 is None:
                 continue
             over = [ms for ms, at in hud.over if t0 <= at <= t1]
+            steps = [(ms, at) for ms, at in hud.over if t0 <= at <= t1]
+            during = [ms for ms, at in steps                # a GUI step that ended inside a reader step (or 1 ms after)
+                      if any(r0 <= at <= r0 + rms / 1000 + 0.001 for _n, r0, rms in reader_log)]
             per[name] = {"s": round(t1 - t0, 2), "over_4ms": len(over), "max_ms": max(over, default=0.0),
-                         "gc": [(g, ms, th) for g, ms, th, at in gc_log if t0 <= at <= t1 and ms > 2]}
+                         "gc": [(g, ms, th) for g, ms, th, at in gc_log if t0 <= at <= t1 and ms > 2],
+                         "over_during_reader": len(during),
+                         "reader": [(n, round(ms, 2)) for n, r0, ms in reader_log if t0 <= r0 <= t1 and ms > 2][:30]}
         result["phases"] = per
         result["gc_over_2ms"] = [(g, ms, th) for g, ms, th, _at in gc_log if ms > 2]
         result["gc_count"] = len(gc_log)

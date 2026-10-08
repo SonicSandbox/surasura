@@ -396,3 +396,22 @@ def test_a_row_cache_gives_back_the_same_rows_until_their_piece_changes():
     assert third.rows[0] is first.rows[0] and third.rows[2] is first.rows[2]
     assert third.rows[1] is not first.rows[1] and third.rows[1].n_watched == 1
     assert vr.build(items, WORKS, {}, numbers=(2, {}), cache=cache).rows[0] is not first.rows[0]   # new numbers
+
+
+def test_a_receipt_without_cards_shows_nothing_from_anki():
+    """Sonic (2026-10-07): what the window shows from a learner's Anki card is offered only while the card is there.
+    `mined_at` outlives a deleted card, so on its own it is no ✓, no mined chip and no 'the cards keep their pictures
+    and audio'."""
+    receipt = {"mined_at": "2026-10-01T00:00:00Z"}
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3),
+                       {0: receipt, 1: dict(receipt, availability="missing"), 2: receipt})])
+    row = vr.build(items, WORKS, {}, cards={}).rows[0]
+    assert all(e.status.kind != "in_anki" for e in row.episodes)
+    assert row.status.kind != "in_anki"
+    gone = row.episodes[1]
+    assert gone.missing and not gone.removed and "removed" not in gone.play_tip
+    assert row.mark is None or "deleted after mining" not in row.mark.tip
+    assert not any(chip.mined for chip in row.chips)
+    # the same three files with their cards are in Anki: the card is what counts, not the receipt
+    row = vr.build(items, WORKS, {}, cards={1: 5, 2: 7, 3: 4}).rows[0]
+    assert row.status.kind == "in_anki" and row.episodes[1].removed

@@ -336,7 +336,9 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
     known, counted, n_new = numbers.get(item["id"], (0, 0, None))
     missing = item.get("availability") == "missing"
     c = cards.get(item["id"], 0)
-    mined = bool(item.get("mined_at")) or c > 0
+    # in Anki only while its cards are there (Sonic, 2026-10-07): the receipt `mined_at` outlives a card the learner
+    # deleted, so it never shows ✓, a mined chip or "the cards keep their pictures and audio" on its own
+    mined = c > 0
     word = MEDIA_WORD.get(media, "video")
     verb = VERB[word]
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
@@ -378,7 +380,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         media = "youtube"
     word = MEDIA_WORD.get(media, "video")
     eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n) for it in piece]
-    shims = [_Shim(e, bool(e.cards) or bool(it.get("mined_at"))) for e, it in zip(eps, piece)]
+    shims = [_Shim(e, bool(e.cards)) for e in eps]
     st, mark = status_of(shims, word, line_n)
     n = len(eps)
     n_watched = sum(1 for e in eps if e.watched)
@@ -408,7 +410,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     more = 0
     if n > 1:
         chips = tuple(Chip(text=str(e.number) if e.number is not None else "•", watched=e.watched,
-                           next=(i == next_index), mined=bool(e.cards) or e.removed or bool(piece[i].get("mined_at")),
+                           next=(i == next_index), mined=bool(e.cards),
                            tip=e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
                       for i, e in enumerate(eps[:CHIPS_SHOWN]))
         more = max(0, n - CHIPS_SHOWN)

@@ -322,3 +322,23 @@ def test_the_tiers_stay_in_order_through_moves_and_status_writes():
         assert [r.key for r in views[-1][1].rows][1:3] == keys[:2]
     finally:
         reader.stop()
+
+
+def test_a_card_deleted_in_anki_takes_its_mark_away(monkeypatch):
+    """Sonic (2026-10-07): a card the learner deleted shows nothing. When the store records the deletion (`data_version`
+    moves, no feed row), the reader asks every item's cards again within CARDS_ALL_S and the ✓ goes."""
+    monkeypatch.setattr(library_reader, "CARDS_ALL_S", 0.2)
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        item = next(e.id for r in views[-1][1].rows for e in r.episodes if e.cards > 0)
+        with seed.library._lock:
+            seed.library._cards.pop(item, None)
+            seed.library._data_version += 1             # one move: the cards go stale, all re-asked past CARDS_ALL_S
+        assert _wait(lambda: all(e.cards == 0 and e.status.kind != "in_anki"
+                                 for r in views[-1][1].rows for e in r.episodes if e.id == item))
+    finally:
+        reader.stop()

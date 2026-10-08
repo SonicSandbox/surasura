@@ -227,6 +227,20 @@ def main_child(a):
     def phase_scroll():
         mark("scroll")
         bar = lst.verticalScrollBar()
+        # another program writes while the person scrolls (review A-17): a watched mark every 300 ms, so the reader
+        # rebuilds the view on its thread while this one paints
+        stop_writes = threading.Event()
+        result["scroll_commits"] = 0
+
+        def writer():
+            lib = opener.library
+            ids = [r["id"] for r in lib.items() if r["tier"] == "now"][:50]
+            k = 0
+            while not stop_writes.wait(0.3):
+                lib.commit(items=[{"id": ids[k % len(ids)], "watched": k % 2}])
+                result["scroll_commits"] += 1
+                k += 1
+        threading.Thread(target=writer, name="scroll-writer", daemon=True).start()
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -242,6 +256,7 @@ def main_child(a):
                 state["dir"] = -1
             if state["n"] >= 300:
                 timer.stop()
+                stop_writes.set()
                 mark("scroll", end=True)
                 QTimer.singleShot(300, phase_open)
         timer.timeout.connect(step)

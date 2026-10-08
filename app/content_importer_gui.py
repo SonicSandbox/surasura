@@ -1027,9 +1027,10 @@ class ContentImporterApp:
                                                "own syncs.")
 
     # --- the fast re-plan's preview (E1.1 04 §2; app/replan_preview.py) -------------------------------------------- #
-    # With 順's "Re-order Anki as I move content (preview)" on, this window hosts the engine: a move restarts a 0.8 s
-    # settle, then one job on the host's worker re-plans and re-orders Anki's new cards, tomorrow's first, with the
-    # line at the bottom right saying what it does. Off (the default), or Junban removed: no host, 2.5's window.
+    # With 順's "Re-order Anki as I move content (preview)" on, this window has a host (its jobs in a helper process
+    # of their own, E3.1-B1): a move restarts a 0.8 s settle, then one job re-plans and re-orders Anki's new cards,
+    # tomorrow's first, with the line at the bottom right saying what it does. Off (the default), or Junban removed:
+    # no host, 2.5's window.
 
     def _start_replan(self):
         """At open (and by a test): the host, when the preview is on — the plan and the engine loaded on its worker,
@@ -1044,7 +1045,7 @@ class ContentImporterApp:
                 from app import replan_preview, settings_manager
                 settings = settings_manager.load_settings() or {}
                 if replan_preview.is_on(settings, self.language) and not self.__dict__.get("_replan_closed"):
-                    host = replan_preview.Host(self.language, say=self._replan_lines.put)
+                    host = replan_preview.open_host(self.language, say=self._replan_lines.put)
                     host.warm()
                     host.catch_up()
                     self._replan = host

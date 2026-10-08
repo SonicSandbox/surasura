@@ -3570,7 +3570,7 @@ def _plan_json(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-_PLAN_HEADER = [None, None]
+_PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never pair one file's key with another's header
 
 
 def _plan_is_this_runs(run_signature, results_dir=None):
@@ -3583,9 +3583,10 @@ def _plan_is_this_runs(run_signature, results_dir=None):
     except OSError:
         return False
     key = (path, st.st_mtime_ns, st.st_size)
-    if _PLAN_HEADER[0] != key:                  # read (the whole stream, for its CRC) once per version of the file
-        _PLAN_HEADER[:] = [key, plan_engine.read_header(path)]
-    header = _PLAN_HEADER[1]
+    hit = _PLAN_HEADER[0]
+    if hit is None or hit[0] != key:            # read (the whole stream, for its CRC) once per version of the file
+        hit = _PLAN_HEADER[0] = (key, plan_engine.read_header(path))
+    header = hit[1]
     return header is not None and header.get("run_signature") == run_signature
 
 

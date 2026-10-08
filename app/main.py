@@ -3633,7 +3633,7 @@ class MasterDashboardApp:
     # --- the fast re-plan's preview (E1.1 04 §3; app/replan_preview.py) --------------------------------------------- #
     # With 順's "Re-order Anki as I move content (preview)" on, this window catches up — a re-order the Content
     # Manager left owed, cards Anki holds that no re-order placed — at start and on focus, re-orders after every
-    # Generate (the host's worker, 順 spinning), and runs the automatic Generate the preview asks for (moves made,
+    # Generate (the host's helper process, 順 spinning), and runs the automatic Generate the preview asks for (moves made,
     # switched on, the plan can't serve a move): quietly, shown working, never with the Content Manager open, never two.
     # Off (the default): no host, 2.5's window.
 
@@ -3655,7 +3655,7 @@ class MasterDashboardApp:
             host.stop()
             host = self._replan_host = None
         if on and host is None:
-            host = self._replan_host = replan_preview.Host(
+            host = self._replan_host = replan_preview.open_host(
                 language, say=lambda line: self.gui_queue.put(lambda: self._replan_said(line)),
                 working=lambda busy: self.gui_queue.put(lambda: self._junban_spinner(busy)),
                 generate=lambda reason: self.gui_queue.put(lambda: self._want_replan_generate(reason)))

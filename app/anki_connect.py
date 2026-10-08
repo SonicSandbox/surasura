@@ -334,7 +334,11 @@ def _send(action, url, timeout, params):
         raise AnkiError(f"AnkiConnect returned HTTP {e.code} for '{action}'.", kind="protocol")
     except (urllib.error.URLError, socket.timeout, OSError) as e:
         # ConnectionRefusedError is an OSError, and it is by far the common case: Anki is shut.
-        raise AnkiError(f"Could not reach Anki at {url} ({e}). Is Anki running?", kind="offline")
+        error = AnkiError(f"Could not reach Anki at {url} ({e}). Is Anki running?", kind="offline")
+        # A timeout is Anki open but busy (its own sync, Check Database, a big read), not Anki closed (E3.1 review 3
+        # R6: the sync rule's "Anki closed since" must not come from it).
+        error.timed_out = isinstance(getattr(e, "reason", e), (socket.timeout, TimeoutError))
+        raise error
 
     try:
         reply = json.loads(raw.decode("utf-8"))
@@ -378,7 +382,8 @@ def multi(actions, url, timeout=60):
 def probe(url, required=(), timeout=5):
     """Is Anki up, and can it do what the caller needs? Returns a dict; never raises.
 
-    `{"ok": bool, "version": int|None, "missing": [action, ...], "error": str}`
+    `{"ok": bool, "version": int|None, "missing": [action, ...], "error": str}` (+ `"timed_out": True` when Anki
+    is open but didn't answer in time)
 
     Windows call this on open and show the answer in their connection row, so every failure has to
     come back as data. `required` is the caller's capability gate: an AnkiConnect too old to expose
@@ -410,6 +415,7 @@ def probe(url, required=(), timeout=5):
             report["missing"] = [name for name in required if name not in available]
     except AnkiError as e:
         report["error"] = str(e)
+        report["timed_out"] = bool(getattr(e, "timed_out", False))     # open but busy, not closed
         return report
 
     if report["missing"]:

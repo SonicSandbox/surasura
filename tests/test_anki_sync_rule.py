@@ -64,6 +64,9 @@ class FakeAnki:
     def __call__(self, request, timeout=None):
         if self.offline:
             raise urllib.error.URLError("[WinError 10061] No connection could be made")
+        if getattr(self, "slow", False):
+            import socket
+            raise urllib.error.URLError(socket.timeout("timed out"))         # open, but busy past the timeout
         payload = json.loads(request.data.decode("utf-8"))
         result, error = self.answer(payload["action"])
         body = json.dumps({"result": result, "error": error}).encode("utf-8")
@@ -366,3 +369,45 @@ def test_a_pending_sync_older_than_its_session_is_not_sent(anki, clock):
     clock.at += 30
     anki_sync_rule.closed_seen()
     assert anki_sync_rule.due_at(SETTINGS) is None
+
+
+def test_inside_the_lock_a_profile_read_a_moment_ago_is_not_asked_again(anki, clock):
+    """E3.1-B2: Junban's run passes the profile its card map read under the same lock — S1 asks only for the sync;
+    a different profile than the session's is still a new session. Outside the lock it is always asked."""
+    with anki_connect.writer("a run"):
+        assert anki_sync_rule.before_write(URL, locked=True, profile="DevTest") == "synced"
+        assert "getActiveProfile" not in anki.actions
+        clock.at += 60
+        anki_sync_rule.wrote(False, SETTINGS)
+        assert anki_sync_rule.before_write(URL, locked=True, profile="DevTest") is None
+        assert anki_sync_rule.before_write(URL, locked=True, profile="TheBank") == "synced"
+    assert "getActiveProfile" not in anki.actions and anki.syncs == 2
+    anki_sync_rule.before_write(URL, profile="TheBank")
+    assert "getActiveProfile" in anki.actions
+
+
+def test_a_probe_that_times_out_keeps_the_pending_sync_for_a_later_look(anki, clock):
+    """Review 3 R6: Anki open but busy past the probe's timeout is not Anki closed: S3 stays pending (no "closed
+    since"), and is sent at the next look."""
+    anki_sync_rule.before_write(URL)
+    anki_sync_rule.wrote(True, SETTINGS)
+    clock.at += 61
+    anki.slow = True
+    answer, again = anki_sync_rule.sync_if_due(URL, SETTINGS)
+    assert answer is None and again == clock.at + anki_sync_rule.REVIEW_RETRY_S
+    assert not anki_sync_rule.read_state().get("closed_at") and anki_sync_rule.read_state().get("front_pending")
+    assert anki_connect.probe(URL, timeout=3).get("timed_out") is True
+    anki.slow = False
+    assert anki_sync_rule.sync_if_due(URL, SETTINGS) == ("synced", None)
+    assert anki.syncs == 2
+
+
+def test_a_delay_of_an_hour_or_more_is_still_sent(anki, clock):
+    """Review 3 R7: the age rule ("long ago: not ours to send") counts from the due time, so a hand-set delay of 90
+    minutes still syncs when it comes."""
+    slow = {"anki_sync_delay_min": 90}
+    anki_sync_rule.before_write(URL)
+    anki_sync_rule.wrote(True, slow)
+    clock.at += 90 * 60 + 1
+    assert anki_sync_rule.due_at(slow) is not None
+    assert anki_sync_rule.sync_if_due(URL, slow) == ("synced", None)

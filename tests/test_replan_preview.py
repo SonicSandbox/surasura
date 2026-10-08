@@ -619,7 +619,7 @@ def test_after_a_generate_a_plan_the_engine_stands_aside_from_reorders_from_the_
 
 
 def test_a_review_beginning_mid_write_stops_the_automatic_job_between_requests(lib):
-    """04 §6 (review #9): an automatic job asks for a review before every request but the first; the rest wait."""
+    """04 §6 (review #9): an automatic job asks for a review before every request, the first too; the rest wait."""
     root, store = lib
     _settings_file(root, junban_chunk_size=5)
     fake = _deck(root)
@@ -659,7 +659,10 @@ def test_a_deck_changed_since_the_switch_stands_aside():
     on = {"junban_replan_preview": True, "enable_junban": True, "junban_scope": "deck", "junban_deck": "TheBank",
           "junban_replan_deck": "TheBank"}
     assert replan_preview.unavailable(on) is None
-    assert "deck changed" in replan_preview.unavailable(dict(on, junban_deck="中文"))
+    line = replan_preview.unavailable(dict(on, junban_deck="中文"))
+    assert "deck changed" in line and "TheBank" in line and "中文" in line      # both decks named (review 3 R4)
+    assert replan_preview.deck_set_aside(dict(on, junban_deck="中文")) == "TheBank"
+    assert replan_preview.deck_set_aside(on) is None
     assert replan_preview.unavailable(dict(on, junban_replan_deck="")) is None     # a hand edit: no record, no check
 
 
@@ -762,3 +765,116 @@ def test_a_run_with_nothing_to_write_records_its_cards_as_placed(lib):
             fake.note_mods[note["noteId"]] = 1_700_000_000
         host._job("generate")
     assert undo.ladder("ja", [DECK])["seen"] >= extra[0]["cardId"]
+
+
+def test_a_warm_move_asks_anki_in_few_round_trips_and_nothing_twice(lib):
+    """E3.1-B2: a request costs a round trip of Anki's 25 ms timer. Before a warm move's first write: one probe (the
+    host's, reused by the run), the review check once (then with each request's re-check), the profile only inside
+    the map's first read (S1 takes it), and the reads in their few requests."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")                    # the first job: the ladder laid, S1's sync
+        for card in fake.cards.values():
+            card["mod"] = 1_700_000_500          # written long ago, as far as the next read can tell
+        _move_later_to_top(store)
+        fake.requests.clear()
+        host._job("move")
+    assert fake.write_requests, "the move wrote nothing"
+    top = [request["action"] for request in fake.requests]
+    first = next(i for i, request in enumerate(fake.requests) if request["action"] == "multi"
+                 and any(entry.get("action") == "setSpecificValueOfCard" for entry in request["params"]["actions"]))
+    before = top[:first]
+    assert before.count("requestPermission") == 1 and before.count("apiReflect") == 1, before
+    assert before.count("guiReviewActive") == 1 and "getActiveProfile" not in before, before
+    assert before.count("cardsInfo") == 0 and before.count("cardsModTime") == 0, before
+    assert len(before) <= 8, before              # 17 before E3.1-B2 (the DevTest drill's warm moves)
+    last = fake.requests[first - 1]["params"]["actions"]
+    assert [entry["action"] for entry in last] == ["guiReviewActive", "cardsModTime"]
+
+
+def test_a_generates_reorder_survives_every_look_while_anki_stays_closed(lib):
+    """Review 3 R1: the dashboard queues a catch-up right after every Generate's own job (its child's end), and every
+    focus is one more: while Anki stays closed none of them may use up the re-order the Generate still owes. Anki
+    opens: the next catch-up re-orders."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host(generate=lambda reason: None)
+    with _patched(fake):
+        host._job("catch-up")
+        fake.offline = True
+        host._job("generate")
+        for _focus in range(3):
+            host._job("catch-up")                    # Anki still closed: nothing written, the re-order still owed
+            assert host._force, "a look while Anki was closed used the Generate's re-order up"
+        fake.offline = False
+        fake.write_requests.clear()
+        calls = []
+        real = host._replan
+        host._replan = lambda *a, **k: calls.append(a[5] if len(a) > 5 else k.get("kind")) or real(*a, **k)
+        host._job("catch-up")
+    assert calls == ["catch-up"] and not host._force
+
+
+def test_a_retry_is_never_swallowed_by_the_last_looks_memo(lib, monkeypatch):
+    """Review 3 R2: a catch-up that met a review is retried as a catch-up — that retry runs, though the store, the
+    plan and the run are as they were at the last look."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host(generate=lambda reason: None)
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+        fake.reviewing = True
+        host._job("catch-up")                        # a review: said, retried
+        assert lines[-1] == replan_preview.REVIEWING and host._retry_at is not None
+        fake.reviewing = False
+        fake.write_requests.clear()
+        host._retry_at = time.monotonic() - 1        # the retry is due
+        host.run_pending()
+    assert fake.write_requests, "the retry returned at once"
+
+
+def test_a_probe_that_times_out_is_anki_busy_not_closed(lib, monkeypatch):
+    """Review 3 R6: Anki open but slow to answer (its own sync, Check Database) is never "closed": a pending S3 stays
+    pending, the line says it'll try again, and it does."""
+    from app import anki_connect
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+        real = anki_connect.probe
+        monkeypatch.setattr(anki_connect, "probe", lambda url, required=(), timeout=5: {
+            "ok": False, "version": None, "missing": [], "error": "timed out", "timed_out": True})
+        closed = []
+        monkeypatch.setattr(anki_sync_rule, "closed_seen", lambda now=None: closed.append(now))
+        host._job("move")
+        assert lines[-1] == replan_preview.NOT_ANSWERING and host._retry_at is not None and not closed
+        monkeypatch.setattr(anki_connect, "probe", real)
+
+
+def test_a_review_beginning_before_the_first_request_writes_nothing(lib):
+    """Review 3 R12 (S2): a review that starts after the job's guards but before its first request — the review check
+    that goes with request 1's re-check stops it: nothing written, the line says so, and the job is retried."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        for card in fake.cards.values():
+            card["mod"] = 1_700_000_500
+        _move_later_to_top(store)
+        calls = []
+
+        def start_review(ids):
+            calls.append(ids)
+            if len(calls) == 1:                      # the map's read: the review begins right after it
+                fake.reviewing = True
+        fake.before_mod_times = start_review
+        fake.write_requests.clear()
+        host._job("move")
+    assert not fake.write_requests, "it wrote into a review"
+    assert lines[-1] == replan_preview.REVIEWING and host._retry_at is not None

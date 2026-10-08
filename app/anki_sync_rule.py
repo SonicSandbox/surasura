@@ -112,16 +112,18 @@ def _profile(url):
     return name if isinstance(name, str) else None
 
 
-def before_write(url, wait=None, cancel=None, on_wait=None, locked=False):
+def before_write(url, wait=None, cancel=None, on_wait=None, locked=False, profile=None):
     """S1, just before a write's first request: one sync when this write starts a session -> what the sync answered
     ("synced", "not-signed-in", "full-sync", "failed: …"), or None when no sync was due (or Anki can't be asked: the
     write finds that out itself). `locked`: the caller holds the Anki-write lock (Junban's run, its writes planned
     and about to go: a run that writes nothing never syncs); else the sync takes it (`wait` / `cancel` / `on_wait`).
-    A review in progress: no sync now, the session not started — the next write asks again. A sync that failed
-    (AnkiWeb unreachable, a timeout) starts no session either: the next write tries again, at most every
-    S1_RETRY_S, so a write is never held up by a sync that keeps failing. Never raises."""
+    `profile`: Anki's open profile as the caller read it under that lock a moment ago (the warm card map's), not
+    asked again (E3.1-B2). A review in progress: no sync now, the session not started — the next write asks again.
+    A sync that failed (AnkiWeb unreachable, a timeout) starts no session either: the next write tries again, at
+    most every S1_RETRY_S, so a write is never held up by a sync that keeps failing. Never raises."""
     try:
-        profile = _profile(url)
+        if profile is None or not locked:
+            profile = _profile(url)
         if profile is None:
             return None
         if not _new_session(read_state(), profile, time.time()):
@@ -191,8 +193,10 @@ def due_at(settings, state=None):
     if wait is None or state.get("front_pending") is not True:
         return None
     front = float(state.get("front_at") or 0)
-    if front < float(state.get("closed_at") or 0) or time.time() - front > SESSION_GAP_S:
-        return None                     # Anki closed since (its own sync carried it), or long ago: not ours to send
+    if front < float(state.get("closed_at") or 0) or time.time() - front > SESSION_GAP_S + wait:
+        # Anki closed since (its own sync carried it), or long past its time: not ours to send (a delay of an hour or
+        # more is still sent: review 3 R7)
+        return None
     return front + wait
 
 
@@ -207,7 +211,10 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
         now = time.time()
         if not force and now < due:
             return None, due
-        if not anki_connect.probe(url, timeout=3).get("ok"):
+        probe = anki_connect.probe(url, timeout=3)
+        if probe.get("timed_out"):
+            return None, now + REVIEW_RETRY_S           # open but busy (its own sync, Check Database): look again
+        if not probe.get("ok"):
             # Anki closed after the write: its own sync on close (S2) carried the order. Nothing to send.
             _update(settled_at=now, front_pending=False)
             closed_seen(now)

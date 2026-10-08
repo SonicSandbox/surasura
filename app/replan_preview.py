@@ -4,7 +4,7 @@ about a second later — tomorrow's cards first, then the rest — without a ful
     replan_preview.is_on(settings, language)    # 順's option "Re-order Anki as I move content (preview)", for the
                                                 # language it was switched on in, Junban on and present
     replan_preview.unavailable(settings)        # why the option can't be used now (D7), or None
-    host = replan_preview.Host(language, say=…, working=…, generate=…)   # one per window process
+    host = replan_preview.open_host(language, say=…, working=…, generate=…)   # one per window (a helper process)
     host.poke()                                 # a store change: the 0.8 s settle restarts; one job when it ends
     host.catch_up()                             # the dashboard's start / focus, the CM's open: the job, only if owed
     host.after_generate()                       # a full Generate finished: the re-order from its plan, shadow mode
@@ -23,13 +23,23 @@ here imports Junban, the engine or the analyzer — 2.5, byte for byte (rule 1).
 Light by rule: no Tk. `say(line)`, `working(bool)` and `generate(reason)` are the window's, called from the worker:
 each must only post to that window's own queue. Everything heavy (the store, the engine, the analyzer's signature,
 Junban) is imported on the worker; the AnkiWeb indicator's words are worked out there too (`web`).
+
+**The helper process** (E3.1-B1, Sonic's ⭐): a window makes its host with `open_host`, which runs the `Host` in a
+process of its own (`Remote`; `helper_main` is the other side) — the same calls, a few bytes each over a local pipe.
+A job's reads and parses (Anki's answers, Junban's tables, the plan) then never hold the window's interpreter: on
+DevTest they held the Content Manager's window 16–63 ms a move, against a 4 ms budget. Nothing in it is the 2.x
+window's: 3.0's window makes the same `open_host` call.
 """
 
 import importlib.util
+import json
 import os
 import sys
 import threading
 import time
+
+if __name__ == "__main__" and __package__ is None:     # the helper from source: `python app/replan_preview.py …`
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SWITCH = "junban_replan_preview"
 LANGUAGE = "junban_replan_language"     # the language 順's switch was turned on in (its deck's): "" reads as "ja"
@@ -41,18 +51,25 @@ CHECK_ANKI_S = 60.0             # the catch-up's look for new cards in Anki, at 
 CLOSE_WAIT_S = 15.0             # "finishing…" waits at most this long (inside an update's 20 s grace: updater.STOP_GRACE)
 SHADOW_LOG = "replan_shadow.log"
 VERB = "re-ordering as you move"    # the Anki-write lock's holder line ("… is writing to Anki")
+IN_PROCESS_ENV = "SURASURA_REPLAN_IN_PROCESS"   # "1": the host in the window's own process (the suites' fake Anki)
+ADDRESS_ENV = "SURASURA_REPLAN_ADDRESS"         # the helper's way back to its window: the pipe's name …
+KEY_ENV = "SURASURA_REPLAN_KEY"                 # … and its key (never on a command line: app_entry logs every argv)
+HELPER_START_S = 30.0           # a helper that hasn't answered by then: the window's own process hosts the jobs
+STATE_EVERY_S = 0.05            # the helper sends its state (busy, the indicator) when it changes, looked at this often
 TIERS = ("now", "soon", "goal")
 KINDS = ("warm", "generate", "move", "catch-up")
 
 # The bar's lines (04 §2.4, §4).
 CLOSED = "Anki is closed — your new order goes to Anki the next time Surasura sees it open"
 REVIEWING = "Anki is in a review — re-ordering after it"
+NOT_ANSWERING = "Anki isn't answering just now — trying again shortly"
 BUSY = "順 is busy — re-ordering when it's done"
 UPDATE = "An update is waiting — re-ordering after it"
 UP_TO_DATE = "Anki's order is up to date"
 NEW_CONTENT = "New content: Generate puts its words in Anki's order (press it when you've placed it)"
 GENERATE_FIRST = "New content or settings: Generate runs first, then Anki is re-ordered"
 GENERATE_FIRST_CM = "New content or settings: Generate runs first (when you close the Content Manager), then Anki is re-ordered"
+PRESS_GENERATE = "New content or settings: press Generate, then Anki is re-ordered"
 REPLAN_THEN_GENERATE = "Anki re-ordered · refreshing your list (Generate)…"
 REPLAN_THEN_GENERATE_CM = "Anki re-ordered · your list refreshes (Generate) when you close the Content Manager"
 STAND_ASIDE = {
@@ -99,11 +116,21 @@ def unavailable(settings):
         return "Not with Coverage selection: there the list's words depend on the order, so only Generate can tell."
     if settings.get("only_i_plus_one"):
         return "Not with 'Only i+1': there the list's words depend on the order, so only Generate can tell."
-    deck = str(settings.get(DECK) or "").strip()
-    if deck and deck != str(settings.get("junban_deck") or "").strip():
-        return (f"順's deck changed since this was switched on (for {deck}): switch it on again in 順, in the "
-                "language of the deck it should re-order.")
+    deck = deck_set_aside(settings)
+    if deck:
+        now = str(settings.get("junban_deck") or "").strip()
+        # Both decks named, and the box left enabled (`deck_set_aside`): ticking it again records this deck (review 3
+        # R4) — in the language of the deck it should re-order.
+        return (f"順's deck changed since this was switched on for {deck}: pick {deck} again in 順, or switch this on "
+                f"again for {now} — in {now}'s language.")
     return None
+
+
+def deck_set_aside(settings):
+    """The deck the preview was switched on for, when 順's deck is another one now (the preview then stands aside),
+    else None. 順 never greys its box for it: ticking it again is how the preview moves to the deck shown."""
+    deck = str((settings or {}).get(DECK) or "").strip()
+    return deck if deck and deck != str((settings or {}).get("junban_deck") or "").strip() else None
 
 
 def plan_path():
@@ -167,6 +194,7 @@ class Host:
         self._seen = None                         # the catch-up's last look with nothing owed (store, plan, run)
         self._plan = self._plan_key = self._engine = self._ids = None
         self._cards = None
+        self._probe = None                        # `_may_write`'s probe, for this job's run
         self.last = ""                            # the last line said (tests; the window's line)
         self.web = ""                             # the AnkiWeb indicator's words, worked out on the worker
 
@@ -419,11 +447,13 @@ class Host:
             owed = True
         writable = owed and self._may_write(settings, kind)
         if owed and not writable:
-            if kind == "generate":
-                self._force = True                   # Anki closed at the Generate's end: the next catch-up re-orders
+            if kind == "generate" or force:
+                # Anki closed at the Generate's end (or a newer order planned meanwhile): the next catch-up re-orders —
+                # kept until a job can write, through every look while Anki stays closed (review 3 R1).
+                self._force = True
             if kind != "catch-up" or self._generate is None:
                 return                               # 順's window, an update, Anki closed or a review: said, retried
-        if kind == "catch-up" and owed:
+        if kind == "catch-up" and owed and not force:
             # An owed re-order the plan can't serve (new content, a stand-aside plan, Anki closed) is looked at again
             # only when the store, the plan or the run moved: focus comes often.
             from app import analyzer
@@ -433,7 +463,10 @@ class Host:
             if seen == self._seen:
                 return
             self._seen = seen
-        parts = self._parts(settings, store)
+        # The library's files stat'd only where something reads them (review 3 R9): the plan's check, a Generate's
+        # list path, the dashboard's journey.
+        parts = (self._parts(settings, store) if plan is not None or kind == "generate" or self._generate is not None
+                 else None)
         verdict = self._verdict(plan, parts, store) if plan is not None else ("generate-first", why)
         if writable:
             done = self._replan(settings, store, versions, order, verdict, kind, parts)
@@ -446,9 +479,11 @@ class Host:
 
     def _may_write(self, settings, kind):
         """The guards a write needs (04 §4), asked before the library is read: 順's window open (waited for), an
-        update waiting, Anki closed (the next sight of it catches up), a review (waited for)."""
+        update waiting, Anki closed (the next sight of it catches up), a review (waited for). The probe is the run's
+        own (Junban's preflight, on a job's positions-only settings), kept for the job's run (E3.1-B2: asked once)."""
         from app import anki_connect, anki_sync_rule
-        from modules.junban import auto
+        from modules.junban import auto, reposition
+        self._probe = None
         blocked = auto.blocked(settings)
         if blocked:
             if blocked == "the 順 window is open":
@@ -458,7 +493,12 @@ class Host:
                 self._tell(UPDATE)
             return False
         url = anki_connect.address(settings)
-        if not anki_connect.probe(url, timeout=3).get("ok"):
+        probe = reposition.probe_anki(dict(settings, **auto._POSITIONS_ONLY))
+        if not probe.get("ok") and probe.get("timed_out"):
+            self._tell(NOT_ANSWERING)                # open but busy: never "closed" (review 3 R6: S3 stays pending)
+            self._retry(kind)
+            return False
+        if not probe.get("ok") and not probe.get("missing"):     # an old AnkiConnect: the run says what it lacks
             anki_sync_rule.closed_seen()
             self._tell(CLOSED)
             return False
@@ -466,6 +506,7 @@ class Host:
             self._tell(REVIEWING)
             self._retry(kind)
             return False
+        self._probe = probe
         return True
 
     def _replan(self, settings, store, versions, order, verdict, kind="move", parts=None):
@@ -482,7 +523,7 @@ class Host:
             except Exception:
                 current = False
             if not current:
-                self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
+                self._tell(PRESS_GENERATE)          # the Generate just ran (and failed): none is asked for again (R10)
                 return False
             report = self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
             if report is not None and report.get("ok") and not report.get("left") and not report.get("failures"):
@@ -500,7 +541,7 @@ class Host:
                 return False
             asked = self._ask_generate(f"generate-first: {verdict[1]}")
             self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False
-                       else "New content or settings: press Generate, then Anki is re-ordered")
+                       else PRESS_GENERATE)
             return False
         engine, ids = self._engine_for(store)
         ranked = sorted((order[key] + (item_id,) for key, item_id in self._plan_keys(ids) if key in order))
@@ -558,6 +599,7 @@ class Host:
         from app import anki_connect
         from modules.junban import auto, reposition
         settings.update(auto._POSITIONS_ONLY)
+        job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
         try:
             report = reposition.run(settings, progress=self._progress(job), refresh=False, wait=None,
@@ -581,7 +623,7 @@ class Host:
             problems = report.get("problems") or ["it could not finish"]
             self._tell(f"Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order"
                        if written else f"Anki not re-ordered: {problems[0]}")
-            if written or report.get("failures"):
+            if written or report.get("failures") or report.get("anki_error") == "offline":
                 self._retry(kind)                    # Anki went away mid-write: again soon. A refusal only the user
             return report                            # can clear (an unfinished run, a missing deck) waits for them
         self._said_done(report, job)
@@ -607,8 +649,13 @@ class Host:
         n = job.front_size or 0
         front = len(written & set(job.front_ids))
         rest = len(written) - front
+        if not written and report.get("left") and anki_connect_reviewing(job):
+            self._tell(REVIEWING)                    # stopped for a review before anything landed (review 3 R10)
+            return
         if not written:
             line = UP_TO_DATE
+        elif job.kind == spaced.FULL and report.get("left"):
+            line = f"Anki: {len(written):,} of your new cards spaced out so far — tomorrow's {n} first"
         elif job.kind == spaced.FULL:
             line = f"Anki: your {len(written):,} new cards are spaced out (once) — tomorrow's {n} first"
         elif front:
@@ -620,14 +667,17 @@ class Host:
         elif report.get("left"):
             line += f" · {len(report['left'])} changed in Anki meanwhile, placed next"
         self._tell(line)
-        if written:
+        if written and not report.get("left"):      # cards still waiting: never "up to date" 5 s later (R10)
             self._done_at = time.monotonic() + DONE_S
 
     def _retry(self, kind):
-        """Again in RETRY_S (a transient outcome: a review, a lock held, cards that changed mid-write)."""
+        """Again in RETRY_S (a transient outcome: a review, a lock held, cards that changed mid-write) — a look of its
+        own: the catch-up's memo of its last look (`_seen`) is let go, or the retry would return at once (review 3
+        R2)."""
         with self._lock:
             if not self._closing:
                 self._retry_at, self._retry_kind = time.monotonic() + RETRY_S, kind
+                self._seen = None
 
     def _ask_generate(self, reason):
         """Ask the window for an automatic Generate — once per run (`results/`' stamp): the window keeps a request
@@ -660,8 +710,10 @@ class Host:
             from modules.junban import undo
             deck = str(settings.get("junban_deck") or "").strip()
             url = anki_connect.address(settings)
-            if not anki_connect.probe(url, timeout=3).get("ok"):
-                anki_sync_rule.closed_seen()
+            probe = anki_connect.probe(url, timeout=3)
+            if not probe.get("ok"):
+                if not probe.get("timed_out"):       # a timeout is Anki busy, not closed (review 3 R6)
+                    anki_sync_rule.closed_seen()
                 return False
             ids = anki_connect.find_cards(url, f'deck:"{anki_connect.escape_query(deck)}" is:new -is:suspended '
                                                "-is:buried -deck:filtered")
@@ -749,6 +801,327 @@ class Host:
             _log_shadow(f"{self.language} · {difference}")
 
 
+# --- the helper process (E3.1-B1) -------------------------------------------------------------------------------- #
+
+def open_host(language, say=None, working=None, generate=None):
+    """The window's host: `Remote` — the jobs in a helper process of its own — or, with IN_PROCESS_ENV ("1": the
+    suites' fake Anki lives in their own process), the `Host` in the window's process. Same calls either way."""
+    if os.environ.get(IN_PROCESS_ENV) == "1":
+        return Host(language, say=say, working=working, generate=generate)
+    return Remote(language, say=say, working=working, generate=generate)
+
+
+class Remote:
+    """`Host`'s calls, answered by a helper process that runs the `Host` (E3.1-B1): `python app/replan_preview.py`
+    from source, `Surasura.exe replan_helper` frozen; `--language`, and `--generate` for the dashboard's (it may ask
+    for a Generate). The two talk over a local pipe of their own (`multiprocessing.connection`, a random key in the
+    helper's environment: no port, no console handles — Surasura.exe has none), one small JSON message a call each
+    way; this side's thread only decodes them. Calls made before the helper answers wait for it, in order.
+
+    The helper ends when this side goes (`stop`, or the window's process gone: the pipe breaks). A helper that can't
+    start, or ends on its own, leaves the jobs to the window's own process from then on (`Host`, which then catches
+    up: the store says what is owed) — the window works, with its pauses back."""
+
+    def __init__(self, language, say=None, working=None, generate=None):
+        self.language = language
+        self._say = say or (lambda line: None)
+        self._working = working or (lambda on: None)
+        self._generate = generate
+        self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._conn = None
+        self._proc = None
+        self._sent = 0                            # calls sent (numbered) …
+        self._seen = 0                            # … and the last the helper has taken in
+        self._busy = False                        # the helper's host, as it last said
+        self._waiting = []                        # calls made before the helper answered
+        self._local = None                        # the window's own Host, once the helper is out
+        self._stopped = False
+        self._last = ""
+        self._web = ""
+        threading.Thread(target=self._run, name="replan-remote", daemon=True).start()
+
+    # --- Host's calls ---------------------------------------------------------------------------------------- #
+
+    def poke(self):
+        self._call("poke")
+
+    def catch_up(self):
+        self._call("catch_up")
+
+    def after_generate(self):
+        self._call("after_generate")
+
+    def warm(self):
+        self._call("warm")
+
+    def close(self):
+        self._call("close")
+
+    def busy(self):
+        with self._lock:
+            local = self._local
+            if local is None:
+                return not self._stopped and (self._sent > self._seen or self._busy)
+        return local.busy()
+
+    def stop(self):
+        """The window is gone: the helper ends (its job finishes the request it is in). Never waits."""
+        with self._lock:
+            self._stopped = True
+            local, conn = self._local, self._conn
+            self._waiting = []
+        if local is not None:
+            local.stop()
+        if conn is not None:
+            self._post(conn, {"do": "stop"})
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    @property
+    def last(self):
+        local = self._local
+        return local.last if local is not None else self._last
+
+    @property
+    def web(self):
+        local = self._local
+        return local.web if local is not None else self._web
+
+    # --- the pipe ------------------------------------------------------------------------------------------- #
+
+    def _call(self, do):
+        with self._lock:
+            local = self._local
+            if local is None:
+                if self._stopped:
+                    return
+                self._sent += 1
+                message = {"n": self._sent, "do": do}
+                conn = self._conn
+                if conn is None:
+                    self._waiting.append(message)
+                    return
+        if local is not None:
+            getattr(local, do)()
+            return
+        self._post(conn, message)
+
+    def _post(self, conn, message):
+        try:
+            with self._send_lock:
+                conn.send_bytes(json.dumps(message).encode("utf-8"))
+        except (OSError, ValueError):
+            pass                                  # the reader finds the pipe broken and takes the jobs over
+
+    def _run(self):
+        try:
+            conn = self._connect()
+        except Exception as e:
+            print(f"Re-order as you move: its helper didn't start ({e}) — this window's process runs the jobs")
+            self._go_local()
+            return
+        with self._lock:
+            self._conn = conn
+            waiting, self._waiting = self._waiting, []
+            stopped = self._stopped
+        if stopped:
+            self._post(conn, {"do": "stop"})
+            conn.close()
+            return
+        for message in waiting:
+            self._post(conn, message)
+        while True:
+            try:
+                message = json.loads(conn.recv_bytes().decode("utf-8"))
+            except (EOFError, OSError, ValueError):
+                break
+            if isinstance(message, dict):
+                self._receive(message)
+        with self._lock:
+            self._conn = None
+            stopped = self._stopped
+        if not stopped:
+            print("Re-order as you move: its helper ended — this window's process runs the jobs")
+            self._go_local()
+
+    def _receive(self, message):
+        if "say" in message:
+            self._last = str(message["say"])
+            try:
+                self._say(self._last)
+            except Exception:
+                pass
+        if "working" in message:
+            try:
+                self._working(bool(message["working"]))
+            except Exception:
+                pass
+        if "generate" in message and self._generate is not None:
+            try:
+                self._generate(str(message["generate"]))
+            except Exception:
+                pass
+        if "web" in message:
+            self._web = str(message["web"] or "")
+        with self._lock:
+            if isinstance(message.get("seen"), int):
+                self._seen = max(self._seen, message["seen"])
+            if "busy" in message:
+                self._busy = bool(message["busy"])
+
+    def _connect(self):
+        """Start the helper and take its call -> the connection. Raises when it can't start or doesn't answer within
+        HELPER_START_S (or ends first)."""
+        import secrets
+        import subprocess
+        from multiprocessing.connection import Client, Listener
+        from app import library_store
+        if library_store.update_staged():
+            raise RuntimeError("an update is staged")
+        key = secrets.token_bytes(32)
+        listener = Listener(authkey=key)
+        answered = threading.Event()
+        try:
+            flags = 0x08000000 if sys.platform == "win32" else 0            # CREATE_NO_WINDOW
+            self._proc = subprocess.Popen(_helper_args(self.language, self._generate is not None),
+                                          env=_helper_env(listener.address, key), creationflags=flags,
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+
+            def watch():                          # a helper that ended or never calls: wake `accept` with a call
+                deadline = time.monotonic() + HELPER_START_S
+                while not answered.wait(0.2):
+                    if self._proc.poll() is not None or time.monotonic() > deadline or self._stopped:
+                        try:
+                            Client(listener.address, authkey=key).close()
+                        except Exception:
+                            pass
+                        return
+            threading.Thread(target=watch, name="replan-remote-watch", daemon=True).start()
+            conn = listener.accept()
+            answered.set()
+            try:
+                hello = json.loads(conn.recv_bytes().decode("utf-8"))
+            except (EOFError, OSError, ValueError):
+                hello = {}
+            if not isinstance(hello, dict) or "hello" not in hello:     # (the watch's own call says nothing)
+                conn.close()
+                raise RuntimeError("the helper ended before it answered" if self._proc.poll() is not None
+                                   else "the helper didn't answer")
+            return conn
+        finally:
+            answered.set()
+            listener.close()
+
+    def _go_local(self):
+        """The window's own process hosts the jobs from now on: the calls that waited, then a catch-up."""
+        with self._lock:
+            if self._local is not None or self._stopped:
+                return
+            waiting = [message["do"] for message in self._waiting]
+            self._waiting = []
+            self._local = Host(self.language, say=self._say, working=self._working, generate=self._generate)
+            local = self._local
+        local.warm()
+        local.catch_up()
+        for do in dict.fromkeys(waiting):        # each kind once, in the order first asked
+            if do not in ("warm", "catch_up"):
+                getattr(local, do)()
+
+
+def _helper_args(language, generate):
+    """The helper's command line, frozen (`Surasura.exe replan_helper …`, app_entry's branch) or from source."""
+    extra = ["--language", language] + (["--generate"] if generate else [])
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "replan_helper", *extra]
+    return [sys.executable, os.path.abspath(__file__), *extra]
+
+
+def _helper_env(address, key):
+    from app.path_utils import build_subprocess_env
+    env = build_subprocess_env()
+    env[ADDRESS_ENV] = address
+    env[KEY_ENV] = key.hex()
+    env.pop(IN_PROCESS_ENV, None)
+    return env
+
+
+def helper_main(argv=None):
+    """The helper process (`Remote`'s other side): one `Host`, driven by its window's calls; its lines, its state and
+    a Generate's request go back the same way. Ends when the window says stop or its pipe breaks (the window's
+    process gone), after the job in hand (at most CLOSE_WAIT_S). -> the exit code."""
+    import argparse
+    from multiprocessing.connection import Client
+    parser = argparse.ArgumentParser(prog="replan_helper")
+    parser.add_argument("--language", default="ja")
+    parser.add_argument("--generate", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        conn = Client(os.environ[ADDRESS_ENV], authkey=bytes.fromhex(os.environ[KEY_ENV]))
+    except (KeyError, ValueError, OSError, EOFError) as e:
+        print(f"replan_helper: no window to answer ({e})", file=sys.stderr)
+        return 2
+    lock = threading.Lock()
+    gone = threading.Event()
+    state = {"seen": 0, "busy": None, "web": None}
+
+    def send(message):                            # with `lock` held
+        try:
+            conn.send_bytes(json.dumps(message, ensure_ascii=False).encode("utf-8"))
+        except (OSError, ValueError):
+            gone.set()
+
+    def tell(**message):                          # the host's callbacks, from its worker
+        with lock:
+            send(dict(message, seen=state["seen"]))
+
+    host = Host(args.language, say=lambda line: tell(say=line), working=lambda on: tell(working=bool(on)),
+                generate=(lambda reason: tell(generate=reason)) if args.generate else None)
+
+    def report(force=False):                      # with `lock` held
+        busy, web = host.busy(), host.web
+        if force or busy != state["busy"] or web != state["web"]:
+            state["busy"], state["web"] = busy, web
+            send({"seen": state["seen"], "busy": busy, "web": web})
+
+    def watch():
+        while not gone.wait(STATE_EVERY_S):
+            with lock:
+                report()
+    with lock:
+        send({"hello": os.getpid()})
+    threading.Thread(target=watch, name="replan-helper-state", daemon=True).start()
+    calls = {"poke": host.poke, "catch_up": host.catch_up, "after_generate": host.after_generate, "warm": host.warm,
+             "close": host.close}
+    while not gone.is_set():
+        try:
+            message = json.loads(conn.recv_bytes().decode("utf-8"))
+        except (EOFError, OSError, ValueError):
+            break
+        if not isinstance(message, dict) or message.get("do") == "stop":
+            break
+        with lock:
+            call = calls.get(message.get("do"))
+            if call is not None:
+                call()
+            if isinstance(message.get("n"), int):
+                state["seen"] = max(state["seen"], message["n"])
+            report(force=True)
+    gone.set()
+    host.stop()
+    worker = host._thread
+    if worker is not None:
+        worker.join(CLOSE_WAIT_S)
+    try:
+        conn.close()
+    except OSError:
+        pass
+    return 0
+
+
 # --- shadow mode's comparison ------------------------------------------------------------------------------------- #
 
 PRIORITY_COLUMNS = ("Word", "Reading", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
@@ -812,3 +1185,8 @@ def _log_shadow(line):
             f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " · " + line + "\n")
     except Exception:
         pass
+
+
+if __name__ == "__main__":
+    from app import replan_preview as _module      # the helper runs in the module every import shares
+    sys.exit(_module.helper_main())

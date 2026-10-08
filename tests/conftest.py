@@ -94,6 +94,14 @@ def _no_gui_update_check(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _replan_in_process(monkeypatch):
+    """The fast re-plan preview's host in the test's own process (`replan_preview.open_host`), never a helper process:
+    the suites' fake AnkiConnect is a patch of this process's `urlopen`, which a helper would never see. The helper
+    itself is tested on its own (tests/test_replan_helper.py, against a fake Anki served on a loopback port)."""
+    monkeypatch.setenv("SURASURA_REPLAN_IN_PROCESS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_ui_timers(monkeypatch):
     """Stop GUI windows from leaving Tk `after` timers behind when a test destroys them.
 
@@ -241,7 +249,7 @@ def _guards_for_shared_windows():
     in two beside other test runs."""
     mp = pytest.MonkeyPatch()
     for name in ("SURASURA_NO_UI_TIMERS", "SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC",
-                 "SURASURA_NO_UPDATE_CHECK"):
+                 "SURASURA_NO_UPDATE_CHECK", "SURASURA_REPLAN_IN_PROCESS"):
         mp.setenv(name, "1")
     from app import library_store
     mp.setattr(library_store, "spawn_maintain", lambda language, *extra: None)

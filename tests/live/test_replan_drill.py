@@ -19,7 +19,8 @@ window (in this process): its open and the first job — the session sync (S1, w
 that card is never written) and the one full spacing — timed; a second window opened and moved at once (the cold load
 counted); then moves of the study's kinds in a warm window, each timed from the move: tomorrow's cards landed (the
 first write request's answer) and every card landed, the window's thread watched by a 1 ms timer (its worst gap).
-Every AnkiConnect request is logged with its time. Last, the deck is deleted with its cards and read back gone; Anki
+Every AnkiConnect request is logged with its time (in-process; with `SURASURA_LIVE_HELPER=1` the host runs in
+its helper process, as the app runs it, and a move is timed from the lines the window hears). Last, the deck is deleted with its cards and read back gone; Anki
 stays open on DevTest. Results: `debug/E3.1/drill/drill-<time>.json` and the printed summary.
 """
 import io
@@ -39,6 +40,9 @@ URL = os.environ.get("SURASURA_LIVE_ANKI_URL", "http://127.0.0.1:8765")
 CARDS = int(os.environ.get("SURASURA_LIVE_CARDS", "2000"))
 SYNC = os.environ.get("SURASURA_LIVE_SYNC") == "1"
 PHONE = os.environ.get("SURASURA_LIVE_PHONE") == "1"
+# E3.1-B1: the Content Manager's host in its helper process (the app's own way); without it, in the window's process
+# (every request then logged with its time here — the helper's requests are its own: timed from the lines it sends).
+HELPER = os.environ.get("SURASURA_LIVE_HELPER") == "1"
 DECK = "E3.1 drill"
 TAG = "surasura-e31-drill"
 DRILL = os.path.join(_ROOT, "debug", "E3.1", "drill-root")
@@ -96,8 +100,9 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
     env = cases.child_env(root)
     for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(name, env[name])
-    for name in ("SURASURA_NO_ANKI_SYNC", "SURASURA_NO_UI_TIMERS"):
+    for name in ("SURASURA_NO_ANKI_SYNC", "SURASURA_NO_UI_TIMERS") + (("SURASURA_REPLAN_IN_PROCESS",) if HELPER else ()):
         monkeypatch.delenv(name, raising=False)
+    assert not (HELPER and PHONE), "the phone step reads the request log: in-process only"
     cases.build(root, "rp2-ja")
     settings = {"junban_replan_preview": True, "junban_replan_language": "ja", "junban_deck": DECK,
                 "junban_scope": "deck", "junban_order": "content", "anki_connect_url": URL, "target_language": "ja",
@@ -163,11 +168,28 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
             time.sleep(2)
         summary["phone_done"] = os.path.exists(PHONE_DONE)
         _say(f"PHONE: done={summary['phone_done']}")
-    assert _devtest(), "Anki is no longer on DevTest: the drill stops here (its deck stays, said in the summary)"
 
     # --- the window ------------------------------------------------------------------------------------------- #
     import tkinter as tk
-    from app import anki_sync_rule
+    from app import anki_sync_rule, replan_preview
+    heard = []                                       # (when, line): every line the window's host says
+    real_open = replan_preview.open_host
+
+    def open_host(language, say=None, **kwargs):
+        def hear(line):
+            heard.append((time.perf_counter(), line))
+            if say is not None:
+                say(line)
+        return real_open(language, say=hear, **kwargs)
+    monkeypatch.setattr(replan_preview, "open_host", open_host)
+
+    def done_line(lines):
+        return next(((at, line) for at, line in lines if line.startswith("Anki: ") and not line.endswith("…")), None)
+
+    def written_in(line):
+        import re
+        numbers = [int(n.replace(",", "")) for n in re.findall(r"([\d,]+) (?:more moved|cards moved|new cards)", line)]
+        return sum(numbers)                          # beyond tomorrow's (whose writes the line doesn't count)
     from app import content_importer_gui as cig
     from app.content_importer_gui import ContentImporterApp
     gaps, last = [], [time.perf_counter()]
@@ -215,12 +237,29 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
         change = store.move([item], tier, before_id=before)
         app._store_did(change, "Move")
         host = app.__dict__.get("_replan")
+        h0 = len(heard)
         ok = pump(tk_root, lambda: (app.__dict__.get("_replan") is not None and not app._replan.busy()
-                                    and any(e["sub"] == "setSpecificValueOfCard" for e in log[n0:])), 60)
+                                    and (done_line(heard[h0:]) if HELPER else
+                                         any(e["sub"] == "setSpecificValueOfCard" for e in log[n0:]))), 60)
         if not ok:                                           # a move that changes no card's place writes nothing
             ok = app.__dict__.get("_replan") is not None and not app._replan.busy()
         host = app.__dict__.get("_replan")
         writes = [e for e in log[n0:] if e["sub"] == "setSpecificValueOfCard"]
+        if HELPER:
+            lines = heard[h0:]
+            landed = next((at for at, line in lines if "cards placed" in line or "already in place" in line), None)
+            done = done_line(lines)
+            row = {"move": name, "ok": ok, "line": host.last if host else None, "helper": True,
+                   "lines": [[round(at - t_move, 3), line] for at, line in lines],
+                   "more_moved": written_in(done[1]) if done else 0,
+                   "tomorrow_landed_s": round(landed - t_move, 3) if landed else None,
+                   "all_landed_s": round(done[0] - t_move, 3) if done else None,
+                   "tk_worst_gap_ms": round(max(gaps[1:]) * 1000, 1) if len(gaps) > 1 else None,
+                   "tk_gaps_over_4ms": sum(1 for gap in gaps[1:] if gap > 0.004)}
+            summary["moves"].append(row)
+            _say(f"move '{name}' (helper): {row['tomorrow_landed_s']} s tomorrow, {row['all_landed_s']} s all, "
+                 f"{row['more_moved']} more moved, Tk worst {row['tk_worst_gap_ms']} ms — {row['line']}")
+            return row
         row = {"move": name, "ok": ok, "line": host.last if host else None,
                "requests": len(log) - n0, "write_requests": len(writes), "cards_written": sum(e["subs"] for e in writes),
                "tomorrow_landed_s": round(writes[0]["at"] + writes[0]["took"] - t_move, 3) if writes else None,
@@ -241,16 +280,23 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
              ("6+ Months' first → Soon's top", lambda s: (s.ids("goal")[0], "soon", s.ids("soon")[0]))]
     tk_root = app = None
     try:
+        # Inside the try (review 3 R13): leaving DevTest still writes the summary and goes through the clean-up.
+        assert _devtest(), "Anki is no longer on DevTest: the drill stops here (its deck stays, said in the summary)"
         # 1. The first window: its open's catch-up is the first job — S1, the one full spacing.
         tk_root, app = open_window()
         n0 = len(log)
         t0 = time.perf_counter()
         assert pump(tk_root, lambda: app.__dict__.get("_replan") is not None, 60), "no host: is the preview on?"
-        assert pump(tk_root, lambda: not app._replan.busy() and log[n0:], 900), "the first job never finished"
+        assert pump(tk_root, lambda: not app._replan.busy() and (done_line(heard) if HELPER else log[n0:]), 900), \
+            "the first job never finished"
         summary["first_job_s"] = round(time.perf_counter() - t0, 2)
         summary["first_line"] = app._replan.last
         summary["first_cards_written"] = sum(e["subs"] for e in log[n0:] if e["sub"] == "setSpecificValueOfCard")
         summary["first_syncs"] = [round(e["took"], 2) for e in log[n0:] if e["action"] == "sync"]
+        if HELPER:
+            first = done_line(heard)
+            summary["first_cards_written"] = written_in(first[1]) if first else 0
+            summary["first_syncs"] = [anki_sync_rule.read_state().get("sync")]
         reviewed = [row["cardId"] for row in anki_connect.cards_info(URL, cards) if row.get("type") != 0]
         written = {c for e in log[n0:] for c in e["cards"]}          # the preview's writes (not the set-up's)
         summary["phone_reviewed_cards"] = reviewed
@@ -284,6 +330,8 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
             if not _devtest():
                 raise RuntimeError("Anki is not on DevTest: nothing deleted, nothing synced — the deck stays")
             with locks.take(anki_connect.WRITER_LOCK, "the E3.1 drill (clean-up)", wait=180):
+                if not _devtest():                   # asked again after the lock's wait (review 3 R13)
+                    raise RuntimeError("Anki left DevTest while the clean-up waited: nothing deleted, the deck stays")
                 if DECK in anki_connect.deck_names(URL):
                     anki_connect.invoke("deleteDecks", URL, decks=[DECK], cardsToo=True)
                 notes = anki_connect.find_notes(URL, f"tag:{TAG}")

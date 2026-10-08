@@ -382,6 +382,11 @@ def connect(args):
     languages = [lang for lang in LANGUAGES if os.path.isdir(get_user_files_path(lang))]
     if not languages:
         raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
+    from app.connect.ledger import Ledger, TooNew
+    try:
+        Ledger().close()                    # a ledger a newer Surasura wrote: refused, said so (both paths)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
     if not args.consume_only:
         return _loop(loaded, languages, getattr(args, "looks", None))
     out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []} for lang in languages}

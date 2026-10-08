@@ -35,12 +35,15 @@ Every Anki call runs through `Steps` (the command line's own verbs, in this proc
 """
 import datetime
 import json
+import logging
 import os
 import time
 from types import SimpleNamespace
 
 from app.connect import fit_check
 from app.connect.ledger import BEFORE_MINING, IN_FLIGHT, Ledger
+
+log = logging.getLogger("surasura-cli")
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
 WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasura writer, a Generate)
@@ -117,11 +120,14 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
                     summary["stopped"] = STOPPED_FOR_UPDATE
                     return summary
                 steps.consume(lang, ledger)
-                jobs = _ordered(steps, ledger, lang)
+                jobs = ledger.open_jobs(lang)
                 if not jobs:
                     continue
                 work = True
                 outside |= _language(steps, ledger, lang, jobs, prepared, summary["languages"][lang])
+                if steps.update_staged():           # staged while its jobs ran: stop at this step boundary
+                    summary["stopped"] = STOPPED_FOR_UPDATE
+                    return summary
             if summary.get("stopped") or not work or not outside:
                 break
             if looks is not None and summary["looks"] >= looks:
@@ -133,7 +139,10 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
     finally:
         if own:
             ledger.close()
-        steps.settle()
+        try:
+            steps.settle()                  # a pending sync is sent before Connect exits (P2.3)
+        except Exception:
+            log.exception("Connect's pending sync wasn't sent")
 
 
 def _empty():
@@ -147,11 +156,10 @@ def _pause(seconds, sleep, cancel):
     return True
 
 
-def _ordered(steps, ledger, lang):
-    """The language's open jobs, the top 20's order first (the next day's words first), then the rest oldest first."""
-    line = {item_id: n for n, item_id in enumerate(steps.mine_line(lang))}
-    jobs = ledger.open_jobs(lang)
-    return sorted(jobs, key=lambda j: (line.get(j["item_id"], len(line)), j["id"]))
+def _ordered(jobs, line):
+    """The open jobs, the top 20's order first (the next day's words first), then the rest oldest first."""
+    place = {item_id: n for n, item_id in enumerate(line)}
+    return sorted(jobs, key=lambda j: (place.get(j["item_id"], len(place)), j["id"]))
 
 
 def _language(steps, ledger, lang, jobs, prepared, out):
@@ -161,6 +169,16 @@ def _language(steps, ledger, lang, jobs, prepared, out):
             _wait(ledger, job, Wait(CHINESE, look=False, resume=_resume_of(job)), out)
         return False
     wait = _blocked(steps, lang, None)
+    line = store_now = None
+    if wait is None:
+        try:                                # the store answers first: never an empty top 20 for a busy one
+            line, store_now = steps.mine_line(lang), steps.store_id(lang)
+        except Wait as w:
+            wait = w
+        except Needs as n:
+            if ledger.need(lang, n.kind, n.say):
+                out["needs"].append(n.say)
+            wait = Wait(n.say, look=False)
     if wait is None and lang not in prepared:
         try:
             steps.prepare(lang, ledger)
@@ -176,10 +194,9 @@ def _language(steps, ledger, lang, jobs, prepared, out):
             _wait(ledger, job, Wait(wait.reason, wait.look, _resume_of(job)), out)
         return wait.look
     outside = False
-    store_now, line = steps.store_id(lang), set(steps.mine_line(lang))
-    for job in jobs:
+    for job in _ordered(jobs, line):
         try:
-            _job(steps, ledger, lang, job, store_now, line, out)
+            _job(steps, ledger, lang, job, store_now, set(line), out)
         except Wait as w:
             _wait(ledger, job, w, out)
             outside |= w.look
@@ -187,6 +204,12 @@ def _language(steps, ledger, lang, jobs, prepared, out):
             if ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=job["id"]):
                 out["needs"].append(n.say)
             _wait(ledger, job, Wait(n.say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out)
+        except Exception as e:              # R15: a fault of one job never ends the run nor hides it
+            log.exception("Connect's job %s stopped on an error", job["id"])
+            say = f"Connect stopped on an error while making an episode's cards ({type(e).__name__}): {e}"
+            if ledger.need(lang, "error", say, item_id=job["item_id"], job_id=job["id"]):
+                out["needs"].append(say)
+            _wait(ledger, job, Wait(say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out)
         if steps.update_staged():
             break
     return outside
@@ -209,7 +232,10 @@ def _resume_of(job):
 
 
 def _wait(ledger, job, wait, out):
-    ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=wait.resume)
+    """The job waits with one reason. Before mining it keeps no step to resume at: it picks again from the list as it
+    is then (so a parked job never holds the level raise's look, `ledger.in_flight`)."""
+    resume = None if wait.resume in BEFORE_MINING else wait.resume
+    ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)
     out["waiting"][job["item_id"]] = wait.reason
 
 
@@ -222,9 +248,14 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         ledger.set_state(jid, "dropped", reason="the library was set up again")
         out["dropped"].append(item_id)
         return
-    if not job.get("store_id") and store_now:           # queued before SCHEMA 3: the store it was read from now
+    if not job.get("store_id") and step in BEFORE_MINING:
+        # queued before SCHEMA 3 (the 2.x preview's inbox): which library it came from isn't known, so it is never
+        # mined into this one (P2.1 adversary #12) — named as a gap, as a read of the log Connect can't trust is
+        ledger.set_state(jid, "dropped", reason="queued before Connect kept its library's identity")
         with ledger.transaction():
-            ledger.conn.execute("UPDATE jobs SET store_id = ? WHERE id = ?", (store_now, jid))
+            ledger.add_gap(lang, [item_id])
+        out["dropped"].append(item_id)
+        return
     if step in BEFORE_MINING and item_id not in line:
         ledger.set_state(jid, "dropped", reason="left the top 20")
         out["dropped"].append(item_id)
@@ -301,6 +332,8 @@ def _fit(steps, ledger, lang, job):
     if fit_check.version(pairing) != picked.get("pairing"):
         raise Repick()                      # E17: hato re-timed it, or a new subtitle
     verdict, _who, why = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    if verdict == fit_check.RETRY:
+        raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
     if verdict != fit_check.TIMED:
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
@@ -308,9 +341,10 @@ def _fit(steps, ledger, lang, job):
 
 
 def _mine(steps, ledger, lang, job, record=True):
-    """The mine step: the words not settled yet, in one batch (tried once more after a batch in doubt), then the
-    batch's one store write (`record`: False for a job of a store set up again since). Raises Wait, Needs, Repick,
-    and _Finished when the job ends here (skipped, failed)."""
+    """The mine step: the words not settled yet, in one batch (tried again after a batch in doubt; a second crash
+    ends it), then the mining's one store write — every batch's made words and the receipt together (`record`: False
+    for a job of a store set up again since). Raises Wait, Needs, Repick, and _Finished when the job ends here
+    (skipped, failed)."""
     jid = job["id"]
     picked = ledger.picked(jid) or {}
     words = picked.get("words") or []
@@ -327,11 +361,7 @@ def _mine(steps, ledger, lang, job, record=True):
             break
         doubt = any(_outcome(ledger, jid, w) == "uncertain" for w in todo)
         if doubt and _failures(ledger, jid) >= 2:
-            ledger.set_state(jid, "failed", reason="Anki Miner stopped twice while making its cards")
-            ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice "
-                        "while making its cards. Look in Anki for the cards it made.", item_id=job["item_id"],
-                        job_id=jid)
-            raise _Finished("failed")
+            _fail_mining(steps, ledger, lang, job)
         wait = _blocked(steps, lang, "mining")
         if wait is not None:
             raise wait
@@ -354,14 +384,20 @@ def _mine(steps, ledger, lang, job, record=True):
             ledger.end_batch(jid, attempt, "refused")
             ledger.set_state(jid, "skipped", reason=s.why, skipped={"mining": s.why})
             raise _Finished("skipped") from None
-        state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
-        if got.get("doubt"):
+        if got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
+            # a word Anki Miner doesn't account for may be in Anki: found by the job's tag first, never sent twice
             found = steps.by_tag(lang, job, picked, [w for w in todo if _row(got, w) in UNSETTLED])
             got["outcomes"] = _merge(got["outcomes"], found)
-            state = "uncertain"
+        state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-        if state == "uncertain":
-            _count_failure(ledger, jid)
+        if got.get("doubt"):
+            _count_failure(ledger, jid)     # only a run that crashed or timed out: an unknown status is no crash
+    left = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
+    if _failures(ledger, jid) >= 2 and any(_outcome(ledger, jid, w) == "uncertain" for w in left):
+        _fail_mining(steps, ledger, lang, job)     # a second crash in the last try
+    if left:                                # Anki Miner never accounted for them, three times: named, not mined
+        never = f"{len(left)} words Anki Miner never made or turned down"
+        ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
     made = {}
     for o in ledger.outcomes(jid):
         if o["outcome"] == "made" and o["note_id"] is not None:
@@ -373,6 +409,14 @@ def _mine(steps, ledger, lang, job, record=True):
             w.resume = "mining"
             raise
     ledger.set_state(jid, "filling")
+
+
+def _fail_mining(steps, ledger, lang, job):
+    """A second failure (E11): the job `failed`, named once in Needs you; nothing is tried a third time."""
+    ledger.set_state(job["id"], "failed", reason="Anki Miner stopped twice while making its cards")
+    ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice while "
+                "making its cards. Look in Anki for the cards it made.", item_id=job["item_id"], job_id=job["id"])
+    raise _Finished("failed")
 
 
 def _outcome(ledger, jid, word):
@@ -440,7 +484,7 @@ def _fill(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "filling", s.why))
         return
     except Needs as n:
-        ledger.need(lang, n.kind, n.say)
+        ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=jid)
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "filling", n.say))
         return
     ledger.set_state(jid, "ordering")
@@ -463,7 +507,7 @@ def _order(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "ordering", s.why))
         return
     except Needs as n:
-        ledger.need(lang, n.kind, n.say)
+        ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=jid)
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "ordering", n.say))
         return
     with ledger.transaction():
@@ -516,20 +560,29 @@ class Steps:
             connect_verbs._store_write(lambda: inbox.consume(store, lang, ledger), WAIT_S)
             connect_verbs._level(store, lang, self.loaded)
 
+    def _open(self, lang):
+        """The language's store for a read or write the loop can't do without -> the store; a store busy past the
+        store's own wait → Wait (looked at again); none to write (JSON mode, read-only, damaged) → Needs."""
+        from app import library_store
+        from app.connect import library
+        from app.path_utils import get_data_path
+        store = library.open_store(lang)
+        if store is not None:
+            return store
+        mode, reason = library_store.check_mode(lang, get_data_path(lang), busy_wait=0.0)
+        if mode == "store" or reason == "busy":
+            raise Wait(LIBRARY_BUSY)
+        raise Needs("no-store", "Surasura's library can't be written just now, so Connect can't make cards. Open "
+                                "Surasura to see why.")
+
     def mine_line(self, lang):
         from app.connect import library
-        store = library.open_store(lang)
-        if store is None:
-            return []
-        with store:
+        with self._open(lang) as store:
             return library.mine_line(store)
 
     def store_id(self, lang):
         from app.connect import library
-        store = library.open_store(lang)
-        if store is None:
-            return None
-        with store:
+        with self._open(lang) as store:
             return library.store_id(store)
 
     def title(self, lang, job):
@@ -573,19 +626,18 @@ class Steps:
         return beside(subtitle) if subtitle else None
 
     def record(self, lang, job, made, mined_at, batch):
-        """The batch's one store write (receipt + made words); nothing without a store (JSON mode, read-only)."""
+        """The mining's one store write (receipt + made words): a busy store is looked at again, one that can't be
+        written is Needs you — the job never goes on without its record (G1.3-4 reads it)."""
         from app import library_store
         from app.connect import library
-        store = library.open_store(lang)
-        if store is None:
-            return
-        with store:
+        with self._open(lang) as store:
             try:
                 library.record_batch(store, job["item_id"], made, mined_at, batch)
             except library_store.StoreBusy:
                 raise Wait(LIBRARY_BUSY) from None
             except library_store.StoreReadOnly:
-                return
+                raise Needs("no-store", "Surasura's library can't be written just now, so Connect can't record the "
+                                        "cards it made. Open Surasura to see why.") from None
 
     # --- Anki and its tools -------------------------------------------------------------------------------- #
     def blocked(self, lang):
@@ -630,11 +682,8 @@ class Steps:
         subtitle = self.subtitle(lang, job)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
-        store = library.open_store(lang)
-        made = set()
-        if store is not None:
-            with store:
-                made = library.made_words_all(store)
+        with self._open(lang) as store:          # every word Connect ever made, or no pick at all
+            made = library.made_words_all(store)
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, words=None, job=str(job["id"]), wait=WAIT_S,
                              made=made)
         try:
@@ -677,7 +726,10 @@ class Steps:
             if e.kind in ("crashed", "timeout"):
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
             raise _miner_wait_or_needs(e) from None
-        return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": bool(done.get("error"))}
+        # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
+        run = done.get("run") or {}
+        doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
+        return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt}
 
     def by_tag(self, lang, job, picked, words):
         """Which of `words` reached Anki, found by the job's tag (read-only) -> outcomes (made / uncertain)."""
@@ -709,7 +761,7 @@ class Steps:
             out = verbs.backfill(ns)
         except CliError as e:
             raise _wait_or_needs(e, "filling") from None
-        if out.get("skipped") in ("backfill absent", "the Connect preview is off"):
+        if isinstance(out.get("skipped"), str):         # absent, the preview off, Anki switched off: named
             raise Skip(out["skipped"])
 
     def order(self, lang, job):
@@ -722,6 +774,8 @@ class Steps:
             raise _wait_or_needs(e, "ordering") from None
         if out.get("skipped") == "junban absent":
             raise Skip("Junban isn't installed")
+        if out.get("skipped"):              # 順 off, an update waiting, the list out of date: named, the re-sort owed
+            raise Skip(str(out["skipped"]))
 
 
 def _unsure(word):

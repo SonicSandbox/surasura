@@ -4,7 +4,8 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
 - **hato's verdict** (its pairing record, `verdict`): `timed` → mine.
 - **Anything else** (hato's `extracted` / `untimed`, or no pairing: your own placement): tsubasa's command line when
   it's installed (`tsubasa --pair VIDEO SUB --dry-run --json --no-results`, P0.2: about a second an episode, never a
-  write): `CONFIDENT` with one segment → mine; anything else (`REFUSED`, `ERROR`, two segments, no answer) → not timed.
+  write): `CONFIDENT` with one segment → mine; anything else (`REFUSED`, `ERROR`, two segments or none, an answer it
+  can't read) → not timed; no answer at all (it timed out, or couldn't start) → asked again at the runner's next look.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 
 tsubasa decides by `outcome` and `segments` only (P0.2: on `ERROR` its other fields carry defaults). It is GPL, so it
@@ -22,7 +23,7 @@ import shutil
 import subprocess
 import sys
 
-TIMED, NOT_TIMED = "timed", "not timed"
+TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
 CREATE_NO_WINDOW = 0x08000000
 
@@ -40,7 +41,8 @@ def find_tsubasa():
 
 
 def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S):
-    """-> (TIMED or NOT_TIMED, who decided: `hato` · `tsubasa` · None, the reason in plain words when not timed).
+    """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `tsubasa` · None, the reason in plain words when not
+    timed). RETRY: tsubasa didn't answer (timed out, couldn't start) — the runner asks again at its next look.
     `tsubasa`: its program (default: found on PATH); `run`: `subprocess.run`'s stand-in (tests)."""
     if (pairing or {}).get("verdict") == "timed":
         return TIMED, "hato", None
@@ -53,14 +55,17 @@ def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S):
         done = (run or subprocess.run)(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, timeout=timeout, **options)
     except (OSError, subprocess.SubprocessError) as e:
-        return NOT_TIMED, "tsubasa", f"tsubasa couldn't check it ({type(e).__name__}), so no cards."
+        # no answer this time (a file read whole over a slow share, a program that wouldn't start): asked again
+        return RETRY, "tsubasa", f"tsubasa couldn't check it this time ({type(e).__name__}); Connect asks again."
     answer = _answer(done.stdout)
     outcome = (answer or {}).get("outcome")
     segments = (answer or {}).get("segments")
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) == 1:
         return TIMED, "tsubasa", None
-    if outcome == "CONFIDENT":
+    if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
         return NOT_TIMED, "tsubasa", "Its timing changes part-way through the video, so no cards."
+    if outcome == "CONFIDENT":
+        return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards."
     reason = (answer or {}).get("reason")
     if outcome in ("REFUSED", "ERROR"):
         return NOT_TIMED, "tsubasa", f"Not timed to its video ({outcome.lower()}), so no cards." + (

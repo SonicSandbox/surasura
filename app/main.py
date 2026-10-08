@@ -2403,6 +2403,7 @@ class MasterDashboardApp:
             messagebox.showinfo("Update", "Another Surasura update is already in progress.")
             return
         updater.hold_children()
+        self._replan_stop_for_update()
         job = {"info": info, "lock": lock, "staged": None, "error": None, "done": False, "children": None,
                "listing": False, "window": None, "rows": None, "after": None}
         self._update_job = job
@@ -2592,6 +2593,10 @@ class MasterDashboardApp:
         if start_held:
             try:
                 self._maybe_auto_generate()            # one held back meanwhile
+            except Exception:
+                pass
+            try:
+                self._replan_start()                   # the preview's helper, stopped at "Update now"
             except Exception:
                 pass
 
@@ -3661,6 +3666,14 @@ class MasterDashboardApp:
                 generate=lambda reason: self.gui_queue.put(lambda: self._want_replan_generate(reason)))
         if host is not None:
             self._replan_focus()
+
+    def _replan_stop_for_update(self):
+        """"Update now": the preview's helper is a Surasura process the update would wait for, and this window's hold
+        isn't its own (E3.1 pass 4 #1) — stopped now (its job ends the request it is in), started again by a cancel."""
+        host = self.__dict__.get("_replan_host")
+        if host is not None:
+            host.stop()
+            self._replan_host = None
 
     def replan_preview_changed(self):
         """順's window: its "Re-order Anki as I move content" switch (or its sync choice) changed."""

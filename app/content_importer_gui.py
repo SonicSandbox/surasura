@@ -1049,6 +1049,8 @@ class ContentImporterApp:
                     host.warm()
                     host.catch_up()
                     self._replan = host
+                    if self.__dict__.get("_replan_closed"):   # closed meanwhile: `_replan_gone` missed it (pass 4 #15)
+                        host.stop()
             except Exception as e:
                 print(f"Re-order as you move: not started ({e})")
             finally:

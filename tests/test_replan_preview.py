@@ -817,23 +817,115 @@ def test_a_generates_reorder_survives_every_look_while_anki_stays_closed(lib):
     assert calls == ["catch-up"] and not host._force
 
 
-def test_a_retry_is_never_swallowed_by_the_last_looks_memo(lib, monkeypatch):
-    """Review 3 R2: a catch-up that met a review is retried as a catch-up — that retry runs, though the store, the
-    plan and the run are as they were at the last look."""
+def test_a_retry_is_never_swallowed_by_the_last_looks_memo(lib):
+    """Review 3 R2, as pass 4 #3 asks: the review begins after the job's guards (the run itself meets it), so the first
+    look and its retry share the memo's key ("owed", writable, …) — the retry runs all the same."""
     root, store = lib
     fake = _deck(root)
     host, lines = _host(generate=lambda reason: None)
     with _patched(fake):
         host._job("catch-up")
+        for card in fake.cards.values():
+            card["mod"] = 1_700_000_500
         _move_later_to_top(store)
-        fake.reviewing = True
-        host._job("catch-up")                        # a review: said, retried
-        assert lines[-1] == replan_preview.REVIEWING and host._retry_at is not None
-        fake.reviewing = False
+        calls = []
+
+        def start_review(ids):
+            calls.append(ids)
+            if len(calls) == 1:                      # the map's read: past the guards, before request 1
+                fake.reviewing = True
+        fake.before_mod_times = start_review
         fake.write_requests.clear()
+        host._job("catch-up")
+        assert not fake.write_requests and host._retry_at is not None
+        fake.before_mod_times = None
+        fake.reviewing = False
         host._retry_at = time.monotonic() - 1        # the retry is due
         host.run_pending()
     assert fake.write_requests, "the retry returned at once"
+
+
+def test_a_read_that_lost_anki_is_tried_again(lib):
+    """Review 3 R2's second half: Anki goes away during the map's read — the run says `anki_error`, and the job is
+    retried (a refusal only the user can clear is the one said once)."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+
+        def go_away(ids):
+            fake.offline = True                      # the next request finds Anki gone
+        fake.before_mod_times = go_away
+        fake.write_requests.clear()
+        host._job("move")
+    assert not fake.write_requests and host._retry_at is not None
+    assert lines[-1].startswith("Anki not re-ordered: Could not reach Anki")
+
+
+def test_a_generates_reorder_cut_short_places_the_rest_at_its_retry(lib):
+    """Pass 4 #2: a Generate's re-order owes nothing to the store's versions. Cut short by a review after request 1,
+    it is retried as itself (not as a move that finds nothing owed), and the retry places the rest."""
+    root, store = lib
+    _settings_file(root, junban_chunk_size=5)
+    fake = _deck(root)
+    host, lines = _host(generate=lambda reason: None)
+    with _patched(fake):
+        host._job("catch-up")                        # the ladder laid: Anki in the plan's order
+        queue = fake.queue()
+        dues = [fake.cards[card_id]["due"] for card_id in queue[:40]]
+        for card_id, due in zip(queue[:40], reversed(dues)):
+            fake.cards[card_id].update(due=due, mod=int(time.time()))     # reversed by hand in Anki
+        real = fake._multi
+
+        def multi(actions):
+            replies = real(actions)
+            if any(a.get("action") == "setSpecificValueOfCard" for a in actions):
+                fake.reviewing = True                # a review begins once the first request landed
+            return replies
+        fake._multi = multi
+        fake.write_requests.clear()
+        host._job("generate")
+        assert len(fake.write_requests) == 1 and host._retry_at is not None
+        fake._multi = real
+        fake.reviewing = False
+        host._retry_at = time.monotonic() - 1
+        host.run_pending()
+    assert len(fake.write_requests) > 1, "the retry found nothing owed: the rest was never placed"
+    assert fake.queue()[:40] == queue[:40]
+
+
+def test_an_update_another_process_started_stops_every_write(lib, monkeypatch):
+    """Pass 4 #1: "Update now" in the dashboard holds its own process only; the helper sees the update's lock (any
+    process) — it says so and writes nothing, and no S3 sync goes either."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        _move_later_to_top(store)
+        monkeypatch.setattr(replan_preview, "_update_staged", lambda: True)
+        fake.write_requests.clear()
+        syncs = fake.syncs
+        host._job("move")
+        host._sync_step(force=True)
+    assert lines[-1] == replan_preview.UPDATE and not fake.write_requests and fake.syncs == syncs
+
+
+def test_with_nothing_moved_the_line_names_what_the_plan_waits_for(lib):
+    """Pass 4 #13: nothing the plan holds moved — new content says so; a setting (or an update) says press Generate."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    versions, order = replan_preview._snapshot(store)
+    settings = host._settings()
+    assert host._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
+    assert lines[-1] == replan_preview.NEW_CONTENT
+    assert host._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
+    assert lines[-1] == replan_preview.PRESS_GENERATE
 
 
 def test_a_probe_that_times_out_is_anki_busy_not_closed(lib, monkeypatch):

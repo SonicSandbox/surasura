@@ -472,6 +472,8 @@ class Host:
             done = self._replan(settings, store, versions, order, verdict, kind, parts)
             if done:
                 self._seen = None
+            elif force and self._retry_at is not None:
+                self._force = True                   # interrupted (a review, cards changed mid-write): still owed (pass 4 #2)
         elif verdict is not None and verdict[0] == "generate-first" and plan is not None and self._moved(store, order):
             self._ask_generate(f"generate-first: {verdict[1]}")      # Anki closed: the list refreshes all the same
         if kind == "catch-up" and self._generate is not None:
@@ -491,6 +493,10 @@ class Host:
                 self._retry(kind)
             elif blocked == "an update is waiting":
                 self._tell(UPDATE)
+            return False
+        if _update_staged():
+            # "Update now" in another process (the dashboard's hold is its own: E3.1 pass 4 #1) — never a write then.
+            self._tell(UPDATE)
             return False
         url = anki_connect.address(settings)
         probe = reposition.probe_anki(dict(settings, **auto._POSITIONS_ONLY))
@@ -535,9 +541,10 @@ class Host:
             return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):
-                # Only new (or changed) content, nothing the plan holds moved: new episodes are the user's to place
-                # first (2.4's rule for the automatic Generate) — said, never run on its own.
-                self._tell(NEW_CONTENT)
+                # Nothing the plan holds moved: never run on its own — new (or changed) content is the user's to place
+                # first (2.4's rule for the automatic Generate); anything else (a setting, an update) waits for the
+                # user's Generate, and the line says which (pass 4 #13).
+                self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE)
                 return False
             asked = self._ask_generate(f"generate-first: {verdict[1]}")
             self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False
@@ -628,7 +635,7 @@ class Host:
             return report                            # can clear (an unfinished run, a missing deck) waits for them
         self._said_done(report, job)
         if report.get("left"):
-            self._retry("move")
+            self._retry(kind)                        # as itself: a Generate's re-order owes nothing to the store (#2)
         return report
 
     def _progress(self, job):
@@ -764,6 +771,8 @@ class Host:
             if not is_on(settings, self.language):
                 self._sync_at = None
                 return
+            if _update_staged():
+                return                               # an update waits: no sync now (the pending one stays pending)
             _answer, self._sync_at = anki_sync_rule.sync_if_due(anki_connect.address(settings), settings,
                                                                  force=force, cancel=None if force else self._cancel)
         except Exception:
@@ -835,6 +844,7 @@ class Remote:
         self._seen = 0                            # … and the last the helper has taken in
         self._busy = False                        # the helper's host, as it last said
         self._waiting = []                        # calls made before the helper answered
+        self._unseen = []                         # calls sent the helper hasn't said it took (a fallback replays them)
         self._local = None                        # the window's own Host, once the helper is out
         self._stopped = False
         self._last = ""
@@ -904,6 +914,7 @@ class Remote:
                 if conn is None:
                     self._waiting.append(message)
                     return
+                self._unseen.append(message)
         if local is not None:
             getattr(local, do)()
             return
@@ -924,19 +935,21 @@ class Remote:
             self._go_local()
             return
         with self._lock:
-            self._conn = conn
-            waiting, self._waiting = self._waiting, []
             stopped = self._stopped
+            if not stopped:
+                # Posted before the pipe is published, so no call made meanwhile overtakes them (pass 4 #5).
+                for message in self._waiting:
+                    self._post(conn, message)
+                self._unseen, self._waiting = list(self._waiting), []
+                self._conn = conn
         if stopped:
             self._post(conn, {"do": "stop"})
             conn.close()
             return
-        for message in waiting:
-            self._post(conn, message)
         while True:
             try:
                 message = json.loads(conn.recv_bytes().decode("utf-8"))
-            except (EOFError, OSError, ValueError):
+            except Exception:                     # EOF, a broken or closed pipe, an aborted read (pass 4 #7)
                 break
             if isinstance(message, dict):
                 self._receive(message)
@@ -969,6 +982,7 @@ class Remote:
         with self._lock:
             if isinstance(message.get("seen"), int):
                 self._seen = max(self._seen, message["seen"])
+                self._unseen = [sent for sent in self._unseen if sent["n"] > self._seen]
             if "busy" in message:
                 self._busy = bool(message["busy"])
 
@@ -1021,8 +1035,9 @@ class Remote:
         with self._lock:
             if self._local is not None or self._stopped:
                 return
-            waiting = [message["do"] for message in self._waiting]
-            self._waiting = []
+            # The calls the helper never took (sent, or still waiting), each kind once (pass 4 #6).
+            waiting = [message["do"] for message in self._unseen + self._waiting]
+            self._waiting, self._unseen = [], []
             self._local = Host(self.language, say=self._say, working=self._working, generate=self._generate)
             local = self._local
         local.warm()
@@ -1030,6 +1045,15 @@ class Remote:
         for do in dict.fromkeys(waiting):        # each kind once, in the order first asked
             if do not in ("warm", "catch_up"):
                 getattr(local, do)()
+
+
+def _update_staged():
+    """An update staged (its lock held from "Update now" until the hand-over), seen from any process. Never raises."""
+    try:
+        from app import library_store
+        return library_store.update_staged()
+    except Exception:
+        return False
 
 
 def _helper_args(language, generate):
@@ -1070,8 +1094,12 @@ def helper_main(argv=None):
 
     def send(message):                            # with `lock` held
         try:
-            conn.send_bytes(json.dumps(message, ensure_ascii=False).encode("utf-8"))
-        except (OSError, ValueError):
+            data = json.dumps(message).encode("utf-8")            # ASCII escapes: a lone surrogate still encodes
+        except (TypeError, ValueError):
+            return
+        try:
+            conn.send_bytes(data)
+        except OSError:
             gone.set()
 
     def tell(**message):                          # the host's callbacks, from its worker

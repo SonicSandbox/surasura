@@ -203,3 +203,22 @@ def test_the_host_is_only_for_the_language_the_preview_was_switched_on_in(monkey
     d.var_language.get.return_value = "ja"
     d._replan_start()
     assert d._replan_host.language == "ja"
+
+
+def test_update_now_stops_the_helper_and_a_cancel_starts_it_again(monkeypatch):
+    """Pass 4 #1: the preview's helper is a Surasura process the update would wait for (and this window's hold isn't
+    its own) — "Update now" stops it; a cancelled update starts it again."""
+    d = _dash()
+    d._replan_stop_for_update = types.MethodType(Dash._replan_stop_for_update, d)
+    d._end_update = types.MethodType(Dash._end_update, d)
+    made = []
+    monkeypatch.setattr(main_module.settings_manager, "load_settings", lambda: dict(ON))
+    monkeypatch.setattr(replan_preview, "Host", lambda language, **kw: made.append(Host(language)) or made[-1])
+    d._replan_start()
+    first = d._replan_host
+    d._replan_stop_for_update()
+    assert first.calls[-1] == "stop" and d._replan_host is None
+    d._update_job = None
+    d._end_update({"after": None, "window": None, "done": False}, start_held=True)
+    assert d._replan_host is not None and d._replan_host is not first
+    assert "_replan_stop_for_update()" in inspect.getsource(Dash._start_update)

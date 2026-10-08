@@ -45,7 +45,7 @@ EPISODIC = ("anime", "drama", "movie", None)
 Status = namedtuple("Status", "kind label tip tone")          # tone: ok · accent · dim · ink · faint · warn
 Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mark (⌀ N)
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
-                                "status mark rel_path play_tip can_play")
+                                "status mark rel_path play_tip can_play deleted", defaults=(False,))
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play")
@@ -65,6 +65,8 @@ STRINGS = {
     "in_anki": "{n} in Anki", "mined": "Mined", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
+    "deleted": "Cards deleted", "deleted_n": "Cards deleted · {n}",
+    "tip_deleted": "Its cards were deleted in Anki, so it isn't mined again unless you ask",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     "tip_mining": "Making its cards now",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -279,13 +281,18 @@ def status_of(eps, word, line_n):
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
     cards = sum(e.cards for e in eps)
-    unmined = [e for e in eps if not (e.cards or e.mined)]
+    # mined, then its cards deleted by the learner: never made again unless asked (Sonic, 2026-10-07), so not Waiting
+    deleted = [e for e in eps if e.deleted and not (e.cards or e.mined)]
+    unmined = [e for e in eps if not (e.cards or e.mined or e.deleted)]
     ready = [e for e in unmined if not e.missing]
     missing = [e for e in eps if e.missing and not e.removed]
     removed = [e for e in eps if e.removed]
     top_missing = [e for e in missing if e.in_top]
     Word = word[:1].upper() + word[1:]
-    if not unmined:                                                # every item mined
+    if not unmined and deleted and not k:                          # every item's cards deleted: plain, no Anki mark
+        st = Status("deleted", STRINGS["deleted"] if n == 1 else STRINGS["deleted_n"].format(n=len(deleted)),
+                    STRINGS["tip_deleted"], "faint")
+    elif not unmined:                                              # every item mined (or its cards deleted)
         label = STRINGS["in_anki"].format(n=cards) if cards else STRINGS["mined"]
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
@@ -345,6 +352,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing)
+    deleted = bool(item.get("mined_at")) and not mined
+    ep = ep._replace(deleted=deleted)
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
     online = item.get("source_type") in ("youtube", "bilibili")
     if online:                                       # its video is online; the window holds no address for it yet
@@ -360,10 +369,10 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
 
 class _Shim:
     """An episode as `status_of` reads it (`mined` is the receipt or cards)."""
-    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining")
+    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted")
 
     def __init__(self, ep, mined):
-        self.label, self.cards, self.mined = ep.label, ep.cards, mined
+        self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
 
 
@@ -602,7 +611,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     needs = []
     by_work, order = {}, []
     for row in rows:
-        waiting = [e for e in row.episodes if e.missing and not e.removed and e.in_top]
+        waiting = [e for e in row.episodes if e.missing and not e.removed and e.in_top and not e.deleted]
         if not waiting:
             continue
         key = row.work_id if row.work_id is not None else row.key

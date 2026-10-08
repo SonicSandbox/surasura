@@ -6,6 +6,7 @@ source says so.
 
 "Anki" here is a stand-in script that writes a file the moment it is started: the file never appears.
 """
+import ast
 import os
 import re
 import subprocess
@@ -79,20 +80,35 @@ def test_picking_and_mining_never_open_anki(anki_stand_in, fake_miner, tmp_path)
     anki_stand_in()
 
 
-def test_only_a_windows_session_start_calls_open_anki_start():
-    callers = []
-    for folder, _dirs, files in os.walk(APP):
-        for name in files:
-            if name.endswith(".py"):
+def _callers():
+    """Every source file of the app's and its modules' that starts Anki through `open_anki`, however it's imported."""
+    found = []
+    for top in (APP, os.path.join(h.PROJECT_ROOT, "modules")):
+        for folder, _dirs, files in os.walk(top):
+            for name in files:
+                if not name.endswith(".py") or os.sep + "tests" + os.sep in os.path.join(folder, ""):
+                    continue
                 path = os.path.join(folder, name)
                 with open(path, encoding="utf-8") as f:
                     text = f.read()
-                if re.search(r"open_anki\.start\(", text):
-                    callers.append(os.path.relpath(path, APP).replace(os.sep, "/"))
-    assert callers == ["connect/anki_session.py"], callers
+                if re.search(r"open_anki\.start\(|from\s+app\.connect\.open_anki\s+import|import\s+app\.connect\.open_anki",
+                             text):
+                    found.append(os.path.relpath(path, h.PROJECT_ROOT).replace(os.sep, "/"))
+    return found
+
+
+def test_only_a_windows_session_start_calls_open_anki_start():
+    assert _callers() == ["app/connect/anki_session.py"], _callers()
     with open(os.path.join(APP, "connect", "anki_session.py"), encoding="utf-8") as f:
-        text = f.read()
-    body = text[text.index("def at_window("):]
-    assert "open_anki.start(" in body and "opening" in body.split("open_anki.start(")[0], \
-        "inside at_window, and only at the window's start"
-    assert text.count("open_anki.start(") == 1
+        tree = ast.parse(f.read())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "start" and getattr(node.func.value, "id", None) == "open_anki"]
+    assert len(calls) == 1
+    # the call sits under an `if` whose test reads the window's `opening` flag, inside `at_window`
+    guards = []
+    for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(function):
+            if isinstance(node, ast.If) and any(c is calls[0] for c in ast.walk(node)):
+                guards.append((function.name, {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}))
+    assert guards and all(name == "at_window" for name, _ in guards)
+    assert any("opening" in names for _name, names in guards), guards

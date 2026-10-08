@@ -439,9 +439,13 @@ def setup(args):
     from app.connect import setup as checking
     contract.emit_progress("checking Anki and Anki Miner", 0, 1)
     out = checking.checks(loaded, lang, use_open_profile=args.use_anki_profile)
-    profile = next(c for c in out["checks"] if c["id"] == "anki_profile")
-    if args.use_anki_profile and profile["state"] != checking.OK:
-        raise CliError("anki-closed", "Anki isn't open, so Surasura can't see which profile to use. Open Anki, then "
-                                      "try again.")
+    if args.use_anki_profile:
+        anki, profile = out["checks"][0], out["checks"][1]
+        if anki["state"] != checking.OK:
+            raise CliError("anki-closed", f"{anki['say']} Surasura can't see which profile to use until it answers.")
+        if profile["state"] != checking.OK:
+            raise CliError("failed", profile["say"])
+        if not out["recorded"]:
+            raise CliError("failed", "Surasura couldn't save Connect's setup record. Try again in a moment.")
     contract.emit_progress("done", 1, 1)
     return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))

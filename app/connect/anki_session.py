@@ -24,7 +24,10 @@ import os
 import time
 
 LOOK_TIMEOUT = 3                # seconds a look waits for Anki (a closed port is refused at once)
-SETTLE_MARGIN_S = 120           # `settle` never waits past the rule's delay + this
+BEGIN_WAIT_S = 10.0             # a headless `begin` waits this long for another Surasura writer (the window: none)
+SETTLE_MARGIN_S = 120           # `settle` never waits past the rule's delay + this …
+SETTLE_MAX_DELAY_S = 10 * 60    # … nor a delay longer than this: a longer one is left to the next Surasura program
+                                # that looks, or to Anki's own sync on close (S2)
 OPENING_EVERY_S = 5             # after Open Anki for me started Anki: a look this often …
 OPENING_WAIT_S = 120            # … for up to this long
 
@@ -35,25 +38,37 @@ def on(settings):
 
 
 def look(url):
-    """Is Anki there? `open` · `closed` (a refused connection: recorded for the sync rule — `closed_seen`) · `busy`
-    (it didn't answer in time: open, never taken for closed, E3.1 review 3 R6). Never raises."""
-    from app import anki_connect, anki_sync_rule
-    report = anki_connect.probe(url, timeout=LOOK_TIMEOUT)
-    if report.get("ok"):
-        return "open"
-    if report.get("timed_out"):
-        return "busy"
+    """Is Anki there? `open` · `closed` (nothing answers on its port: recorded for the sync rule, `closed_seen`, so
+    the next look starts a session) · `busy` (it didn't answer in time: open, never taken for closed, E3.1 review 3
+    R6) · `unusable` (something answered, but not as AnkiConnect should: a permission prompt, a reply of another
+    shape, an address that isn't this computer's — never "closed", so it starts no session and opens no Anki). One
+    read-only request (`requestPermission`, as `probe` asks first). Never raises."""
+    from app import anki_connect
     try:
-        anki_sync_rule.closed_seen()
+        answer = anki_connect.invoke("requestPermission", url, timeout=LOOK_TIMEOUT)
+    except anki_connect.AnkiError as e:
+        if getattr(e, "timed_out", False):
+            return "busy"
+        if e.kind != "offline":
+            return "unusable"
+        try:
+            from app import anki_sync_rule
+            anki_sync_rule.closed_seen()
+        except Exception:
+            pass
+        return "closed"
     except Exception:
-        pass
-    return "closed"
+        return "unusable"
+    if isinstance(answer, dict) and answer.get("permission") not in (None, "granted"):
+        return "unusable"
+    return "open"
 
 
-def begin(url, settings, wait=0.0, cancel=None):
+def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
     """S1 now: the session's sync when this starts a session -> what it answered (`synced` · `not-signed-in` ·
     `full-sync` · `failed: …`), or None (Connect off, no session starting, Anki closed or busy, a review in progress —
-    the next look asks again — or another Surasura program holding Anki past `wait`, which then syncs itself)."""
+    the next look asks again — or another Surasura program holding Anki past `wait`: the session stays due, and the
+    next look syncs it)."""
     if not on(settings):
         return None
     from app import anki_connect, anki_sync_rule
@@ -64,13 +79,18 @@ def begin(url, settings, wait=0.0, cancel=None):
 
 def waiting(url, settings):
     """None when Connect may read and write Anki now; else the one reason, in plain words — the status line's, never
-    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's, or you reviewing."""
+    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's, or you reviewing. None
+    too with Connect's preview off (nothing of Connect's waits) or Anki switched off for the run."""
+    if not on(settings):
+        return None
     from app import anki_connect
     state = look(url)
     if state == "closed":
         return "Waiting for Anki: it isn't open."
     if state == "busy":
         return "Waiting for Anki: it's busy."
+    if state == "unusable":
+        return "Waiting for Anki: it doesn't answer as AnkiConnect should (a permission prompt in Anki?)."
     from app.connect import setup
     mine = setup.anki_profile()
     if mine:
@@ -125,12 +145,17 @@ def per_day(url, deck):
 def settle(url, settings, cancel=None, sleep=time.sleep, clock=time.time):
     """A headless process's last step (E1.1 04 §3: a pending sync never dies with its process): the pending S3 sync,
     sent when its time comes — a newer write restarts the wait — and never once Anki has closed (its own sync on close
-    carried the order). Waits at most the rule's delay + SETTLE_MARGIN_S. -> what the sync answered, `anki-closed`,
-    or None (none pending, Connect off, cancelled, out of time)."""
+    carried the order). Waits at most the rule's delay + SETTLE_MARGIN_S, and never for a delay over
+    SETTLE_MAX_DELAY_S (a process isn't kept alive for hours: the next Surasura program that looks sends it, or Anki's
+    own sync on close carries the order). -> what the sync answered, `anki-closed`, or None (none pending, Connect off,
+    cancelled, out of time)."""
     if not on(settings):
         return None
     from app import anki_sync_rule
-    limit = clock() + (anki_sync_rule.delay_s(settings) or 0.0) + SETTLE_MARGIN_S
+    delay = anki_sync_rule.delay_s(settings) or 0.0
+    if delay > SETTLE_MAX_DELAY_S:
+        return None
+    limit = clock() + delay + SETTLE_MARGIN_S
     while True:
         answer, next_look = anki_sync_rule.sync_if_due(url, settings, cancel=cancel)
         if next_look is None:
@@ -149,7 +174,8 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
       OPENING_EVERY_S for up to OPENING_WAIT_S (`say` tells the window's bar);
     - Anki open: `begin`, the session's sync when this starts one.
 
-    -> {"anki": open · closed · busy, "opened": bool, "sync": its answer or None}, or None when Connect is off."""
+    -> {"anki": open · closed · busy · unusable, "opened": bool, "sync": its answer or None}, or None when Connect is
+    off."""
     if not on(settings):
         return None
     from app import anki_connect
@@ -165,5 +191,5 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
             while state != "open" and clock() < deadline:
                 sleep(OPENING_EVERY_S)
                 state = look(url)
-    answer = begin(url, settings) if state == "open" else None
+    answer = begin(url, settings, wait=0.0) if state == "open" else None     # the window never waits for a writer
     return {"anki": state, "opened": opened, "sync": answer}

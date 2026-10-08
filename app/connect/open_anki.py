@@ -20,6 +20,7 @@ Under a test root nothing is found unless the test names a stand-in (`SURASURA_A
 real Anki.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,8 +31,13 @@ CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 CREATE_NO_WINDOW = 0x08000000
 MAC_BUNDLE = "/Applications/Anki.app"
 STAND_IN = "SURASURA_ANKI_PROGRAM"          # tests and the live drill only: the program to start as "Anki"
-# Variables this program's own runtime sets that would point Anki's Python or Qt at the wrong files
-_NOT_FOR_ANKI = ("PYTHON", "_MEI", "_PYI", "TCL_", "TK_", "QT_")
+# Variables this program's own runtime sets that would point Anki's Python or Qt at the wrong files: Python's and
+# PyInstaller's, Tcl/Tk's (2.x), and the Qt paths a frozen PyQt6 program sets (3.0) — never the user's own Qt choices
+# (QT_QPA_PLATFORM, QT_SCALE_FACTOR: Anki honours them too)
+_NOT_FOR_ANKI = ("PYTHON", "_MEI", "_PYI")
+_NOT_FOR_ANKI_NAMES = frozenset({"TCL_LIBRARY", "TK_LIBRARY", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
+                                 "QML2_IMPORT_PATH", "QML_IMPORT_PATH"})
+_ANKI_EXE = re.compile(r"^(.*?anki\.exe)(?:\s|$)", re.IGNORECASE)
 
 
 def _command(path):
@@ -55,13 +61,15 @@ def _association():
 
 
 def program_of(command):
-    """The program in a Windows command line (`"C:\\…\\Anki.exe" "%1"` -> `C:\\…\\Anki.exe`), or None."""
-    command = str(command or "").strip()
+    """The program in a Windows command line (`"C:\\…\\Anki.exe" "%1"` -> `C:\\…\\Anki.exe`), or None: quoted,
+    or not (a path with spaces, up to its `anki.exe`), `%ProgramFiles%`-style variables expanded."""
+    command = os.path.expandvars(str(command or "").strip())
     if command.startswith('"'):
         end = command.find('"', 1)
         path = command[1:end] if end > 0 else ""
     else:
-        path = command.split(" ", 1)[0]
+        found = _ANKI_EXE.match(command)
+        path = found.group(1) if found else command.split(" ", 1)[0]
     return path if os.path.basename(path).lower() == "anki.exe" else None
 
 
@@ -107,7 +115,8 @@ def running():
 
 def environment():
     """This program's environment, less what would steer Anki's own Python or Qt."""
-    return {key: value for key, value in os.environ.items() if not key.upper().startswith(_NOT_FOR_ANKI)}
+    return {key: value for key, value in os.environ.items()
+            if not key.upper().startswith(_NOT_FOR_ANKI) and key.upper() not in _NOT_FOR_ANKI_NAMES}
 
 
 def start(profile=None):

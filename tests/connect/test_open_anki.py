@@ -56,7 +56,8 @@ def test_the_stand_in_starts_detached_on_connects_profile_with_a_clean_environme
     seen = _wait_for(out)
     process.wait(timeout=30)
     assert seen["argv"] == ["-p", "日本語の勉強"], "Anki opens on the profile Connect was set up with"
-    assert set(seen["env"]) == {"STAND_IN_OUT"}, "none of this program's Python, Qt or Tcl variables reach Anki"
+    # the user's own Qt choices (QT_QPA_PLATFORM, QT_SCALE_FACTOR) pass: Anki honours them too
+    assert set(seen["env"]) - {"QT_QPA_PLATFORM", "QT_SCALE_FACTOR"} == {"STAND_IN_OUT"},         "none of this program's Python, Qt or Tcl paths reach Anki"
 
 
 def test_without_a_profile_anki_opens_its_last_one(stand_in):
@@ -118,11 +119,18 @@ def test_windows_looks_in_the_installers_places_then_the_apkg_association(monkey
     ('"C:\\Users\\学習者\\AppData\\Local\\Programs\\Anki\\Anki.exe" "%1"',
      "C:\\Users\\学習者\\AppData\\Local\\Programs\\Anki\\Anki.exe"),
     ("C:\\Anki\\anki.exe %1", "C:\\Anki\\anki.exe"),
+    ("C:\\Program Files\\Anki\\anki.exe %1", "C:\\Program Files\\Anki\\anki.exe"),     # unquoted, with a space
     ('"C:\\Program Files\\7-Zip\\7zFM.exe" "%1"', None),          # .apkg opened by something that isn't Anki
     ("", None),
 ])
 def test_the_apkg_association_names_anki_only_when_it_is_anki(command, program):
     assert open_anki.program_of(command) == program
+
+
+def test_a_command_written_with_a_variable_is_read_through_it(monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\学習者\\AppData\\Local")
+    assert open_anki.program_of('"%LOCALAPPDATA%\\Programs\\Anki\\anki.exe" "%1"') == \
+        "C:\\Users\\学習者\\AppData\\Local\\Programs\\Anki\\anki.exe"
 
 
 @pytest.mark.parametrize("listing, answer", [
@@ -154,5 +162,8 @@ def test_the_environment_keeps_everything_else(monkeypatch):
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     monkeypatch.setenv("_MEIPASS2", "C:\\Temp\\_MEI123")
     monkeypatch.setenv("APPDATA", "C:\\Users\\学習者\\AppData\\Roaming")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")              # the user's own choice: Anki honours it too
+    monkeypatch.setenv("QT_SCALE_FACTOR", "1.5")
     env = open_anki.environment()
     assert "_MEIPASS2" not in env and env["APPDATA"].endswith("Roaming") and "PATH" in env
+    assert env["QT_QPA_PLATFORM"] == "wayland" and env["QT_SCALE_FACTOR"] == "1.5"

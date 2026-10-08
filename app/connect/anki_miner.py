@@ -21,7 +21,7 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
 Failures are AnkiMinerError with a `kind` the runner (P2.4) acts on: `busy` (its window is open, or another run works:
 retry later, E8), `writer-busy` (another Surasura program writes Anki), `reviewing` (you're reviewing: E2), `anki-closed` (E1), `quarantined` (Windows Security blocked it: WinError 225, never retried
 silently, W1), `crashed` / `timeout` (the batch is `uncertain`: checked in Anki by the job's tag before any retry,
-E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `refused` (a run file it refused), `setup` (its
+E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `too-old` (a build before 3.5.0, never run), `refused` (a run file it refused), `setup` (its
 setup is incomplete: `check`'s items name what), `absent`.
 """
 import json
@@ -88,6 +88,43 @@ def _registry_location():
             return winreg.QueryValueEx(key, "InstallLocation")[0] or None
     except OSError:
         return None
+
+
+MIN_VERSION = (3, 5, 0)        # the first release with `--api` (IS §4.1)
+
+
+def version_tuple(text):
+    """"3.7.0" -> (3, 7, 0), padded to three parts ("3.5" -> (3, 5, 0)); None when it isn't a dotted version."""
+    parts = []
+    for piece in str(text or "").strip().lstrip("vV").split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple((parts + [0, 0, 0])[:max(3, len(parts))]) if parts else None
+
+
+def too_old(text):
+    found = version_tuple(text)
+    return found is not None and found < MIN_VERSION
+
+
+def too_old_install(path):
+    """The installer's version when the program at `path` is the one its installer put in place (InstallLocation)
+    and it is older than 3.5.0, else None. Such a build has no `--api`: run with it, it opens its window."""
+    folder = _registry_location()
+    if not folder or not path:
+        return None
+    try:
+        same = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(os.path.join(folder, EXE)))
+    except (TypeError, ValueError):
+        return None
+    installed = installed_version() if same else None
+    return installed if installed and too_old(installed) else None
 
 
 def installed_version():
@@ -186,7 +223,12 @@ def _result(verdict):
 
 
 def version(path):
-    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read every batch, E10)."""
+    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read every batch, E10). A build
+    its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window): AnkiMinerError
+    `too-old`."""
+    old = too_old_install(path)
+    if old:
+        raise AnkiMinerError("too-old", f"Anki Miner {old} is too old for Surasura: Connect needs 3.5.0 or later.")
     result = _result(api(path, ["version"]))
     if result.get("schema") != API_SCHEMA:
         raise AnkiMinerError("unknown-version", f"Anki Miner {result.get('app')} isn't one Surasura has been "

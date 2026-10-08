@@ -33,7 +33,10 @@ class StandInAnki:
         self.asked.append(("probe", tuple(required)))
         if not self.open:
             return {"ok": False, "version": None, "missing": [], "error": "closed", "timed_out": self.timed_out}
-        return {"ok": True, "version": 6, "missing": [a for a in required if a in self.missing], "error": ""}
+        missing = [a for a in required if a in self.missing]
+        # as `anki_connect.probe` answers: not ok whenever an action is missing
+        return {"ok": not missing, "version": 6, "missing": missing,
+                "error": "This AnkiConnect is missing " + ", ".join(missing) if missing else ""}
 
     def invoke(self, action, url, timeout=30, **params):
         self.asked.append((action, params))
@@ -221,9 +224,11 @@ def test_an_anki_miner_setting_that_points_nowhere_names_the_path(monkeypatch, t
 def test_a_build_its_installer_says_is_older_than_35_is_never_run(monkeypatch, fake_miner):
     # research/01:228 — a build without --api opens its window: the uninstall key's version is read first
     StandInAnki(monkeypatch)
+    monkeypatch.setattr(anki_miner, "_registry_location", lambda: os.path.dirname(fake_miner.path))
+    monkeypatch.setattr(anki_miner, "EXE", os.path.basename(fake_miner.path))      # the installer's program
     monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.4.2")
-    monkeypatch.setattr(anki_miner, "find", lambda settings: fake_miner.path)     # found by its installer
-    check = _by_id(setup.checks(_settings(), "ja"))["anki_miner_version"]
+    # chosen by hand or found by its installer: the installer's version is read first either way
+    check = _by_id(setup.checks(_settings(fake_miner), "ja"))["anki_miner_version"]
     assert check["state"] == "needs-you" and "3.4.2" in check["say"] and "Update Anki Miner" in check["do"]
     assert fake_miner.calls() == [], "never started"
 
@@ -312,6 +317,82 @@ def test_anki_miner_not_reaching_anki_while_anki_is_closed_is_only_a_wait(monkey
     assert check["state"] == "waiting"
 
 
+# Anki Miner 3.7's own `check` items (3.7.0 cli/api/commands.py), as it answers them
+ITEMS_37 = ["anki", "deck", "note_type", "fields", "dictionary", "resources", "language_pack", "ffmpeg", "ffprobe",
+            "yt_dlp", "speech_model"]
+
+
+def _items(failing, message="not ready"):
+    return [{"name": n, "ok": n not in failing, "message": message if n in failing else None} for n in ITEMS_37]
+
+
+def test_what_only_anki_miners_youtube_fetch_needs_never_stops_connect(monkeypatch, ready_37):
+    # 3.7 says ready without yt-dlp or a speech model: Connect mines videos only, and trusts that verdict
+    StandInAnki(monkeypatch)
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": True, "items": _items({"yt_dlp", "speech_model"})})
+    result = setup.checks(_settings(ready_37), "ja")
+    assert _by_id(result)["anki_miner_setup"]["state"] == "ok" and result["ready"]
+
+
+def test_anki_closed_fails_anki_miners_deck_and_fields_too_and_that_is_one_wait(monkeypatch, ready_37):
+    StandInAnki(monkeypatch, open_=False)
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": _items({"anki", "deck", "note_type", "fields", "yt_dlp"},
+                                                         "Not checked: Anki is not reachable.")})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["state"] == "waiting" and check["do"] == "Open Anki"
+
+
+def test_anki_closed_and_a_dictionary_missing_names_only_the_dictionary(monkeypatch, ready_37):
+    StandInAnki(monkeypatch, open_=False)
+    items = _items({"anki", "deck", "note_type", "fields"}, "Not checked: Anki is not reachable.")
+    items[4] = {"name": "dictionary", "ok": False, "message": "No dictionary is installed."}
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": items})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["state"] == "needs-you" and "dictionary: No dictionary is installed." in check["say"]
+    assert "deck" not in check["say"], "what Anki's being closed explains isn't named as missing"
+
+
+def test_anki_miner_not_reaching_anki_that_surasura_reaches_names_its_address(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": _items({"anki", "deck", "note_type", "fields"})})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["state"] == "needs-you" and "address may differ" in check["say"]
+
+
+def test_a_named_profile_anki_miner_lacks_says_what_to_do_about_it(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    check = _by_id(setup.checks(_settings(ready_37, connect_anki_miner_profile="字幕"), "ja"))["anki_miner_profile"]
+    assert check["do"] == "Choose a profile Anki Miner has, or make it in Anki Miner"
+    assert "didn't answer" not in check["say"]
+
+
+def test_the_record_forgets_an_anki_miner_that_was_uninstalled(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    setup.checks(_settings(ready_37), "ja")
+    assert setup.read_record()["anki_miner"]["app"] == "3.7.0"
+    setup.checks(_settings(), "ja")                               # gone: nothing found
+    assert setup.read_record()["anki_miner"] is None
+
+
+def test_a_profile_another_program_chose_meanwhile_is_kept(monkeypatch, ready_37):
+    # Two writers of the record: a look that read it before a slow Anki Miner call writes back only what it decided
+    anki = StandInAnki(monkeypatch, profile="日本語")
+    setup.checks(_settings(ready_37), "ja")
+    real_version = anki_miner.version
+
+    def slow_version(path):
+        setup.write_record(dict(setup.read_record(), anki_profile="中文学习"))      # `setup --use-anki-profile` elsewhere
+        return real_version(path)
+    monkeypatch.setattr(anki_miner, "version", slow_version)
+    anki.profile = "日本語"
+    setup.checks(_settings(ready_37), "ja")
+    assert setup.anki_profile() == "中文学习", "the other program's choice survives"
+
+
 def test_nothing_of_anki_miners_is_ever_written(monkeypatch, ready_37):
     # Its settings and profiles are its own (01-scope): only `version`, `profiles` and `check` are asked
     StandInAnki(monkeypatch)
@@ -364,5 +445,13 @@ def test_every_missing_piece_has_a_sentence_and_an_action(monkeypatch):
 
 def test_version_tuples_read_as_anki_miner_writes_them():
     assert setup.version_tuple("3.7.0") == (3, 7, 0) and setup.version_tuple("v3.5.0-rc1") == (3, 5, 0)
+    assert setup.version_tuple("3.5") == (3, 5, 0), "two parts are padded, so 3.5 is never too old"
     assert setup.version_tuple("") is None and setup.version_tuple("dev") is None
-    assert setup._too_old("3.4.9") and not setup._too_old("3.5.0") and not setup._too_old("dev")
+    assert setup._too_old("3.4.9") and not setup._too_old("3.5.0") and not setup._too_old("3.5")
+    assert not setup._too_old("dev")
+
+
+def test_open_anki_for_me_is_read_only_with_connects_preview_on(monkeypatch, ready_37):
+    StandInAnki(monkeypatch, open_=False)
+    checks = _by_id(setup.checks(_settings(ready_37, connect_enabled=False, connect_open_anki=True), "ja"))
+    assert "open_anki" not in checks and "Surasura opens it" not in checks["anki"]["say"]

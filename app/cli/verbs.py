@@ -817,7 +817,8 @@ MINE_WORDS = ("list", "unknown", "i1")
 # The caller's kinds of failure (app/connect/anki_miner.py) -> the contract's codes (02 §3)
 _MINER_CODES = {"busy": "anki-miner-busy", "writer-busy": "busy", "reviewing": "anki-busy",
                 "anki-closed": "anki-closed", "quarantined": "needs-you",
-                "unknown-version": "needs-you", "needs-you": "needs-you", "setup": "needs-you",
+                "unknown-version": "needs-you", "too-old": "needs-you", "needs-you": "needs-you",
+                "setup": "needs-you",
                 "refused": "failed", "crashed": "failed", "timeout": "failed", "failed": "failed",
                 "unreadable": "bad-data", "cancelled": "failed", "absent": "failed"}
 

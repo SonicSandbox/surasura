@@ -59,6 +59,13 @@ def test_use_anki_profile_with_anki_closed_says_so(set_up):
     h.write_settings(connect_enabled=True)
     code, lines = h.run_cli("setup", "--use-anki-profile", env={"SURASURA_NO_ANKI_SYNC": None})
     assert code == 3 and h.answer(lines)["code"] == "anki-closed"
+    assert "Anki isn't open" in h.answer(lines)["message"]
+
+
+def test_use_anki_profile_with_anki_switched_off_for_the_run_says_that(set_up):
+    h.write_settings(connect_enabled=True)
+    code, lines = h.run_cli("setup", "--use-anki-profile")
+    assert code == 3 and "isn't asked in this run" in h.answer(lines)["message"]
 
 
 def test_use_anki_profile_moves_connect_to_the_open_profile(set_up, monkeypatch):

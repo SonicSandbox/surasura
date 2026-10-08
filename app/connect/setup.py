@@ -43,7 +43,10 @@ RECORD_VERSION = 1
 # sync, the note type's fields, a batch checked by its tag): a fork on port 8765 missing one is named (E5)
 ANKI_ACTIONS = ("guiReviewActive", "getActiveProfile", "findNotes", "notesInfo", "addTags", "modelFieldNames",
                 "sync")
-MIN_ANKI_MINER = (3, 5, 0)          # the first release with `--api` (IS §4.1)
+# Anki Miner's `check` items (3.7.0 `cli/api/commands.py`): those it can't look at while Anki is closed, and those
+# only its YouTube fetch needs (a video-only caller is ready without them: its own `ready` leaves them out)
+ANKI_ITEMS = frozenset({"anki", "deck", "note_type", "fields"})
+FETCH_ONLY = frozenset({"yt_dlp", "speech_model"})
 RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
 ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
 
@@ -79,7 +82,7 @@ def read_record():
 
 
 def write_record(record):
-    """Atomically (temp + replace); a failure costs only a check asked again. Never raises."""
+    """Atomically (temp + replace) -> written or not. A failure costs only a check asked again. Never raises."""
     path = record_path()
     temp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
@@ -87,11 +90,13 @@ def write_record(record):
         with open(temp, "w", encoding="utf-8") as f:
             json.dump(dict(record, version=RECORD_VERSION), f, ensure_ascii=False, indent=1)
         os.replace(temp, path)
+        return True
     except OSError:
         try:
             os.remove(temp)
         except OSError:
             pass
+        return False
 
 
 def anki_profile():
@@ -113,9 +118,9 @@ def _anki(url, open_anki_on):
     if _anki_off():
         return _check("anki", NOT_CHECKED, "Anki isn't asked in this run (SURASURA_NO_ANKI_SYNC)."), False
     report = anki_connect.probe(url, required=ANKI_ACTIONS, timeout=3)
-    if report.get("ok") and not report.get("missing"):
-        return _check("anki", OK, "Anki is open, with AnkiConnect."), True
     if report.get("ok"):
+        return _check("anki", OK, "Anki is open, with AnkiConnect."), True
+    if report.get("missing"):         # it answered (`probe` says not ok whenever an action is missing)
         missing = ", ".join(f'"{name}"' for name in report["missing"])
         return _check("anki", NEEDS_YOU,
                       f"The Anki add-on that answers Surasura (AnkiConnect) can't do {missing}, which Connect needs.",
@@ -131,7 +136,8 @@ def _anki(url, open_anki_on):
 
 def _anki_profile(url, answered, record, keep, use_open):
     """S2, E3 -> (check, Anki's open profile or None). `keep`: record the first profile seen (Connect's preview on);
-    `use_open`: Connect works in the open profile from now on (`--use-anki-profile`)."""
+    `use_open`: Connect works in the open profile from now on (`--use-anki-profile`). Sets `record["anki_profile"]`
+    when it decides one (`checks` writes only what changed, onto the record as it is then)."""
     from app import anki_connect
     if not answered:
         return _check("anki_profile", NOT_CHECKED, "Checked once Anki is open."), None
@@ -196,23 +202,13 @@ def _first_known_sync(settings, language):
 # Anki Miner (S4–S7, E7–E12, W1)
 # --------------------------------------------------------------------------- #
 def version_tuple(text):
-    """"3.7.0" -> (3, 7, 0); None when it isn't a dotted version."""
-    parts = []
-    for piece in str(text or "").strip().lstrip("vV").split("."):
-        digits = ""
-        for ch in piece:
-            if not ch.isdigit():
-                break
-            digits += ch
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts) if parts else None
+    from app.connect import anki_miner
+    return anki_miner.version_tuple(text)
 
 
 def _too_old(app):
-    found = version_tuple(app)
-    return found is not None and found < MIN_ANKI_MINER
+    from app.connect import anki_miner
+    return anki_miner.too_old(app)
 
 
 def _miner_error(id_, e):
@@ -226,6 +222,10 @@ def _miner_error(id_, e):
         return _check(id_, NEEDS_YOU, e.message, "Windows Security → Protection history")
     if e.kind == "unknown-version":
         return _check(id_, NEEDS_YOU, e.message, "Update Surasura")
+    if e.kind == "too-old":
+        return _check(id_, NEEDS_YOU, e.message, f"Update Anki Miner ({RELEASES})")
+    if e.kind == "needs-you":
+        return _check(id_, NEEDS_YOU, e.message, "Choose a profile Anki Miner has, or make it in Anki Miner")
     return _check(id_, NEEDS_YOU, f"Anki Miner didn't answer Surasura's question: {e.message}", "Open Anki Miner "
                   "once to check it starts")
 
@@ -249,17 +249,9 @@ def _anki_miner(settings, language, answered):
             do = f"Install Anki Miner ({RELEASES})"
         return [_check("anki_miner", NEEDS_YOU, say, do)] + rest("anki_miner", "Checked once Anki Miner is installed."), {}
     found = {"path": path}
-    installed = None if chosen else anki_miner.installed_version()
-    out = [_check("anki_miner", OK, "Anki Miner is installed" + (f" ({installed})." if installed else "."))]
-    if installed and _too_old(installed):
-        # Never run: a build without `--api` opens its window (research/01:228)
-        found["app"] = installed
-        return out + [_check("anki_miner_version", NEEDS_YOU,
-                             f"Anki Miner {installed} is too old for Surasura: Connect needs 3.5.0 or later.",
-                             f"Update Anki Miner ({RELEASES})")] + rest("anki_miner_version",
-                                                                        "Checked once Anki Miner is updated."), found
+    out = [_check("anki_miner", OK, "Anki Miner is installed.")]
     try:
-        info = anki_miner.version(path)
+        info = anki_miner.version(path)     # never runs a build its installer says is older than 3.5.0
     except anki_miner.AnkiMinerError as e:
         return out + [_miner_error("anki_miner_version", e)] + rest("anki_miner_version",
                                                                     "Checked once Anki Miner answers."), found
@@ -293,18 +285,23 @@ def _anki_miner(settings, language, answered):
     except anki_miner.AnkiMinerError as e:
         return out + [_miner_error("anki_miner_setup", e)], found
     items = {item.get("name"): item for item in ready.get("items") or () if isinstance(item, dict)}
-    missing = [(name_, item) for name_, item in items.items() if not item.get("ok")]
-    if ready.get("ready") and not missing:
+    failed = {name_: item for name_, item in items.items() if not item.get("ok") and name_ not in FETCH_ONLY}
+    anki_down = "anki" in failed
+    own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
+    if ready.get("ready") is True:          # its own verdict; what only its YouTube fetch needs never counts
         out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
-    elif missing and all(name_ == "anki" for name_, _item in missing):
+    elif own:
+        named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
+        out.append(_check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).",
+                          "Open Anki Miner and finish its setup"))
+    elif anki_down and not answered:
         out.append(_check("anki_miner_setup", WAITING, "Anki Miner can't reach Anki: Connect waits until Anki is "
-                          "open.", "Open Anki") if not answered else
-                   _check("anki_miner_setup", NEEDS_YOU, "Anki Miner can't reach Anki, though Surasura can: its "
+                          "open, then checks the rest of its setup.", "Open Anki"))
+    elif anki_down:
+        out.append(_check("anki_miner_setup", NEEDS_YOU, "Anki Miner can't reach Anki, though Surasura can: its "
                           "AnkiConnect address may differ from Surasura's.", "Check Anki Miner's AnkiConnect address"))
     else:
-        named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in missing
-                          if name_ != "anki") or "it says it isn't ready"
-        out.append(_check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).",
+        out.append(_check("anki_miner_setup", NEEDS_YOU, "Anki Miner says its own setup isn't finished.",
                           "Open Anki Miner and finish its setup"))
     return out, found
 
@@ -335,7 +332,7 @@ def _modules():
 
 
 def _open_anki(settings):
-    if not (settings or {}).get("connect_open_anki"):
+    if not ((settings or {}).get("connect_enabled") and settings.get("connect_open_anki")):
         return []
     from app.connect import open_anki
     command = open_anki.find()
@@ -357,18 +354,25 @@ def checks(settings, language, keep=None, use_open_profile=False):
     settings = settings or {}
     keep = bool(settings.get("connect_enabled")) if keep is None else bool(keep)
     record = read_record()
+    before = record.get("anki_profile")
     url = anki_connect.address(settings)
-    anki, answered = _anki(url, bool(settings.get("connect_open_anki")))
+    anki, answered = _anki(url, bool(settings.get("connect_enabled") and settings.get("connect_open_anki")))
     profile, open_now = _anki_profile(url, answered, record, keep, use_open_profile)
     out = [anki, profile, _ankiweb(), _first_known_sync(settings, language)]
     miner, found = _anki_miner(settings, language, answered)
     out += miner + _modules() + _open_anki(settings)
+    written = False
     if keep:
-        if found:
-            record["anki_miner"] = found
-        record["checked_at"] = _now()
-        record.setdefault("checks", {})[language] = [{"id": c["id"], "state": c["state"]} for c in out]
-        write_record(record)
+        # Onto the record as it is now (another program may have written it while Anki Miner answered): only what
+        # this look decided
+        fresh = read_record()
+        if record.get("anki_profile") != before:
+            fresh["anki_profile"], fresh["anki_profile_at"] = record["anki_profile"], record.get("anki_profile_at")
+        fresh["anki_miner"] = found or None
+        fresh["checked_at"] = _now()
+        fresh.setdefault("checks", {})[language] = [{"id": c["id"], "state": c["state"]} for c in out]
+        written = write_record(fresh)
+        record = fresh
     return {"ready": not any(c["blocks"] for c in out), "checks": out,
             "anki_profile": record.get("anki_profile") if keep else (record.get("anki_profile") or open_now),
-            "anki_miner": found or None, "recorded": keep}
+            "anki_miner": found or None, "recorded": written}

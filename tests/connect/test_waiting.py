@@ -71,6 +71,21 @@ def test_no_video_waits_for_the_next_start_and_connect_exits(tmp_path, ledger):
     assert not any(e[0] == "mine" for e in steps.log)
 
 
+def test_tsubasa_with_no_answer_waits_and_is_asked_again_at_the_next_look(tmp_path, ledger):
+    # why: a RETRY verdict is tsubasa not answering this time, not a video that is not timed; it must never become a
+    # Needs you "not-timed" (the user would be told a fine episode is wrong) and Connect must keep looking
+    steps, summary, slept = _run(tmp_path, ledger, {"verdict": "retry"}, looks=1)
+    assert 1 in summary["languages"]["ja"]["waiting"], "the episode waits"
+    assert ledger.jobs("ja")[0]["state"] == "waiting"
+    assert ledger.needs("ja") == [], "no not-timed need is recorded"
+    assert not any(e[0] == "mine" for e in steps.log)
+    # the next look (2 minutes on) gets the answer: the job goes on and is done
+    steps, summary, slept = _run(tmp_path, ledger, {"verdict": "retry"}, looks=5, clear=["verdict"])
+    assert slept == [runner.LOOK_EVERY_S], "asked again after one 2-minute look"
+    assert ledger.jobs("ja")[0]["state"] == "done"
+    assert ledger.needs("ja") == [], "still no need after the answer came"
+
+
 def test_not_timed_is_named_once_in_needs_you_and_never_mined(tmp_path, ledger):
     for _start in range(2):
         steps, summary, slept = _run(tmp_path, ledger, {"verdict": "not timed"})
@@ -78,6 +93,16 @@ def test_not_timed_is_named_once_in_needs_you_and_never_mined(tmp_path, ledger):
     job = ledger.jobs("ja")[0]
     assert job["state"] == "waiting" and "Not timed" in job["reason"]
     assert [n["kind"] for n in ledger.needs("ja")] == ["not-timed"], "named once, however many starts"
+
+
+def test_a_not_timed_wait_before_mining_keeps_no_pick_so_it_holds_no_level_raise_look(tmp_path, ledger):
+    # why: it waits at fit-check, before any mining, so it has no step to resume at; a stored resume would make
+    # `in_flight` true and hold the level raise's look for a job that can't mine anyway
+    steps, summary, slept = _run(tmp_path, ledger, {"verdict": "not timed"})
+    assert ("fit", 1) in steps.log, "it reached the fit check (the wait is the fit's, not an earlier one)"
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["resume"]) == ("waiting", None)
+    assert ledger.in_flight("ja") is False
 
 
 def test_a_failed_known_sync_or_generate_is_needs_you_and_nothing_is_picked(tmp_path, ledger):
@@ -109,3 +134,21 @@ def test_a_cancel_ends_the_wait_at_once(tmp_path, ledger):
     steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ANKI_CLOSED})
     summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=cancel)
     assert summary["stopped"] == "cancelled" and summary["looks"] == 1
+
+
+def test_a_busy_library_at_the_look_is_a_wait_never_an_empty_top_20(tmp_path, ledger):
+    # the store can't be read: the job waits to look again, it is never mined against an empty top 20 and dropped
+    steps, summary, slept = _run(tmp_path, ledger, {"store_busy": True}, looks=1)
+    assert summary["languages"]["ja"]["waiting"] == {1: runner.LIBRARY_BUSY}
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"]) == ("waiting", runner.LIBRARY_BUSY), "waits, not dropped"
+    assert not any(e[0] == "mine" for e in steps.log), "no mining against an empty top 20"
+
+
+def test_each_episodes_backfill_need_names_its_own_item(tmp_path, ledger):
+    # Why: a need is named once per (kind, item); without the item id, the second episode's ask would be
+    # swallowed as the first one's and you'd see one need for two episodes.
+    steps, summary, slept = _run(tmp_path, ledger, {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]},
+                                                    "fill_needs": True})
+    assert {n["item_id"] for n in ledger.needs("ja")} == {1, 2}
+    assert [j["state"] for j in ledger.jobs("ja")] == ["done", "done"]

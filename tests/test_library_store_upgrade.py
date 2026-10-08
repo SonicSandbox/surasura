@@ -147,6 +147,40 @@ def test_upgrade_completes_pieces_and_keeps_2_5s(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_backup_killed_mid_copy_never_looks_whole(language):
+    """L3.1's smoothness drills (R3): a process killed while the `.bak` is copied left an empty `.bak` with its
+    `-journal`, counted among the backups kept. A copy is written as `.part` and renamed only when whole; the next
+    backup clears a killed one's leftovers (an older version's `.bak` still holding its journal too), and only whole
+    backups count toward the newest kept."""
+    _d, _u, doc = library(language)
+    _data_dir, _user_files_dir, db = schema1_store(language, doc)
+    folder, base = os.path.split(db)
+    for name in (".bak.20260101-000000.part", ".bak.20260101-000000.part-journal", ".bak.20260101-000001",
+                 ".bak.20260101-000001-journal"):
+        open(os.path.join(folder, base + name), "wb").close()
+    conn = _raw(db)
+
+    class Killed(Exception):
+        pass
+
+    class Dying:                                               # the process dies inside SQLite's copy
+        def backup(self, target, *a, **k):
+            target.execute("CREATE TABLE half (x)")
+            raise Killed("killed mid-copy")
+    with pytest.raises(Killed):
+        ls._backup_db(Dying(), db)
+    assert not [f for f in os.listdir(folder) if f.startswith(base + ".bak.") and not f.endswith((".part", "-journal"))], \
+        "a killed copy leaves no whole-looking .bak (the older one with its journal cleared too)"
+    dest = ls._backup_db(conn, db)
+    conn.close()
+    left = sorted(f for f in os.listdir(folder) if f.startswith(base + ".bak."))
+    assert left == [os.path.basename(dest)], left
+    check = sqlite3.connect(dest)
+    assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    check.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_upgrade_failure_leaves_schema_1_and_a_bak(language, monkeypatch):
     """02 §2.6 #6: a step that fails rolls the whole upgrade back — schema 1, no works table, every row as it was — with
     a `.bak` beside it and the reason recorded; the next helper run tries again and succeeds."""

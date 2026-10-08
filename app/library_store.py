@@ -663,19 +663,34 @@ def quick_check(conn, db_path):
 
 def _backup_db(conn, db_path):
     """A `.bak` through SQLite's backup API (a plain copy of the .db alone lost committed rows, K6);
-    keep the newest BAK_KEEP (R-5)."""
+    keep the newest BAK_KEEP (R-5). Written under a `.part` name and renamed once whole, so a process killed
+    mid-copy leaves no `.bak` that looks complete; the next backup (always the helper's, under the maintenance lock)
+    clears such a leftover, and a `.bak` still holding its `-journal` (an older version's killed copy)."""
+    folder, base = os.path.split(db_path)
+    names = os.listdir(folder)
+    for name in names:
+        if not name.startswith(base + ".bak."):
+            continue
+        whole = name[:-len("-journal")] if name.endswith("-journal") else name
+        if whole.endswith(".part") or (whole != name or whole + "-journal" in names):
+            for leftover in (whole, whole + "-journal"):
+                try:
+                    os.remove(os.path.join(folder, leftover))
+                except OSError:
+                    pass
     dest = f"{db_path}.bak.{_stamp()}"
     n = 1
     while os.path.exists(dest):
         dest = f"{db_path}.bak.{_stamp()}-{n}"
         n += 1
-    target = sqlite3.connect(dest)
+    target = sqlite3.connect(dest + ".part")
     try:
         conn.backup(target)
     finally:
         target.close()
-    folder, base = os.path.split(db_path)
-    baks = sorted((f for f in os.listdir(folder) if f.startswith(base + ".bak.")),
+    os.replace(dest + ".part", dest)
+    baks = sorted((f for f in os.listdir(folder) if f.startswith(base + ".bak.") and
+                   not f.endswith((".part", "-journal"))),
                   key=lambda f: os.path.getmtime(os.path.join(folder, f)))
     for old in baks[:-BAK_KEEP]:
         try:

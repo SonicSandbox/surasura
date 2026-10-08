@@ -44,6 +44,7 @@ _TEMP_PREFIXES = ("~$", ".~")
 
 BELL_SLOTS = 8            # windows that can listen to one store's bell at once (a ninth falls back to the slow look)
 
+FILE_ACTION_MODIFIED = 3
 ERROR_ALREADY_EXISTS = 183
 ERROR_OPERATION_ABORTED = 995        # our own close()
 ERROR_NOTIFY_ENUM_DIR = 1022         # Windows lost track: enumerate the tree
@@ -98,14 +99,15 @@ def ignored(rel):
     return name in _SKIP_NAMES or name.endswith(_TEMP_SUFFIXES) or name.startswith(_TEMP_PREFIXES)
 
 
-def folders_of(root, rel):
-    """The folders a report on `rel` asks to sync: its parent (a file added, removed or renamed there; a sub-folder
-    created or gone), and `rel` itself when it is a folder now (a folder copied or moved in arrives as one report)."""
-    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
-    out = [parent]
+def folders_of(root, rel, action=1):
+    """The folder a report on `rel` asks to sync: `rel` itself when it is a folder now (a folder copied, moved or
+    renamed in arrives as one report; its scoped sync takes what is under it), else its parent (a file added, changed,
+    removed or renamed there; a sub-folder gone). A folder's own "modified" report asks for nothing: Windows sends it
+    whenever something inside changes, and that change has its own report (syncing the folder would widen a drop
+    into a show's folder to the whole tier)."""
     if os.path.isdir(os.path.join(root, *rel.split("/"))):
-        out.append(rel)
-    return out
+        return [] if action == FILE_ACTION_MODIFIED else [rel]
+    return [rel.rsplit("/", 1)[0] if "/" in rel else ""]
 
 
 class TreeWatch:
@@ -261,22 +263,22 @@ class TreeWatch:
             if got.value == 0:
                 self._overflow()
                 continue
-            self._note(_parse(buf.raw[:got.value]))
+            self._note(_parse(buf.raw[:got.value], actions=True))
 
     def _overflow(self):
         with self._lock:
             self._full = True
         self._changed.set()
 
-    def _note(self, names):
+    def _note(self, reports):
         now = time.monotonic()
         added = False
         with self._lock:
-            for name in names:
+            for action, name in reports:
                 rel = name.replace("\\", "/")
                 if ignored(rel) or (self.under and rel.split("/", 1)[0] not in self.under):
                     continue
-                for folder in folders_of(self.root, rel):
+                for folder in folders_of(self.root, rel, action):
                     if not folder:
                         continue                              # the root itself: only its tier folders matter
                     self._pending[folder] = now
@@ -304,13 +306,16 @@ def _Overlapped():
 _OVERLAPPED = []
 
 
-def _parse(raw):
-    """FILE_NOTIFY_INFORMATION records -> the names they carry (relative to the watched folder, '\\'-separated)."""
+def _parse(raw, actions=False):
+    """FILE_NOTIFY_INFORMATION records -> the names they carry (relative to the watched folder, '\\'-separated), or
+    (action, name) pairs with `actions`."""
     out, off = [], 0
     while off + 12 <= len(raw):
         nxt = int.from_bytes(raw[off:off + 4], "little")
+        action = int.from_bytes(raw[off + 4:off + 8], "little")
         ln = int.from_bytes(raw[off + 8:off + 12], "little")
-        out.append(raw[off + 12:off + 12 + ln].decode("utf-16-le", "replace"))
+        name = raw[off + 12:off + 12 + ln].decode("utf-16-le", "replace")
+        out.append((action, name) if actions else name)
         if not nxt:
             break
         off += nxt

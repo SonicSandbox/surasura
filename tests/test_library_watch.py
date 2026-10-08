@@ -69,6 +69,22 @@ def test_parse_reads_every_record_in_a_buffer():
     assert lw._parse(raw) == ["LowPriority\\番組\\第01話.srt", "LowPriority\\番組"]
 
 
+def test_parse_can_carry_each_reports_action():
+    data = "LowPriority\\番組".encode("utf-16-le")
+    raw = (0).to_bytes(4, "little") + (3).to_bytes(4, "little") + len(data).to_bytes(4, "little") + data
+    assert lw._parse(raw, actions=True) == [(3, "LowPriority\\番組")]
+
+
+def test_a_folders_own_modified_report_asks_for_nothing(tmp_path):
+    # Windows reports a folder "modified" whenever something inside it changes; that change has its own report.
+    (tmp_path / "LowPriority" / "番組").mkdir(parents=True)
+    root = str(tmp_path)
+    assert lw.folders_of(root, "LowPriority/番組", lw.FILE_ACTION_MODIFIED) == []
+    assert lw.folders_of(root, "LowPriority/番組", 1) == ["LowPriority/番組"]             # a folder arrived: itself
+    assert lw.folders_of(root, "LowPriority/番組/第01話.srt", 1) == ["LowPriority/番組"]  # a file: its folder
+    assert lw.folders_of(root, "LowPriority/消えた番組", 2) == ["LowPriority"]           # gone: its parent
+
+
 def test_not_windows_falls_back_without_touching_windows(monkeypatch, tmp_path):
     # macOS / Linux keep the slow look: the watch says so and never loads kernel32.
     monkeypatch.setattr(lw.sys, "platform", "linux")
@@ -90,10 +106,13 @@ def test_a_file_dropped_into_a_show_folder_is_reported_once_it_settles(language)
     data_dir, _u, _doc = library(language)
     w = _watch(data_dir)
     try:
-        show = sorted(os.listdir(os.path.join(data_dir, "LowPriority")))[0]
+        soon = os.path.join(data_dir, "LowPriority")
+        show = sorted(d for d in os.listdir(soon) if os.path.isdir(os.path.join(soon, d)))[0]
         touch(data_dir, f"LowPriority/{show}/{show}_第99話.srt", f"{show}\n")
         seen, full = _settled(w, want=[f"LowPriority/{show}"])
-        assert f"LowPriority/{show}" in seen and not full
+        time.sleep(0.2)                                   # the tier folder's own report, if one came, has settled too
+        seen |= set(w.take(time.monotonic() + 10)[0])
+        assert seen == {f"LowPriority/{show}"} and not full   # the show's folder, never the whole tier
     finally:
         w.close()
 
@@ -101,7 +120,7 @@ def test_a_file_dropped_into_a_show_folder_is_reported_once_it_settles(language)
 @windows_only
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_folder_copied_in_names_the_new_folder(language, tmp_path):
-    # A show folder of 12 episodes copied in by hand: its tier folder and the new folder, nothing per file.
+    # A show folder of 12 episodes copied in by hand: the new folder alone (its scoped sync takes its 12 files).
     data_dir, _u, _doc = library(language)
     src = tmp_path / "src"
     word = names(language)[20]
@@ -110,8 +129,8 @@ def test_a_folder_copied_in_names_the_new_folder(language, tmp_path):
     w = _watch(data_dir)
     try:
         shutil.copytree(src, os.path.join(data_dir, "GoalContent", word))
-        seen, full = _settled(w, want=["GoalContent", f"GoalContent/{word}"])
-        assert {"GoalContent", f"GoalContent/{word}"} <= seen and not full
+        seen, full = _settled(w, want=[f"GoalContent/{word}"])
+        assert seen == {f"GoalContent/{word}"} and not full
     finally:
         w.close()
 
@@ -127,8 +146,8 @@ def test_renamed_moved_and_deleted_folders_are_reported():
         seen, _f = _settled(w, want=["LowPriority"])
         assert "LowPriority" in seen
         shutil.move(os.path.join(soon, b), os.path.join(data_dir, "GoalContent", b))
-        seen, _f = _settled(w, want=["LowPriority", "GoalContent"])
-        assert {"LowPriority", "GoalContent"} <= seen
+        seen, _f = _settled(w, want=["LowPriority", f"GoalContent/{b}"])
+        assert {"LowPriority", f"GoalContent/{b}"} <= seen
         shutil.rmtree(os.path.join(soon, a + "_改"))
         seen, _f = _settled(w, want=["LowPriority"])
         assert "LowPriority" in seen

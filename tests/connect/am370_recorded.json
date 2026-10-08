@@ -1,0 +1,627 @@
+{
+ "source": "Anki Miner 3.7.0 (tag v3.7.0, fee1c3b), run from its source; P1.3-AM37's dry run of its proof episode, 2026-10-07",
+ "version": {
+  "schema": 1,
+  "command": "version",
+  "ok": true,
+  "error": null,
+  "message": null,
+  "result": {
+   "schema": 1,
+   "app": "3.7.0",
+   "commands": [
+    "mine",
+    "check",
+    "version",
+    "profiles",
+    "settings-export",
+    "render",
+    "media",
+    "settings-import",
+    "setup",
+    "fetch"
+   ],
+   "features": [
+    "sentence-rules-off",
+    "bold-target",
+    "named-words-whitelisted",
+    "script-fold",
+    "filter-names",
+    "word-from-line",
+    "dry-run",
+    "render",
+    "media",
+    "settings-import",
+    "setup",
+    "fetch",
+    "beside-window"
+   ]
+  }
+ },
+ "dry_run": {
+  "words": [
+   {
+    "word": "事",
+    "reading": "コト",
+    "orth": "こと",
+    "surface": "こと",
+    "sent": [
+     "こと"
+    ],
+    "front_reading": "こと",
+    "line_start": 2.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "物",
+    "reading": "モノ",
+    "orth": "もの",
+    "surface": "もの",
+    "sent": [
+     "もの"
+    ],
+    "front_reading": "もの",
+    "line_start": 10.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "所",
+    "reading": "トコロ",
+    "orth": "ところ",
+    "surface": "ところ",
+    "sent": [
+     "ところ"
+    ],
+    "front_reading": "ところ",
+    "line_start": 14.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "時",
+    "reading": "トキ",
+    "orth": "とき",
+    "surface": "とき",
+    "sent": [
+     "とき"
+    ],
+    "front_reading": "とき",
+    "line_start": 26.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "図書カード",
+    "reading": "トショカード",
+    "orth": "図書カード",
+    "surface": "図書カード",
+    "sent": [
+     "図書カード"
+    ],
+    "front_reading": "としょかーど",
+    "line_start": 18.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "借りる",
+    "reading": "カリル",
+    "orth": "借りる",
+    "surface": "借り",
+    "sent": [
+     "借りる"
+    ],
+    "front_reading": "かりる",
+    "line_start": 18.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "矢張り",
+    "reading": "ヤハリ",
+    "orth": "やっぱり",
+    "surface": "やっぱり",
+    "sent": [
+     "やっぱり"
+    ],
+    "front_reading": "やっぱり",
+    "line_start": 22.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "振り返る",
+    "reading": "フリカエル",
+    "orth": "振り返る",
+    "surface": "振り返っ",
+    "sent": [
+     "振り返る"
+    ],
+    "front_reading": "ふりかえる",
+    "line_start": 30.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "彼女",
+    "reading": "カノジョ",
+    "orth": "彼女",
+    "surface": "彼女",
+    "sent": [
+     "彼女"
+    ],
+    "front_reading": "かのじょ",
+    "line_start": 30.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   }
+  ],
+  "rows": [
+   {
+    "word": "こと",
+    "mined_form": "こと",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 2.0,
+    "sentence": "仕事をすることができる。",
+    "start": 2.0,
+    "end": 4.5,
+    "filter": null
+   },
+   {
+    "word": "もの",
+    "mined_form": "もの",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 10.0,
+    "sentence": "物語を読むものだ。",
+    "start": 10.0,
+    "end": 12.5,
+    "filter": null
+   },
+   {
+    "word": "ところ",
+    "mined_form": "ところ",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 14.0,
+    "sentence": "場所はいいところだね。",
+    "start": 14.0,
+    "end": 16.5,
+    "filter": null
+   },
+   {
+    "word": "とき",
+    "mined_form": "とき",
+    "status": "ready",
+    "note_id": null,
+    "from_line": true,
+    "media_missing": [],
+    "line_start": 26.0,
+    "sentence": "時間があるときに電話して。",
+    "start": 26.0,
+    "end": 28.5,
+    "filter": null
+   },
+   {
+    "word": "図書カード",
+    "mined_form": "図書カード",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 18.0,
+    "sentence": "図書カードを借りたい。",
+    "start": 18.0,
+    "end": 20.5,
+    "filter": null
+   },
+   {
+    "word": "借りる",
+    "mined_form": "借りる",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 18.0,
+    "sentence": "図書カードを借りたい。",
+    "start": 18.0,
+    "end": 20.5,
+    "filter": null
+   },
+   {
+    "word": "やっぱり",
+    "mined_form": "やっぱり",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 22.0,
+    "sentence": "やっぱり駅まで歩くのが一番手っ取り早い。",
+    "start": 22.0,
+    "end": 24.5,
+    "filter": null
+   },
+   {
+    "word": "振り返る",
+    "mined_form": "振り返る",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 30.0,
+    "sentence": "彼女はすぐに気が付いて振り返った。",
+    "start": 30.0,
+    "end": 32.5,
+    "filter": null
+   },
+   {
+    "word": "彼女",
+    "mined_form": "彼女",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 30.0,
+    "sentence": "彼女はすぐに気が付いて振り返った。",
+    "start": 30.0,
+    "end": 32.5,
+    "filter": null
+   }
+  ]
+ },
+ "dry_run_two_entries": {
+  "words": [
+   {
+    "word": "事",
+    "reading": "コト",
+    "orth": "こと",
+    "surface": "こと",
+    "sent": [
+     "こと",
+     "事"
+    ],
+    "front_reading": "こと",
+    "line_start": 2.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "物",
+    "reading": "モノ",
+    "orth": "もの",
+    "surface": "もの",
+    "sent": [
+     "もの",
+     "物"
+    ],
+    "front_reading": "もの",
+    "line_start": 10.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "所",
+    "reading": "トコロ",
+    "orth": "ところ",
+    "surface": "ところ",
+    "sent": [
+     "ところ",
+     "所"
+    ],
+    "front_reading": "ところ",
+    "line_start": 14.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "時",
+    "reading": "トキ",
+    "orth": "とき",
+    "surface": "とき",
+    "sent": [
+     "とき",
+     "時"
+    ],
+    "front_reading": "とき",
+    "line_start": 26.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "図書カード",
+    "reading": "トショカード",
+    "orth": "図書カード",
+    "surface": "図書カード",
+    "sent": [
+     "図書カード"
+    ],
+    "front_reading": "としょかーど",
+    "line_start": 18.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "借りる",
+    "reading": "カリル",
+    "orth": "借りる",
+    "surface": "借り",
+    "sent": [
+     "借りる"
+    ],
+    "front_reading": "かりる",
+    "line_start": 18.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "矢張り",
+    "reading": "ヤハリ",
+    "orth": "やっぱり",
+    "surface": "やっぱり",
+    "sent": [
+     "やっぱり",
+     "矢張り"
+    ],
+    "front_reading": "やっぱり",
+    "line_start": 22.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "振り返る",
+    "reading": "フリカエル",
+    "orth": "振り返る",
+    "surface": "振り返っ",
+    "sent": [
+     "振り返る"
+    ],
+    "front_reading": "ふりかえる",
+    "line_start": 30.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   },
+   {
+    "word": "彼女",
+    "reading": "カノジョ",
+    "orth": "彼女",
+    "surface": "彼女",
+    "sent": [
+     "彼女"
+    ],
+    "front_reading": "かのじょ",
+    "line_start": 30.0,
+    "line_expansion": [
+     0,
+     0
+    ]
+   }
+  ],
+  "rows": [
+   {
+    "word": "こと",
+    "mined_form": "こと",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 2.0,
+    "sentence": "仕事をすることができる。",
+    "start": 2.0,
+    "end": 4.5,
+    "filter": null
+   },
+   {
+    "word": "事",
+    "mined_form": "こと",
+    "status": "duplicate",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": null,
+    "sentence": null,
+    "start": null,
+    "end": null,
+    "filter": null
+   },
+   {
+    "word": "もの",
+    "mined_form": "もの",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 10.0,
+    "sentence": "物語を読むものだ。",
+    "start": 10.0,
+    "end": 12.5,
+    "filter": null
+   },
+   {
+    "word": "物",
+    "mined_form": "もの",
+    "status": "duplicate",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": null,
+    "sentence": null,
+    "start": null,
+    "end": null,
+    "filter": null
+   },
+   {
+    "word": "ところ",
+    "mined_form": "ところ",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 14.0,
+    "sentence": "場所はいいところだね。",
+    "start": 14.0,
+    "end": 16.5,
+    "filter": null
+   },
+   {
+    "word": "所",
+    "mined_form": "ところ",
+    "status": "duplicate",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": null,
+    "sentence": null,
+    "start": null,
+    "end": null,
+    "filter": null
+   },
+   {
+    "word": "とき",
+    "mined_form": "とき",
+    "status": "ready",
+    "note_id": null,
+    "from_line": true,
+    "media_missing": [],
+    "line_start": 26.0,
+    "sentence": "時間があるときに電話して。",
+    "start": 26.0,
+    "end": 28.5,
+    "filter": null
+   },
+   {
+    "word": "時",
+    "mined_form": "時",
+    "status": "ready",
+    "note_id": null,
+    "from_line": true,
+    "media_missing": [],
+    "line_start": 26.0,
+    "sentence": "時間があるときに電話して。",
+    "start": 26.0,
+    "end": 28.5,
+    "filter": null
+   },
+   {
+    "word": "図書カード",
+    "mined_form": "図書カード",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 18.0,
+    "sentence": "図書カードを借りたい。",
+    "start": 18.0,
+    "end": 20.5,
+    "filter": null
+   },
+   {
+    "word": "借りる",
+    "mined_form": "借りる",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 18.0,
+    "sentence": "図書カードを借りたい。",
+    "start": 18.0,
+    "end": 20.5,
+    "filter": null
+   },
+   {
+    "word": "やっぱり",
+    "mined_form": "やっぱり",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 22.0,
+    "sentence": "やっぱり駅まで歩くのが一番手っ取り早い。",
+    "start": 22.0,
+    "end": 24.5,
+    "filter": null
+   },
+   {
+    "word": "矢張り",
+    "mined_form": "やっぱり",
+    "status": "duplicate",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": null,
+    "sentence": null,
+    "start": null,
+    "end": null,
+    "filter": null
+   },
+   {
+    "word": "振り返る",
+    "mined_form": "振り返る",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 30.0,
+    "sentence": "彼女はすぐに気が付いて振り返った。",
+    "start": 30.0,
+    "end": 32.5,
+    "filter": null
+   },
+   {
+    "word": "彼女",
+    "mined_form": "彼女",
+    "status": "ready",
+    "note_id": null,
+    "from_line": false,
+    "media_missing": [],
+    "line_start": 30.0,
+    "sentence": "彼女はすぐに気が付いて振り返った。",
+    "start": 30.0,
+    "end": 32.5,
+    "filter": null
+   }
+  ]
+ }
+}

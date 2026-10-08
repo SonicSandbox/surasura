@@ -32,6 +32,7 @@ def test_place_moves_an_item_to_a_tier_and_position_and_logs_who_asked():
 def test_with_connect_on_the_placement_is_logged_under_its_source():
     c.library()
     with c.store() as s:
+        s.set_soon_line(len(s.ids("now")) - 1)          # 3.0: a row below the Soon line, so Soon exists (L3.1)
         s.register_reader("connect")
         mark = s.conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
     item = _ids("now")[-1]
@@ -76,7 +77,7 @@ def test_current_in_the_3_0_library_counts_now_then_soon():
     c.library(arrivals=True)
     now = _ids("now")
     with c.store() as s:
-        s.move([now[-1]], "soon")                       # Soon holds one item, Current = NOW then Soon
+        s.set_soon_line(len(now) - 1)                   # Soon holds one item, Current = NOW then Soon (the line, L3.1)
     now = _ids("now")
     item = now[0]
     # right after NOW's last item stays in NOW
@@ -133,7 +134,7 @@ def test_current_answers_the_place_in_current():
     c.library(arrivals=True)
     now = _ids("now")
     with c.store() as s:
-        s.move(now[-2:], "soon")
+        s.set_soon_line(len(now) - 2)                   # two rows below the Soon line (L3.1)
     now = _ids("now")
     item = now[0]
     code, line = h.call("place", "--file", str(item), "--to", "current", "--position", str(len(now) + 1),

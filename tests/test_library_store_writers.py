@@ -25,8 +25,8 @@ import tkinter as tk
 from app import library_store as ls
 from app import content_importer_gui as cig
 from app.content_importer_gui import ContentImporterApp
-from tests.test_library_store_support import (LANGUAGES, library, names, read_doc, roots, subprocess_env, touch,
-                                              write_manifest)
+from tests.test_library_store_support import (LANGUAGES, library, names, no_line, read_doc, roots, subprocess_env,
+                                              touch, write_manifest)
 
 BENCH = bool(os.environ.get("SURASURA_STORE_BENCH"))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -148,6 +148,7 @@ def test_no_order_or_tier_action_moves_a_file(window, language):
     leave every file where it is, with the same bytes (I3, L5: Sonic, "The store should never move any of the
     files")."""
     data_dir, _uf, _doc = _store_library(language)
+    no_line(ls.open_store(language, data_dir, _uf)).close()   # 2.x's tier actions, as 2.4 drew them (no Soon line)
     app = window(language)
     before = _snapshot(data_dir)
     now = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]
@@ -438,7 +439,15 @@ def test_open_and_focus_walk_on_the_worker_never_the_windows_thread(window, size
     # (20k), where an in-process count of walk_library would see none. Both are counted, with the thread asking.
     walks, in_process = [], []
     real_sync, real_walk = ls.sync_for_window, ls.walk_library
-    monkeypatch.setattr(ls, "sync_for_window", lambda s: walks.append(threading.current_thread()) or real_sync(s))
+
+    def counted(store, *args, **kwargs):
+        # Counted when it ends: a focus return asked while a sync still runs (20k: its own process, slower on a busy
+        # machine) shares one follow-up by design, so the next focus return waits for this one to finish.
+        try:
+            return real_sync(store, *args, **kwargs)
+        finally:
+            walks.append(threading.current_thread())
+    monkeypatch.setattr(ls, "sync_for_window", counted)
     monkeypatch.setattr(ls, "walk_library", lambda d: in_process.append(threading.current_thread()) or real_walk(d))
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     t0 = time.perf_counter()

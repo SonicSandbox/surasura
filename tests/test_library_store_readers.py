@@ -284,6 +284,10 @@ def test_the_journey_check_takes_in_a_file_dropped_into_a_folder(env, language):
     """The check syncs the disk first (A10's dashboard half): a hato drop turns the ✓ off before Generate."""
     data_dir, _uf, _doc = _library(language)
     _run(env, language)
+    store = ls.open_store(language, data_dir, _uf)
+    store.set_library_options(arrivals_on=False)          # New arrivals off: the drop lands in NOW (2.x, Q4-11)
+    store.close()
+    _run(env, language)
     assert _journey(env, language) is True
     drop = os.path.join(data_dir, *ls.HATO_FOLDER.split("/"), f"{names(language)[5]}.txt")
     os.makedirs(os.path.dirname(drop), exist_ok=True)

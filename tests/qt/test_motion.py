@@ -688,6 +688,44 @@ def test_a_lifted_opening_hands_its_window_to_the_next_opening(clock, stage, lif
     assert card2.isVisible()
 
 
+def test_a_lift_paints_once_a_show_and_still_repaints_when_asked(clock, stage, lifted, split, monkeypatch):
+    from PyQt6.QtTest import QTest
+    from tests.qt.conftest import wait_until
+    # why (M2.1-2): Qt paints a window shown from the loop twice — its expose, then show_sys's UpdateLater of the whole
+    # rect — and the second redrew the same picture (4+ ms at 250 %); a lift drops that one; the first and every paint
+    # asked for later stay. Split (the default on real time): the lift is shown from the loop, as in the app.
+    painted = []
+    paint = motion._Lift.paintEvent
+
+    def counted(self, event):
+        painted.append(self)
+        paint(self, event)
+    monkeypatch.setattr(motion._Lift, "paintEvent", counted)
+    card1 = Card(stage, "up")
+    o1 = card1.open()
+    assert wait_until(lambda: painted, 2)
+    lift = o1.lift
+    QTest.qWait(60)                                              # the posted UpdateLater and any repaint it asks for
+    assert len(painted) == 1
+    lift.update()                                                # a repaint asked for later still paints
+    assert wait_until(lambda: len(painted) == 2, 2)
+    clock.advance(400)
+    assert wait_until(lambda: not lift.isVisible(), 2)
+    card1.hide()
+    painted.clear()
+    card2 = Card(stage, "pop")
+    card2.setGeometry(150, 100, 420, 220)
+    o2 = card2.open()                                            # the kept lift shown again, at another size
+    assert wait_until(lambda: painted, 2)
+    assert o2.lift is lift
+    QTest.qWait(60)
+    assert len(painted) == 1
+    pic = lift.grab().toImage()                                  # and what it painted is the overlay, not a clear window
+    c = QPoint(o2.target_in_picture.x() + o2.widget_size.width() // 2,
+               o2.target_in_picture.y() + o2.widget_size.height() // 2)
+    assert pic.pixelColor(round(c.x() * pic.devicePixelRatio()), round(c.y() * pic.devicePixelRatio())).alpha() == 255
+
+
 def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):
     from tests.qt.conftest import wait_until
     # why: the pool is bounded: a window that once opened many overlays at once keeps at most LIFTS_KEPT hidden ones

@@ -461,6 +461,24 @@ class _Lift(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._painted = False                      # painted since it was last shown
+
+    def showEvent(self, event):
+        self._painted = False
+        super().showEvent(event)
+
+    def event(self, event):
+        # Painted once a show (M2.1-2, measured 2026-10-08). Qt paints a shown window twice: Windows sends a see-through
+        # (layered) window no WM_PAINT, so Qt's Windows plugin exposes it itself as it shows (qwindowswindow.cpp,
+        # setVisible -> fireFullExpose) and that paint is the one put on screen; QWidgetPrivate::show_sys also posts every
+        # shown widget an UpdateLater of its whole rect (qwidget.cpp: the paint a child, which gets no expose, needs).
+        # Here it repaints the same picture (~1 ms at 150 %, 4+ at 250 %). Dropped once the expose has painted it; one
+        # that comes first (no paint yet) goes through, and the expose then finds nothing to paint. (PyQt6 gives the
+        # event no region; a lift's picture never changes while it is shown, so the one after a paint is that repaint.)
+        if event.type() == QEvent.Type.UpdateLater and self._painted:
+            self._painted = False                  # (only the one: a later UpdateLater paints as usual)
+            return True
+        return super().event(event)
 
     def paintEvent(self, _event):
         o = self.opening
@@ -469,6 +487,7 @@ class _Lift(QWidget):
         p = QPainter(self)                         # (a see-through window's backing store starts clear)
         o._draw(p)
         p.end()
+        self._painted = True
 
 
 # The lifts kept for the next opening in the same window (row 7): making a top-level window is a native window's birth

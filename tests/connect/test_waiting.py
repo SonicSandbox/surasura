@@ -58,9 +58,16 @@ def test_a_reason_that_can_end_keeps_connect_looking_every_two_minutes(tmp_path,
     assert summary["looks"] == 2
 
 
-def test_a_wait_at_mining_resumes_at_mining_without_picking_again(tmp_path, ledger):
+def test_a_wait_before_any_batch_reached_anki_miner_picks_again(tmp_path, ledger):
+    # Anki Miner refused the batch (its window open): nothing reached Anki, so the job keeps no step to resume at —
+    # it picks again from the list as it is then, can still be dropped, and never holds the level raise
+    # (adversary P2.4-A #1)
+    steps, _summary, _slept = _run(tmp_path, ledger, {"miner_busy": True}, looks=1)
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["resume"]) == ("waiting", None)
+    assert not ledger.in_flight("ja")
     steps, _summary, _slept = _run(tmp_path, ledger, {"miner_busy": True}, clear=["miner_busy"])
-    assert [e[0] for e in steps.log if e[0] in ("pick", "mine")] == ["pick", "mine", "mine"]
+    assert [e[0] for e in steps.log if e[0] in ("pick", "mine")] == ["pick", "mine", "pick", "mine"]
     assert ledger.jobs("ja")[0]["state"] == "done"
 
 
@@ -151,4 +158,9 @@ def test_each_episodes_backfill_need_names_its_own_item(tmp_path, ledger):
     steps, summary, slept = _run(tmp_path, ledger, {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]},
                                                     "fill_needs": True})
     assert {n["item_id"] for n in ledger.needs("ja")} == {1, 2}
+    # a Backfill failure is tried again at the next start, once (adversary P2.4-A #13); then the job finishes
+    assert [(j["state"], j["resume"]) for j in ledger.jobs("ja")] == [("waiting", "filling")] * 2
+    steps, summary, slept = _run(tmp_path, ledger, {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]},
+                                                    "fill_needs": True})
+    assert [e[0] for e in steps.log].count("fill") == 2
     assert [j["state"] for j in ledger.jobs("ja")] == ["done", "done"]

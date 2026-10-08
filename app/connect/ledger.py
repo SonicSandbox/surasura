@@ -24,6 +24,7 @@ import datetime
 import json
 import os
 import sqlite3
+import uuid
 
 SCHEMA = 3
 # A job's states (02 §2). Open = not finished one way or the other; not started = still droppable.
@@ -78,7 +79,7 @@ _SCHEMA_SQL = (
 _ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
                   ("store_id", "TEXT"), ("resume", "TEXT"), ("picked", "TEXT"),
                   ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("failures", "INTEGER NOT NULL DEFAULT 0"),
-                  ("skipped", "TEXT"))
+                  ("skipped", "TEXT"), ("tag_pending", "TEXT"))
 # P2.4's tables (made IF NOT EXISTS, like the rest)
 _RUNNER_SQL = (
     # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
@@ -118,7 +119,9 @@ _RUNNER_SQL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS one_need ON needs (language, kind, COALESCE(item_id, -1)) WHERE seen = 0",
 )
 # The columns `set_state` may write beside the state
-_STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id"))
+_STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id", "tag_pending"))
+# Anki Miner's outcomes that settle a word without a card (it turned it down): never sent again for the item
+_NOT_MADE = ("made", "uncertain", "not_attempted")
 
 
 class TooNew(Exception):
@@ -152,6 +155,7 @@ class Ledger:
         self.conn = sqlite3.connect(db_path, timeout=5.0, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        self._uid = None
         try:
             self._refuse_newer()
         except BaseException:
@@ -165,6 +169,8 @@ class Ledger:
                 if name not in have:
                     self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
             self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (str(SCHEMA),))
+            # this ledger's own name in its jobs' tags: a ledger made again never reuses a lost one's tags
+            self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('uid', ?)", (uuid.uuid4().hex[:8],))
             self.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema' AND CAST(value AS INTEGER) < ?",
                               (str(SCHEMA), SCHEMA))
 
@@ -196,7 +202,7 @@ class Ledger:
         cur = self.conn.execute("SELECT * FROM jobs WHERE language = ? AND item_id = ? ORDER BY id DESC LIMIT 1",
                                 (language, item_id))
         row = cur.fetchone()
-        return None if row is None else dict(zip([d[0] for d in cur.description], row))
+        return None if row is None else self._tagged(dict(zip([d[0] for d in cur.description], row)))
 
     def jobs(self, language=None, states=None):
         sql, params = "SELECT * FROM jobs WHERE 1 = 1", []
@@ -208,7 +214,19 @@ class Ledger:
             params += list(states)
         cur = self.conn.execute(sql + " ORDER BY id", params)
         names = [d[0] for d in cur.description]
-        return [dict(zip(names, r)) for r in cur.fetchall()]
+        return [self._tagged(dict(zip(names, r))) for r in cur.fetchall()]
+
+    def tag_id(self, job_id):
+        """The job's name in its Anki tag and run folder (`<ledger uid>-<job id>`): unique past a lost ledger
+        (adversary P2.4-A #14), so an old job's notes are never counted as a new one's."""
+        if self._uid is None:
+            row = self.conn.execute("SELECT value FROM meta WHERE key = 'uid'").fetchone()
+            self._uid = row[0] if row else "0"
+        return f"{self._uid}-{job_id}"
+
+    def _tagged(self, job):
+        job["tag"] = self.tag_id(job["id"])
+        return job
 
     def has_work(self, language, item_id):
         """An open job, or one already done (its receipt may not be written yet): never queue the item again."""
@@ -259,7 +277,7 @@ class Ledger:
         row = cur.fetchone()
         if row is None:
             return None
-        out = dict(zip([d[0] for d in cur.description], row))
+        out = self._tagged(dict(zip([d[0] for d in cur.description], row)))
         out["words"] = _words(out.get("words"))
         return out
 
@@ -434,6 +452,33 @@ class Ledger:
         """N9: the note ids the job made (its `made` outcomes), for *Undo this batch* (P2.5)."""
         return [r[0] for r in self.conn.execute("SELECT note_id FROM outcomes WHERE job_id = ? AND outcome = 'made' "
                                                 "AND note_id IS NOT NULL ORDER BY rowid", (job_id,))]
+
+    def declined(self, language, item_id):
+        """(word, reading) of every word Anki Miner turned down for the item, in any of its jobs (not found, no
+        definition …): a later pick never sends them again (adversary P2.4-A #19)."""
+        marks = ",".join("?" * len(_NOT_MADE))
+        return {(w, r) for w, r in self.conn.execute(
+            f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
+            f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
+
+    def skipped_for(self, language, reason):
+        """Is any job of the language `skipped` for `reason`?"""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND state = 'skipped' AND reason = ? LIMIT 1",
+                                 (language, reason)).fetchone() is not None
+
+    def reopen_skipped(self, language, item_ids, reason):
+        """Jobs `skipped` for `reason` (Anki Miner wasn't installed) of these items queued again, where the item has
+        no other open job -> how many (intent keeper P2.4-A #11: installed later, they're mined in turn)."""
+        marks = ",".join("?" * len(OPEN))
+        n = 0
+        for item_id in item_ids:
+            cur = self.conn.execute(
+                f"UPDATE jobs SET state = 'queued', reason = NULL, resume = NULL, skipped = NULL, updated_at = ? "
+                f"WHERE id = (SELECT MAX(id) FROM jobs WHERE language = ? AND item_id = ?) AND state = 'skipped' AND "
+                f"reason = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN "
+                f"({marks}))", (_now(), language, item_id, reason, language, item_id) + OPEN)
+            n += cur.rowcount
+        return n
 
     def need(self, language, kind, say, item_id=None, job_id=None):
         """Something Connect needs you for, named once while unseen (`kind` + item) -> True when newly named."""

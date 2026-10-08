@@ -276,6 +276,24 @@ def test_two_quick_moves_make_one_job_and_a_move_during_a_job_makes_one_more(lib
     host.stop()
 
 
+def test_each_move_restarts_the_settle(lib, monkeypatch):
+    """04 §2.2: the job waits for the moves to settle — a second move inside the settle pushes it back, so a burst of
+    moves runs once, after the last."""
+    root, store = lib
+    monkeypatch.setattr(replan_preview, "SETTLE_S", 30.0)
+    jobs = []
+    host, _ = _host()
+    monkeypatch.setattr(host, "_job", lambda kind: jobs.append(kind))
+    try:
+        host.poke()
+        first = host._due
+        time.sleep(0.05)
+        host.poke()
+        assert host._due > first and jobs == []
+    finally:
+        host.stop()
+
+
 def test_closing_runs_a_pending_settle_at_once(lib, monkeypatch):
     root, store = lib
     monkeypatch.setattr(replan_preview, "SETTLE_S", 30.0)      # a settle that would outlast the window

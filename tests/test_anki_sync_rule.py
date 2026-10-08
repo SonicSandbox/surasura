@@ -312,6 +312,13 @@ def test_sync_stays_refused_everywhere_but_the_rules_call(anki):
         anki_connect.sync(URL)                                    # without the Anki-write lock
     assert refused.value.kind == "refused"
     with anki_connect.writer("a test"):
+        # Holding the lock changes nothing for `invoke`: `sync` is refused by name, before any request.
+        with pytest.raises(anki_connect.AnkiError) as by_name:
+            anki_connect.invoke("sync", URL)
+        assert by_name.value.kind == "refused" and "not allowed" in str(by_name.value)
+        with pytest.raises(anki_connect.AnkiError):
+            anki_connect.multi([{"action": "sync"}], URL)
+        assert "sync" not in anki.actions
         assert anki_connect.sync(URL) == "synced"
         with pytest.raises(anki_connect.AnkiError):
             anki_connect.sync("http://example.com:8765")          # loopback only
@@ -331,6 +338,20 @@ def test_a_failed_session_sync_is_tried_again_but_never_holds_every_write_up(ank
     clock.at += anki_sync_rule.S1_RETRY_S
     assert anki_sync_rule.before_write(URL) == "synced"
     assert anki.syncs == 1
+
+
+def test_a_session_another_program_synced_while_this_one_waited_for_the_lock_is_not_synced_again(anki, clock):
+    """S1 decides twice: before the lock (cheap) and again holding it. Another program that started the session
+    while this one waited for the lock (its sync done, the state file written) leaves nothing to sync."""
+    real = anki_connect.writer
+
+    def writer_after_another_programs_sync(*args, **kwargs):
+        anki_sync_rule._update(profile=anki.profile, session_at=clock.at, last_write=clock.at, sync="synced",
+                               session_due=False)
+        return real(*args, **kwargs)
+    with mock.patch.object(anki_connect, "writer", writer_after_another_programs_sync):
+        assert anki_sync_rule.before_write(URL) is None
+    assert anki.syncs == 0
 
 
 def test_inside_the_lock_the_session_sync_takes_no_lock_of_its_own(anki, clock):

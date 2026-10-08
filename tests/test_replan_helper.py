@@ -126,6 +126,14 @@ def test_the_helper_ends_with_its_window(served):
         host._stopped = True                     # (this side gone: nothing takes the jobs over here)
     host._conn.close()
     assert host._proc.wait(30) == 0
+    # The window's "stop" alone ends it, its pipe still open (the word is the protocol, not the close behind it).
+    host = _open(hosts)
+    assert _wait(lambda: host._conn is not None, 60)
+    host._post(host._conn, {"do": "stop"})
+    try:
+        assert host._proc.wait(30) == 0
+    finally:
+        host.stop()
 
 
 def test_a_helper_that_cant_start_leaves_the_jobs_to_the_windows_process(served, monkeypatch):

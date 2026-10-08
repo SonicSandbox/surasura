@@ -6174,30 +6174,16 @@ class Round:
         return files, subdirs
 
     def _held(self, rel):
-        """{key: (size, mtime_ns)} of the available items directly in `rel`: the `items_key` index, a sub-folder's
-        items skipped by one seek each (never a scan of a tier's whole subtree)."""
+        """{key: (size, mtime_ns)} of the available items directly in `rel`: one range read of the `items_key` index,
+        a sub-folder's items filtered out inside SQLite (a tier folder's 90k keys at 200k: ~tens of ms; one seek per
+        sub-folder from here took 2.2 s)."""
         prefix = path_key(rel) + "/"
-        hi = prefix[:-1] + "0"                             # '0' follows '/': past every key under the prefix
-        held, lo, op = {}, prefix, ">"
         with self.store._reading():
-            while True:
-                rows = self.store.conn.execute(
-                    f"SELECT rel_key, size, mtime_ns, availability FROM items WHERE rel_key {op} ? AND rel_key < ? "
-                    "ORDER BY rel_key LIMIT 256", (lo, hi)).fetchall()
-                if not rows:
-                    return held
-                op = ">"
-                for key, size, mtime_ns, availability in rows:
-                    rest = key[len(prefix):]
-                    if "/" in rest:                        # a sub-folder's items: seek past them all
-                        lo, op = prefix + rest.split("/", 1)[0] + "0", ">="
-                        break
-                    if availability == "available":
-                        held[key] = (size, mtime_ns)
-                    lo = key
-                else:
-                    if len(rows) < 256:
-                        return held                        # the last page
+            rows = self.store.conn.execute(
+                "SELECT rel_key, size, mtime_ns FROM items WHERE rel_key > ? AND rel_key < ? "
+                "AND instr(substr(rel_key, ?), '/') = 0 AND availability = 'available'",
+                (prefix, prefix[:-1] + "0", len(prefix) + 1)).fetchall()      # '0' follows '/': past the prefix
+        return {key: (size, mtime_ns) for key, size, mtime_ns in rows}
 
 
 def _store_has_content(self):

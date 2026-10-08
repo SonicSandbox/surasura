@@ -805,3 +805,120 @@ def test_without_a_watch_the_slow_look_runs_in_front_only(window, language, monk
     rel = _tree_paths(app)[0]
     os.remove(os.path.join(app.data_root, *rel.split("/")))
     assert _pump(app, lambda: rel not in _tree_paths(app), timeout=3.0), "the slow look never found the change"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_hourly_round_finds_a_drop_the_blinded_watch_missed(window, language, monkeypatch):
+    """The watch is blind to this tree (its events never reach the worker), so only the round can find a drop into
+    a show folder that holds no items yet. The round is made due at once (a 1 s hour, batches 0.1 s apart); its
+    folder alone is synced, and the tree shows the file within 5 s."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # neither focus nor Refresh may bring it in here
+    lookout = app._lookout
+    word = names(language)[31]
+    os.makedirs(os.path.join(app.data_root, "HighPriority", word), exist_ok=True)
+    _pump(app, lambda: False, timeout=0.3)                       # the empty folder settles while the watch still sees it
+    lookout.tree.under = ("見ない",)                              # blind: no event from this tree reaches the worker
+    monkeypatch.setattr(lw, "ROUND_S", 1.0)
+    monkeypatch.setattr(lw, "ROUND_GAP_S", 0.1)
+    lookout._last_full = time.monotonic() - 2.0                  # the round's hour has passed
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    rel = f"HighPriority/{word}/{word}_第01話.srt"
+    touch(app.data_root, rel, f"{word}\n")
+    app._worker_wake.set()                                       # the worker may be waiting for the hourly round
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "the round never found the drop"
+    assert [f"HighPriority/{word}"] in scoped, scoped            # the round's folder, never the whole library
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_return_restarts_a_watch_that_stopped(window, language, monkeypatch):
+    """A watch that ended (closed here, as after a failure) is not left dead until the retry or the hourly round:
+    the focus return's look starts it again at once. The retry in jobs() waits RETRY_S (300 s) after the open, so
+    only the focus path can bring the watch back inside the 5 s bound."""
+    app = _settled_window(window, language, monkeypatch)
+    assert app._lookout.tree.alive
+    app._lookout.tree.close()                                    # the watch ended: its handle and thread are gone
+    assert not app._lookout.tree.alive
+    app._refresh_from_focus()
+    assert _pump(app, lambda: app._lookout.tree.alive, timeout=5.0), "a focus return left the watch dead"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_closing_a_settled_window_ends_its_worker_and_lookout_at_once(window, language, monkeypatch):
+    """A settled window's worker sleeps up to an hour waiting for the round; closing the window must wake it (the
+    <Destroy> stop), not leave a thread and a watch alive until the next hourly round."""
+    app = _settled_window(window, language, monkeypatch)
+    worker = app._worker
+    assert worker.is_alive() and app._lookout is not None           # sanity: idle and watched before the close
+    app.root.destroy()
+    deadline = time.monotonic() + 2.0                                # no Tk pump here: the root is gone
+    while worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not worker.is_alive(), "the worker waited out its hour after the window closed"
+    assert app._lookout is None, "the watch outlived its window"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_look_restarts_the_rounds_hour(window, language, monkeypatch):
+    """A focus return's full look covers the round, so it restarts the round's hour: a round that was due is put off
+    for an hour, not run on top of the look that just read the whole library."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    lookout._last_full = lookout.clock() - (lw.ROUND_S + 10)     # the round would be due now
+    full_looks, looked = [], []
+    real_sync = ls.sync_for_window
+
+    def counting_sync(store, folders=None):
+        if folders is None:                                       # a full look, not a round's batch or a drop
+            full_looks.append(1)
+        return real_sync(store, folders=folders)
+
+    real_looked = lookout.looked
+
+    def recording_looked(now=None):
+        result = real_looked(now)
+        looked.append(1)                                          # after the real call, so the state is set
+        return result
+
+    monkeypatch.setattr(ls, "sync_for_window", counting_sync)
+    monkeypatch.setattr(lookout, "looked", recording_looked)
+    app._refresh_from_focus()
+    assert _pump(app, lambda: bool(looked), timeout=5.0), "the focus return never ran its full look"
+    assert full_looks, "the focus return ran no full look"
+    assert lookout.timeout() > lw.ROUND_S - 60, f"the round's hour did not restart: {lookout.timeout()} s"
+    assert lookout.round is None, "a round was still under way after the full look covered it"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_out_while_the_worker_makes_its_lookout_is_kept(window, language, monkeypatch):
+    """A FocusOut that lands while the worker is making its watch (after `_make_lookout` copied the window's front
+    flag into the new lookout, before the lookout is up) is kept: the worker re-reads the flag once the lookout
+    exists, so the watch never believes a window behind it is in front. Without that re-read the lookout keeps the
+    stale True and would look at a window that is behind."""
+    from app import library_watch as lw
+    holder, ready = [], threading.Event()
+    real_open = lw.Lookout.open
+
+    def focus_out_during_make(self):
+        # Bounded: the test thread hands over the window once the constructor has returned.
+        assert ready.wait(5), "the test window never handed over to the worker"
+        holder[0]._set_front(False)                               # the FocusOut, landing mid-make
+        return real_open(self)
+
+    monkeypatch.setattr(lw.Lookout, "open", focus_out_during_make)
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    holder.append(app)
+    ready.set()
+    assert _pump(app, lambda: app.__dict__.get("_lookout") is not None and app._open_walked, timeout=10)
+    assert app._lookout.front is False, "a focus out during the make was lost"

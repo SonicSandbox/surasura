@@ -755,3 +755,50 @@ def test_a_round_reads_a_folder_of_more_than_one_page_of_items():
         assert _full_round(store) == [folder]
     finally:
         store.close()
+
+
+@windows_only
+def test_a_bell_whose_thread_ended_reads_deaf_and_slow_until_focus_makes_a_new_one(tmp_path):
+    # Why: a bell whose thread ended by itself (its wait failed) hears nothing, so the window must not sit on the
+    # watch's quiet path: it reads deaf and slow (the slow look stands in) until a focus makes a new bell in a slot.
+    data_dir, _u, _doc = library("ja")
+    db = str(tmp_path / "library_ja_0123456789abcdef.db")
+    now = [1000.0]
+    look = lw.Lookout(data_dir, under=TIER_FOLDERS, db_path=db, clock=lambda: now[0]).open()
+    try:
+        assert look.bell is not None and look.bell.slot is not None and look.bell.alive
+        assert not look.deaf and not look.slow
+        look.bell._k32.SetEvent(look.bell._stop)              # end the bell's thread without closing the bell
+        look.bell._thread.join(2.0)
+        assert not look.bell.alive
+        assert look.deaf and look.slow
+        look.focus(now=now[0])                                # the retry: a new bell, in a slot
+        assert look.bell.alive and not look.deaf and not look.slow
+    finally:
+        look.close()
+
+
+@windows_only
+def test_a_watch_whose_events_cant_be_made_falls_back_and_starts_no_thread(monkeypatch, tmp_path):
+    # the folder opens but its event objects can't be made: the watch gives up cleanly (no watching state, no
+    # thread that never wakes), so the window keeps its slow look instead of a watch that hangs half-open
+    real_k32 = lw._k32
+
+    class _NoEvents:
+        def __init__(self, k32):
+            self._k32 = k32
+
+        def __getattr__(self, name):
+            return getattr(self._k32, name)
+
+        def CreateEventW(self, *args):
+            return 0
+
+    monkeypatch.setattr(lw, "_k32", lambda: _NoEvents(real_k32()))
+    w = lw.TreeWatch(str(tmp_path))
+    try:
+        assert w.start() is False
+        assert w.state == "fallback"
+        assert w.alive is False
+    finally:
+        w.close()

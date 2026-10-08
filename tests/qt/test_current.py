@@ -514,3 +514,17 @@ def test_a_change_on_current_leaves_finished_and_goal_untouched(seeded):
     assert wait_until(lambda: lst.model().entries[i][1] is not row)
     assert fin.model().entries is fin_entries and fin.model().changed == []
     assert strip.goal is goal
+
+
+def test_the_rows_just_past_the_screen_are_painted_ahead_when_the_list_rests(seeded):
+    """Bench 7: a row's first paint (up to ~15 ms) fell in the scroll's frames. Once the list rests, the rows just below
+    the screen are drawn ahead, one per turn of the loop; scrolling onto them then draws no row afresh."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    assert wait_until(lambda: lst.delegate.warmed >= 3)
+    bar = lst.verticalScrollBar()
+    renders = lst.delegate.renders
+    bar.setValue(bar.value() + round(theme.SIZES["row"] * rows.fz()))    # one row down: the next row comes in
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders

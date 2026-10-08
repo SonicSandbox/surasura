@@ -21,7 +21,8 @@ Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`pla
 """
 from collections import OrderedDict
 
-from PyQt6.QtCore import (QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal)
+from PyQt6.QtCore import (QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
+                          pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                          QStaticText, QTextOption)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
@@ -410,6 +411,8 @@ class RowsModel(QAbstractListModel):
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
 SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
+WARM_AHEAD = 8                                       # rows past each edge of the screen painted ahead, in idle moments
+WARM_IDLE_MS = 60                                    # how long the list rests (no scroll, no refresh) before it does
 
 
 class RowDelegate(QStyledItemDelegate):
@@ -418,6 +421,8 @@ class RowDelegate(QStyledItemDelegate):
         self.view = view
         self.paints = 0                              # rows painted (tests: only what's on screen)
         self.renders = 0                             # rows drawn into a pixmap (tests: a repaint reuses them)
+        self.warmed = 0                              # rows drawn ahead, before they came on screen (`warm`)
+        self._warming = False
         self._sprites = OrderedDict()
 
     def _sprite(self, kind, payload, lines, size, dpr, hovered, draw, ident=None, ground="bg"):
@@ -438,7 +443,10 @@ class RowDelegate(QStyledItemDelegate):
         q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         draw(q)
         q.end()
-        self.renders += 1
+        if self._warming:
+            self.warmed += 1
+        else:
+            self.renders += 1
         self._sprites[key] = (payload, lines, pix)
         self._sprites.move_to_end(key)
         while len(self._sprites) > SPRITES_KEPT:
@@ -686,19 +694,14 @@ class RowDelegate(QStyledItemDelegate):
                      self._lines_h(lines))
         is_open = self.view.model().open_key == getattr(payload, "key", None)
         if kind == HERO and not is_open:
-            box_h = rect.height() - 8 - theme.SPACING["list-gap"] - self._lines_h(lines)
-            local = QRect(0, 0, rect.width(), rect.height())
-            pix = self._sprite(kind, payload, lines, QSize(rect.width(), box_h), dpr, hovered,
-                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr))
-            p.drawPixmap(rect.topLeft(), pix)
+            pix, box = self._closed(kind, payload, lines, rect, dpr, hovered)
+            p.drawPixmap(box.topLeft(), pix)
             if focused:
-                self._focus_ring(p, QRect(rect.left(), rect.top(), rect.width(), box_h), theme.RADII["r-sm"])
+                self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
             self._paint_hero(p, payload, rect, lines, hovered, focused, dpr)
         elif kind in (ROW, FINISHED) and not is_open:
-            local = QRect(0, 0, body.width(), body.height())
-            pix = self._sprite(kind, payload, lines, body.size(), dpr, hovered,
-                               lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines))
+            pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered)
             p.drawPixmap(body.topLeft(), pix)
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
@@ -727,6 +730,37 @@ class RowDelegate(QStyledItemDelegate):
             self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), round(15 * fz() + 6)), dpr)
             y += round(15 * fz() + 6)
         p.restore()
+
+    def _closed(self, kind, payload, lines, rect, dpr, hovered):
+        """A closed hero or row's pixmap (painted once, `_sprite`) and the box it fills in `rect`."""
+        if kind == HERO:
+            box_h = rect.height() - 8 - theme.SPACING["list-gap"] - self._lines_h(lines)
+            local = QRect(0, 0, rect.width(), rect.height())
+            pix = self._sprite(kind, payload, lines, QSize(rect.width(), box_h), dpr, hovered,
+                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr))
+            return pix, QRect(rect.left(), rect.top(), rect.width(), box_h)
+        body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
+                     self._lines_h(lines))
+        local = QRect(0, 0, body.width(), body.height())
+        pix = self._sprite(kind, payload, lines, body.size(), dpr, hovered,
+                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines))
+        return pix, body
+
+    def warm(self, index, dpr):
+        """Paint a closed row's pixmap ahead of its first paint (the list's idle moments): -> whether it drew one."""
+        entry = index.data(ROW_ROLE)
+        if entry is None or entry[0] not in (HERO, ROW, FINISHED):
+            return False
+        kind, payload, lines = entry
+        if self.view.model().open_key == payload.key:
+            return False
+        before = self.warmed
+        self._warming = True
+        try:
+            self._closed(kind, payload, lines, self.view.visualRect(index), dpr, False)
+        finally:
+            self._warming = False
+        return self.warmed != before
 
     def _paint_line(self, p, ln, strip, dpr):
         col = style.colours()
@@ -1106,6 +1140,13 @@ class RowsView(QListView):
         self._hover = None
         self._restore = None
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
+        # a row's first paint (its text laid out, its cover drawn: up to ~15 ms, bench 7) moved out of the scroll's
+        # frames: once the list rests, the rows just past the screen are painted ahead, one per turn of the loop
+        self._warm = QTimer(self)
+        self._warm.setSingleShot(True)
+        self._warm.setInterval(WARM_IDLE_MS)
+        self._warm.timeout.connect(self._warm_one)
+        self.verticalScrollBar().valueChanged.connect(self._rest)
 
     # entries ---------------------------------------------------------------------------------------------------- #
     def set_entries(self, entries):
@@ -1113,6 +1154,7 @@ class RowsView(QListView):
         model = self.model()
         anchor = self._anchor()
         how = model.set_entries(entries)
+        self._rest()
         if how == "same":
             if len(model.changed) > 40:
                 self.viewport().update()
@@ -1155,6 +1197,33 @@ class RowsView(QListView):
             if target <= bar.maximum():
                 bar.setValue(target)
                 self._restore = None
+
+    def _rest(self, *_args):
+        self._warm.setInterval(WARM_IDLE_MS)
+        self._warm.start()
+
+    def _warm_one(self):
+        """Paint one row ahead (the next below the screen first, then above); again on the next turn until done."""
+        model = self.model()
+        n = model.rowCount()
+        if not n or not self.isVisible():
+            return
+        first = self.indexAt(QPoint(4, 1))
+        last = self.indexAt(QPoint(4, self.viewport().height() - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else n - 1
+        dpr = self.viewport().devicePixelRatioF() or 1.0
+        below = range(hi + 1, min(n, hi + 1 + WARM_AHEAD))
+        above = range(lo - 1, max(-1, lo - 1 - WARM_AHEAD), -1)
+        for r in list(below) + list(above):
+            if self.delegate.warm(model.index(r, 0), dpr):
+                self._warm.setInterval(0)                # the next one on the loop's next turn
+                self._warm.start()
+                return
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._rest()
 
     def _range_changed(self, _lo, _hi):
         if self._restore is not None:

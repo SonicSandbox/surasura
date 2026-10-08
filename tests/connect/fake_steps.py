@@ -63,7 +63,10 @@ class FakeSteps:
     would) · `words` {item: [(word, reading)]} · `blocked` (a reason, or None) · `verdict` (TIMED / NOT_TIMED) ·
     `videos` {item: path or None} · `profile_at_pick` / `profile_at_mine` · `kill` ("pick" · "fit" · "mine" · "fill" ·
     "order" · "mid-batch:<n>" · "after-mine") · `absent` (a set of "anki-miner" · "backfill" · "junban") · `store_id` ·
-    `prepare_error` · `staged`."""
+    `prepare_error` · `staged` · `store_busy` (the library busy: the top 20 can't be read) · `unknown_status` (a word
+    Anki Miner answers with a status it doesn't know: uncertain, no crash, no card) · `fill_needs` (Backfill asks for
+    you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
+    pick has run)."""
 
     def __init__(self, folder, plan=None, child=False):
         self.folder = folder
@@ -85,7 +88,8 @@ class FakeSteps:
         self.log.append(("lower",))
 
     def update_staged(self):
-        return bool(self.plan.get("staged"))
+        return bool(self.plan.get("staged")) or (bool(self.plan.get("staged_after_pick"))
+                                                  and any(e[0] == "pick" for e in self.log))
 
     def settle(self):
         self.log.append(("settle",))
@@ -104,6 +108,8 @@ class FakeSteps:
                     ledger.queue_level(lang, item, [tuple(w) for w in words], store_id="store-1")
 
     def mine_line(self, lang):
+        if self.plan.get("store_busy"):
+            raise runner.Wait(runner.LIBRARY_BUSY)
         return list((self.plan.get("line") or {}).get(lang, []))
 
     def store_id(self, lang):
@@ -147,6 +153,8 @@ class FakeSteps:
     def pick(self, lang, job, video):
         self.log.append(("pick", job["item_id"]))
         self._kill("pick")
+        if job["item_id"] in (self.plan.get("pick_error") or ()):
+            raise KeyError("a pairing row this test broke")
         if job.get("kind") == "level":
             candidates = [tuple(w) for w in job.get("words") or ()]
         else:
@@ -184,6 +192,9 @@ class FakeSteps:
             if crash is not None and n >= crash:
                 self.plan["crash_mid_batch"] = None if not self.plan.get("crash_always") else crash
                 return {"outcomes": [_unsure(x) for x in words], "app": "3.7.0", "doubt": True}
+            if w["word"] in (self.plan.get("unknown_status") or ()):
+                out.append(_unsure(w))      # a status Anki Miner's caller doesn't know: no card, no crash
+                continue
             note = self.anki.add(w["word"], TAG + str(job["id"]))
             out.append({"word": w["word"], "reading": w["reading"], "outcome": "made", "note_id": note,
                         "line_start": w["line_start"]})
@@ -199,6 +210,8 @@ class FakeSteps:
     def fill(self, lang, job, note_ids):
         self.log.append(("fill", job["item_id"], list(note_ids)))
         self._kill("fill")
+        if self.plan.get("fill_needs"):
+            raise runner.Needs("needs-you", "Backfill runs for one deck only: choose one in the Backfill window.")
         if "backfill" in (self.plan.get("absent") or ()):
             raise runner.Skip("backfill absent")
 

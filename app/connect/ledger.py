@@ -81,7 +81,7 @@ _ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
                   ("skipped", "TEXT"))
 # P2.4's tables (made IF NOT EXISTS, like the rest)
 _RUNNER_SQL = (
-    # N5, one Anki Miner call: `state` running · done · uncertain · failed
+    # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
     """CREATE TABLE IF NOT EXISTS batches (
       job_id INTEGER NOT NULL,
       attempt INTEGER NOT NULL,

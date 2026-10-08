@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,9 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RESOURCES = os.path.join(REPO, "tests", "Test Resources")
+# the burst's words, one a drop: dictionary words of two kanji or more the suite's known words don't hold
+DROP_WORDS = ("蜃気楼", "灯台", "羅針盤", "潮騒", "珊瑚礁", "漁火", "帆船", "波止場", "入江", "干潟",
+              "防波堤", "稲妻", "汽笛", "木枯らし", "陽炎", "雪崩", "氷柱", "夕凪", "渦潮", "灯籠")
 
 
 def say(*parts):
@@ -116,13 +120,19 @@ class Drill:
         path = os.path.join(folder, name)
         with open(self.a.subtitle, "rb") as f:
             data = f.read()
+        # one new word a drop, on the last line's time (inside the video): every drop of the burst makes its own card,
+        # so the burst times 20 real Anki Miner batches, not one batch and 19 empty picks
+        times = re.findall(r"(\d\d:\d\d:\d\d,\d\d\d) --> (\d\d:\d\d:\d\d,\d\d\d)", data.decode("utf-8-sig"))
+        start, end = times[-1] if times else ("00:00:01,000", "00:00:02,000")
+        word = DROP_WORDS[(self.n - 1) % len(DROP_WORDS)]
         with open(path, "wb") as f:
-            f.write(data + f"\n\n{9000 + self.n}\n00:59:00,000 --> 00:59:01,000\n{name}\n".encode("utf-8"))
+            f.write(data + f"\n\n{9000 + self.n}\n{start} --> {end}\n{word}が見えた。\n".encode("utf-8"))
         with open(path, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()
         with open(os.path.join(RESOURCES, "connect", "pairing_v1.json"), encoding="utf-8") as f:
             record = json.load(f)
-        record.update({"language": "ja", "library_path": path, "subtitle_sha256": sha, "verdict": "timed",
+        record.update({"schema": 1, "language": "ja", "library_path": path, "subtitle_sha256": sha, "verdict": "timed",
+                       "timing": {"outcome": "CONFIDENT", "offset_s": 0.0, "segments": 1, "reference": "subtitle"},
                        "video_path": os.path.abspath(self.a.video), "video_size": os.path.getsize(self.a.video),
                        "content_key": "v1-" + hashlib.sha256(f"drill-{self.n}-{time.time()}".encode()).hexdigest()})
         store = library.open_store("ja")
@@ -152,16 +162,17 @@ class Drill:
         with Ledger() as ledger:
             return ledger.jobs("ja")
 
-    def notes_of(self, job_id):
+    def notes_of(self, job):
+        """The notes carrying the job's tag (`<ledger uid>-<id>`)."""
         from app.connect import anki_miner, runfile
-        return self.ask("findNotes", query=anki_miner.tag_query(runfile.job_tag(str(job_id))))
+        return self.ask("findNotes", query=anki_miner.tag_query(runfile.job_tag(job["tag"])))
 
     # --- the steps ----------------------------------------------------------------------------------------- #
     def loop(self):
         item = self.drop()
         code, answer, seconds = self.connect()
         job = next(j for j in self.jobs() if j["item_id"] == item)
-        notes = self.notes_of(job["id"])
+        notes = self.notes_of(job)
         out = {"exit": code, "seconds": seconds, "state": job["state"], "reason": job["reason"],
                "skipped": job["skipped"], "notes": len(notes), "answer": answer}
         self.summary["steps"]["loop"] = out
@@ -184,10 +195,10 @@ class Drill:
             return False
         code1, _a, s1 = self.connect(kill_when=mid_batch)
         job = next(j for j in self.jobs() if j["item_id"] == item)
-        before = len(self.notes_of(job["id"]))
+        before = len(self.notes_of(job))
         code2, answer, s2 = self.connect()
         job = next(j for j in self.jobs() if j["item_id"] == item)
-        ids = self.notes_of(job["id"])
+        ids = self.notes_of(job)
         info = self.ask("notesInfo", notes=ids) if ids else []
         words = [((n.get("fields") or {}).get("Expression") or {}).get("value") for n in info]
         twice = sorted({w for w in words if words.count(w) > 1})
@@ -216,11 +227,11 @@ class Drill:
         if not self.devtest():
             self.summary["teardown"] = "SKIPPED: Anki isn't on DevTest; the notes are left — named below"
             return False
-        ids = sorted({n for j in self.jobs() for n in self.notes_of(j["id"]) if n >= self.started_ms})
+        ids = sorted({n for j in self.jobs() for n in self.notes_of(j) if n >= self.started_ms})
         with anki_connect.writer("P2.4 drill teardown", wait=60):
             if ids:
                 self.ask("deleteNotes", notes=ids)
-        left = sorted({n for j in self.jobs() for n in self.notes_of(j["id"]) if n >= self.started_ms})
+        left = sorted({n for j in self.jobs() for n in self.notes_of(j) if n >= self.started_ms})
         self.summary["teardown"] = {"deleted": len(ids), "left": left}
         say("teardown", self.summary["teardown"])
         return not left

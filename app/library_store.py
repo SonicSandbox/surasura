@@ -6112,6 +6112,90 @@ class DiskPoll:
         return bool(self.changed)
 
 
+ROUND_FOLDERS = 200              # the hourly round (L3.2): at most this many folders a batch,
+ROUND_BATCH_S = 0.05             # or this long, whichever comes first (one batch every 2 s: `library_watch.ROUND_GAP_S`)
+
+
+class Round:
+    """The hourly safety round (L3.2; the user's L3.1-4, "let windows handle it but with the fallback"): every folder
+    under the tier folders — folders that hold no item included, which the old poll never looked at — listed a batch
+    at a time (`step`), each folder's content files compared with the items the store holds directly in it.
+    Listings, sizes and times only; a folder whose listing differs is handed back for a scoped sync. Nothing is kept
+    between rounds: one a close interrupts starts over (the next open's full look covers it)."""
+
+    def __init__(self, store):
+        from collections import deque
+        self.store = store
+        self.queue = deque(FOLDER_OF_TIER[t] for t in ANALYSED)
+        self.listed = 0                  # folders listed so far
+        self.batches = []                # (folders, seconds) of each batch, for the figures
+
+    @property
+    def done(self):
+        return not self.queue
+
+    def step(self, max_folders=ROUND_FOLDERS, max_s=ROUND_BATCH_S, clock=time.perf_counter):
+        """One batch: -> the folders (relative to data/<lang>) whose content differs from the store."""
+        t0 = clock()
+        differ, n = [], 0
+        while self.queue and n < max_folders and (n == 0 or clock() - t0 < max_s):
+            rel = self.queue.popleft()
+            n += 1
+            files, subdirs = self._listing(rel)
+            self.queue.extendleft(reversed(subdirs))       # top-down, as the sync walks
+            if files != self._held(rel):
+                differ.append(rel)
+        self.listed += n
+        self.batches.append((n, clock() - t0))
+        return differ
+
+    def _listing(self, rel):
+        """{key: (size, mtime_ns)} of the content files directly in `rel`, and its sub-folders; a folder gone lists
+        nothing (its items, if any, differ)."""
+        files, subdirs = {}, []
+        try:
+            entries = list(os.scandir(os.path.join(self.store.data_dir, *rel.split("/"))))
+        except OSError:
+            return files, subdirs
+        for e in entries:
+            if e.name in SKIP_NAMES:
+                continue
+            child = f"{rel}/{e.name}"
+            try:
+                child.encode("utf-8")
+                if e.is_dir():
+                    subdirs.append(child)
+                elif is_content_name(e.name):
+                    st = e.stat()
+                    files[path_key(child)] = (st.st_size, st.st_mtime_ns)
+            except (OSError, UnicodeEncodeError):
+                continue                                   # a name the sync can't take either (K28)
+        return files, subdirs
+
+    def _held(self, rel):
+        """{key: (size, mtime_ns)} of the available items directly in `rel`: the `items_key` index, a sub-folder's
+        items skipped by one seek each (never a scan of a tier's whole subtree)."""
+        prefix = path_key(rel) + "/"
+        hi = prefix[:-1] + "0"                             # '0' follows '/': past every key under the prefix
+        held, lo, op = {}, prefix, ">"
+        with self.store._reading():
+            while True:
+                rows = self.store.conn.execute(
+                    f"SELECT rel_key, size, mtime_ns, availability FROM items WHERE rel_key {op} ? AND rel_key < ? "
+                    "ORDER BY rel_key LIMIT 256", (lo, hi)).fetchall()
+                if not rows:
+                    return held
+                op = ">"
+                for key, size, mtime_ns, availability in rows:
+                    rest = key[len(prefix):]
+                    if "/" in rest:                        # a sub-folder's items: seek past them all
+                        lo, op = prefix + rest.split("/", 1)[0] + "0", ">="
+                        break
+                    if availability == "available":
+                        held[key] = (size, mtime_ns)
+                    lo = key
+
+
 def _store_has_content(self):
     """Does an analysed tier hold a file that is there? (The dashboard's Generate button, §7.)"""
     return self.conn.execute("SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ('now', 'soon', 'goal') "

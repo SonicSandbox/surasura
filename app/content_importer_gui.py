@@ -19,6 +19,7 @@ from app.path_utils import (get_user_file, ensure_data_setup, get_icon_path, get
                             get_user_files_path, SOURCE_MARKER, SIDECAR_SUFFIX,
                             backup_to_trash, restart_trash_clock, read_text, append_text)
 from app import library_store
+from app import library_watch
 
 # --- Constants & Theme ---
 BG_COLOR = "#1e1e1e"
@@ -31,8 +32,9 @@ SUCCESS_COLOR = "#03dac6"
 # A bulk Remove / Graduate / Demote updates the status line every this many files.
 BATCH_STATUS_EVERY = 100
 
-# The library store (Library_Store_Spec §6.7, §6.10): the worker's poll, its results' drain on the window's
-# thread, the idle export after this window's last change, and how long a build at open holds changes.
+# The library store (Library_Store_Spec §6.7, §6.10): the worker's check while there is no store to watch (being
+# built, JSON or read-only mode; with a store it waits on `library_watch.Lookout`, L3.2), its results' drain on the
+# window's thread, the idle export after this window's last change, and how long a build at open holds changes.
 STORE_POLL_S = 0.5
 STORE_DRAIN_MS = 100
 BIG_BLOCK = 1000             # items: a command over this many runs behind a progress mark (§6.12)
@@ -371,20 +373,43 @@ class ContentImporterApp:
             self.status_var.set("Getting your library ready… (a moment)")
 
     def _start_store_worker(self):
-        """The worker (one per window): the 500 ms poll and every disk sync (§6.10), with its own store handle
-        (K31), and the 100 ms drain of its results on this thread. Skipped under test (no timers)."""
+        """The worker (one per window): the library watched (L3.2) and every disk sync (§6.10), with its own store
+        handle (K31), and the 100 ms drain of its results on this thread. Skipped under test (no timers)."""
         if os.environ.get("SURASURA_NO_UI_TIMERS") or self.__dict__.get("_worker"):
             return
         self._worker_wake = threading.Event()
         self._worker_stop = threading.Event()
         self._worker_results = queue.Queue()
         self._open_walked = False                        # until the open's walk reports (S1.1 smoothness row 4)
+        self._front = True                               # in front (focused, not minimized): the slow look's turn
         self._store_work()                               # made here, before the worker can race to make it
         self._worker_wake.set()                          # the first poll at once: the open's walk waits for nothing
         self._worker = threading.Thread(target=self._store_worker, daemon=True)
         self._worker.start()
         self.root.after(STORE_DRAIN_MS, self._drain_store_worker)
-        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._worker_stop.set(), add="+")
+        self.root.bind("<Destroy>", lambda e: e.widget is self.root and self._stop_store_worker(), add="+")
+        # In front or not (L3.2): a flag the worker's slow look reads — never a Tk call from the worker. Moving
+        # between widgets inside the window is a FocusOut and a FocusIn, which leave it in front.
+        self.root.bind("<FocusIn>", lambda e: self._set_front(True), add="+")
+        self.root.bind("<FocusOut>", lambda e: self._set_front(False), add="+")
+        self.root.bind("<Unmap>", lambda e: e.widget is self.root and self._set_front(False), add="+")
+        self.root.bind("<Map>", lambda e: e.widget is self.root and self._set_front(self._has_focus()), add="+")
+
+    def _stop_store_worker(self):
+        self._worker_stop.set()
+        self._worker_wake.set()                          # the worker may be waiting for the hourly round
+
+    def _has_focus(self):
+        try:
+            return self.root.focus_get() is not None
+        except Exception:                                # a popdown's name Tk can't map back (tkinter's KeyError)
+            return True
+
+    def _set_front(self, front):
+        self._front = front
+        lookout = self.__dict__.get("_lookout")
+        if lookout is not None:
+            lookout.set_front(front)
 
     def _store_work(self):
         """The lock a disk sync and a command's file work + commit take in turn (Undo-Remove's put-back, Remove's
@@ -412,54 +437,99 @@ class ContentImporterApp:
                 print(f"Library sync failed: {e}")
 
     def _store_worker(self):
-        """Worker thread: every STORE_POLL_S, or when woken — stat the folders that hold items (`DiskPoll`), run
-        `sync_disk` when one changed or a sync was asked for, notice another process's change
-        (`changed_since`), and hand the copy to the helper when someone else rewrote it. Never touches Tk."""
+        """Worker thread (L3.2: the library watched, not checked). It sleeps until Windows reports a change in the
+        library's folders, the store's bell rings (a commit in any process), the window asks (open, focus, Refresh)
+        or a timer is due (the hourly round; without a watch, the slow look in front and the watch's retry) — then
+        syncs the folders that changed (all of them when Windows lost track or the window asked), notices another
+        process's change (`changed_since`), and hands the copy to the helper when someone else rewrote it. With no
+        store to watch (being built, JSON or read-only mode) it checks every STORE_POLL_S. Never touches Tk."""
         self._sync_wanted = True                         # the open's one walk (S1.1 smoothness row 4)
-        store = poll = token = None
+        store = poll = token = lookout = None
         handed = posted = None
-        while not self._worker_stop.is_set():
-            self._worker_wake.wait(STORE_POLL_S)
-            self._worker_wake.clear()
-            try:
-                if self._opener().check() != "store":
-                    store = poll = token = None
-                    banner = (self._opener().mode, self._opener().reason, None)
+        try:
+            while not self._worker_stop.is_set():
+                if lookout is None:
+                    self._worker_wake.wait(STORE_POLL_S)
+                    self._worker_wake.clear()
+                else:
+                    lookout.wait()
+                if self._worker_stop.is_set():
+                    break
+                try:
+                    if self._opener().check() != "store":
+                        if lookout is not None:
+                            lookout.close()
+                        store = poll = token = lookout = self._lookout = None
+                        banner = (self._opener().mode, self._opener().reason, None)
+                        if banner != posted:
+                            posted = banner
+                            self._worker_results.put(("banner", banner, 0.0))
+                        continue
+                    if store is None:
+                        store = self._opener().handle()
+                        token = store.token()
+                        # The watch first, then the open's walk: a change while it runs is reported, never lost.
+                        lookout = self._lookout = self._make_lookout(store)
+                        # The tree was drawn before this token: a change made in between is checked against the
+                        # versions it was drawn at (the fast path redraws only if they moved).
+                        self._worker_results.put(("check", None, 0.0))
+                    with self._store_work():
+                        sync, self._sync_wanted = self._sync_wanted, False
+                        if sync:
+                            lookout.focus()              # the watch's health first (ended, or its root moved)
+                        jobs = lookout.jobs()
+                        folders = list(jobs.folders)
+                        if jobs.slow:                    # no watch: the folders that hold items, stat'ed
+                            if poll is None:
+                                poll = library_store.DiskPoll(store)
+                            if poll.check():
+                                folders += poll.changed
+                        if jobs.round is not None and not (sync or jobs.full):
+                            folders += jobs.round.step()
+                            if jobs.round.done:
+                                lookout.round_done()
+                        t0 = time.perf_counter()
+                        if sync or jobs.full:
+                            summary = library_store.sync_for_window(store)
+                            lookout.looked()
+                            self._worker_results.put(("synced", summary, time.perf_counter() - t0))
+                        elif folders:
+                            summary = library_store.sync_for_window(store, folders=sorted(set(folders)))
+                            self._worker_results.put(("synced", summary, time.perf_counter() - t0))
+                    if store.changed_since(token):
+                        self._worker_results.put(("changed", None, 0.0))
+                    token = store.token()
+                    banner = (self._opener().mode, self._opener().reason, store.meta().get("reimport_pending"))
                     if banner != posted:
                         posted = banner
                         self._worker_results.put(("banner", banner, 0.0))
-                    continue
-                if store is None:
-                    store = self._opener().handle()
-                    poll = library_store.DiskPoll(store)
-                    poll.check()
-                    token = store.token()
-                    # The tree was drawn before this token: a change made in between is checked against the
-                    # versions it was drawn at (the fast path redraws only if they moved).
-                    self._worker_results.put(("check", None, 0.0))
-                with self._store_work():
-                    sync, self._sync_wanted = self._sync_wanted, False
-                    changed = poll.check()
-                    if sync or changed:
-                        t0 = time.perf_counter()
-                        summary = library_store.sync_for_window(store)
-                        self._worker_results.put(("synced", summary, time.perf_counter() - t0))
-                if store.changed_since(token):
-                    self._worker_results.put(("changed", None, 0.0))
-                token = store.token()
-                banner = (self._opener().mode, self._opener().reason, store.meta().get("reimport_pending"))
-                if banner != posted:
-                    posted = banner
-                    self._worker_results.put(("banner", banner, 0.0))
-                copy = library_store._stat(library_store.manifest_path(self.user_files_root))
-                seen = library_store._stat_str(copy) if copy else ""
-                if seen and seen != store.meta().get("last_export_stat") and seen != handed:
-                    handed = seen                        # an outside change to the copy: the helper looks
-                    library_store.spawn_maintain(self.language)
-            except Exception as e:
-                self._worker_results.put(("error", str(e), 0.0))
-                self._sync_wanted = True                 # asked again at the next poll, not left for a focus
-                store = poll = token = None
+                    # The copy: its own watch wakes this thread when it's saved (every writer saves it by a rename,
+                    # `write_manifest`); every wake looks, so focus, Refresh, the bell and the round do too.
+                    copy = library_store._stat(library_store.manifest_path(self.user_files_root))
+                    seen = library_store._stat_str(copy) if copy else ""
+                    if seen and seen != store.meta().get("last_export_stat") and seen != handed:
+                        handed = seen                    # an outside change to the copy: the helper looks
+                        library_store.spawn_maintain(self.language)
+                except Exception as e:
+                    self._worker_results.put(("error", str(e), 0.0))
+                    self._sync_wanted = True             # asked again at the next check, not left for a focus
+                    if lookout is not None:
+                        lookout.close()                  # checked every STORE_POLL_S until a store opens again
+                    store = poll = token = lookout = self._lookout = None
+        finally:
+            if lookout is not None:
+                lookout.close()
+            self._lookout = None
+
+    def _make_lookout(self, store):
+        """The window's eyes on its library (L3.2): the tree watch on the tier folders, the copy's watch, the bell,
+        the hourly round. A watch that can't start leaves the slow look in front (`Lookout.slow`)."""
+        lookout = library_watch.Lookout(
+            store.data_dir, under=[library_store.FOLDER_OF_TIER[t] for t in library_store.ANALYSED],
+            db_path=store.db_path, copy=library_store.manifest_path(self.user_files_root), wake=self._worker_wake,
+            make_round=lambda: library_store.Round(store))
+        lookout.front = self.__dict__.get("_front", True)
+        return lookout.open()
 
     def _drain_store_worker(self):
         """On this thread, every STORE_DRAIN_MS: apply the worker's results, the banners and the build's end."""

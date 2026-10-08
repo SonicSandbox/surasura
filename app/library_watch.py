@@ -34,6 +34,9 @@ import time
 SETTLE_S = 0.3            # a folder is synced once it has had no report for this long (a copy still running waits)
 BUFFER = 65536            # bytes: the most Windows allows over a network share
 RETRY_S = 300.0           # a watch that failed is tried again this often while the window is open (and on focus)
+SLOW_S = 10.0             # the slow look (no watch: not Windows, a drive that can't report): this often, in front only
+ROUND_S = 3600.0          # the safety round: once an hour while a window is open, none within an hour of a full look
+ROUND_GAP_S = 2.0         # one batch of the round (`library_store.Round.step`) every this often
 
 # The names a change report can carry that never mean a library change: the trash, the store's own files, the
 # manifest copy, and the temp names downloads and editors write first.
@@ -123,6 +126,8 @@ class TreeWatch:
         self.buffer = buffer
         self.settle = settle
         self.under = tuple(under) if under else None          # only reports under these top-level folders count
+        self.subtree = True                                   # the whole tree
+        self.notify = 0x1 | 0x2 | 0x8 | 0x10                  # names, folders, size, last write
         self.state = "closed"
         self.error = None
         self.reports = 0                                      # wake-ups of the watch thread (an idle watch has none)
@@ -231,7 +236,7 @@ class TreeWatch:
         ov = _Overlapped()
         ov.hEvent = self._io
         k32.ResetEvent(self._io)
-        if not k32.ReadDirectoryChangesW(self._handle, buf, len(buf), True, 0x1 | 0x2 | 0x8 | 0x10, None,
+        if not k32.ReadDirectoryChangesW(self._handle, buf, len(buf), self.subtree, self.notify, None,
                                          ctypes.byref(ov), None):
             return False
         handles = (wt.HANDLE * 2)(self._io, self._stop)
@@ -285,6 +290,174 @@ class TreeWatch:
                     added = True
         if added:
             self._changed.set()
+
+
+class FileWatch(TreeWatch):
+    """One folder (not its tree), and only the files named in `names`: the library's copy (`master_manifest.json`),
+    which every writer saves by a rename (`os.replace`, reported at once). `take()` -> ([], True) once one of them
+    changed (or Windows lost track): look at it."""
+
+    def __init__(self, folder, names, wake=None):
+        super().__init__(folder, buffer=4096, settle=0.0, wake=wake)
+        self.names = {n.lower() for n in names}
+        self.subtree = False
+        self.notify = 0x1 | 0x10                              # names (a save by rename), last write (one in place)
+
+    def _note(self, reports):
+        if any(name.replace("\\", "/").lower() in self.names for _action, name in reports):
+            self._overflow()
+
+
+def _identity(path):
+    """The folder at `path` now — (device, file index), "" when there is none — to tell a root renamed away (a watch
+    follows its folder, and Windows sends no report for the watched folder's own rename) from the one watched."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+class Lookout:
+    """A library window's eyes on its store and folders (L3.2), headless — the Content Manager's worker today, the
+    new window's tomorrow: the tree watch on the language's data folder, a watch on the copy, the store's bell, and
+    the timers of the slow look, the watch's retry and the hourly round. The window's worker loops:
+
+        lookout.wait()                    # blocks until something is due: idle and watched, the round (an hour)
+        jobs = lookout.jobs()             # what is due now (`Jobs`)
+        ...                               # the syncs; `looked()` after every full look
+
+    The window sets `front` (focused and not minimized: the slow look runs only then) and calls `focus()` before the
+    full look a focus return or Refresh makes (the watch's health: restarted when it ended or its root moved)."""
+
+    def __init__(self, data_dir, under=None, db_path=None, copy=None, wake=None, make_round=None,
+                 clock=time.monotonic):
+        self.wake = wake or threading.Event()
+        self.clock = clock
+        self.tree = TreeWatch(data_dir, under=under, wake=self.wake)
+        self.copy = FileWatch(os.path.dirname(copy), [os.path.basename(copy)], wake=self.wake) if copy else None
+        self.db_path = db_path
+        self.bell = None
+        self.make_round = make_round                          # () -> a `library_store.Round`
+        self.round = None
+        self.front = True
+        self.wakes = 0                                        # the worker's wake-ups (an idle watched window: none)
+        self.slow_looks = 0
+        self._root = None
+        now = clock()
+        self._last_full = now                                 # the open's full look follows `open()` at once
+        self._last_slow = None
+        self._last_try = now
+        self._round_next = None
+
+    def open(self):
+        self._start_tree()
+        if self.copy is not None:
+            self.copy.start()
+        if self.db_path:
+            self.bell = Bell(self.db_path, self.wake.set)
+        return self
+
+    def close(self):
+        self.tree.close()
+        if self.copy is not None:
+            self.copy.close()
+        if self.bell is not None:
+            self.bell.close()
+
+    def _start_tree(self):
+        self.tree.close()
+        started = self.tree.start()
+        self._root = _identity(self.tree.root) if started else None
+        return started
+
+    @property
+    def slow(self):
+        """No watch (or no bell to hear other processes by): the slow look stands in, in front only."""
+        return not self.tree.alive or (self.db_path is not None and (self.bell is None or self.bell.slot is None))
+
+    def set_front(self, front):
+        """The window's thread: in front or not. Coming to the front in fallback wakes the worker for its look."""
+        was, self.front = self.front, bool(front)
+        if self.front and not was and self.slow:
+            self.wake.set()
+
+    def focus(self, now=None):
+        """Before a focus return's (or Refresh's) full look: restart the watch if it ended, failed or its root moved;
+        give the copy's watch and the bell another try. -> True when the tree watch was restarted."""
+        now = self.clock() if now is None else now
+        self._last_try = now
+        restarted = False
+        if watchable():
+            if not self.tree.alive or _identity(self.tree.root) != self._root:
+                restarted = self._start_tree()
+            if self.copy is not None and not self.copy.alive:
+                self.copy.start()
+            if self.db_path and (self.bell is None or self.bell.slot is None):
+                if self.bell is not None:
+                    self.bell.close()
+                self.bell = Bell(self.db_path, self.wake.set)
+        return restarted
+
+    def looked(self, now=None):
+        """A full look just ran: the round restarts its hour, and one under way is dropped (the look covered it)."""
+        self._last_full = self.clock() if now is None else now
+        self.round = self._round_next = None
+
+    def timeout(self, now=None):
+        """Seconds until something is due (the worker's wait), never None: an idle watched window waits for the
+        round."""
+        now = self.clock() if now is None else now
+        due = [self._last_full + ROUND_S if self._round_next is None else self._round_next]
+        if self.tree.state == "watching":
+            settle = self.tree.due(now)
+            if settle is not None:
+                due.append(now + settle)
+        elif watchable():
+            due.append(self._last_try + RETRY_S)
+        if self.slow and self.front:
+            due.append(now if self._last_slow is None else self._last_slow + SLOW_S)
+        return max(0.0, min(due) - now)
+
+    def wait(self, now=None):
+        got = self.wake.wait(self.timeout(now))
+        self.wake.clear()
+        self.wakes += 1
+        return got
+
+    def jobs(self, now=None):
+        """What is due now -> `Jobs(folders, full, copy, slow, round)`: the settled folders to sync; a full look
+        (Windows lost track, or a watch that came back missed what happened meanwhile); the copy changed; the slow
+        look's turn (`DiskPoll`); a round batch to run (`round.step()`)."""
+        now = self.clock() if now is None else now
+        folders, full = self.tree.take(now)
+        copy = bool(self.copy is not None and self.copy.take(now)[1])
+        if self.tree.state != "watching" and watchable() and now - self._last_try >= RETRY_S:
+            self._last_try = now
+            full = self._start_tree() or full
+        slow = self.slow and self.front and (self._last_slow is None or now - self._last_slow >= SLOW_S)
+        if slow:
+            self._last_slow = now
+            self.slow_looks += 1
+        step = None
+        if self._round_next is None and now - self._last_full >= ROUND_S and self.make_round is not None:
+            self.round, self._round_next = self.make_round(), now
+        if self._round_next is not None and now >= self._round_next:
+            step = self.round
+            self._round_next = now + ROUND_GAP_S
+        return Jobs(folders, full, copy, slow, step)
+
+    def round_done(self, now=None):
+        """The round's last batch ran: the next one in an hour."""
+        self._last_full = self.clock() if now is None else now
+        self.round = self._round_next = None
+
+
+class Jobs:
+    __slots__ = ("folders", "full", "copy", "slow", "round")
+
+    def __init__(self, folders, full, copy, slow, round):
+        self.folders, self.full, self.copy, self.slow, self.round = folders, full, copy, slow, round
 
 
 def _overlapped_type():

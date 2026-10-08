@@ -499,3 +499,18 @@ def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_chan
     assert lst.model().changed == [i]
     lst.viewport().repaint()
     assert lst.delegate.renders == renders + 1
+
+
+def test_a_change_on_current_leaves_finished_and_goal_untouched(seeded):
+    """Bench 6: every reader view diffed every page on the window's thread. A status write on a Current row now builds
+    no entries for Finished (its rows are the same objects) and doesn't repaint the Goal strip."""
+    seed, win = seeded()
+    lst = current(win)
+    fin = win.page_widgets["finished"].list
+    strip = win.page_widgets["current"].goal_strip
+    fin_entries, goal = fin.model().entries, strip.goal
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1 - int(row.episodes[0].watched)}])
+    assert wait_until(lambda: lst.model().entries[i][1] is not row)
+    assert fin.model().entries is fin_entries and fin.model().changed == []
+    assert strip.goal is goal

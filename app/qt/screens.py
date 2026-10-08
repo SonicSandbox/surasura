@@ -143,6 +143,11 @@ class GoalStrip(QWidget):
 
 
 # --- the pages ------------------------------------------------------------------------------------------------------ #
+def same_objects(a, b):
+    """Two tuples holding the same objects, in order."""
+    return a is b or (len(a) == len(b) and all(x is y for x, y in zip(a, b)))
+
+
 class Page(QWidget):
     message = pyqtSignal(str)                       # a line for the bottom bar (a file that couldn't open)
 
@@ -173,9 +178,18 @@ class Page(QWidget):
     def entries(self, view):
         raise NotImplementedError
 
+    def unchanged(self, old, new):
+        """Whether this page's part of the view is the same as last time (no entries built, nothing diffed)."""
+        return False
+
     def set_view(self, view):
-        self.view_model = view
-        self.state_bar.show_line(state_line(view))
+        old, self.view_model = self.view_model, view
+        line = state_line(view)
+        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):   # only when it changes
+            self.state_bar.show_line(line)
+        if old is not None and view is not None and old.loading == view.loading and self.unchanged(old, view):
+            self.list.model().changed = []
+            return "same"                               # another page's change: this list's diff costs nothing
         return self.list.set_entries(self.entries(view))
 
     def _media_of(self, episode):
@@ -226,10 +240,15 @@ class CurrentPage(Page):
             out.append((rows.HERO if i == 0 else rows.ROW, r, tuple(after.get(i, ()))))
         return out
 
+    def unchanged(self, old, new):
+        # the reader's row cache keeps an unchanged row the same object, so an identity walk is the whole check
+        return old.lines == new.lines and same_objects(old.rows, new.rows)
+
     def set_view(self, view):
         how = super().set_view(view)
         if view is not None and view.goal is not None:
-            self.goal_strip.set_goal(view.goal)
+            if view.goal != self.goal_strip.goal:         # repainted only when Goal changed
+                self.goal_strip.set_goal(view.goal)
             self.goal_strip.setVisible(bool(view.rows) or bool(view.goal.files) or not view.loading)
         return how
 
@@ -243,6 +262,10 @@ class FinishedPage(Page):
         self.help.setAccessibleName(strings.FINISHED_HELP_NAME)
         self.help.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.head_row.insertWidget(1, self.help)
+
+    def unchanged(self, old, new):
+        return len(old.finished) == len(new.finished) and all(
+            a.label == b.label and same_objects(a.rows, b.rows) for a, b in zip(old.finished, new.finished))
 
     def entries(self, view):
         if view is None:
@@ -265,6 +288,9 @@ class NeedsPage(Page):
         self.failures = tuple(entries or ())
         if self.view_model is not None:
             self.list.set_entries(self.entries(self.view_model))
+
+    def unchanged(self, old, new):
+        return old.needs == new.needs
 
     def entries(self, view):
         out = [(rows.NEED, n, ()) for n in (view.needs if view is not None else ())]

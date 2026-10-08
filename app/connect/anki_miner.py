@@ -39,6 +39,7 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{15B09250-
 EXE = "AnkiMiner.exe"
 CREATE_NO_WINDOW = 0x08000000
 WINERROR_VIRUS = 225            # "Operation did not complete successfully because the file contains a virus"
+DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings_manager)
 
 # Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
 # here is a later addition: ignored until Surasura knows it.
@@ -56,12 +57,13 @@ KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setu
 # The outcome of each status (IS §4.4)
 OUTCOMES = {"created": "made", "duplicate": "duplicate", "not_found": "not_found", "no_definition": "no_definition",
             "media_failed": "media_failed", "refused": "refused", "not_attempted": "not_attempted",
-            "uncertain": "uncertain"}
+            "uncertain": "uncertain", "ready": "ready"}       # ready: a dry run would make it (Z-7)
 # A run that stopped with one of these and wrote no result never reached Anki: refused, never uncertain
 BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "ANKI_UNREACHABLE", "SETUP_ERROR",
                          "PROFILE_UNREADABLE", "BAD_RUN_FILE", "CANCELLED"))
 # When a word went as two entries (its card front, and Surasura's Word), the better outcome is the word's
-_BEST = ("made", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted", "not_found")
+_BEST = ("made", "ready", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted",
+         "not_found")
 
 
 class AnkiMinerError(Exception):
@@ -205,22 +207,32 @@ def settings_export(path, language, out, profile=None):
 
 
 def profile_id(listed, name):
-    """The id of the profile called `name` (or with that id) among `profiles`' list, or None (E9)."""
+    """The id of the profile called `name` (or with that id) among `profiles`' list, or None (E9). Names compare
+    ignoring case, as Anki Miner keeps them apart."""
     for entry in listed:
-        if name in (entry.get("id"), entry.get("name")):
+        called = entry.get("name")
+        if name == entry.get("id") or (isinstance(called, str) and called.casefold() == name.casefold()):
             return entry.get("id")
     return None
 
 
 def choose_profile(info, listed, name):
-    """The Anki Miner profile Connect mines with: the id of the one `connect_anki_miner_profile` names when Anki Miner
-    has it; else, once every named word is whitelisted (Z-1, 3.7), None — Anki Miner's active profile, your usual one
-    (Sonic, 2026-10-07: the separate profile is optional). Before Z-1 the named profile is needed (its whitelist is how
-    the named words pass the name lists, IS-R3, N10): AnkiMinerError `needs-you` when it's missing (E9)."""
+    """The id of the Anki Miner profile Connect mines with — the run file, `check` and the settings export all name
+    it, so one batch reads one profile. The one `connect_anki_miner_profile` names when Anki Miner has it. Once every
+    named word is whitelisted (Z-1, 3.7) the "Surasura" profile is optional (Sonic, 2026-10-07): with the setting left
+    at its default (or empty) and no such profile, the profile `profiles` marks active, your usual one (None only when
+    none is marked: Anki Miner then reads its window's settings). A profile you named yourself that Anki Miner doesn't
+    have is never swapped for another: AnkiMinerError `needs-you` (E9), as is a missing "Surasura" profile before Z-1
+    (its whitelist is how the named words pass the name lists, IS-R3, N10)."""
     found = profile_id(listed, name) if name else None
-    if found is not None or "Z-1" in features(info):
+    if found is not None:
         return found
-    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name or "Surasura"}". Make it once in Anki '
+    if name and name != DEFAULT_PROFILE:
+        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name}" (Surasura\'s Anki Miner profile '
+                             "setting). Choose one Anki Miner has, or make it in Anki Miner.")
+    if "Z-1" in features(info):
+        return next((entry.get("id") for entry in listed if entry.get("active")), None)
+    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{DEFAULT_PROFILE}". Make it once in Anki '
                          "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
 
 
@@ -308,9 +320,9 @@ def outcomes(words, rows, run_failed=False, features=()):
 
 def preflight(path, language, profile_name):
     """Before every batch (E9, E10): what this Anki Miner is (`version`, never cached), the id of the profile Connect
-    mines with (`choose_profile`; None: the active one), and its `check` for the language. Raises AnkiMinerError:
-    `needs-you` when an Anki Miner before 3.7 has no such profile, `anki-closed` when Anki isn't reachable, `setup`
-    naming what Anki Miner's own setup lacks."""
+    mines with (`choose_profile`), and its `check` for the language. Raises AnkiMinerError: `needs-you` when that
+    profile is missing (`choose_profile`), `anki-closed` when Anki isn't reachable, `setup` naming what Anki Miner's
+    own setup lacks."""
     info = version(path)
     profile = choose_profile(info, profiles(path), profile_name)
     ready = check(path, language, profile)

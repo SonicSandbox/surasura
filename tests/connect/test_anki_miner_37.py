@@ -1,6 +1,7 @@
 """Connect's mine step on Anki Miner 3.7.0 (P1.3-AM37; API.md and `cli/api/contract.py` at tag v3.7.0, fee1c3b),
 against the fake Anki Miner taught 3.7's contract and against a real 3.7.0's own answers, recorded
-(`am370_recorded.json`: its `version` verdict and the result rows of a dry run on the proof's episode).
+(`am370_recorded.json`: its `version` verdict and the result rows of two dry runs of the proof's episode, the
+run file 3.6 was sent and the one 3.7 is sent now).
 
 - any profile works once every named word is whitelisted (Z-1): the "Surasura" profile when Anki Miner has one, else
   the active one (Sonic, 2026-10-07: the separate profile is optional); before 3.7 it is still needed
@@ -64,11 +65,13 @@ def _check_args(fake_miner):
 # The profile
 # --------------------------------------------------------------------------- #
 def test_on_37_any_profile_works_your_active_one_when_there_is_no_surasura_profile(batch, fake_miner, words):
-    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=ONLY_DEFAULT)
+    fake_miner.plan(app="3.7.0", features=FEATURES_37,
+                    profiles=[{"id": "anime", "name": "Anime"}, {"id": "drama", "name": "Drama", "active": True}])
     done = batch()
     assert [o["outcome"] for o in done["outcomes"]] == ["made"] * len(words)
-    assert "profile" not in fake_miner.run_files()[-1]              # Anki Miner's active profile
-    assert "--profile" not in _check_args(fake_miner)[-1]           # checked as the run will mine
+    # the active one, pinned by its id (review #5): checked and mined as one profile, whatever is active later
+    assert fake_miner.run_files()[-1]["profile"] == "drama"
+    assert _check_args(fake_miner)[-1][-2:] == ["--profile", "drama"]
     assert not os.path.exists(anki_miner.whitelist_path("ja"))      # no whitelist file to keep (Z-1)
 
 
@@ -80,9 +83,27 @@ def test_on_37_the_surasura_profile_is_still_used_when_anki_miner_has_it(batch, 
 
 
 def test_on_37_an_empty_profile_setting_is_the_active_profile(batch, fake_miner):
-    fake_miner.plan(app="3.7.0", features=FEATURES_37)
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=ONLY_DEFAULT)
     batch(profile="")
-    assert "profile" not in fake_miner.run_files()[-1]
+    assert fake_miner.run_files()[-1]["profile"] == "default"
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "default", "name": "Default"}])
+    batch(profile="", attempt=2)
+    assert "profile" not in fake_miner.run_files()[-1]              # none marked active: Anki Miner's own choice
+
+
+def test_a_profile_you_named_that_anki_miner_lacks_is_never_swapped_for_another(batch, fake_miner):
+    # Review #4: only the default "Surasura" is optional; a name you chose yourself and Anki Miner no longer has
+    # needs you, on 3.7 as before it
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=ONLY_DEFAULT)
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        batch(profile="Anime JP")
+    assert e.value.kind == "needs-you" and "Anime JP" in e.value.message and "mine" not in fake_miner.commands()
+
+
+def test_a_profile_name_matches_whatever_its_case(batch, fake_miner):
+    fake_miner.plan(app="3.7.0", features=FEATURES_37)
+    batch(profile="surasura")
+    assert fake_miner.run_files()[-1]["profile"] == "p-surasura"
 
 
 @pytest.mark.parametrize("app, features", [("3.5.0", []), ("3.6.0", ["sentence-rules-off"])])
@@ -103,11 +124,15 @@ def test_on_37_each_word_goes_once_with_its_surface_and_reading_and_no_word_make
     done = batch()
     entries = fake_miner.run_files()[-1]["episodes"][0]["words"]
     assert [e["word"] for e in entries] == [w["sent"][0] for w in words]           # one entry a word, its front
-    assert all(e.get("reading") == w["front_reading"] for e, w in zip(entries, words))
-    assert any(w["front_reading"] for w in words)
+    # a reading only for a word Anki Miner may not find by itself (review #2): its own reading stands otherwise
+    assert all(e.get("reading") == (w["front_reading"] if w["predicted_class"] else None)
+               for e, w in zip(entries, words))
+    assert any("reading" in e for e in entries) and any("reading" not in e for e in entries)
     two = next(w for w in words if len(w["sent"]) > 1)
     entry = entries[words.index(two)]
-    assert entry["surface"] == two["surface"] and two["word"] not in [e["word"] for e in entries]
+    assert entry.get("surface") == (two["surface"] if two["surface"] != two["sent"][0] else None)
+    assert two["word"] not in [e["word"] for e in entries]                         # its Word goes no more
+    assert any("surface" in e for e in entries)                                    # 借り(たい): as written
     rows = done["result"]["words"]
     assert len(rows) == len(words) and sum(r["status"] == "created" for r in rows) == len(words)
     assert len({r["note_id"] for r in rows}) == len(words)
@@ -115,8 +140,9 @@ def test_on_37_each_word_goes_once_with_its_surface_and_reading_and_no_word_make
 
 
 def test_the_two_entry_shape_would_make_two_cards_of_one_word_on_37(tmp_path, fake_miner, words):
-    # The risk the change removes (am-3.7-check): the card front and Surasura's Word, both made from their line,
-    # are two notes of one word. Shown with the 3.6 run file handed to a 3.7 build.
+    # The risk the change removes, in the fake's terms (every name it is told is made from its line): the card front
+    # and Surasura's Word both made, two notes of one word. The real 3.7 did it for 時 / とき (recorded, below); for
+    # 下さる it would answer `duplicate`, as both names reach one word on the line.
     two = next(w for w in words if len(w["sent"]) > 1)
     fake_miner.plan(app="3.7.0", features=FEATURES_37, from_line=two["sent"])
     run_dir = tmp_path / "runs"
@@ -191,13 +217,32 @@ def test_a_real_37_version_answer_reads_as_37(fake_miner, recorded):
     assert runfile.from_line(info["features"]) and not runfile.sends_sentence_keys(info["app"], info["features"])
 
 
+def test_on_a_real_37_the_two_entry_shape_makes_two_cards_and_one_entry_one(recorded):
+    # The proof episode's line 時間があるときに電話して。: 3.7 makes とき from its line, and 時 (Surasura's Word, the
+    # second entry) from the same line, found inside 時間: two fronts, two cards. One entry a word: one card.
+    def fronts_by_word(shape, features):
+        words, rows, out, at = recorded[shape]["words"], recorded[shape]["rows"], {}, 0
+        for w in words:
+            n = len(runfile.entries(w, features))
+            out[w["word"]] = {r["mined_form"] for r in rows[at:at + n] if r["status"] == "ready"}
+            at += n
+        assert at == len(rows)
+        return out
+    features = recorded["version"]["result"]["features"]
+    old = fronts_by_word("dry_run_two_entries", ())
+    assert old["時"] == {"とき", "時"}
+    assert [w for w, fronts in old.items() if len(fronts) > 1] == ["時"]
+    new = fronts_by_word("dry_run", features)
+    assert all(len(fronts) == 1 for fronts in new.values()) and new["時"] == {"とき"}
+
+
 def test_a_real_37_dry_run_reads_back_one_row_a_word(recorded):
     # The proof's words as sent (one entry each) and the rows the real build gave back for them, in order
     words, rows = recorded["dry_run"]["words"], recorded["dry_run"]["rows"]
     assert len(rows) == len(words) and [r["word"] for r in rows] == [w["sent"][0] for w in words]
     fronts = [r["mined_form"] for r in rows if r["status"] == "ready"]
     assert len(fronts) == len(set(fronts))                          # no word would be made twice
-    out = anki_miner.outcomes(words, [dict(r, status="created" if r["status"] == "ready" else r["status"])
-                                      for r in rows], features=recorded["version"]["result"]["features"])
+    out = anki_miner.outcomes(words, rows, features=recorded["version"]["result"]["features"])
     assert [o["word"] for o in out] == [w["word"] for w in words]
+    assert {o["outcome"] for o in out} == {"ready"}                 # a dry run's words: ready, nothing made
     assert any(o["from_line"] for o in out) == any(r["from_line"] for r in rows)

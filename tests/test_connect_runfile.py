@@ -108,28 +108,36 @@ FEATURES_37 = ["sentence-rules-off", "bold-target", "named-words-whitelisted", "
                "word-from-line", "dry-run", "render", "media", "settings-import", "setup", "fetch", "beside-window"]
 # pick's words as 3.7 is sent them: the word as its line writes it, and its card front's reading in hiragana
 WORDS_37 = [
-    {"word": "図書館", "sent": ["図書館"], "surface": "図書館", "front_reading": "としょかん", "line_start": 90.0,
-     "line_expansion": [0, 1]},
+    {"word": "図書館", "sent": ["図書館"], "surface": "図書館", "front_reading": "としょかん", "predicted_class": None,
+     "line_start": 90.0, "line_expansion": [0, 1]},
     {"word": "下さる", "sent": ["くださる", "下さる"], "surface": "ください", "front_reading": "くださる",
-     "line_start": 103.0, "line_expansion": [2, 0]},
-    {"word": "借りる", "sent": ["借りる"], "surface": "借り", "front_reading": "かりる", "line_start": 116.4,
-     "line_expansion": [0, 0]},
+     "predicted_class": None, "line_start": 103.0, "line_expansion": [2, 0]},
+    {"word": "借りる", "sent": ["借りる"], "surface": "借り", "front_reading": "かりる", "predicted_class": None,
+     "line_start": 116.4, "line_expansion": [0, 0]},
+    {"word": "図書カード", "sent": ["図書カード"], "surface": "図書カード", "front_reading": "としょかーど",
+     "predicted_class": "IS-P5", "line_start": 120.0, "line_expansion": [0, 0]},
 ]
 
 
 def test_on_37_each_word_goes_once_with_the_word_as_written_and_its_reading():
     # Z-2: a second name (Surasura's Word) could be made from the same line as a second card; one entry a word
     requests = runfile.word_requests(WORDS_37, FEATURES_37)
-    assert [r["word"] for r in requests] == ["図書館", "くださる", "借りる"]
+    assert [r["word"] for r in requests] == ["図書館", "くださる", "借りる", "図書カード"]
     assert "surface" not in requests[0]                             # written as its front: nothing to add
-    assert requests[1] == {"word": "くださる", "line_start": 103.0, "line_expansion": [2, 0], "surface": "ください",
-                           "reading": "くださる"}
-    assert requests[2]["surface"] == "借り" and requests[2]["reading"] == "かりる"
+    assert requests[1] == {"word": "くださる", "line_start": 103.0, "line_expansion": [2, 0], "surface": "ください"}
+    assert requests[2]["surface"] == "借り"
+
+
+def test_on_37_only_a_word_anki_miner_may_not_find_itself_carries_its_reading():
+    # Review #2: 3.7 puts an entry's reading on a word it finds itself too, over its own (仏 ほとけ, not UniDic's ふつ);
+    # a word only Surasura joins may be made from its line, and its reading is then the card's
+    requests = runfile.word_requests(WORDS_37, FEATURES_37)
+    assert [r.get("reading") for r in requests] == [None, None, None, "としょかーど"]
 
 
 def test_before_37_the_words_go_as_before_with_no_new_keys():
     requests = runfile.word_requests(WORDS_37, ["named-words-whitelisted", "sentence-rules-off"])
-    assert [r["word"] for r in requests] == ["図書館", "くださる", "下さる", "借りる"]
+    assert [r["word"] for r in requests] == ["図書館", "くださる", "下さる", "借りる", "図書カード"]
     assert all(set(r) == {"word", "line_start", "line_expansion"} for r in requests)
 
 

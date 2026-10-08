@@ -85,27 +85,40 @@ def line_expansion(cues, at):
     return [before, after]
 
 
+def _by_lemma(token):
+    """A verb or adjective form UniDic reads as another word's (its lemma's reading isn't its own dictionary form's):
+    a potential, ra-nuki or classical form — 行ける, 辿り着ける, 来れる, 美しき. Anki Miner folds these to the lemma too
+    (`morphology.mining_base`), so the card is the lemma's (P1.3-AM37 review #3)."""
+    node = token.node
+    f = node.feature if node is not None else None
+    return (f is not None and f.pos1 in ("動詞", "形容詞") and bool(token.lemma) and bool(f.lForm)
+            and bool(f.kanaBase) and f.kanaBase != "*" and f.lForm != f.kanaBase)
+
+
 def card_front(token):
     """The word Anki Miner is named by (IS:234): a verb, adjective or helper verb by its dictionary form as the
-    occurrence writes it (orthBase); anything else exactly as written (伯父さん, not おじさん; クソ, not くそ)."""
+    occurrence writes it (orthBase) — by its lemma where that form is another word's (`_by_lemma`: 行ける → 行く);
+    anything else exactly as written (伯父さん, not おじさん; クソ, not くそ)."""
     node = token.node
     if node is not None and node.feature.pos1 in CONJUGATED:
-        return node.feature.orthBase or token.orth
+        return token.lemma if _by_lemma(token) else node.feature.orthBase or token.orth
     return token.written
 
 
 def front_reading(occurrence, key, language):
     """The reading the card front is said with on this line, in hiragana as Anki Miner writes readings — or None (Anki
     Miner then reads it itself). A set phrase: its row's reading (the dictionary's, キガツク); a word: its occurrence's
-    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: やっぱり, never its lemma's
-    やはり; 言っ, いう); a joined word: the reading the join gives it (日本人, にほんじん). Chinese keeps none."""
+    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: やっぱ said so, never its
+    lemma's やはり; 言っ, いう), or the lemma's where the front is the lemma (行ける, いく); a joined word: the reading
+    the join gives it (日本人, にほんじん). Chinese keeps none."""
     if language != "ja":
         return None
     from app import anki_match
     node = occurrence.token.node
     if not occurrence.phrase and node is None:
         return None
-    reading = key[1] if occurrence.phrase else getattr(node.feature, "kanaBase", None)
+    by_lemma = occurrence.phrase or _by_lemma(occurrence.token)
+    reading = key[1] if by_lemma else getattr(node.feature, "kanaBase", None)
     reading = reading if isinstance(reading, str) and reading not in ("", "*") else None
     return anki_match.fold_kana(reading) if reading else None
 

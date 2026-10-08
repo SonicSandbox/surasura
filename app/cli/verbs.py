@@ -900,7 +900,7 @@ def _anki_miner_setup(loaded, lang, run_dir):
     name = loaded.get("connect_anki_miner_profile") or "Surasura"
     try:
         info = anki_miner.version(miner)
-        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # None: the active one (Z-1)
+        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
         os.makedirs(run_dir, exist_ok=True)
         mapping = fields.from_export(
             anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)

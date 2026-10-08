@@ -102,17 +102,21 @@ def entries(word, features=()):
     """The names one picked word goes as. Before Z-2: its card front, and Surasura's Word when pick added it (IS:235;
     the Word finds the card the front misses, else comes back `duplicate` or `not_found`). Once Anki Miner makes a
     word from its line: the card front alone. A second name could be made from the same line as a second card of the
-    same word (事 found inside 仕事 on the line where Anki Miner read こと into a longer expression), and the front with
-    the word as written and its reading already reaches what the Word did."""
+    same word (recorded on 3.7.0: とき made from its line, and 時, the Word, found inside 時間 on the same line), and
+    the front with the word as written reaches what the Word did (pick names a form Anki Miner folds, 行ける, by its
+    lemma: `pick.card_front`)."""
     return list(word["sent"][:1]) if from_line(features) else list(word["sent"])
 
 
 def word_requests(words, features=()):
     """The run file's `words` for picked words (pick.pick's): each name `entries` gives, with the line's start in
     seconds and its expansion, always sent (IS:260). Where Anki Miner makes a word from its line (Z-2), the entry also
-    carries the word as this line writes it (`surface`, when it differs: 借り for 借りる, a set phrase's own words) and
-    the reading its card front is said with here (`front_reading`: hiragana, as Anki Miner writes readings; やっぱり,
-    never its lemma's やはり). The reading chooses among dictionary entries, so the card is Surasura's word."""
+    carries the word as this line writes it (`surface`, when it differs: 借り for 借りる, a set phrase's own words), and,
+    for a word Anki Miner may not find by itself (pick's `predicted_class`: a set phrase, a word only Surasura joins, a
+    kana-only word, a name, grammar), the reading its card front is said with here (`front_reading`: hiragana, as Anki
+    Miner writes readings), so a word made from its line is Surasura's word. 3.7 puts an entry's reading on a word it
+    finds itself too, over its own reading and the fixes it makes to UniDic's (仏 ほとけ, not ふつ): so a word it is
+    expected to find goes without one."""
     out, made = [], from_line(features)
     for word in words:
         for name in entries(word, features):
@@ -122,7 +126,7 @@ def word_requests(words, features=()):
                 surface, reading = word.get("surface"), word.get("front_reading")
                 if surface and surface.strip() and surface != name:
                     entry["surface"] = surface
-                if reading and reading.strip():
+                if reading and reading.strip() and word.get("predicted_class"):
                     entry["reading"] = reading
             out.append(entry)
     return out

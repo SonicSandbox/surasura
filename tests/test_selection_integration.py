@@ -695,6 +695,8 @@ def test_a_band_change_is_remembered_and_stamped_so_the_next_check_reuses_it(sam
     # Generate, and the re-plan would refuse the plan ("generate-first: auto_band"). Haya's E1.3 check.
     import gzip
     from app.main import journey_is_current
+    from tests import plan_file_cases
+    plan_file_cases.needs_junban()                              # the plan file is written only with Junban (E3.1)
     root = samples_env
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)
@@ -703,6 +705,9 @@ def test_a_band_change_is_remembered_and_stamped_so_the_next_check_reuses_it(sam
     ls, data_dir, user_files = _with_library_store(root)
     assert ls.read_auto_band("ja", data_dir) is None
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True, auto_max_words=line)
+    settings = json.loads((root / "settings.json").read_text(encoding="utf-8"))
+    settings["junban_replan_preview"] = True                    # a plan file only while the preview is on (E1.2-1)
+    (root / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     _run_samples(root)                                          # nothing remembered → picks Uncommon → remembers it
     assert ls.read_auto_band("ja", data_dir) == "uncommon"
     argv = ["analyzer.py", "--language", "ja"]

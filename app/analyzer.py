@@ -3570,6 +3570,26 @@ def _plan_json(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+_PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never pair one file's key with another's header
+
+
+def _plan_is_this_runs(run_signature, results_dir=None):
+    """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question while the
+    fast re-plan's preview is on (E1.2-1): a plan switched on, lost or damaged gets a full run, never the reuse."""
+    from app import plan_engine
+    path = os.path.join(results_dir or RESULTS_DIR, PLAN_FILE)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _PLAN_HEADER[0]
+    if hit is None or hit[0] != key:            # read (the whole stream, for its CRC) once per version of the file
+        hit = _PLAN_HEADER[0] = (key, plan_engine.read_header(path))
+    header = hit[1]
+    return header is not None and header.get("run_signature") == run_signature
+
+
 def write_plan_file(results_dir, lines):
     """Write the plan file atomically: a temp file, gzip level 3, flushed and fsynced, read back whole (the gzip CRC,
     and the header's JSON — every line is `json.dumps`' own), then `os.replace`. On any error the temp is removed, the
@@ -3943,7 +3963,7 @@ def journey_is_current(args, language):
             stored = store.get_meta("last_run_signature")
         finally:
             store.close()
-        current = stored == sig and read_run_stamp(results_dir) == sig
+        current = stored == sig and read_run_stamp(results_dir) == sig and _plan_kept(language, sig, results_dir)
         if current:
             record_analysed(language, library)
         return current
@@ -3979,9 +3999,22 @@ def journey_check(args, language):
         if not all(os.path.exists(os.path.join(results_dir, name)) for name in
                    ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
             return False
-        return _token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
+        return (_token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
+                and _plan_kept(language, sig, results_dir))
     except Exception:
         return None
+
+
+def _plan_kept(language, sig, results_dir):
+    """The analyzer's own reuse gate, asked as the window and the command line ask it: with the fast re-plan's
+    preview on for `language`, a run is current only with its plan file (E1.2-1). Off: always True."""
+    try:
+        from app import replan_preview
+        if not replan_preview.is_on(settings_manager.load_settings(), language):
+            return True
+    except Exception:
+        return True
+    return _plan_is_this_runs(sig, results_dir)
 
 
 def _token_store_meta(language, key):
@@ -4058,6 +4091,8 @@ def run_signature_parts(language, found_files, args):
             "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
             # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
             "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+            # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
+            "anki_sync_delay_min",
             # Optional-module switches that change what the app SHOWS, never what a run computes.
             # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
             # library_frequency.json it used to switch on.)
@@ -4251,6 +4286,14 @@ def _template_fingerprint():
 # changes. A stamp that is missing (results from before this existed) counts as a mismatch: one
 # full run, then back to skipping.
 RUN_STAMP_FILE = "run_signature.txt"
+
+
+def engine_id():
+    """The running app's engine as the plan file's header names it (`"<version>|schema<N>|rev<N>"`): the plan
+    writer's and the fast re-plan's check (`plan_engine.check`), one formula."""
+    from app import __version__ as _app_version
+    from app import token_index as _token_index
+    return f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}"
 
 
 def read_run_stamp(results_dir):
@@ -4498,6 +4541,14 @@ def main():
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
     
+    # The plan file (E1.1 01; read only by the fast re-plan) is kept and written only while its preview is on
+    # (E1.2-1 = B, Sonic 2026-10-05): off, a Generate does exactly the work it did before the plan existed.
+    try:
+        from app import replan_preview as _replan_preview
+        _plan_on = _replan_preview.is_on(settings_manager.load_settings(), language)
+    except Exception:
+        _plan_on = False
+
     # The library's list: the store's (built, checked and synced with the disk first), else the file.
     _library = prepare_library(language, data_dir, user_files_dir)
     found_files = resolve_found_files(language, schedule=_library["schedule"])   # shared with the GUI
@@ -4520,7 +4571,8 @@ def main():
     if (_store is not None and _run_sig and _analysis_outputs_present
             and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
             and _store.get_meta("last_run_signature") == _run_sig
-            and read_run_stamp(RESULTS_DIR) == _run_sig):   # ...and results/ is THIS run's (above)
+            and read_run_stamp(RESULTS_DIR) == _run_sig     # ...and results/ is THIS run's (above)
+            and (not _plan_on or _plan_is_this_runs(_run_sig))):   # the preview's plan too (E1.2-1)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
         record_analysed(language, _library, data_dir, user_files_dir)
         # A completed run is being reused; make sure the Content Manager sidecars exist and are
@@ -4934,8 +4986,8 @@ def main():
     # in the long tail below the cut-off; the writer checks every list word's uses add up. None: the cut-off is fixed
     # only after the aggregation — every word.
     plan_files = []
-    _plan_keys = None
-    if _counts is not None and floor_count is not None:
+    _plan_keys = None if _plan_on else frozenset()      # off: no word is kept, so nothing is recorded per use
+    if _plan_on and _counts is not None and floor_count is not None:
         _pieces = (_bound_counts or {}) if skip_singles else {}     # pieces count when the one-kanji rule is off
         _room = Counter()
         for compound in _rare:
@@ -5090,7 +5142,7 @@ def main():
                     file_phrases[index] += 1
                     # The plan file's spellings, for a phrase met as often as a row needs (`_phrase_uses`, as words'
                     # `_plan_keys` below).
-                    if _phrase_uses is None or _phrase_uses[index] >= floor_count:
+                    if _plan_on and (_phrase_uses is None or _phrase_uses[index] >= floor_count):
                         met = file_phrase_spelled.get(index)
                         if met is None:
                             file_phrase_spelled[index] = (orth, written)
@@ -5327,7 +5379,8 @@ def main():
 
         
         file_token_cache[file_path] = file_counter
-        plan_files.append(_plan_file(file_uses, word_stats, file_phrase_spelled, phrase_stats))
+        if _plan_on:
+            plan_files.append(_plan_file(file_uses, word_stats, file_phrase_spelled, phrase_stats))
         if file_credits:
             file_credit_cache[file_path] = file_credits
         if file_phrases:
@@ -5994,7 +6047,8 @@ def main():
     word_state = _word_state.get
     # The plan file's: every list key (in word_stats' order) and, per file, what this pass reads of the words a list
     # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses a phrase took}, {lemma: count}).
-    plan_keys = [key for key, entry in word_stats.items() if entry["total_count"] >= floor_count]
+    plan_keys = ([key for key, entry in word_stats.items() if entry["total_count"] >= floor_count]
+                 if _plan_on else [])
     plan_index = {key: k for k, key in enumerate(plan_keys)}
     plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
     plan_prog = []
@@ -6171,30 +6225,30 @@ def main():
     except Exception as e:
         print(f"Warning: automatic rarity could not remember its band ({e}); the next run decides afresh.")
 
-    # No run signature, no plan: nothing could tell which run it describes.
-    try:
-        if not _run_sig:
-            raise ValueError("the run has no signature")
-        from app import __version__ as _app_version
-        _plan_size = write_plan_file(RESULTS_DIR, plan_lines({
-            "language": language,
-            "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
-            "run_signature": _run_sig, "order_free_signature": signature_digest(_sig_parts, order_free=True,
-                                                                                         chunked=False),
-            "signature_parts": _sig_parts,
-            "library": _library, "weights": (WEIGHT_HIGH, WEIGHT_LOW, WEIGHT_GOAL), "floor": floor_count,
-            "total_tokens": total_tokens, "phrase_rows": _phrase_set is not None,
-            "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),
-            "max_contexts": args.max_contexts, "data_dir": data_dir, "found_files": found_files,
-            "plan_files": plan_files, "word_stats": word_stats, "phrase_keys": phrase_keys, "halved": _halved,
-            "shared_phrases": _shared_phrases, "output_rows": output_rows, "valid_lrs": valid_lrs,
-            "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,
-            "token_cache": file_token_cache, "credit_cache": file_credit_cache, "phrase_cache": file_phrase_cache,
-            "bound_cache": file_bound_cache, "piece_cache": file_piece_cache, "keys": plan_keys,
-            "prog": plan_prog}))
-        print(f"Saved the plan file ({_plan_size:,} bytes).")
-    except Exception as e:
-        print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
+    # No run signature, no plan: nothing could tell which run it describes. Off, no plan at all (E1.2-1).
+    if _plan_on:
+        try:
+            if not _run_sig:
+                raise ValueError("the run has no signature")
+            _plan_size = write_plan_file(RESULTS_DIR, plan_lines({
+                "language": language,
+                "engine": engine_id(),
+                "run_signature": _run_sig, "order_free_signature": signature_digest(_sig_parts, order_free=True,
+                                                                                             chunked=False),
+                "signature_parts": _sig_parts,
+                "library": _library, "weights": (WEIGHT_HIGH, WEIGHT_LOW, WEIGHT_GOAL), "floor": floor_count,
+                "total_tokens": total_tokens, "phrase_rows": _phrase_set is not None,
+                "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),
+                "max_contexts": args.max_contexts, "data_dir": data_dir, "found_files": found_files,
+                "plan_files": plan_files, "word_stats": word_stats, "phrase_keys": phrase_keys, "halved": _halved,
+                "shared_phrases": _shared_phrases, "output_rows": output_rows, "valid_lrs": valid_lrs,
+                "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,
+                "token_cache": file_token_cache, "credit_cache": file_credit_cache, "phrase_cache": file_phrase_cache,
+                "bound_cache": file_bound_cache, "piece_cache": file_piece_cache, "keys": plan_keys,
+                "prog": plan_prog}))
+            print(f"Saved the plan file ({_plan_size:,} bytes).")
+        except Exception as e:
+            print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint so a same-setting re-run can open the

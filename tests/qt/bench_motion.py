@@ -157,10 +157,12 @@ def child(rounds):
                 with meter.span(label):
                     return fn(*a, **k)
             setattr(owner, name, wrapped)
-        # the opening's own steps, by name: which one is long (the overlay's snapshot, the picture with its shadow, the
-        # lift's window shown and painted, the overlay itself shown at the end, a close)
+        # the opening's own steps, by name: which one is long (the click's own share, the overlay's snapshot, the picture
+        # with its shadow, the lift's window shown and painted, the overlay itself shown at the end, a close)
         timed(motion.OverlayOpening, "start", "open-start")
         timed(motion.OverlayOpening, "_compose", "open-compose")
+        timed(motion.OverlayOpening, "_snapshot", "open-snapshot")      # M2.1-1 (b): the pieces, each its own step
+        timed(motion.OverlayOpening, "_go", "open-go")
         timed(motion, "_take_lift", "lift-take")
         timed(motion._Lift, "paintEvent", "lift-paint")
         timed(motion, "_show", "overlay-show")

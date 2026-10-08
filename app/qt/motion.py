@@ -431,9 +431,26 @@ def _lifted():
     return QGuiApplication.platformName() == "windows"
 
 
+# How an in-window overlay's opening is prepared (M2.1-1, Sonic 2026-10-08: "Split it as you said"): in pieces — the
+# overlay drawn (its snapshot); for the ghost, its shadow added (the picture); the picture shown and the motion started
+# (a lift paints the shadow and the snapshot itself, in its own paint: no picture composed) — each in a pass of the GUI
+# thread's loop of its own, the thread waiting PIECE_GAP_MS between them (input and paints come in between), instead of
+# one step of 4-10 ms on this desktop (perhaps 10-25 ms on the laptop). The motion starts 2-3 ms later. None = split on
+# real time, one step on a test's time (a test reads the opening at once); True / False = force.
+SPLIT = None
+PIECE_GAP_MS = 1
+
+
+def _split():
+    if SPLIT is not None:
+        return bool(SPLIT)
+    return not clock().test_time
+
+
 class _Lift(QWidget):
-    """The opening overlay lifted: its composed picture in a window of its own, above the main window and owned by it,
-    see-through, never taking input or focus. Painted once; each frame only its opacity and place change."""
+    """The opening overlay lifted: its shadow and snapshot in a window of its own, above the main window and owned by it,
+    see-through, never taking input or focus. Painted once, in its own paint (no picture composed first: M2.1-1); each
+    frame only its opacity and place change."""
 
     def __init__(self, opening, owner):
         super().__init__(owner, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
@@ -447,11 +464,10 @@ class _Lift(QWidget):
 
     def paintEvent(self, _event):
         o = self.opening
-        if o is None or o.picture is None:         # (resting in the pool, hidden)
+        if o is None or o.pixmap is None:          # (resting in the pool, hidden)
             return
-        p = QPainter(self)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        p.drawPixmap(0, 0, o.picture)
+        p = QPainter(self)                         # (a see-through window's backing store starts clear)
+        o._draw(p)
         p.end()
 
 
@@ -527,6 +543,7 @@ class OverlayOpening:
         self.widget_size = None
         self._finisher = None
         self._pressed = None                       # the child a forwarded press went to (its release follows it)
+        self._pieces = None                        # the preparation's pieces still to run (None: none left)
         self.ended = False
         self.cancelled = False
 
@@ -547,20 +564,77 @@ class OverlayOpening:
             self.anim = clock().animate(duration(dur_name), self._frame_window, self._done, kind=kind, owner=w,
                                         on_end=self._cut_short)
             return self
+        self._dur_name, self._kind = dur_name, kind
+        self._top = w.window()
+        self._finisher = _InputFinisher(self)      # a key or a press while it is prepared shows it at once
+        QApplication.instance().installEventFilter(self._finisher)
+        self._lifts = _lifted()
+        self._pieces = deque((self._snapshot, self._go) if self._lifts else (self._snapshot, self._picture, self._go))
+        if _split():
+            self._next_piece()
+        else:
+            while self._pieces:                    # a test's time: the pieces in this one step
+                self._pieces.popleft()()
+            self._pieces = None
+        return self
+
+    @property
+    def live(self):
+        """Being prepared or moving."""
+        return self._pieces is not None or (self.anim is not None and self.anim.alive)
+
+    def _next_piece(self):
+        QTimer.singleShot(PIECE_GAP_MS, Qt.TimerType.PreciseTimer, self._run_piece)
+
+    def _run_piece(self):
+        """One piece of the preparation, in its own pass of the loop; a piece's error is reported and the overlay shown
+        without the motion."""
+        if self.ended or not self._pieces:
+            return
+        piece = self._pieces.popleft()
+        try:
+            piece()
+        except Exception:
+            self._pieces = None
+            sys.excepthook(*sys.exc_info())
+            self._cut_short()
+            return
+        if self.ended:
+            return
+        if self._pieces:
+            self._next_piece()
+        else:
+            self._pieces = None
+
+    def _snapshot(self):
+        """The first piece: the overlay drawn once, as it will look, at the device-pixel ratio."""
+        w = self.widget
         w.ensurePolished()
         if w.layout() is not None:
             w.layout().activate()
-        self.pixmap = w.grab()                     # once: the overlay as it will look, at the device-pixel ratio
+        self.pixmap = w.grab()
         final = w.geometry()
         m = _shadow_margins(self.shadow_name)
-        area = final.adjusted(-m[0], -m[1], m[2], m[3])          # the picture: the overlay and its shadow
-        self.target_in_picture = final.topLeft() - area.topLeft()
+        self._area = final.adjusted(-m[0], -m[1], m[2], m[3])    # the picture: the overlay and its shadow
+        self.target_in_picture = final.topLeft() - self._area.topLeft()
         self.widget_size = final.size()
-        self._size = area.size()
-        self.picture = self._compose(area.size())
-        if _lifted():
-            self._top = w.window()
-            self._lift_at = w.parentWidget().mapToGlobal(area.topLeft())   # the picture's place at the end, global
+        self._size = self._area.size()
+
+    def _picture(self):
+        """The second, for the painted ghost only (it repaints each frame): its shadow added under it, in one picture.
+        A lift paints the two itself, in its own paint."""
+        self.picture = self._compose(self._size)
+
+    def _go(self):
+        """The last: the picture shown where the motion starts, and the motion started — unless its page went while it
+        was prepared (then it is shown as asked, without the motion)."""
+        w, area = self.widget, self._area
+        parent = w.parentWidget()
+        if parent is None or not parent.isVisible():
+            self._cut_short()
+            return
+        if self._lifts:
+            self._lift_at = parent.mapToGlobal(area.topLeft())   # the picture's place at the end, global
             self._origin = QPoint(0, 0)
             self.lift = _take_lift(self, self._top)
             self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
@@ -569,7 +643,7 @@ class OverlayOpening:
             owner = self.lift
         else:
             travel = area.united(area.translated(self.delta))    # the ghost: everywhere the picture goes
-            self.ghost = _Ghost(self, w.parentWidget())
+            self.ghost = _Ghost(self, parent)
             self.ghost.setGeometry(travel)
             self._origin = area.topLeft() - travel.topLeft()     # the picture's place at the end
             self.ghost.offset = self._offset(0.0)
@@ -578,11 +652,8 @@ class OverlayOpening:
             self.ghost.show()
             self.ghost.raise_()
             owner = self.ghost
-        self._finisher = _InputFinisher(self)
-        QApplication.instance().installEventFilter(self._finisher)
-        self.anim = clock().animate(duration(dur_name), self._frame, self._done, kind=kind, owner=owner,
+        self.anim = clock().animate(duration(self._dur_name), self._frame, self._done, kind=self._kind, owner=owner,
                                     on_end=self._cut_short)
-        return self
 
     def content_global(self):
         """Where the overlay itself is on the screen now, while it opens."""
@@ -601,13 +672,17 @@ class OverlayOpening:
         pic.setDevicePixelRatio(dpr)
         pic.fill(Qt.GlobalColor.transparent)
         p = QPainter(pic)
+        self._draw(p)
+        p.end()
+        return pic
+
+    def _draw(self, p):
+        """The shadow and the snapshot at their place in the picture (into the ghost's picture, or the lift's window)."""
         r = QRect(self.target_in_picture, self.widget_size)
         if self.shadow_name:
             from app.qt import shadow
             shadow.paint(p, QRectF(r), self.shadow_name, covered=self._opaque(r))
         p.drawPixmap(r.topLeft(), self.pixmap)
-        p.end()
-        return pic
 
     def _opaque(self, r):
         """The part of the snapshot that is surely opaque (a slice of the shadow wholly under it is never seen): the
@@ -667,8 +742,11 @@ class OverlayOpening:
         self._teardown(show=not self.cancelled)
 
     def finish(self):
-        """Jump to the end now (a key or a press came during the opening)."""
-        if self.anim is not None and self.anim.alive:
+        """Jump to the end now (a key or a press came during the opening): shown at once while it is prepared."""
+        if self._pieces is not None:
+            self._pieces = None
+            self._done()
+        elif self.anim is not None and self.anim.alive:
             self.anim.finish()
 
     def cancel(self):
@@ -685,6 +763,7 @@ class OverlayOpening:
         if self.ended:
             return
         self.ended = True
+        self._pieces = None
         if self._finisher is not None and self._pressed is None:
             self._finisher.remove()                # (kept while a forwarded press waits for its release)
         if self.ghost is not None and not sip.isdeleted(self.ghost):
@@ -779,7 +858,7 @@ class _InputFinisher(QObject):
     def eventFilter(self, obj, event):
         et = event.type()
         o = self.opening
-        live = o.anim is not None and o.anim.alive
+        live = o.live
         if et == QEvent.Type.MouseButtonRelease and o._pressed is not None:
             return o.release(event)
         if not live:
@@ -838,7 +917,7 @@ def open_overlay(widget, how="pop", shadow_name=None, on_done=None, focus=False)
     opening = OverlayOpening(widget, how, shadow_name, on_done, focus)
     _OPENINGS[id(widget)] = opening
     opening.start()
-    if opening.anim is None or not opening.anim.alive:
+    if opening.ended or not opening.live:
         _OPENINGS.pop(id(widget), None)
         return None
     return opening

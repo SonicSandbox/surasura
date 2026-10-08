@@ -701,3 +701,120 @@ def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):
     assert wait_until(lambda: all(sip.isdeleted(w) or not w.isVisible() for w in lifts), 2)
     free = [w for w in motion._LIFTS.get(id(top), []) if not sip.isdeleted(w)]
     assert len(free) <= motion.LIFTS_KEPT
+
+
+# --- row 7: the opening prepared in pieces (M2.1-1, lean (b)): never one GUI-thread step of 4–10 ms per click -------- #
+@pytest.fixture
+def split():
+    motion.SPLIT = True
+    yield
+    motion.SPLIT = None
+
+
+def _passes(opening):
+    """Run the loop until the opening is ready (moving or ended); -> the loop pass each piece ran in, by name."""
+    from tests.qt.conftest import wait_until
+    seen, n = {}, [0]
+    for name in ("_snapshot", "_picture", "_go"):
+        fn = getattr(opening, name)
+        setattr(opening, name, lambda fn=fn, name=name: (seen.__setitem__(name, n[0]), fn())[1])
+    opening._pieces = type(opening._pieces)(getattr(opening, f.__name__) for f in opening._pieces)
+
+    def ready():
+        n[0] += 1
+        return opening._pieces is None
+    assert wait_until(ready, 2)
+    return seen
+
+
+def test_a_split_opening_is_prepared_in_three_passes_of_the_loop_then_moves(clock, stage, split):
+    # why: the snapshot, the picture with its shadow and the shown picture each cost 1-6 ms here (2-3x on the laptop);
+    # in one step they made the click's step 4-10 ms. Each in a pass of its own, input and paints come in between.
+    card = Card(stage, "up")
+    opening = card.open()
+    assert opening is not None and motion.opening_of(card) is opening
+    assert opening.pixmap is None and opening.ghost is None and opening.anim is None    # nothing done in the click
+    assert card.open() is None                                   # being prepared: a second open starts nothing
+    seen = _passes(opening)
+    assert list(seen) == ["_snapshot", "_picture", "_go"]
+    assert seen["_snapshot"] < seen["_picture"] < seen["_go"]    # never two pieces in one pass
+    assert opening.picture is not None and opening.ghost is not None and opening.anim.alive
+    assert opening.ghost.opacity == 0.0 and not card.isVisible()
+    clock.advance(400)
+    assert card.isVisible() and motion.opening_of(card) is None and not _filters_left(opening)
+
+
+def test_a_split_lifted_opening_is_two_pieces_and_takes_its_window_only_in_the_last(clock, stage, split, lifted):
+    card = Card(stage, "slide")
+    opening = card.open()
+    assert opening.lift is None
+    seen = _passes(opening)
+    assert list(seen) == ["_snapshot", "_go"] and seen["_snapshot"] < seen["_go"]
+    assert opening.picture is None                               # no picture composed: the lift paints the two itself
+    assert opening.lift is not None and opening.lift.isVisible() and opening.lift.windowOpacity() == 0.0
+    clock.advance(400)
+    assert card.isVisible()
+
+
+def test_a_close_while_the_opening_is_prepared_drops_it(clock, stage, split):
+    from tests.qt.conftest import wait_until
+    for close in (lambda c: c.hide(), lambda c: c.close()):
+        card = Card(stage)
+        opening = card.open()
+        close(card)
+        assert motion.opening_of(card) is None and opening.ended and not _filters_left(opening)
+        wait_until(lambda: False, 0.05)                          # the pieces that were due run, and do nothing
+        assert opening.ghost is None and opening.picture is None and not card.isVisible()
+
+
+def test_a_key_while_the_opening_is_prepared_shows_it_at_once_and_goes_to_the_field(clock, stage, split):
+    field = QLineEdit(stage)
+    field.setGeometry(10, 10, 200, 30)
+    field.show()
+    stage.activateWindow()
+    field.setFocus()
+    QApplication.processEvents()
+    card = Card(stage, "rise")
+    opening = card.open()
+    QTest.keyClick(field, Qt.Key.Key_A)
+    assert card.isVisible() and opening.ended and opening.ghost is None and not _filters_left(opening)
+    assert field.text() == "a"
+    from tests.qt.conftest import wait_until
+    wait_until(lambda: False, 0.05)
+    assert opening.ghost is None and card.isVisible()          # no motion after it showed
+
+
+def test_a_page_hidden_while_the_opening_is_prepared_shows_it_as_asked_without_the_motion(clock, stage, split):
+    page = QWidget(stage)
+    page.setGeometry(0, 0, 900, 640)
+    page.show()
+    card = Card(page, "slide")
+    opening = card.open()
+    page.hide()                                                  # a tab switch in the 2-3 ms it is prepared
+    from tests.qt.conftest import wait_until
+    assert wait_until(lambda: opening.ended, 2)
+    assert opening.ghost is None and not card.isHidden() and not _filters_left(opening)
+    page.show()
+    assert card.isVisible()
+
+
+def test_an_error_in_a_piece_is_reported_and_the_overlay_shown_without_the_motion(clock, stage, split, qt_errors):
+    card = Card(stage)
+    opening = card.open()
+
+    def broken():
+        raise ValueError("a painter's bug")
+    opening._pieces[1] = broken                                  # the picture
+    from tests.qt.conftest import wait_until
+    assert wait_until(lambda: opening.ended, 2)
+    assert card.isVisible() and opening.ghost is None and not _filters_left(opening)
+    assert qt_errors and qt_errors[0][0] is ValueError
+    qt_errors.clear()
+
+
+def test_openings_are_split_on_real_time_and_whole_on_a_tests_time(clock):
+    assert motion.SPLIT is None
+    assert not motion._split()                                   # the clock fixture: test time, read at once
+    clock.use_real_time()
+    assert motion._split()
+    clock.use_test_time(0.0)

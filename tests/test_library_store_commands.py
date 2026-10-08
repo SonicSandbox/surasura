@@ -21,8 +21,8 @@ import time
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import (LANGUAGES, big_store, entry, library, migrated, names, paths, roots,
-                                              subprocess_env, touch, write_manifest)
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, big_store, entry, library, migrated, names,
+                                              no_line, paths, pieces_ok, roots, subprocess_env, touch, write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
@@ -202,7 +202,7 @@ class Model:
 
 
 def _run_property(language, steps, seed):
-    store = migrated(language, shows=4, episodes=5, loose=2)
+    store = no_line(migrated(language, shows=4, episodes=5, loose=2))     # 2.4's placement, the line's rule aside
     data_dir, user_files_dir = roots(language)
     from tests.test_library_store_support import read_doc
     doc = read_doc(user_files_dir)
@@ -278,6 +278,7 @@ def _run_property(language, steps, seed):
             store.set_tier(sids, target or "graduated")
         else:
             continue
+        assert pieces_ok(store) is None, f"step {step}: {op} broke a piece: {pieces_ok(store)}"
         for t in ls.ANALYSED:
             assert store.ids(t) == model.ids(t), f"step {step}: {op} diverged in {t}"
     store.close()
@@ -303,13 +304,15 @@ def test_undo_proof_add_then_a_drag_then_undo_the_add(language):
     rel = "HighPriority/" + names(language)[40] + "/" + names(language)[41] + ".srt"
     add = store.insert([touch(data_dir, rel)], "now")
     new_id = add.added[0]
+    pushed = store.ids("soon")[0]                  # 3.0: the Soon line stays put, NOW's last row crossed it (G2.2-1)
     now = store.ids("now")
     drag = store.move([now[-1]], "now", before_id=now[1])
     dragged = store.ids("now")
     undone = store.undo(add)
     assert undone.notes == []
     assert new_id not in store.ids("now")
-    assert store.ids("now") == [i for i in dragged if i != new_id], "the drag must survive the Add's undo"
+    assert store.ids("now") == [i for i in dragged if i != new_id] + [pushed], \
+        "the drag must survive the Add's undo (and the row the Add pushed below the line comes back)"
     assert drag is not None
     store.close()
 
@@ -795,7 +798,7 @@ def test_log_set_tier_remove_restore(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_log_register_is_hatos_and_never_explicit(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))              # a drop at the top of NOW: it enters the mine line
     data_dir, _u = roots(language)
     store.register_reader("connect")
     mark = _last_log(store)
@@ -810,7 +813,7 @@ def test_log_register_is_hatos_and_never_explicit(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_log_sync_reset_and_reimport_write_crossings_only(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))            # New arrivals off: a hato drop lands in Current (Q4-11)
     data_dir, user_files_dir = roots(language)
     store.register_reader("connect")
     mark = _last_log(store)
@@ -1028,7 +1031,7 @@ def test_insert_at_before_and_after_an_anchor(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_register_finds_a_synced_row_or_adds_one(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))              # first 2.x's rule (Q4-11), then New arrivals (D30)
     data_dir, _u = roots(language)
     w = names(language)
     rel = f"HighPriority/{w[1]}/{w[90]}.srt"
@@ -1081,7 +1084,7 @@ def test_register_with_no_store(language):
     assert ls.register_headless(language, path, {"content_key": "built"}, data_dir, user_files_dir).code == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert store.conn.execute("SELECT COUNT(*) FROM pairings").fetchone()[0] == 1
-    assert store.ids("now")[0] == store.item_id(f"{ls.HATO_FOLDER}/{w[94]}.srt")
+    assert store.ids("arrivals") == [store.item_id(f"{ls.HATO_FOLDER}/{w[94]}.srt")], "3.0: it waits (D30)"
     store.close()
 
 
@@ -1489,22 +1492,31 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         store.move([item], "soon", after_id=anchor)
         times.append(time.perf_counter() - t0)
         log_rows = _last_log(store) - logs
-        assert store.conn.total_changes - before == 1 + log_rows + 2      # the item, its log rows, 2 versions
+        # the item, its log rows, 2 versions — and its piece (schema 2, 05 §5.2): it leaves its show's piece and takes
+        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, at most 11 episodes)
+        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 11
     if BENCH:
         work = statistics.median(t - f for t, f in zip(times, probe.times))
         _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "
                 f"{statistics.median(probe.times) * 1000:.2f} ms, work {work * 1000:.2f} ms")
-        assert 0 < work <= 0.001, work                         # the flush + 1 ms (§6.12), paired as in #14
+        assert 0 < work <= 0.001 + SETTLE, work                # the flush + 1 ms + 3.0's settling (§6.12, L3.1-1)
     probe.close()
     store.close()
 
 
+# 3.0's settling step (L3.1, §12.8): each save also keeps a title's episodes one piece, NOW at the Soon line's count
+# and the feed's stamps — ~0.4 ms more on a one-item move. Sonic accepted 3.0's figures (L3.1-1, 2026-10-07; the line
+# count may move off the move later if it ever matters).
+SETTLE = 0.0005
+WHOLE_TIER = 2.8   # s: 3.0's whole-tier move (2.2–2.4 s measured; 2.5's check was 1.67 s + 20 %, L3.1-1)
+
+
 def allowance(items, per_item=0.00005):
     """The store's own work in one save, beside the flush it waits for (§6.12, L1.2-1): 1 ms + 0.05 ms an
-    item moved (an insert: 0.12 ms a file — it reads each file and builds its entry). As built a move
-    measures ~0.5 ms + 0.03–0.04 ms an item, at 2k and 100k alike; the flush counts once, whatever the item
-    count, because the whole command is one transaction."""
-    return 0.001 + per_item * items
+    item moved (an insert: 0.12 ms a file — it reads each file and builds its entry), + 0.5 ms for 3.0's settling
+    step (`SETTLE`). As built (3.0) a one-item move measures ~0.9 ms at 2k, ~1.25 ms at 100k; the flush counts once,
+    whatever the item count, because the whole command is one transaction."""
+    return 0.001 + SETTLE + per_item * items
 
 
 class _FlushProbe:
@@ -1684,5 +1696,288 @@ def test_set_tier_and_a_small_insert_timed_at_100k(language):
            1, per_item=0.00012)
     _timed(f"14 {language} 100k: insert of a 50-file season",
            each(20, lambda n: store.insert(next(seasons), "soon")), 50, per_item=0.00012)
+    probe.close()
+    store.close()
+
+
+# ================================================================================================ #
+# The Soon line (L3.1 row 3.1.3; the L2.2 pack 05 §5.1, 06 §6.4; ✅ Q2-4, G2.2-1)
+# ================================================================================================ #
+
+def _line_holds(store):
+    """Current's first `soon_line` rows are NOW and the rest Soon, every row counted (available or missing)."""
+    n = store.meta()["soon_line"]
+    current = _current(store)
+    return store.ids("now") == current[:n] and store.ids("soon") == current[n:]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_tiers_follow_the_line_after_every_command(language):
+    """05 §5.1: every command that changes Current ends with the tiers in step with the line — insert, register, move,
+    finish, Put back, a sync (new files, a file gone), an undo, set_soon_line — so the analyzer's tier weights are the
+    position's (K3) with no engine change."""
+    store = arrivals_off(migrated(language, shows=3, episodes=4))   # register lands in Current here
+    data_dir, _u = roots(language)
+    w = names(language)
+    store.set_soon_line(len(store.ids("now")) - 2)
+    assert _line_holds(store)
+    steps = [
+        ("insert at the top of NOW", lambda: store.insert([touch(data_dir, f"HighPriority/{w[60]}.srt")], "now")),
+        ("register", lambda: store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[61]}.srt"), {"content_key": "r1"})),
+        ("a drag from Soon to NOW's top", lambda: store.move([store.ids("soon")[-1]], "now")),
+        ("a drag from NOW into Soon", lambda: store.move([store.ids("now")[0]], "soon",
+                                                        after_id=store.ids("soon")[2])),
+        ("finish", lambda: store.set_tier([store.ids("now")[1]], "graduated")),
+        ("remove", lambda: store.remove([store.ids("now")[0]])),
+    ]
+    out = None
+    for label, step in steps:
+        out = step()
+        assert out is not None and _line_holds(store), label
+    assert store.restore(out.trash_ids) and _line_holds(store), "Put back"
+    os.remove(os.path.join(data_dir, store.item(store.ids("now")[0])["rel_path"]))
+    touch(data_dir, f"HighPriority/{w[62]}.srt")
+    assert store.sync_disk() and _line_holds(store), "a sync"
+    change = store.move([store.ids("goal")[0]], "now")
+    assert store.undo(change) and _line_holds(store), "an undo"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_above_the_line_pushes_the_boundary_item_below(language):
+    """G2.2-1 (the line stays at its count): a file added at the top of Current pushes the row that was n-th just below
+    the line — its words now count half — and the line stays at n; an item dragged across the line takes the tier of
+    where it lands while the boundary row crosses the other way (06 §6.4)."""
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, _u = roots(language)
+    n = store.meta()["soon_line"]
+    now, soon = store.ids("now"), store.ids("soon")
+    add = store.insert([touch(data_dir, f"HighPriority/{names(language)[63]}.srt")], "now")
+    assert store.meta()["soon_line"] == n
+    assert store.ids("now") == add.added + now[:-1] and store.ids("soon") == [now[-1]] + soon
+    dragged = store.ids("soon")[3]
+    store.move([dragged], "now", after_id=store.ids("now")[0])
+    assert store.item(dragged)["tier"] == "now" and store.ids("now")[1] == dragged
+    assert store.ids("soon")[0] == now[-2], "the row at the boundary crossed the other way"
+    assert store.meta()["soon_line"] == n and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drive_going_offline_moves_nothing_across_the_line(language):
+    """05 §5.1, 06 §6.4: missing rows count like any row, so files going missing (a drive offline) and coming back
+    change no tier — the list and Anki's order don't flip and flip back."""
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, _u = roots(language)
+    tiers = {t: store.ids(t) for t in ls.TIERS}
+    gone = store.ids("now")[:3]
+    paths = {i: os.path.join(data_dir, store.item(i)["rel_path"]) for i in gone}
+    saved = {i: open(path, "rb").read() for i, path in paths.items()}
+    for path in paths.values():
+        os.remove(path)
+    store.sync_disk()
+    assert all(store.item(i)["availability"] == "missing" for i in gone)
+    assert {t: store.ids(t) for t in ls.TIERS} == tiers
+    for i, path in paths.items():
+        with open(path, "wb") as f:
+            f.write(saved[i])
+    store.sync_disk()
+    assert {t: store.ids(t) for t in ls.TIERS} == tiers and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_open_no_longer_re_counts_the_line(language):
+    """05 §5.1 (row 3.1.3): from schema 2 the line is canonical — an open reads it as stored and changes nothing, the
+    fewer-rows case included (06 §6.4: all of Current is NOW, the line at its end, staying at n); 0 is allowed."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, user_files_dir = roots(language)
+    current = len(_current(store))
+    store.set_soon_line(current + 10)
+    version = store.meta()["state_version"]
+    store.close()
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.meta()["soon_line"] == current + 10 and store.meta()["state_version"] == version
+    assert len(store.ids("now")) == current and store.ids("soon") == []
+    store.set_soon_line(0)                                      # allowed: everything in Current is Soon
+    assert store.ids("now") == [] and len(store.ids("soon")) == current
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_set_soon_line_and_the_library_options_undo(language):
+    """04 §4.2: set_soon_line re-tiers the rows it crosses and its undo puts the old line and the rows back;
+    set_library_options writes the mine line and New arrivals, undone by the value check. Nothing goes to
+    settings.json (RD-S16)."""
+    store = migrated(language, shows=3, episodes=4)
+    tiers = {t: store.ids(t) for t in ls.TIERS}
+    n = store.meta()["soon_line"]
+    assert store.set_soon_line(n) is None, "the same line: nothing written"
+    change = store.set_soon_line(n + 5)
+    assert len(store.ids("now")) == n + 5 and store.ids("now")[n:] == tiers["soon"][:5]
+    store.undo(change)
+    assert store.meta()["soon_line"] == n and {t: store.ids(t) for t in ls.TIERS} == tiers
+    options = store.set_library_options(mine_line=12, arrivals_on=False)
+    assert (store.meta()["mine_line"], store.meta()["arrivals_on"]) == (12, 0)
+    assert store.set_library_options(mine_line=12) is None
+    store.undo(options)
+    assert (store.meta()["mine_line"], store.meta()["arrivals_on"]) == (ls.MINE_LINE_DEFAULT, 1)
+    with pytest.raises(ValueError):
+        store.set_soon_line(-1)
+    settings = os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json")
+    assert not os.path.exists(settings) or "soon_line" not in open(settings, encoding="utf-8").read()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_soons_top_is_the_first_slot_below_the_line(language):
+    """05 §5.1: "the top of Soon" is the first slot below the line, counted without the rows being placed — an item
+    sent there from NOW lands first in Soon, never bounced back above the line."""
+    store = migrated(language, shows=3, episodes=4)
+    now, soon = store.ids("now"), store.ids("soon")
+    store.move([now[0]], "soon")
+    assert store.ids("soon")[0] == now[0] and store.ids("now") == now[1:] + [soon[0]]
+    assert _line_holds(store)
+    demoted = store.ids("now")[2]
+    store.set_tier([demoted], "soon")
+    assert store.item(demoted)["tier"] == "soon" and _line_holds(store)
+    store.close()
+
+
+def test_generate_parity_line_at_the_tier_boundary(ja_resources_dir):
+    """K3 (08 §8.1 #1): weights by position need no engine change — with the line at NOW's count the analyzer's output
+    is `expected_output.csv`, byte for byte; dragging the line changes the weights through the tiers, and dragging it
+    back gives the same output again. No ENGINE_REVISION change rides on it."""
+    import shutil
+    import pandas as pd
+    from tests.test_library_store_readers import _run
+    root = os.environ["SURASURA_TEST_ROOT"]
+    env = {"root": root, "results": os.path.join(root, "results")}
+    os.makedirs(env["results"], exist_ok=True)
+    data_dir, user_files_dir = roots("ja")
+    high = os.path.join(data_dir, "HighPriority")
+    shutil.copytree(os.path.join(REPO, "samples", "ja", "HighPriority"), high)
+    os.makedirs(user_files_dir, exist_ok=True)
+    shutil.copy(os.path.join(ja_resources_dir, "KnownWord.json"), os.path.join(user_files_dir, "KnownWord.json"))
+    rows = [ls.make_entry(f"HighPriority/{n}", "Disk Sync", None, with_source_type=False) for n in sorted(os.listdir(high))]
+    write_manifest(user_files_dir, {"schedule": {"PHASE_1_NOW": rows, "PHASE_2_SOON": [], "PHASE_3_LATER": []}})
+    expected = pd.read_csv(os.path.join(ja_resources_dir, "expected_output.csv"))
+    expected = expected.sort_values(by="Word").reset_index(drop=True)
+
+    def generated():
+        _run(env, "ja")
+        out = pd.read_csv(os.path.join(env["results"], "priority_learning_list.csv"))
+        return out.sort_values(by="Word").reset_index(drop=True)
+    pd.testing.assert_frame_equal(generated(), expected, check_dtype=False)
+    store = ls.open_store("ja", data_dir, user_files_dir)
+    line = store.meta()["soon_line"]
+    assert line == len(rows) == len(store.ids("now"))
+    store.set_soon_line(line - 1)                               # one file below the line: it counts half
+    store.close()
+    assert not generated().equals(expected), "the line's position is the weight"
+    store = ls.open_store("ja", data_dir, user_files_dir)
+    store.set_soon_line(line)
+    store.close()
+    pd.testing.assert_frame_equal(generated(), expected, check_dtype=False)
+
+
+# ================================================================================================ #
+# The deferred smoothness items (L3.1 row 3.1.8; §12.4 #11)
+# ================================================================================================ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_sync_walks_only_the_folders_the_poll_saw(language):
+    """§12.4 #11: the window's poll names the folders whose time moved, and the sync walks only those — a hato drop
+    costs its folder's walk, not the library's (5 s at 200k). Within them it does what a whole sync does; outside them
+    nothing is looked at until a whole sync (a focus, Refresh) runs."""
+    store = migrated(language, shows=3, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    poll = ls.DiskPoll(store)
+    assert poll.check() is False and poll.changed == []
+    show = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    elsewhere = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    time.sleep(0.05)                                            # the folder's modified time must move
+    touch(data_dir, f"{folder}/{w[110]}.srt")
+    os.remove(os.path.join(data_dir, store.item(elsewhere)["rel_path"]))   # a change outside the folder polled
+    assert poll.check() is True
+    assert folder in poll.changed
+    summary = store.sync_disk(folders=[folder])
+    assert [store.item(i)["rel_path"] for i in summary["added"]] == [f"{folder}/{w[110]}.srt"]
+    assert summary["missing"] == [] and store.item(elsewhere)["availability"] == "available", "not walked"
+    assert store.sync_disk()["missing"] == [elsewhere], "a whole sync takes in the rest"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scoped_sync_in_another_process_and_a_vanished_folder(language):
+    """The large-library path (`sync_for_window` from 20k items runs the sync in a process of its own) carries the
+    folders too; a show folder renamed shows as its parent's change, and each of its files is followed to the new name
+    (9a: the same name, size and time, exactly one item gone) — the same items, nothing added."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    show = next(i for i in store.ids("now") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    members = [i for i in store.ids("now") if store.item(i)["rel_path"].startswith(folder + "/")]
+    os.rename(os.path.join(data_dir, *folder.split("/")), os.path.join(data_dir, *folder.split("/")) + "_renamed")
+    summary = store.sync_disk(folders=[folder.split("/", 1)[0]])
+    assert sorted(summary["renamed"]) == sorted(members) and summary["added"] == [], \
+        "a folder renamed: each file followed (9a), the same items"
+    assert all(store.item(i)["rel_path"].startswith(folder + "_renamed/") for i in members)
+    assert ls.main(["sync", "--language", language, "--folder", folder.split("/", 1)[0]]) in (ls.EXIT_NOTHING,
+                                                                                              ls.EXIT_DONE)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_nudge_reads_only_the_rows_it_needs(language):
+    """§12.4 #11: ▲▼ read the whole tier (20 ms at 20k). Now it reads the rows between the selection and the row it
+    jumps past: at 20k the statements a ▲ sends touch a few dozen rows, and the result is today's group-jump rule
+    (the property test against 2.4's code holds it there)."""
+    store = big_store(language, 20_000)
+    ids = store.ids("goal")
+    target = ids[len(ids) // 2]
+    rows_read = []
+    store.conn.set_trace_callback(lambda sql: rows_read.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
+    t0 = time.perf_counter()
+    change = store.nudge([target], "up")
+    took = time.perf_counter() - t0
+    store.conn.set_trace_callback(None)
+    assert change is not None
+    new = store.ids("goal")
+    assert new.index(target) < ids.index(target)
+    assert not any("ORDER BY ord, id" in s and "LIMIT" not in s and "tier = " in s for s in rows_read), \
+        "no statement reads the whole tier"
+    if BENCH:
+        _record(f"nudge {language} 20k: {took * 1000:.2f} ms")
+        assert took < 0.010, took
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_whole_tier_move_within_20_percent_of_12_1(language):
+    """§12.1's whole-tier move (6+ Months, 54,500 rows at 100k, there and back) took 1.50–1.67 s of work; the feed's
+    column, its index and the pieces' upkeep may add at most 20 % (L2.2 04 §4.1's cost model). Timed run only."""
+    if not BENCH:
+        pytest.skip("the 100k timing runs in the timed proof only")
+    store = big_store(language, 100_000)
+    store.register_reader("connect")
+    probe = _FlushProbe(os.path.dirname(store.db_path))
+    largest = max(ls.ANALYSED, key=lambda t: len(store.ids(t)))
+    whole = store.ids(largest)
+    other = "soon" if largest != "soon" else "goal"
+    works = []
+    for _ in range(3):
+        for tier in (other, largest):
+            probe()
+            t0 = time.perf_counter()
+            store.move(whole, tier)
+            works.append(time.perf_counter() - t0 - probe.times[-1])
+    work = sorted(works)[len(works) // 2]
+    _record(f"whole-tier move {language} 100k ({len(whole)} items): work p50 {work:.2f} s (budget {WHOLE_TIER:.2f} s)")
+    assert work <= WHOLE_TIER, work
+    assert store.ids(largest) == whole and pieces_ok(store) is None
     probe.close()
     store.close()

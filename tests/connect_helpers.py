@@ -31,9 +31,8 @@ def library(lang="ja", connect=True, arrivals=False, extra=3, **settings):
     h.write_settings(target_language=lang, connect_enabled=connect, **settings)
     data_dir, user_files = dirs(lang)
     assert library_store.maintain(lang, data_dir, user_files, from_folders=True) == library_store.EXIT_DONE
-    if arrivals:
-        with store(lang) as s:
-            s.bookkeeping({"arrivals_on": 1}, copy_carries=True)
+    with store(lang) as s:          # 3.0 builds every library with New arrivals on (L3.1): off is the 2.x behaviour
+        s.bookkeeping({"arrivals_on": 1 if arrivals else 0}, copy_carries=True)
     return data_dir
 
 

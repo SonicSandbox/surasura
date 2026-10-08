@@ -50,6 +50,8 @@ def _write(path, text):
 
 def _to_store(app):
     assert ls.maintain("ja", app.data_root, app.user_files_root, from_folders=True) == ls.EXIT_DONE
+    from tests.test_library_store_support import no_line
+    no_line(ls.open_store("ja", app.data_root, app.user_files_root)).close()   # 2.x's window: no Soon line (L3.1)
     assert app._store_mode() == "store"
 
 

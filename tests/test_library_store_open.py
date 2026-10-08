@@ -694,7 +694,7 @@ def test_an_upgrade_leaves_a_backup(language, monkeypatch):
     data_dir, user_files_dir = roots(language)
     monkeypatch.setattr(ls, "STORE_SCHEMA", ls.STORE_SCHEMA + 1)
     monkeypatch.setitem(ls._UPGRADES, ls.STORE_SCHEMA - 1,
-                        lambda conn: conn.execute("ALTER TABLE items ADD COLUMN upgraded INTEGER"))
+                        lambda store: store.conn.execute("ALTER TABLE items ADD COLUMN upgraded INTEGER"))
     assert ls.check_mode(language, data_dir)[0] == "json"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     db = _db(language)

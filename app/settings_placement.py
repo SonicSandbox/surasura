@@ -16,7 +16,7 @@ PLACED = {
     "target_coverage": "analysis", "split_length": "neither", "target_language": "analysis",
     "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "report",
     "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
-    "hide_satoru": "neither", "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
+    "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "skipped_version": "neither",
 "source_display": "report", "word_search_enabled": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",

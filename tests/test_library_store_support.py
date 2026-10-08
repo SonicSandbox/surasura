@@ -122,6 +122,74 @@ def paths(store, tier):
     return [e["physical_path"] for _i, e, _a in store.ordered(tier)]
 
 
+def schema1_store(language, doc):
+    """A 2.5–2.7 store (schema 1) as their migration left it, under the test root: the v1 tables (`SCHEMA_SQL`, which
+    the store module keeps as 2.5 wrote them) and the made-words table 2.6 adds; each manifest row an item keyed 1024,
+    2048, … per tier with ids 1, 2, …; 2.5's pieces (runs of one folder); 2.x's meta (New arrivals off, no Soon line,
+    no works). The manifest is written and recorded as the store's copy. Returns (data_dir, user_files_dir, db)."""
+    import sqlite3
+    import uuid
+    data_dir, user_files_dir = roots(language)
+    path = write_manifest(user_files_dir, doc)
+    db = ls.library_db_path(language, data_dir)
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    norm = ls.normalise(doc)
+    image = ls._image_from_manifest(norm, data_dir)
+    now = ls._now()
+    conn = sqlite3.connect(db, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("BEGIN")
+        for sql in ls.SCHEMA_SQL + ls.ADDED_TABLES_SQL:
+            conn.execute(sql)
+        conn.execute("INSERT INTO roots (id, kind, path, created_at) VALUES (1, 'library', NULL, ?)", (now,))
+        conn.executemany("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",
+                         image["tables"]["pieces"]["rows"])
+        position = {}
+        for n, item in enumerate(image["items"], 1):
+            position[item["tier"]] = position.get(item["tier"], 0) + 1
+            title, folder, source_type = ls._columns(item["entry"])
+            conn.execute(
+                "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, source_type, "
+                "availability, size, mtime_ns, changed_in, added_at, piece_id) "
+                "VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (n, item["rel_path"], item["rel_key"], item["tier"], ls.STEP * position[item["tier"]],
+                 ls._dumps(item["entry"]), title, folder, source_type, item["availability"], item["size"],
+                 item["mtime_ns"], now, item["piece_id"]))
+        conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('items', ?)", (len(image["items"]),))
+        meta = ls._fresh_meta(uuid.uuid4().hex, 1, 1)
+        meta.update(ls._manifest_meta(norm))
+        meta.update({"arrivals_on": 0, "migrated_at": now, "last_export_stat": ls._stat_str(os.stat(path))})
+        conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", [(k, str(v)) for k, v in meta.items()])
+        conn.execute("PRAGMA user_version = 1")
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    return data_dir, user_files_dir, db
+
+
+def no_line(store):
+    """2.x's placement, line-free: the Soon line's key taken out, so the tiers no longer follow it (schema 2 always
+    holds one). Only for the tests that hold the store's placement to 2.4's frozen code; the line's own rule, on top of
+    every command, is tested in test_library_store_commands.py (the Soon line)."""
+    with store._writing():
+        store.conn.execute("DELETE FROM meta WHERE key = 'soon_line'")
+    return store
+
+
+def arrivals_off(store):
+    """New arrivals switched off (the user's library option, `set_library_options`): hato's drops land at the top of
+    NOW as through 2.x (Q4-11). 3.0 builds every library with them on (D30)."""
+    store.set_library_options(arrivals_on=False)
+    return store
+
+
+def pieces_ok(store):
+    """None when every piece is one contiguous run of one work's items in one tier and every item has a work and a
+    piece (L2.2 05 §5.2 rule 1); else what's wrong."""
+    return ls._pieces_ok(store.conn) or ls._works_ok(store.conn)
+
+
 def subprocess_env():
     env = dict(os.environ)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

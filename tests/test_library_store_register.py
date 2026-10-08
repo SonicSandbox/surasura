@@ -14,7 +14,8 @@ import os
 import pytest
 
 from app import library_store as ls
-from tests.test_library_store_support import LANGUAGES, library, migrated, names, roots, touch, write_manifest
+from tests.test_library_store_support import (LANGUAGES, arrivals_off, library, migrated, names, roots, touch,
+                                              write_manifest)
 
 
 def _record(key, **more):
@@ -39,6 +40,7 @@ def test_register_headless_answers_where_the_item_landed_and_what_became_of_the_
     data_dir, user_files_dir, doc = library(language)
     write_manifest(user_files_dir, doc)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    arrivals_off(ls.open_store(language, data_dir, user_files_dir)).close()   # 2.x's landing (Q4-11), arrivals off
     w = names(language)
     drop = touch(data_dir, f"{ls.HATO_FOLDER}/{w[80]}.srt")
     first = ls.register_headless(language, drop, _record("v1-aa"), data_dir, user_files_dir)
@@ -130,7 +132,7 @@ def test_a_path_on_another_drive_is_refused_not_a_crash():
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_backfill_registration_logs_no_event_so_connect_sees_nothing(language):
-    store = migrated(language)
+    store = arrivals_off(migrated(language))                   # a drop at the top of NOW: it would enter the mine line
     data_dir, _u = roots(language)
     store.register_reader("connect")
     w = names(language)
@@ -182,7 +184,7 @@ def test_register_headless_sets_a_reader_before_registering_even_on_a_store_it_b
     write_manifest(user_files_dir, doc)
     drop = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[90]}.srt")
     answer = ls.register_headless(language, drop, _record("v1-kk"), data_dir, user_files_dir, reader="connect")
-    assert answer.code == ls.EXIT_DONE and answer.landed == "now-top"
+    assert answer.code == ls.EXIT_DONE and answer.landed == "arrivals", "a store 3.0 builds: New arrivals on (D30)"
     store = ls.open_store(language, data_dir, user_files_dir)
     rows, gap = store.read_events("connect")
     entered = {r[1] for r in rows if r[2] != "left_mine_line"}     # one of the build's items it pushed out

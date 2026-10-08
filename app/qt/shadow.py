@@ -145,8 +145,10 @@ def shape(rect, name):
     return QRectF(rect).adjusted(-spread, -spread, spread, spread).translated(x, y)
 
 
-def paint(painter, rect, name):
-    """Draw the named shadow of an element at `rect` (logical px, the painter's coordinates)."""
+def paint(painter, rect, name, covered=None):
+    """Draw the named shadow of an element at `rect` (logical px, the painter's coordinates). `covered`: a rect the caller
+    paints opaque on top (the element itself): a slice wholly under it is skipped — the middle of a large box, which is
+    most of a sheet's or a side panel's shadow (row 7: composing an opening's picture)."""
     box = shape(rect, name)
     if box.width() <= 0 or box.height() <= 0:
         return                                   # a spread larger than the box: nothing (as CSS)
@@ -164,7 +166,10 @@ def paint(painter, rect, name):
         for (sy0, sy1), (dy0, dy1) in ys:
             if dx1 - dx0 <= 0 or dy1 - dy0 <= 0:
                 continue
-            painter.drawPixmap(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0), pix,
+            target = QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0)
+            if covered is not None and covered.contains(target):
+                continue
+            painter.drawPixmap(target, pix,
                                QRectF(sx0 * pdpr, sy0 * pdpr, (sx1 - sx0) * pdpr, (sy1 - sy0) * pdpr))
 
 

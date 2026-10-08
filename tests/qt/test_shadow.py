@@ -26,12 +26,12 @@ def _fresh_cache():
     shadow.clear()
 
 
-def _draw(name, rect, size=(1000, 1000), dpr=1.0):
+def _draw(name, rect, size=(1000, 1000), dpr=1.0, covered=None):
     img = QImage(round(size[0] * dpr), round(size[1] * dpr), QImage.Format.Format_ARGB32_Premultiplied)
     img.setDevicePixelRatio(dpr)
     img.fill(Qt.GlobalColor.transparent)
     p = QPainter(img)
-    shadow.paint(p, QRectF(*rect), name)
+    shadow.paint(p, QRectF(*rect), name, covered=covered)
     p.end()
     return img
 
@@ -153,3 +153,20 @@ def test_the_follower_tracks_its_overlay_and_never_takes_a_click(qapp):
     card.hide()
     assert follower.isHidden()
     stage.close()
+
+
+@pytest.mark.parametrize("dpr", [1.0, 1.5])
+def test_a_slice_wholly_under_the_element_is_skipped_and_nothing_outside_it_changes(dpr):
+    # row 7: an opening's picture skips the middle of a sheet's shadow (the opaque card covers it): every pixel outside
+    # the covered rect is as before, the middle is left empty
+    rect = (100, 100, 800, 500)
+    covered = QRectF(*rect).adjusted(16, 16, -16, -16)
+    whole, skipped = _draw("sheet", rect, dpr=dpr), _draw("sheet", rect, dpr=dpr, covered=covered)
+    inside = covered.adjusted(-1, -1, 1, 1)
+    for y in range(0, 1000, 7):
+        for x in range(0, 1000, 7):
+            if not inside.contains(x, y):
+                px, py = round(x * dpr), round(y * dpr)
+                assert whole.pixel(px, py) == skipped.pixel(px, py), (x, y)
+    mid = (round(500 * dpr), round(350 * dpr))
+    assert QImage.pixel(whole, *mid) >> 24 > 0 and skipped.pixel(*mid) >> 24 == 0

@@ -604,10 +604,19 @@ class OverlayOpening:
         r = QRect(self.target_in_picture, self.widget_size)
         if self.shadow_name:
             from app.qt import shadow
-            shadow.paint(p, QRectF(r), self.shadow_name)
+            shadow.paint(p, QRectF(r), self.shadow_name, covered=self._opaque(r))
         p.drawPixmap(r.topLeft(), self.pixmap)
         p.end()
         return pic
+
+    def _opaque(self, r):
+        """The part of the snapshot that is surely opaque (a slice of the shadow wholly under it is never seen): the
+        overlay's rect inside its corners' radius, when the overlay paints its whole background."""
+        w = self.widget
+        if not (w.autoFillBackground() or w.testAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)):
+            return None
+        inset = max(v for v in theme.RADII.values() if v < theme.RADII["pill"])   # the roundest card corner
+        return QRectF(r).adjusted(inset, inset, -inset, -inset)
 
     def _painted(self):
         """The ghost's rect where the picture is now (its own coordinates)."""

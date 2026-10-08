@@ -621,6 +621,7 @@ def lifted():
     motion.LIFT = True
     yield
     motion.LIFT = None
+    motion._LIFTS.clear()                                        # the kept lifts belong to this test's window
 
 
 def test_a_lifted_opening_is_a_see_through_window_moved_and_faded_then_the_overlay(clock, stage, lifted):
@@ -668,3 +669,35 @@ def test_a_lifted_opening_ends_when_its_page_goes_or_its_window_moves(clock, sta
     stage.move(stage.pos() + QPoint(30, 0))                      # the window moved: the opening lands at once
     QApplication.processEvents()
     assert motion.opening_of(card) is None and card.isVisible()
+
+
+def test_a_lifted_opening_hands_its_window_to_the_next_opening(clock, stage, lifted):
+    from tests.qt.conftest import wait_until
+    # why: making a top-level window each time costs a native window's birth; a kept one is only shown again
+    card1 = Card(stage, "up")
+    o1 = card1.open()
+    lift = o1.lift
+    clock.advance(400)                                           # the opening ends; its lift is given back a frame on
+    assert wait_until(lambda: not lift.isVisible(), 2)
+    assert lift.opening is None and lift in motion._LIFTS[id(lift.parentWidget())]
+    card1.hide()
+    card2 = Card(stage, "up")
+    o2 = card2.open()
+    assert o2.lift is lift and lift.opening is o2 and lift.isVisible()
+    clock.advance(400)
+    assert card2.isVisible()
+
+
+def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):
+    from tests.qt.conftest import wait_until
+    # why: the pool is bounded: a window that once opened many overlays at once keeps at most LIFTS_KEPT hidden ones
+    cards = [Card(stage, how) for how in ("up", "pop", "slide")]
+    assert len(cards) == motion.LIFTS_KEPT + 1
+    openings = [card.open() for card in cards]
+    lifts = [o.lift for o in openings]
+    assert len({id(w) for w in lifts}) == len(cards)             # each opening has a lift of its own
+    top = lifts[0].parentWidget()                                # taken before the advance: the window they belong to
+    clock.advance(400)
+    assert wait_until(lambda: all(sip.isdeleted(w) or not w.isVisible() for w in lifts), 2)
+    free = [w for w in motion._LIFTS.get(id(top), []) if not sip.isdeleted(w)]
+    assert len(free) <= motion.LIFTS_KEPT

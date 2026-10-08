@@ -446,10 +446,43 @@ class _Lift(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def paintEvent(self, _event):
+        o = self.opening
+        if o is None or o.picture is None:         # (resting in the pool, hidden)
+            return
         p = QPainter(self)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        p.drawPixmap(0, 0, self.opening.picture)
+        p.drawPixmap(0, 0, o.picture)
         p.end()
+
+
+# The lifts kept for the next opening in the same window (row 7): making a top-level window is a native window's birth
+# each time; a kept one, hidden, is only shown again. id(top window) -> the free lifts (children of it: they go with it).
+_LIFTS = {}
+LIFTS_KEPT = 2
+
+
+def _take_lift(opening, top):
+    free = _LIFTS.get(id(top))
+    while free:
+        lift = free.pop()
+        if not sip.isdeleted(lift) and lift.parentWidget() is top:
+            lift.opening = opening
+            return lift
+    return _Lift(opening, top)
+
+
+def _give_back(lift):
+    """A lift whose opening ended: hidden and kept for the window's next opening (at most LIFTS_KEPT), else deleted."""
+    if sip.isdeleted(lift):
+        return
+    lift.hide()
+    lift.opening = None
+    top = lift.parentWidget()
+    free = _LIFTS.setdefault(id(top), []) if top is not None else None
+    if free is None or len(free) >= LIFTS_KEPT:
+        lift.deleteLater()
+        return
+    free.append(lift)
 
 
 class _Ghost(QWidget):
@@ -529,7 +562,7 @@ class OverlayOpening:
             self._top = w.window()
             self._lift_at = w.parentWidget().mapToGlobal(area.topLeft())   # the picture's place at the end, global
             self._origin = QPoint(0, 0)
-            self.lift = _Lift(self, self._top)
+            self.lift = _take_lift(self, self._top)
             self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
             self.lift.setWindowOpacity(0.0)
             self.lift.show()
@@ -652,10 +685,9 @@ class OverlayOpening:
         lift, self.lift = self.lift, None
         if lift is not None and not sip.isdeleted(lift):
             if show:                               # the overlay paints first; the lift goes a frame later (no flash)
-                QTimer.singleShot(FRAME_MS, lift.close)
+                QTimer.singleShot(FRAME_MS, lambda: _give_back(lift))
             else:
-                lift.close()
-            lift.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                _give_back(lift)
         w = self.widget
         if _OPENINGS.get(id(w)) is self:
             _OPENINGS.pop(id(w), None)

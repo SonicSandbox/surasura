@@ -106,6 +106,10 @@ def child(rounds):
             return QSize(600, 56)
 
     class StandIn(motion.Overlay):
+        def grab(self, *a):
+            with probe_hud().span("open-grab"):
+                return super().grab(*a)
+
         def __init__(self, parent, how, rows):
             super().__init__(parent)
             self.how = how
@@ -123,6 +127,10 @@ def child(rounds):
                 self.follower = shadow.Follower(self, self.shadow_name)
 
     results = {}
+    meters = []
+
+    def probe_hud():
+        return meters[0]
     orig_first = hud.Probe._first_frame
 
     def first(self):
@@ -132,6 +140,7 @@ def child(rounds):
 
     def exercise(probe):
         window, meter = probe.window, probe.hud
+        meters.append(meter)
         # where a frame's time goes: the ghost's own paint and the list's, as spans (the rest is the flush and the rest
         # of the window repainted under the ghost)
         ghost_paint = motion._Ghost.paintEvent
@@ -140,6 +149,22 @@ def child(rounds):
             with meter.span("ghost-paint"):
                 ghost_paint(self, event)
         motion._Ghost.paintEvent = timed_ghost
+
+        def timed(owner, name, label):
+            fn = getattr(owner, name)
+
+            def wrapped(*a, **k):
+                with meter.span(label):
+                    return fn(*a, **k)
+            setattr(owner, name, wrapped)
+        # the opening's own steps, by name: which one is long (the overlay's snapshot, the picture with its shadow, the
+        # lift's window shown and painted, the overlay itself shown at the end, a close)
+        timed(motion.OverlayOpening, "start", "open-start")
+        timed(motion.OverlayOpening, "_compose", "open-compose")
+        timed(motion, "_take_lift", "lift-take")
+        timed(motion._Lift, "paintEvent", "lift-paint")
+        timed(motion, "_show", "overlay-show")
+        timed(motion, "_give_back", "lift-give-back")
         list_paint = QListView.paintEvent
 
         def timed_list(self, event):
@@ -184,7 +209,8 @@ def child(rounds):
                 wait = motion.duration(motion.HOW[kind][0]) + 120
             elif what == "close":
                 meter.tag = None
-                widget.hide()
+                with meter.span("close"):
+                    widget.hide()
                 wait = 80
             elif what == "toast":
                 meter.tag = "toast"

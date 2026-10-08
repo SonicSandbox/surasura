@@ -449,3 +449,33 @@ def test_a_file_whose_cards_were_deleted_is_not_waiting_and_never_in_needs_you()
     mixed = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {0: receipt, 1: receipt})])
     row = vr.build(mixed, WORKS, {}, cards={1: 3}).rows[0]
     assert row.status.kind == "waiting" and row.status.label == "1/2 · Waiting"
+
+
+def test_an_untyped_titles_pieces_take_the_type_of_all_its_files():
+    """L3.1's rule (review IK-24): a title nobody typed is guessed over ALL its files, not one piece's. A piece of one
+    text file beside a piece of three EPUBs is read as a book, so its row's media is "book", not "text"."""
+    work(8, "潮風の旅日記", media=None)
+    items = items_of([("now", 8, 10, ["潮風の旅日記 01 港.txt"], {0: {"source_type": "text"}}),
+                      ("now", 8, 11, ["潮風の旅日記 上.epub", "潮風の旅日記 中.epub", "潮風の旅日記 下.epub"],
+                       {k: {"source_type": "epub"} for k in range(3)})])
+    view = vr.build(items, WORKS, {})
+    piece_a = [r for r in view.rows if r.piece_id == 10]
+    assert len(piece_a) == 1 and piece_a[0].media == "book"
+
+
+def test_a_cached_row_follows_its_untyped_titles_guess_when_another_piece_changes_it():
+    """A title nobody typed is guessed from all its files (L3.1's rule), so a new file in another piece of the same
+    title can move the type of a piece the cache would otherwise hand back unchanged: piece A's own items and work are
+    the same objects in both builds, yet its row must say *Book* once B's four EPUBs make the title one (the reviews'
+    2026-10-08 finding: a cached row kept the old type)."""
+    work(8, "月明かりの航路", media=None)
+    items = items_of([("now", 8, 1, [f"月明かりの航路 0{k} 夜の港.srt" for k in range(1, 3)], {}),
+                      ("now", 8, 2, ["月明かりの航路 03 霧の海峡.srt"], {})])
+    cache = vr.RowCache()
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert first.rows[0].media != "book"                  # two subtitles and one more: the title reads as video
+    for k in range(4):                                    # piece B gains four EPUBs: the title's guess becomes a book
+        items[4 + k] = dict(items[3], id=4 + k, source_type="epub", rel_path=f"HighPriority/月明かりの航路 04-{k} 章.epub",
+                            title=f"月明かりの航路 04-{k} 章.epub", ord=4096.0 + 1024.0 * k)
+    second = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert second.rows[0].media == "book"                 # A's row is rebuilt, not the cached one with the old type

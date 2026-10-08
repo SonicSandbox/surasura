@@ -622,3 +622,152 @@ def test_a_scroll_step_repaints_only_the_strip_that_came_into_view(seeded):
     for _ in range(5):
         QApplication.processEvents()
     assert regions.heights and max(regions.heights) <= 40 + 2, (regions.heights, vp.height())
+
+
+def test_the_pointer_resting_on_a_closed_row_paints_its_episodes_ahead_so_opening_it_draws_none_afresh(seeded,
+                                                                                                       monkeypatch):
+    """Bench 9: opening a row was one long step, its episodes' first paints. A pointer that rests on a closed row for a
+    moment paints that row's episodes ahead; opening it then draws no episode afresh (the spy counts every episode the
+    open row's repaint draws; warming draws are counted only after the warm has finished)."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    i = next(i for i, e in enumerate(lst.model().entries)
+             if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
+    row = lst.model().entries[i][1]
+    ids = {(ep.id, False) for ep in row.episodes}
+    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])     # nothing warmed before the pointer arrives
+    pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
+    QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
+                                                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert wait_until(lambda: any(k[1] in ids for k in lst.delegate._sprites["ep"]))
+    assert wait_until(lambda: not lst._hover_warm.isActive())            # the warm has run out of episodes in view
+    drawn = []
+    original = lst.delegate._paint_episode
+    monkeypatch.setattr(lst.delegate, "_paint_episode", lambda *a, **k: (drawn.append(a[2]), original(*a, **k))[1])
+    lst.toggle(lst.model().index(i, 0))
+    lst.doItemsLayout()
+    lst.viewport().repaint()
+    assert lst.model().open_key == row.key
+    assert drawn == []                                                   # opening blits the warmed episodes
+
+
+def test_a_resting_list_keeps_its_screen_and_the_rows_ahead_and_lets_rows_scrolled_far_past_go(seeded):
+    """Bench 9: a list kept every row it had ever painted, so idle memory grew with what was scrolled past (284 MB idle
+    at 375 %). Once the list rests, it keeps its screen and the WARM_AHEAD rows either side; rows scrolled several
+    screens past are let go, and the screen it rests on is still painted."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    bar = lst.verticalScrollBar()
+    lst.viewport().repaint()
+    top_last = lst.indexAt(QPoint(4, lst.viewport().height() - 2)).row()
+    row_index = {e[1].key: i for i, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) is not None}
+
+    def owner(ident):                    # the row a pixmap is of: a closed row's key, or an open head's (key, "open")
+        if ident in row_index:
+            return row_index[ident]
+        if isinstance(ident, tuple) and len(ident) == 2 and ident[0] in row_index:
+            return row_index[ident[0]]
+        return None
+
+    def painted_rows():
+        return [i for i in (owner(k[1]) for k in lst.delegate._sprites["row"]) if i is not None]
+
+    bar.setValue(bar.maximum() // 2)                           # far down the list: its screen is painted
+    lst.viewport().repaint()
+    far = [i for i in painted_rows() if i > top_last + rows.WARM_AHEAD]
+    assert far, "the far screen should be painted before the rest"
+    bar.setValue(0)                                            # back to the top, and the list rests
+    lst.viewport().repaint()
+    assert wait_until(lambda: not lst._warm.isActive())
+    kept = painted_rows()
+    assert any(i <= top_last for i in kept), "the screen the list rests on is kept"
+    assert max(kept) <= top_last + rows.WARM_AHEAD, (max(kept), top_last)
+
+
+def test_the_generated_covers_are_kept_within_their_byte_budget_oldest_out_first(qapp, monkeypatch):
+    """Covers are generated per title and kept by bytes (`COVERS_MB`), not by count: a library of many titles at
+    250 % would otherwise hold tens of megabytes of pixmaps. The oldest go first, and the running byte count must match
+    what is actually held, or the next eviction works from a wrong total."""
+    rows.clear_covers()
+    try:
+        monkeypatch.setattr(rows, "COVERS_MB", 1)            # 1 MiB: about 18 covers of 100 x 140 at 1.0
+        titles = [f"星降る街{n:02d}" for n in range(40)]     # 40 covers of 56,000 bytes: 2.2 MB, over the budget
+        for title in titles:
+            rows.cover(title, 100, 140, 1.0)
+        assert rows._COVER_BYTES[0] <= 1024 * 1024
+        assert rows._COVER_BYTES[0] == sum(rows._size(p) for p in rows._COVERS.values())
+        kept = [key[0] for key in rows._COVERS]
+        assert kept and kept[-1] == titles[-1] and titles[0] not in kept
+        assert kept == titles[len(titles) - len(kept):]      # the survivors are the newest, in order
+    finally:
+        rows.clear_covers()
+
+
+def test_an_open_hero_keeps_its_head_as_a_pixmap_and_a_repaint_draws_nothing_afresh(seeded):
+    """Review B-13 for the hero: the open hero's head is a pixmap of its own, keyed as the open hero, not drawn afresh
+    on each paint; a repaint of the open hero draws no head or episode afresh."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    lst.toggle(lst.model().index(0, 0))                        # the hero is the first entry: open it
+    lst.doItemsLayout()
+    lst.viewport().repaint()
+    hero = lst.model().entries[0][1]
+    assert any(k[0] == rows.HERO and k[1] == (hero.key, "open") for k in lst.delegate._sprites["row"]), \
+        [k[:2] for k in lst.delegate._sprites["row"]][-4:]
+    renders = lst.delegate.renders
+    lst.viewport().repaint()                                   # the open hero again: nothing new is drawn
+    assert lst.delegate.renders == renders
+
+
+def test_the_goal_strip_blits_its_pixmap_and_paints_afresh_only_for_a_new_goal(seeded):
+    """The Goal strip is painted once into `_pix` and blitted on every repaint (a tab switch, a window repaint): the
+    same goal, size and look keep the same pixmap object, and a different goal draws a new one."""
+    seed, win = seeded()
+    strip = win.page_widgets["current"].goal_strip
+    strip.repaint()
+    first = strip._pix
+    assert first is not None
+    strip.repaint()
+    assert strip._pix is first
+    other = strip.goal._replace(line="1 title · 2 files")
+    strip.set_goal(other)
+    strip.repaint()
+    assert strip._pix is not first and strip._pix_key[0] is other
+
+
+def test_an_emptied_list_lets_its_row_and_episode_pixmaps_go_once_it_rests(seeded):
+    """A list emptied (a search that finds nothing, a view with no entries) must not keep the pixmaps of the rows it
+    showed: idle memory should not hold on to what an empty list no longer draws. Once it rests, both caches and their
+    byte counts are back to nothing."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    assert wait_until(lambda: lst.delegate.warmed >= 3)
+    # the list painted rows, so there is a pixmap to let go; without this the rest of the test proves nothing
+    assert lst.delegate._sprites["row"] and lst.delegate._bytes["row"] > 0
+    lst.set_entries([])
+    assert wait_until(lambda: not lst._warm.isActive())
+    assert not lst.delegate._sprites["row"] and not lst.delegate._sprites["ep"]
+    assert lst.delegate._bytes == {"row": 0, "ep": 0}
+
+
+def test_the_hover_warm_stops_once_its_episodes_would_push_out_what_it_drew(seeded, monkeypatch):
+    """Bench 9 follow-up: the hover warm paints episodes ahead only within half the episodes' cache. Past that, each
+    one drawn would evict one drawn before, call after call, so the warm must stop (return False) within a few calls,
+    and the episodes' cache stays inside its cap."""
+    monkeypatch.setitem(rows.SPRITE_MB, "ep", 1)              # 1 MB: half of it is the warm's budget
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    d = lst.delegate
+    i = next(i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and len(e[1].episodes) >= 6)
+    index = lst.model().index(i, 0)
+    calls = 0
+    while calls < 8 and d.warm_episodes(index, 1.0, 1 << 20):   # a large room: only the budget can stop it
+        calls += 1
+    assert calls < 8, ("the warm drew on every call: each episode evicts the one before", d._bytes["ep"])
+    assert d._bytes["ep"] <= 1024 * 1024

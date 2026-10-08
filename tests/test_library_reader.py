@@ -342,3 +342,30 @@ def test_a_card_deleted_in_anki_takes_its_mark_away(monkeypatch):
                                  for r in views[-1][1].rows for e in r.episodes if e.id == item))
     finally:
         reader.stop()
+
+
+def test_with_no_handle_a_new_numbers_version_builds_and_the_same_version_builds_nothing():
+    """W12: with no store handle (read-only, no copy to fall back on) the last rows stay, but the plan's numbers still
+    belong to the view: a new numbers version publishes a new view; the same version builds nothing more."""
+    from tests.fixtures import standin_store
+
+    class NoCopy(standin_store.StandinOpener):
+        fallback_handle = None
+    seed = window_seed.build()
+    seed.library.set_mode("read-only", "busy")
+    reader = library_reader.LibraryReader(NoCopy(seed.library), language=seed.language, numbers=seed.numbers,
+                                          poll=0.02)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "read-only", timeout=6.0)
+        builds = reader.builds
+        time.sleep(0.5)                                  # ~25 polls with the same numbers version: no build
+        assert reader.builds == builds
+        item = next(iter(seed.numbers.table))
+        n = len(views)
+        seed.numbers.set(item, (1, 2, 3))                # a new numbers version, no handle to read
+        assert _wait(lambda: len(views) > n)
+        assert reader.builds > builds
+    finally:
+        reader.stop()

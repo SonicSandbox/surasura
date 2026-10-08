@@ -93,7 +93,7 @@ def _loaded(argv, root):
 
 
 @pytest.mark.parametrize("argv", [["status"], ["status", "--anki"], ["list", "--limit", "5"],
-                                  ["list", "--order", "encounter"], ["known"]])
+                                  ["list", "--order", "encounter"], ["known"], ["setup"]])
 def test_the_quick_verbs_load_nothing_heavy_and_no_tokenizer(generated, argv):
     code, loaded = _loaded(argv, generated)
     assert code == 0 and not loaded & set(NOT_EVEN_TEXT), loaded

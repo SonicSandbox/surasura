@@ -4091,6 +4091,7 @@ def run_signature_parts(language, found_files, args):
             "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
             # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
             "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+            "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
             # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
             "anki_sync_delay_min",
             # Optional-module switches that change what the app SHOWS, never what a run computes.

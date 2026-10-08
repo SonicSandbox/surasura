@@ -59,6 +59,8 @@ VERBS = {
     "place": (connect_verbs.place_args, connect_verbs.place, True),
     "finish": (connect_verbs.finish_args, connect_verbs.finish, True),
     "connect": (connect_verbs.connect_args, connect_verbs.connect, True),
+    # P2.3: the setup checks
+    "setup": (connect_verbs.setup_args, connect_verbs.setup, True),
 }
 
 # The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other

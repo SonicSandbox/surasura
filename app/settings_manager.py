@@ -85,6 +85,10 @@ DEFAULT_SETTINGS = {
     "connect_send_grammar": True,
     "connect_anki_miner_path": "",
     "connect_anki_miner_profile": "Surasura",
+    # Open Anki for me (P2.3; ✅ Q4-16; app/connect/open_anki.py): with Connect's preview on, Surasura starts Anki when a
+    # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
+    # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
+    "connect_open_anki": False,
     "logic": {
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:

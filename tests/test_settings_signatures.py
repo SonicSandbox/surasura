@@ -798,6 +798,7 @@ PLACED = {
     "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",
     "connect_mine_words": "neither", "connect_send_grammar": "neither", "connect_anki_miner_path": "neither",
     "connect_anki_miner_profile": "neither",
+    "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "anki_sync_delay_min": "neither",       # the sync rule's minute (E1.1 04 §3): when Anki syncs, never a run
     "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
     "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",

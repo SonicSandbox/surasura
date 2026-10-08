@@ -482,7 +482,8 @@ class _Lift(QWidget):
 
     def paintEvent(self, _event):
         o = self.opening
-        if o is None or o.pixmap is None:          # (resting in the pool, hidden)
+        if o is None or o.pixmap is None or o.ended:   # (resting in the pool; or its overlay is shown under it, which
+                                                       # may be gone: nothing of it is drawn — review H4)
             return
         p = QPainter(self)                         # (a see-through window's backing store starts clear)
         o._draw(p)
@@ -563,6 +564,7 @@ class OverlayOpening:
         self._finisher = None
         self._pressed = None                       # the child a forwarded press went to (its release follows it)
         self._pieces = None                        # the preparation's pieces still to run (None: none left)
+        self._landed_by_window = False             # ended by its window moving or resizing (its lift left behind at once)
         self.ended = False
         self.cancelled = False
 
@@ -592,9 +594,8 @@ class OverlayOpening:
         if _split():
             self._next_piece()
         else:
-            while self._pieces:                    # a test's time: the pieces in this one step
-                self._pieces.popleft()()
-            self._pieces = None
+            while self._step():                    # a test's time: the pieces in this one step
+                pass
         return self
 
     @property
@@ -606,10 +607,15 @@ class OverlayOpening:
         QTimer.singleShot(PIECE_GAP_MS, Qt.TimerType.PreciseTimer, self._run_piece)
 
     def _run_piece(self):
-        """One piece of the preparation, in its own pass of the loop; a piece's error is reported and the overlay shown
-        without the motion."""
+        """One piece of the preparation, in its own pass of the loop."""
+        if self._step():
+            self._next_piece()
+
+    def _step(self):
+        """Run the next piece; a piece's error is reported and the overlay shown without the motion. -> True when
+        pieces remain."""
         if self.ended or not self._pieces:
-            return
+            return False
         piece = self._pieces.popleft()
         try:
             piece()
@@ -617,13 +623,13 @@ class OverlayOpening:
             self._pieces = None
             sys.excepthook(*sys.exc_info())
             self._cut_short()
-            return
+            return False
         if self.ended:
-            return
+            return False
         if self._pieces:
-            self._next_piece()
-        else:
-            self._pieces = None
+            return True
+        self._pieces = None
+        return False
 
     def _snapshot(self):
         """The first piece: the overlay drawn once, as it will look, at the device-pixel ratio."""
@@ -791,7 +797,7 @@ class OverlayOpening:
         self.ghost = None
         lift, self.lift = self.lift, None
         if lift is not None and not sip.isdeleted(lift):
-            if show:                               # the overlay paints first; the lift goes a frame later (no flash)
+            if show and not self._landed_by_window:   # the overlay paints first; the lift goes a frame later (no flash)
                 QTimer.singleShot(FRAME_MS, lambda: _give_back(lift))
             else:
                 _give_back(lift)
@@ -887,8 +893,10 @@ class _InputFinisher(QObject):
             if o._pressed is None:
                 self.remove()                      # nothing left to do: never a filter left behind
             return False
-        if et in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.WindowStateChange) and obj is getattr(o, "_top", None):
-            o.finish()                             # the window moved under a lifted opening: land it now
+        if obj is getattr(o, "_top", None) and (et in (QEvent.Type.Resize, QEvent.Type.WindowStateChange)
+                                                or (et == QEvent.Type.Move and o.lift is not None)):
+            o._landed_by_window = True             # resized (the picture no longer fits) or moved from under a lift
+            o.finish()                             # (a lift is a window of its own: it stays where it was) — land it now
             return False
         if et == QEvent.Type.KeyPress:
             o.finish()

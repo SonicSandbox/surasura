@@ -3621,6 +3621,10 @@ class MasterDashboardApp:
                     result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
                     # The same decks' new cards, for the report's backlog marks (read-only).
                     anki_sync.sync_backlog(lang, url, decks, fields)
+                    # Known from Anki (P2.4): only with Connect's preview on; its window when it has news
+                    signal = anki_sync.read_known_signal(lang, url, decks, fields, s)
+                    if signal and (signal.get("marked") or signal.get("offered")):
+                        self.gui_queue.put(lambda: self._known_signal_window(lang, url))
             except Exception as e:
                 print(f"Anki sync skipped: {e}")
             finally:
@@ -3632,6 +3636,14 @@ class MasterDashboardApp:
 
         self._anki_spinner(True)
         threading.Thread(target=work, daemon=True).start()
+
+    def _known_signal_window(self, language, url):
+        """P2.4 row 2.4.15: *You suspended N cards since … — marked known*, with Undo per word (Connect's preview only)."""
+        try:
+            from app.connect import known_signal_window
+            known_signal_window.show(self.root, language, url, lambda widget, text: ToolTip(widget, text, wrap=320))
+        except Exception as e:
+            print(f"Known from Anki's window wasn't shown: {e}")
 
     def _maybe_backlog_sync(self):
         """Generate's own read of the Anki backlog (Junban_Backlog_Spec WP-B7): the new cards waiting

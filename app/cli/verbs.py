@@ -490,8 +490,12 @@ def known_sync(args):
             raise CliError("failed", result.error)
         contract.emit_progress("reading Anki's new cards", 1, 2)
         anki_sync.sync_backlog(lang, url, decks, fields)
-    return {"language": lang, "added": result.added, "total": result.total_known,
-            "backlog": anki_sync.count_backlog(lang), "last_sync": anki_sync.load_state(lang).get("last_sync")}
+    out = {"language": lang, "added": result.added, "total": result.total_known,
+           "backlog": anki_sync.count_backlog(lang), "last_sync": anki_sync.load_state(lang).get("last_sync")}
+    signal = anki_sync.read_known_signal(lang, url, decks, fields, loaded)       # P2.4: only with Connect on
+    if signal is not None:
+        out["known_from_anki"] = {"marked": len(signal.get("marked") or ()), "offered": signal.get("offered", 0)}
+    return out
 
 
 # --------------------------------------------------------------------------- #

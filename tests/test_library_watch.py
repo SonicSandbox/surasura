@@ -591,3 +591,167 @@ def test_a_window_with_no_bell_slot_keeps_the_slow_look_until_focus_finds_one(tm
             w.close()
         for b in holders:
             b.close()
+
+
+# --- the first review's fixes: tier folders, a thread that ends, the damaged mark, retries, paging ----------- #
+
+@windows_only
+def test_a_file_outside_the_tier_folders_is_no_report_while_a_tier_file_is():
+    # Under the data folder, a folder that is no tier folder (その他, a note of the user's) is no sync: the watch's
+    # `under` filter drops its report, and the tier folder's report still comes through, once.
+    data_dir, _u, _doc = library("ja")
+    w = _watch(data_dir)
+    try:
+        soon = os.path.join(data_dir, "LowPriority")
+        show = sorted(d for d in os.listdir(soon) if os.path.isdir(os.path.join(soon, d)))[0]
+        touch(data_dir, "その他/メモ.srt", "メモ\n")
+        touch(data_dir, f"LowPriority/{show}/{show}_第98話.srt", f"{show}\n")
+        seen, full = _settled(w, want=[f"LowPriority/{show}"])
+        time.sleep(0.2)                                   # the outside report, if one came, has settled too
+        seen |= set(w.take(time.monotonic() + 10)[0])
+        assert seen == {f"LowPriority/{show}"} and not full   # never the その他 folder, never the whole tier
+    finally:
+        w.close()
+
+
+@windows_only
+def test_a_tier_folder_spelled_in_capitals_on_disk_is_still_matched(tmp_path):
+    # NTFS compares names in any case, so a show dropped into HIGHPRIORITY/ is the High priority tier's: `under` is
+    # lowered once in TreeWatch, and the report's name must be lowered too. The capitals on disk are what make the
+    # test sensitive to that: a lowercase spelling would match the un-lowered comparison as well.
+    root = str(tmp_path / "library")
+    os.makedirs(os.path.join(root, "HIGHPRIORITY"))
+    w = lw.TreeWatch(root, settle=0.05, under=("HighPriority",))
+    assert w.start(), (w.state, w.error)
+    try:
+        touch(root, "HIGHPRIORITY/番組/第01話.srt", "第01話\n")
+        seen, _full = _settled(w, want=["HIGHPRIORITY/番組"])
+        assert "HIGHPRIORITY/番組" in seen
+    finally:
+        w.close()
+
+
+@windows_only
+def test_the_copy_watch_wakes_on_the_copy_rewritten_in_place(tmp_path):
+    # The deprecated Immersion Architect saves the copy by opening the existing file and writing over it, not by a
+    # rename. Windows reports that only as a last-write change, so the watch must listen for it or an in-place save
+    # goes unseen.
+    folder = tmp_path / "番組"
+    folder.mkdir()
+    manifest = folder / "master_manifest.json"
+    manifest.write_text('{"order": []}', encoding="utf-8")
+    w = lw.FileWatch(str(folder), ["master_manifest.json"])
+    assert w.start(), (w.state, w.error)
+    try:
+        with open(str(manifest), "w", encoding="utf-8") as f:
+            f.write('{"order": ["LowPriority/番組"]}')
+        folders, full = _settled(w, full=True)
+        assert folders == set() and full
+    finally:
+        w.close()
+
+
+def test_a_tier_folder_renamed_away_is_its_own_sync(tmp_path):
+    # A tier folder gone from the top (renamed or deleted) is reported as itself: its scoped sync marks its items
+    # missing. Never "" (the root): that report would be dropped and the tier's items would stay "present".
+    root = str(tmp_path)
+    assert lw.folders_of(root, "LowPriority", 4) == ["LowPriority"]       # renamed away: old name
+    assert lw.folders_of(root, "LowPriority", 2) == ["LowPriority"]       # deleted
+
+
+@windows_only
+def test_a_tier_folder_renamed_away_is_reported_itself():
+    # The live half of the same rule: renaming LowPriority/ away wakes a sync of LowPriority itself (Windows sends
+    # the old name), and the new top-level name, not a tier folder, wakes nothing.
+    data_dir, _u, _doc = library("ja")
+    w = _watch(data_dir)
+    try:
+        tier = os.path.join(data_dir, "LowPriority")
+        os.rename(tier, os.path.join(data_dir, "LowPriority_改"))
+        seen, _f = _settled(w, want=["LowPriority"])
+        time.sleep(0.2)                                   # the new name's report, if one came, has settled too
+        seen |= set(w.take(time.monotonic() + 10)[0])
+        assert "LowPriority" in seen and seen <= {"LowPriority"}
+    finally:
+        w.close()
+
+
+@windows_only
+def test_a_watch_thread_that_ends_by_itself_reads_ended_and_wakes_the_window_closed_reads_closed():
+    # Windows' wait fails at once and nothing closes the watch: the thread ends on its own. That must read "ended"
+    # and wake the window (so its retry takes over) — never sit as "watching". close() is the contrast: "closed".
+    # A fresh watch has no handle yet, so start() doesn't set the wake event: a wake seen here came from the thread.
+    data_dir, _u, _doc = library("ja")
+    w = lw.TreeWatch(data_dir, under=TIER_FOLDERS)
+    w._read = lambda buf, got: None
+    try:
+        assert w.start()
+        woke = w.wait(2.0)
+        assert woke, "the window was not woken when its watch thread ended"
+        assert w.state == "ended" and not w.alive
+    finally:
+        w.close()
+
+    w2 = _watch(data_dir)
+    assert w2.alive
+    w2.close()
+    assert w2.state == "closed" and not w2.alive
+
+
+@windows_only
+def test_marking_a_store_damaged_rings_its_bell():
+    # A window sleeping on its watch must look again when the store is marked damaged (L3.2): the marker alone
+    # is not enough, the listener on that store has to be rung once by mark_damaged itself.
+    store = migrated("ja")
+    bell = lw.Bell(store.db_path, lambda: None)
+    try:
+        assert bell.slot is not None                         # it really listens, or the ring proves nothing
+        ls.mark_damaged(store.db_path, "テスト")
+        assert _rung(bell) == 1                              # one ring, from the damage and nothing else
+        assert os.path.exists(ls.damaged_marker(store.db_path))
+    finally:
+        if os.path.exists(ls.damaged_marker(store.db_path)):
+            os.remove(ls.damaged_marker(store.db_path))      # the marker must not outlive this test
+        bell.close()
+        store.close()
+
+
+@windows_only
+def test_a_copy_watch_that_stopped_is_started_again_at_the_retry_and_asks_a_look(tmp_path):
+    # The copy's watch that ended on its own is not started at once: it waits RETRY_S, as the tree's watch does, and
+    # the restart reports the copy as changed, because the copy may have been saved while no watch was listening.
+    data_dir, user_files, _doc = library("ja")
+    os.makedirs(user_files, exist_ok=True)                    # the copy's folder: the watch can't start without it
+    copy_path = os.path.join(user_files, "master_manifest.json")
+    now = [1000.0]
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, copy=copy_path, clock=lambda: now[0]).open()
+    try:
+        assert lk.copy.alive
+        lk.copy.close()                                       # as if the copy's watch had ended by itself
+        assert not lk.copy.alive
+        now[0] += lw.RETRY_S - 1                              # just short of the retry: the copy's watch stays down
+        early = lk.jobs(now=now[0])
+        assert early.copy is False and not lk.copy.alive
+        now[0] += 1                                           # RETRY_S exactly: started again, and the copy is asked
+        late = lk.jobs(now=now[0])
+        assert lk.copy.alive and late.copy is True
+    finally:
+        lk.close()
+
+
+def test_a_round_reads_a_folder_of_more_than_one_page_of_items():
+    # Why: the round reads a folder's held items a page of 256 at a time (`Round._held`). A folder of 300 episodes
+    # is two pages, so the round must read the second page too: it finds nothing while the folder matches the
+    # store, and it finds the folder when an episode past the first page is deleted.
+    store = migrated("ja")
+    try:
+        folder = f"{ls.FOLDER_OF_TIER['now']}/長い番組"
+        paths = [touch(store.data_dir, f"{folder}/第{i:03d}話.srt", f"長い番組 {i}\n") for i in range(1, 301)]
+        ls.sync_for_window(store, folders=[folder])
+        assert store.conn.execute("SELECT COUNT(*) FROM items WHERE rel_key LIKE ?",
+                                  (ls.path_key(folder) + "/%",)).fetchone()[0] == 300
+        assert _full_round(store) == []
+        os.remove(paths[299])                  # the 300th episode: only the second page holds it
+        assert _full_round(store) == [folder]
+    finally:
+        store.close()

@@ -887,3 +887,37 @@ def test_a_stale_hover_scrolled_off_screen_warms_no_episodes_once_the_list_rests
     lst._warm_hovered()
     assert lst.delegate.warmed == before
     assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])
+
+
+def _ground_strip_below_last_row(lst):
+    """The share of ground-coloured pixels in the viewport strip under the last row (from its bottom edge down)."""
+    last = lst.model().rowCount() - 1
+    bottom = lst.visualRect(lst.model().index(last, 0)).bottom()
+    lst.viewport().repaint()
+    arr = rgb_array(lst.viewport().grab())
+    strip = arr[bottom + 1:, :, :]
+    return strip.shape[0], count(strip, rows.c("bg").name()) / float(strip.shape[0] * strip.shape[1])
+
+
+def test_the_list_ground_shows_under_the_last_row_before_and_after_it_is_opened_and_closed(seeded):
+    """The list's viewport is opaque (it paints no ground of its own), so the list paints its ground itself: the space
+    under the last row must show the list's ground, not black or leftover pixels, or a learner sees a torn window at
+    the foot of his list. Checked before a row is opened and again after the last row is opened and closed (review
+    C-10: a grab after closing the last row)."""
+    seed, win = seeded(size=(1280, 1400))
+    lst = current(win)
+    for _ in range(20):
+        QApplication.processEvents()
+    height, share = _ground_strip_below_last_row(lst)
+    assert height >= 20, height                                       # the list is taller than its rows
+    assert share >= 0.95, share
+    last = lst.model().rowCount() - 1
+    lst.toggle(lst.model().index(last, 0))                            # open the last row ...
+    lst.doItemsLayout()
+    lst.toggle(lst.model().index(last, 0))                            # ... and close it again
+    lst.doItemsLayout()
+    for _ in range(20):
+        QApplication.processEvents()
+    height, share = _ground_strip_below_last_row(lst)
+    assert height >= 20, height
+    assert share >= 0.95, share

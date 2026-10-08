@@ -115,7 +115,8 @@ def test_what_needs_saying_is_said_once_in_the_bar(looks, answer, line):
     window = Window(connect_open_anki=True)
     window.look(opening=True)
     assert any(line in said for said in window.lines), window.lines
-    assert window.synced_known == [] and looks.kicks == []
+    # Anki answered: the known-words sync that waited for the look runs at its own pace (never forced, no kick)
+    assert window.synced_known == ([False] if answer["anki"] == "open" else []) and looks.kicks == []
 
 
 def test_nothing_to_say_says_nothing(looks):
@@ -124,7 +125,7 @@ def test_nothing_to_say_says_nothing(looks):
         looks.answer = answer
         window = Window()
         window.look(opening=True)
-        assert window.lines == [] and window.synced_known == []
+        assert window.lines == [] and window.synced_known == ([False] if answer["anki"] == "open" else [])
 
 
 def test_a_look_that_fails_never_takes_the_window_down_and_the_next_one_runs(looks, monkeypatch):
@@ -136,3 +137,38 @@ def test_a_look_that_fails_never_takes_the_window_down_and_the_next_one_runs(loo
     window = Window()
     window.look(opening=True)
     assert window._connect_looking is False and window.lines == []
+
+
+def test_the_known_words_sync_waits_while_the_sessions_look_runs(monkeypatch):
+    # Q4-1's fresh state: the window's own known-words sync (its 2 s timer, a focus) never reads Anki while the
+    # session's look — and its sync — is still running; the look runs it when it has answered
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    window = types.SimpleNamespace(_connect_looking=True,
+                                   var_anki_sync_auto=types.SimpleNamespace(get=lambda: True),
+                                   _last_anki_sync=float("-inf"), var_language=None)
+    assert main.MasterDashboardApp._maybe_anki_sync(window, force=True) is None
+    assert window._last_anki_sync == float("-inf"), "nothing started"
+
+
+def test_connect_switched_on_after_the_window_opened_gets_its_focus_looks(looks):
+    window = Window(connect_enabled=False)
+    window.look(opening=True)                       # the window's start, Connect off: nothing
+    window._current_settings["connect_enabled"] = True
+    window.look()                                   # switched on in Settings, then a focus
+    assert looks.calls == [False], "a focus look, never one that opens Anki"
+
+
+def test_the_window_start_keeps_a_sync_connects_verbs_left_pending(monkeypatch):
+    # The re-plan's switch off lets a pending sync go (Anki's close carries it) — but with Connect's preview on, the
+    # sync a Connect verb left for Connect to send must survive the window opening (P2.3 review 2, #1)
+    pytest.importorskip("app.anki_sync_rule")
+    from app import anki_sync_rule
+    from tests.test_replan_dashboard import _dash
+    anki_sync_rule.wrote(True, {"anki_sync_delay_min": 1})
+    monkeypatch.setattr(main.settings_manager, "load_settings",
+                        lambda: {"junban_replan_preview": False, "connect_enabled": True})
+    _dash()._replan_start()
+    assert anki_sync_rule.read_state().get("front_pending") is True
+    monkeypatch.setattr(main.settings_manager, "load_settings", lambda: {"junban_replan_preview": False})
+    _dash()._replan_start()
+    assert anki_sync_rule.read_state().get("front_pending") is False, "both previews off: let go, as before"

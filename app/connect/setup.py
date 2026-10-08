@@ -177,7 +177,7 @@ def _ankiweb(record=None):
         return _check("ankiweb", NEEDS_YOU, "AnkiWeb wants a full sync, which only you can choose.",
                       "In Anki: click Sync and choose", blocks=False)
     from app.connect import anki_session
-    if anki_session.failing(record):
+    if anki_session.failing(record, state):
         return _check("ankiweb", NEEDS_YOU, "Anki couldn't sync with AnkiWeb the last three times Surasura asked, so "
                       "your phone may be missing Surasura's cards and order.",
                       "In Anki: click Sync and see what it says", blocks=False)

@@ -1439,6 +1439,7 @@ class MasterDashboardApp:
             return
         s = getattr(self, "_current_settings", None) or {}
         if not s.get("connect_enabled"):
+            self._connect_opened = self._connect_opened or opening     # switched on later: a focus may look
             return
         import time
         now = time.monotonic()
@@ -1467,9 +1468,13 @@ class MasterDashboardApp:
             sync = (done or {}).get("sync")
             if sync == "synced" and done.get("opened"):
                 say("Anki is open and synced: your phone's reviews are in.")
+            if (done or {}).get("anki") == "open":
+                # The session's sync has answered — the known-words sync waited for this look (Q4-1): right away once
+                # your phone's reviews are in, else at its own five-minute pace
+                fresh = sync == "synced"
+                self.gui_queue.put(lambda: self._maybe_anki_sync(force=fresh))
             if sync == "synced":
-                # Your phone's reviews are in: read the words you know now, and let Connect see what's waiting
-                self.gui_queue.put(lambda: self._maybe_anki_sync(force=True))
+                # … and let Connect see what's waiting
                 try:
                     from app.connect import kick
                     kick.kick(s)
@@ -3577,6 +3582,8 @@ class MasterDashboardApp:
         """
         if not self.var_anki_sync_auto.get() or os.environ.get("SURASURA_NO_ANKI_SYNC"):
             return
+        if self.__dict__.get("_connect_looking"):
+            return      # Connect's session look is running: it reads your known words once its sync is in (Q4-1)
         import time
         now = time.monotonic()
         if not force and now - self._last_anki_sync < 300:
@@ -3728,9 +3735,11 @@ class MasterDashboardApp:
             settings["enable_junban"] = bool(self.var_enable_junban.get())
             language = self.var_language.get() or "ja"
             on = replan_preview.is_on(settings, language)
-            if settings.get(replan_preview.SWITCH) is not True:
+            if settings.get(replan_preview.SWITCH) is not True and not settings.get("connect_enabled"):
+                # switched off: a pending sync is let go (Anki's close carries it) — unless Connect's preview, whose
+                # verbs leave one for Connect to send, is on (P2.3)
                 from app import anki_sync_rule
-                anki_sync_rule.drop_pending()          # switched off: a pending sync is let go (Anki's close carries it)
+                anki_sync_rule.drop_pending()
         except Exception:
             on, language = False, self.var_language.get() or "ja"
         host = self.__dict__.get("_replan_host")

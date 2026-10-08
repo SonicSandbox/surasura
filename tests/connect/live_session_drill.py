@@ -73,9 +73,14 @@ def main():
         from app import anki_sync_rule                     # E3.1's: the session and open steps need it
         return anki_sync_rule.read_state()
 
-    if not devtest():
-        sys.exit("REFUSED: Anki isn't open on DevTest")
     steps = [s.strip() for s in a.steps.split(",") if s.strip()]
+    # `--steps open` alone may start from Anki closed by hand on DevTest (Anki 26.9 ignores `guiExitAnki`: P1.4, P2.3):
+    # Connect's record then names DevTest, as the setup step would have
+    closed_already = steps == ["open"] and anki_session.look(a.url) == "closed" and not open_anki.running()
+    if closed_already:
+        setup.write_record({"anki_profile": "DevTest"})
+    elif not devtest():
+        sys.exit("REFUSED: Anki isn't open on DevTest")
 
     if "setup" in steps:
         result = setup.checks(settings, "ja")
@@ -95,7 +100,7 @@ def main():
         summary["steps"]["session"] = {"first": first, "second": second}
         assert first == "synced" and second is None
 
-    if "open" in steps:
+    if "open" in steps and not closed_already:
         assert devtest(), "not DevTest before closing Anki"
         with anki_connect.writer("P2.3 drill: closing Anki on DevTest"):
             anki_connect.invoke("guiExitAnki", a.url, timeout=10)
@@ -105,7 +110,8 @@ def main():
         closed = anki_session.look(a.url) == "closed" and not open_anki.running()
         say("open: Anki closed:", closed)
         if not closed:
-            sys.exit("FAILED: Anki didn't close; nothing was started")
+            sys.exit("FAILED: Anki didn't close; nothing was started (close its DevTest window, then --steps open)")
+    if "open" in steps:
         lines = []
         started = time.time()
         done = anki_session.at_window(settings, opening=True, say=lines.append)

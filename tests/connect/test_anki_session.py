@@ -281,9 +281,16 @@ def test_settle_never_waits_past_the_delay_and_its_margin(anki, clock, monkeypat
     anki_session.begin(URL, ON)
     anki_session.after_write(ON, True)
     start = clock.at
-    monkeypatch.setattr(anki_sync_rule, "sync_if_due", lambda url, settings, cancel=None: (None, clock.at + 30))
+    waits = []
+
+    def sync_if_due(url, settings, wait=None, cancel=None):
+        waits.append(wait)
+        return None, clock.at + 30
+    monkeypatch.setattr(anki_sync_rule, "sync_if_due", sync_if_due)
     assert anki_session.settle(URL, ON, sleep=clock.sleep, clock=clock.time) is None
     assert clock.at - start <= 60 + anki_session.SETTLE_MARGIN_S + 5
+    # nor does a wait for another Surasura writer (a long Junban or Backfill run) outlast that limit
+    assert waits and all(w is not None and w <= 60 + anki_session.SETTLE_MARGIN_S for w in waits), waits
 
 
 def test_with_the_minute_off_only_the_sessions_sync_is_asked(anki, clock):
@@ -475,3 +482,17 @@ def test_a_pending_sync_that_fails_counts_as_a_sync_point_too(anki, clock):
     anki.fail = True
     assert anki_session.settle(URL, ON, sleep=clock.sleep, clock=clock.time).startswith("failed")
     assert setup.read_record()["sync_failures"] == 1
+
+
+def test_a_sync_that_worked_elsewhere_since_breaks_the_row(anki, clock, monkeypatch):
+    # E6 "in a row": Connect failed three times, but the re-plan's own sync worked after the last of them (its
+    # `synced_at` is newer) — AnkiWeb isn't failing, so nothing needs you
+    anki.fail = True
+    for point in (1, 2, 3):
+        if point > 1:
+            clock.at += anki_sync_rule.S1_RETRY_S + 1
+        anki_session.begin(URL, ON)
+    assert anki_session.failing()
+    anki_sync_rule._update(synced_at=clock.at + 5, sync="synced")
+    assert not anki_session.failing()
+    assert _ankiweb_check(monkeypatch)["state"] == "ok"

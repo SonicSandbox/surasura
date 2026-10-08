@@ -30,8 +30,8 @@ import time
 LOOK_TIMEOUT = 3                # seconds a look waits for Anki (a closed port is refused at once)
 BEGIN_WAIT_S = 10.0             # a headless `begin` waits this long for another Surasura writer (the window: none)
 SETTLE_MARGIN_S = 120           # `settle` never waits past the rule's delay + this …
-SETTLE_MAX_DELAY_S = 10 * 60    # … nor a delay longer than this: a longer one is left to the next Surasura program
-                                # that looks, or to Anki's own sync on close (S2)
+SETTLE_MAX_DELAY_S = 10 * 60    # … nor a delay longer than this: a longer one is left to Anki's own sync on close
+                                # (S2), or to the re-plan's host when its preview is on
 OPENING_EVERY_S = 5             # after Open Anki for me started Anki: a look this often …
 OPENING_WAIT_S = 120            # … for up to this long
 FAILS_TO_ASK = 3                # 06-edges E6: three sync points in a row whose sync failed → Needs you
@@ -80,21 +80,35 @@ def counted(answer):
         from app.connect import setup
         record = setup.read_record()
         before = record.get("sync_failures") or 0
-        failures = (before if isinstance(before, int) else 0) + 1 if answer.startswith("failed") else 0
-        if failures != before:
-            setup.write_record(dict(record, sync_failures=failures))
+        before = before if isinstance(before, int) and not isinstance(before, bool) else 0
+        if answer.startswith("failed"):
+            # with the last sync that worked as the rule knows it then: a newer one breaks the row (`failing`)
+            from app import anki_sync_rule
+            seen = anki_sync_rule.read_state().get("synced_at") or 0
+            setup.write_record(dict(record, sync_failures=before + 1, synced_at_seen=seen))
+        elif before:
+            setup.write_record(dict(record, sync_failures=0))
     except Exception:
         pass
     return answer
 
 
-def failing(record=None):
-    """E6: has Connect's sync failed FAILS_TO_ASK sync points in a row?"""
+def failing(record=None, state=None):
+    """E6: has Connect's sync failed FAILS_TO_ASK sync points in a row? A sync that worked since the last one counted
+    — the re-plan's own, say (the rule's `synced_at`, `state`) — breaks the row."""
     if record is None:
         from app.connect import setup
         record = setup.read_record()
+    if state is None:
+        from app import anki_sync_rule
+        state = anki_sync_rule.read_state()
     count = (record or {}).get("sync_failures")
-    return isinstance(count, int) and count >= FAILS_TO_ASK
+    if not (isinstance(count, int) and not isinstance(count, bool) and count >= FAILS_TO_ASK):
+        return False
+    try:
+        return float((state or {}).get("synced_at") or 0) <= float((record or {}).get("synced_at_seen") or 0)
+    except (TypeError, ValueError):
+        return True
 
 
 def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
@@ -179,8 +193,8 @@ def settle(url, settings, cancel=None, sleep=time.sleep, clock=time.time):
     """A headless process's last step (E1.1 04 §3: a pending sync never dies with its process): the pending S3 sync,
     sent when its time comes — a newer write restarts the wait — and never once Anki has closed (its own sync on close
     carried the order). Waits at most the rule's delay + SETTLE_MARGIN_S, and never for a delay over
-    SETTLE_MAX_DELAY_S (a process isn't kept alive for hours: the next Surasura program that looks sends it, or Anki's
-    own sync on close carries the order). -> what the sync answered, `anki-closed`, or None (none pending, Connect off,
+    SETTLE_MAX_DELAY_S (a process isn't kept alive for hours: Anki's own sync on close carries the order, or the
+    re-plan's host sends it while its preview is on). -> what the sync answered, `anki-closed`, or None (none pending, Connect off,
     cancelled, out of time)."""
     if not on(settings):
         return None
@@ -190,7 +204,7 @@ def settle(url, settings, cancel=None, sleep=time.sleep, clock=time.time):
         return None
     limit = clock() + delay + SETTLE_MARGIN_S
     while True:
-        answer, next_look = anki_sync_rule.sync_if_due(url, settings, cancel=cancel)
+        answer, next_look = anki_sync_rule.sync_if_due(url, settings, wait=max(0.0, limit - clock()), cancel=cancel)
         if next_look is None:
             return counted(answer)
         if (cancel is not None and cancel.is_set()) or clock() >= limit:

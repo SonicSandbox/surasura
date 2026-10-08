@@ -198,9 +198,10 @@ def child(rounds):
                 steps.append(("close", kind, widget, None))
             steps.append(("toast", "rise", None, None))
             steps.append(("toast-close", "rise", None, None))
-        # a person clicks in the window in front: the lift is used only then (the final adversary's first finding). The bench shows it without
-        # activation; Windows may refuse a background process the foreground, so the bench then says so and takes the
-        # lifted path as in front (the lift paints and moves the same; only its stacking over other programs differs)
+        # a person clicks in the window in front: the lift is used only then (the final adversary's first finding).
+        # The bench shows it without activation; Windows may refuse a background process the foreground, so the bench
+        # then says so and takes the lifted path as in front (the lift paints and moves the same; only its stacking
+        # over other programs differs)
         window.raise_()
         window.activateWindow()
 

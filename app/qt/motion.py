@@ -476,7 +476,7 @@ class _Lift(QWindow):
         self.owner = owner
         self.opening = opening
         self.store = QBackingStore(self)
-        self._flushed_hidden = False                    # flushed while hidden: the show's expose finds it there already
+        self._flushed_hidden = False               # flushed while hidden: its show's expose finds it there
 
     def paint(self):
         """Its picture drawn into its backing store (nothing reaches the screen): the shadow and the snapshot — or
@@ -502,7 +502,7 @@ class _Lift(QWindow):
     def exposeEvent(self, _event):
         if not self.isExposed():
             return
-        if self._flushed_hidden:                        # its show: the picture flushed before is on screen with it
+        if self._flushed_hidden:                   # its show: the picture flushed before is on screen with it
             self._flushed_hidden = False
             return
         self.paint()                               # exposed again (a screen change): drawn as it is now

@@ -1499,17 +1499,24 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         work = statistics.median(t - f for t, f in zip(times, probe.times))
         _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "
                 f"{statistics.median(probe.times) * 1000:.2f} ms, work {work * 1000:.2f} ms")
-        assert 0 < work <= 0.001, work                         # the flush + 1 ms (§6.12), paired as in #14
+        assert 0 < work <= 0.001 + SETTLE, work                # the flush + 1 ms + 3.0's settling (§6.12, L3.1-1)
     probe.close()
     store.close()
 
 
+# 3.0's settling step (L3.1, §12.8): each save also keeps a title's episodes one piece, NOW at the Soon line's count
+# and the feed's stamps — ~0.4 ms more on a one-item move. Sonic accepted 3.0's figures (L3.1-1, 2026-10-07; the line
+# count may move off the move later if it ever matters).
+SETTLE = 0.0005
+WHOLE_TIER = 2.8   # s: 3.0's whole-tier move (2.2–2.4 s measured; 2.5's check was 1.67 s + 20 %, L3.1-1)
+
+
 def allowance(items, per_item=0.00005):
     """The store's own work in one save, beside the flush it waits for (§6.12, L1.2-1): 1 ms + 0.05 ms an
-    item moved (an insert: 0.12 ms a file — it reads each file and builds its entry). As built a move
-    measures ~0.5 ms + 0.03–0.04 ms an item, at 2k and 100k alike; the flush counts once, whatever the item
-    count, because the whole command is one transaction."""
-    return 0.001 + per_item * items
+    item moved (an insert: 0.12 ms a file — it reads each file and builds its entry), + 0.5 ms for 3.0's settling
+    step (`SETTLE`). As built (3.0) a one-item move measures ~0.9 ms at 2k, ~1.25 ms at 100k; the flush counts once,
+    whatever the item count, because the whole command is one transaction."""
+    return 0.001 + SETTLE + per_item * items
 
 
 class _FlushProbe:
@@ -1969,8 +1976,8 @@ def test_whole_tier_move_within_20_percent_of_12_1(language):
             store.move(whole, tier)
             works.append(time.perf_counter() - t0 - probe.times[-1])
     work = sorted(works)[len(works) // 2]
-    _record(f"whole-tier move {language} 100k ({len(whole)} items): work p50 {work:.2f} s (budget {1.67 * 1.2:.2f} s)")
-    assert work <= 1.67 * 1.2, work
+    _record(f"whole-tier move {language} 100k ({len(whole)} items): work p50 {work:.2f} s (budget {WHOLE_TIER:.2f} s)")
+    assert work <= WHOLE_TIER, work
     assert store.ids(largest) == whole and pieces_ok(store) is None
     probe.close()
     store.close()

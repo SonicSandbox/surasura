@@ -522,6 +522,17 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL,
       batch    TEXT,
       PRIMARY KEY (item_id, word))""",
+    # Each card's line (✅ D1, 2026-10-07): the note Connect made from a line of an item, the line's start and end (ms,
+    # as Connect's line reader gives them) and a short fingerprint of its text — no sentence, no media; 3.1's journey
+    # plays a card's line, found again by its fingerprint after a re-sync shifts the timings. Empty until Connect fills it.
+    """CREATE TABLE IF NOT EXISTS made_lines (
+      note_id  INTEGER PRIMARY KEY,
+      item_id  INTEGER NOT NULL,
+      start_ms INTEGER,
+      end_ms   INTEGER,
+      line_fp  TEXT,
+      made_at  TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
@@ -579,7 +590,7 @@ FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "ani
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7); `works` without its derived
 # columns (WORK_NOT_COPIED: a rebuild re-derives them)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log", "made_words", "works")
+               "placement_log", "made_words", "made_lines", "works")
 WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
 COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart")
@@ -3427,6 +3438,10 @@ class Store:
                             out[item_id].update(int(n) for n in json.loads(notes))
                         except (ValueError, TypeError):
                             continue
+                if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_lines'").fetchone():
+                    for item_id, note in self.conn.execute(f"SELECT item_id, note_id FROM made_lines WHERE item_id IN "
+                                                           f"({marks})", chunk):
+                        out[item_id].add(note)
         return {i: sorted(v) for i, v in out.items()}
 
     def record_made(self, item_id, made, batch=None):
@@ -3448,6 +3463,42 @@ class Store:
                                   "VALUES (?, ?, ?, ?, ?)", fresh)
             cmd.touch()
             return [r[1] for r in fresh]
+
+    def record_lines(self, item_id, lines):
+        """Each card's line (✅ D1, 2026-10-07): [(note_id, start_ms, end_ms, text)] for the notes Connect made from an
+        item's lines — the start and end as Connect's line reader (`app/cues.py`) gives them; of the text only its
+        fingerprint is kept (`line_fingerprint`), so the line is found again after a re-sync shifts its timings, and no
+        sentence or media is stored. A note recorded again takes its newer line. Like `record_made` (role `connect`, a
+        status write: `state_version` only; an item removed meanwhile is recorded too). Returns the note ids recorded."""
+        rows = []
+        for note_id, start_ms, end_ms, text in lines:
+            if note_id is None:
+                continue
+            rows.append((int(note_id), item_id, None if start_ms is None else int(start_ms),
+                         None if end_ms is None else int(end_ms), line_fingerprint(text) if text else None, _now()))
+        if not rows:
+            return []
+        with self._command("record_lines", "connect") as cmd:
+            for sql in ADDED_TABLES_SQL:
+                self.conn.execute(sql)
+            self.conn.executemany("INSERT OR REPLACE INTO made_lines (note_id, item_id, start_ms, end_ms, line_fp, "
+                                  "made_at) VALUES (?, ?, ?, ?, ?, ?)", rows)
+            cmd.touch()
+            return [r[0] for r in rows]
+
+    def card_lines(self, item_ids):
+        """{item_id: [(note_id, start_ms, end_ms, line_fp)]} in the line's order — what 3.1's journey plays (D1)."""
+        ids = list(dict.fromkeys(item_ids))
+        out = {i: [] for i in ids}
+        with self._reading():
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_lines'").fetchone():
+                return out
+            for chunk in _chunks(ids, 500):
+                for item_id, *rest in self.conn.execute(
+                        f"SELECT item_id, note_id, start_ms, end_ms, line_fp FROM made_lines WHERE item_id IN "
+                        f"({','.join('?' * len(chunk))}) ORDER BY item_id, start_ms, note_id", chunk):
+                    out[item_id].append(tuple(rest))
+        return out
 
     def made(self, item_id):
         """{word: [note ids]} Connect made cards for, for one item (N15)."""
@@ -4351,6 +4402,15 @@ Pin = namedtuple("Pin", "item_id rel_path tier pinned_at")
 PLACING_TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
 
 
+def line_fingerprint(text):
+    """A short fingerprint of a line's text (D1): 12 hex characters of the SHA-1 of its NFKC form with every space and
+    line break taken out — the same for the same words whatever their timing, the file's line breaks or full-width
+    letters, so a card's line is found again after a re-sync."""
+    import unicodedata
+    folded = "".join(unicodedata.normalize("NFKC", str(text or "")).split())
+    return hashlib.sha1(folded.encode("utf-8")).hexdigest()[:12]
+
+
 def _rule_for(record, rules):
     """(source, target) of the rule for a record's arrival, or None: it waits (05 §5.12, `app/connect/rules.py`'s
     rule). Sources: `<producer>:<channel id>` before the producer's own line; targets PLACING_TARGETS."""
@@ -4668,16 +4728,18 @@ def _write_image(store, image, meta):
             col = t["fields"].index("item_id")
             kept = {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in have]}
             _insert_rows(conn, name, kept)
-    t = tables.get("made_words")                               # outlives Remove: an item or its trash row
-    if t and t["rows"]:
-        col = t["fields"].index("item_id")
-        known = have | {r[0] for r in conn.execute("SELECT item_id FROM trash")}
-        _insert_rows(conn, "made_words", {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in known]})
+    for name in ("made_words", "made_lines"):                   # outlive Remove: an item or its trash row
+        t = tables.get(name)
+        if t and t["rows"]:
+            col = t["fields"].index("item_id")
+            known = have | {r[0] for r in conn.execute("SELECT item_id FROM trash")}
+            _insert_rows(conn, name, {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in known]})
     # K30: AUTOINCREMENT learns only from the rows a table holds; ids are never reused.
     highest = max([0] + list(have) + [r[0] for r in conn.execute(
         "SELECT MAX(item_id) FROM trash UNION ALL SELECT MAX(item_id) FROM placement_log "
         "UNION ALL SELECT MAX(item_id) FROM pairings UNION ALL SELECT MAX(item_id) FROM anki_links "
-        "UNION ALL SELECT MAX(item_id) FROM anki_changes UNION ALL SELECT MAX(item_id) FROM made_words")
+        "UNION ALL SELECT MAX(item_id) FROM anki_changes UNION ALL SELECT MAX(item_id) FROM made_words "
+        "UNION ALL SELECT MAX(item_id) FROM made_lines")
         if r[0] is not None])
     _set_seq(conn, "items", highest)
     marks = [v for k, v in meta.items() if k.startswith("reader:")]
@@ -4950,7 +5012,7 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
         if keep_store_id:
             for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
                 store.conn.execute(sql)
-            for name in ("anki_links", "pairings", "made_words", "placement_log", "trash", "exclusions",
+            for name in ("anki_links", "pairings", "made_words", "made_lines", "placement_log", "trash", "exclusions",
                          "anki_changes", "gone", "items", "pieces", "works", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)

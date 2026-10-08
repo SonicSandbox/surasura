@@ -429,9 +429,10 @@ def test_search_finds_titles_first_then_items_in_every_place(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_search_200k_under_20ms(language):
-    """05 §5.3's measurement as a proof: a search scans the stored keys — at 200k files under 20 ms (the window
-    debounces 120 ms on top). The budget holds in the timed run (200k); otherwise 20k, unbudgeted."""
+def test_search_200k_under_30ms(language):
+    """05 §5.3's measurement as a proof: a search scans the stored keys — at 200k files under 30 ms, 3.0's figure
+    (23–26 ms measured over the keys' covering index; the pack's 20 ms came from a two-column bench; L3.1-1). The window
+    debounces 120 ms on top. The budget holds in the timed run (200k); otherwise 20k, unbudgeted."""
     n = 200_000 if BENCH else 20_000
     store = big_store(language, n)
     word = names(language)[3]
@@ -444,7 +445,7 @@ def test_search_200k_under_20ms(language):
     if BENCH:
         median = sorted(times)[4]
         print(f"\nsearch {language} {n}: median {median * 1000:.1f} ms")
-        assert median <= 0.020, median
+        assert median <= 0.030, median
     store.close()
 
 
@@ -964,6 +965,32 @@ def test_cards_of_and_made_words(language):
     assert store.made(a)[names(language)[1]] == [501, 502]
     store.remove([b])
     assert store.record_made(b, [(names(language)[3], [504])], "b3") == [names(language)[3]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_each_cards_line_is_kept_by_its_address_and_fingerprint(language):
+    """D1 (Sonic, 2026-10-07: 3.1's journey plays a card's line): per note Connect made from a line — its item, the
+    line's start and end and a fingerprint of its text, never the text; empty until Connect fills it; the same words
+    give the same fingerprint whatever their spacing, line breaks or full-width digits; a note recorded again takes its
+    newer line (a re-sync shifted it); `cards_of` counts the note; an item removed keeps its lines (Put back finds
+    them)."""
+    store = migrated(language)
+    w = names(language)
+    a, b = store.ids("now")[:2]
+    assert store.card_lines([a, b]) == {a: [], b: []}, "empty by default"
+    line = f"{w[1]}{w[2]} 12"
+    assert ls.line_fingerprint(line) == ls.line_fingerprint(f"{w[1]}\n{w[2]}１２") != ls.line_fingerprint(w[3])
+    assert len(ls.line_fingerprint(line)) == 12
+    assert store.record_lines(a, [(701, 61_250, 63_900, line), (702, 12_000, 14_500, w[3])]) == [701, 702]
+    assert store.card_lines([a]) == {a: [(702, 12_000, 14_500, ls.line_fingerprint(w[3])),
+                                         (701, 61_250, 63_900, ls.line_fingerprint(line))]}
+    assert not store.conn.execute("SELECT 1 FROM made_lines WHERE line_fp = ?", (line,)).fetchone(), "no text kept"
+    store.record_lines(a, [(701, 61_500, 64_100, line)])                  # hato re-synced the episode
+    assert store.card_lines([a])[a][-1] == (701, 61_500, 64_100, ls.line_fingerprint(line))
+    assert store.cards_of([a]) == {a: [701, 702]}
+    store.remove([a])
+    assert [n for n, *_r in store.card_lines([a])[a]] == [702, 701], "kept for Put back"
     store.close()
 
 

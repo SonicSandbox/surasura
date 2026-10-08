@@ -720,6 +720,28 @@ def test_connects_made_words_travel_in_the_copy_and_back(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_each_cards_line_travels_in_the_copy_and_back(language):
+    # Why: D1 — a card's line address (its note, item, start / end and fingerprint) is the library's record like the
+    # made words: the copy carries it and a rebuild (a new PC) brings it back, a removed item's lines with its trash row.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, gone = store.ids("now")[:2]
+    store.record_lines(item, [(801, 1_000, 2_500, names(language)[4])])
+    store.record_lines(gone, [(802, 3_000, 4_000, names(language)[5])])
+    store.remove([gone])
+    lines = store.card_lines([item, gone])
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert len(read_doc(user_files_dir)["surasura_library"]["tables"]["made_lines"]["rows"]) == 2
+    db = store.db_path
+    store.close()
+    _db_aside(db)                                              # a new PC
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.card_lines([item, gone]) == lines
+    store.close()
+
+
 def _made_word(store, item, word):
     with store._writing():
         for sql in ls.ADDED_TABLES_SQL:

@@ -705,8 +705,9 @@ def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
 
 # --- row 7: the lifted opening (Windows' compositor fades and moves it; measured ≈ 0.3 ms a frame) ------------------- #
 @pytest.fixture
-def lifted():
+def lifted(monkeypatch):
     motion.LIFT = True
+    monkeypatch.setattr(motion, "_in_front", lambda top: True)   # (offscreen hands activation around unlike Windows)
     yield
     motion.LIFT = None
     motion._LIFTS.clear()                                        # the kept lifts belong to this test's window

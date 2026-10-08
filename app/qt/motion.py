@@ -431,6 +431,12 @@ def _lifted():
     return QGuiApplication.platformName() == "windows"
 
 
+def _in_front(top):
+    """Whether `top` is the active window: a lift (a window of its own, shown above its owner) is used only then; behind
+    another program's window it would show over that program."""
+    return QApplication.activeWindow() is top
+
+
 # How an in-window overlay's opening is prepared (M2.1-1, Sonic 2026-10-08: "Split it as you said"): in pieces — the
 # overlay drawn (its snapshot); for the ghost, its shadow added (the picture); the picture shown and the motion started
 # (a lift paints the shadow and the snapshot itself, in its own paint: no picture composed) — each in a pass of the GUI
@@ -519,6 +525,41 @@ def _give_back(lift):
         lift.deleteLater()
         return
     free.append(lift)
+
+
+class _LiftLeaving(QObject):
+    """A finished opening's lift, kept up one frame so the overlay under it paints first (no flash), then given back —
+    at once if the overlay is hidden or deleted meanwhile (Esc or Back right after a key or a press finished it, a drag
+    starting, its page going): the lift would show a closed card for a frame."""
+
+    def __init__(self, widget, lift):
+        super().__init__()
+        self.widget, self.lift = widget, lift
+        widget.installEventFilter(self)
+        widget.destroyed.connect(self.done)
+        _LEAVING.add(self)
+        QTimer.singleShot(FRAME_MS, self.done)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Hide:
+            self.done()
+        return False
+
+    def done(self, *_args):
+        lift, self.lift = self.lift, None
+        if lift is None:
+            return
+        _LEAVING.discard(self)
+        if not sip.isdeleted(self.widget):
+            self.widget.removeEventFilter(self)
+            try:
+                self.widget.destroyed.disconnect(self.done)
+            except (TypeError, RuntimeError):
+                pass
+        _give_back(lift)
+
+
+_LEAVING = set()
 
 
 class _Ghost(QWidget):
@@ -652,12 +693,16 @@ class OverlayOpening:
 
     def _go(self):
         """The last: the picture shown where the motion starts, and the motion started — unless its page went while it
-        was prepared (then it is shown as asked, without the motion)."""
+        was prepared or its window is minimised (then it is shown as asked, without the motion). A window behind another
+        program's gets the painted stand-in: a lift is a window of its own and would show over that program."""
         w, area = self.widget, self._area
         parent = w.parentWidget()
-        if parent is None or not parent.isVisible():
+        if parent is None or not parent.isVisible() or self._top.isMinimized():
             self._cut_short()
             return
+        if self._lifts and not _in_front(self._top):
+            self._lifts = False
+            self.picture = self._compose(self._size)
         if self._lifts:
             self._lift_at = parent.mapToGlobal(area.topLeft())   # the picture's place at the end, global
             self._origin = QPoint(0, 0)
@@ -796,15 +841,14 @@ class OverlayOpening:
             self.ghost.deleteLater()
         self.ghost = None
         lift, self.lift = self.lift, None
-        if lift is not None and not sip.isdeleted(lift):
-            if show and not self._landed_by_window:   # the overlay paints first; the lift goes a frame later (no flash)
-                QTimer.singleShot(FRAME_MS, lambda: _give_back(lift))
-            else:
-                _give_back(lift)
+        if lift is not None and sip.isdeleted(lift):
+            lift = None
         w = self.widget
         if _OPENINGS.get(id(w)) is self:
             _OPENINGS.pop(id(w), None)
         if sip.isdeleted(w):
+            if lift is not None:
+                _give_back(lift)
             return
         try:
             w.destroyed.disconnect(self._widget_gone)
@@ -816,9 +860,14 @@ class OverlayOpening:
             if not show:
                 w.hide()
             return
-        if not show:
+        if show:
+            _show(w, self.focus)
+        if lift is None:
             return
-        _show(w, self.focus)
+        if show and not self._landed_by_window and w.isVisible():
+            _LiftLeaving(w, lift)                  # the overlay paints first; the lift goes a frame later (no flash)
+        else:
+            _give_back(lift)                       # nothing paints under it (closed, its page gone), or it was left behind
 
     def press(self, event):
         """A press (left, right, middle) on the opening overlay: finish it, then give the press to what the user saw

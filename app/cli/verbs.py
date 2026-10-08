@@ -619,18 +619,20 @@ def junban(args):
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
-    job = numbering_job(junban_settings)
+    job = numbering_job(junban_settings, lang)
     if args.dry_run:
         return _junban_dry_run(lang, junban_settings, reposition, job)[0]
     return _junban_auto(args, lang, junban_settings, auto, job)[0]
 
 
-def numbering_job(junban_settings):
+def numbering_job(junban_settings, lang):
     """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
     the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
-    on (`junban_replan_preview`, its switch in 順: E3.1); None — 2.5's dense block — while it's off, so the command line
-    and the window never renumber each other's deck."""
-    if (junban_settings or {}).get("junban_replan_preview") is not True:
+    on for this language (`replan_preview.is_on`: its switch in 順, Junban on and present, the language it was turned
+    on in — E3.1's rule for `auto.reorder`); None — 2.5's dense block — otherwise, so the command line and the window
+    never renumber each other's deck."""
+    from app import replan_preview
+    if not replan_preview.is_on(junban_settings, lang):
         return None
     from modules.junban import spaced
     return spaced.Job(automatic=True)
@@ -744,7 +746,7 @@ def resort(args):
     junban_settings = _junban_settings(loaded, lang)
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return dict(idle, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
-    job = numbering_job(junban_settings)
+    job = numbering_job(junban_settings, lang)
     if args.dry_run:
         # What the run would do, no more: its guards and its list check first, then planned as that unattended run
         why = auto.blocked(junban_settings, window=False)

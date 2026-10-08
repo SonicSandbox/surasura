@@ -87,6 +87,21 @@ def test_spaced_while_the_re_plan_preview_is_on_and_a_second_run_writes_nothing(
     assert code == 0 and _dues(twin) == spaced_out
 
 
+
+def test_dense_while_the_re_plan_preview_is_on_for_the_other_language(deck):
+    """The re-plan preview was turned on in 順 for Chinese: a Japanese re-sort numbers 2.5's dense block, as
+    `junban --auto` does (`replan_preview.is_on(settings, language)`, E3.1's rule) — `junban_deck` is one key for both
+    languages, so the switch alone would space out the Japanese deck behind the window's back."""
+    fake, patched = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
+    with patched:
+        code, line = h.call("resort")
+    assert code == 0 and line["numbering"] == "dense" and line["moves"] > 0, line
+    dense = _dues(fake)
+    twin, patched_twin = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
+    with patched_twin:
+        code, auto_line = h.call("junban", "--auto")
+    assert code == 0 and _dues(twin) == dense
+
 def test_a_dry_run_writes_nothing_and_previews_the_runs_moves(deck):
     fake, patched = deck(connect_enabled=True)
     with patched:

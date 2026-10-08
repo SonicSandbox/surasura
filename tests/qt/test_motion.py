@@ -296,7 +296,7 @@ def test_each_kind_starts_at_its_offset_transparent_and_ends_in_place(clock, sta
     dur, dist_name, axis, sign = motion.HOW[how]
     dist = theme.MOTION[dist_name] * sign if dist_name else 0
     want = QPoint(dist, 0) if axis == "x" else QPoint(0, dist)
-    assert ghost.offset == want and ghost.opacity == 0.0
+    assert ghost.offset - opening._origin == want and ghost.opacity == 0.0
     assert card.graphicsEffect() is None
     clock.advance(theme.MOTION[dur] // 2)
     assert 0.0 < ghost.opacity < 1.0 and card.graphicsEffect() is None
@@ -309,7 +309,7 @@ def test_the_ghost_at_its_place_is_the_overlay_pixel_for_pixel(clock, stage):
     card = Card(stage)
     opening = card.open()
     ghost = opening.ghost
-    ghost.opacity, ghost.offset = 1.0, QPoint(0, 0)
+    ghost.opacity, ghost.offset = 1.0, opening._offset(1.0)
     seen = ghost.grab(ghost.content_rect()).toImage()
     want = opening.pixmap.toImage()
     assert seen.size() == want.size()
@@ -356,16 +356,93 @@ def test_esc_during_the_opening_finishes_it_then_the_router_closes_it(clock, qap
         services.shutdown(0.5)
 
 
-def test_a_press_on_the_ghost_reaches_the_button_the_user_saw(clock, stage):
+def test_a_press_on_the_opening_overlay_reaches_the_button_the_user_saw(clock, stage):
+    # routed as Qt routes it: the press lands on the window at the point; the ghost takes no mouse itself
     card = Card(stage)
     opening = card.open()
     clock.advance(48)
     ghost = opening.ghost
-    at = ghost.content_rect().topLeft() + card.button.geometry().center()
-    QTest.mousePress(ghost, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    at = ghost.mapTo(stage, ghost.content_rect().topLeft() + card.button.geometry().center())
+    win = stage.windowHandle()                                 # through the window: Qt picks the widget at the point
+    QTest.mousePress(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
     assert card.isVisible() and motion.opening_of(card) is None    # finished first
-    QTest.mouseRelease(ghost, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    QTest.mouseRelease(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
     assert card.clicks == [1]
+    assert not _filters_left(opening)
+
+
+def test_a_press_beside_the_opening_overlay_reaches_what_is_there(clock, stage):
+    # review A2: the shadow's margin and the travel are no wall — a row under a rising toast takes its click
+    below = QPushButton("下の行", stage)
+    below.setGeometry(200, 270, 320, 30)                       # under the card's bottom edge, in its shadow's reach
+    below.show()
+    hits = []
+    below.clicked.connect(lambda: hits.append(1))
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    at = below.geometry().center()
+    assert not opening.ghost.content_rect().contains(opening.ghost.mapFrom(stage, at))
+    QTest.mouseClick(stage.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    assert hits == [1] and card.isVisible()                    # the opening finished, the click went where it fell
+
+
+def _filters_left(opening):
+    f = opening._finisher
+    return f is not None and f.installed
+
+
+def test_every_end_tears_the_opening_down_a_hidden_page_an_error_a_stop(clock, stage, qt_errors):
+    # review A1: an opening cut short leaves no filter, no ghost, and the overlay can open again
+    page = QWidget(stage)
+    page.setGeometry(0, 0, 900, 640)
+    page.show()
+    card = Card(page, "slide")
+    opening = card.open()
+    clock.advance(32)
+    page.hide()                                                 # a tab switch while the side panel opens
+    clock.advance(32)
+    assert motion.opening_of(card) is None and opening.ghost is None and not _filters_left(opening)
+    assert not card.isHidden()                                  # it was asked open: open, without the motion
+    page.show()
+    assert card.isVisible()
+    card.hide()
+    assert card.open() is not None                              # and it opens again
+    clock.advance(400)
+    card.hide()
+    # an error in a frame
+    opening = card.open()
+    opening._frame = lambda v: (_ for _ in ()).throw(ValueError("a painter's bug"))
+    opening.anim.on_frame = opening._frame
+    clock.advance(32)
+    assert motion.opening_of(card) is None and not _filters_left(opening) and card.isVisible()
+    assert qt_errors and qt_errors[0][0] is ValueError
+    qt_errors.clear()
+    card.hide()
+    # stopped from outside
+    opening = card.open()
+    opening.anim.stop()
+    assert motion.opening_of(card) is None and not _filters_left(opening)
+
+
+def test_back_during_the_opening_closes_it(clock, qapp):
+    # review A3: the mouse's Back button over an opening overlay closes it, as Esc does
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    QApplication.processEvents()
+    try:
+        card = Card(win.centralWidget())
+        win.register_overlay(card)
+        opening = card.open()
+        clock.advance(32)
+        at = opening.ghost.mapTo(win.centralWidget(), opening.ghost.content_rect().center())
+        QTest.mouseClick(win.centralWidget(), Qt.MouseButton.BackButton, Qt.KeyboardModifier.NoModifier, at)
+        QApplication.processEvents()
+        assert not card.isVisible() and motion.opening_of(card) is None and win.isVisible()
+    finally:
+        win.close()
+        services.shutdown(0.5)
 
 
 def test_a_key_during_an_opening_without_focus_stays_with_the_field(clock, stage):
@@ -381,8 +458,7 @@ def test_a_key_during_an_opening_without_focus_stays_with_the_field(clock, stage
     QTest.keyClick(field, Qt.Key.Key_A)
     QApplication.processEvents()
     assert card.isVisible()                                   # the key finished the opening
-    assert field.text() == "a" and QApplication.focusWidget() in (field, None)
-    assert QApplication.focusWidget() is not card
+    assert field.text() == "a" and stage.focusWidget() is field   # the window's own focus, never the overlay
 
 
 def test_an_opener_that_asks_gives_the_overlay_the_focus(clock, stage):
@@ -392,7 +468,7 @@ def test_an_opener_that_asks_gives_the_overlay_the_focus(clock, stage):
     stage.activateWindow()
     card.open()
     clock.advance(400)
-    assert card.isVisible() and (QApplication.focusWidget() in (card, None))
+    assert card.isVisible() and stage.focusWidget() is card
 
 
 def test_each_frame_repaints_only_where_the_ghost_was_and_is(clock, stage):
@@ -402,8 +478,8 @@ def test_each_frame_repaints_only_where_the_ghost_was_and_is(clock, stage):
     rects = []
     original = ghost.update
     ghost.update = lambda *a: (rects.append(a[0]) if a else None, original(*a))
-    painted = opening._painted(ghost.content_rect())
-    full_travel = painted.united(painted.translated(-opening.delta))
+    painted = opening._painted()
+    full_travel = ghost.rect()
     clock.advance(200)
     assert rects
     for r in rects:
@@ -420,11 +496,19 @@ def test_reduced_an_overlay_fades_in_place_within_fast(clock, stage):
     assert card.isVisible()
 
 
-def test_frozen_an_overlay_shows_at_once(qapp, stage):
+def test_frozen_an_overlay_shows_at_once_on_top_and_focused_as_users_see_it(qapp, stage):
+    # review A5: the frozen path ends as an opening does (tests run frozen: they must see what users see)
     freeze.set_frozen(True)
     try:
+        other = QLabel("上", stage)
+        other.setGeometry(150, 100, 400, 200)
+        other.show()
         card = Card(stage)
+        card.focus = True
+        card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         assert card.open() is None and card.isVisible()
+        assert stage.childAt(card.geometry().center()) in (card, card.label, card.button)   # raised over the label
+        assert stage.focusWidget() is card
     finally:
         freeze.set_frozen(None)
 
@@ -436,6 +520,12 @@ def test_a_top_level_popup_moves_and_fades_on_its_own_window(clock, qapp):
     assert pop.isVisible() and pop.pos() == QPoint(300, 300 - theme.MOTION["pop-shift"])
     clock.advance(theme.MOTION["overlay-pop"])
     assert pop.pos() == QPoint(300, 300) and motion.opening_of(pop) is None and opening is not None
+    pop.hide()
+    # review A7: a popup closed mid-opening keeps no half-faded state for its next open
+    opening = motion.open_overlay(pop, "pop")
+    clock.advance(40)
+    motion.cancel_opening(pop)
+    assert pop.windowOpacity() == 1.0 and pop.pos() == QPoint(300, 300) and not pop.isVisible()
     pop.close()
 
 

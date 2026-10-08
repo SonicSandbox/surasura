@@ -60,23 +60,34 @@ def child(rounds):
                 return f"{JA[index.row() % len(JA)]}  第{index.row() % 24 + 1}話"
             return None
 
+    from PyQt6.QtGui import QStaticText
+
     class Painted(QStyledItemDelegate):
+        """Rows painted as the spec says the Current list paints them (05 §5.11: text cached as QStaticText)."""
+        cache = {}
+
+        def _text(self, key, text):
+            st = self.cache.get(key)
+            if st is None:
+                st = self.cache[key] = QStaticText(text)
+                st.setPerformanceHint(QStaticText.PerformanceHint.AggressiveCaching)
+            return st
+
         def paint(self, p, option, index):
             c = style.colours()
             r = option.rect
+            row = index.row()
             p.save()
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(style.qcolor(c["raised"]))
             p.drawRoundedRect(QRectF(r.left() + 12, r.top() + 6, 31, 44), 5, 5)
             p.setPen(style.qcolor(c["ink"]))
-            p.drawText(QRect(r.left() + 56, r.top(), r.width() - 260, r.height()),
-                       Qt.AlignmentFlag.AlignVCenter, index.data())
+            mid = r.top() + r.height() // 2 - 9
+            p.drawStaticText(r.left() + 56, mid, self._text(("t", row % 240), index.data()))
             p.setPen(style.qcolor(c["ink-dim"]))
-            p.drawText(QRect(r.right() - 190, r.top(), 80, r.height()), Qt.AlignmentFlag.AlignVCenter,
-                       f"{(index.row() * 37) % 100} %")
-            p.drawText(QRect(r.right() - 100, r.top(), 90, r.height()), Qt.AlignmentFlag.AlignVCenter,
-                       f"{(index.row() * 13) % 60} new")
+            p.drawStaticText(r.right() - 190, mid, self._text(("p", row % 100), f"{(row * 37) % 100} %"))
+            p.drawStaticText(r.right() - 100, mid, self._text(("n", row % 60), f"{(row * 13) % 60} new"))
             p.restore()
 
         def sizeHint(self, option, index):
@@ -109,9 +120,22 @@ def child(rounds):
 
     def exercise(probe):
         window, meter = probe.window, probe.hud
+        # where a frame's time goes: the ghost's own paint and the list's, as spans (the rest is the flush and the rest
+        # of the window repainted under the ghost)
+        ghost_paint = motion._Ghost.paintEvent
+
+        def timed_ghost(self, event):
+            with meter.span("ghost-paint"):
+                ghost_paint(self, event)
+        motion._Ghost.paintEvent = timed_ghost
+        list_paint = QListView.paintEvent
+
+        def timed_list(self, event):
+            with meter.span("list-paint"):
+                list_paint(self, event)
         central = window.centralWidget()
         page = window.pages
-        view = QListView(page)
+        view = type("TimedList", (QListView,), {"paintEvent": timed_list})(page)
         view.setModel(Rows(view))
         view.setItemDelegate(Painted(view))
         view.setUniformItemSizes(True)
@@ -144,7 +168,7 @@ def child(rounds):
             if what == "open":
                 widget.setGeometry(rect)
                 meter.tag = kind
-                motion.open_overlay(widget, kind, widget.shadow_name)
+                motion.open_overlay(widget, kind, widget.shadow_name, on_done=lambda: setattr(meter, "tag", None))
                 wait = motion.duration(motion.HOW[kind][0]) + 120
             elif what == "close":
                 meter.tag = None
@@ -153,6 +177,9 @@ def child(rounds):
             elif what == "toast":
                 meter.tag = "toast"
                 window.toasts.show("進撃の巨人 → Soon · #26, after the first 25 files", undo=lambda: None)
+                op = motion.opening_of(window.toasts.card)
+                if op is not None:
+                    op.on_done = lambda: setattr(meter, "tag", None)
                 wait = motion.duration("toast-rise") + 120
             else:
                 meter.tag = None
@@ -221,7 +248,8 @@ def verdict(r):
             "steps_over_1_6ms": b.get("steps_over_desktop"), "steps_over_4ms": b.get("steps_over_4ms"),
             "idle_wakes": b.get("idle_wakes"), "late": r.get("hud", {}).get("late", {}).get("causes"),
             "late_max_ms": r.get("hud", {}).get("late", {}).get("max_ms"),
-            "clock": r.get("hud", {}).get("anim"), "desktop_targets_met": ok}
+            "clock": r.get("hud", {}).get("anim"), "spans": r.get("hud", {}).get("spans"),
+            "desktop_targets_met": ok}
 
 
 def main():

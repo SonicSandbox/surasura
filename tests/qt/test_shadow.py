@@ -44,21 +44,24 @@ def _expected(name, rect, x, y):
     return a * shadow.profile(x + 0.5, box.left(), box.right(), s) * shadow.profile(y + 0.5, box.top(), box.bottom(), s)
 
 
-def test_a_large_shadow_matches_the_closed_form_at_its_edge_one_sigma_out_its_middle_and_beyond():
+@pytest.mark.parametrize("dpr", [1.0, 1.25, 1.5, 1.75, 2.0])
+def test_a_large_shadow_matches_the_closed_form_at_its_edge_one_sigma_out_its_middle_and_beyond(dpr):
+    # review A10: at every scale the window is checked at, read in device pixels
     name, rect = "menu", (300, 300, 400, 300)          # 0 24px 50px -16px #000: σ 25
-    img = _draw(name, rect)
+    img = _draw(name, rect, dpr=dpr)
     box = shadow.shape(QRectF(*rect), name)
     s = shadow.sigma(name)
-    mid_x = int(box.center().x())
-    top = int(box.top())
-    for y, want in ((top, 0.5), (top - int(s), 0.159), (int(box.center().y()), 1.0)):
-        got = img.pixelColor(mid_x, y).alpha()
-        assert abs(got - _expected(name, rect, mid_x, y)) <= 3, (y, got)
-        assert abs(got - 255 * want) <= 6, (y, got, want)
-    assert img.pixelColor(mid_x, int(top - 3.2 * s)).alpha() == 0       # beyond 3σ: nothing drawn
-    # a corner, off both edges: the product of the two profiles
-    cx, cy = int(box.left() - s / 2), int(box.top() - s / 2)
-    assert abs(img.pixelColor(cx, cy).alpha() - _expected(name, rect, cx, cy)) <= 3
+
+    def at(x, y):                                       # a logical point's device pixel, and its closed form there
+        px, py = int(x * dpr), int(y * dpr)
+        return img.pixelColor(px, py).alpha(), _expected(name, rect, (px + 0.5) / dpr - 0.5, (py + 0.5) / dpr - 0.5)
+    for y, want in ((box.top(), 0.5), (box.top() - s, 0.159), (box.center().y(), 1.0)):
+        got, exact = at(box.center().x(), y)
+        assert abs(got - exact) <= 3, (dpr, y, got, exact)
+        assert abs(got - 255 * want) <= 8, (dpr, y, got, want)
+    assert at(box.center().x(), box.top() - 3.2 * s)[0] == 0           # beyond 3σ: nothing drawn
+    got, exact = at(box.left() - s / 2, box.top() - s / 2)           # a corner: the product of the two profiles
+    assert abs(got - exact) <= 3, (dpr, got, exact)
 
 
 def test_a_small_box_is_fainter_and_drawn_at_its_own_height():

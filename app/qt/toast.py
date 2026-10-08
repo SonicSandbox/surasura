@@ -124,6 +124,9 @@ class ToastHost(QObject):
     def show(self, message, undo=None, buttons=(), long=False):
         """Show `message` (plain text). `undo`: a callback for *Undo*; `buttons`: [(label, tooltip, callback)] — each
         click runs its callback and closes the toast. `long`: 12 s (the Anki offer), else 6.5 s."""
+        opening = motion.opening_of(self.card)
+        if opening is not None:
+            opening.finish()                          # replaced mid-rise: the old one lands, the new one shows in place
         actions = []
         if undo is not None:
             actions.append((strings.TOAST_UNDO, strings.TOAST_UNDO_TIP, self._closing(undo)))
@@ -144,6 +147,7 @@ class ToastHost(QObject):
         self.alive = False
         self.life.stop()
         self.card.hide()
+        self.card._callbacks = []                     # a late click on a closed toast does nothing
 
     def set_dragging(self, on):
         """A drag started (True) or ended (False): hidden meanwhile; back after it, unanimated, if still alive."""

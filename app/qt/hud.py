@@ -35,6 +35,7 @@ from app.qt import strings, style
 
 STEP_BUDGET_MS = 4.0
 TICK_MS = 2
+LONG_MS = 20.0                                   # a stretch this long is explained (row D)
 
 
 def p95(values):
@@ -70,6 +71,8 @@ class Hud(QObject):
         self._pending_work = None
         self.tag = None                            # a measuring script's label for the frames now (e.g. "pop")
         self.tagged = {}
+        self.long = []                             # row D: each stretch over LONG_MS — its messages and sampled stacks
+        self.sampler = None
 
     # --- on / off ----------------------------------------------------------------------------------------------- #
     def start(self):
@@ -84,6 +87,8 @@ class Hud(QObject):
         self.counters = Counters()
         self.gcwatch = GcWatch().install()
         self.messages = MessageLog().install()
+        if os.environ.get("SURASURA_HUD_SAMPLE") == "1":
+            self.sampler = StallSampler(self).start()
         from app.qt import motion
         motion.clock().on_frame_done = self._clock_frame
         self._ticker.start()
@@ -116,6 +121,8 @@ class Hud(QObject):
             self.gcwatch.remove()
         if getattr(self, "messages", None) is not None:
             self.messages.remove()
+        if self.sampler is not None:
+            self.sampler.stop()
         from app.qt import motion
         if motion.clock().on_frame_done == self._clock_frame:
             motion.clock().on_frame_done = None
@@ -176,6 +183,13 @@ class Hud(QObject):
             if ms > STEP_BUDGET_MS:
                 self.over.append((round(ms, 2), now))
             del self.steps[:-5000]
+            if ms > LONG_MS and len(self.long) < 60:
+                rec = {"at_ms": round((started - self.ignore_before) * 1000), "ms": round(ms, 1)}
+                if getattr(self, "messages", None) is not None:
+                    rec["messages"] = self.messages.within(started, now)
+                if self.sampler is not None:
+                    rec["stacks"] = self.sampler.take(started)
+                self.long.append(rec)
 
     def eventFilter(self, obj, event):
         if obj is self.window and event.type() == QEvent.Type.UpdateRequest:
@@ -236,6 +250,7 @@ class Hud(QObject):
                        "frame_max_ms": round(max(self.anim_frames, default=0.0), 2)}
         out["tagged"] = {k: {"n": len(v), "p95_ms": round(p95(v), 2), "max_ms": round(max(v), 2)}
                          for k, v in self.tagged.items()}
+        out["long"] = self.long[-30:]
         return out
 
     def _show(self):
@@ -259,7 +274,7 @@ def wanted(argv=None):
 # For every tick of the 2 ms timer that comes over 4 ms late, what the process and the machine did in that gap: Python's
 # collector (any thread), the GUI thread's and the other threads' CPU, the machine's idle share, the timer resolution;
 # `classify` names a cause from those counters alone (a pure function: tests feed it made-up records).
-CAUSES = ("gc", "step", "gui-busy", "gil", "machine", "timer", "unknown")
+CAUSES = ("gc", "step", "gui-busy", "other-thread", "machine", "timer", "unexplained", "unknown")
 
 
 def classify(rec):
@@ -268,9 +283,11 @@ def classify(rec):
     - step: the tick waited behind other work in the same stretch (a long step, already counted as one).
     - gui-busy: the GUI thread itself ran for at least half the lateness outside a counted stretch (Windows calling
       into the window while it waits: sent messages, hooks, accessibility).
-    - gil: another thread of this process ran for at least half of it (it held Python's lock).
+    - other-thread: another thread of this process ran for at least half of it (Python's lock is then likely, not
+      proven: a thread in Qt's own code holds no Python lock).
     - machine: nothing here ran and the machine's processors were mostly busy (another program had them).
-    - timer: nothing ran anywhere much: the wake itself came late."""
+    - timer: nothing ran and Windows' timer is coarse enough to explain it (its resolution ≥ half the lateness).
+    - unexplained: nothing here ran, the machine was idle and the timer was fine."""
     late = rec.get("late_ms") or 0.0
     half = 0.5 * late
     if (rec.get("gc_ms") or 0.0) >= half:
@@ -283,17 +300,20 @@ def classify(rec):
     if gui >= half:
         return "gui-busy"
     if other >= half:
-        return "gil"
+        return "other-thread"
     if idle is not None and idle < 0.25:
         return "machine"
-    return "timer"
+    res = rec.get("res_ms")
+    if res is not None and res >= half:
+        return "timer"
+    return "unexplained"
 
 
 class Counters:
     """Windows' counters, read on the GUI thread: its own CPU cycles, the process's, the processors' idle cycles, the
     timer resolution. Off Windows (or if a call fails) every reading is None — never an error (05 §5.11)."""
 
-    def __init__(self):
+    def __init__(self, calibrate=True):
         self.ok = False
         self.mhz = None
         if sys.platform != "win32":
@@ -319,13 +339,25 @@ class Counters:
             nt.NtQueryTimerResolution.argtypes = [ctypes.POINTER(wintypes.ULONG)] * 3
             self._nt = nt
             self._res = [wintypes.ULONG() for _ in range(3)]
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
-                self.mhz = float(winreg.QueryValueEx(key, "~MHz")[0])   # the cycle counters tick at about this rate
             self._c = ctypes.c_uint64()
+            # cycles per µs, measured (never a nominal MHz); a probe's marks measure it after the first frame instead
+            self.mhz = self._calibrate() if calibrate else None
             self.ok = True
         except Exception:
             self.ok = False
+
+    def _calibrate(self, ms=4.0):
+        """The GUI thread's cycle counter against the clock over a short busy spin (the HUD's start only)."""
+        try:
+            k, c = self._k, self._c
+            k.QueryThreadCycleTime(self._thread, self._byref(c))
+            c0, t0 = c.value, time.perf_counter()
+            while (time.perf_counter() - t0) * 1000 < ms:
+                pass
+            k.QueryThreadCycleTime(self._thread, self._byref(c))
+            return (c.value - c0) / ((time.perf_counter() - t0) * 1e6) or None
+        except Exception:
+            return None
 
     def sample(self):
         """(perf_counter s, GUI-thread cycles, process cycles, idle cycles of all processors, timer resolution ms) or
@@ -411,6 +443,48 @@ class MessageLog(QAbstractNativeEventFilter):
         return out
 
 
+class StallSampler:
+    """`SURASURA_HUD_SAMPLE=1` (row D, diagnosis only): a watching thread that, while a GUI-thread stretch has run over
+    LONG_MS, reads the GUI thread's Python stack every few ms. A stack ending in `app.exec()` means Qt's own C++ held
+    the time (painting, layout, fonts), not a Python callback. It takes Python's lock to look, so it is never on by
+    default."""
+
+    def __init__(self, hud, every_ms=4):
+        self.hud = hud
+        self.every = every_ms / 1000.0
+        self.ident = threading.get_ident()
+        self.samples = {}                        # stretch start -> [stack]
+        self._stop = threading.Event()
+
+    def start(self):
+        threading.Thread(target=self._run, name="hud-stall-sampler", daemon=True).start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+    def _run(self):
+        import traceback
+        while not self._stop.wait(self.every):
+            start = self.hud._awake_at
+            if start is None or (time.perf_counter() - start) * 1000 < LONG_MS:
+                continue
+            frame = sys._current_frames().get(self.ident)
+            if frame is None:
+                continue
+            lines = [f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
+                     for f in traceback.extract_stack(frame, limit=12)]
+            got = self.samples.setdefault(start, [])
+            if len(got) < 6 and (not got or got[-1] != lines):
+                got.append(lines)
+            if len(self.samples) > 200:
+                for k in sorted(self.samples)[:100]:
+                    self.samples.pop(k, None)
+
+    def take(self, start):
+        return self.samples.pop(start, [])
+
+
 class GcWatch:
     """Python's collector: each collection's start, end, generation and thread (gc.callbacks)."""
 
@@ -462,7 +536,7 @@ def mark(name):
     if not os.environ.get("SURASURA_SHELL_PROBE"):
         return
     if not _mark_counters:
-        _mark_counters.append(Counters())
+        _mark_counters.append(Counters(calibrate=False))   # no spin inside the start it measures
     MARKS.append((name, time.perf_counter(), _process_age_ms(), _mark_counters[0].sample(), _faults_and_reads()))
 
 
@@ -503,10 +577,12 @@ def phases(marks=None, first_frame_ms=None):
         if age0 is not None:
             q_age = age0 - (perf0 - qt_package.IMPORTED_AT) * 1000.0
             out.append({"phase": "python+app_entry", "ms": round(q_age, 1)})
-            out.append({"phase": f"imports→{name0}", "ms": round(age0 - q_age, 1)})
+            out.append({"phase": f"imports-to-{name0}", "ms": round(age0 - q_age, 1)})
     except Exception:
         pass
     counters = _mark_counters[0] if _mark_counters else None
+    if counters is not None and counters.ok and not counters.mhz:
+        counters.mhz = counters._calibrate()   # now, after the start
     for (_n0, _p0, a0, c0, f0), (n1, _p1, a1, c1, f1) in zip(marks, marks[1:]):
         row = {"phase": n1, "ms": round(a1 - a0, 1) if a0 is not None and a1 is not None else None}
         if counters is not None and c0 is not None and c1 is not None:
@@ -606,11 +682,17 @@ class Probe(QObject):
         self.window, self.path, self.hud = window, path, hud
         self.idle = float(os.environ.get("SURASURA_SHELL_PROBE_IDLE", "10")) if idle is None else idle
         self.result = {"first_frame_ms": None}
+        if hud is not None:
+            # nothing counts until the first paint (row D: the window's first show is start-up, and its ~80 ms stretch
+            # had read as a late tick after it — W2.1's and the kit's "late max")
+            hud.ignore_before = float("inf")
         window.first_frame.connect(self._first_frame)
 
     def _first_frame(self):
         mark("flushed")
         self.result["first_frame_ms"] = _process_age_ms()
+        if os.environ.get("SURASURA_GC_FREEZE") == "1":  # row D's A/B (measure_shell.py --gc-freeze): measuring only
+            gc.freeze()
         self.result["first_frame_wall"] = time.perf_counter()
         if self.hud is not None:
             self.hud.ignore_before = time.perf_counter()

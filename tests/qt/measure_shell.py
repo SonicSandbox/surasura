@@ -33,7 +33,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False, piled=False):
+def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False, piled=False, sample=False):
     root = tempfile.mkdtemp(prefix="w21-measure-")
     probe = os.path.join(root, "probe.json")
     import shutil                                   # the test root is also where bundled resources are read: the mark
@@ -54,6 +54,9 @@ def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False, piled=False):
     env.pop("SURASURA_SHELL_PROBE_PILED", None)
     if piled:
         env["SURASURA_SHELL_PROBE_PILED"] = "1"
+    env.pop("SURASURA_HUD_SAMPLE", None)
+    if sample:
+        env["SURASURA_HUD_SAMPLE"] = "1"
     if fontengine:
         env["QT_QPA_PLATFORM"] = "windows:fontengine=" + fontengine
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "app_entry.py")], cwd=root, env=env,
@@ -67,6 +70,10 @@ def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False, piled=False):
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--idle", type=float, default=5.0)
@@ -76,10 +83,11 @@ def main():
     ap.add_argument("--phases", action="store_true", help="where the first frame went, phase by phase (M2.1 row D)")
     ap.add_argument("--gc-freeze", action="store_true", help="A/B: freeze the collector's start-up objects")
     ap.add_argument("--piled", action="store_true", help="A/B: W2.1's burst, 500 timers set at once")
+    ap.add_argument("--sample", action="store_true", help="row D: sample the GUI thread's stack in long stretches")
     args = ap.parse_args()
     runs = []
     for _ in range(args.runs):
-        r = one_run(args.idle, args.hud, args.busy, args.fontengine, args.gc_freeze, args.piled)
+        r = one_run(args.idle, args.hud, args.busy, args.fontengine, args.gc_freeze, args.piled, args.sample)
         print(json.dumps(r), flush=True)
         if args.phases and r.get("phases"):
             print("  " + " · ".join(f"{p['phase']} {p['ms']}" + (f" (cpu {p['cpu_ms']}, idle {p['idle_share']}, "

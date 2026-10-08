@@ -24,7 +24,7 @@ from collections import deque
 from PyQt6 import sip
 from PyQt6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt,
                           QTimer, pyqtSignal)
-from PyQt6.QtGui import QKeyEvent, QMouseEvent, QPainter
+from PyQt6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app import theme
@@ -99,6 +99,7 @@ def windows_animations():
 class Mode(QObject):
     """Whether motion is reduced: the user's `app_motion` and, for *Follow*, Windows' own switch."""
     changed = pyqtSignal(bool)                  # reduced, after a change
+    setting_changed = pyqtSignal()
 
     def __init__(self, reader=windows_animations, parent=None):
         super().__init__(parent)
@@ -115,8 +116,10 @@ class Mode(QObject):
         return not self.system
 
     def set_setting(self, value):
-        before = self.reduced
+        before, was = self.reduced, self.setting
         self.setting = value if value in SETTINGS else "follow"
+        if self.setting != was:
+            self.setting_changed.emit()
         if self.reduced != before:
             self.changed.emit(self.reduced)
 
@@ -160,12 +163,15 @@ class SettingChangeFilter(QAbstractNativeEventFilter):
 # --- the clock ------------------------------------------------------------------------------------------------------ #
 class Animation:
     """One thing moving on the clock: `on_frame(value)` each frame (value 0..1, eased; a loop's raw phase), then
-    `on_done()` once. `finish()` jumps it to its end; `stop()` ends it where it is (no more callbacks)."""
-    __slots__ = ("clock", "start", "duration", "on_frame", "on_done", "curve", "repeat", "owner", "kind", "alive")
+    `on_done()` once. `finish()` jumps it to its end; `stop()` ends it where it is (no more frames). **Every** end that
+    isn't a finish — `stop()`, its owner hidden or deleted, an error in a frame — calls `on_end()` once, so whoever
+    started it can always tidy up (M2.1 review A1)."""
+    __slots__ = ("clock", "start", "duration", "on_frame", "on_done", "on_end", "curve", "repeat", "owner", "kind",
+                 "alive")
 
-    def __init__(self, clock, duration_ms, on_frame, on_done, curve_, repeat, owner, kind):
+    def __init__(self, clock, duration_ms, on_frame, on_done, curve_, repeat, owner, kind, on_end=None):
         self.clock, self.duration, self.on_frame, self.on_done = clock, max(1.0, float(duration_ms)), on_frame, on_done
-        self.curve, self.repeat, self.owner, self.kind = curve_, repeat, owner, kind
+        self.curve, self.repeat, self.owner, self.kind, self.on_end = curve_, repeat, owner, kind, on_end
         self.start = 0.0
         self.alive = True
 
@@ -248,11 +254,13 @@ class Clock(QObject):
         return [a for a in self._anims if a.alive]
 
     # --- animating ------------------------------------------------------------------------------------------ #
-    def animate(self, duration_ms, on_frame, on_done=None, kind="move", points=None, owner=None, repeat=False):
+    def animate(self, duration_ms, on_frame, on_done=None, kind="move", points=None, owner=None, repeat=False,
+                on_end=None):
         """Start one animation. `kind`: "move" (slides, rises, rows: reduced motion jumps it), "fade" (kept when
         reduced, at most FAST), "loop" (with `repeat`: a spinner; never started when reduced or frozen). `points`: the
-        bezier (default the mock's EASE; "linear"). `owner`: a widget whose deletion or hiding ends it. -> Animation."""
-        anim = Animation(self, duration_ms, on_frame, on_done, curve(points), repeat, owner, kind)
+        bezier (default the mock's EASE; "linear"). `owner`: a widget whose deletion or hiding ends it (checked each
+        frame). `on_end`: called once on any end but a finish. -> Animation."""
+        anim = Animation(self, duration_ms, on_frame, on_done, curve(points), repeat, owner, kind, on_end)
         reduced = self.mode.reduced
         if freeze.frozen() or (reduced and kind != "fade"):
             anim.alive = False
@@ -265,11 +273,6 @@ class Clock(QObject):
             anim.duration = min(anim.duration, float(theme.FAST))
         anim.start = self.now()
         self._anims.append(anim)
-        if owner is not None:
-            try:
-                owner.destroyed.connect(lambda *_a, a=anim: self._end(a, finish=False))
-            except (TypeError, RuntimeError):
-                pass
         if self._test_now is None:
             self._start_timer()
         return anim
@@ -287,7 +290,18 @@ class Clock(QObject):
             self._call(anim, anim.on_frame, 1.0)
             if anim.on_done is not None:
                 self._call(anim, anim.on_done)
+        else:
+            self._ended(anim)
         self._prune()
+
+    def _ended(self, anim):
+        """An end that isn't a finish: tell its starter once (never twice, never from inside its own error)."""
+        fn, anim.on_end = anim.on_end, None
+        if fn is not None:
+            try:
+                fn()
+            except Exception:
+                sys.excepthook(*sys.exc_info())
 
     def _prune(self):
         self._anims = [a for a in self._anims if a.alive]
@@ -300,6 +314,7 @@ class Clock(QObject):
         except Exception:
             anim.alive = False                     # a broken animation stops; the others go on; the error is reported
             sys.excepthook(*sys.exc_info())
+            self._ended(anim)
 
     @staticmethod
     def _gone(owner):
@@ -326,6 +341,7 @@ class Clock(QObject):
                     continue
                 if self._gone(anim.owner):
                     anim.alive = False
+                    self._ended(anim)
                     continue
                 p = (now - anim.start) / anim.duration
                 if anim.repeat:
@@ -360,15 +376,32 @@ def clock():
 
 
 def install_mode_filter(app=None):
-    """Listen for Windows' animation switch (Follow Windows). -> the filter (kept by the app)."""
+    """Follow Windows' animation switch: Windows' `WM_SETTINGCHANGE` for it (a native filter, on Windows and only while
+    the setting is *Follow*: it sees every message, ~8 µs each — P-motion), and a fresh read whenever the app comes back
+    to the front (the switch lives in Windows' Settings, so the app is in the back when it changes). Idempotent."""
     app = app or QApplication.instance()
-    existing = getattr(app, "_surasura_motion_filter", None)
-    if existing is not None:
-        return existing
-    f = SettingChangeFilter()
-    app.installNativeEventFilter(f)
-    app._surasura_motion_filter = f
-    return f
+    state = getattr(app, "_surasura_motion", None)
+    if state is None:
+        state = {"filter": SettingChangeFilter(), "installed": False}
+        app._surasura_motion = state
+        app.applicationStateChanged.connect(
+            lambda st: clock().mode.system_changed() if st == Qt.ApplicationState.ApplicationActive else None)
+        clock().mode.changed.connect(lambda _r: _sync_mode_filter(app))
+        clock().mode.setting_changed.connect(lambda: _sync_mode_filter(app))
+    _sync_mode_filter(app)
+    return state["filter"]
+
+
+def _sync_mode_filter(app):
+    state = getattr(app, "_surasura_motion", None)
+    if state is None:
+        return
+    want = sys.platform == "win32" and clock().mode.setting == "follow"
+    if want and not state["installed"]:
+        app.installNativeEventFilter(state["filter"])
+    elif not want and state["installed"]:
+        app.removeNativeEventFilter(state["filter"])
+    state["installed"] = want
 
 
 # --- the overlay animator ------------------------------------------------------------------------------------------- #
@@ -385,51 +418,48 @@ HOW = {
 
 
 class _Ghost(QWidget):
-    """The opening overlay's stand-in: its snapshot (and shadow), moved, with painted opacity. It takes the mouse, so a
-    press during the opening reaches what the user saw under the pointer (`OverlayOpening.forward`)."""
+    """The opening overlay's stand-in: one picture — its shadow and its snapshot, composed once — moved, with painted
+    opacity (CSS's opacity: the shadow never shows through the card as it fades). Transparent to the mouse: a press
+    goes where Qt sends it, and the opening's input filter takes those that land on the overlay (`OverlayOpening`)."""
 
     def __init__(self, opening, parent):
         super().__init__(parent)
         self.opening = opening
         self.setObjectName("motionGhost")
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.offset = QPoint(0, 0)
         self.opacity = 0.0
 
     def content_rect(self):
+        """Where the overlay itself is inside the picture now (the ghost's coordinates)."""
         o = self.opening
-        return QRect(o.target_in_ghost.topLeft() + self.offset, o.target_in_ghost.size())
+        return QRect(self.offset + o.target_in_picture, o.widget_size)
 
     def paintEvent(self, _event):
-        o = self.opening
         p = QPainter(self)
         p.setOpacity(self.opacity)
-        r = self.content_rect()
-        if o.shadow_name:
-            from app.qt import shadow
-            shadow.paint(p, QRectF(r), o.shadow_name)
-        p.drawPixmap(r.topLeft(), o.pixmap)
+        p.drawPixmap(self.offset, self.opening.picture)   # self.offset: the picture's top-left now
         p.end()
-
-    def mousePressEvent(self, event):
-        self.opening.forward(self, event)
-
-    def mouseReleaseEvent(self, event):
-        self.opening.forward(self, event)
 
 
 class OverlayOpening:
-    """One overlay opening (made by `open_overlay`): the snapshot moved and faded in on the clock, then the overlay."""
+    """One overlay opening (made by `open_overlay`): the composed picture moved and faded in on the clock, then the
+    overlay itself. **Every end tears it down** — finished, cancelled (a close), or cut short (its ghost hidden with a
+    page, an error in a frame): nothing of it stays installed, and the overlay can open again."""
 
     def __init__(self, widget, how, shadow_name=None, on_done=None, focus=False):
         self.widget, self.how, self.shadow_name, self.on_done, self.focus = widget, how, shadow_name, on_done, focus
         self.ghost = None
         self.anim = None
         self.pixmap = None
-        self.target_in_ghost = QRect()
+        self.picture = None
+        self.target_in_picture = QPoint()
+        self.widget_size = None
         self._finisher = None
         self._pressed = None                       # the child a forwarded press went to (its release follows it)
         self.ended = False
+        self.cancelled = False
 
     def start(self):
         w = self.widget
@@ -445,7 +475,8 @@ class OverlayOpening:
             w.setWindowOpacity(0.0)
             w.move(self._final_pos + self.delta)
             w.show()
-            self.anim = clock().animate(duration(dur_name), self._frame_window, self._done, kind=kind, owner=w)
+            self.anim = clock().animate(duration(dur_name), self._frame_window, self._done, kind=kind, owner=w,
+                                        on_end=self._cut_short)
             return self
         w.ensurePolished()
         if w.layout() is not None:
@@ -453,39 +484,58 @@ class OverlayOpening:
         self.pixmap = w.grab()                     # once: the overlay as it will look, at the device-pixel ratio
         final = w.geometry()
         m = _shadow_margins(self.shadow_name)
-        area = final.adjusted(-m[0], -m[1], m[2], m[3])
-        area = area.united(area.translated(self.delta))
+        area = final.adjusted(-m[0], -m[1], m[2], m[3])          # the picture: the overlay and its shadow
+        self.target_in_picture = final.topLeft() - area.topLeft()
+        self.widget_size = final.size()
+        self._size = area.size()
+        self.picture = self._compose(area.size())
+        travel = area.united(area.translated(self.delta))        # the ghost: everywhere the picture goes
         self.ghost = _Ghost(self, w.parentWidget())
-        self.ghost.setGeometry(area)
-        self.target_in_ghost = QRect(final.topLeft() - area.topLeft(), final.size())
-        self.ghost.offset = QPoint(self.delta)
+        self.ghost.setGeometry(travel)
+        self._origin = area.topLeft() - travel.topLeft()         # the picture's place at the end
+        self.ghost.offset = self._offset(0.0)
         self.ghost.opacity = 0.0
-        self._last = self._painted(self.ghost.content_rect())
+        self._last = self._painted()
         self.ghost.show()
         self.ghost.raise_()
         self._finisher = _InputFinisher(self)
         QApplication.instance().installEventFilter(self._finisher)
-        self.anim = clock().animate(duration(dur_name), self._frame, self._done, kind=kind, owner=self.ghost)
+        self.anim = clock().animate(duration(dur_name), self._frame, self._done, kind=kind, owner=self.ghost,
+                                    on_end=self._cut_short)
         return self
 
-    def _offset(self, v, _widget=None):
-        """Where the snapshot is at value `v`: whole logical pixels, drawn with no smooth transform, so Qt places it on
-        the nearest device pixel and never resamples it (crisp at 125 / 150 / 175 %)."""
-        return QPoint(round(self.delta.x() * (1.0 - v)), round(self.delta.y() * (1.0 - v)))
+    def _compose(self, size):
+        """The shadow and the snapshot in one picture, at the snapshot's device-pixel ratio."""
+        dpr = self.pixmap.devicePixelRatio() or 1.0
+        pic = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
+        pic.setDevicePixelRatio(dpr)
+        pic.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pic)
+        r = QRect(self.target_in_picture, self.widget_size)
+        if self.shadow_name:
+            from app.qt import shadow
+            shadow.paint(p, QRectF(r), self.shadow_name)
+        p.drawPixmap(r.topLeft(), self.pixmap)
+        p.end()
+        return pic
 
-    def _painted(self, content):
-        """The ghost's painted rect for a content rect: the snapshot and its shadow."""
-        m = _shadow_margins(self.shadow_name)
-        return content.adjusted(-m[0], -m[1], m[2], m[3])
+    def _painted(self):
+        """The ghost's rect where the picture is now (its own coordinates)."""
+        return QRect(self.ghost.offset, self._size)
 
     # --- frames ------------------------------------------------------------------------------------------------ #
+    def _offset(self, v, _widget=None):
+        """Where the picture is at value `v`: whole logical pixels, drawn with no smooth transform, so Qt places it on
+        the nearest device pixel and never resamples it."""
+        return self._origin + QPoint(round(self.delta.x() * (1.0 - v)), round(self.delta.y() * (1.0 - v)))
+
     def _frame(self, v):
         g = self.ghost
         if g is None or sip.isdeleted(g):
             return
         g.opacity = v
-        g.offset = self._offset(v, g)
-        now = self._painted(g.content_rect())
+        g.offset = self._offset(v)
+        now = self._painted()
         g.update(now.united(self._last))           # only what this frame changes: the last and the next place
         self._last = now
 
@@ -501,6 +551,11 @@ class OverlayOpening:
         if self.on_done is not None:
             self.on_done()
 
+    def _cut_short(self):
+        """Ended without finishing (its ghost hidden with its page, stopped, an error in a frame): the overlay is shown
+        as asked, without the motion — unless it was cancelled (closed)."""
+        self._teardown(show=not self.cancelled)
+
     def finish(self):
         """Jump to the end now (a key or a press came during the opening)."""
         if self.anim is not None and self.anim.alive:
@@ -508,8 +563,9 @@ class OverlayOpening:
 
     def cancel(self):
         """The overlay was closed during its opening: no ghost, nothing shown."""
-        if self.anim is not None:
-            self.anim.stop()
+        self.cancelled = True
+        if self.anim is not None and self.anim.alive:
+            self.anim.stop()                       # -> _cut_short -> torn down, not shown
         self._teardown(show=False)
 
     def _widget_gone(self, *_args):
@@ -519,67 +575,115 @@ class OverlayOpening:
         if self.ended:
             return
         self.ended = True
-        if self._finisher is not None:
-            QApplication.instance().removeEventFilter(self._finisher)
-            self._finisher = None
+        if self._finisher is not None and self._pressed is None:
+            self._finisher.remove()                # (kept while a forwarded press waits for its release)
         if self.ghost is not None and not sip.isdeleted(self.ghost):
             self.ghost.hide()
             self.ghost.deleteLater()
         self.ghost = None
         w = self.widget
-        _OPENINGS.pop(id(w), None)
-        if not show or sip.isdeleted(w):
+        if _OPENINGS.get(id(w)) is self:
+            _OPENINGS.pop(id(w), None)
+        if sip.isdeleted(w):
             return
+        try:
+            w.destroyed.disconnect(self._widget_gone)
+        except (TypeError, RuntimeError):
+            pass
         if w.isWindow():
-            w.setWindowOpacity(1.0)
+            w.setWindowOpacity(1.0)                # cancelled or not, the window keeps no half-faded state
             w.move(self._final_pos)
+            if not show:
+                w.hide()
             return
-        w.show()
-        w.raise_()
-        if self.focus:                             # only when the opener asks (a menu, the tray): never a toast
-            w.setFocus(Qt.FocusReason.PopupFocusReason)
+        if not show:
+            return
+        _show(w, self.focus)
 
-    def forward(self, ghost, event):
-        """A press (or its release) on the ghost: finish the opening, then hand it to what the user saw under the
-        pointer, in the overlay at its place (the press is never lost to the window beneath)."""
+    def press(self, event):
+        """A press (left, right, middle) on the opening overlay: finish it, then give the press to what the user saw
+        under the pointer, at its place now. -> True when it was taken."""
+        g = self.ghost
+        if g is None or sip.isdeleted(g):
+            return False
+        local_in_ghost = g.mapFromGlobal(event.globalPosition().toPoint())
+        content = g.content_rect()
+        if not content.contains(local_in_ghost):
+            self.finish()                          # a press elsewhere: the opening ends, the press goes on as routed
+            return False
+        local = local_in_ghost - content.topLeft()
+        self._pressed = w_pending = self.widget    # (set before the finish: the filter stays for the release)
+        self.finish()
         w = self.widget
-        if event.type() == QEvent.Type.MouseButtonPress:
-            local = event.position().toPoint() - ghost.content_rect().topLeft()
-            self.finish()
-            if sip.isdeleted(w) or not w.isVisible() or not w.rect().contains(local):
-                return
-            target = w.childAt(local) or w
-            self._pressed = target
-            pos = target.mapFrom(w, local) if target is not w else local
-        else:
-            target = self._pressed
+        if sip.isdeleted(w) or not w.isVisible():
             self._pressed = None
-            if target is None or sip.isdeleted(target):
-                return
-            pos = target.mapFromGlobal(event.globalPosition().toPoint())
+            if self._finisher is not None:
+                self._finisher.remove()
+            return True
+        target = w.childAt(local) or w_pending
+        self._pressed = target
+        pos = target.mapFrom(w, local) if target is not w else local
         QApplication.sendEvent(target, QMouseEvent(event.type(), QPointF(pos), QPointF(target.mapToGlobal(pos)),
                                                    event.button(), event.buttons(), event.modifiers()))
+        return True
+
+    def release(self, event):
+        """The release that follows a forwarded press goes to the same control. -> True when it was taken."""
+        target, self._pressed = self._pressed, None
+        if self._finisher is not None:
+            self._finisher.remove()
+        if target is None or sip.isdeleted(target):
+            return False
+        pos = target.mapFromGlobal(event.globalPosition().toPoint())
+        QApplication.sendEvent(target, QMouseEvent(event.type(), QPointF(pos), QPointF(target.mapToGlobal(pos)),
+                                                   event.button(), event.buttons(), event.modifiers()))
+        return True
+
+
+_FORWARDED = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton)
 
 
 class _InputFinisher(QObject):
-    """During an opening: a key or a press anywhere finishes it first. A key goes on to whatever has the focus after
-    it (the overlay, usually); a press goes on as Qt routed it (a press on the ghost is the ghost's to forward)."""
+    """App-wide, only while an overlay opens (and until a press it forwarded is released): a key finishes the opening
+    and goes on to whatever has the focus after it; a press on the opening overlay is the overlay's (it finishes, then
+    reaches the control under the pointer); any other press (the mouse's Back button too) finishes it and goes on as
+    Qt routed it, so Esc's router sees the overlay open."""
 
     def __init__(self, opening):
         super().__init__()
         self.opening = opening
+        self.installed = True
+
+    def remove(self):
+        if self.installed:
+            self.installed = False
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            if self.opening._finisher is self:
+                self.opening._finisher = None
 
     def eventFilter(self, obj, event):
         et = event.type()
+        o = self.opening
+        live = o.anim is not None and o.anim.alive
+        if et == QEvent.Type.MouseButtonRelease and o._pressed is not None:
+            return o.release(event)
+        if not live:
+            if o._pressed is None:
+                self.remove()                      # nothing left to do: never a filter left behind
+            return False
         if et == QEvent.Type.KeyPress:
-            self.opening.finish()
+            o.finish()
             target = QApplication.focusWidget()
             if target is not None and target is not obj:
                 QApplication.postEvent(target, QKeyEvent(et, event.key(), event.modifiers(), event.text(),
                                                          event.isAutoRepeat(), event.count()))
                 return True
-        elif et == QEvent.Type.MouseButtonPress and obj is not self.opening.ghost:
-            self.opening.finish()
+        elif et == QEvent.Type.MouseButtonPress:
+            if event.button() in _FORWARDED:
+                return o.press(event)
+            o.finish()
         return False
 
 
@@ -593,17 +697,25 @@ def _shadow_margins(name):
     return shadow.margins(name)
 
 
+def _show(widget, focus):
+    """An overlay at its place: shown, on top, and given the keyboard only when its opener asked."""
+    widget.show()
+    widget.raise_()
+    if focus:                                      # only when the opener asks (a menu, the tray): never a toast
+        widget.setFocus(Qt.FocusReason.PopupFocusReason)
+
+
 def open_overlay(widget, how="pop", shadow_name=None, on_done=None, focus=False):
     """Show `widget` — an in-window overlay laid out at its place, or a top-level popup — with its opening motion,
     **only if it isn't shown already**: an overlay on screen never animates again (a refresh holds still, R4b-5). `how`:
     a key of HOW. `shadow_name`: its shadow (`theme.SHADOWS`), drawn under the snapshot. `focus`: it takes the keyboard
-    when it shows (a menu, the tray; never a toast or search results). Close it with `hide()` /
-    `close()` on an `Overlay` (or `cancel_opening`): a close during the opening drops it. -> the opening, or None when
-    nothing animates (frozen, already shown)."""
-    if widget.isVisible() or id(widget) in _OPENINGS:
+    when it shows (a menu, the tray; never a toast or search results). Close it with `hide()` / `close()` on an
+    `Overlay` (or `cancel_opening`): a close during the opening drops it. -> the opening, or None when nothing animates
+    (frozen, already shown)."""
+    if widget.isVisible() or opening_of(widget) is not None:
         return None
     if freeze.frozen():
-        widget.show()
+        _show(widget, focus)                       # as at an opening's end: the same stacking and focus
         if on_done is not None:
             on_done()
         return None
@@ -619,7 +731,7 @@ def open_overlay(widget, how="pop", shadow_name=None, on_done=None, focus=False)
 def opening_of(widget):
     """The opening under way for `widget`, or None."""
     o = _OPENINGS.get(id(widget))
-    return o if o is not None and o.widget is widget else None
+    return o if o is not None and o.widget is widget and not o.ended else None
 
 
 def cancel_opening(widget):
@@ -650,6 +762,9 @@ class Overlay(QWidget):
 
 
 # --- the spinner ---------------------------------------------------------------------------------------------------- #
+GLOW = 10                                       # px the pulse's glow reaches (theme.SHADOWS["bar-dot"]: blur 10)
+
+
 class Spinner(QWidget):
     """A painted busy mark. `pulse`: the bottom bar's dot (7 px, the accent with its glow; its opacity 1 → .35 → 1 in
     1.4 s, ease-in-out: the mock's `.foot .dot.busy`); `spin`: an arc turning once in 1.2 s, linear (the mining mark).
@@ -665,7 +780,7 @@ class Spinner(QWidget):
         self.phase = 0.0
         self._anim = None
         self._watched = None
-        side = size or (self.DOT + 2 * 6 if kind == "pulse" else 14)
+        side = size or (self.DOT + 2 * GLOW if kind == "pulse" else 14)   # room for the glow (2σ: its last 2 %)
         self.setFixedSize(side, side)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         clock().mode.changed.connect(self._sync)

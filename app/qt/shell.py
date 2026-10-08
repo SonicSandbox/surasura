@@ -264,7 +264,8 @@ class EscapeRouter(QObject):
                 win.close()
                 return True
             return False                                  # a menu closes itself on Esc
-        open_now = [o for o in self.overlays if o.isVisible() and o.window() is win]
+        open_now = [o for o in self.overlays if (o.isVisible() or motion.opening_of(o) is not None)
+                    and o.window() is win]                # an overlay still opening is open (M2.1 review A3)
         if open_now:
             for overlay in open_now:
                 overlay.close()
@@ -411,7 +412,7 @@ class ShellWindow(QMainWindow):
         footer = style.styled(QWidget(), "footer")
         self.footer = footer
         row = QHBoxLayout(footer)
-        row.setContentsMargins(16, 0, 16, 0)
+        row.setContentsMargins(16 - motion.GLOW, 0, 16, 0)   # the dot at 16 px, as the mock: its glow needs room
         row.setSpacing(10)
         self.bar_dot = motion.Spinner("pulse", footer)    # M2.1: the mock's pulsing dot while a job runs (G1.5-2)
         self.bar_dot.setObjectName("bardot")
@@ -552,9 +553,6 @@ class ShellWindow(QMainWindow):
             QTimer.singleShot(0, self._frame_flushed)         # after this frame is flushed
 
     def _frame_flushed(self):
-        if os.environ.get("SURASURA_GC_FREEZE") == "1":  # row D's A/B (measure_shell.py --gc-freeze)
-            import gc
-            gc.freeze()
         self.first_frame.emit()
 
     def showEvent(self, event):
@@ -661,7 +659,7 @@ def main(argv=None):
     """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked."""
     argv = list(sys.argv if argv is None else argv)
     hud.mark("main")                                  # the probe's phases (M2.1 row D); nothing when it is off
-    from app.qt import hud as hud_module, single as single_module
+    from app.qt import single as single_module
     app = QApplication.instance() or QApplication(argv[:1])
     hud.mark("qapp")
     prepare_process()
@@ -675,10 +673,10 @@ def main(argv=None):
     connect_instance(window, instance)
     probe_file = os.environ.get("SURASURA_SHELL_PROBE")
     # (measuring, the HUD keeps its overlay off: the overlay's own first show would be timed as the window's)
-    hud = hud_module.Hud(window, overlay=not probe_file).start() if hud_module.wanted(argv) else None
+    meter = hud.Hud(window, overlay=not probe_file).start() if hud.wanted(argv) else None
     if probe_file:                                    # tests/qt/measure_shell.py: shown without taking the keyboard
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        hud_module.Probe(window, probe_file, hud=hud)
+        hud.Probe(window, probe_file, hud=meter)
     window.show_first()
     hud.mark("shown")
     try:

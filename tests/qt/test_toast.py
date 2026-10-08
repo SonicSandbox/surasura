@@ -86,8 +86,8 @@ def test_undo_calls_back_once_and_closes(clock, stage):
     assert b.isVisible() and b.text() == strings.TOAST_UNDO and b.toolTip()
     b.click()
     assert undone == [1] and not host.card.isVisible() and not host.alive
-    b.click()                                              # hidden: a second click can't reach it
-    assert undone == [1] or not b.isVisible()
+    b.click()                                              # a late click on the closed toast does nothing
+    assert undone == [1]
 
 
 def test_extra_buttons_run_and_close_and_every_button_has_a_tooltip(clock, stage):
@@ -115,6 +115,15 @@ def test_its_time_is_6_5_s_or_12_s_on_a_timer_of_its_own_and_ends_it(clock, stag
     assert not clock.running                               # resting: the toast wakes no clock
     host.life.timeout.emit()
     assert not host.card.isVisible() and not host.alive
+
+
+def test_a_toast_replaced_while_rising_lands_and_shows_the_new_message(clock, stage):
+    # review A6: no old snapshot rising under the new text
+    host = toast.ToastHost(stage)
+    host.show(JA)
+    clock.advance(60)
+    host.show(ZH)
+    assert motion.opening_of(host.card) is None and host.card.isVisible() and host.card.message == ZH
 
 
 def test_a_new_toast_replaces_the_shown_one_without_rising_again(clock, stage):
@@ -162,7 +171,7 @@ def test_a_toast_never_takes_the_keyboard(clock, stage):
     host = toast.ToastHost(stage)
     host.show(JA, undo=lambda: None)
     _up(host, clock)
-    assert QApplication.focusWidget() is before
+    assert stage.focusWidget() is field and before in (field, None)
     assert host.card.focusPolicy() == Qt.FocusPolicy.NoFocus
 
 

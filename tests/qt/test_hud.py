@@ -116,11 +116,12 @@ def test_classify_names_each_cause_from_its_counters():
     assert hud.classify(_rec(gc_ms=7.0)) == "gc"                       # the collector held the lock for most of it
     assert hud.classify(_rec(in_stretch_ms=9.0)) == "step"             # it waited behind work in the same stretch
     assert hud.classify(_rec(gui_ms=8.0)) == "gui-busy"                # the GUI thread ran outside a counted stretch
-    assert hud.classify(_rec(other_ms=9.0)) == "gil"                   # another thread ran
+    assert hud.classify(_rec(other_ms=9.0)) == "other-thread"          # another thread of ours ran (not proven: GIL)
     assert hud.classify(_rec(idle_share=0.1)) == "machine"             # nothing here ran; the processors were busy
-    assert hud.classify(_rec()) == "timer"                             # nothing ran anywhere: the wake came late
+    assert hud.classify(_rec(res_ms=15.6)) == "timer"                  # Windows' timer coarse enough to explain it
+    assert hud.classify(_rec(res_ms=1.0)) == "unexplained"             # nothing ran, idle machine, a fine timer
     assert hud.classify(_rec(gui_ms=None, other_ms=None)) == "unknown"  # no counters on this system
-    assert set(hud.CAUSES) >= {"gc", "step", "gui-busy", "gil", "machine", "timer", "unknown"}
+    assert set(hud.CAUSES) >= {"gc", "step", "gui-busy", "other-thread", "machine", "timer", "unexplained"}
 
 
 def test_off_windows_the_counters_answer_none_never_an_error(monkeypatch):
@@ -173,7 +174,7 @@ def test_the_phases_are_consecutive_and_sum_to_the_last_mark(monkeypatch):
     rows = hud.phases(marks)
     named = [r for r in rows if r["phase"] in ("qapp", "window", "flushed")]
     assert [r["ms"] for r in named] == [20.0, 80.0, 50.0] and named[0]["faults"] == 50
-    first = [r for r in rows if r["phase"] in ("python+app_entry", "imports→main")]
+    first = [r for r in rows if r["phase"] in ("python+app_entry", "imports-to-main")]
     assert len(first) == 2 and round(sum(r["ms"] for r in first), 1) == 300.0
     assert round(sum(r["ms"] for r in rows), 1) == 450.0               # they add up to the first frame
 
@@ -196,3 +197,25 @@ def test_a_motion_frame_is_counted_with_the_paint_that_follows_it(qapp, window):
         assert r["anim"]["frames"] >= 1 and r["anim"]["ticks"] == 1 and r["tagged"]["pop"]["n"] >= 1
     finally:
         meter.stop()
+
+
+def test_the_probe_start_runs_main_and_writes_every_phase(qapp, monkeypatch, tmp_path):
+    # M2.1 row D: shell.main() with the probe on — the measuring scripts' way in — marks each phase of the start and
+    # writes them (a name clash in main() once crashed every measured start before its first frame).
+    import json
+    import sys
+    probe = tmp_path / "probe.json"
+    monkeypatch.setenv("SURASURA_SHELL_PROBE", str(probe))
+    monkeypatch.setenv("SURASURA_SHELL_PROBE_IDLE", "0.3")
+    monkeypatch.delenv("SURASURA_HUD", raising=False)
+    hook, interval = sys.excepthook, sys.getswitchinterval()
+    hud.MARKS.clear()
+    try:
+        code = shell.main(["probe-test"])
+    finally:
+        sys.excepthook, _ = hook, sys.setswitchinterval(interval)
+        hud.MARKS.clear()
+    data = json.loads(probe.read_text(encoding="utf-8"))
+    names = [p["phase"] for p in data["phases"]]
+    assert code == 0 and data["first_frame_ms"] is not None
+    assert {"qapp", "claimed", "services", "look", "window", "shown", "painted", "flushed"} <= set(names)

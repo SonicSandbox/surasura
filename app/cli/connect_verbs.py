@@ -362,8 +362,10 @@ ROUNDS = 20         # reads of the log a Connect makes before it leaves the rest
 
 
 def connect_args(parser):
+    import argparse
     parser.add_argument("--consume-only", action="store_true",
                         help="read the library's new placements into Connect's queue, then exit (no mining)")
+    parser.add_argument("--looks", type=int, default=None, help=argparse.SUPPRESS)    # tests and drills: at most N
 
 
 def connect(args):
@@ -381,7 +383,7 @@ def connect(args):
     if not languages:
         raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
     if not args.consume_only:
-        return _loop(loaded, languages)
+        return _loop(loaded, languages, getattr(args, "looks", None))
     out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []} for lang in languages}
     rounds = 0
     while rounds < ROUNDS:
@@ -419,7 +421,7 @@ def connect(args):
     return {"languages": out, "rounds": rounds}
 
 
-def _loop(loaded, languages):
+def _loop(loaded, languages, looks=None):
     """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
     it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
     from app import batch_gc, locks
@@ -431,7 +433,7 @@ def _loop(loaded, languages):
         return {"skipped": "already running"}
     try:
         with held:
-            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages)
+            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
     except TooNew as e:
         raise CliError("needs-you", str(e), ask="Update Surasura") from None
     if not summary.get("stopped") and any(_pending(lang) for lang in languages):

@@ -99,7 +99,11 @@ def test_the_stand_in_mirrors_the_stores_reads():
     assert not h.changed_since(tok)
     seed.library.commit(items=[{"id": now[0][0], "ord": -1.0}], order=True)
     assert h.changed_since(tok)
-    assert h.pinned() == [] and isinstance(h.cards_of([now[0][0]]), dict)
+    pinned = h.pinned()                                   # the seed's one Finished show studying its cards first
+    assert pinned and all(p[2] == "graduated" for p in pinned)
+    assert [p[3] for p in pinned] == sorted(p[3] for p in pinned)
+    cards = h.cards_of([r["id"] for r in seed.items])
+    assert cards and all(isinstance(v, list) and v for v in cards.values())
     with pytest.raises(ValueError):
         h.ordered("HighPriority")
 

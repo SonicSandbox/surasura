@@ -15,6 +15,7 @@ Deterministic for a given (files, language, rng seed).
 """
 import os
 import random
+import re
 from collections import namedtuple
 
 from tests.fixtures import standin_store
@@ -291,15 +292,17 @@ class _Mining:
         return tuple(self.ids)
 
 
+_SEASON = re.compile(r" 第\d+[期季]$")             # the season suffix the builder adds to a reused title
+
+
 def leak_check(seed):
     """-> a list of problems (empty: clean). Every work's title is the vocabulary's (a season suffix allowed), every
     item's file name starts with its work's title or is one of the seed's video / chapter names, and no path leaves the
     seed's tiers."""
     vocab = seed.vocabulary
     problems = []
-    season = _vocab(seed.language)["season"].format(n="")
     for w in seed.works:
-        base = w["title"].split(" " + season)[0] if season in w["title"] else w["title"]
+        base = _SEASON.sub("", w["title"])
         if base not in vocab:
             problems.append(f"work title not invented: {w['title']!r}")
     titles = {w["id"]: w["title"] for w in seed.works}

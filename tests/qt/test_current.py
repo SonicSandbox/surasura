@@ -203,12 +203,13 @@ def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_access
     seed, win = seeded(size=(1100, 760))
     long_title = "海鳴りの聞こえる町で暮らす二人 Season 2 — 特別編 🌊 and a very long English subtitle that goes on"
     lst = current(win)
-    row = lst.model().entries[1][1]
+    i = next(k for k, e in enumerate(lst.model().entries) if e[0] == rows.ROW and e[1].media != "youtube")
+    row = lst.model().entries[i][1]
     seed.library.commit(works=[{"id": row.work_id, "title": long_title}])
-    assert wait_until(lambda: lst.model().entries[1][1].title == long_title)
+    assert wait_until(lambda: lst.model().entries[i][1].title == long_title)
     QApplication.processEvents()
-    idx = lst.model().index(1, 0)
-    title = part(lst, 1, "title")[0]
+    idx = lst.model().index(i, 0)
+    title = part(lst, i, "title")[0]
     assert title[2].startswith(long_title)
     assert lst.model().data(idx, Qt.ItemDataRole.AccessibleTextRole).startswith(long_title)
     cols = lst.delegate.columns(lst.visualRect(idx))

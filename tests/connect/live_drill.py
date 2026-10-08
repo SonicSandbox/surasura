@@ -58,6 +58,8 @@ def main():
     a = _args()
     if a.profile != "DevTest" or not a.deck.endswith("DevTest"):
         refuse("the drill runs on the DevTest profile and deck only")
+    if a.steps and set(a.steps.split(",")) & {"scan", "resort", "pins"}:
+        return drill_p22(a)
     if a.steps:
         return drill_p14(a)
     if a.deck != "DevTest" or not a.anki_miner or not a.subtitle or not a.video or not (a.am_home or a.own):
@@ -275,6 +277,147 @@ def drill_p14(a):
         print(f"deleted {len(ids)}; left with the tag: {len(left)}")
         if left:
             failed.append(f"notes left with {tag}: {left}")
+    if failed:
+        print("FAILED: " + " | ".join(failed))
+        return 1
+    print("DRILL PASSED")
+    return 0
+
+
+def drill_p22(a):
+    """P2.2 row 2.2.9, `--steps scan,resort,pins`: DevTest only, holding Anki's machine lock (standing go, 2026-10-07).
+
+      * `scan` (reads only): the deck's notes whose `MiscInfo` is in Anki Miner's source shape, and whether the pin
+        step's rule names each one's own file (`pins.names_of("<folder>/<name>.ja.srt")` holds the source) — 03 §8's
+        measurement on real labels;
+      * `resort`: five tagged test notes, then `surasura-cli resort` (in-process, a scratch root, the Connect and
+        re-plan previews on): the deck spaced out once, a second run that writes nothing new, the first run put back
+        from its run snapshot and every card of the deck checked back in place;
+      * `pins`: with `connect.PINS` on for this drill only and one stand-in pin naming the test notes' source, a resort
+        puts their cards first; put back the same way.
+    Then the tagged notes are deleted and counted back to 0."""
+    import io
+    import json
+    import shutil
+    root = os.path.abspath(a.root.replace(".p13-drill", ".p22-drill"))
+    if os.path.isdir(root):
+        shutil.rmtree(root)
+    os.makedirs(os.path.join(root, "results"))
+    os.makedirs(os.path.join(root, "User Files", "ja"))
+    os.environ["SURASURA_TEST_ROOT"] = root
+    os.environ["APPDATA"] = os.path.join(root, "appdata")
+    os.environ.pop("SURASURA_NO_ANKI_SYNC", None)
+    sys.path.insert(0, REPO)
+    from app import anki_connect
+    from app.cli import __main__ as cli
+    from modules.junban import connect, pins, reposition
+
+    steps = {s.strip() for s in a.steps.split(",") if s.strip()}
+    active = anki_connect.invoke("getActiveProfile", a.url, timeout=10)
+    if active != a.profile:
+        refuse(f'Anki is open on profile "{active}", not {a.profile}')
+    failed = []
+
+    if "scan" in steps:
+        ids = anki_connect.find_notes(a.url, f'deck:"{a.deck}"')
+        shaped, named, separated = 0, 0, 0
+        for note in anki_connect.invoke("notesInfo", a.url, notes=ids) or []:
+            misc = ((note.get("fields") or {}).get("MiscInfo") or {}).get("value")
+            source = pins.source_of(misc)
+            if source is None:
+                continue
+            shaped += 1
+            label = str(misc).rsplit(" @ ", 1)[0]
+            if " — " in label:
+                separated += 1
+                folder, name = label.split(" — ", 1)
+                named += source in pins.names_of(f"{folder}/{name}.ja.srt")
+        print(f"scan: {len(ids)} notes in {a.deck} · {shaped} with an Anki Miner source · {separated} as "
+              f"'<folder> — <name>' · {named} named by the rule from their own folder and name")
+        if separated and named != separated:
+            failed.append(f"scan: the rule named {named} of {separated}")
+
+    if not steps & {"resort", "pins"}:
+        return _verdict(failed)
+    shutil.copy2(os.path.join(REPO, "tests", "Test Resources", "ja", "expected_output.csv"),
+                 os.path.join(root, "results", "priority_learning_list.csv"))
+    settings = {"target_language": "ja", "anki_connect_url": a.url, "connect_enabled": True, "enable_junban": True,
+                "junban_scope": "deck", "junban_deck": a.deck, "junban_order": "priority", "junban_unlisted": "back",
+                "junban_replan_preview": True}
+    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False)
+    from app import analyzer, settings_manager
+    loaded = dict(settings_manager.load_settings(), target_language="ja")
+    analyzer.journey_is_current = lambda argv, lang: True     # the scratch root's list is current by fiat (no Generate)
+
+    def resort():
+        out = io.StringIO()
+        code = cli.main(["resort", "--lang", "ja", "--wait", "60"], out=out)
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    tag = f"surasura::connect::test-{run_id}"
+    source = f"P22 drill — episode {run_id} @ 00:00:01"
+    before = {c["cardId"]: (c["due"], c["queue"]) for c in
+              anki_connect.cards_info(a.url, anki_connect.find_cards(a.url, f'deck:"{a.deck}" is:new'))}
+    lapis = anki_connect.invoke("modelFieldNames", a.url, modelName="Lapis") or []
+    notes = [{"deckName": a.deck, "modelName": "Lapis", "tags": [tag],
+              "fields": {lapis[0]: word, **({"Sentence": sentence} if "Sentence" in lapis else {}),
+                         **({"MiscInfo": source} if "MiscInfo" in lapis else {})},
+              "options": {"allowDuplicate": True}} for word, sentence in P14_NOTES]
+    ids = []
+    try:
+        with anki_connect.writer("P2.2 drill: test notes", wait=60):
+            made = [n for n in anki_connect.invoke("addNotes", a.url, notes=notes) or [] if isinstance(n, int)]
+        mine = set(anki_connect.find_cards(a.url, f'"tag:{tag}"'))
+        print(f"Anki {active} · deck {a.deck} · {tag} · {len(made)} test notes, {len(mine)} cards")
+        if "resort" in steps:
+            code, first = resort()
+            print(f"resort: exit {code} · {first.get('numbering')} · moved {first.get('moves')} · undo {first.get('undo')}")
+            code2, second = resort()
+            print(f"resort again: exit {code2} · {second.get('numbering')} · moved {second.get('moves')}")
+            if code or first.get("numbering") not in ("full", "delta") or code2 or second.get("moves"):
+                failed.append(f"resort: {first} / {second}")
+            for undo_id in filter(None, (second.get("undo"), first.get("undo"))):
+                put = reposition.restore_run(loaded, undo_id, wait=60)
+                print(f"  restore {undo_id}: {put['message']}")
+                if not put["ok"]:
+                    failed.append(f"restore {undo_id}: {put['problems']}")
+        if "pins" in steps and "MiscInfo" in lapis:
+            connect.PINS = True
+            pins.read = lambda language: ([(1, f"P22 drill/episode {run_id}.ja.srt", "2026-10-07T00:00:00Z")], {},
+                                          {})
+            code, line = resort()
+            order = sorted((c for c in anki_connect.cards_info(a.url, list(before) + sorted(mine)) if c["queue"] == 0),
+                           key=lambda c: (c["due"], c["cardId"]))
+            first_ids = {c["cardId"] for c in order[:len(mine)]}
+            print(f"pins: exit {code} · pinned first {line.get('pinned_first')} · the test cards lead: "
+                  f"{first_ids == mine}")
+            if code or line.get("pinned_first") != len(mine) or first_ids != mine:
+                failed.append(f"pins: {line}")
+            if line.get("undo"):
+                put = reposition.restore_run(loaded, line["undo"], wait=60)
+                print(f"  restore {line['undo']}: {put['message']}")
+                if not put["ok"]:
+                    failed.append(f"pins restore: {put['problems']}")
+        now = {c["cardId"]: (c["due"], c["queue"]) for c in anki_connect.cards_info(a.url, list(before))}
+        moved = sorted(c for c, was in before.items() if now.get(c) != was)
+        print(f"the deck's own {len(before)} new cards: {len(moved)} not back where they were")
+        if moved:
+            failed.append(f"cards not back: {moved[:10]}")
+    finally:
+        with anki_connect.writer("P2.2 drill teardown", wait=60):
+            ids = anki_connect.find_notes(a.url, f'"tag:{tag}"')
+            if ids:
+                anki_connect.invoke("deleteNotes", a.url, notes=ids)
+        left = anki_connect.find_notes(a.url, f'"tag:{tag}"')
+        print(f"deleted {len(ids)}; left with the tag: {len(left)}")
+        if left:
+            failed.append(f"notes left with {tag}: {left}")
+    return _verdict(failed)
+
+
+def _verdict(failed):
     if failed:
         print("FAILED: " + " | ".join(failed))
         return 1

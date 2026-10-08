@@ -100,6 +100,7 @@ def test_the_quick_verbs_load_nothing_heavy_and_no_tokenizer(generated, argv):
 
 
 @pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"],
+                                  ["resort"], ["resort", "--dry-run"],
                                   ["backfill", "--tag", "surasura::connect::job-1"],
                                   ["backfill", "--notes", "1789712000000", "--dry-run"]])
 def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated, argv):

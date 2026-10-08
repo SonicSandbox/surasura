@@ -232,6 +232,12 @@ class Ledger:
                               [(language, str(w), str(r)) for w, r in keys])
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"listed:{language}", signature))
 
+    def forget_list(self, language):
+        """Connect switched on again: the next look records the list and mines nothing (inside the caller's
+        transaction)."""
+        self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
+
     def owe_resort(self, language):
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"resort_due:{language}", _now()))
 

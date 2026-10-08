@@ -644,12 +644,12 @@ def _numbering(stats, job):
     return str(((stats or {}).get("numbering") or {}).get("kind") or "dense").lower()
 
 
-def _junban_dry_run(lang, junban_settings, reposition, job=None):
+def _junban_dry_run(lang, junban_settings, reposition, job=None, unattended=False):
     from app import anki_connect
     if not anki_connect.probe(reposition._url(junban_settings)).get("ok"):
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     try:
-        writes, stats = reposition.dry_run(junban_settings, job=job)
+        writes, stats = reposition.dry_run(junban_settings, job=job, unattended=unattended)
     except reposition.AnkiError as e:
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     if stats.get("problems"):
@@ -746,7 +746,17 @@ def resort(args):
         return dict(idle, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
     job = numbering_job(junban_settings)
     if args.dry_run:
-        answer, stats = _junban_dry_run(lang, junban_settings, reposition, job)
+        # What the run would do, no more: its guards and its list check first, then planned as that unattended run
+        why = auto.blocked(junban_settings, window=False)
+        if why is not None:
+            return dict(idle, skipped=why)
+        from app import analyzer, run_args
+        argv = run_args.analyzer_args(junban_settings, lang, headless=True)
+        current = analyzer.journey_is_current(argv, lang)
+        if current is False or (current is None and reposition.list_is_stale(
+                lang, reposition.order_csv_path(junban_settings))):
+            return dict(idle, skipped="the list is out of date: Generate first")
+        answer, stats = _junban_dry_run(lang, junban_settings, reposition, job, unattended=True)
     else:
         answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
     if answer.get("skipped"):
@@ -952,13 +962,24 @@ def _level_job(job, lang):
     None. Never creates the ledger."""
     if not job or not str(job).isdigit():
         return None
+    import sqlite3
     from app.connect import ledger
     if not os.path.exists(ledger.path()):
         return None
-    with ledger.Ledger() as book:
-        row = book.job_by_id(int(job))
+    try:            # read only: a pick never writes (nor upgrades) Connect's ledger
+        conn = sqlite3.connect(f"file:{ledger.path()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            cur = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job),))
+            row = cur.fetchone()
+            row = None if row is None else dict(zip([d[0] for d in cur.description], row))
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        # A job named by its ledger id that can't be read is never mined as the whole list: refused
+        raise CliError("failed", f"Connect's ledger can't be read for job {job}: {e}") from None
     if row is None or row.get("kind") != ledger.LEVEL or row.get("language") != lang:
         return None
+    row["words"] = ledger._words(row.get("words"))
     return row
 
 

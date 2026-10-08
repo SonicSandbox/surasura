@@ -415,11 +415,15 @@ def _level(store, lang, loaded):
     newly listed words of the episodes already mined, top 20 first, as `level` jobs; None when there's no list of it
     to read (another language's, none yet, a Generate writing it)."""
     from app.connect import level
-    read = _read_list(lang)
-    if read is None:
-        return None
-    signature, listed, file_words = read
-    return level.check(store, lang, listed, signature, file_words, mode=loaded.get("connect_mine_words") or "list")
+    try:
+        read = _read_list(lang)
+        if read is None:
+            return None
+        signature, listed, file_words = read
+        return level.check(store, lang, listed, signature, file_words,
+                           mode=loaded.get("connect_mine_words") or "list")
+    except Exception as e:      # a busy ledger, a store that can't be read: this look is skipped, never the run
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 def _read_list(lang):
@@ -431,7 +435,9 @@ def _read_list(lang):
             holds = verbs._results_language()
             folder = verbs._results_dir()
             path = os.path.join(folder, verbs.PRIORITY_CSV)
-            if (holds and holds != lang) or not os.path.exists(path):
+            # Only a list known to be this language's: one whose language can't be told is no look (another
+            # language's list recorded as this one's would make its whole list "newly listed" at its next Generate)
+            if holds != lang or not os.path.exists(path):
                 return None
             signature = verbs.read_run_stamp_here()
             if signature is None:

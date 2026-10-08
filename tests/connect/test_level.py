@@ -4,8 +4,8 @@ Sonic (HC-N38): "If they increase the level that means all of the content that t
 So it would need to mine more things but exclude what they've already mined." What each test holds still:
 
   * only the newly listed words, only for episodes already mined, the top 20 first — never an episode not mined yet
-    (its first mining reads the list as it is), never beyond the top 20 in 2.x (E23), never a word an episode higher
-    up already takes (one card per word), never a word Connect already made (N15);
+    (its first mining reads the list as it is), never beyond the top 20 in 2.x (E23), never a word Connect already
+    made for any episode (N15, G1.3-4); one card per word is the pick's at each job's turn, the top job first;
   * the first look and a lowered level mine nothing; a look at the same list does nothing; a batch in flight makes
     the look wait instead of losing the raise;
   * a level job's pick sends Anki Miner only its words.
@@ -54,20 +54,22 @@ def _level_jobs():
         return [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
 
 
-def test_a_raise_mines_only_the_new_words_of_mined_episodes_top_first_one_card_per_word():
+def test_a_raise_mines_only_the_new_words_of_mined_episodes_top_first():
     (a, fa), (b, fb), (d, fd) = _line()
-    _mine(a, d)                                   # b is in the line but not mined yet: its job waits
+    _mine(a, d)                                   # b is in the line but not mined yet: its own first job waits
     with Ledger() as ledger:
         ledger.queue("ja", b, "user", None)
     files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
     assert _check(BEFORE, "run-1", files)["first"] is True          # the first look records, mines nothing
     assert _level_jobs() == []
     out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [a, d]
+    assert out["new"] == 3 and out["queued"] == [a, d]                # the top first; b's first mining reads the list
     jobs = {j["item_id"]: j for j in _level_jobs()}
+    assert [j["item_id"] for j in _level_jobs()] == [a, d]            # queued, so run, in the line's order
     assert jobs[a]["words"] == [("眼鏡", "メガネ")]                    # 散歩 was listed before: never again
-    # 眼鏡 went to a (higher); 老婆 is b's (its first mining, once it runs, reads the raised list) — d gets only 駐車場
-    assert jobs[d]["words"] == [("駐車場", "チュウシャジョウ")]
+    # d names all its new words: 眼鏡 too — a's job runs first, and d's pick skips a word with a card by then, so a
+    # word is never held back from d by a job above it that ends up making no card
+    assert jobs[d]["words"] == sorted([("眼鏡", "メガネ"), ("老婆", "ロウバ"), ("駐車場", "チュウシャジョウ")])
     assert all(j["state"] == "queued" and j["source"] == "level" for j in jobs.values())
     with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "a moved list owes a re-sort"
@@ -109,8 +111,8 @@ def test_beyond_the_top_20_nothing_in_2_x():
     assert _check(RAISED, "run-2", files)["queued"] == [], "E23: the already-mined episodes below the line wait for 3.0"
 
 
-def test_words_connect_already_made_for_the_episode_are_skipped():
-    (a, fa), _b, _d = _line()
+def test_a_word_connect_already_made_for_any_episode_is_skipped():
+    (a, fa), (b, _fb), _d = _line()
     _mine(a)
     with c.store() as s:
         from app import library_store
@@ -118,10 +120,20 @@ def test_words_connect_already_made_for_the_episode_are_skipped():
             for sql in library_store.ADDED_TABLES_SQL:
                 s.conn.execute(sql)
             s.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES (?, ?, ?, ?, ?)",
-                           (a, "眼鏡", "[1789712000001]", "2026-10-06T10:00:00Z", "job-7"))
+                           (b, "眼鏡", "[1789712000001]", "2026-10-06T10:00:00Z", "job-7"))   # made for b, card deleted
     _check(BEFORE, "run-1", {fa: ["眼鏡", "老婆"]})
     _check(RAISED, "run-2", {fa: ["眼鏡", "老婆"]})
     assert [j["words"] for j in _level_jobs()] == [[("老婆", "ロウバ")]], "G1.3-4: a word made once is never made again"
+
+
+def test_switched_on_again_the_next_look_is_a_first_look():
+    """✅ G1.1-2: what the list gained while Connect was off is never mined — the preview's switch forgets the list."""
+    (a, fa), _b, _d = _line()
+    _mine(a)
+    _check(BEFORE, "run-1", {fa: ["眼鏡"]})
+    level.forget("ja")
+    out = _check(RAISED, "run-2", {fa: ["眼鏡"]})
+    assert out["first"] is True and out["queued"] == [] and _level_jobs() == []
 
 
 def test_a_batch_in_flight_makes_the_look_wait_and_the_raise_is_not_lost():
@@ -213,6 +225,30 @@ def _last_generate(words, signature, file_words):
         json.dump({"settings": {"language": "ja"}}, f)
     with open(os.path.join(results, "file_words.json"), "w", encoding="utf-8") as f:
         json.dump(file_words, f, ensure_ascii=False)
+
+
+def test_a_list_whose_language_cant_be_told_is_no_look():
+    """No `library_frequency.json` (a results folder from before, or half written): the look waits for a list it can
+    tell is this language's — never another language's list recorded as this one's."""
+    (a, fa), _b, _d = _line()
+    _mine(a)
+    _last_generate(BEFORE, "run-1", {fa: ["眼鏡"]})
+    os.remove(os.path.join(h.root(), "results", "library_frequency.json"))
+    code, line = h.call("connect", "--consume-only")
+    assert code == 0 and line["languages"]["ja"]["level"] is None, line
+    with Ledger() as ledger:
+        assert ledger.recorded_list("ja") == (None, None)
+
+
+def test_a_look_that_fails_never_stops_the_run(monkeypatch):
+    (a, fa), _b, _d = _line()
+    _last_generate(BEFORE, "run-1", {fa: ["眼鏡"]})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the ledger is locked")
+    monkeypatch.setattr(level, "check", broken)
+    code, line = h.call("connect", "--consume-only")
+    assert code == 0 and "the ledger is locked" in line["languages"]["ja"]["level"]["error"], line
 
 
 def test_connect_looks_once_a_run_and_queues_the_level_jobs():

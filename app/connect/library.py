@@ -63,12 +63,13 @@ def mined_at(store, item_id):
     return None if item is None else item.get("mined_at")
 
 
-def made_words(store, item_id):
-    """The words Connect made cards for, for one item (N15, the store's `made_words`; G1.3-4: never made again
-    automatically) — empty while the table holds nothing (2.x: written from P2.4 on)."""
+def made_words_all(store):
+    """Every word Connect has made a card for in this language's library, whatever the episode (N15, the store's
+    `made_words`, keyed by the lemma; G1.3-4: a word made once is never made again automatically, even when its card
+    was deleted) — empty while the table holds nothing (2.x: written from P2.4 on)."""
     if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'").fetchone():
         return set()
-    return {row[0] for row in store.conn.execute("SELECT word FROM made_words WHERE item_id = ?", (item_id,))}
+    return {row[0] for row in store.conn.execute("SELECT DISTINCT word FROM made_words")}
 
 
 def pairings(store):

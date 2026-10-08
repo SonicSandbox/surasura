@@ -30,8 +30,8 @@ def deck(monkeypatch):
         cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険", "眼鏡", "老婆"])
         fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"),
                                   **{k: over.pop(k) for k in ("reviewing", "offline") if k in over})
-        saved = rep._settings(junban_order="content", enable_junban=True, junban_later_tag=True,
-                              junban_later_flag=True, junban_later_suspend=True, **over)
+        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True, junban_later_tag=True,
+                                        junban_later_flag=True, junban_later_suspend=True), **over})
         saved.pop("junban_url", None)
         h.write_settings(**{**saved, "anki_connect_url": FAKE_URL})
         return fake, rep._patched(fake)
@@ -134,3 +134,19 @@ def test_junban_removed_it_says_so():
     h.write_settings(enable_junban=True, connect_enabled=True)
     code, line = _cli_without_modules("resort")
     assert code == 0 and line["skipped"] == "junban absent" and line["moves"] == 0, line
+
+
+def test_a_dry_run_says_what_the_run_would_do_no_more(deck, monkeypatch):
+    """A dry run asks the run's own questions first: 順 switched off, or a list older than the library, and the run
+    wouldn't move a card — so neither does the dry run's answer (adversarial review #6)."""
+    fake, patched = deck(connect_enabled=True, enable_junban=False)
+    with patched:
+        code, line = h.call("resort", "--dry-run")
+    assert code == 0 and line["skipped"] == "順 is switched off" and line["moves"] == 0, line
+    from app import analyzer
+    fake, patched = deck(connect_enabled=True)
+    monkeypatch.setattr(analyzer, "journey_is_current", lambda argv, lang: False)
+    with patched:
+        code, line = h.call("resort", "--dry-run")
+    assert code == 0 and line["skipped"] == "the list is out of date: Generate first", line
+    assert fake.requests == []

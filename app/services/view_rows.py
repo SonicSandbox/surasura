@@ -484,11 +484,14 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
     hit = cache.rows.get(key)
     same_items = hit is not None and hit[1] is work and len(hit[2]) == len(piece) and \
         all(a is b for a, b in zip(hit[2], piece))
-    if same_items and cache.same_global and hit[0][2] == hero:
+    # a title nobody typed: its guess is read from all its files, so another piece's new file can move it (reviews
+    # 2026-10-08, the Haiku pass: a cached row kept the old type)
+    guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+    if same_items and cache.same_global and hit[0][2] == hero and hit[0][-1] == guess:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
         sig = (len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
-               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece))
+               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess)
     if same_items and hit[0] == sig:
         row = hit[3]
         if row.index != index:
@@ -528,8 +531,8 @@ def _current_items(items):
 
 class _Guesses:
     """A title's media type when nobody said (`media_type_guess` over **all** its files, as L3.1's store guesses it):
-    the files counted by title in one pass, once a build, and only when a row that isn't cached asks. A cached row keeps
-    its guess until its own files or its title change (another piece's new file type rarely moves a title's)."""
+    the files counted by title in one pass, once a build, when a title nobody typed is on the list. A cached row keeps
+    the guess in its key, so another piece's new file that moves the title's type rebuilds it."""
 
     def __init__(self, items):
         self.items = items

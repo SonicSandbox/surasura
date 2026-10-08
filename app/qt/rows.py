@@ -776,7 +776,7 @@ class RowDelegate(QStyledItemDelegate):
     def _paint_open_row(self, p, kind, row, body, hovered, focused, dpr, lines):
         """An open row: its head painted once into a pixmap (its top corners rounded on the list's ground), the ground
         under it filled, then the episodes (each its own pixmap) — opening a row costs a relayout and blits, and a
-        repaint of an open row draws nothing afresh."""
+        repaint of an open row draws no text or cover afresh (its ground, rule and focus ring are a few strokes)."""
         h = round(theme.SIZES["row"] * fz())
         local = QRect(0, 0, body.width(), body.height())
         pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
@@ -814,7 +814,10 @@ class RowDelegate(QStyledItemDelegate):
             cache = self._sprites[name]
             for key in list(cache):
                 ident = key[1]
-                keep = (ident[0] in eps) if name == "ep" else                     (ident in keys or (isinstance(ident, tuple) and ident[0] in keys))
+                if name == "ep":
+                    keep = ident[0] in eps
+                else:
+                    keep = ident in keys or (isinstance(ident, tuple) and ident[0] in keys)
                 if not keep:
                     self._bytes[name] -= _size(cache.pop(key)[1])
 
@@ -836,8 +839,8 @@ class RowDelegate(QStyledItemDelegate):
         return self.warmed != before
 
     def warm_episodes(self, index, dpr, room):
-        """Paint ahead the episodes a closed row would show if it opened now (those within `room` px under its head),
-        one a call: -> whether it drew one. The pointer resting on a row warms them, so opening it blits (bench 9: every
+        """Paint ahead the episodes a closed row would show if it opened now (those starting within `room` px of its
+        top), one a call: -> whether it drew one. The pointer resting on a row warms them, so opening it blits (bench 9: every
         toggle was one long step, its episodes' first paints)."""
         entry = index.data(ROW_ROLE)
         if entry is None or entry[0] not in (HERO, ROW):
@@ -852,10 +855,12 @@ class RowDelegate(QStyledItemDelegate):
             head = round(theme.SIZES["row"] * fz())
         area = QRect(rect.left(), rect.top() + head + 1, rect.width(), 1 << 20)
         before = self.warmed
-        self._warming = True
+        budget = SPRITE_MB["ep"] * 1024 * 1024 // 2    # never more than half the episodes' cache: past it, each one
+        self._warming = True                            # drawn would push out one drawn before, again and again
         try:
             for r, ep in self._episode_rows(row, area, kind == HERO):
-                if r.top() - rect.top() > room:
+                budget -= round(r.width() * dpr) * round(r.height() * dpr) * 4
+                if r.top() - rect.top() > room or budget < 0:
                     break
                 w, h = r.width(), r.height()
                 self._sprite("ep", ep, r.size(), dpr, False,
@@ -1036,7 +1041,7 @@ class RowDelegate(QStyledItemDelegate):
 
     def _paint_open_hero(self, p, row, rect, lines, hovered, focused, dpr):
         """An open hero: its head painted once into a pixmap, the rest of its box drawn around the episodes (each its
-        own pixmap) — a repaint of the open hero draws nothing afresh (review B-13)."""
+        own pixmap) — a repaint of the open hero draws no text or cover afresh (review B-13)."""
         g = self._hero_geometry(row, rect, lines)
         head = g["head"]
         local = QRect(0, 0, rect.width(), rect.height())
@@ -1350,6 +1355,7 @@ class RowsView(QListView):
         model = self.model()
         n = model.rowCount()
         if not n:
+            self.delegate.keep_only(())                  # an emptied list lets its pixmaps go
             return
         if not self.isVisible():
             like = self.warm_like
@@ -1400,7 +1406,10 @@ class RowsView(QListView):
             total += heights[-1]
             if total >= room:
                 break
-        bar = like.width() - like.viewport().width() if like.verticalScrollBar().isVisible() else             self.verticalScrollBar().sizeHint().width()
+        if like.verticalScrollBar().isVisible():
+            bar = like.width() - like.viewport().width()
+        else:
+            bar = self.verticalScrollBar().sizeHint().width()
         width = like.width() - (bar if total > like.viewport().height() else 0)       # review B-4
         top = 0
         for r, h in enumerate(heights):

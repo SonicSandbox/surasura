@@ -50,8 +50,8 @@ def save_seed(files, share, path, language="ja"):
 
 def system_scale():
     """This desktop's own scaling (1.5 at 150 %): `QT_SCALE_FACTOR` multiplies it, so a run at `--scale` % sets
-    scale / 100 / system (as `capture.py` and `bench_motion.py` do). Until 2026-10-08 this bench set scale / 100 alone:
-    bench 9's "100 / 150 / 250 %" ran at 150 / 225 / 375 % on this 150 % desktop."""
+    scale / 100 / system (as `capture.py` does, and M2.1's `bench_motion.py`). Until 2026-10-08 this bench set
+    scale / 100 alone: bench 9's "100 / 150 / 250 %" ran at 150 / 225 / 375 % on this 150 % desktop."""
     try:
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -107,7 +107,8 @@ def main_parent(a):
     seed_path = os.path.join(work, "seed.pkl")
     t = time.perf_counter()
     files = save_seed(a.files, a.current_share, seed_path, a.language)
-    print(f"seed: {files} files ({(time.perf_counter() - t):.1f} s)", flush=True)
+    print(f"seed: {files} files ({(time.perf_counter() - t):.1f} s); this desktop's own scale {system_scale()} "
+          f"(1.0 when it couldn't be read: each run's `dpr` says what it ran at)", flush=True)
     results = []
     for i in range(a.runs):
         root = tempfile.mkdtemp(prefix="surasura-bench-root-", dir=work)
@@ -357,7 +358,11 @@ def main_child(a):
         from PyQt6.QtGui import QHoverEvent, QMouseEvent
         mark("open")
         lst.verticalScrollBar().setValue(0)
-        n = min(20, lst.model().rowCount())
+        vh = lst.viewport().height()                    # the rows on screen (a row below it is neither hovered nor
+        shown = [i for i in range(lst.model().rowCount())    # painted when it opens), taken in turn: 20 openings
+                 if lst.visualRect(lst.model().index(i, 0)).bottom() <= vh]
+        order = (shown * 20)[:20] if shown else []
+        n = len(order)
         last = [QPointF(-1, -1)]
 
         def hover(i):
@@ -371,8 +376,8 @@ def main_child(a):
                                                        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
                                                        Qt.KeyboardModifier.NoModifier))
             last[0] = pos
-        for i in range(n):
-            t = 600 * i
+        for k, i in enumerate(order):
+            t = 600 * k
             QTimer.singleShot(t, lambda i=i: hover(i))
             for dt in (300, 420):
                 def toggle(i=i):

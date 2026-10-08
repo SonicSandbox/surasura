@@ -46,11 +46,12 @@ Status = namedtuple("Status", "kind label tip tone")          # tone: ok · acce
 Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mark (⌀ N)
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
                                 "status mark rel_path play_tip can_play")
-Row = namedtuple("Row", "key index tier work_id piece_id media title title_ep line source n_files n_watched "
+Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play")
 Chip = namedtuple("Chip", "text watched next mined tip")
-Line = namedtuple("Line", "kind after tip")                    # drawn after row `after` (0-based in Current)
+Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
+#                                                                 `split`: the row's first `split` files are above it
 Goal = namedtuple("Goal", "titles files covers line tip")
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
@@ -74,7 +75,8 @@ STRINGS = {
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
     "mark_missing": "No {word} on disk for {eps} — link one, or mine the text on its own",
     "mark_removed": "{Word} deleted after mining ({eps}). The cards keep their pictures and audio — only ▶ can't play it",
-    "play": "{verb} {name} in your {player}", "play_youtube": "{verb} {name} on YouTube",
+    "play": "{verb} {name} in your {player} (the {word} beside its subtitle file)",
+    "play_online": "Its video is online: opening it from here comes in a later build",
     "play_missing": "No {word} on disk — link one to {verb_l} it from here (Needs you, in a later build)",
     "play_removed": "Its {word} was removed — link it to {verb_l} it from here (Needs you, in a later build)",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
@@ -82,6 +84,7 @@ STRINGS = {
     "nums": "#{a}–{b}", "videos": "{n} videos", "video": "1 video", "watched": "{k} of {n} watched",
     "channel_n": "{n} videos · {title}",
     "top_tip": "Everything above this line mines itself: your top {n} files",
+    "top_tip_split": "Everything above this line mines itself: your top {n} files — of {title}, its first {k} of {m}",
     "soon_tip": "Soon: what's below this line comes after your first {n} files. It still counts toward your list",
     "soon_tip_nocount": "Soon: what's below this line comes after what's above it. It still counts toward your list",
     "goal_line": "{titles} titles · {files} files", "goal_one": "1 title · {files} files",
@@ -96,6 +99,7 @@ STRINGS = {
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
+    "acc_hero": "Up next: {title} {ep} · {pct} · {new} · {status}",
 }
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -105,6 +109,8 @@ _EP_PATTERNS = (
     re.compile(r"第\s*(\d{1,4})\s*[話话回集]"),
     re.compile(r"(?i)(?:^|[^A-Za-z])(?:ep|episode|e)\.?\s*(\d{1,4})(?!\d)"),
 )
+_NOT_EPISODE = re.compile(r"[(\[（【]\s*(?:19|20)\d\d\s*[)\]）】]|(?:19|20)\d\d[-./]\d{1,2}[-./]\d{1,2}|\d{3,4}[pP]\b|"
+                          r"[xX]26[45]|\b(?:19|20)\d\d\b(?=\s*$)")
 _NUMBER = re.compile(r"(?:^|[\s_\-\[\(（【#＃])(\d{1,4})(?:v\d)?(?=$|[\s_\-\]\)）】.])")
 
 
@@ -116,7 +122,7 @@ def stem(name):
 
 def episode_number(name):
     """The episode (or part) number a file's name gives, or None: `S01E05`, `第5話`, `ep05`, `Show - 05`, `Show 05 …`."""
-    s = _EXT.sub("", name or "")
+    s = _NOT_EPISODE.sub(" ", _EXT.sub("", name or ""))
     for pat in _EP_PATTERNS:
         m = pat.search(s)
         if m:
@@ -202,6 +208,28 @@ def day_label(stamp):
         return ""
 
 
+def media_type_guess(counts, anilist_id=None, tmdb_id=None):
+    """A title's type when nobody said — L3.1's `library_store.media_type_guess`, the same rule (computed on read,
+    never stored): from its items' source types ({type: count}) and its ids; None → *Video*."""
+    if not counts:
+        return None
+    kind = max(counts, key=lambda k: (counts[k], k or ""))
+    if kind in ("youtube", "bilibili"):
+        return "youtube"
+    if kind == "epub":
+        return "book"
+    if kind == "text":
+        return "text"
+    if kind == "subtitle":
+        if tmdb_id and str(tmdb_id).startswith("movie:"):
+            return "movie"
+        if anilist_id:
+            return "anime"
+        if tmdb_id and str(tmdb_id).startswith("tv:"):
+            return "drama"
+    return None
+
+
 def source_of(item, work):
     """hato · youtube · anilist · None: where an item came from (its chip's colour)."""
     if (item.get("rel_path") or "").startswith(HATO_FOLDER):
@@ -243,7 +271,10 @@ def _eps_list(eps):
 
 
 def status_of(eps, word, line_n):
-    """One status for a set of episodes (a row's, or one episode's), in the mock's order, and the on-disk mark."""
+    """One status for a set of episodes (a row's, or one episode's), in the mock's order (`stHTML`): every item mined →
+    *N in Anki*; any being mined → *Mining*; an unmined one that can be mined in the top → *Waiting*; some mined, the
+    rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
+    on-disk mark beside it when something isn't there."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -254,21 +285,6 @@ def status_of(eps, word, line_n):
     removed = [e for e in eps if e.removed]
     top_missing = [e for e in missing if e.in_top]
     Word = word[:1].upper() + word[1:]
-    if unmined and not ready:                                      # nothing left that could be mined
-        if all(e.removed for e in unmined):
-            st = Status("no_media", STRINGS["removed"].format(Word=Word), STRINGS["tip_removed"].format(word=word),
-                        "faint")
-        else:
-            top = any(e.in_top for e in unmined)
-            label = STRINGS["no_media"].format(word=word) if len(unmined) == 1 else \
-                STRINGS["no_media_n"].format(word=word, n=len(unmined))
-            tip = STRINGS["tip_no_media"].format(word=word, top=STRINGS["tip_no_media_top"].format(line=line_n)
-                                                 if top else "")
-            st = Status("no_media", label, tip, "warn" if top else "faint")
-        mark = None
-        if mined and removed:
-            mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed)))
-        return st, mark
     if not unmined:                                                # every item mined
         label = STRINGS["in_anki"].format(n=cards) if cards else STRINGS["mined"]
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
@@ -279,11 +295,21 @@ def status_of(eps, word, line_n):
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
-    elif k:
+    elif ready and k:
         st = Status("mine_rest", STRINGS["mine_rest"].format(k=k, n=n),
                     STRINGS["tip_mine_rest"].format(k=k, n=n, line=line_n), "ok")
-    else:
+    elif ready:
         st = Status("mine", STRINGS["mine"], STRINGS["tip_mine"].format(line=line_n), "ink")
+    else:                                                          # nothing left that could be mined
+        top = any(e.in_top for e in unmined)
+        label = STRINGS["no_media"].format(word=word) if len(unmined) == 1 else \
+            STRINGS["no_media_n"].format(word=word, n=len(unmined))
+        tip = STRINGS["tip_no_media"].format(word=word, top=STRINGS["tip_no_media_top"].format(line=line_n)
+                                             if top else "")
+        st = Status("no_media", label, tip, "warn" if top else "faint")
+        mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed))) \
+            if removed else None
+        return st, mark
     mark = None
     if missing:
         mark = Mark(len(missing), "warn" if top_missing else "faint",
@@ -318,12 +344,15 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing)
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
-    if missing:
+    online = item.get("source_type") in ("youtube", "bilibili")
+    if online:                                       # its video is online; the window holds no address for it yet
+        ep = ep._replace(can_play=False)
+    if online:
+        tip = STRINGS["play_online"]
+    elif missing:
         tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
-    elif media == "youtube" and item.get("source_type") in ("youtube", "bilibili"):
-        tip = STRINGS["play_youtube"].format(verb=verb, name=label)
     else:
-        tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word])
+        tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word], word=word)
     return ep._replace(status=st, mark=mark, play_tip=tip)
 
 
@@ -336,10 +365,10 @@ class _Shim:
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
 
 
-def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False):
+def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
-    media = work.get("media_type")
+    media = work.get("media_type") or (guessed or {}).get(first.get("work_id"))
     if media is None and first.get("source_type") in ("youtube", "bilibili"):
         media = "youtube"
     word = MEDIA_WORD.get(media, "video")
@@ -353,7 +382,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     news = [numbers[it["id"]][2] for it in piece if it["id"] in numbers and numbers[it["id"]][2] is not None]
     pct = pct_of(known, counted)
     n_new = sum(news) if news else None
-    channel = work.get("youtube_channel") or work.get("title")
+    channel = work.get("title") or work.get("youtube_channel")
     single_video = media == "youtube" and n == 1
     if single_video:
         title = eps[0].title
@@ -386,12 +415,29 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         else f"{title} · {st.label if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
-               media=media, title=title, title_ep=nxt.label if (n > 1 or media in EPISODIC) and media != "youtube"
+               media=media, media_word=word, verb=VERB[word], title=title, title_ep=nxt.label if (n > 1 or media in EPISODIC) and media != "youtube"
                else "", line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
                studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
                can_play=nxt.can_play)
+
+
+def _guesses(items, works):
+    """{work_id: its guessed type} for the works nobody typed (one pass over the items)."""
+    counts = {}
+    for r in items.values():
+        w = r.get("work_id")
+        if w is None or (works.get(w) or {}).get("media_type"):
+            continue
+        c = counts.setdefault(w, {})
+        st = r.get("source_type")
+        c[st] = c.get(st, 0) + 1
+    out = {}
+    for w, c in counts.items():
+        work = works.get(w) or {}
+        out[w] = media_type_guess(c, work.get("anilist_id"), work.get("tmdb_id"))
+    return out
 
 
 def _current_items(items):
@@ -420,7 +466,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     cards = cards or {}
     mining = set(mining or ())
     options = options or {}
-    line_n = int(options.get("mine_line") or 20)
+    line_n = options.get("mine_line")
+    line_n = 20 if line_n is None else int(line_n)
     current = _current_items(items)
     top_ids = _mine_ids(current, line_n)
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
@@ -431,20 +478,35 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             in_top.add(r["id"])
             if r["id"] == last:
                 break
+    guessed = _guesses(items, works)
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(ordered_tier(items, tier)):
-            rows.append(_row(len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n))
+            rows.append(_row(len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
+                             guessed=guessed))
+    if rows:                                         # the hero reads as it's painted: its next episode's numbers
+        h = rows[0]
+        nxt = h.episodes[h.next_index]
+        rows[0] = h._replace(accessible=STRINGS["acc_hero"].format(
+            title=h.title, ep=h.title_ep, status=nxt.status.label,
+            pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
+            new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
     lines = []
     if len(top_ids) >= line_n and line_n > 0:
         last = top_ids[-1]
         at = next(i for i, row in enumerate(rows) if any(e.id == last for e in row.episodes))
-        lines.append(Line("top", at, STRINGS["top_tip"].format(n=line_n)))
+        row = rows[at]
+        k = next(j for j, e in enumerate(row.episodes) if e.id == last) + 1
+        if k < len(row.episodes):                       # the line runs through this row: only its first k mine
+            tip = STRINGS["top_tip_split"].format(n=line_n, title=row.title, k=k, m=len(row.episodes))
+            lines.append(Line("top", at, tip, k))
+        else:
+            lines.append(Line("top", at, STRINGS["top_tip"].format(n=line_n), None))
     first_soon = next((i for i, row in enumerate(rows) if row.tier == "soon"), None)
     if first_soon is not None and first_soon > 0:
         k = options.get("soon_line")
         tip = STRINGS["soon_tip"].format(n=k) if k else STRINGS["soon_tip_nocount"]
-        lines.append(Line("soon", first_soon - 1, tip))
+        lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
     goal_items = ordered_tier(items, "goal")
     goal_works = []
@@ -459,7 +521,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         g_line = STRINGS["goal_empty"]
     goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
     # Finished: newest first, by month; no date last (*Earlier*)
-    fin_rows = [_row(0, "graduated", p, works, numbers, cards, mining, set(), line_n, finished=True)
+    fin_rows = [_row(0, "graduated", p, works, numbers, cards, mining, set(), line_n, finished=True, guessed=guessed)
                 for p in pieces(ordered_tier(items, "graduated"))]
     stamp_of = {}
     for p in pieces(ordered_tier(items, "graduated")):
@@ -479,10 +541,18 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     finished = tuple(Month(m, tuple(by_label[m])) for m in months)
     # Needs you: each show whose unmined files in the top wait on a missing file
     needs = []
+    by_work, order = {}, []
     for row in rows:
         waiting = [e for e in row.episodes if e.missing and not e.removed and e.in_top]
         if not waiting:
             continue
+        key = row.work_id if row.work_id is not None else row.key
+        if key not in by_work:
+            by_work[key] = (row, [])
+            order.append(key)
+        by_work[key][1].extend(waiting)
+    for key in order:
+        row, waiting = by_work[key]
         word = MEDIA_WORD.get(row.media, "video")
         unit = STRINGS["unit_eps"] if row.media in EPISODIC else STRINGS["unit_files"] \
             if row.media == "youtube" else STRINGS["unit_parts"]
@@ -506,12 +576,12 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         subline = STRINGS["subline_empty"].format(lang=lang)
     else:
         subline = STRINGS["subline"].format(lang=lang, rows=0, files=0)
-    if loading:
-        state = "loading"
-    elif mode == "json":
+    if mode == "json":                              # the mode's bar first: a library that can't be used says so
         state = "getting-ready"
     elif mode == "read-only":
         state = "read-only"
+    elif loading:
+        state = "loading"
     else:
         state = "full" if rows else "empty"
     badges = {"needs": len(needs), "arrivals": counts.arrival_files, "finished": counts.finished}

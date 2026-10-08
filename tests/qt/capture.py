@@ -216,8 +216,14 @@ def run_screens(scale, out_dir):
                     problems.append("current: no learned green (in Anki)")
                 if count(sub, c["top20-line"], 12) < 40:
                     problems.append("current: no top-20 line")
-            if screen == "current-open" and count(sub, theme.STATUS["warn"], 40) < 5:
-                problems.append("current-open: no heads-up amber (no video in the top 20)")
+            if screen == "current-open":
+                # only the open row's episodes (the closed row's own amber mark mustn't answer for them)
+                from PyQt6.QtCore import QRect
+                r = lst.visualRect(lst.model().index(amber, 0))
+                row_h = round(theme.SIZES["row"] * rows.fz())
+                eps = rgb_array(lst.viewport().grab(QRect(r.left(), r.top() + row_h, r.width(), r.height() - row_h)))
+                if count(eps, theme.STATUS["warn"], 40) < 5:
+                    problems.append("current-open: no heads-up amber on its episodes (no video in the top 20)")
             results.append({"scale": scale, "theme": theme_name, "screen": screen, "file": name,
                             "problems": problems})
     win.close()
@@ -236,7 +242,16 @@ def run_screens(scale, out_dir):
         pix = win.grab()
         name = f"w22-{label}-hb-{scale}.png"
         pix.save(os.path.join(out_dir, name))
-        results.append({"scale": scale, "theme": "hb", "screen": label, "file": name, "problems": []})
+        page = win.page_widgets["current"]
+        problems = []
+        sub = rgb_array(page.grab())
+        if count(sub, theme.colours("hb")["bg"], TOL) < 0.3 * sub.shape[0] * sub.shape[1]:
+            problems.append(f"{label}: the page's ground is under 30 %")
+        if label == "read-only" and not (page.state_bar.isVisible() and page.state_bar.text()):
+            problems.append("read-only: no bar saying why")
+        if label == "empty" and page.list.model().entries[0][0] != rows.EMPTY:
+            problems.append("empty: no empty line")
+        results.append({"scale": scale, "theme": "hb", "screen": label, "file": name, "problems": problems})
         win.close()
         services.shutdown(1.0)
     return results

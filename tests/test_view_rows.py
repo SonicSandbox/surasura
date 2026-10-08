@@ -61,6 +61,10 @@ def test_episode_numbers_come_from_the_file_names_in_every_common_shape():
     assert vr.episode_number("白銀の書庫番 02 雨の街角.txt") == 2
     assert vr.episode_number("[Group] 海辺の図書室 - 11 [1080p].srt") == 11
     assert vr.episode_number("なぜ人は行列に並ぶのか.srt") is None
+    # a year in brackets, a date and a resolution are never an episode (W2.2 review A-11)
+    assert vr.episode_number("天気の子 (2019).srt") is None
+    assert vr.episode_number("Hanashi Radio 2026-09-02.srt") is None
+    assert vr.episode_number("海辺の図書室 - 05 [1080p] x264.mkv") == 5
 
 
 def test_ranges_say_the_parts_a_row_holds_with_gaps():
@@ -216,7 +220,7 @@ def test_a_single_video_is_title_first_and_its_channel_below():
     items = items_of([("now", 4, 4, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: {"source_type": "youtube"}})])
     row = vr.build(items, WORKS, {}).rows[0]
     assert row.title == "【検証】一週間お弁当を作り続けてみた" and row.line == "Tsubasa no Kitchen"
-    assert row.source == "youtube" and "YouTube" in row.play_tip
+    assert row.source == "youtube" and not row.can_play and "online" in row.play_tip.lower()   # its video is online
 
 
 def test_partly_watched_rows_say_how_many_but_the_hero_does_not():
@@ -281,12 +285,14 @@ def test_a_chinese_library_reads_the_same_way():
     assert view.rows[0].line == "Ep 3–4" and view.subline.startswith("中文")
 
 
-def test_every_row_answers_its_accessible_text():
-    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {})])
-    row = vr.build(items, WORKS, {}, numbers={1: (95, 100, 4), 2: (95, 100, 6)}).rows[0]
-    # two files: both within the top 20, so they mine by themselves (Waiting), though no line is drawn under 20
-    assert row.accessible == "星降る街の小さな工房 · 95% known · 10 new · Waiting"
-    assert row.description == "Ep 1–2"
+def test_every_row_answers_its_accessible_text_and_the_hero_reads_its_next_episode():
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})])
+    view = vr.build(items, WORKS, {}, numbers={1: (95, 100, 4), 2: (95, 100, 6), 3: (90, 100, 1), 4: (80, 100, 2)})
+    # all four files are within the top 20, so they mine by themselves (Waiting), though no line is drawn under 20
+    assert view.rows[1].accessible == "雲の上の郵便屋さん · 85% known · 3 new · Waiting"
+    assert view.rows[1].description == "Ep 1–2"
+    # the hero is painted from Up next (its next episode), so it reads that way too (IK-12)
+    assert view.rows[0].accessible == "Up next: 星降る街の小さな工房 Ep 1 · 95% known · 4 new · Waiting"
 
 
 def test_the_first_screen_round_trips_through_the_cache():
@@ -301,17 +307,76 @@ def test_the_first_screen_round_trips_through_the_cache():
     assert vr.from_cache({"rows": "nonsense"}) is None
 
 
-def test_twenty_thousand_files_build_in_a_moment():
-    """The reader builds the view on its own thread; at 20,000 files it must still keep up with a change (the budget's
-    owner is the reader, not the GUI thread: a loose bound here, the timed figure in row 5)."""
-    import time
+def test_twenty_thousand_files_are_all_accounted_for():
+    """Every file of a 20,000-file library lands in exactly one place the window shows (its build time is the bench's
+    figure, measured under the timed lock: never a bound here, where a loaded machine would make it flake)."""
     from tests.fixtures import window_seed
     seed = window_seed.build(files=20000)
     items = {r["id"]: r for r in seed.items}
     works = {w["id"]: w for w in seed.works}
-    t = time.perf_counter()
     view = vr.build(items, works, {"mine_line": 20, "soon_line": 40}, numbers=seed.numbers()[1])
-    took = time.perf_counter() - t
     assert view.counts.current_files + view.counts.goal_files + view.counts.arrival_files + \
         sum(len(r.episodes) for m in view.finished for r in m.rows) == 20000
-    assert took < 2.0, took
+
+
+
+def test_a_mine_line_of_zero_draws_no_line_and_nothing_waits():
+    """A-4: 0 is a setting (nothing mines itself), not "unset"."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 30), {})])
+    view = vr.build(items, WORKS, {"mine_line": 0})
+    assert not [ln for ln in view.lines if ln.kind == "top"]
+    assert view.rows[0].status.kind == "mine"
+
+
+def test_a_line_through_a_row_says_how_many_of_its_files_are_above_it():
+    """A-12: the line falls inside a piece when the 20th file is one of its middle episodes; its tip and its `split`
+    say the row's first k files are the ones above it."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 15), {}), ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 24), {})])
+    view = vr.build(items, WORKS, {"mine_line": 20})
+    top = [ln for ln in view.lines if ln.kind == "top"][0]
+    assert top.after == 1 and top.split == 5
+    assert "its first 5 of 24" in top.tip
+
+
+def test_an_untyped_work_takes_the_stores_guess():
+    """A-3: L3.1 leaves `media_type` empty until someone sets it; the window guesses as the store does (text → *Open*,
+    an EPUB → a book, *Read*), never "video" for everything."""
+    w = work(6, "旅路のノート", media=None)
+    items = items_of([("now", 6, 6, ["旅路のノート 01 雨の街角.txt", "旅路のノート 02 帰り道.txt"],
+                       {0: {"source_type": "text"}, 1: {"source_type": "text"}})])
+    row = vr.build(items, WORKS, {}).rows[0]
+    assert row.media == "text" and row.verb == "Open" and row.media_word == "file"
+    assert vr.media_type_guess({"epub": 3}) == "book" and vr.media_type_guess({"subtitle": 2}, anilist_id=7) == "anime"
+    assert w["media_type"] is None
+
+
+def test_a_channels_row_is_titled_by_its_work_not_its_channel_id():
+    """A-2: L3.1 keeps the channel's id in `youtube_channel`; the row reads the work's title."""
+    work(7, "Kotoba Lab", media="youtube", channel="UC4R8DWoMoI7CAwX8_LjQHig")
+    names = ["【解説】言葉の由来を調べてみたら面白かった [a1b2c3].srt", "町の小さな図書館を紹介します [d4e5f6].srt"]
+    items = items_of([("now", 7, 7, names, {k: {"source_type": "youtube"} for k in range(2)}),
+                      ("now", 7, 8, ["雨の日の散歩で見つけた小さな発見 [0a1b2c].srt"], {0: {"source_type": "youtube"}})])
+    view = vr.build(items, WORKS, {})
+    assert view.rows[0].title == "Kotoba Lab" and view.rows[1].line == "Kotoba Lab"
+    assert not view.rows[0].episodes[0].can_play and "online" in view.rows[0].play_tip.lower()
+
+
+def test_mining_outranks_no_video():
+    """A-10, the mock's order (stHTML): an episode being mined shows *Mining* even if its video is gone meanwhile."""
+    one = type("E", (), dict(label="Ep 1", cards=0, mined=False, missing=True, removed=False, in_top=True,
+                             mining=True))()
+    assert vr.status_of([one], "video", 20)[0].kind == "mining"
+
+
+def test_needs_you_is_one_card_per_show_even_split_in_parts():
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {1: {"availability": "missing"}}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("now", 1, 3, eps("星降る街の小さな工房", 5, 8), {0: {"availability": "missing"}})])
+    view = vr.build(items, WORKS, {"mine_line": 20})
+    assert len(view.needs) == 1 and [e[0] for e in view.needs[0].episodes] == ["Ep 2", "Ep 5"]
+
+
+def test_the_modes_bar_outranks_loading():
+    """A-6: a library that can't be used says so even before any rows were read."""
+    assert vr.build({}, WORKS, {}, mode="read-only", reason="busy", loading=True).state == "read-only"
+    assert vr.build({}, WORKS, {}, mode="json", reason="no store", loading=True).state == "getting-ready"

@@ -53,6 +53,7 @@ def run_child(seed_path, out_path, scale, root):
     if not env["QT_SCALE_FACTOR"]:
         env.pop("QT_SCALE_FACTOR")
     env["SURASURA_FREEZE_MOTION"] = "1"
+    env["SURASURA_READER_GC_FREEZE"] = "0" if NO_GC_FREEZE else "1"
     cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--out", out_path]
     subprocess.run(cmd, env=env, cwd=ROOT, timeout=300, check=False)
     with open(out_path, encoding="utf-8") as f:
@@ -80,7 +81,12 @@ def summary(results):
     return {k: med(p) for k, p in keys.items()}
 
 
+NO_GC_FREEZE = False
+
+
 def main_parent(a):
+    global NO_GC_FREEZE
+    NO_GC_FREEZE = a.no_gc_freeze
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-")
     seed_path = os.path.join(work, "seed.json")
     t = time.perf_counter()
@@ -157,7 +163,8 @@ def main_child(a):
     shell.prepare_process()
     opener = _LazyOpener(a.child)
     reader = library_reader.LibraryReader(opener, numbers=lambda: (1, opener.numbers_table),
-                                          mining=lambda: opener.mining_ids)
+                                          mining=lambda: opener.mining_ids,
+                                          freeze_gc=os.environ.get("SURASURA_READER_GC_FREEZE", "1") != "0")
     services = shell.Services(library=reader)
     window = shell.open_window(app, services)
     window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -165,7 +172,33 @@ def main_child(a):
     page = window.page_widgets["current"]
     lst = page.list
     result = {"first_frame_ms": None, "rows_live_ms": None}
-    t_start = time.perf_counter()
+    phases = {}                                          # name -> [start, end] (perf_counter)
+
+    def mark(name, end=False):
+        phases.setdefault(name, [None, None])[1 if end else 0] = time.perf_counter()
+
+    # Python's collector: every collection, its generation, its length and the thread it ran on (a full one on a big
+    # heap holds Python's lock — every thread waits — so it shows here before anywhere else)
+    import gc
+    import threading
+    gc_log, gc_start = [], {}
+
+    def on_gc(phase_, info):
+        tid = threading.get_ident()
+        if phase_ == "start":
+            gc_start[tid] = time.perf_counter()
+        elif tid in gc_start:
+            t0 = gc_start.pop(tid)
+            gc_log.append((info["generation"], round((time.perf_counter() - t0) * 1000, 2),
+                           threading.current_thread().name, t0))
+    gc.callbacks.append(on_gc)
+    from app.qt import rows as rows_module
+    real_cover = rows_module.cover
+
+    def cover(*args, **kw):
+        with hud.span("cover"):
+            return real_cover(*args, **kw)
+    rows_module.cover = cover
     delegate_cls = type(lst.delegate)
     real_paint = delegate_cls.paint
 
@@ -192,6 +225,7 @@ def main_child(a):
 
     # the phases ----------------------------------------------------------------------------------------------------- #
     def phase_scroll():
+        mark("scroll")
         bar = lst.verticalScrollBar()
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
@@ -208,11 +242,13 @@ def main_child(a):
                 state["dir"] = -1
             if state["n"] >= 300:
                 timer.stop()
+                mark("scroll", end=True)
                 QTimer.singleShot(300, phase_open)
         timer.timeout.connect(step)
         timer.start(16)
 
     def phase_open():
+        mark("open")
         lst.verticalScrollBar().setValue(0)
         n = min(20, lst.model().rowCount())
         for i in range(n * 2):
@@ -220,9 +256,11 @@ def main_child(a):
                 with hud.span("toggle"):
                     lst.toggle(lst.model().index((i // 2) % n, 0))
             QTimer.singleShot(120 * i, toggle)
+        QTimer.singleShot(120 * n * 2 + 200, lambda: mark("open", end=True))
         QTimer.singleShot(120 * n * 2 + 300, phase_tabs)
 
     def phase_tabs():
+        mark("tabs")
         names = ["finished", "needs", "current", "finished", "current", "finished", "current", "finished",
                  "current", "current"]
         for i, name in enumerate(names):
@@ -230,28 +268,48 @@ def main_child(a):
                 with hud.span("tab-switch"):
                     window.show_tab(name)
             QTimer.singleShot(150 * i, switch)
+        QTimer.singleShot(150 * len(names) + 200, lambda: mark("tabs", end=True))
         QTimer.singleShot(150 * len(names) + 300, phase_outside)
 
     def phase_outside():
+        # another program's commit (a hato drop): made on a thread of its own, as another process would
+        mark("outside")
         lib = opener.library
-        first = min((r for r in lib.items() if r["tier"] == "now"), key=lambda r: r["ord"])
-        new_id = max(r["id"] for r in lib.items()) + 1
-        result["outside_at"] = time.perf_counter()
-        lib.commit(items=[dict(first, id=new_id, ord=first["ord"] - 512, piece_id=10 ** 9,
-                               rel_path="HighPriority/Hato/outside - 01.srt", title="outside - 01.srt")], order=True)
+
+        def writer():
+            items = lib.items()
+            first = min((r for r in items if r["tier"] == "now"), key=lambda r: r["ord"])
+            new_id = max(r["id"] for r in items) + 1
+            result["outside_at"] = time.perf_counter()
+            lib.commit(items=[dict(first, id=new_id, ord=first["ord"] - 512, piece_id=10 ** 9,
+                                   rel_path="HighPriority/Hato/outside - 01.srt", title="outside - 01.srt")],
+                       order=True)
+        threading.Thread(target=writer, name="outside-writer", daemon=True).start()
 
         def landed():
             entries = lst.model().entries
             if entries and getattr(entries[0][1], "key", None) == f"p{10 ** 9}":
                 result["outside_ms"] = round((time.perf_counter() - result["outside_at"]) * 1000, 1)
+                QTimer.singleShot(300, lambda: (mark("outside", end=True), mark("idle")))
                 QTimer.singleShot(5000, finish)
             else:
                 QTimer.singleShot(10, landed)
         landed()
 
     def finish():
+        mark("idle", end=True)
         result["memory"] = hud_module._memory_mb()
         result["hud"] = hud.report()
+        per = {}
+        for name, (t0, t1) in phases.items():
+            if t0 is None or t1 is None:
+                continue
+            over = [ms for ms, at in hud.over if t0 <= at <= t1]
+            per[name] = {"s": round(t1 - t0, 2), "over_4ms": len(over), "max_ms": max(over, default=0.0),
+                         "gc": [(g, ms, th) for g, ms, th, at in gc_log if t0 <= at <= t1 and ms > 2]}
+        result["phases"] = per
+        result["gc_over_2ms"] = [(g, ms, th) for g, ms, th, _at in gc_log if ms > 2]
+        result["gc_count"] = len(gc_log)
         result["paints"] = lst.delegate.paints if hasattr(lst.delegate, "paints") else None
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(result, f)
@@ -273,6 +331,7 @@ def main():
     ap.add_argument("--scale", type=int, default=0, help="QT_SCALE_FACTOR × 100 (0: Windows' own scaling)")
     ap.add_argument("--language", default="ja")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-gc-freeze", action="store_true", help="the reader leaves the collector as it is (an A/B)")
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
     if a.child:

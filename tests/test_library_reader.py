@@ -203,3 +203,98 @@ def test_a_listener_that_raises_never_stops_the_reader():
         assert _wait(lambda: len(views) > n)
     finally:
         reader.stop()
+
+
+
+def test_a_data_version_move_that_changes_nothing_builds_nothing():
+    """A-7: SQLite moves `data_version` on a checkpoint too; a read that brings nothing the window shows publishes no
+    new view."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        time.sleep(0.1)
+        n, builds = len(views), reader.builds
+        with seed.library._lock:
+            seed.library._data_version += 1               # another connection's checkpoint: no row changed
+        assert _wait(lambda: reader.skipped >= 1)
+        assert len(views) == n and reader.builds == builds
+    finally:
+        reader.stop()
+
+
+def test_cards_made_without_a_feed_row_still_show():
+    """A-8: L3.1's `record_made` doesn't put the item in the feed; the reader asks every change for the cards."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        row = next(r for r in views[-1][1].rows if r.status.kind == "waiting")
+        item = row.episodes[0].id
+        with seed.library._lock:
+            seed.library._cards[item] = [1, 2, 3]
+            seed.library._data_version += 1
+        assert _wait(lambda: any(e.cards == 3 for r in views[-1][1].rows for e in r.episodes if e.id == item))
+    finally:
+        reader.stop()
+
+
+def test_the_stores_mode_is_asked_at_the_start_not_every_poll():
+    """A-5: the real opener's `check()` probes the file; while the store is in use it's asked once."""
+    seed = window_seed.build()
+    calls = []
+    real = seed.opener.check
+    seed.opener.check = lambda: (calls.append(1), real())[1]
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views)
+        time.sleep(0.5)                                  # ~25 polls
+        assert len(calls) <= 2
+    finally:
+        reader.stop()
+
+
+def test_a_store_that_turns_busy_keeps_its_rows_under_the_bar():
+    """A-6: with no handle to read (busy, damaged, newer) the last rows stay, the bar says why."""
+    from tests.fixtures import standin_store
+
+    class NoCopy(standin_store.StandinOpener):
+        fallback_handle = None
+    seed = window_seed.build()
+    opener = NoCopy(seed.library)
+    reader = library_reader.LibraryReader(opener, numbers=seed.numbers, poll=0.02)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        rows = views[-1][1].rows
+        seed.library.set_mode("read-only", "busy")
+        assert _wait(lambda: views[-1][1].state == "read-only", timeout=6.0)
+        assert views[-1][1].rows == rows and views[-1][1].reason == "busy"
+    finally:
+        reader.stop()
+
+
+def test_a_status_write_keeps_a_stale_cache_out(tmp_path):
+    """A-9: the cache key is the store's (id, epoch, state version): a watched tick since it was written keeps it out."""
+    seed = window_seed.build()
+    cache = str(tmp_path / "window_cache_ja.json")
+    first = _reader(seed, cache_file=cache)
+    first.start()
+    assert _wait(lambda: os.path.exists(cache))
+    first.stop()
+    seed.library.commit(items=[{"id": seed.items[0]["id"], "watched": 1}])
+    again = _reader(seed, cache_file=cache)
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert not views[0][1].cached
+    finally:
+        again.stop()

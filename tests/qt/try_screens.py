@@ -48,7 +48,8 @@ def main(argv=None):
     app = QApplication.instance() or QApplication(sys.argv[:1])
     shell.prepare_process()
     reader = library_reader.LibraryReader(seed.opener, language=a.language, numbers=seed.numbers,
-                                          mining=seed.mining, cache_file=library_reader.cache_path(a.language))
+                                          mining=seed.mining, cache_file=library_reader.cache_path(a.language),
+                                          freeze_gc=True)
     services = shell.Services(library=reader)
     window = shell.open_window(app, services)
     window.show_first()

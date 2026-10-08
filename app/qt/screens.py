@@ -9,6 +9,7 @@ entries — nothing is worked out here. ▶ asks for a file: the page looks for 
 and hands it to the system's player, or says in the bar why it can't.
 """
 import os
+import re
 import sys
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QUrl, pyqtSignal
@@ -21,6 +22,7 @@ from app.services import view_rows
 
 VIDEO_EXTS = (".mkv", ".mp4", ".webm", ".m4v", ".avi", ".mov")
 AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".flac", ".wav")
+_LANGUAGE_TAG = re.compile(r"\.[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?$")
 
 
 def state_line(view):
@@ -28,6 +30,8 @@ def state_line(view):
     if view is None:
         return ""
     if view.state == "getting-ready":
+        if view.reason == "migration failed":           # never "getting ready" forever (G1.2-18: why, what to do)
+            return strings.STATE_LINES["migration-failed"]
         return strings.STATE_LINES["getting-ready"]
     if view.state == "read-only":
         reason = view.reason or ""
@@ -48,9 +52,14 @@ def media_to_open(language, episode, media):
         return (path, None) if os.path.exists(path) else (None, strings.PLAY_FAILED.format(
             name=episode.label, why=strings.PLAY_NOT_ON_DISK))
     base = os.path.splitext(path)[0]
-    for ext in (AUDIO_EXTS if word == "audio" else VIDEO_EXTS):
-        if os.path.exists(base + ext):
-            return base + ext, None
+    bases = [base]
+    tagged = _LANGUAGE_TAG.sub("", base)            # `ep01.ja.srt`, `ep01.zh-Hans.ass` → `ep01.mkv`
+    if tagged != base:
+        bases.append(tagged)
+    for b in bases:
+        for ext in (AUDIO_EXTS if word == "audio" else VIDEO_EXTS):
+            if os.path.exists(b + ext):
+                return b + ext, None
     return None, strings.PLAY_FAILED.format(name=episode.label, why=strings.PLAY_NO_MEDIA_BESIDE.format(word=word))
 
 
@@ -160,7 +169,6 @@ class Page(QWidget):
         self.list = rows.RowsView(strings.LIST_NAMES.get(name, heading), tooltips=tooltips, parent=self)
         self.list.play_requested.connect(self._play)
         box.addWidget(self.list, 1)
-        self._media = {}
 
     def entries(self, view):
         raise NotImplementedError
@@ -168,11 +176,18 @@ class Page(QWidget):
     def set_view(self, view):
         self.view_model = view
         self.state_bar.show_line(state_line(view))
-        self._media = {e.id: r.media for r in view.rows for e in r.episodes} if view is not None else {}
         return self.list.set_entries(self.entries(view))
 
+    def _media_of(self, episode):
+        """The media type of the row an episode is in (looked up on a click, not kept per view: a view at 20,000 files
+        must cost the GUI thread as little as it can)."""
+        for kind, payload, _lines in self.list.model().entries:
+            if any(e.id == episode.id for e in getattr(payload, "episodes", ())):
+                return payload.media
+        return None
+
     def _play(self, episode):
-        media = self._media.get(episode.id)
+        media = self._media_of(episode)
         bridge.run_in_worker(media_to_open, self.language, episode, media, then=self._open_found,
                              failed=lambda info: self.message.emit(strings.PLAY_FAILED.format(
                                  name=episode.label, why=str(info[0]))))
@@ -181,6 +196,9 @@ class Page(QWidget):
         path, why = found
         if path is None:
             self.message.emit(why)
+            return
+        if sys.platform != "win32":                       # Qt's own opener belongs on the GUI thread
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
             return
         bridge.run_in_worker(open_with_system, path,
                              failed=lambda info: self.message.emit(strings.PLAY_FAILED.format(

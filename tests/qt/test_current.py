@@ -98,8 +98,9 @@ def test_the_hero_is_the_first_row_and_its_play_says_where_it_opens(seeded):
     assert kind == rows.HERO and hero.work_id == seed.hero_work
     assert hero.title_ep == "Ep 3"                                    # two watched: Up next is the third
     play = part(lst, 0, "play")[0]
-    assert play[2] == "Watch Ep 3 in your video player"
-    assert lst.model().data(lst.model().index(0, 0), Qt.ItemDataRole.AccessibleTextRole).startswith(hero.title)
+    assert play[2].startswith("Watch Ep 3 in your video player")
+    assert lst.model().data(lst.model().index(0, 0), Qt.ItemDataRole.AccessibleTextRole).startswith(
+        "Up next: " + hero.title)
 
 
 def test_a_click_on_a_row_opens_its_episodes_and_a_second_closes_it(seeded):
@@ -172,7 +173,9 @@ def test_every_status_is_a_glyph_and_words_never_colour_alone(seeded):
         if kind in (rows.HERO, rows.ROW):
             kinds.add(row.status.kind)
             assert row.status.label and row.status.tip
-            assert row.status.label.lower() in row.accessible.lower()
+            # the hero reads as it's painted: its next episode's status (IK-12)
+            said = row.episodes[row.next_index].status if kind == rows.HERO else row.status
+            assert said.label.lower() in row.accessible.lower()
     assert {"mining", "waiting", "in_anki", "no_media", "mine"} <= kinds
 
 
@@ -219,15 +222,19 @@ def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_access
 
 
 def test_nothing_the_screens_do_writes_to_the_library(seeded):
-    """Display only (W2.2): opening rows and pressing ▶ never touches the store."""
+    """Display only (W2.2): opening rows, clicking every painted part and pressing ▶ never touches the store — any
+    write would go through the library's `commit`, watched here."""
     seed, win = seeded()
     lst = current(win)
-    before = seed.library._meta["state_version"]
+    writes = []
+    real = seed.library.commit
+    seed.library.commit = lambda *a, **kw: (writes.append((a, kw)), real(*a, **kw))[1]
     for i in range(min(6, lst.model().rowCount())):
-        lst.toggle(lst.model().index(i, 0))
+        for p in lst.delegate.parts(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0))):
+            QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=p[1].center())
     lst.play_requested.emit(lst.model().entries[0][1].episodes[0])
     QApplication.processEvents()
-    assert seed.library._meta["state_version"] == before
+    assert writes == []
 
 
 def test_play_looks_for_the_video_beside_the_file_on_a_worker_and_says_why_it_cant(seeded, tmp_path):
@@ -271,9 +278,11 @@ def test_needs_you_shows_the_show_waiting_on_videos_and_its_tab_appears(seeded):
 
 
 def test_the_subline_counts_current(seeded):
+    """Counted from the seed itself, not from the view: the rows are Current's pieces, the files its items."""
     seed, win = seeded()
-    view = win.page_widgets["current"].view_model
-    assert win.subline.text() == f"日本語 · {view.counts.current_rows} in Current · {view.counts.current_files} files"
+    current_items = [r for r in seed.items if r["tier"] in ("now", "soon")]
+    pieces = len({r["piece_id"] for r in current_items})
+    assert win.subline.text() == f"日本語 · {pieces} in Current · {len(current_items)} files"
 
 
 def test_the_goal_strip_counts_goals_titles_and_files(seeded):
@@ -354,15 +363,20 @@ def test_e16_large_text_at_1024_keeps_every_column_inside_the_row(qapp, seeded):
     assert style.current()[1] == "L"
     lst = current(win)
     width = lst.viewport().width()
+    f = rows.fz()
     for i in range(min(8, lst.model().rowCount())):
         rect = lst.visualRect(lst.model().index(i, 0))
-        kind = lst.model().entries[i][0]
+        kind, payload, lines = lst.model().entries[i]
         if kind == rows.ROW:
             cols = lst.delegate.columns(rect)
-            assert cols["acts"].right() <= width and cols["text_right"] > rect.left() + 120
+            cover_right = rect.left() + 4 + round(20 * f) + 12 + round(theme.SIZES["row-cover-w"] * f)
+            assert cols["acts"].right() <= width
+            assert cols["text_right"] - cover_right >= 100            # the title keeps room to be read
         elif kind == rows.HERO:
-            g = lst.delegate._hero_geometry(lst.model().entries[i][1], rect, lst.model().entries[i][2])
-            assert g["main"].right() < g["play"].left() and g["play"].right() <= width
+            g = lst.delegate._hero_geometry(payload, rect, lines)
+            assert g["main"].width() >= 200 and g["play"].right() <= width
+            assert g["status"].left() >= g["main"].right()            # the side column never covers the text
+            assert g["cover"].bottom() <= g["box"].bottom()
 
 
 def test_the_wiring_check_passes_with_the_pages_alive(seeded):
@@ -380,3 +394,91 @@ def test_painted_parts_show_their_tooltip_through_the_bubble(seeded):
     ev = QHelpEvent(QEvent.Type.ToolTip, play[1].center(), lst.viewport().mapToGlobal(play[1].center()))
     lst.viewportEvent(ev)
     assert wait_until(lambda: win.tooltips.showing() == play[2])
+
+
+def test_a_click_on_a_pill_a_mark_or_a_tick_changes_nothing(seeded):
+    """IK-10: in W2.2 a status pill, the on-disk mark, a chip and an episode's tick are states, not buttons: a click on
+    one neither opens nor closes the row."""
+    seed, win = seeded(size=(1280, 1100))
+    lst = current(win)
+    i = next(k for k, e in enumerate(lst.model().entries) if e[0] == rows.ROW and e[1].mark is not None)
+    lst.toggle(lst.model().index(i, 0))
+    assert wait_until(lambda: lst.model().open_key is not None)
+    lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+    QApplication.processEvents()
+    for name in ("status", "mark", "tick"):
+        p = part(lst, i, name)[0]
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=p[1].center())
+        QApplication.processEvents()
+        assert lst.model().open_key is not None, name
+
+
+def test_a_failed_migration_says_so_and_never_getting_ready_forever(seeded):
+    """IK-8 / G1.2-18: the bar says why and what to do."""
+    seed, win = seeded(mode="json", reason="migration failed")
+    page = win.page_widgets["current"]
+    assert page.state_bar.text() == strings.STATE_LINES["migration-failed"]
+
+
+
+def test_the_text_cache_holds_across_device_pixel_ratios(qapp):
+    """A-1: a caller asking at 1.0 between two paints at 1.5 must not empty the cache (it did, 2–4 times a frame)."""
+    rows.TEXT.static("星降る街の小さな工房", "row-title", 300, dpr=1.5)
+    key = rows.TEXT._key
+    held = len(rows.TEXT._static)
+    rows.TEXT.metrics("status-pill")                     # at the default ratio
+    rows.TEXT.static("雲の上の郵便屋さん", "row-title", 300, dpr=2.0)
+    assert rows.TEXT._key == key and len(rows.TEXT._static) == held + 1
+
+
+def test_a_reset_keeps_the_row_at_the_top_where_it_was(seeded):
+    """An outside commit (a hato drop at the top) changes the rows' keys: the list is reset, and the row that was at
+    the top of the view stays there."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 2)
+    QApplication.processEvents()
+    idx = lst.indexAt(QPoint(4, 1))
+    key = rows.RowsModel.key_of(lst.model().entries[idx.row()])
+    y = lst.visualRect(idx).top()
+    first = next(r for r in seed.items if r["tier"] == "now")
+    seed.library.commit(items=[dict(first, id=10 ** 6, ord=first["ord"] - 512, piece_id=10 ** 6,
+                                    rel_path="HighPriority/Hato/new - 01.srt", title="new - 01.srt")], order=True)
+    assert wait_until(lambda: lst.model().entries[0][1].key == f"p{10 ** 6}")
+    QApplication.processEvents()
+    row = lst.model().keys.index(key)
+    assert abs(lst.visualRect(lst.model().index(row, 0)).top() - y) <= 1
+
+
+def test_finished_hit_tests_only_what_it_paints(seeded):
+    """A-14: a Finished row paints only Mining… / N in Anki; no hidden pill or mark answers the pointer."""
+    seed, win = seeded()
+    win.show_tab("finished")
+    lst = win.page_widgets["finished"].list
+    QApplication.processEvents()
+    for i, (kind, payload, _l) in enumerate(lst.model().entries):
+        if kind != rows.FINISHED:
+            continue
+        names = [p[0] for p in part_any(lst, i)]
+        assert "mark" not in names
+        if payload.status.kind not in ("in_anki", "mining"):
+            assert "status" not in names
+
+
+def part_any(lst, i):
+    entry = lst.model().entries[i]
+    return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
+
+
+def test_a_youtube_videos_play_is_muted_and_says_why(seeded):
+    """A-19: its video is online; until the window holds its address ▶ is muted with the reason, never a dead click."""
+    seed, win = seeded()
+    lst = current(win)
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
+                              if e[0] == rows.ROW and e[1].media == "youtube")
+    assert not row.can_play and "online" in row.play_tip.lower()
+    fired = []
+    lst.play_requested.connect(fired.append)
+    play = [p for p in part(lst, i, "play")][0]
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=play[1].center())
+    assert fired == []

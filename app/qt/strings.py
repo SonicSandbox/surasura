@@ -25,7 +25,7 @@ PAGE_WAITING = "This page arrives in a later build of 3.0."
 # --- W2.2: the first screens (Current, Finished, Needs you; the painted rows) ------------------------------------ #
 CURRENT_HEADING = "Current"
 CURRENT_HEADING_TIP = "What you're working through, in the order you'll watch and read it"
-CURRENT_EMPTY = ("Nothing in Current yet", "Add what you'll watch and read with + Add, or drop files here")
+CURRENT_EMPTY = ("Nothing in Current yet", "What you'll watch and read next shows here, in order")
 FINISHED_HEADING = "Finished"
 FINISHED_HELP = "?"
 FINISHED_HELP_NAME = "About Finished"
@@ -42,13 +42,15 @@ STATE_LINES = {
     "getting-ready": "Getting your library ready… Your list shows as it was; nothing can be moved until it's done.",
     "busy": "Updating your library…",
     "read-only": "Read-only: {reason}. Nothing can be moved until it's fixed.",
+    "migration-failed": "Read-only: your library couldn't be brought into 3.0's store, so it shows as it was. "
+                        "Open the logs folder (the bar) and send it in; nothing of yours was changed.",
 }
 READ_ONLY_REASONS = {
-    "damaged": "the library needs a repair",
+    "damaged": "the library needs a repair — Surasura keeps its last good copy; send the logs folder (the bar) in",
     "made by a newer Surasura": "your library was saved by a newer Surasura — update Surasura to change it",
-    "busy": "another program is saving your library",
+    "busy": "another program is saving your library — it opens as soon as that's done",
 }
-READ_ONLY_IO = "Surasura can't read the library's file"
+READ_ONLY_IO = "Surasura can't read the library's file — check its drive is there, then restart Surasura"
 PLAY_FAILED = "Couldn't open {name}: {why}"
 PLAY_NOT_ON_DISK = "it isn't on disk"
 PLAY_NO_MEDIA_BESIDE = "no {word} beside it on disk"
@@ -64,8 +66,10 @@ ROWS_HERO_STATS = "{pct}% known · {n} new words"
 ROWS_HERO_STATS_NONE = "not analysed yet"
 ROWS_VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 ROWS_NO_MEDIA_BUTTON = "No {word}"
+ROWS_ONLINE_BUTTON = "Online"
 ROWS_SOON_LABEL = "SOON"
 ROWS_STUDYING = "↑ Studying its cards first"
+ROWS_STUDYING_TIP = "Its new cards go first in Anki until they're studied"
 ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"
 ROWS_MORE_CHIPS = "{n} more"

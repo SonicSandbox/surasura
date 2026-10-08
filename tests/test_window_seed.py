@@ -102,8 +102,11 @@ def test_the_stand_in_mirrors_the_stores_reads():
     pinned = h.pinned()                                   # the seed's one Finished show studying its cards first
     assert pinned and all(p[2] == "graduated" for p in pinned)
     assert [p[3] for p in pinned] == sorted(p[3] for p in pinned)
-    cards = h.cards_of([r["id"] for r in seed.items])
-    assert cards and all(isinstance(v, list) and v for v in cards.values())
+    ids = [r["id"] for r in seed.items]
+    cards = h.cards_of(ids)                              # L3.1's shape: every id asked, an empty list where none
+    assert list(cards) == ids and all(isinstance(v, list) for v in cards.values())
+    assert any(cards.values()) and any(not v for v in cards.values())
+    assert h.meta()["store_id"]
     with pytest.raises(ValueError):
         h.ordered("HighPriority")
 

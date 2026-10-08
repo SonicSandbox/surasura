@@ -43,6 +43,10 @@ class ProgrammingError(Exception):
     """A handle used from a thread other than the one that opened it (sqlite3's own message)."""
 
 
+class OperationalError(Exception):
+    """A read while the store can't be used (busy, damaged): sqlite3's "database is locked"."""
+
+
 class StandinLibrary:
     """The shared library: items and works by id, the meta, and each item's cards. Thread-safe; tests change it through
     `commit` (as another program would) and the window's handles see it through the feed."""
@@ -55,7 +59,7 @@ class StandinLibrary:
         self._cards = dict(cards or {})
         self._data_version = 1
         self.mode, self.reason = mode, reason
-        m = {"epoch": 1, "state_version": 1, "order_version": 1, "availability_version": 1, "pins_version": 1,
+        m = {"store_id": "standin-0001", "epoch": 1, "state_version": 1, "order_version": 1, "availability_version": 1, "pins_version": 1,
              "analysed_order_version": 1, "planned_order_version": 1, "planned_pins_version": 1,
              "mine_line": MINE_LINE_DEFAULT, "soon_line": None, "arrivals_on": 1, "feed_floor": 0}
         m.update(meta or {})
@@ -85,7 +89,7 @@ class StandinLibrary:
     def open_any(self):
         """A handle even when the mode isn't `store` (the rows the window shows read-only from the JSON copy, or the
         last saved state: the stand-in's one source)."""
-        return StandinStore(self)
+        return StandinStore(self, copy=True)
 
     # --- an outside writer (tests; a hato drop, another window, the command line) ------------------------------- #
     def commit(self, items=(), works=(), gone=(), meta=None, order=False, availability=False, pins=False,
@@ -165,16 +169,17 @@ class StandinOpener:
     def fallback_handle(self):
         h = getattr(self._local, "copy", None)
         if h is None or h.closed:
-            h = self._local.copy = StandinStore(self.library)
+            h = self._local.copy = StandinStore(self.library, copy=True)
         return h
 
 
 class StandinStore:
     """One handle (one 'connection'), bound to the thread that opened it."""
 
-    def __init__(self, library):
+    def __init__(self, library, copy=False):
         self._lib = library
         self._thread = threading.get_ident()
+        self._copy = copy                              # the library's last copy (read-only): readable in any mode
         self.closed = False
 
     def _here(self):
@@ -182,6 +187,8 @@ class StandinStore:
             raise ProgrammingError("Cannot operate on a closed database.")
         if threading.get_ident() != self._thread:
             raise ProgrammingError("SQLite objects created in a thread can only be used in that same thread.")
+        if not self._copy and self._lib.mode != "store":
+            raise OperationalError("database is locked")
 
     def close(self):
         self.closed = True
@@ -294,7 +301,7 @@ class StandinStore:
             return [(r["id"], r["rel_path"], r["tier"], r["pinned"]) for r in rows]
 
     def cards_of(self, item_ids):
-        """{item_id: [note ids]} for the items that have cards (L3.1)."""
+        """{item_id: [note ids]} for every item asked, sorted, an empty list where none (L3.1's shape)."""
         self._here()
         with self._lib._lock:
-            return {i: list(self._lib._cards[i]) for i in item_ids if self._lib._cards.get(i)}
+            return {i: sorted(self._lib._cards.get(i) or ()) for i in dict.fromkeys(item_ids)}

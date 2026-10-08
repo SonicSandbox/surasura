@@ -45,8 +45,11 @@ class Text:
         self._metrics = {}
         self._key = None
 
-    def _check(self, dpr):
-        key = (style.current(), dpr)
+    def _check(self, dpr=None):
+        # Logical pixels: a font, its metrics and a prepared static text hold at any device-pixel ratio, so the cache
+        # follows the look (theme, text size, language) only — keyed on the ratio too, it emptied itself whenever a
+        # caller asked at 1.0 between two paints at 1.5 (W2.2 review A-1).
+        key = style.current()
         if key != self._key:
             self._fonts.clear()
             self._static.clear()
@@ -422,12 +425,12 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             h = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
             if is_open:
-                h += round(len(payload.episodes) * theme.SIZES["episode-row"] * f + 14 + 10)
+                h += self._episodes_h(payload) + 14
             return QSize(100, h + 8 + gap + self._lines_h(lines))
         if kind in (ROW, FINISHED):
             h = round(theme.SIZES["row"] * f)
             if is_open and kind == ROW:
-                h += round(len(payload.episodes) * theme.SIZES["episode-row"] * f + 10 + 10)
+                h += self._episodes_h(payload) + 10
             return QSize(100, h + gap + self._lines_h(lines))
         if kind == MONTH:
             return QSize(100, round(11.5 * f * 1.45 + 20))
@@ -439,6 +442,10 @@ class RowDelegate(QStyledItemDelegate):
         if kind == EMPTY:
             return QSize(100, round(17 * f * 1.45 + 13 * f * 1.45 + 80))
         return QSize(100, round(theme.SIZES["row"] * f))
+
+    def _episodes_h(self, row):
+        """An open row's episode list: 4 px, then one `episode-row` per episode (as `_episode_rows` lays them)."""
+        return 4 + len(row.episodes) * round(theme.SIZES["episode-row"] * fz())
 
     def _hero_text_h(self):
         f = fz()
@@ -481,10 +488,20 @@ class RowDelegate(QStyledItemDelegate):
             line = QRect(rect.left(), rect.top(), rect.width(), h)
             cols = self.columns(line, kind)
             st_rect, mk_rect = self._status_rects(payload, cols["stat"])
+            if kind == FINISHED:                       # Finished paints only Mining… / N in Anki, never the mark
+                mk_rect = None
+                if payload.status is None or payload.status.kind not in ("in_anki", "mining"):
+                    st_rect = None
             if st_rect is not None:
                 out.append(("status", st_rect, payload.status.tip, None))
             if mk_rect is not None:
                 out.append(("mark", mk_rect, payload.mark.tip, None))
+            if payload.studying:
+                fm = TEXT.metrics("badge")
+                sw = fm.horizontalAdvance(strings.ROWS_STUDYING) + round(16 * f)
+                x0 = line.left() + 4 + round(20 * f) + 12 + round(theme.SIZES["row-cover-w"] * f) + 13
+                out.append(("studying", QRect(x0, line.center().y(), sw, round(19 * f) + 4),
+                            strings.ROWS_STUDYING_TIP, None))
             if kind == ROW:
                 out.append(("play", self._play_rect(cols["acts"]), payload.play_tip,
                             payload.episodes[payload.next_index]))
@@ -635,7 +652,7 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             self._paint_hero(p, payload, rect, lines, hovered, focused, dpr)
         elif kind in (ROW, FINISHED):
-            self._paint_row(p, kind, payload, body, hovered, focused, dpr)
+            self._paint_row(p, kind, payload, body, hovered, focused, dpr, lines)
         elif kind == MONTH:
             TEXT.draw(p, rect.left() + 4, rect.bottom() - round(11.5 * fz() * 0.9) - 4, payload.upper(), "month",
                       rect.width() - 8, c("ink-faint"), dpr=dpr)
@@ -696,7 +713,7 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_row(self, p, kind, row, body, hovered, focused, dpr):
+    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=()):
         f = fz()
         h = round(theme.SIZES["row"] * f)
         line = QRect(body.left(), body.top(), body.width(), h)
@@ -747,7 +764,7 @@ class RowDelegate(QStyledItemDelegate):
             self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
         if is_open:
             area = QRect(body.left(), line.bottom() + 1, body.width(), body.bottom() - line.bottom())
-            self._paint_episodes(p, row, area, dpr)
+            self._paint_episodes(p, row, area, dpr, lines=lines)
 
     def _paint_studying(self, p, x, y_mid, dpr):
         f = fz()
@@ -769,7 +786,7 @@ class RowDelegate(QStyledItemDelegate):
         icon(p, "play", QRectF(r.center().x() - 7, r.center().y() - 7, 14, 14), c("ink-dim"))
         p.restore()
 
-    def _paint_episodes(self, p, row, area, dpr, hero=False):
+    def _paint_episodes(self, p, row, area, dpr, hero=False, lines=()):
         f = fz()
         rows = self._episode_rows(row, area, hero)
         if not rows:
@@ -777,7 +794,13 @@ class RowDelegate(QStyledItemDelegate):
         rule_x = rows[0][0].left() - 0.5
         p.setPen(QPen(c("line"), 1))
         p.drawLine(QPointF(rule_x, rows[0][0].top()), QPointF(rule_x, rows[-1][0].bottom()))
-        for r, ep in rows:
+        clip = QRectF(self.view.viewport().rect()) if p.device() is self.view.viewport() else None
+        split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
+        for i, (r, ep) in enumerate(rows):
+            if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too
+                self._paint_line(p, lines_top(lines), QRect(r.left() - 8, r.top() - 3, r.width() + 8, 6), dpr)
+            if clip is not None and not clip.intersects(QRectF(r)):
+                continue
             cols = self._episode_cols(r)
             tick = QRectF(cols["tick"])
             if ep.watched:
@@ -850,7 +873,7 @@ class RowDelegate(QStyledItemDelegate):
                           c("ink-dim"), dpr=dpr)
         st = g["stats"]
         stats = strings.ROWS_HERO_STATS_NONE if nxt.pct is None else strings.ROWS_HERO_STATS.format(
-            pct=round(nxt.pct), n=nxt.n_new if nxt.n_new is not None else 0)
+            pct=round(nxt.pct), n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH)
         TEXT.draw(p, st.left(), st.center().y(), stats, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
         for chip_rect, chip in g["chips"]:
             self._paint_chip(p, chip_rect, chip, dpr)
@@ -859,7 +882,7 @@ class RowDelegate(QStyledItemDelegate):
         if nxt.status is not None:
             paint_pill(p, nxt.status, g["status"], dpr)
         if self.view.model().open_key == row.key:
-            self._paint_episodes(p, row, g["eps"], dpr, hero=True)
+            self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
 
     def _paint_chip(self, p, r, chip, dpr):
         f = fz()
@@ -885,14 +908,13 @@ class RowDelegate(QStyledItemDelegate):
     def _paint_watch(self, p, r, row, nxt, dpr):
         f = fz()
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
-        word = {"podcast": "audio", "audiobook": "audio", "book": "EPUB", "lightnovel": "EPUB",
-                "manga": "EPUB"}.get(row.media, "video")
+        word = row.media_word
         if nxt.can_play:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self._iris(rr))
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
             ink = style.qcolor(theme.FIXED["on-accent"])
-            label = strings.ROWS_VERB.get(word, strings.ROWS_VERB["video"])
+            label = row.verb
         else:
             pen = QPen(c("line-hi"), 1)
             pen.setStyle(Qt.PenStyle.DashLine)
@@ -900,7 +922,10 @@ class RowDelegate(QStyledItemDelegate):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
             ink = c("ink-faint")
-            label = strings.ROWS_NO_MEDIA_BUTTON.format(word=word)
+            if row.media == "youtube":
+                label = strings.ROWS_ONLINE_BUTTON
+            else:
+                label = strings.ROWS_NO_MEDIA_BUTTON.format(word=word)
         fm = TEXT.metrics("button", dpr=dpr)
         total = 12 + 6 + fm.horizontalAdvance(label)
         x = r.center().x() - total / 2
@@ -968,6 +993,10 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, x, y + 12.5 * f * 1.45 / 2, strings.ROWS_FAILURE_LINE, "hero-sub", w, c("ink-dim"), dpr=dpr)
 
 
+def lines_top(lines):
+    return next(ln for ln in lines if ln.kind == "top")
+
+
 def view_tone(pct):
     return view_rows.pct_tone(pct)
 
@@ -1018,9 +1047,10 @@ class RowsView(QListView):
             self.viewport().update()
         else:
             self._hover = None
-            if anchor is not None:
+            if anchor is not None and self.isVisible():
                 self._restore = anchor
                 self._apply_restore()
+                self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         return how
 
     def _anchor(self):
@@ -1118,8 +1148,11 @@ class RowsView(QListView):
                         self.play_requested.emit(part[3])
                     event.accept()
                     return
-                if part is not None and part[0] in ("open", "title", "chip", "status", "mark", "tick"):
+                if part is not None and part[0] in ("open", "title"):
                     self.toggle(idx)
+                    event.accept()
+                    return
+                if part is not None:                 # a pill, a mark, a chip, a tick: states, not buttons (W2.2)
                     event.accept()
                     return
         super().mousePressEvent(event)
@@ -1137,6 +1170,10 @@ class RowsView(QListView):
         super().changeEvent(event)
 
 
-# The list's layout mode (P-layout, W2.2 row 0): see *As built*.
-LAYOUT_MODE = QListView.LayoutMode.Batched
+# The list's layout mode (P-layout, W2.2 row 0, this desktop, 20,000 rows): one pass. Qt 6.11's batched mode was worse
+# on every count — its batches ran in one stretch of the event loop (1,494 ms to lay 20,000 out, 120 ms for an insert,
+# 258 ms for a reset, against one pass's 83 / 73 ms) and an insert lost the scroll place. One pass costs ~4 µs a row
+# (the delegate's sizeHint): within the 4 ms step up to ~1,000 rows in one list; past that, a relayout (a row opened,
+# the rows changed) is a long step — W3.1's (*As built*).
+LAYOUT_MODE = QListView.LayoutMode.SinglePass
 LAYOUT_BATCH = 100

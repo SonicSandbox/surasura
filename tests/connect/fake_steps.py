@@ -216,7 +216,9 @@ class FakeSteps:
             out.append({"word": w["word"], "reading": w["reading"], "outcome": "made", "note_id": note,
                         "line_start": w["line_start"]})
         self._kill("after-mine")
-        return {"outcomes": out, "app": "3.7.0", "doubt": False}
+        # names_tag_refused: Anki didn't take the names' tag, so every made note comes back tag_pending
+        pending = [o["note_id"] for o in out if o["outcome"] == "made"] if self.plan.get("names_tag_refused") else []
+        return {"outcomes": out, "app": "3.7.0", "doubt": False, "tag_pending": pending}
 
     def by_tag(self, lang, job, picked, words):
         self.log.append(("by_tag", job["item_id"]))

@@ -538,7 +538,9 @@ def test_an_open_row_repaints_from_pixmaps_and_opening_rows_never_pushes_the_clo
     seed, win = seeded()
     lst = current(win)
     lst.viewport().repaint()
-    openable = [i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and len(e[1].episodes) >= 2][:6]
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    openable = [i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and len(e[1].episodes) >= 2 and
+                on_screen(i)][:6]
     assert len(openable) >= 3
     for i in openable:                                         # open and close several: their episodes fill a cache
         lst.toggle(lst.model().index(i, 0))
@@ -548,7 +550,7 @@ def test_an_open_row_repaints_from_pixmaps_and_opening_rows_never_pushes_the_clo
         lst.viewport().repaint()                               # the open row again: its head and episodes are reused
         assert lst.delegate.renders == renders
         key = lst.model().entries[i][1].key
-        assert any(k[1] == (key, "open") for k in lst.delegate._sprites["row"])     # the head is a pixmap (B-9)
+        assert any(k[1] == (key, "open") for k in lst.delegate._sprites["row"]), [k[:2] for k in lst.delegate._sprites["row"]][-4:]   # the head is a pixmap (B-9)
         lst.toggle(lst.model().index(i, 0))
         lst.doItemsLayout()
         lst.viewport().repaint()

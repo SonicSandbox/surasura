@@ -695,6 +695,8 @@ def test_a_band_change_is_remembered_and_stamped_so_the_next_check_reuses_it(sam
     # Generate, and the re-plan would refuse the plan ("generate-first: auto_band"). Haya's E1.3 check.
     import gzip
     from app.main import journey_is_current
+    from tests import plan_file_cases
+    plan_file_cases.needs_junban()                              # the plan file is written only with Junban (E3.1)
     root = samples_env
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)

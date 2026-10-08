@@ -404,6 +404,29 @@ def test_known_words_changed_reorders_now_then_asks_for_a_generate(lib):
     assert asked and asked[0].startswith("replan-now"), asked
 
 
+def test_known_words_changed_without_a_move_asks_for_no_journey(lib):
+    """The journey's Generate is for moves (04 §3, G1.5-5): known words changed with nothing moved leave the run's
+    signature behind the library's, but no move is pending — nothing is asked for on focus (mutant "journey asks
+    without moves")."""
+    root, store = lib
+    fake = _deck(root)
+    asked = []
+    dash, _ = _host(generate=asked.append)
+    with _patched(fake):
+        dash._job("catch-up")
+        asked.clear()
+        known = os.path.join(root, "User Files", "ja", "KnownWord.json")
+        with open(known, encoding="utf-8") as f:
+            data = json.load(f)
+        with open(known, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)          # a new stat: the known words "changed"
+        os.utime(known, (time.time() + 5, time.time() + 5))
+        dash._seen = None                        # focus again (the look's memo holds no known words)
+        dash._job("catch-up")
+    assert not store.journey_pending()
+    assert "moves" not in asked, asked
+
+
 def test_a_stand_aside_plan_says_generate_reorders(lib, monkeypatch):
     root, store = lib
     fake = _deck(root)
@@ -616,6 +639,36 @@ def test_after_a_generate_a_plan_the_engine_stands_aside_from_reorders_from_the_
     with _patched(fake):
         host._job("generate")
     assert fake.write_requests and replan_preview.STAND_ASIDE["weights"] not in lines
+
+
+def test_after_a_generate_a_reorder_from_the_list_cut_short_records_no_plan(lib, monkeypatch):
+    """The list path after a Generate (a stand-aside plan) records the order planned only when every card landed:
+    cut short by a review after request 1, nothing is recorded, and the job is retried (mutant "records after a
+    failure")."""
+    root, store = lib
+    _settings_file(root, junban_chunk_size=5)
+    fake = _deck(root)
+    monkeypatch.setattr(plan_engine, "stands_aside", lambda plan: "weights")
+    recorded = []
+    real_record = library_store.Store.record_planned
+
+    def record(self, order_version, pins_version):
+        recorded.append((order_version, pins_version))
+        real_record(self, order_version, pins_version)
+    monkeypatch.setattr(library_store.Store, "record_planned", record)
+    real = fake._multi
+
+    def multi(actions):
+        replies = real(actions)
+        if any(a.get("action") == "setSpecificValueOfCard" for a in actions):
+            fake.reviewing = True                            # a review begins once the first request landed
+        return replies
+    fake._multi = multi
+    host, _ = _host()
+    with _patched(fake):
+        host._job("generate")
+    assert len(fake.write_requests) == 1, "the list's re-order never started, or wrote on through the review"
+    assert recorded == [] and host._retry_at is not None
 
 
 def test_a_review_beginning_mid_write_stops_the_automatic_job_between_requests(lib):

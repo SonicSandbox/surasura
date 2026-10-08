@@ -86,6 +86,13 @@ def _dash(language="ja", children=(), generating=None):
 ON = {"junban_replan_preview": True, "enable_junban": True, "junban_scope": "deck", "junban_deck": "TheBank"}
 
 
+@pytest.fixture(autouse=True)
+def _junban_installed(monkeypatch):
+    """The dashboard's wiring is under test here, not whether Junban is installed: a build without modules/ (the
+    public CI) has none, and `is_on` would read every switch as off."""
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: True)
+
+
 def test_off_there_is_no_host(monkeypatch):
     d = _dash()
     monkeypatch.setattr(main_module.settings_manager, "load_settings", lambda: {"junban_replan_preview": False})
@@ -155,8 +162,8 @@ def test_after_a_generate_the_host_reorders_and_the_backfill_step_is_left_as_it_
     auto = types.SimpleNamespace(enabled=lambda s: seen.setdefault("settings", s) and False,
                                  blocked=lambda s, window=True: None)
     monkeypatch.setitem(__import__("sys").modules, "modules.junban.auto", auto)
-    import modules.junban
-    monkeypatch.setattr(modules.junban, "auto", auto, raising=False)
+    junban = pytest.importorskip("modules.junban")          # a build without modules/ (the public CI) skips
+    monkeypatch.setattr(junban, "auto", auto, raising=False)
     monkeypatch.setattr(main_module.settings_manager, "load_settings",
                         lambda: dict(ON, junban_auto_reorder=True, junban_auto_backfill=True))
     d._maybe_junban_auto(force=True)

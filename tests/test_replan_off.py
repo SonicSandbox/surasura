@@ -45,6 +45,7 @@ def test_off_every_output_is_the_bases_and_no_plan_file_is_written(tmp_path, cas
 
 
 def test_switching_it_on_runs_one_full_generate_that_writes_the_plan(tmp_path):
+    cases.needs_junban()
     case = "samples-ja"
     root = str(tmp_path / case)
     cases.build(root, case, preview=False)
@@ -84,7 +85,8 @@ def test_junban_removed_the_switch_is_read_as_off(tmp_path):
     """settings.json says on, but no Junban: no plan (the analyzer asks for the package, never imports it to see)."""
     case = "samples-ja"
     root = str(tmp_path / case)
-    cases.build(root, case)                                     # the switch on in settings.json
+    cases.build(root, case, preview=False)
+    _switch(root, True)                                         # the switch on in settings.json (with Junban or not)
     language, _library, _shipped, args = cases.ALL_CASES[case]
     code = ("import sys, runpy; sys.modules['modules.junban'] = None; "
             f"sys.argv = ['analyzer.py', '--language={language}', '--static', '--no-open'] + {args!r}; "

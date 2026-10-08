@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(REPO, "tests", "Test Resources")
 SAMPLES = os.path.join(REPO, "samples")
@@ -120,7 +122,9 @@ def build(root, case, order=None, preview=True):
     """A case's library under `root`, every file's mtime pinned. `order`: [(tier, name)] in place of the case's own
     (the same files; RP-2's other orders). `preview`: the fast re-plan's preview switched on in the root's
     settings.json, for the case's language (E3.1: the switch is its language's), so a Generate writes the plan file
-    (E1.2-1: only then); False leaves no settings.json (2.5's run)."""
+    (E1.2-1: only then); False leaves no settings.json (2.5's run). On, a build without Junban skips the test."""
+    if preview:
+        needs_junban()
     language, library, shipped, _args = ALL_CASES[case]
     for sub in ("results", "appdata", "localappdata"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
@@ -156,6 +160,14 @@ def build(root, case, order=None, preview=True):
         json.dump({"schedule": schedule}, f, ensure_ascii=False, indent=2)
     for path in pinned:
         os.utime(path, (MTIME, MTIME))
+
+
+def needs_junban():
+    """The plan file is written only with Junban installed (E3.1: `replan_preview.is_on`): a build without modules/
+    (the public CI) skips a test that switches the preview on."""
+    from app import replan_preview
+    if not replan_preview.junban_present():
+        pytest.skip("no Junban (a build without modules/): the preview is off and no plan file is written")
 
 
 def _shipped(language, name):

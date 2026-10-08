@@ -106,6 +106,10 @@ class Drill:
         from app import anki_sync
         first = anki_sync.sync("ja", self.a.url, ["DevTest"], ["Expression"])
         assert first.error is None, first.error
+        # Connect's setup, as the person's own: it records the Anki profile Connect makes cards in (the open one)
+        from app.connect import setup as connect_setup
+        connect_setup.checks(settings, "ja")
+        assert connect_setup.anki_profile() == "DevTest", connect_setup.read_record()
 
     def drop(self):
         """A hato-style drop: the subtitle copied into hato's folder (its own bytes), registered with a `timed`

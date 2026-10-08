@@ -93,7 +93,7 @@ def _queue(store, language, ledger, new, file_words):
             continue
         lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
         words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
-        if words and ledger.queue_level(language, item_id, words) is not None:
+        if words and ledger.queue_level(language, item_id, words, store_id=library.store_id(store)) is not None:
             queued.append(item_id)
     return queued
 

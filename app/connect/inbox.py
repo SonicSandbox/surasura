@@ -39,7 +39,7 @@ def consume(store, language, ledger=None):
         missed = []
         with ledger.transaction():
             if gap:
-                for job in ledger.jobs(language, states=("queued", "waiting")):
+                for job in ledger.jobs(language, states=("queued", "waiting")):     # `drop` keeps one mining
                     if job["item_id"] not in in_line and ledger.drop(language, job["item_id"], "left the top 20"):
                         dropped.append(job["item_id"])
                 missed = [i for i in line if library.mined_at(store, i) is None and not ledger.has_work(language, i)]
@@ -54,7 +54,8 @@ def consume(store, language, ledger=None):
                 for item_id, (event_id, kind, by) in latest.items():
                     if item_id in in_line:
                         if kind in ENTERS and library.mined_at(store, item_id) is None \
-                                and ledger.queue(language, item_id, by, event_id) is not None:
+                                and ledger.queue(language, item_id, by, event_id,
+                                                 store_id=library.store_id(store)) is not None:
                             queued.append(item_id)
                     elif ledger.drop(language, item_id, "left the top 20"):
                         dropped.append(item_id)

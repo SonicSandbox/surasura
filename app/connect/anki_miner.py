@@ -405,12 +405,14 @@ def tag_names(url, words, outcomes):
 
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
-               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0):
+               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
     {"run_file", "run", "result", "outcomes", "app", "features", "tagged", "tag_pending"}; raises AnkiMinerError
-    (busy, anki-closed, needs-you, setup, refused, crashed …)."""
+    (busy, anki-closed, needs-you, setup, refused, crashed …). `expect_profile`: the profile id the words were
+    picked for (P1.3-AM37 #5, the runner's half): another one active now -> AnkiMinerError `profile-changed`, before
+    anything is mined (the runner picks again)."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -421,7 +423,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout)
+                              subtitle_offset, timeout, expect_profile)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -436,8 +438,10 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-               subtitle_offset, timeout):
+               subtitle_offset, timeout, expect_profile=None):
     info, profile = preflight(path, language, profile_name)
+    if expect_profile is not None and profile != expect_profile:
+        raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
     asks, named = features(info), info.get("features")
     if "Z-1" not in asks:
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])

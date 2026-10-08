@@ -18,6 +18,13 @@ P2.1 puts Connect on the library store (the verbs `register`, `place`, `finish`,
 - `rules`      — New arrivals' placing rules (`placing_rules`, 3.0 only)
 - `notice`     — the window's start-up line: what another program added while Surasura was closed
 
+P2.4 builds the loop (`surasura-cli connect`):
+
+- `runner`     — sync → known-sync → generate → pick → fit check → mine → backfill → junban → sync, every job in
+                 top-20 order, each step saved; waits and resumes; exits when no job is left
+- `fit_check`  — hato's `timed`, else tsubasa's `CONFIDENT` with one segment, else not mined
+- `power`      — mains power only, below-normal priority
+
 Nothing here is imported unless a command-line verb needs it, or the window with Connect's preview on: with the
 preview off, every output is 2.5's.
 """

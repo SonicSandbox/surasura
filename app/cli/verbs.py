@@ -1129,6 +1129,9 @@ def pick(args):
 
     contract.emit_progress("choosing the words and their lines", 2, 3)
     keys, source = picking.carded(lang, loaded, [setup[2].deck] if setup else ())
+    # Connect's runner (P2.4): every word it has made a card for, whatever became of the card (G1.3-4: a card you
+    # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
+    keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
     view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,

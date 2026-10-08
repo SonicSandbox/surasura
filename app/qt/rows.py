@@ -590,7 +590,9 @@ class RowDelegate(QStyledItemDelegate):
         y += eyebrow_h + 5
         g["title"] = QRect(main.left(), y, main.width(), title_h)
         y += title_h + 5
-        g["sub"] = QRect(main.left(), y, main.width(), sub_h) if row.line or row.source else None
+        # the sub line (mock `heroSub`): *Hato* for a hato show, the channel for a video; otherwise dropped
+        g["sub"] = QRect(main.left(), y, main.width(), sub_h) if row.source == "hato" or \
+            (row.media == "youtube" and row.line) else None
         if g["sub"] is not None:
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)

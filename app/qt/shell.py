@@ -28,10 +28,11 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, Q
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from app import path_utils, theme
-from app.qt import applog, bridge, screens, strings, style, titlebar, tooltip
+from app.qt import applog, bridge, strings, style, titlebar, tooltip
 from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
+from app.qt import screens                                # W2.2: the pages a library fills
 
 TABS = ("current", "finished", "needs", "settings")
 STATE_FILE = "window_state.json"

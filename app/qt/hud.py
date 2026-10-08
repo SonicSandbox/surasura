@@ -619,10 +619,10 @@ class Probe(QObject):
             QTimer.singleShot(500, self._exercise)
 
     def _exercise(self):
-        """Row 8's run: ten tab switches, then 500 bar updates in a burst (one a millisecond), each from the event loop
-        and each timed on its own (`tab-switch`, `bar-update` spans: a step is one of them). The loop's stretches and the
-        late ticks are reported beside them: a burst of due timers is handled in one stretch, so a stretch can be many
-        steps. `SURASURA_SHELL_PROBE_BUSY=1` adds a Python worker busy in 20 ms runs — CPU work in a thread, which the
+        """Row 8's run: ten tab switches, then 500 bar updates in a burst (one a millisecond, each set off as the last
+        ends: M2.1 row D), each from the event loop and each timed on its own (`tab-switch`, `bar-update` spans: a step
+        is one of them). The loop's stretches and the late ticks are reported beside them. `SURASURA_SHELL_PROBE_PILED=1`
+        schedules the 500 at once (W2.1's way: on a busy machine due timers pile into one stretch). `SURASURA_SHELL_PROBE_BUSY=1` adds a Python worker busy in 20 ms runs — CPU work in a thread, which the
         threading rule forbids (04 §4.1: processes do CPU work) — to show what it would cost (review A3)."""
         if os.environ.get("SURASURA_SHELL_PROBE_BUSY") == "1":
             import threading
@@ -649,9 +649,21 @@ class Probe(QObject):
         for i in range(10):
             QTimer.singleShot(40 * i, lambda n=names[i % len(names)]: timed("tab-switch", lambda: self.window.show_tab(n)))
         snap = self.window.services.status.snapshot()
-        for i in range(500):
-            QTimer.singleShot(600 + i, lambda i=i: timed("bar-update", lambda: self.window.show_status(
-                snap._replace(lines=(f"{i} / 500",)))))
+        if os.environ.get("SURASURA_SHELL_PROBE_PILED") == "1":
+            # W2.1's burst (row D's A/B): 500 timers due 1 ms apart, all set at once — on a late or busy machine several
+            # come due together and one stretch handles them all, so a stretch reads as many steps
+            for i in range(500):
+                QTimer.singleShot(600 + i, lambda i=i: timed("bar-update", lambda: self.window.show_status(
+                    snap._replace(lines=(f"{i} / 500",)))))
+            return
+
+        def update(i=0):
+            # M2.1 row D: each update sets the next one off 1 ms after it ends, so a stretch is one update, as a real
+            # bar's are (the status service sends a few a second, never a queue of 500)
+            timed("bar-update", lambda: self.window.show_status(snap._replace(lines=(f"{i} / 500",))))
+            if i + 1 < 500:
+                QTimer.singleShot(1, lambda: update(i + 1))
+        QTimer.singleShot(600, update)
 
     def _finish(self):
         self.result["memory"] = _memory_mb()

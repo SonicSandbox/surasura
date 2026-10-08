@@ -33,7 +33,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False):
+def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False, piled=False):
     root = tempfile.mkdtemp(prefix="w21-measure-")
     probe = os.path.join(root, "probe.json")
     import shutil                                   # the test root is also where bundled resources are read: the mark
@@ -51,6 +51,9 @@ def one_run(idle, hud, busy=False, fontengine="", gc_freeze=False):
     env.pop("SURASURA_GC_FREEZE", None)
     if gc_freeze:
         env["SURASURA_GC_FREEZE"] = "1"
+    env.pop("SURASURA_SHELL_PROBE_PILED", None)
+    if piled:
+        env["SURASURA_SHELL_PROBE_PILED"] = "1"
     if fontengine:
         env["QT_QPA_PLATFORM"] = "windows:fontengine=" + fontengine
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "app_entry.py")], cwd=root, env=env,
@@ -72,10 +75,11 @@ def main():
     ap.add_argument("--fontengine", default="", help="e.g. gdi: Qt's Windows font engine, for comparison")
     ap.add_argument("--phases", action="store_true", help="where the first frame went, phase by phase (M2.1 row D)")
     ap.add_argument("--gc-freeze", action="store_true", help="A/B: freeze the collector's start-up objects")
+    ap.add_argument("--piled", action="store_true", help="A/B: W2.1's burst, 500 timers set at once")
     args = ap.parse_args()
     runs = []
     for _ in range(args.runs):
-        r = one_run(args.idle, args.hud, args.busy, args.fontengine, args.gc_freeze)
+        r = one_run(args.idle, args.hud, args.busy, args.fontengine, args.gc_freeze, args.piled)
         print(json.dumps(r), flush=True)
         if args.phases and r.get("phases"):
             print("  " + " · ".join(f"{p['phase']} {p['ms']}" + (f" (cpu {p['cpu_ms']}, idle {p['idle_share']}, "

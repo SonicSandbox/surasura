@@ -71,8 +71,8 @@ def _gradient(length, lo, hi, s, horizontal, colour, alpha_only=False):
             points.add(min(float(length), max(0.0, edge - REACH * s + (2 * REACH * s) * i / STOPS)))
     for at in sorted(points):
         a = profile(at, lo, hi, s)
-        c = QColor(0, 0, 0, round(255 * a)) if alpha_only else QColor(colour.red(), colour.green(), colour.blue(),
-                                                                        round(colour.alpha() * a))
+        c = QColor(colour)                       # the shadow's colour; through DestinationIn only its alpha counts
+        c.setAlpha(round((255 if alpha_only else colour.alpha()) * a))
         g.setColorAt(at / length if length else 0.0, c)
     return g
 

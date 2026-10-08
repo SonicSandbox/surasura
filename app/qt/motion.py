@@ -525,6 +525,7 @@ class OverlayOpening:
         if self.ghost is not None and not sip.isdeleted(self.ghost):
             self.ghost.hide()
             self.ghost.deleteLater()
+        self.ghost = None
         w = self.widget
         _OPENINGS.pop(id(w), None)
         if not show or sip.isdeleted(w):

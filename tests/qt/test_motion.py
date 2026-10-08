@@ -489,14 +489,21 @@ def test_the_pulse_dims_to_a_third_at_its_half(clock, stage):
     assert spin.pulse_opacity() == pytest.approx(1.0, abs=0.01)
     clock.advance(theme.MOTION["footer-pulse"] / 2 - 1)
     assert spin.pulse_opacity() == pytest.approx(0.35, abs=0.01)
-    img = spin.grab().toImage()
-    c = img.pixelColor(spin.width() // 2, spin.height() // 2)
+    c = _alone(spin).pixelColor(spin.width() // 2, spin.height() // 2)
     # the dot at .35 over its glow at .35: about two fifths covered, never the full dot
     assert 70 <= c.alpha() <= 130
     spin.set_running(False)
-    img = spin.grab().toImage()
-    still = img.pixelColor(spin.width() // 2, spin.height() // 2)
+    still = _alone(spin).pixelColor(spin.width() // 2, spin.height() // 2)
     assert still.alpha() == 255 and still.name() == theme.colours("hb")["ink-faint"]
+
+
+def _alone(widget):
+    """The widget painted on a transparent image, without the window's background (grab() would draw it)."""
+    from PyQt6.QtGui import QImage, QRegion
+    img = QImage(widget.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    widget.render(img, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return img
 
 
 def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):

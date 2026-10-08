@@ -99,3 +99,17 @@ def test_a_lost_ledger_mines_nothing_twice(tmp_path):
     assert not any(e[0] == "mine" for e in steps.log)
     assert [j["reason"] for j in jobs] == [runner.NO_WORDS]
     assert collections.Counter(steps.anki.words()) == collections.Counter(w for w, _r in WORDS[1])
+
+
+def test_an_unknown_status_is_uncertain_tried_again_and_never_counts_as_a_crash(tmp_path):
+    # a status Anki Miner's caller doesn't know is no crash: the word is retried, but it never counts toward
+    # "stopped twice", so the job ends done (its skipped JSON names mining), not failed, with no mine-failed need
+    steps, _summary, jobs, needs = _clean_run(tmp_path, line={"ja": [2]}, queue={"ja": [2]},
+                                              unknown_status=["気配"])
+    assert [j["state"] for j in jobs] == ["done"], jobs
+    assert "mining" in json.loads(jobs[0]["skipped"]), "the word left in doubt is named under mining"
+    assert "mine-failed" not in [n["kind"] for n in needs], needs
+    mines = [e for e in steps.log if e[0] == "mine"]
+    assert len(mines) >= 2 and all(e[3] == ["気配"] for e in mines[1:]), "the unknown word is tried again alone"
+    assert collections.Counter(steps.anki.words()) == collections.Counter([WORDS[2][0][0], WORDS[2][2][0]]), \
+        "the other words get one card each; the unknown one gets none"

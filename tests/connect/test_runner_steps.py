@@ -123,6 +123,20 @@ def test_no_anki_miner_skips_the_mine_step(monkeypatch):
         _steps().mine("ja", {"id": 3, "item_id": 1}, {}, [], 1)
 
 
+@pytest.mark.parametrize("answer, reason", [
+    ({"skipped": "the list is out of date: Generate first"}, "the list is out of date: Generate first"),
+    ({"skipped": "an update is waiting: restart first"}, "an update is waiting: restart first"),
+])
+def test_a_junban_skipped_answer_is_named_as_a_skip_and_is_never_a_reorder(monkeypatch, answer, reason):
+    # a skipped answer means the re-sort is owed: the job must stop, naming why, not look as if it reordered
+    monkeypatch.setattr(verbs, "junban", lambda ns: dict(answer))
+    with pytest.raises(runner.Skip) as got:
+        _steps().order("ja", {"id": 8, "item_id": 1})
+    assert str(got.value) == reason
+    monkeypatch.setattr(verbs, "junban", lambda ns: {})
+    assert _steps().order("ja", {"id": 8, "item_id": 1}) is None, "a clean answer raises nothing"
+
+
 def test_the_connect_verb_runs_the_loop_and_a_second_one_steps_aside():
     import threading
     from app import locks
@@ -167,3 +181,39 @@ def test_a_newer_ledger_is_needs_you_through_the_verb():
     old.close()
     code, line = h.call("connect")
     assert (code, line["code"]) == (4, "needs-you") and "newer" in line["message"]
+
+
+def test_a_newer_ledger_is_needs_you_through_consume_only_too():
+    # the consume-only path reads the ledger before its own loop, so a newer one must be refused there as well
+    import sqlite3
+    from app.connect import ledger as book
+    c.library()
+    os.makedirs(book.folder(), exist_ok=True)
+    old = sqlite3.connect(book.path())
+    old.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    old.execute("INSERT INTO meta VALUES ('schema', '99')")
+    old.commit()
+    old.close()
+    code, line = h.call("connect", "--consume-only")
+    assert (code, line["code"]) == (4, "needs-you") and "newer" in line["message"]
+
+
+def test_a_store_that_cant_be_written_is_needs_you_and_the_job_never_goes_on_unrecorded(monkeypatch):
+    # The mining's receipt and made words are the record G1.3-4 reads: when the store refuses the write the job must
+    # stop as Needs you, never return as if its cards were recorded.
+    from app import library_store
+    c.library()
+    with c.store() as s:
+        item = s.ids("now")[0]
+
+    tried = []
+
+    def read_only(*a, **k):
+        tried.append(True)
+        raise library_store.StoreReadOnly("the library store is damaged and needs Repair")
+    monkeypatch.setattr(library, "record_batch", read_only)
+    with pytest.raises(runner.Needs) as caught:
+        _steps().record("ja", {"item_id": item}, {"上層部": [1001]}, "2026-10-08T15:00:00Z", "7")
+    # the store opened and the write was attempted: the Needs is the refused write's, not a store that never opened
+    assert tried == [True]
+    assert caught.value.kind == "no-store" and "can't be written" in caught.value.say

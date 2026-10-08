@@ -117,6 +117,19 @@ def test_a_job_of_a_store_set_up_again_is_dropped_before_mining(tmp_path, ledger
     assert not any(e[0] == "pick" for e in steps.log)
 
 
+def test_a_job_queued_before_connect_kept_library_identity_is_a_gap_and_never_mined(tmp_path, ledger):
+    # Queued with no store_id (the 2.x inbox): which library it came from is unknown, so it is never mined into this
+    # one; it is named as a gap instead, and nothing of it is picked
+    with ledger.transaction():
+        ledger.queue("ja", 1, "user", None)
+    steps, summary = _run(tmp_path, ledger, {"line": {"ja": [1]}})
+    assert _states(ledger) == {1: "dropped"}
+    assert ledger.jobs("ja")[0]["reason"] == "queued before Connect kept its library's identity"
+    assert ledger.gaps("ja")[0]["items"] == [1]
+    assert summary["languages"]["ja"]["dropped"] == [1]
+    assert not any(e[0] in ("pick", "mine") for e in steps.log)
+
+
 def test_an_episode_with_no_word_to_make_is_done_with_its_receipt(tmp_path, ledger):
     steps, _summary = _run(tmp_path, ledger, {"line": {"ja": [9]}, "queue": {"ja": [9]}, "words": {"9": []}})
     job = ledger.jobs("ja")[0]
@@ -125,8 +138,28 @@ def test_an_episode_with_no_word_to_make_is_done_with_its_receipt(tmp_path, ledg
     assert not any(e[0] in ("mine", "fill", "order") for e in steps.log)
 
 
+def test_one_jobs_unexpected_error_waits_with_the_error_named_and_the_run_goes_on(tmp_path, ledger):
+    # R15: an error no step expects (a KeyError from pick) is a fault of that one job, not of the run. Item 1 waits with
+    # the error named and one `error` need; item 2 still ends done, so one bad episode never hides the rest of the queue
+    _steps, summary = _run(tmp_path, ledger, {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "pick_error": [1]})
+    assert _states(ledger) == {1: "waiting", 2: "done"}
+    job1 = next(j for j in ledger.jobs("ja") if j["item_id"] == 1)
+    assert "KeyError" in job1["reason"], "the reason names the error"
+    errors = [n for n in ledger.needs("ja") if n["kind"] == "error"]
+    assert [n["item_id"] for n in errors] == [1], "one error need, for the item that failed"
+    assert summary["languages"]["ja"]["done"] == [2]
+
+
 def test_an_update_staged_stops_the_run_before_any_job(tmp_path, ledger):
     steps, summary = _run(tmp_path, ledger, {"line": {"ja": [1]}, "queue": {"ja": [1]}, "staged": True})
     assert summary["stopped"] == runner.STOPPED_FOR_UPDATE
     assert not any(e[0] == "pick" for e in steps.log)
     assert ("settle",) in steps.log, "a pending sync is still sent before it exits"
+
+
+def test_an_update_staged_mid_run_stops_at_the_next_job_boundary(tmp_path, ledger):
+    # staged once item 1's pick has run: the run stops at that step boundary, so item 2 is never picked this run
+    plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "staged_after_pick": True}
+    steps, summary = _run(tmp_path, ledger, plan)
+    assert summary["stopped"] == runner.STOPPED_FOR_UPDATE
+    assert [e[1] for e in steps.log if e[0] == "pick"] == [1], "item 2 waits for the next start"

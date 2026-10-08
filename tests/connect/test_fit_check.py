@@ -29,13 +29,46 @@ def _check(answer=None, stdout=None, pairing=None):
                            run=_tsubasa(answer, stdout))
 
 
-def test_hatos_timed_verdict_mines_without_running_tsubasa():
-    # hato already paired it as timed: tsubasa must not be asked again (a second run costs about a second an episode).
+def _hato_record(subtitle_bytes, **over):
+    """hato's pairing record as 09-hato-layer writes it: schema 1, `timed`, one segment, the copy's sha256."""
+    import hashlib
+    record = {"schema": 1, "verdict": "timed", "subtitle_sha256": hashlib.sha256(subtitle_bytes).hexdigest(),
+              "timing": {"outcome": "CONFIDENT", "offset_s": -1.24, "segments": 1}}
+    record.update(over)
+    return record
+
+
+def test_hatos_timed_verdict_mines_without_running_tsubasa(tmp_path):
+    # hato already paired it as timed, and the library's copy is the file it timed: tsubasa must not be asked again (a
+    # second run costs about a second an episode), and no offset is applied (hato's copy is already shifted).
     def must_not_run(*_a, **_kw):
         raise AssertionError("tsubasa ran although hato said timed")
 
-    got = fit_check.check({"verdict": "timed"}, VIDEO, SUBTITLE, tsubasa="tsubasa", run=must_not_run)
-    assert got == (fit_check.TIMED, "hato", None)
+    body = "1\n00:00:01,000 --> 00:00:02,500\n上層部の決定だ\n".encode("utf-8")
+    subtitle = tmp_path / "上層部の話 01.srt"
+    subtitle.write_bytes(body)
+    got = fit_check.fit(_hato_record(body), VIDEO, str(subtitle), tsubasa="tsubasa", run=must_not_run)
+    assert got == (fit_check.TIMED, "hato", None, 0.0)
+
+
+def test_a_hato_timed_record_that_fails_the_gate_goes_to_tsubasa(tmp_path):
+    # 09-hato-layer's gate: schema 1, one segment and the copy's sha256 all hold, else Connect asks tsubasa itself —
+    # a copy edited since hato timed it, or a record of a schema this Surasura doesn't know, is never trusted.
+    body = "1\n00:00:01,000 --> 00:00:02,500\n上層部の決定だ\n".encode("utf-8")
+    subtitle = tmp_path / "上層部の話 01.srt"
+    subtitle.write_bytes(body)
+    asked = []
+
+    def tsubasa(command, **kw):
+        asked.append(command)
+        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [
+            {"start": 0.0, "end": 1420.5, "offset": 1.24}]}) + "\n").encode("utf-8"))
+
+    for record in (_hato_record(body, schema=2), _hato_record(body, timing={"segments": 2}),
+                   _hato_record(body, timing=None), _hato_record("別のファイル".encode("utf-8"))):
+        got = fit_check.fit(record, VIDEO, str(subtitle), tsubasa="tsubasa", run=tsubasa)
+        assert got == (fit_check.TIMED, "tsubasa", None, 1.24)      # tsubasa's one segment: its offset is cut by
+    assert len(asked) == 4
 
 
 def test_a_confident_answer_with_exactly_one_segment_is_timed():

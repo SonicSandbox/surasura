@@ -94,6 +94,22 @@ class FakeSteps:
     def settle(self):
         self.log.append(("settle",))
 
+    def enabled(self):
+        """`switched_off`: Connect's switch off (from the start, or once the plan's `switch_off_after` step ran)."""
+        after = self.plan.get("switch_off_after")
+        return not (self.plan.get("switched_off") or (after and any(e[0] == after for e in self.log)))
+
+    def miner_found(self):
+        return "anki-miner" not in (self.plan.get("absent") or ())
+
+    def after_write(self, lang):
+        self.log.append(("after_write", lang))
+
+    def tag_names(self, lang, note_ids):
+        self.log.append(("tag_names", list(note_ids)))
+        if self.plan.get("tag_names_wait"):
+            raise runner.Wait(runner.ANKI_CLOSED, resume="filling")
+
     # --- the library
     def consume(self, lang, ledger):
         for item in (self.plan.get("queue") or {}).get(lang, []):
@@ -145,7 +161,7 @@ class FakeSteps:
             raise runner.Wait(error)
 
     def run_dir(self, job):
-        return os.path.join(self.folder, "runs", str(job["id"]))
+        return os.path.join(self.folder, "runs", job["tag"])
 
     def _carded(self):
         return set(self.anki.words())
@@ -172,7 +188,8 @@ class FakeSteps:
         self.log.append(("fit", job["item_id"]))
         self._kill("fit")
         verdict = self.plan.get("verdict", "timed")
-        return verdict, "hato", None if verdict == "timed" else "Not timed to its video, so no cards."
+        return (verdict, "hato", None if verdict == "timed" else "Not timed to its video, so no cards.",
+                float(self.plan.get("offset", 0.0)))
 
     def mine(self, lang, job, picked, words, attempt):
         self.log.append(("mine", job["item_id"], attempt, [w["word"] for w in words]))
@@ -195,15 +212,17 @@ class FakeSteps:
             if w["word"] in (self.plan.get("unknown_status") or ()):
                 out.append(_unsure(w))      # a status Anki Miner's caller doesn't know: no card, no crash
                 continue
-            note = self.anki.add(w["word"], TAG + str(job["id"]))
+            note = self.anki.add(w["word"], TAG + job["tag"])
             out.append({"word": w["word"], "reading": w["reading"], "outcome": "made", "note_id": note,
                         "line_start": w["line_start"]})
         self._kill("after-mine")
-        return {"outcomes": out, "app": "3.7.0", "doubt": False}
+        # names_tag_refused: Anki didn't take the names' tag, so every made note comes back tag_pending
+        pending = [o["note_id"] for o in out if o["outcome"] == "made"] if self.plan.get("names_tag_refused") else []
+        return {"outcomes": out, "app": "3.7.0", "doubt": False, "tag_pending": pending}
 
     def by_tag(self, lang, job, picked, words):
         self.log.append(("by_tag", job["item_id"]))
-        found = {n["word"]: k for k, n in self.anki.notes(TAG + str(job["id"])).items()}
+        found = {n["word"]: k for k, n in self.anki.notes(TAG + job["tag"]).items()}
         return [dict(_unsure(w), outcome="made", note_id=found[w["word"]]) if w["word"] in found else _unsure(w)
                 for w in words]
 

@@ -168,6 +168,48 @@ def _command(path):
 # --------------------------------------------------------------------------- #
 # One call
 # --------------------------------------------------------------------------- #
+_job_handle = None      # Windows: one job object for this process's Anki Miner calls, closed (and they ended) with it
+
+
+def _bind(proc):
+    """Windows: Anki Miner (and its ffmpeg children) ends when this process ends, however it ends — a Connect killed
+    mid-batch never leaves an Anki Miner adding cards with no one holding Anki's write lock (adversary P2.4-A #4).
+    Standard library `ctypes`; anything that fails leaves the call as it was."""
+    global _job_handle
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if _job_handle is None:
+            class _Basic(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD)]
+
+            class _Extended(ctypes.Structure):
+                _fields_ = [("BasicLimitInformation", _Basic), ("IoInfo", ctypes.c_uint64 * 6),
+                            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
+                return
+            info = _Extended()
+            info.BasicLimitInformation.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(wintypes.HANDLE(handle), 9, ctypes.byref(info),
+                                                    ctypes.sizeof(info)):    # 9: JobObjectExtendedLimitInformation
+                kernel32.CloseHandle(wintypes.HANDLE(handle))
+                return
+            _job_handle = handle
+        kernel32.AssignProcessToJobObject(wintypes.HANDLE(_job_handle), wintypes.HANDLE(int(proc._handle)))
+    except Exception:
+        pass
+
+
 def _stop(proc):
     """Stop a call past its timeout with every process it started (Anki Miner's ffmpeg children too)."""
     if sys.platform == "win32":
@@ -188,6 +230,7 @@ def api(path, args, timeout=QUICK_TIMEOUT):
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
+        _bind(proc)
     except FileNotFoundError:
         raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
     except OSError as e:

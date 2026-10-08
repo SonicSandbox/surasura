@@ -922,3 +922,80 @@ def test_a_focus_out_while_the_worker_makes_its_lookout_is_kept(window, language
     ready.set()
     assert _pump(app, lambda: app.__dict__.get("_lookout") is not None and app._open_walked, timeout=10)
     assert app._lookout.front is False, "a focus out during the make was lost"
+
+
+# --- L3.2: with no store and nothing coming, the worker sleeps (`_store_soon`) -------------------------------- #
+
+class _HelperStillRunning:
+    """A store helper that has not exited yet (its poll() says None), as `_start_store_build` leaves it."""
+
+    def poll(self):
+        return None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_keeps_polling_after_a_failed_pass(window, language):
+    """A pass that failed keeps its lookout, so the worker checks every STORE_POLL_S whatever the store's state:
+    the lookout alone decides it, the reason is set to 'no store' to show it does not."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(object()) is True
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("reason", ["busy", "not ready"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_a_busy_or_not_ready_database_is_retried(window, language, reason):
+    """A database another process holds (busy) or not ready yet opens as soon as it frees, so the worker polls."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = reason
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_opener_settle_retry_is_still_running(window, language):
+    """The opener retries a busy database on its own thread; while that thread lives the store is coming. The
+    reason stays 'no store' so only the live retry can make the answer True."""
+    app = window(language)
+    app._store_waiting = None
+    opener = app._opener()
+    opener.reason = "no store"
+    release = threading.Event()
+    settle = threading.Thread(target=release.wait, args=(5,), daemon=True)
+    opener._worker = settle
+    settle.start()
+    try:
+        assert app._store_soon(None) is True
+    finally:
+        release.set()
+        settle.join(5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_open_helper_builds_the_store(window, language):
+    """JSON mode with the helper started at open still building the store (before its deadline): poll."""
+    app = window(language)
+    app._opener().reason = "no store"
+    app._store_waiting = (_HelperStillRunning(), time.monotonic() + 60)
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_json_mode_with_nothing_building(window, language):
+    """No store file and no helper running: nothing changes until the window wakes the worker (focus, Refresh), so
+    there is no timer while nothing can change."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_read_only_mode(window, language):
+    """A damaged store opens read-only and stays that way, so no timer can bring a change: the worker sleeps."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "damaged"
+    assert app._store_soon(None) is False

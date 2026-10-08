@@ -807,3 +807,111 @@ def test_a_watch_whose_events_cant_be_made_falls_back_and_starts_no_thread(monke
         assert w.alive is False
     finally:
         w.close()
+
+
+@windows_only
+def test_a_watch_that_ends_at_once_after_its_retry_costs_no_full_look(monkeypatch, tmp_path):
+    # A share that opens but can't report: the retry starts the watch, its first read fails at once and the thread
+    # ends. The slow look stands in for it, so PROVEN_S later there is no full look (one every RETRY_S would be a
+    # full tree look for each retry on a share that never reports). The contrast, a watch that stays up, is above.
+    monkeypatch.setattr(lw, "_last_error", lambda: 64)    # ERROR_NETNAME_DELETED
+    now = [1000.0]
+    data_dir = str(tmp_path / "ライブラリ")
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0]).open()
+    try:
+        assert lk.tree.state == "fallback"
+        os.makedirs(data_dir)
+        now[0] += lw.RETRY_S
+        lk.tree._read = lambda buf, got: False            # the share opens, but its first read fails at once
+        assert lk.jobs(now=now[0]).full is False          # the retry starts the watch; its look is owed, not yet
+        deadline = time.monotonic() + 5.0
+        while lk.tree.state != "ended" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert lk.tree.state == "ended" and lk.tree.alive is False
+        now[0] += lw.PROVEN_S
+        assert lk.jobs(now=now[0]).full is False          # it ended meanwhile: no full look
+    finally:
+        lk.close()
+
+
+@windows_only
+def test_a_folder_reported_before_the_watch_ended_still_wakes_the_worker_at_its_settle_time(tmp_path):
+    # A folder the watch reported just before its thread ended is still owed its sync: the worker must wake at the
+    # settle time (seconds), not at the retry's RETRY_S, and hand the folder out once it has settled. The clock is
+    # fake and no thread runs: the state and the pending report are set directly, so nothing waits on the disk.
+    data_dir, _u, _doc = library("ja")
+    now = [5000.0]
+    lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0])
+    lk.front = False                                      # no slow look: its own timer would hide the settle time
+    try:
+        lk.tree.state = "ended"                           # the watch's thread ended by itself after the report
+        lk.tree._pending["HighPriority"] = now[0]
+        wait = lk.timeout(now=now[0])
+        assert wait <= lk.tree.settle + 1e-6, f"worker sleeps {wait:.1f} s, past the settle time"
+        assert wait < lw.RETRY_S / 2
+
+        now[0] += lk.tree.settle / 2                      # not yet settled: nothing handed out
+        assert lk.jobs(now=now[0]).folders == []
+
+        now[0] += lk.tree.settle                          # settled: the folder is handed out
+        assert lk.jobs(now=now[0]).folders == ["HighPriority"]
+    finally:
+        lk.tree._pending.clear()
+        lk.tree.state = "closed"
+        lk.close()
+
+
+@windows_only
+def test_an_old_watch_thread_that_outlives_close_leaves_the_new_watch_alone(monkeypatch):
+    # a hung share: the first thread's read is still stuck when close() gives up waiting (CLOSE_JOIN_S), and it fails
+    # only after a new start(). That late end must not mark the new watch "ended": it stays watching, its thread alive
+    import threading
+    monkeypatch.setattr(lw, "CLOSE_JOIN_S", 0.05)
+    monkeypatch.setattr(lw, "_last_error", lambda: 64)    # ERROR_NETNAME_DELETED: a failed read, not our own close
+    data_dir, _u, _doc = library("ja")
+    release, entered, calls = threading.Event(), threading.Event(), []
+
+    def read(buf, got):
+        if not calls:                       # the first thread only: a read that hangs, then fails late
+            calls.append(1)
+            entered.set()
+            release.wait(5.0)
+            return False
+        deadline = time.monotonic() + 5.0   # the new thread reads until its own watch is closed
+        while w.state == "watching" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return None
+
+    w = lw.TreeWatch(data_dir, under=TIER_FOLDERS)
+    w._read = read
+    try:
+        assert w.start()
+        old = w._thread
+        assert entered.wait(5.0), "the first watch thread never reached its read"
+        w.close()                           # waits 0.05 s; the first thread is still stuck in its read
+        assert w.start()
+        release.set()
+        old.join(5.0)
+        assert not old.is_alive(), "the late read never ended"
+        assert w.state == "watching" and w.alive
+        assert w.error is None
+    finally:
+        release.set()
+        w.close()
+
+
+def test_a_show_folder_deleted_from_disk_makes_its_tier_folder_differ():
+    # why: the store still holds items in a show folder that is gone from disk, with no sync: the round must hand back
+    # the tier folder that held it, and never the vanished show folder itself (nothing lists it any more)
+    store = migrated("ja")
+    try:
+        assert _full_round(store) == []                       # a synced library is quiet first
+        rels = [store.item(i)["rel_path"] for i in store.ids("now")]
+        rel = next(r for r in rels if r.count("/") >= 2)      # an item inside a show folder, not a loose file
+        tier, show = rel.split("/")[0], rel.rsplit("/", 1)[0]
+        shutil.rmtree(os.path.join(store.data_dir, *show.split("/")))
+        found = _full_round(store)
+        assert tier in found
+        assert show not in found
+    finally:
+        store.close()

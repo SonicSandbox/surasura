@@ -380,3 +380,19 @@ def test_the_modes_bar_outranks_loading():
     """A-6: a library that can't be used says so even before any rows were read."""
     assert vr.build({}, WORKS, {}, mode="read-only", reason="busy", loading=True).state == "read-only"
     assert vr.build({}, WORKS, {}, mode="json", reason="no store", loading=True).state == "getting-ready"
+
+
+def test_a_row_cache_gives_back_the_same_rows_until_their_piece_changes():
+    """The reader rebuilds the view on every change; an unchanged piece must come back as the same object (the window
+    repaints nothing for it), a changed one rebuilt — a watched mark on one show rebuilds one row."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {}), ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("now", 3, 3, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 4)], {})])
+    cache = vr.RowCache()
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    again = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert all(a is b for a, b in zip(first.rows, again.rows))
+    items[5] = dict(items[5], watched=1)                  # the second show's first episode watched (a new feed row)
+    third = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    assert third.rows[0] is first.rows[0] and third.rows[2] is first.rows[2]
+    assert third.rows[1] is not first.rows[1] and third.rows[1].n_watched == 1
+    assert vr.build(items, WORKS, {}, numbers=(2, {}), cache=cache).rows[0] is not first.rows[0]   # new numbers

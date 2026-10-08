@@ -440,6 +440,72 @@ def _guesses(items, works):
     return out
 
 
+class RowCache:
+    """Rows kept between builds (the reader holds one): a piece whose items and work are the same objects as last time
+    (the reader's copy replaces a row's dict only when the feed changed it) and whose cards, mining and place in the top
+    are unchanged gives back last time's `Row` — the same object, so the window repaints nothing for it. A new numbers
+    version clears it."""
+
+    def __init__(self):
+        self.rows = {}
+        self.version = None
+        self.hits = self.misses = 0
+
+    def begin(self, version):
+        if version != self.version:
+            self.rows = {}
+            self.version = version
+        self._next = {}
+
+    def end(self):
+        self.rows = self._next
+
+
+def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero):
+    if cache is None:
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed)
+        return _as_hero(row) if hero else row
+    first = piece[0]
+    work = works.get(first.get("work_id"))
+    key = (tier, finished, first.get("piece_id"), first["id"])
+    sig = (len(piece), line_n, hero, guessed.get(first.get("work_id")),
+           tuple(cards.get(it["id"], 0) for it in piece), tuple(it["id"] in mining for it in piece),
+           tuple(it["id"] in in_top for it in piece))
+    hit = cache.rows.get(key)
+    if hit is not None and hit[0] == sig and hit[1] is work and len(hit[2]) == len(piece) and \
+            all(a is b for a, b in zip(hit[2], piece)):
+        row = hit[3]
+        if row.index != index:
+            row = row._replace(index=index)
+        cache.hits += 1
+    else:
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed)
+        if hero:
+            row = _as_hero(row)
+        cache.misses += 1
+    cache._next[key] = (sig, work, tuple(piece), row)
+    return row
+
+
+def _as_hero(h):
+    """The hero reads as it's painted: its next episode's numbers and status."""
+    nxt = h.episodes[h.next_index]
+    return h._replace(accessible=STRINGS["acc_hero"].format(
+        title=h.title, ep=h.title_ep, status=nxt.status.label,
+        pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
+        new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
+
+
+def _by_tier(items):
+    """Each tier's items in `(ord, id)` order — one pass, one sort per tier."""
+    out = {t: [] for t in ("arrivals", "now", "soon", "goal", "graduated")}
+    for r in items.values():
+        out.setdefault(r.get("tier"), []).append(r)
+    for rows in out.values():
+        rows.sort(key=lambda r: (r.get("ord") or 0.0, r["id"]))
+    return out
+
+
 def _current_items(items):
     return ordered_tier(items, "now") + ordered_tier(items, "soon")
 
@@ -456,19 +522,23 @@ def _mine_ids(current, n):
 
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False):
+          loading=False, busy=False, cache=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now."""
+    numbers_version = None
     if isinstance(numbers, tuple):
-        numbers = numbers[1]
+        numbers_version, numbers = numbers
     numbers = numbers or {}
+    if cache is not None:
+        cache.begin(numbers_version if numbers_version is not None else id(numbers))
     cards = cards or {}
     mining = set(mining or ())
     options = options or {}
     line_n = options.get("mine_line")
     line_n = 20 if line_n is None else int(line_n)
-    current = _current_items(items)
+    tiers = _by_tier(items)
+    current = tiers["now"] + tiers["soon"]
     top_ids = _mine_ids(current, line_n)
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
     in_top = set()
@@ -481,16 +551,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     guessed = _guesses(items, works)
     rows = []
     for tier in ("now", "soon"):
-        for piece in pieces(ordered_tier(items, tier)):
-            rows.append(_row(len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
-                             guessed=guessed))
-    if rows:                                         # the hero reads as it's painted: its next episode's numbers
-        h = rows[0]
-        nxt = h.episodes[h.next_index]
-        rows[0] = h._replace(accessible=STRINGS["acc_hero"].format(
-            title=h.title, ep=h.title_ep, status=nxt.status.label,
-            pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
-            new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
+        for piece in pieces(tiers[tier]):
+            rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
+                                    False, guessed, hero=not rows))
     lines = []
     if len(top_ids) >= line_n and line_n > 0:
         last = top_ids[-1]
@@ -508,7 +571,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         tip = STRINGS["soon_tip"].format(n=k) if k else STRINGS["soon_tip_nocount"]
         lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
-    goal_items = ordered_tier(items, "goal")
+    goal_items = tiers["goal"]
     goal_works = []
     for r in goal_items:
         if r.get("work_id") not in goal_works:
@@ -521,10 +584,11 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         g_line = STRINGS["goal_empty"]
     goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
     # Finished: newest first, by month; no date last (*Earlier*)
-    fin_rows = [_row(0, "graduated", p, works, numbers, cards, mining, set(), line_n, finished=True, guessed=guessed)
-                for p in pieces(ordered_tier(items, "graduated"))]
+    fin_pieces = pieces(tiers["graduated"])
+    fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed, False)
+                for p in fin_pieces]
     stamp_of = {}
-    for p in pieces(ordered_tier(items, "graduated")):
+    for p in fin_pieces:
         key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"
         stamp_of[key] = max((it.get("graduated_at") or "" for it in p), default="")
     fin_rows.sort(key=lambda r: stamp_of.get(r.key, ""), reverse=True)
@@ -565,7 +629,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         needs.append(Need(key=row.key, work_id=row.work_id, title=title, line=line,
                           episodes=tuple((e.label, STRINGS["need_ep"].format(word=word)) for e in waiting),
                           cover_title=row.cover_title))
-    arrivals = ordered_tier(items, "arrivals")
+    arrivals = tiers["arrivals"]
+    if cache is not None:
+        cache.end()
     counts = Counts(current_rows=len(rows), current_files=len(current), goal_titles=len(goal_works),
                     goal_files=len(goal_items), finished=len(fin_rows),
                     arrivals=len(pieces(arrivals)), arrival_files=len(arrivals))

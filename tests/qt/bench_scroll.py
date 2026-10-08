@@ -40,8 +40,9 @@ def save_seed(files, share, path, language="ja"):
     data = {"items": seed.items, "works": seed.works, "cards": {str(k): v for k, v in lib._cards.items()},
             "numbers": {str(k): v for k, v in seed.numbers()[1].items()}, "mining": list(seed.mining()),
             "meta": {k: lib._meta[k] for k in ("mine_line", "soon_line", "arrivals_on")}, "language": language}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    import pickle
+    with open(path, "wb") as f:                          # pickle: the child loads it fast (a store opens fast)
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
     return seed.files
 
 
@@ -88,7 +89,7 @@ def main_parent(a):
     global GC_FREEZE
     GC_FREEZE = a.gc_freeze
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-")
-    seed_path = os.path.join(work, "seed.json")
+    seed_path = os.path.join(work, "seed.pkl")
     t = time.perf_counter()
     files = save_seed(a.files, a.current_share, seed_path, a.language)
     print(f"seed: {files} files ({(time.perf_counter() - t):.1f} s)", flush=True)
@@ -130,9 +131,10 @@ class _LazyOpener:
 
     def _load(self):
         if self._opener is None:
+            import pickle
             from tests.fixtures import standin_store
-            with open(self.path, encoding="utf-8") as f:
-                data = json.load(f)
+            with open(self.path, "rb") as f:
+                data = pickle.load(f)
             self.library = standin_store.StandinLibrary(
                 data["items"], data["works"], meta=data["meta"], cards={int(k): v for k, v in data["cards"].items()})
             self.numbers_table = {int(k): tuple(v) for k, v in data["numbers"].items()}

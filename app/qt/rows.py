@@ -19,6 +19,8 @@ window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answe
 
 Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`play_requested`); a row opens and closes.
 """
+from collections import OrderedDict
+
 from PyQt6.QtCore import (QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                          QStaticText, QTextOption)
@@ -333,6 +335,7 @@ class RowsModel(QAbstractListModel):
         self.entries = []
         self.keys = []
         self.open_key = None
+        self.changed = []                           # rows a "same" refresh changed (repainted alone)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.entries)
@@ -387,11 +390,13 @@ class RowsModel(QAbstractListModel):
         return (kind, len(getattr(payload, "episodes", ()) or ()), len(lines))
 
     def set_entries(self, entries):
-        """-> "same" (payloads swapped in place: repaint), "relayout" (same keys, another height somewhere) or
-        "reset"."""
+        """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "relayout" (same keys,
+        another height somewhere) or "reset"."""
         keys = [self.key_of(e) for e in entries]
         if keys == self.keys and entries:
-            shapes = [self.shape_of(e) for e in self.entries] == [self.shape_of(e) for e in entries]
+            old = self.entries
+            shapes = [self.shape_of(e) for e in old] == [self.shape_of(e) for e in entries]
+            self.changed = [i for i, (a, b) in enumerate(zip(old, entries)) if a[1] is not b[1] or a[2] != b[2]]
             self.entries = list(entries)
             return "same" if shapes else "relayout"
         self.beginResetModel()
@@ -404,11 +409,40 @@ class RowsModel(QAbstractListModel):
 
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
+SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
+
+
 class RowDelegate(QStyledItemDelegate):
     def __init__(self, view):
         super().__init__(view)
         self.view = view
         self.paints = 0                              # rows painted (tests: only what's on screen)
+        self.renders = 0                             # rows drawn into a pixmap (tests: a repaint reuses them)
+        self._sprites = OrderedDict()
+
+    def _sprite(self, kind, payload, lines, size, dpr, hovered, draw):
+        """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
+        reused while the row object, its lines, its width, the screen's ratio, the look and the hover are the same.
+        The reader keeps an unchanged row the same object between builds, so a refresh repaints from these."""
+        key = (kind, payload.key, size.width(), size.height(), dpr, style.current(), hovered)
+        hit = self._sprites.get(key)
+        if hit is not None and hit[0] is payload and hit[1] == lines:
+            self._sprites.move_to_end(key)
+            return hit[2]
+        pix = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(c("bg"))
+        q = QPainter(pix)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        draw(q)
+        q.end()
+        self.renders += 1
+        self._sprites[key] = (payload, lines, pix)
+        self._sprites.move_to_end(key)
+        while len(self._sprites) > SPRITES_KEPT:
+            self._sprites.popitem(last=False)
+        return pix
 
     # sizes ------------------------------------------------------------------------------------------------------ #
     def _lines_h(self, lines):
@@ -649,8 +683,28 @@ class RowDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                      self._lines_h(lines))
-        if kind == HERO:
+        is_open = self.view.model().open_key == getattr(payload, "key", None)
+        if kind == HERO and not is_open:
+            box_h = rect.height() - 8 - theme.SPACING["list-gap"] - self._lines_h(lines)
+            local = QRect(0, 0, rect.width(), rect.height())
+            pix = self._sprite(kind, payload, lines, QSize(rect.width(), box_h), dpr, hovered,
+                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr))
+            p.drawPixmap(rect.topLeft(), pix)
+            if focused:
+                self._focus_ring(p, QRect(rect.left(), rect.top(), rect.width(), box_h), theme.RADII["r-sm"])
+        elif kind == HERO:
             self._paint_hero(p, payload, rect, lines, hovered, focused, dpr)
+        elif kind in (ROW, FINISHED) and not is_open:
+            local = QRect(0, 0, body.width(), body.height())
+            pix = self._sprite(kind, payload, lines, body.size(), dpr, hovered,
+                               lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines))
+            p.drawPixmap(body.topLeft(), pix)
+            if focused:
+                self._focus_ring(p, body, theme.RADII["r-sm"])
+                if kind == ROW and not hovered:
+                    cols = self.columns(QRect(body.left(), body.top(), body.width(),
+                                              round(theme.SIZES["row"] * fz())), kind)
+                    self._paint_play_button(p, self._play_rect(cols["acts"]), payload.can_play)
         elif kind in (ROW, FINISHED):
             self._paint_row(p, kind, payload, body, hovered, focused, dpr, lines)
         elif kind == MONTH:
@@ -1041,7 +1095,11 @@ class RowsView(QListView):
         anchor = self._anchor()
         how = model.set_entries(entries)
         if how == "same":
-            self.viewport().update()
+            if len(model.changed) > 40:
+                self.viewport().update()
+            else:
+                for i in model.changed:                  # only the rows that changed (dirty rows, never all)
+                    self.update(model.index(i, 0))
         elif how == "relayout":
             self.relayout()
             self.viewport().update()

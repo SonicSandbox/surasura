@@ -482,3 +482,20 @@ def test_a_youtube_videos_play_is_muted_and_says_why(seeded):
     play = [p for p in part(lst, i, "play")][0]
     QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=play[1].center())
     assert fired == []
+
+
+def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_changed(seeded):
+    """Each closed row is painted once into a pixmap; a repaint draws the pixmaps (no row drawn again), and a status
+    write on one show repaints that show's row alone."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    renders = lst.delegate.renders
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1 - int(row.episodes[0].watched)}])
+    assert wait_until(lambda: lst.model().entries[i][1] is not row)
+    assert lst.model().changed == [i]
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders + 1

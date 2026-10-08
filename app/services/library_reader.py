@@ -76,6 +76,7 @@ class LibraryReader:
         self._data_version = None
         self._numbers_version = None
         self._mode = None
+        self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
@@ -208,9 +209,9 @@ class LibraryReader:
 
     def _build(self, numbers, mode, reason, rows_known):
         self.builds += 1
-        return view_rows.build(self._items, self._works, self._options, numbers=numbers, cards=self._cards,
-                               mining=set(self.mining()), language=self.language, mode=mode, reason=reason,
-                               loading=not rows_known)
+        return view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
+                               cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
+                               reason=reason, loading=not rows_known, cache=self.row_cache)
 
     def _busy(self, error):
         self._recheck = True                            # a failed read: ask the store's mode again next time

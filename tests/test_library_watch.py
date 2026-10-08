@@ -530,7 +530,8 @@ def test_the_round_waits_an_hour_then_hands_out_one_batch_every_two_seconds():
 @windows_only
 def test_a_failed_watch_is_retried_after_retry_s_and_then_asks_one_full_look(tmp_path):
     # A library folder that doesn't exist yet can't be watched, so the watch falls back. It is retried only once
-    # RETRY_S has passed, and the restart asks one full look: the watch missed what happened while it was down.
+    # RETRY_S has passed, and the restart asks one full look PROVEN_S later, the watch still up: it missed what happened
+    # while it was down.
     now = [1000.0]
     data_dir = str(tmp_path / "ライブラリ")
     lk = lw.Lookout(data_dir, under=TIER_FOLDERS, clock=lambda: now[0]).open()
@@ -540,9 +541,13 @@ def test_a_failed_watch_is_retried_after_retry_s_and_then_asks_one_full_look(tmp
         now[0] += lw.RETRY_S - 1                              # just short of the retry: still no watch, no full look
         early = lk.jobs(now=now[0])
         assert lk.tree.state == "fallback" and early.full is False
-        now[0] += 1                                           # RETRY_S exactly: the watch starts and asks one full look
+        now[0] += 1                                           # RETRY_S exactly: the watch starts; its look waits
         late = lk.jobs(now=now[0])
-        assert lk.tree.state == "watching" and late.full is True
+        assert lk.tree.state == "watching" and late.full is False
+        assert lk.timeout(now=now[0]) <= lw.PROVEN_S          # the worker wakes for it
+        now[0] += lw.PROVEN_S                                 # still up PROVEN_S later: one full look
+        assert lk.jobs(now=now[0]).full is True
+        assert lk.jobs(now=now[0]).full is False              # once
     finally:
         lk.close()
 

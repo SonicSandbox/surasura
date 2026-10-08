@@ -34,6 +34,8 @@ import time
 SETTLE_S = 0.3            # a folder is synced once it has had no report for this long (a copy still running waits)
 BUFFER = 65536            # bytes: the most Windows allows over a network share
 RETRY_S = 300.0           # a watch that failed is tried again this often while the window is open (and on focus)
+PROVEN_S = 0.5            # a watch the retry started earns its full look only if it is still up this long after
+CLOSE_JOIN_S = 2.0        # close() waits this long for the watch thread (a hung share may keep it longer)
 SLOW_S = 10.0             # the slow look (no watch: not Windows, a drive that can't report): this often, in front only
 ROUND_S = 3600.0          # the safety round: once an hour while a window is open, none within an hour of a full look
 ROUND_GAP_S = 2.0         # one batch of the round (`library_store.Round.step`) every this often
@@ -139,6 +141,7 @@ class TreeWatch:
         self._changed = wake or threading.Event()             # a window's worker may share its own wake event
         self._handle = self._io = self._stop = None
         self._thread = None
+        self._gen = 0                                         # which start() a watch thread belongs to
 
     # --- life ------------------------------------------------------------------------------------------ #
 
@@ -170,7 +173,8 @@ class TreeWatch:
             self.state, self.error = "fallback", _last_error()
             return False
         self.state = "watching"
-        self._thread = threading.Thread(target=self._run, name="library-watch", daemon=True)
+        self._gen += 1
+        self._thread = threading.Thread(target=self._run, args=(self._gen,), name="library-watch", daemon=True)
         self._thread.start()
         return True
 
@@ -184,7 +188,7 @@ class TreeWatch:
         self._k32.SetEvent(self._stop)
         thread, self._thread = self._thread, None
         if thread is not None and thread is not threading.current_thread():
-            thread.join(2.0)
+            thread.join(CLOSE_JOIN_S)
         self._handle = None
         for h in (handle, self._io, self._stop):
             try:
@@ -196,7 +200,8 @@ class TreeWatch:
 
     @property
     def alive(self):
-        return self.state == "watching" and self._thread is not None and self._thread.is_alive()
+        thread = self._thread                                 # read once: close() may clear it meanwhile
+        return self.state == "watching" and thread is not None and thread.is_alive()
 
     # --- the window's side ----------------------------------------------------------------------------- #
 
@@ -253,26 +258,28 @@ class TreeWatch:
             return None
         return bool(k32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(got), False))
 
-    def _run(self):
+    def _run(self, gen):
         """The watch thread. However it ends — close() asked, the read failed, Windows' wait failed, an error here —
-        a watch that wasn't closed reads "ended" and wakes the window, so its retry and the slow look take over."""
+        a watch that wasn't closed reads "ended" and wakes the window, so its retry and the slow look take over. A
+        thread that outlived close()'s wait (a hung share) and ends after a new start() leaves the new watch alone."""
         try:
-            self._loop()
+            self._loop(gen)
         except Exception as exc:                                # a report it couldn't read: the watch ends, never silent
-            self.error = repr(exc)
+            if gen == self._gen:
+                self.error = repr(exc)
         finally:
-            if self.state == "watching":
+            if gen == self._gen and self.state == "watching":
                 self.state = "ended"
                 self._changed.set()
 
-    def _loop(self):
+    def _loop(self, gen):
         import ctypes
         import ctypes.wintypes as wt
         buf = ctypes.create_string_buffer(self.buffer)
         got = wt.DWORD()
-        while True:
+        while gen == self._gen:
             ok = self._read(buf, got)
-            if ok is None:
+            if ok is None or gen != self._gen:
                 return
             self.reports += 1
             if not ok:
@@ -280,7 +287,7 @@ class TreeWatch:
                 if err == ERROR_NOTIFY_ENUM_DIR:
                     self._overflow()
                     continue
-                if self._handle is not None and err != ERROR_OPERATION_ABORTED:
+                if self._handle is not None and err != ERROR_OPERATION_ABORTED and gen == self._gen:
                     self.state, self.error = "ended", err
                 self._changed.set()
                 return
@@ -368,6 +375,7 @@ class Lookout:
         self._last_slow = None
         self._last_try = now
         self._round_next = None
+        self._owed = None                                     # when a watch the retry started earns its full look
 
     def open(self):
         self._start_tree()
@@ -436,19 +444,21 @@ class Lookout:
         return self._retry(moved)[0]
 
     def looked(self, now=None):
-        """A full look just ran: the round restarts its hour, and one under way is dropped (the look covered it)."""
+        """A full look just ran: the round restarts its hour, and one under way is dropped (the look covered it); a
+        full look a restarted watch was owed is paid."""
         self._last_full = self.clock() if now is None else now
-        self.round = self._round_next = None
+        self.round = self._round_next = self._owed = None
 
     def timeout(self, now=None):
         """Seconds until something is due (the worker's wait), never None: an idle watched window waits for the
         round."""
         now = self.clock() if now is None else now
         due = [self._last_full + ROUND_S if self._round_next is None else self._round_next]
-        if self.tree.state == "watching":
-            settle = self.tree.due(now)
-            if settle is not None:
-                due.append(now + settle)
+        settle = self.tree.due(now)                           # reported folders still owed, even if the watch ended since
+        if settle is not None:
+            due.append(now + settle)
+        if self._owed is not None:
+            due.append(self._owed)
         if self._broken():
             due.append(self._last_try + RETRY_S)
         if self.slow and self.front:
@@ -463,15 +473,21 @@ class Lookout:
 
     def jobs(self, now=None):
         """What is due now -> `Jobs(folders, full, copy, slow, round)`: the settled folders to sync; a full look
-        (Windows lost track, or a watch that came back missed what happened meanwhile); the copy changed; the slow
-        look's turn (`DiskPoll`); a round batch to run (`round.step()`)."""
+        (Windows lost track, or a watch the retry started missed what happened meanwhile — asked PROVEN_S later, if
+        the watch is still up: a share that opens but can't report ends at once, and must not cost a full look every
+        RETRY_S); the copy changed; the slow look's turn (`DiskPoll`); a round batch to run (`round.step()`)."""
         now = self.clock() if now is None else now
         folders, full = self.tree.take(now)
         copy = bool(self.copy is not None and self.copy.take(now)[1])
         if self._broken() and now - self._last_try >= RETRY_S:
             self._last_try = now
             tree, again = self._retry()
-            full, copy = full or tree, copy or again
+            copy = copy or again
+            if tree:
+                self._owed = now + PROVEN_S
+        if self._owed is not None and now >= self._owed:
+            full = full or self.tree.alive                    # it ended meanwhile: the slow look stands in, no full look
+            self._owed = None
         slow = self.slow and self.front and (self._last_slow is None or now - self._last_slow >= SLOW_S)
         if slow:
             self._last_slow = now

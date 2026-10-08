@@ -6083,10 +6083,11 @@ def _store_folders(self):
 
 
 class DiskPoll:
-    """The Content Manager's 500 ms poll (§6.10, G5), run on its worker: one versions read, and a stat of
-    every folder that holds items — a file dropped into a show's folder, or a new sub-folder (it changes
+    """The Content Manager's slow look (§6.10, G5; L3.2: only with no watch — not Windows, a drive that can't report,
+    no bell — every `library_watch.SLOW_S` while the window is in front), run on its worker: one versions read, and a
+    stat of every folder that holds items — a file dropped into a show's folder, or a new sub-folder (it changes
     its parent's modified time), is seen. `check()` answers "run a sync?"; the folder list is re-read only
-    when the versions move. A drop into an existing folder that holds no item waits for focus or Refresh."""
+    when the versions move. A drop into an existing folder that holds no item waits for focus, Refresh or the round."""
 
     def __init__(self, store):
         self.store = store
@@ -6144,7 +6145,11 @@ class Round:
             n += 1
             files, subdirs = self._listing(rel)
             self.queue.extendleft(reversed(subdirs))       # top-down, as the sync walks
-            if files != self._held(rel):
+            held, held_dirs = self._held(rel)
+            # a sub-folder the store holds items in that is gone from disk is never listed itself: its parent differs
+            # (one scoped sync of the parent: a folder renamed there is found as the same items, moved)
+            on_disk = {path_key(d) for d in subdirs}
+            if files != held or not held_dirs <= on_disk:
                 differ.append(rel)
         self.listed += n
         self.batches.append((n, clock() - t0))
@@ -6174,16 +6179,25 @@ class Round:
         return files, subdirs
 
     def _held(self, rel):
-        """{key: (size, mtime_ns)} of the available items directly in `rel`: one range read of the `items_key` index,
-        a sub-folder's items filtered out inside SQLite (a tier folder's 90k keys at 200k: ~tens of ms; one seek per
-        sub-folder from here took 2.2 s)."""
+        """({key: (size, mtime_ns)} of the available items directly in `rel`, {key of each sub-folder of `rel` that
+        holds available items, at any depth}): one range read of the `items_key` index, grouped inside SQLite (a tier
+        folder's 90k keys at 200k: ~tens of ms; one seek per sub-folder from here took 2.2 s)."""
         prefix = path_key(rel) + "/"
+        n = len(prefix) + 1
         with self.store._reading():
             rows = self.store.conn.execute(
-                "SELECT rel_key, size, mtime_ns FROM items WHERE rel_key > ? AND rel_key < ? "
-                "AND instr(substr(rel_key, ?), '/') = 0 AND availability = 'available'",
-                (prefix, prefix[:-1] + "0", len(prefix) + 1)).fetchall()      # '0' follows '/': past the prefix
-        return {key: (size, mtime_ns) for key, size, mtime_ns in rows}
+                "SELECT CASE WHEN instr(substr(rel_key, ?), '/') = 0 THEN rel_key "
+                "ELSE substr(rel_key, 1, ? + instr(substr(rel_key, ?), '/') - 2) END AS head, "
+                "instr(substr(rel_key, ?), '/') > 0, size, mtime_ns FROM items "
+                "WHERE rel_key > ? AND rel_key < ? AND availability = 'available' GROUP BY head, 2",
+                (n, n, n, n, prefix, prefix[:-1] + "0")).fetchall()           # '0' follows '/': past the prefix
+        files, dirs = {}, set()
+        for head, deeper, size, mtime_ns in rows:
+            if deeper:
+                dirs.add(head)
+            else:
+                files[head] = (size, mtime_ns)
+        return files, dirs
 
 
 def _store_has_content(self):

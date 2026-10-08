@@ -288,7 +288,7 @@ class ContentImporterApp:
 
     # --- The library store (Library_Store_Spec §6.9, §7 Phase 2) ------------------------------------------ #
     # Store mode: every order and tier action is one store command (check → file work → commit), the tree is
-    # read from the store, the disk walk and the 500 ms poll run on a worker, and Undo reverses this window's
+    # read from the store, the disk walk and the library's watch (L3.2) run on a worker, and Undo reverses this window's
     # own changes one by one (§6.11). JSON mode (no store yet, or none can be made): 2.4's code, with Undo off.
     # Read-only mode (a damaged or newer store): the library is shown, every change is refused, with a notice.
     # The mode is checked, not fixed: every action asks again first, so a store that appeared since (its
@@ -442,14 +442,15 @@ class ContentImporterApp:
         or a timer is due (the hourly round; without a watch, the slow look in front and the watch's retry) — then
         syncs the folders that changed (all of them when Windows lost track or the window asked), notices another
         process's change (`changed_since`), and hands the copy to the helper when someone else rewrote it. With no
-        store to watch (being built, JSON or read-only mode) it checks every STORE_POLL_S. Never touches Tk."""
+        store to watch it checks every STORE_POLL_S only while one is coming (`_store_soon`), else on a wake or every
+        RETRY_S. Never touches Tk."""
         self._sync_wanted = True                         # the open's one walk (S1.1 smoothness row 4)
         store = poll = token = lookout = None
         handed = posted = None
         try:
             while not self._worker_stop.is_set():
                 if lookout is None or store is None:     # no store to watch yet, or the last pass failed
-                    self._worker_wake.wait(STORE_POLL_S)
+                    self._worker_wake.wait(STORE_POLL_S if self._store_soon(lookout) else library_watch.RETRY_S)
                     self._worker_wake.clear()
                 else:
                     lookout.wait()
@@ -525,6 +526,17 @@ class ContentImporterApp:
             if lookout is not None:
                 lookout.close()
             self._lookout = None
+
+    def _store_soon(self, lookout):
+        """With no store to watch: is one likely within moments, so the worker checks every STORE_POLL_S? A pass that
+        failed (it kept its lookout), a database still busy, or a store being built (the helper started at open still
+        runs, or the database is there but not ready). Otherwise — JSON mode with nothing building, read-only — the
+        worker sleeps until the window wakes it (focus, Refresh) or RETRY_S: no timer while nothing can change."""
+        if lookout is not None:
+            return True
+        opener = self._opener()
+        settling = opener._worker is not None and opener._worker.is_alive()     # a busy database, retried meanwhile
+        return settling or opener.reason in ("busy", "not ready") or self._store_building()
 
     def _make_lookout(self, store):
         """The window's eyes on its library (L3.2): the tree watch on the tier folders, the copy's watch, the bell,

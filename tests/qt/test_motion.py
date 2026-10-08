@@ -613,3 +613,58 @@ def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
     finally:
         win.close()
         services.shutdown(0.5)
+
+
+# --- row 7: the lifted opening (Windows' compositor fades and moves it; measured ≈ 0.3 ms a frame) ------------------- #
+@pytest.fixture
+def lifted():
+    motion.LIFT = True
+    yield
+    motion.LIFT = None
+
+
+def test_a_lifted_opening_is_a_see_through_window_moved_and_faded_then_the_overlay(clock, stage, lifted):
+    from tests.qt.conftest import wait_until
+    card = Card(stage, "up")
+    opening = card.open()
+    lift = opening.lift
+    assert lift is not None and opening.ghost is None and lift.isWindow()
+    assert lift.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    assert bool(lift.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+    final = opening._lift_at
+    assert lift.pos() == final + QPoint(0, theme.MOTION["buckets-rise"]) and lift.windowOpacity() == 0.0
+    clock.advance(130)
+    assert 0.0 < lift.windowOpacity() < 1.0 and final.y() < lift.pos().y() < final.y() + 40
+    clock.advance(200)
+    assert card.isVisible() and motion.opening_of(card) is None
+    assert wait_until(lambda: sip.isdeleted(lift) or not lift.isVisible(), 2)       # gone a frame after the overlay
+
+
+def test_a_press_on_a_lifted_opening_reaches_its_button(clock, stage, lifted):
+    card = Card(stage)
+    opening = card.open()
+    clock.advance(48)
+    at = stage.mapFromGlobal(opening.content_global().topLeft() + card.button.geometry().center())
+    win = stage.windowHandle()
+    QTest.mousePress(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    QTest.mouseRelease(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    assert card.clicks == [1] and card.isVisible()
+
+
+def test_a_lifted_opening_ends_when_its_page_goes_or_its_window_moves(clock, stage, lifted):
+    page = QWidget(stage)
+    page.setGeometry(0, 0, 900, 640)
+    page.show()
+    card = Card(page, "slide")
+    opening = card.open()
+    clock.advance(32)
+    page.hide()
+    clock.advance(32)
+    assert motion.opening_of(card) is None and opening.lift is None and not _filters_left(opening)
+    page.show()
+    card.hide()
+    opening = card.open()
+    clock.advance(32)
+    stage.move(stage.pos() + QPoint(30, 0))                      # the window moved: the opening lands at once
+    QApplication.processEvents()
+    assert motion.opening_of(card) is None and card.isVisible()

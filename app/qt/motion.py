@@ -24,7 +24,7 @@ from collections import deque
 from PyQt6 import sip
 from PyQt6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt,
                           QTimer, pyqtSignal)
-from PyQt6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPixmap
+from PyQt6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app import theme
@@ -417,6 +417,41 @@ HOW = {
 }
 
 
+# How an in-window overlay's opening is drawn (row 7, measured 2026-10-07): **lifted** — the composed picture in a
+# top-level, see-through, input-transparent window that Windows' compositor fades and moves (≈ 0.3 ms of this thread a
+# frame at 150 and 200 %) — or **painted** — a ghost child painting it with painted opacity (5–56 ms a frame for the
+# Goal sheet, a side panel or a dialog). Lifted on Windows' own platform; painted elsewhere (offscreen tests, other
+# systems until 3.1 checks them). None = choose; True / False = force (tests).
+LIFT = None
+
+
+def _lifted():
+    if LIFT is not None:
+        return bool(LIFT)
+    return QGuiApplication.platformName() == "windows"
+
+
+class _Lift(QWidget):
+    """The opening overlay lifted: its composed picture in a window of its own, above the main window and owned by it,
+    see-through, never taking input or focus. Painted once; each frame only its opacity and place change."""
+
+    def __init__(self, opening, owner):
+        super().__init__(owner, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.NoDropShadowWindowHint
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.opening = opening
+        self.setObjectName("motionLift")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.drawPixmap(0, 0, self.opening.picture)
+        p.end()
+
+
 class _Ghost(QWidget):
     """The opening overlay's stand-in: one picture — its shadow and its snapshot, composed once — moved, with painted
     opacity (CSS's opacity: the shadow never shows through the card as it fades). Transparent to the mouse: a press
@@ -451,6 +486,7 @@ class OverlayOpening:
     def __init__(self, widget, how, shadow_name=None, on_done=None, focus=False):
         self.widget, self.how, self.shadow_name, self.on_done, self.focus = widget, how, shadow_name, on_done, focus
         self.ghost = None
+        self.lift = None
         self.anim = None
         self.pixmap = None
         self.picture = None
@@ -489,20 +525,41 @@ class OverlayOpening:
         self.widget_size = final.size()
         self._size = area.size()
         self.picture = self._compose(area.size())
-        travel = area.united(area.translated(self.delta))        # the ghost: everywhere the picture goes
-        self.ghost = _Ghost(self, w.parentWidget())
-        self.ghost.setGeometry(travel)
-        self._origin = area.topLeft() - travel.topLeft()         # the picture's place at the end
-        self.ghost.offset = self._offset(0.0)
-        self.ghost.opacity = 0.0
-        self._last = self._painted()
-        self.ghost.show()
-        self.ghost.raise_()
+        if _lifted():
+            self._top = w.window()
+            self._lift_at = w.parentWidget().mapToGlobal(area.topLeft())   # the picture's place at the end, global
+            self._origin = QPoint(0, 0)
+            self.lift = _Lift(self, self._top)
+            self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
+            self.lift.setWindowOpacity(0.0)
+            self.lift.show()
+            owner = self.lift
+        else:
+            travel = area.united(area.translated(self.delta))    # the ghost: everywhere the picture goes
+            self.ghost = _Ghost(self, w.parentWidget())
+            self.ghost.setGeometry(travel)
+            self._origin = area.topLeft() - travel.topLeft()     # the picture's place at the end
+            self.ghost.offset = self._offset(0.0)
+            self.ghost.opacity = 0.0
+            self._last = self._painted()
+            self.ghost.show()
+            self.ghost.raise_()
+            owner = self.ghost
         self._finisher = _InputFinisher(self)
         QApplication.instance().installEventFilter(self._finisher)
-        self.anim = clock().animate(duration(dur_name), self._frame, self._done, kind=kind, owner=self.ghost,
+        self.anim = clock().animate(duration(dur_name), self._frame, self._done, kind=kind, owner=owner,
                                     on_end=self._cut_short)
         return self
+
+    def content_global(self):
+        """Where the overlay itself is on the screen now, while it opens."""
+        if self.lift is not None and not sip.isdeleted(self.lift):
+            return QRect(self.lift.pos() + self.target_in_picture, self.widget_size)
+        g = self.ghost
+        if g is not None and not sip.isdeleted(g):
+            r = g.content_rect()
+            return QRect(g.mapToGlobal(r.topLeft()), r.size())
+        return QRect()
 
     def _compose(self, size):
         """The shadow and the snapshot in one picture, at the snapshot's device-pixel ratio."""
@@ -530,6 +587,17 @@ class OverlayOpening:
         return self._origin + QPoint(round(self.delta.x() * (1.0 - v)), round(self.delta.y() * (1.0 - v)))
 
     def _frame(self, v):
+        lift = self.lift
+        if lift is not None:
+            parent = self.widget.parentWidget() if not sip.isdeleted(self.widget) else None
+            if parent is None or not parent.isVisible():
+                if self.anim is not None and self.anim.alive:
+                    self.anim.stop()               # its page went (a tab switch): cut short, as a ghost would be
+                return
+            if not sip.isdeleted(lift):
+                lift.setWindowOpacity(v)           # the compositor blends it: nothing here repaints
+                lift.move(self._lift_at + self._offset(v))
+            return
         g = self.ghost
         if g is None or sip.isdeleted(g):
             return
@@ -581,6 +649,13 @@ class OverlayOpening:
             self.ghost.hide()
             self.ghost.deleteLater()
         self.ghost = None
+        lift, self.lift = self.lift, None
+        if lift is not None and not sip.isdeleted(lift):
+            if show:                               # the overlay paints first; the lift goes a frame later (no flash)
+                QTimer.singleShot(FRAME_MS, lift.close)
+            else:
+                lift.close()
+            lift.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w = self.widget
         if _OPENINGS.get(id(w)) is self:
             _OPENINGS.pop(id(w), None)
@@ -603,15 +678,12 @@ class OverlayOpening:
     def press(self, event):
         """A press (left, right, middle) on the opening overlay: finish it, then give the press to what the user saw
         under the pointer, at its place now. -> True when it was taken."""
-        g = self.ghost
-        if g is None or sip.isdeleted(g):
-            return False
-        local_in_ghost = g.mapFromGlobal(event.globalPosition().toPoint())
-        content = g.content_rect()
-        if not content.contains(local_in_ghost):
+        content = self.content_global()
+        at = event.globalPosition().toPoint()
+        if content.isNull() or not content.contains(at):
             self.finish()                          # a press elsewhere: the opening ends, the press goes on as routed
             return False
-        local = local_in_ghost - content.topLeft()
+        local = at - content.topLeft()
         self._pressed = w_pending = self.widget    # (set before the finish: the filter stays for the release)
         self.finish()
         w = self.widget
@@ -672,6 +744,9 @@ class _InputFinisher(QObject):
         if not live:
             if o._pressed is None:
                 self.remove()                      # nothing left to do: never a filter left behind
+            return False
+        if et in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.WindowStateChange) and obj is getattr(o, "_top", None):
+            o.finish()                             # the window moved under a lifted opening: land it now
             return False
         if et == QEvent.Type.KeyPress:
             o.finish()

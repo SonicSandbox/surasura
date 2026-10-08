@@ -34,6 +34,12 @@ The check covers `multi` sub-actions too, so neither can be smuggled through a b
 not loopback is refused the same way: Surasura is offline-only, and this client may never become a
 new network destination (CLAUDE.md §1).
 
+**The one exception, named: `sync()`** (K59; E1.1 04 §3, the sync rule `app/anki_sync_rule.py`, Sonic's Q4-4). With
+the fast re-plan's preview on, Surasura asks Anki to sync once at a session's first write (so reviews made on the
+phone arrive before a position is written over them) and once about a minute after tomorrow's cards change. It is
+Anki's own sync to the user's own AnkiWeb account, asked over the same loopback AnkiConnect, holding the Anki-write
+lock — `invoke` still refuses `sync` from anywhere else, `multi` included.
+
 **One writer at a time (E1.4).** Every function that writes Anki takes the Anki-write lock first
 (`writer` / `take_writer`; `app/locks.py`, shared by every install of one Windows user), and an action
 off `READ_ACTIONS` is sent only by a thread holding it — refused here, before a socket opens, like the
@@ -263,17 +269,57 @@ def invoke(action, url, timeout=30, **params):
     if forbidden:
         # A programming error, not a user one — but it must never become a network call.
         raise AnkiError(f"'{forbidden}' is not allowed from this module.", kind="refused")
+    _loopback_only(url)
+    write = _write_in(action, params)
+    if write:
+        _writer_held(write)
+    return _send(action, url, timeout, params)
+
+
+def _loopback_only(url):
     if not is_loopback(url):
         raise AnkiError(f"Refusing to contact {url}: AnkiConnect must be on this computer "
                         "(127.0.0.1 or localhost).", kind="refused")
-    write = _write_in(action, params)
-    if write:
-        from app import locks
-        if not locks.held_here(WRITER_LOCK):
-            # Failing closed: a write sent without the lock could interleave with another writer's.
-            raise AnkiError(f"'{write}' changes Anki, so it is sent only while holding the "
-                            "Anki-write lock.", kind="refused")
 
+
+def _writer_held(what):
+    from app import locks
+    if not locks.held_here(WRITER_LOCK):
+        # Failing closed: a write sent without the lock could interleave with another writer's.
+        raise AnkiError(f"'{what}' changes Anki, so it is sent only while holding the "
+                        "Anki-write lock.", kind="refused")
+
+
+# What `sync` answers (AnkiConnect's own words): no AnkiWeb login on the profile, and a sync that needs the user's
+# choice (a full sync up or down) — both refused by AnkiConnect without a dialog.
+SYNC_NOT_SIGNED_IN = "auth not configured"
+SYNC_NEEDS_FULL = "Sync status"
+
+
+def sync(url, timeout=120):
+    """Ask Anki to sync the open profile with AnkiWeb (the module docstring's one exception; the caller is the
+    sync rule, `app/anki_sync_rule.py`) -> "synced", "not-signed-in" (the profile has no AnkiWeb login),
+    "full-sync" (AnkiWeb wants a full sync: the user's choice, never waited on) or "failed: <why>". Sent only
+    while holding the Anki-write lock; raises AnkiError only for that refusal and a URL that isn't loopback."""
+    _loopback_only(url)
+    _writer_held("sync")
+    try:
+        _send("sync", url, timeout, {})
+    except AnkiError as e:
+        text = str(e)
+        if e.kind == "action" and SYNC_NOT_SIGNED_IN in text:
+            return "not-signed-in"
+        if e.kind == "action" and SYNC_NEEDS_FULL in text:
+            return "full-sync"
+        if e.kind == "refused":
+            raise
+        return f"failed: {text}"
+    return "synced"
+
+
+def _send(action, url, timeout, params):
+    """One POST, after the checks (`invoke`'s, or `sync`'s): the envelope, the reply's shape."""
+    _loopback_only(url)
     payload = {"action": action, "version": API_VERSION, "params": params}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     # Content-Type only. No Origin header, deliberately: its absence is what keeps AnkiConnect from
@@ -288,7 +334,11 @@ def invoke(action, url, timeout=30, **params):
         raise AnkiError(f"AnkiConnect returned HTTP {e.code} for '{action}'.", kind="protocol")
     except (urllib.error.URLError, socket.timeout, OSError) as e:
         # ConnectionRefusedError is an OSError, and it is by far the common case: Anki is shut.
-        raise AnkiError(f"Could not reach Anki at {url} ({e}). Is Anki running?", kind="offline")
+        error = AnkiError(f"Could not reach Anki at {url} ({e}). Is Anki running?", kind="offline")
+        # A timeout is Anki open but busy (its own sync, Check Database, a big read), not Anki closed (E3.1 review 3
+        # R6: the sync rule's "Anki closed since" must not come from it).
+        error.timed_out = isinstance(getattr(e, "reason", e), (socket.timeout, TimeoutError))
+        raise error
 
     try:
         reply = json.loads(raw.decode("utf-8"))
@@ -332,7 +382,8 @@ def multi(actions, url, timeout=60):
 def probe(url, required=(), timeout=5):
     """Is Anki up, and can it do what the caller needs? Returns a dict; never raises.
 
-    `{"ok": bool, "version": int|None, "missing": [action, ...], "error": str}`
+    `{"ok": bool, "version": int|None, "missing": [action, ...], "error": str}` (+ `"timed_out": True` when Anki
+    is open but didn't answer in time)
 
     Windows call this on open and show the answer in their connection row, so every failure has to
     come back as data. `required` is the caller's capability gate: an AnkiConnect too old to expose
@@ -364,6 +415,7 @@ def probe(url, required=(), timeout=5):
             report["missing"] = [name for name in required if name not in available]
     except AnkiError as e:
         report["error"] = str(e)
+        report["timed_out"] = bool(getattr(e, "timed_out", False))     # open but busy, not closed
         return report
 
     if report["missing"]:

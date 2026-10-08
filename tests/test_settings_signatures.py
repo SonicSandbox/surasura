@@ -224,6 +224,7 @@ def _junban_panel_save(**changes):
                             _ready_first_value=lambda: s["junban_ready_first"],
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
+                            _replan_values=lambda: {},      # E3.1's row: saved only once touched
                             _own_values=lambda: {},         # P1.4-1's row: absent with the Connect preview off
                             _write=MagicMock())
     JunbanGui._save_scope(panel)
@@ -798,6 +799,7 @@ PLACED = {
     "connect_mine_words": "neither", "connect_send_grammar": "neither", "connect_anki_miner_path": "neither",
     "connect_anki_miner_profile": "neither",
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
+    "anki_sync_delay_min": "neither",       # the sync rule's minute (E1.1 04 §3): when Anki syncs, never a run
     "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
     "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",
     "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",
@@ -835,6 +837,9 @@ PLACED = {
     "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
     "junban_tag_markers": "neither", "junban_unlisted": "neither",
+    "junban_replan_preview": "neither", "junban_replan_language": "neither", "junban_replan_deck": "neither",
+                                            # the fast re-plan's preview (E1.1 04 §1): a run reads it for the plan file,
+                                            # which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.

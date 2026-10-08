@@ -80,6 +80,17 @@ def main():
                     log_error(f"library_maintain failed:\n{traceback.format_exc()}")
                 sys.exit(code)
 
+            elif command == 'replan_helper':
+                # The fast re-plan's helper (E3.1-B1, app/replan_preview.py): one window's re-order jobs in a process
+                # of its own, talking to that window over a local pipe. Dialog-free; it ends when its window goes.
+                code = 1
+                try:
+                    from app import replan_preview
+                    code = replan_preview.helper_main(sys.argv[2:])
+                except Exception:
+                    log_error(f"replan_helper failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
             elif command == 'analyzer':
                 from app import analyzer
                 sys.argv = [sys.argv[0]] + sys.argv[2:]

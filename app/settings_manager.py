@@ -70,6 +70,11 @@ DEFAULT_SETTINGS = {
     # in known words. Only then — new episodes are the user's to order first. Never in the run
     # signature.
     "anki_auto_generate": False,
+    # The Anki sync rule's S4 (E1.1 04 §3; app/anki_sync_rule.py; shared with Connect, P1.5): with the fast re-plan's
+    # preview on, Surasura asks Anki to sync this many minutes after a write that changed tomorrow's cards (0 = right
+    # away), or "off": only at a session's first write (and Anki's own sync on close). 順's "Sync AnkiWeb". Never in a
+    # signature (analyzer._NON_ANALYSIS_SETTINGS); the dashboard's save keeps it only as written.
+    "anki_sync_delay_min": 1,
     # Surasura Connect's mine path (P1.3; docs/agent instructions/3.0/P1.3-mine-path/): which words of an episode
     # become cards (`list`: on your list, not known, no card yet · `unknown`: every word you don't know · `i1`: only
     # words with a line whose other words you know), whether grammar words go too (names follow logic.ignore_names:

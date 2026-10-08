@@ -163,7 +163,7 @@ QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; bo
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
 QLabel#statebar {{ color: {c['ink-dim']}; background: {c['raised']}; border-radius: 7px; padding: {px(5)} {px(10)};
   {font('row-sub')} }}
-QListView#rows {{ background: transparent; border: 0; }}
+QListView#rows {{ background: {c['bg']}; border: 0; }}
 QListView#rows:focus {{ border: 0; }}
 /* --- end W2.2 --- */
 

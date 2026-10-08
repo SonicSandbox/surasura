@@ -3216,6 +3216,7 @@ class MasterDashboardApp:
             # into a settings.json that lacks it (or one that can't be read)
             as_written = ["connect_mine_words", "connect_send_grammar", "connect_anki_miner_path",
                           "connect_anki_miner_profile", "connect_open_anki", "connect_enabled", "placing_rules",
+                          "connect_backlog_cap", "known_from_anki",          # P2.4: no control here yet
                           # the sync rule's minute (E1.1 04 §3, 順's "Sync AnkiWeb") and Junban's as-written keys
                           "anki_sync_delay_min", *JUNBAN_AS_WRITTEN]
 

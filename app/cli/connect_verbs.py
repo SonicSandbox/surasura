@@ -415,3 +415,33 @@ def _pending(lang):
         return False
     with store:
         return inbox.pending(store)
+
+
+# --------------------------------------------------------------------------- #
+# setup (P2.3: the setup checks, P1.5 04-onboarding §1)
+# --------------------------------------------------------------------------- #
+def setup_args(parser):
+    add_language(parser)
+    parser.add_argument("--use-anki-profile", action="store_true",
+                        help="Connect makes cards in the Anki profile open now, from now on")
+
+
+def setup(args):
+    """Every piece Connect needs, in order, each missing one named in plain words with its one action
+    (`app/connect/setup.py`). Exit 0 whatever is missing: the list is the answer. With Connect's preview on the setup
+    record is kept (`<local data>/connect/setup.json`); off, nothing is written. Asks Anki read-only and Anki Miner its
+    `--api version`, `profiles` and `check`; never syncs, writes Anki or starts Anki."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    if args.use_anki_profile and not loaded.get("connect_enabled"):
+        raise CliError("usage", "--use-anki-profile is for Connect's preview: switch it on first.")
+    from app.connect import setup as checking
+    contract.emit_progress("checking Anki and Anki Miner", 0, 1)
+    out = checking.checks(loaded, lang, use_open_profile=args.use_anki_profile)
+    profile = next(c for c in out["checks"] if c["id"] == "anki_profile")
+    if args.use_anki_profile and profile["state"] != checking.OK:
+        raise CliError("anki-closed", "Anki isn't open, so Surasura can't see which profile to use. Open Anki, then "
+                                      "try again.")
+    contract.emit_progress("done", 1, 1)
+    return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))

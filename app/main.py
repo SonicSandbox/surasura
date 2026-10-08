@@ -3120,7 +3120,8 @@ class MasterDashboardApp:
             # Carried only as the file holds them — a save never drops one the user set, and never writes a default
             # into a settings.json that lacks it (or one that can't be read)
             as_written = ["connect_mine_words", "connect_send_grammar", "connect_anki_miner_path",
-                          "connect_anki_miner_profile", "connect_enabled", "placing_rules", *JUNBAN_AS_WRITTEN]
+                          "connect_anki_miner_profile", "connect_open_anki", "connect_enabled", "placing_rules",
+                          *JUNBAN_AS_WRITTEN]
 
             def build():
                 # Keys that OTHER windows write (Junban's deck, Reels/Koe tunables, the Anki window's

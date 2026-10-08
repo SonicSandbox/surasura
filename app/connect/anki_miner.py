@@ -90,6 +90,21 @@ def _registry_location():
         return None
 
 
+def installed_version():
+    """DisplayVersion from Anki Miner's per-user uninstall key ("3.7.0"), or None (not installed by its installer, off
+    Windows, under a test root). Read before Anki Miner is first run (P2.3's setup checks): a build older than 3.5.0
+    has no `--api`, and running it opens its window."""
+    if sys.platform != "win32" or os.environ.get("SURASURA_TEST_ROOT"):
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            value = winreg.QueryValueEx(key, "DisplayVersion")[0]
+    except OSError:
+        return None
+    return str(value).strip() or None
+
+
 def _default_location():
     base = os.environ.get("LOCALAPPDATA")
     return os.path.join(base, "Programs", "AnkiMiner") if base and sys.platform == "win32" else None

@@ -4058,6 +4058,7 @@ def run_signature_parts(language, found_files, args):
             "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
             # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
             "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+            "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
             # Optional-module switches that change what the app SHOWS, never what a run computes.
             # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
             # library_frequency.json it used to switch on.)

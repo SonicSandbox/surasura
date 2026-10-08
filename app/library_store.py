@@ -48,6 +48,7 @@ from contextlib import contextmanager
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app import library_watch
 from app.path_utils import (CONTENT_EXTENSIONS, backup_to_trash, infer_source_type, read_source_marker,
                             restart_trash_clock)
 
@@ -1282,6 +1283,7 @@ class Store:
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
         self._wlock.acquire()
+        committed = False
         try:
             self.conn.execute("PRAGMA query_only=0")
             if begin:
@@ -1307,6 +1309,7 @@ class Store:
                     if self.conn.in_transaction:
                         self.conn.execute("ROLLBACK")
                     raise
+                committed = True
         except sqlite3.DatabaseError as exc:
             if _is_malformed(exc):
                 mark_damaged(self.db_path, f"{self.role}: {exc}")
@@ -1317,6 +1320,8 @@ class Store:
                 self.conn.execute("PRAGMA query_only=1")
             finally:
                 self._wlock.release()
+        if committed:
+            library_watch.ring(self.db_path)          # every writer's commit wakes the windows listening (L3.2)
 
     def checkpoint(self):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""

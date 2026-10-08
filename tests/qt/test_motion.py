@@ -356,6 +356,30 @@ def test_esc_during_the_opening_finishes_it_then_the_router_closes_it(clock, qap
         services.shutdown(0.5)
 
 
+def test_esc_closes_an_overlay_still_opening_when_its_finisher_is_gone(clock, qapp):
+    # M2.1 review A3: the router must not depend on the opening's own filter finishing it first; with that filter
+    # removed, an Esc during the opening still closes the overlay and drops the opening
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    QApplication.processEvents()
+    try:
+        card = Card(win.centralWidget())
+        win.register_overlay(card)
+        opening = card.open()
+        clock.advance(32)
+        opening._finisher.remove()                              # the opening's filter does not finish it before the router
+        assert motion.opening_of(card) is opening and not card.isVisible()
+        QTest.keyClick(win.centralWidget(), Qt.Key.Key_Escape)
+        QApplication.processEvents()
+        assert motion.opening_of(card) is None and not card.isVisible() and win.isVisible()
+        clock.advance(400)
+        assert not card.isVisible()                             # and it stays closed when its time is up
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
 def test_a_press_on_the_opening_overlay_reaches_the_button_the_user_saw(clock, stage):
     # routed as Qt routes it: the press lands on the window at the point; the ghost takes no mouse itself
     card = Card(stage)
@@ -385,6 +409,26 @@ def test_a_press_beside_the_opening_overlay_reaches_what_is_there(clock, stage):
     assert not opening.ghost.content_rect().contains(opening.ghost.mapFrom(stage, at))
     QTest.mouseClick(stage.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
     assert hits == [1] and card.isVisible()                    # the opening finished, the click went where it fell
+
+
+def test_the_ghost_is_transparent_so_a_press_on_its_travel_strip_reaches_the_button_under_it(clock, stage):
+    # why: the app-wide finisher would end the opening on any press first, hiding the ghost, so the finisher is
+    # taken off here and the press meets the ghost alone: a transparent ghost lets it reach the button beneath
+    below = QPushButton("下の行", stage)
+    below.setGeometry(200, 270, 320, 30)                       # inside the ghost's travel, under the card's bottom edge
+    below.show()
+    hits = []
+    below.clicked.connect(lambda: hits.append(1))
+    card = Card(stage, "up")
+    opening = card.open()
+    clock.advance(32)
+    ghost = opening.ghost
+    at = below.geometry().center()
+    assert ghost.rect().contains(ghost.mapFrom(stage, at))     # the press really lands on the ghost's own area
+    assert not ghost.content_rect().contains(ghost.mapFrom(stage, at))
+    opening._finisher.remove()
+    QTest.mouseClick(stage.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    assert hits == [1]
 
 
 def _filters_left(opening):
@@ -423,6 +467,24 @@ def test_every_end_tears_the_opening_down_a_hidden_page_an_error_a_stop(clock, s
     opening = card.open()
     opening.anim.stop()
     assert motion.opening_of(card) is None and not _filters_left(opening)
+
+
+def test_a_finisher_whose_opening_is_over_removes_itself_and_lets_the_key_through(clock, stage, qapp):
+    # why: a finisher left on the app after its opening ended would sit on every key and press of the whole app
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+    card = Card(stage)
+    opening = card.open()
+    opening.anim.stop()                                         # the opening is over: its animation has stopped
+    assert not opening.live and opening._pressed is None
+    finisher = motion._InputFinisher(opening)                   # a finisher still built for that finished opening
+    qapp.installEventFilter(finisher)
+    try:
+        key = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
+        assert finisher.eventFilter(stage, key) is False        # the key goes on to whatever has it
+        assert not finisher.installed                           # and the filter has taken itself off the app
+    finally:
+        qapp.removeEventFilter(finisher)
 
 
 def test_back_during_the_opening_closes_it(clock, qapp):
@@ -790,6 +852,27 @@ def test_a_split_lifted_opening_is_two_pieces_and_takes_its_window_only_in_the_l
     assert list(seen) == ["_snapshot", "_go"] and seen["_snapshot"] < seen["_go"]
     assert opening.picture is None                               # no picture composed: the lift paints the two itself
     assert opening.lift is not None and opening.lift.isVisible() and opening.lift.windowOpacity() == 0.0
+    clock.advance(400)
+    assert card.isVisible()
+
+
+def test_split_pieces_wait_the_gap_between_their_passes(clock, stage, split, monkeypatch):
+    import time
+    # why: a piece run straight after the last one (a 0 ms gap) leaves no input or paint between the pieces, which is
+    # the point of splitting. The gap is raised to 60 ms so the check has room: half of it must pass between pieces.
+    monkeypatch.setattr(motion, "PIECE_GAP_MS", 60)
+    card = Card(stage, "up")
+    opening = card.open()
+    stamps = {}
+    for name in ("_snapshot", "_picture", "_go"):
+        fn = getattr(opening, name)
+        setattr(opening, name, lambda fn=fn, name=name: (stamps.__setitem__(name, time.perf_counter()), fn())[1])
+    opening._pieces = type(opening._pieces)(getattr(opening, f.__name__) for f in opening._pieces)
+    from tests.qt.conftest import wait_until
+    assert wait_until(lambda: opening._pieces is None, 2)
+    assert list(stamps) == ["_snapshot", "_picture", "_go"]
+    assert stamps["_picture"] - stamps["_snapshot"] >= 0.030
+    assert stamps["_go"] - stamps["_picture"] >= 0.030
     clock.advance(400)
     assert card.isVisible()
 

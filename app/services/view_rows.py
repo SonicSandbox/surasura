@@ -368,7 +368,12 @@ class _Shim:
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
-    media = work.get("media_type") or (guessed or {}).get(first.get("work_id"))
+    media = work.get("media_type")
+    if media is None:                                # nobody typed it: the store's guess, from this piece's files
+        counts = {}
+        for it in piece:
+            counts[it.get("source_type")] = counts.get(it.get("source_type"), 0) + 1
+        media = media_type_guess(counts, work.get("anilist_id"), work.get("tmdb_id"))
     if media is None and first.get("source_type") in ("youtube", "bilibili"):
         media = "youtube"
     word = MEDIA_WORD.get(media, "video")
@@ -423,23 +428,6 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                can_play=nxt.can_play)
 
 
-def _guesses(items, works):
-    """{work_id: its guessed type} for the works nobody typed (one pass over the items)."""
-    counts = {}
-    for r in items.values():
-        w = r.get("work_id")
-        if w is None or (works.get(w) or {}).get("media_type"):
-            continue
-        c = counts.setdefault(w, {})
-        st = r.get("source_type")
-        c[st] = c.get(st, 0) + 1
-    out = {}
-    for w, c in counts.items():
-        work = works.get(w) or {}
-        out[w] = media_type_guess(c, work.get("anilist_id"), work.get("tmdb_id"))
-    return out
-
-
 class RowCache:
     """Rows kept between builds (the reader holds one): a piece whose items and work are the same objects as last time
     (the reader's copy replaces a row's dict only when the feed changed it) and whose cards, mining and place in the top
@@ -451,10 +439,13 @@ class RowCache:
         self.version = None
         self.hits = self.misses = 0
 
-    def begin(self, version):
+    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None):
         if version != self.version:
             self.rows = {}
             self.version = version
+        glob = (id(cards), frozenset(mining or ()), frozenset(in_top or ()), line_n)
+        self.same_global = glob == getattr(self, "_glob", None) and cards is getattr(self, "_cards", None)
+        self._glob, self._cards = glob, cards
         self._next = {}
 
     def end(self):
@@ -468,12 +459,15 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
     first = piece[0]
     work = works.get(first.get("work_id"))
     key = (tier, finished, first.get("piece_id"), first["id"])
-    sig = (len(piece), line_n, hero, guessed.get(first.get("work_id")),
-           tuple(cards.get(it["id"], 0) for it in piece), tuple(it["id"] in mining for it in piece),
-           tuple(it["id"] in in_top for it in piece))
     hit = cache.rows.get(key)
-    if hit is not None and hit[0] == sig and hit[1] is work and len(hit[2]) == len(piece) and \
-            all(a is b for a, b in zip(hit[2], piece)):
+    same_items = hit is not None and hit[1] is work and len(hit[2]) == len(piece) and \
+        all(a is b for a, b in zip(hit[2], piece))
+    if same_items and cache.same_global and hit[0][2] == hero:
+        sig = hit[0]                                 # nothing global moved: the same objects are the same row
+    else:
+        sig = (len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
+               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece))
+    if same_items and hit[0] == sig:
         row = hit[3]
         if row.index != index:
             row = row._replace(index=index)
@@ -522,7 +516,7 @@ def _mine_ids(current, n):
 
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False, cache=None):
+          loading=False, busy=False, cache=None, tiers=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now."""
@@ -530,14 +524,13 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
     numbers = numbers or {}
-    if cache is not None:
-        cache.begin(numbers_version if numbers_version is not None else id(numbers))
+    cache_version = numbers_version if numbers_version is not None else id(numbers)
     cards = cards or {}
     mining = set(mining or ())
     options = options or {}
     line_n = options.get("mine_line")
     line_n = 20 if line_n is None else int(line_n)
-    tiers = _by_tier(items)
+    tiers = tiers if tiers is not None else _by_tier(items)
     current = tiers["now"] + tiers["soon"]
     top_ids = _mine_ids(current, line_n)
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
@@ -548,7 +541,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             in_top.add(r["id"])
             if r["id"] == last:
                 break
-    guessed = _guesses(items, works)
+    if cache is not None:
+        cache.begin(cache_version, cards, mining, in_top, line_n)
+    guessed = {}
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):

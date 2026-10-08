@@ -298,3 +298,26 @@ def test_a_status_write_keeps_a_stale_cache_out(tmp_path):
         assert not views[0][1].cached
     finally:
         again.stop()
+
+
+def test_the_tiers_stay_in_order_through_moves_and_status_writes():
+    """The reader keeps each tier sorted between changes: a status write swaps a row in place; a move (a new `ord`)
+    sorts its tier again — the view's order is always the store's."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        keys = [r.key for r in views[-1][1].rows]
+        third = views[-1][1].rows[2]
+        seed.library.commit(items=[{"id": third.episodes[0].id, "watched": 1}])     # a status write
+        assert _wait(lambda: views[-1][1].rows[2].episodes[0].watched)
+        assert [r.key for r in views[-1][1].rows] == keys
+        moved = [e.id for e in third.episodes]                                       # the third row to the top
+        top = min(r["ord"] for r in seed.items if r["tier"] == "now")
+        seed.library.commit(items=[{"id": i, "ord": top - 1000 + k} for k, i in enumerate(moved)], order=True)
+        assert _wait(lambda: views[-1][1].rows[0].key == third.key)
+        assert [r.key for r in views[-1][1].rows][1:3] == keys[:2]
+    finally:
+        reader.stop()

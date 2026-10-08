@@ -36,6 +36,7 @@ from app.services import view_rows
 
 POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
+CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
 CACHE_VERSION = 2                # 2: keyed (store id, epoch, state version, plan version)
 
 
@@ -77,6 +78,10 @@ class LibraryReader:
         self._numbers_version = None
         self._mode = None
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
+        self._tiers, self._pos, self._dirty = None, {}, set()
+        self._changed_ids = None
+        self._cards_all_at = 0.0
+        self._cards_stale = False
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
@@ -156,8 +161,9 @@ class LibraryReader:
                 self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))
             return
         dv = h.data_version()
+        cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
-                and self._view is not None and not self._view.busy:
+                and self._view is not None and not self._view.busy and not cards_due:
             return
         feed = h.read_feed(self._seen, self._epoch)
         self.reads += 1
@@ -183,35 +189,93 @@ class LibraryReader:
             self._write_cache(view, [self._store_id, feed["epoch"], feed["version"], version])
 
     def _card_counts(self, h):
-        """{item_id: cards} for the items whose rows show cards (Current, Finished): asked on every change — a card
-        made for an item doesn't move its row in the feed (`record_made`)."""
+        """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't
+        move its row in the feed (`record_made`), so every item is asked again at most every CARDS_ALL_S; between, only
+        the items the feed changed. The same dict object comes back when nothing changed (the row cache reads that)."""
         if not hasattr(h, "cards_of"):
             return {}
-        ids = [i for i, r in self._items.items() if r.get("tier") in ("now", "soon", "graduated")]
-        got = h.cards_of(ids)
-        return {i: len(v) for i, v in got.items() if v}
+        now = time.monotonic()
+        if self._changed_ids is None or now - self._cards_all_at >= CARDS_ALL_S:
+            ids = [i for i, r in self._items.items() if r.get("tier") in ("now", "soon", "graduated")]
+            self._cards_all_at = now
+            self._cards_stale = False
+            got = h.cards_of(ids)
+            new = {i: len(v) for i, v in got.items() if v}
+        else:
+            self._cards_stale = True                    # a card may be made elsewhere: every item asked again soon
+            ids = [i for i in self._changed_ids if i in self._items]
+            got = h.cards_of(ids) if ids else {}
+            new = dict(self._cards)
+            for i in ids:
+                n = len(got.get(i) or ())
+                if n:
+                    new[i] = n
+                else:
+                    new.pop(i, None)
+        self._changed_ids = set()
+        return self._cards if new == self._cards else new
 
     def _merge(self, feed):
         if feed["full"]:
             self._items = {r["id"]: r for r in feed["items"]}
             self._works = {w["id"]: w for w in feed["works"]}
+            self._tiers = None                          # sorted again in full at the next build
+            self._changed_ids = None
         else:
+            changed = self._changed_ids if self._changed_ids is not None else set()
             for r in feed["items"]:
+                old = self._items.get(r["id"])
                 self._items[r["id"]] = r
+                changed.add(r["id"])
+                if self._tiers is None:
+                    continue
+                if old is None or old.get("tier") != r.get("tier") or old.get("ord") != r.get("ord"):
+                    self._dirty.add(r.get("tier"))      # it moved: its tiers are sorted again
+                    if old is not None:
+                        self._dirty.add(old.get("tier"))
+                else:                                   # the same place: swapped in, no sort
+                    at = self._pos.get(r["id"])
+                    if at is not None:
+                        self._tiers[at[0]][at[1]] = r
+                    else:
+                        self._dirty.add(r.get("tier"))
             for w in feed["works"]:
                 self._works[w["id"]] = w
             for kind, ident in feed["gone"]:
-                (self._items if kind == "item" else self._works).pop(ident, None)
                 if kind == "item":
-                    self._cards.pop(ident, None)
+                    old = self._items.pop(ident, None)
+                    if old is not None and self._tiers is not None:
+                        self._dirty.add(old.get("tier"))
+                else:
+                    self._works.pop(ident, None)
+            self._changed_ids = changed
         self._options = dict(feed.get("options") or {})
         self._seen, self._epoch = feed["version"], feed["epoch"]
+
+    def _sorted_tiers(self):
+        """Each tier's items in `(ord, id)` order: in full after a full read, else only the tiers something moved in."""
+        if self._tiers is None:
+            self._tiers = view_rows._by_tier(self._items)
+            self._dirty = set()
+            self._pos = {r["id"]: (t, i) for t, rows in self._tiers.items() for i, r in enumerate(rows)}
+        elif self._dirty:
+            for t in self._dirty:
+                if t is None:
+                    continue
+                rows = [r for r in self._items.values() if r.get("tier") == t]
+                rows.sort(key=lambda r: (r.get("ord") or 0.0, r["id"]))
+                self._tiers[t] = rows
+                for i, r in enumerate(rows):
+                    self._pos[r["id"]] = (t, i)
+            self._dirty = set()
+        return self._tiers
 
     def _build(self, numbers, mode, reason, rows_known):
         self.builds += 1
         return view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
-                               reason=reason, loading=not rows_known, cache=self.row_cache)
+                               reason=reason, loading=not rows_known, cache=self.row_cache,
+                               tiers=self._sorted_tiers() if self._items else None)
 
     def _busy(self, error):
         self._recheck = True                            # a failed read: ask the store's mode again next time

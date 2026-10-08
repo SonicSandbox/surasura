@@ -226,13 +226,15 @@ def main_child(a):
     window.first_frame.connect(first_frame)
 
     # the phases ----------------------------------------------------------------------------------------------------- #
-    def phase_scroll():
-        mark("scroll")
+    def phase_scroll(writes=False):
+        name = "scroll-writes" if writes else "scroll"
+        mark(name)
         bar = lst.verticalScrollBar()
-        # another program writes while the person scrolls (review A-17): a watched mark every 300 ms, so the reader
-        # rebuilds the view on its thread while this one paints
+        bar.setValue(0)
+        # the second pass: another program writes while the person scrolls (review A-17) — a watched mark every 300 ms,
+        # so the reader rebuilds the view on its thread while this one paints
         stop_writes = threading.Event()
-        result["scroll_commits"] = 0
+        result.setdefault("scroll_commits", 0)
 
         def writer():
             lib = opener.library
@@ -242,7 +244,8 @@ def main_child(a):
                 lib.commit(items=[{"id": ids[k % len(ids)], "watched": k % 2}])
                 result["scroll_commits"] += 1
                 k += 1
-        threading.Thread(target=writer, name="scroll-writer", daemon=True).start()
+        if writes:
+            threading.Thread(target=writer, name="scroll-writer", daemon=True).start()
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -259,8 +262,8 @@ def main_child(a):
             if state["n"] >= 300:
                 timer.stop()
                 stop_writes.set()
-                mark("scroll", end=True)
-                QTimer.singleShot(300, phase_open)
+                mark(name, end=True)
+                QTimer.singleShot(300, phase_open if writes else (lambda: phase_scroll(writes=True)))
         timer.timeout.connect(step)
         timer.start(16)
 

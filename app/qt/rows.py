@@ -420,18 +420,19 @@ class RowDelegate(QStyledItemDelegate):
         self.renders = 0                             # rows drawn into a pixmap (tests: a repaint reuses them)
         self._sprites = OrderedDict()
 
-    def _sprite(self, kind, payload, lines, size, dpr, hovered, draw):
+    def _sprite(self, kind, payload, lines, size, dpr, hovered, draw, ident=None, ground="bg"):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its lines, its width, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these."""
-        key = (kind, payload.key, size.width(), size.height(), dpr, style.current(), hovered)
+        key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
+               hovered)
         hit = self._sprites.get(key)
         if hit is not None and hit[0] is payload and hit[1] == lines:
             self._sprites.move_to_end(key)
             return hit[2]
         pix = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
         pix.setDevicePixelRatio(dpr)
-        pix.fill(c("bg"))
+        pix.fill(c(ground))
         q = QPainter(pix)
         q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         q.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -850,35 +851,49 @@ class RowDelegate(QStyledItemDelegate):
         p.drawLine(QPointF(rule_x, rows[0][0].top()), QPointF(rule_x, rows[-1][0].bottom()))
         clip = QRectF(self.view.viewport().rect()) if p.device() is self.view.viewport() else None
         split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
+        split_at = None
         for i, (r, ep) in enumerate(rows):
             if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too
-                self._paint_line(p, lines_top(lines), QRect(r.left() - 8, r.top() - 3, r.width() + 8, 6), dpr)
+                split_at = QRect(r.left() - 8, r.top() - 3, r.width() + 8, 6)
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
-            cols = self._episode_cols(r)
-            tick = QRectF(cols["tick"])
-            if ep.watched:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(c("accent"))
-                p.drawEllipse(tick)
-                icon(p, "check", tick.adjusted(4, 4, -4, -4), style.qcolor(theme.FIXED["on-accent"]))
+            if clip is not None:                       # on screen: painted once into a pixmap, reused while unchanged
+                w, h = r.width(), r.height()
+                pix = self._sprite("ep", ep, (), r.size(), dpr, False,
+                                   lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr),
+                                   ident=(ep.id, hero), ground="surface")
+                p.drawPixmap(r.topLeft(), pix)
             else:
-                p.setPen(QPen(c("line-hi"), 1.5))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(tick.adjusted(0.75, 0.75, -0.75, -0.75))
-            text_w = cols["text_right"] - cols["text_left"]
-            lw, _ = TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
-                              c("ink-dim" if ep.watched else "ink"), dpr=dpr)
-            paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr)
-            right = cols["stat"].right()
-            if ep.status is not None:
-                size = pill_size(ep.status, dpr)
-                sr = QRect(right - size.width(), r.center().y() - size.height() // 2, size.width(), size.height())
-                paint_pill(p, ep.status, sr, dpr)
-                right = sr.left() - 4
-            if ep.mark is not None:
-                paint_mark(p, ep.mark, right, r.center().y(), dpr)
-            self._paint_play_button(p, cols["play"], ep.can_play)
+                self._paint_episode(p, r, ep, dpr)
+        if split_at is not None:
+            self._paint_line(p, lines_top(lines), split_at, dpr)
+
+    def _paint_episode(self, p, r, ep, dpr):
+        """One episode row (an open row's): its tick, label, numbers, status, mark and ▶."""
+        cols = self._episode_cols(r)
+        tick = QRectF(cols["tick"])
+        if ep.watched:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(c("accent"))
+            p.drawEllipse(tick)
+            icon(p, "check", tick.adjusted(4, 4, -4, -4), style.qcolor(theme.FIXED["on-accent"]))
+        else:
+            p.setPen(QPen(c("line-hi"), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(tick.adjusted(0.75, 0.75, -0.75, -0.75))
+        text_w = cols["text_right"] - cols["text_left"]
+        lw, _ = TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
+                          c("ink-dim" if ep.watched else "ink"), dpr=dpr)
+        paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr)
+        right = cols["stat"].right()
+        if ep.status is not None:
+            size = pill_size(ep.status, dpr)
+            sr = QRect(right - size.width(), r.center().y() - size.height() // 2, size.width(), size.height())
+            paint_pill(p, ep.status, sr, dpr)
+            right = sr.left() - 4
+        if ep.mark is not None:
+            paint_mark(p, ep.mark, right, r.center().y(), dpr)
+        self._paint_play_button(p, cols["play"], ep.can_play)
 
     def _paint_hero(self, p, row, rect, lines, hovered, focused, dpr):
         f = fz()

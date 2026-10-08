@@ -913,6 +913,23 @@ def test_an_update_another_process_started_stops_every_write(lib, monkeypatch):
     assert lines[-1] == replan_preview.UPDATE and not fake.write_requests and fake.syncs == syncs
 
 
+def test_a_sync_due_while_an_update_waits_is_looked_at_again_later_not_on_every_turn(lib, monkeypatch):
+    """Pass 5 #2: an S3 sync falls due while an update waits — it stays pending, but its time moves RETRY_S on, so the
+    worker sleeps between looks instead of spinning (each turn reads settings.json twice)."""
+    import time
+    root, _store = lib
+    fake = _deck(root)
+    host, _lines = _host()
+    monkeypatch.setattr(replan_preview, "_update_staged", lambda: True)
+    host._sync_at = time.time() - 1.0
+    with _patched(fake):
+        syncs = fake.syncs
+        host._sync_step()
+    assert fake.syncs == syncs
+    assert host._sync_at is not None and host._sync_at > time.time() + replan_preview.RETRY_S - 2.0
+    assert host._next_wait() > 0.5
+
+
 def test_with_nothing_moved_the_line_names_what_the_plan_waits_for(lib):
     """Pass 4 #13: nothing the plan holds moved — new content says so; a setting (or an update) says press Generate."""
     root, store = lib

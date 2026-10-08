@@ -2427,6 +2427,8 @@ class MasterDashboardApp:
             # new "Update now" can never stage into the folder this worker was still writing.
             updater.discard_staged()
             updater.drop_update_lock(job.get("lock"))
+            if job.get("start_held"):
+                self._replan_restart()                 # a cancel during the download (pass 5 #1)
             return
         if job is not getattr(self, "_update_job", None):
             return
@@ -2587,6 +2589,7 @@ class MasterDashboardApp:
                 win.destroy()
         except Exception:
             pass
+        job["start_held"] = start_held
         if job.get("done"):
             updater.drop_update_lock(job.get("lock"))  # else when the download worker ends (_update_downloaded)
         updater.release_children(start=start_held)
@@ -2595,10 +2598,16 @@ class MasterDashboardApp:
                 self._maybe_auto_generate()            # one held back meanwhile
             except Exception:
                 pass
-            try:
-                self._replan_start()                   # the preview's helper, stopped at "Update now"
-            except Exception:
-                pass
+            if job.get("done"):
+                self._replan_restart()                 # else once the download worker drops the lock (pass 5 #1)
+
+    def _replan_restart(self):
+        """The preview's helper, stopped at "Update now", started again once the update's lock is gone — a helper
+        started while it is held would find an update staged and leave the jobs to this window's process."""
+        try:
+            self._replan_start()
+        except Exception:
+            pass
 
     def _apply_and_restart(self, job):
         """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the
@@ -3659,6 +3668,8 @@ class MasterDashboardApp:
         if host is not None and (not on or host.language != language):
             host.stop()
             host = self._replan_host = None
+        if on and host is None and self.__dict__.get("_update_job") is not None:
+            return                                     # an update waits: started again when it ends (pass 5 #1)
         if on and host is None:
             host = self._replan_host = replan_preview.open_host(
                 language, say=lambda line: self.gui_queue.put(lambda: self._replan_said(line)),
@@ -3669,7 +3680,8 @@ class MasterDashboardApp:
 
     def _replan_stop_for_update(self):
         """"Update now": the preview's helper is a Surasura process the update would wait for, and this window's hold
-        isn't its own (E3.1 pass 4 #1) — stopped now (its job ends the request it is in), started again by a cancel."""
+        isn't its own (E3.1 pass 4 #1) — stopped now (a job in hand goes on for at most CLOSE_WAIT_S; pass 5 #3), started
+        again by a cancel once the update's lock is gone."""
         host = self.__dict__.get("_replan_host")
         if host is not None:
             host.stop()

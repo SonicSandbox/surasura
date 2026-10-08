@@ -19,7 +19,7 @@ from app import replan_preview
 Dash = main_module.MasterDashboardApp
 METHODS = ("_replan_start", "replan_preview_changed", "_replan_runs", "_child_running", "_replan_focus",
            "_replan_after_child", "_replan_said", "_want_replan_generate", "_maybe_replan_generate",
-           "_replan_finishing", "_maybe_junban_auto")
+           "_replan_finishing", "_maybe_junban_auto", "_replan_restart")
 
 
 class Host:
@@ -219,6 +219,44 @@ def test_update_now_stops_the_helper_and_a_cancel_starts_it_again(monkeypatch):
     d._replan_stop_for_update()
     assert first.calls[-1] == "stop" and d._replan_host is None
     d._update_job = None
-    d._end_update({"after": None, "window": None, "done": False}, start_held=True)
+    monkeypatch.setattr(main_module.updater, "drop_update_lock", lambda handle: None)
+    monkeypatch.setattr(main_module.updater, "release_children", lambda start=True: None)
+    d._end_update({"after": None, "window": None, "done": True}, start_held=True)
     assert d._replan_host is not None and d._replan_host is not first
     assert "_replan_stop_for_update()" in inspect.getsource(Dash._start_update)
+
+
+def test_a_cancel_during_the_download_starts_the_helper_only_once_the_update_lock_is_dropped(monkeypatch):
+    """Pass 5 #1: cancelled while it downloads, the update's lock is dropped only when the download worker ends — a
+    helper started before would find an update staged and hand every job to this window's process for good. So the
+    helper starts after the lock is dropped; a language switch or 順's switch meanwhile starts none; closing never."""
+    d = _dash()
+    for name in ("_replan_stop_for_update", "_end_update", "_update_downloaded"):
+        setattr(d, name, types.MethodType(getattr(Dash, name), d))
+    order = []
+    monkeypatch.setattr(main_module.settings_manager, "load_settings", lambda: dict(ON))
+    monkeypatch.setattr(replan_preview, "Host", lambda language, **kw: order.append("host") or Host(language))
+    monkeypatch.setattr(main_module.updater, "drop_update_lock", lambda handle: order.append("lock dropped"))
+    monkeypatch.setattr(main_module.updater, "discard_staged", lambda: None)
+    monkeypatch.setattr(main_module.updater, "release_children", lambda start=True: None)
+    d._replan_start()
+    d._replan_stop_for_update()
+    job = {"after": None, "window": None, "done": False, "lock": object()}
+    d._update_job = job
+    order.clear()
+    d._replan_start()                                            # the language switched while it downloads
+    assert d._replan_host is None and order == []
+    d._end_update(job, start_held=True)                          # Cancel, mid-download
+    assert d._replan_host is None and order == []
+    job["done"] = True
+    d._update_downloaded(job)                                    # the worker ends: the lock goes, then the helper
+    assert order == ["lock dropped", "host"] and d._replan_host is not None
+    # Closing mid-download: the lock goes when the worker ends, and no helper starts.
+    d._replan_stop_for_update()
+    job = {"after": None, "window": None, "done": False, "lock": object()}
+    d._update_job = job
+    d._end_update(job, start_held=False)
+    order.clear()
+    job["done"] = True
+    d._update_downloaded(job)
+    assert order == ["lock dropped"] and d._replan_host is None

@@ -772,7 +772,9 @@ class Host:
                 self._sync_at = None
                 return
             if _update_staged():
-                return                               # an update waits: no sync now (the pending one stays pending)
+                if not force:                        # an update waits: no sync now (the pending one stays pending),
+                    self._sync_at = time.time() + RETRY_S    # looked at again later, not on every turn (pass 5 #2)
+                return
             _answer, self._sync_at = anki_sync_rule.sync_if_due(anki_connect.address(settings), settings,
                                                                  force=force, cancel=None if force else self._cancel)
         except Exception:
@@ -953,6 +955,10 @@ class Remote:
                 break
             if isinstance(message, dict):
                 self._receive(message)
+        try:
+            conn.close()                          # a helper this side stopped reading ends too: never two hosts (pass 5 #4)
+        except Exception:
+            pass
         with self._lock:
             self._conn = None
             stopped = self._stopped

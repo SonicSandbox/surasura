@@ -119,13 +119,14 @@ SHIPPED = {"ja": ["Blacklist.txt", "IgnoreList.txt", "frequency_list_ja_global50
 def build(root, case, order=None, preview=True):
     """A case's library under `root`, every file's mtime pinned. `order`: [(tier, name)] in place of the case's own
     (the same files; RP-2's other orders). `preview`: the fast re-plan's preview switched on in the root's
-    settings.json, so a Generate writes the plan file (E1.2-1: only then); False leaves no settings.json (2.5's run)."""
+    settings.json, for the case's language (E3.1: the switch is its language's), so a Generate writes the plan file
+    (E1.2-1: only then); False leaves no settings.json (2.5's run)."""
     language, library, shipped, _args = ALL_CASES[case]
     for sub in ("results", "appdata", "localappdata"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
     if preview:
         with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
-            json.dump({"junban_replan_preview": True}, f)
+            json.dump({"junban_replan_preview": True, "junban_replan_language": language}, f)
     shutil.copytree(os.path.join(REPO, "templates"), os.path.join(root, "templates"), dirs_exist_ok=True)
     data = os.path.join(root, "data", language)
     uf = os.path.join(root, "User Files", language)

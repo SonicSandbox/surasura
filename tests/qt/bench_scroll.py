@@ -53,7 +53,7 @@ def run_child(seed_path, out_path, scale, root):
     if not env["QT_SCALE_FACTOR"]:
         env.pop("QT_SCALE_FACTOR")
     env["SURASURA_FREEZE_MOTION"] = "1"
-    env["SURASURA_READER_GC_FREEZE"] = "0" if NO_GC_FREEZE else "1"
+    env["SURASURA_READER_GC_FREEZE"] = "1" if GC_FREEZE else "0"
     cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--out", out_path]
     subprocess.run(cmd, env=env, cwd=ROOT, timeout=300, check=False)
     with open(out_path, encoding="utf-8") as f:
@@ -81,12 +81,12 @@ def summary(results):
     return {k: med(p) for k, p in keys.items()}
 
 
-NO_GC_FREEZE = False
+GC_FREEZE = False
 
 
 def main_parent(a):
-    global NO_GC_FREEZE
-    NO_GC_FREEZE = a.no_gc_freeze
+    global GC_FREEZE
+    GC_FREEZE = a.gc_freeze
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-")
     seed_path = os.path.join(work, "seed.json")
     t = time.perf_counter()
@@ -164,7 +164,7 @@ def main_child(a):
     opener = _LazyOpener(a.child)
     reader = library_reader.LibraryReader(opener, numbers=lambda: (1, opener.numbers_table),
                                           mining=lambda: opener.mining_ids,
-                                          freeze_gc=os.environ.get("SURASURA_READER_GC_FREEZE", "1") != "0")
+                                          freeze_gc=os.environ.get("SURASURA_READER_GC_FREEZE") == "1")
     services = shell.Services(library=reader)
     window = shell.open_window(app, services)
     window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -331,7 +331,7 @@ def main():
     ap.add_argument("--scale", type=int, default=0, help="QT_SCALE_FACTOR × 100 (0: Windows' own scaling)")
     ap.add_argument("--language", default="ja")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--no-gc-freeze", action="store_true", help="the reader leaves the collector as it is (an A/B)")
+    ap.add_argument("--gc-freeze", action="store_true", help="the reader freezes the collector after each view (A/B)")
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
     if a.child:

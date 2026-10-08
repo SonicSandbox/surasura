@@ -619,23 +619,45 @@ def junban(args):
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
+    job = numbering_job(junban_settings, lang)
     if args.dry_run:
-        return _junban_dry_run(lang, junban_settings, reposition)
-    return _junban_auto(args, lang, junban_settings, auto)
+        return _junban_dry_run(lang, junban_settings, reposition, job)[0]
+    return _junban_auto(args, lang, junban_settings, auto, job)[0]
 
 
-def _junban_dry_run(lang, junban_settings, reposition):
+def numbering_job(junban_settings, lang):
+    """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
+    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
+    on for this language (`replan_preview.is_on`: its switch in 順, Junban on and present, the language it was turned
+    on in — E3.1's rule for `auto.reorder`); None — 2.5's dense block — otherwise, so the command line and the window
+    never renumber each other's deck."""
+    from app import replan_preview
+    if not replan_preview.is_on(junban_settings, lang):
+        return None
+    from modules.junban import spaced
+    return spaced.Job(automatic=True)
+
+
+def _numbering(stats, job):
+    """How the run numbered its cards, for `resort`'s answer: `dense` (2.5's block), `full` (a deck spaced out at
+    once) or `delta` (only what changed)."""
+    if job is None:
+        return "dense"
+    return str(((stats or {}).get("numbering") or {}).get("kind") or "dense").lower()
+
+
+def _junban_dry_run(lang, junban_settings, reposition, job=None, unattended=False):
     from app import anki_connect
     if not anki_connect.probe(reposition._url(junban_settings)).get("ok"):
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     try:
-        writes, stats = reposition.dry_run(junban_settings)
+        writes, stats = reposition.dry_run(junban_settings, job=job, unattended=unattended)
     except reposition.AnkiError as e:
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     if stats.get("problems"):
         raise CliError("needs-you", stats["problems"][0], ask=stats["problems"][0])
-    return {"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
-            "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}
+    return ({"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
+             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}, stats)
 
 
 def _reviewing(report):
@@ -645,11 +667,12 @@ def _reviewing(report):
     return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
 
 
-def _junban_auto(args, lang, junban_settings, auto):
+def _junban_auto(args, lang, junban_settings, auto, job=None):
+    """The automatic reorder, headless -> (its answer, the run's stats or {})."""
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False)
     if why is not None:
-        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}
+        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}, {}
     # The 順 window holds `junban-window` while open: looked at (never held, so a window opened meanwhile still takes
     # it), and waited for up to --wait.
     deadline = time.monotonic() + max(0.0, args.wait or 0.0)
@@ -664,7 +687,7 @@ def _junban_auto(args, lang, junban_settings, auto):
     from modules.junban import connect, undo
     run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
     done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
-                        run_id=run_id)
+                        run_id=run_id, job=job)
     outcome, report = done["outcome"], done.get("report") or {}
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
@@ -678,7 +701,7 @@ def _junban_auto(args, lang, junban_settings, auto):
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
     if outcome == "list-stale":
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
-                "skipped": "the list is out of date: Generate first"}
+                "skipped": "the list is out of date: Generate first"}, {}
     if outcome in ("refused", "failed"):
         problem = (report.get("problems") or [done.get("error") or "it could not finish"])[0]
         raise CliError("failed", f"Junban did not make any changes: {problem}")
@@ -689,8 +712,59 @@ def _junban_auto(args, lang, junban_settings, auto):
         undo_id = run_id if snapshot else None
     else:
         undo_id = os.path.basename(snapshot) if snapshot and written else None
-    return {"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
-            "not_on_list": stats.get("unmatched", 0), "undo": undo_id}
+    return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
+             "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+
+
+# --------------------------------------------------------------------------- #
+# resort (P2.2; P0.3 03-verbs: "Junban pins on spaced numbers"; HC-N7 as amended)
+# --------------------------------------------------------------------------- #
+def resort_args(parser):
+    add_language(parser)
+    add_wait(parser)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="the re-sort the 順 window would preview, numbered as the run would; writes nothing")
+
+
+def resort(args):
+    """Re-sort Anki's new cards now: one Junban run over its one deck — the cards of the items you chose *Study its
+    cards first* for go first (3.0; none in 2.x, ✅ E1.3-3), then Junban's order — positions only, numbered by the one
+    rule every writer follows (`numbering_job`). Un-pinning is the store's `unpin`, never this (HC-N7 as amended:
+    nothing pins or un-pins by itself). The automatic reorder's body (`junban --auto`): every guard, and its own run
+    snapshot while the Connect preview is on. 2.x: only while that preview is on (P0.3 04 §5)."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    idle = {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "pinned_first": 0, "numbering": None,
+            "undo": None}
+    if loaded.get("connect_enabled") is not True:
+        return dict(idle, skipped="the Connect preview is off")
+    try:
+        from modules.junban import auto, reposition
+    except ImportError:
+        return dict(idle, skipped="junban absent")
+    junban_settings = _junban_settings(loaded, lang)
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return dict(idle, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
+    job = numbering_job(junban_settings, lang)
+    if args.dry_run:
+        # What the run would do, no more: its guards and its list check first, then planned as that unattended run
+        why = auto.blocked(junban_settings, window=False)
+        if why is not None:
+            return dict(idle, skipped=why)
+        from app import analyzer, run_args
+        argv = run_args.analyzer_args(junban_settings, lang, headless=True)
+        current = analyzer.journey_is_current(argv, lang)
+        if current is False or (current is None and reposition.list_is_stale(
+                lang, reposition.order_csv_path(junban_settings))):
+            return dict(idle, skipped="the list is out of date: Generate first")
+        answer, stats = _junban_dry_run(lang, junban_settings, reposition, job, unattended=True)
+    else:
+        answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
+    if answer.get("skipped"):
+        return dict(idle, **answer)
+    answer.update(pinned_first=int((stats or {}).get("pinned") or 0), numbering=_numbering(stats, job))
+    return answer
 
 
 # --------------------------------------------------------------------------- #
@@ -885,6 +959,32 @@ def _job_id(args):
     return job
 
 
+def _level_job(job, lang):
+    """Connect's ledger job a `--job` names (its id), when it is a level job of this language (P2.2) -> its row; else
+    None. Never creates the ledger."""
+    if not job or not str(job).isdigit():
+        return None
+    import sqlite3
+    from app.connect import ledger
+    if not os.path.exists(ledger.path()):
+        return None
+    try:            # read only: a pick never writes (nor upgrades) Connect's ledger
+        conn = sqlite3.connect(f"file:{ledger.path()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            cur = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job),))
+            row = cur.fetchone()
+            row = None if row is None else dict(zip([d[0] for d in cur.description], row))
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        # A job named by its ledger id that can't be read is never mined as the whole list: refused
+        raise CliError("failed", f"Connect's ledger can't be read for job {job}: {e}") from None
+    if row is None or row.get("kind") != ledger.LEVEL or row.get("language") != lang:
+        return None
+    row["words"] = ledger._words(row.get("words"))
+    return row
+
+
 def _connect_folder():
     from app.path_utils import get_local_data_path
     return os.path.join(get_local_data_path(), "connect")
@@ -950,6 +1050,11 @@ def pick(args):
         raise CliError("bad-data", f"There's no video at {args.video}.")
     job = _job_id(args)
     listed = _listed(args, lang)
+    level_job = _level_job(args.job, lang)
+    if level_job is not None:
+        # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
+        from app.connect import level
+        mode, listed = "list", (level.restrict(listed, level_job) if listed is not None else None)
     if mode == "list" and listed is None:
         raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
 

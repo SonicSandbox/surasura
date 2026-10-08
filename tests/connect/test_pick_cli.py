@@ -131,3 +131,39 @@ def test_a_tv_caption_file_is_picked_and_mined_from_its_cleaned_copy(library, fa
     data = json.load(open(result["run_file"], encoding="utf-8"))
     assert data["episodes"][0]["subtitle_file"] == result["subtitle"]
     assert "門番" in {w["word"] for w in result["words"]}
+
+
+# --------------------------------------------------------------------------- #
+# P2.2 row 2.2.6: a level raise's job sends Anki Miner only its newly listed words (HC-N38)
+# --------------------------------------------------------------------------- #
+def test_a_level_jobs_pick_sends_anki_miner_only_its_words(library, fake_miner):
+    """The job names two of the episode's list words (the ones a raise newly listed): only they are picked, and the run
+    file Anki Miner reads names nothing else — whatever *Which words become cards* says (a level raise is the list's)."""
+    from app.connect.ledger import Ledger
+    subtitle, video = library
+    h.write_settings(connect_anki_miner_path=fake_miner.path, connect_mine_words="unknown")
+    code, everything = h.call("pick", "--file", subtitle, "--words", "list")
+    full = [(w["word"], w["reading"]) for w in everything["words"]]
+    assert code == 0 and len(full) >= 3, everything
+    chosen = sorted(full[1:3])
+    with Ledger() as ledger:
+        job = ledger.queue_level("ja", 1, chosen)
+    code, result = h.call("pick", "--file", subtitle, "--video", video, "--job", str(job))
+    assert code == 0 and result["mode"] == "list" and result["run_file"], result
+    assert sorted((w["word"], w["reading"]) for w in result["words"]) == chosen
+    data = json.load(open(result["run_file"], encoding="utf-8"))
+    assert [w["word"] for w in data["episodes"][0]["words"]] == [n for w in result["words"] for n in w["sent"]]
+    assert data["episodes"][0]["tags"] == f"surasura::connect::{job}"
+
+
+def test_a_job_name_that_isnt_a_level_job_picks_as_before(library):
+    """Not a ledger id, an id with no job, a first mining's job, another language's level job: the pick is unchanged."""
+    from app.connect.ledger import Ledger
+    subtitle, _video = library
+    code, plain = h.call("pick", "--file", subtitle, "--words", "list")
+    with Ledger() as ledger:
+        first = ledger.queue("ja", 2, "user", None)
+        other = ledger.queue_level("zh", 3, [("学校", "xue2 xiao4")])
+    for job in ("job-9", "99999", str(first), str(other)):
+        code, again = h.call("pick", "--file", subtitle, "--words", "list", "--job", job)
+        assert code == 0 and [w["word"] for w in again["words"]] == [w["word"] for w in plain["words"]], job

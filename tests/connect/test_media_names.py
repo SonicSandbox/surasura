@@ -77,8 +77,8 @@ def word_cut_media(key_suffix="1a2b"):
     """Three words cut from one line: 上層, 部, 上層部 — three audio files and three pictures on disk."""
     notes = [
         card_note(1, f"上層_83520_4_{key_suffix}.mp3", f"上層_83520_4_{key_suffix}.jpg"),
-        card_note(2, f"部_83520_4_3c4d.mp3", f"部_83520_4_3c4d.jpg"),
-        card_note(3, f"上層部_83520_4_5e6f.mp3", f"上層部_83520_4_5e6f.jpg"),
+        card_note(2, "部_83520_4_3c4d.mp3", "部_83520_4_3c4d.jpg"),
+        card_note(3, "上層部_83520_4_5e6f.mp3", "上層部_83520_4_5e6f.jpg"),
     ]
     files = {}
     for n in notes:
@@ -111,7 +111,8 @@ def test_three_words_from_one_line_share_one_audio_and_one_picture():
     assert SL_AUDIO.fullmatch(new_audio) and SL_PICTURE.fullmatch(new_picture), "the names are sl-<16 hex>.<ext>"
     assert out["stored"] == 2, "one audio file and one picture uploaded, not one per word"
     assert len(media.reads) == 2, "the first word's files are read; the other two words reuse the same new names"
-    assert media.files[new_audio] == "bytes-of-上層_83520_4_1a2b.mp3".encode("utf-8"), "the first word's clip is the one stored"
+    assert media.files[new_audio] == "bytes-of-上層_83520_4_1a2b.mp3".encode("utf-8"), \
+        "the first word's clip is the one stored"
     assert all(old not in media.files for old in ("上層_83520_4_1a2b.mp3", "部_83520_4_3c4d.mp3",
                                                   "上層部_83520_4_5e6f.mp3")), "the old per-word names are deleted"
 
@@ -151,7 +152,8 @@ def test_name_already_in_anki_is_reused_without_uploading_again():
     assert out["reused"] == 2 and out["stored"] == 0, "both names are already in Anki: reused, not uploaded"
     assert media.stored == stored_before, "nothing new was stored"
     assert media.reads == reads_before, "the second card's own files were never read back"
-    assert media.note_map[2]["fields"]["SentenceAudio"]["value"] == media.note_map[1]["fields"]["SentenceAudio"]["value"]
+    audio = media.note_map[1]["fields"]["SentenceAudio"]["value"]
+    assert media.note_map[2]["fields"]["SentenceAudio"]["value"] == audio
 
 
 def test_a_second_run_after_it_finished_changes_nothing():

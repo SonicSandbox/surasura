@@ -1,4 +1,5 @@
-"""Connect's shelf through Anki, and its restore point (P2.4 card B3; the shelf's Anki writes in `app/connect/shelf.py`).
+"""Connect's shelf through Anki, and its restore point (P2.4 row 2.4.11; the shelf's Anki writes in
+`app/connect/shelf.py`).
 
 What each test holds still:
 

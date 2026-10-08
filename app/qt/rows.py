@@ -19,6 +19,7 @@ window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answe
 
 Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`play_requested`); a row opens and closes.
 """
+import os
 import time
 from collections import OrderedDict
 
@@ -428,6 +429,9 @@ WARM_AHEAD = 8                                       # rows past each edge of th
 WARM_IDLE_MS = 250                                   # how long the list rests (no scroll, no refresh) before it does —
 #                                                      longer than the gap between a wheel's notches (review B-8)
 HOVER_WARM_MS = 120                                  # the pointer rests this long on a row: its episodes painted ahead
+# rows and episodes painted once into pixmaps and reused (on), or drawn afresh on every paint (off: the bench's A/B,
+# review IK-30 — the consult's T7 / R2 warn against whole-row pictures; bench 10 measures both)
+ROW_PIXMAPS = os.environ.get("SURASURA_ROW_PIXMAPS") != "0"
 
 
 def _size(pix):
@@ -445,11 +449,20 @@ class RowDelegate(QStyledItemDelegate):
         self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
         self._bytes = {"row": 0, "ep": 0}
 
-    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg"):
+    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its width and height, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these. Its lines
         (the top-20 and Soon lines) are drawn outside it, so a line that moves re-renders nothing (review B-13)."""
+        if not ROW_PIXMAPS and to is not None:      # the A/B's other arm: drawn where it stands, nothing kept
+            q, at = to
+            q.save()
+            q.translate(at)
+            q.fillRect(QRect(0, 0, size.width(), size.height()), c(ground))
+            draw(q)
+            q.restore()
+            self.renders += 1
+            return None
         name = "ep" if kind == "ep" else "row"
         cache, kept = self._sprites[name], EPISODES_KEPT if kind == "ep" else SPRITES_KEPT
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
@@ -721,15 +734,17 @@ class RowDelegate(QStyledItemDelegate):
                      self._lines_h(lines))
         is_open = self.view.model().open_key == getattr(payload, "key", None)
         if kind == HERO and not is_open:
-            pix, box = self._closed(kind, payload, lines, rect, dpr, hovered)
-            p.drawPixmap(box.topLeft(), pix)
+            pix, box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
+            if pix is not None:
+                p.drawPixmap(box.topLeft(), pix)
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
             self._paint_open_hero(p, payload, rect, lines, hovered, focused, dpr)
         elif kind in (ROW, FINISHED) and not is_open:
-            pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered)
-            p.drawPixmap(body.topLeft(), pix)
+            pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
+            if pix is not None:
+                p.drawPixmap(body.topLeft(), pix)
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
                 if kind == ROW and not hovered:
@@ -758,19 +773,22 @@ class RowDelegate(QStyledItemDelegate):
             y += round(15 * fz() + 6)
         p.restore()
 
-    def _closed(self, kind, payload, lines, rect, dpr, hovered):
-        """A closed hero or row's pixmap (painted once, `_sprite`) and the box it fills in `rect`."""
+    def _closed(self, kind, payload, lines, rect, dpr, hovered, p=None):
+        """A closed hero or row's pixmap (painted once, `_sprite`) and the box it fills in `rect` (pixmaps off and a
+        painter `p` given: drawn there, and no pixmap)."""
         if kind == HERO:
             box_h = rect.height() - 8 - theme.SPACING["list-gap"] - self._lines_h(lines)
             local = QRect(0, 0, rect.width(), rect.height())
             pix = self._sprite(kind, payload, QSize(rect.width(), box_h), dpr, hovered,
-                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr))
+                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr),
+                               to=None if p is None else (p, rect.topLeft()))
             return pix, QRect(rect.left(), rect.top(), rect.width(), box_h)
         body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                      self._lines_h(lines))
         local = QRect(0, 0, body.width(), body.height())
         pix = self._sprite(kind, payload, body.size(), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines))
+                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines),
+                           to=None if p is None else (p, body.topLeft()))
         return pix, body
 
     def _paint_open_row(self, p, kind, row, body, hovered, focused, dpr, lines):
@@ -779,18 +797,18 @@ class RowDelegate(QStyledItemDelegate):
         repaint of an open row draws no text or cover afresh (its ground, rule and focus ring are a few strokes)."""
         h = round(theme.SIZES["row"] * fz())
         local = QRect(0, 0, body.width(), body.height())
-        pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False),
-                           ident=(row.key, "open"))
-        p.drawPixmap(body.topLeft(), pix)
         radius = theme.RADII["r-sm"]
         rest = QRect(body.left(), body.top() + h, body.width(), body.height() - h)
-        p.save()
-        p.setClipRect(rest)
+        p.save()                                     # the ground first, whole, then the head over it (review C-3)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(c("surface"))
         p.drawRoundedRect(QRectF(body), radius, radius)
         p.restore()
+        pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
+                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False),
+                           ident=(row.key, "open"), to=(p, body.topLeft()))
+        if pix is not None:
+            p.drawPixmap(body.topLeft(), pix)
         if focused:
             self._focus_ring(p, body, radius)
             if kind == ROW and not hovered:
@@ -799,10 +817,12 @@ class RowDelegate(QStyledItemDelegate):
         if kind == ROW:
             self._paint_episodes(p, row, rest, dpr, lines=lines)
 
-    def keep_only(self, entries):
+    def keep_only(self, entries, dpr=None, width=None):
         """At rest, a list keeps the pixmaps of these entries only (its screen and the rows ahead, or a hidden list's
-        first screen): what it scrolled past is let go, so idle memory is a few screens whatever was seen (bench 9:
-        284 MB idle at 375 %)."""
+        screen): what it scrolled past is let go, so idle memory is a few screens whatever was seen (bench 9: 284 MB
+        idle at 375 %). Pixmaps of another look, screen ratio (`dpr`) or list width (`width`, rows only: episodes are
+        narrower) are let go too: they can never be drawn again (review C-5)."""
+        look = style.current()
         keys, eps = set(), set()
         for kind, payload, _lines in entries:
             k = getattr(payload, "key", None)
@@ -818,12 +838,16 @@ class RowDelegate(QStyledItemDelegate):
                     keep = ident[0] in eps
                 else:
                     keep = ident in keys or (isinstance(ident, tuple) and ident[0] in keys)
+                    keep = keep and (width is None or key[2] == width)
+                keep = keep and key[5] == look and (dpr is None or key[4] == dpr)
                 if not keep:
                     self._bytes[name] -= _size(cache.pop(key)[1])
 
     def warm(self, index, dpr, rect=None):
         """Paint a closed row's pixmap ahead of its first paint (the list's idle moments): -> whether it drew one.
         `rect`: where it will stand (a hidden list's, laid out as the shown list is)."""
+        if not ROW_PIXMAPS:
+            return False
         entry = index.data(ROW_ROLE)
         if entry is None or entry[0] not in (HERO, ROW, FINISHED):
             return False
@@ -842,6 +866,8 @@ class RowDelegate(QStyledItemDelegate):
         """Paint ahead the episodes a closed row would show if it opened now (those starting within `room` px of its
         top), one a call: -> whether it drew one. The pointer resting on a row warms them, so opening it blits (bench 9: every
         toggle was one long step, its episodes' first paints)."""
+        if not ROW_PIXMAPS:
+            return False
         entry = index.data(ROW_ROLE)
         if entry is None or entry[0] not in (HERO, ROW):
             return False
@@ -1005,8 +1031,9 @@ class RowDelegate(QStyledItemDelegate):
                 w, h = r.width(), r.height()
                 pix = self._sprite("ep", ep, r.size(), dpr, False,
                                    lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr),
-                                   ident=(ep.id, hero), ground="surface")
-                p.drawPixmap(r.topLeft(), pix)
+                                   ident=(ep.id, hero), ground="surface", to=(p, r.topLeft()))
+                if pix is not None:
+                    p.drawPixmap(r.topLeft(), pix)
             else:
                 self._paint_episode(p, r, ep, dpr)
         if split_at is not None:
@@ -1045,14 +1072,12 @@ class RowDelegate(QStyledItemDelegate):
         g = self._hero_geometry(row, rect, lines)
         head = g["head"]
         local = QRect(0, 0, rect.width(), rect.height())
-        pix = self._sprite(HERO, row, QSize(rect.width(), head.height()), dpr, hovered,
+        self._hero_frame(p, g, hovered)              # the frame first, whole, then the head over it: a head pixmap
+        pix = self._sprite(HERO, row, QSize(rect.width(), head.height()), dpr, hovered,    # that rounds short leaves
                            lambda q: self._paint_hero(q, row, local, lines, hovered, False, dpr, episodes=False),
-                           ident=(row.key, "open"))
-        p.drawPixmap(QPoint(rect.left(), head.top()), pix)
-        p.save()
-        p.setClipRect(QRect(rect.left(), head.bottom() + 1, rect.width(), g["box"].bottom() - head.bottom() + 1))
-        self._hero_frame(p, g, hovered)
-        p.restore()
+                           ident=(row.key, "open"), to=(p, QPoint(rect.left(), head.top())))      # no ground line (C-3)
+        if pix is not None:
+            p.drawPixmap(QPoint(rect.left(), head.top()), pix)
         if focused:
             self._focus_ring(p, g["box"], theme.RADII["r-sm"])
         self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
@@ -1228,6 +1253,15 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, x, y + 12.5 * f * 1.45 / 2, strings.ROWS_FAILURE_LINE, "hero-sub", w, c("ink-dim"), dpr=dpr)
 
 
+def whole_step(dpr):
+    """The smallest scroll step (logical px) whose device size is whole at this ratio: 1 at 100 / 200 %, 2 at 150 /
+    250 %, 4 at 125 / 175 % (review C-2)."""
+    for q in (1, 2, 3, 4):
+        if abs(q * dpr - round(q * dpr)) < 1e-6:
+            return q
+    return 1
+
+
 def lines_top(lines):
     return next(ln for ln in lines if ln.kind == "top")
 
@@ -1271,6 +1305,10 @@ class RowsView(QListView):
         if LAYOUT_MODE == QListView.LayoutMode.Batched:
             self.setBatchSize(LAYOUT_BATCH)
         self.verticalScrollBar().setSingleStep(round(theme.SIZES["row"] * fz() / 2))
+        # a step the user makes (a drag, a touchpad, a notch) lands on a whole device pixel: Qt moves the pixels already
+        # drawn only when the step's device size is whole; any other step repaints the whole list (review C-2, probed:
+        # 1, 7, 13 px at 150 % → 514 px painted)
+        self.verticalScrollBar().actionTriggered.connect(self._snap_step)
         self._hover = None
         self._restore = None
         self.warm_like = None                        # the shown list, while this one is hidden (its width and height)
@@ -1345,6 +1383,15 @@ class RowsView(QListView):
                 bar.setValue(target)
                 self._restore = None
 
+    def _snap_step(self, _action):
+        bar = self.verticalScrollBar()
+        pos, value = bar.sliderPosition(), bar.value()
+        q = whole_step(self.viewport().devicePixelRatioF() or 1.0)
+        if q == 1 or pos == value or pos in (bar.minimum(), bar.maximum()):
+            return
+        snapped = -(-pos // q) * q if pos > value else pos // q * q        # away from where it was: never stuck
+        bar.setSliderPosition(max(bar.minimum(), min(bar.maximum(), snapped)))
+
     def _rest(self, *_args):
         self._moved = time.monotonic()
         self._warm.setInterval(WARM_IDLE_MS)
@@ -1380,28 +1427,42 @@ class RowsView(QListView):
                 self._warm.start()
                 return
         # nothing left to paint ahead: keep the screen and the rows ahead, let the rest go
-        self.delegate.keep_only(model.entries[max(0, lo - WARM_AHEAD):hi + 1 + WARM_AHEAD])
+        self.delegate.keep_only(model.entries[max(0, lo - WARM_AHEAD):hi + 1 + WARM_AHEAD], dpr,
+                                self.visualRect(first).width() if first.isValid() else None)
 
     def _warm_hovered(self):
         row = self._hover
         if row is None or not self.isVisible() or row >= self.model().rowCount():
             return
+        wait = WARM_IDLE_MS / 1000 - (time.monotonic() - self._moved)
+        if wait > 0:                                 # the list is moving (a wheel moves no pointer): after it rests
+            self._hover_warm.setInterval(max(1, round(wait * 1000)))      # (review C-4)
+            self._hover_warm.start()
+            return
         index = self.model().index(row, 0)
+        if not self.visualRect(index).intersects(self.viewport().rect()):
+            return                                   # scrolled away from under the pointer: a stale hover (C-4)
         room = self.viewport().height() - self.visualRect(index).top()
         if self.delegate.warm_episodes(index, self.viewport().devicePixelRatioF() or 1.0, room):
             self._hover_warm.setInterval(0)              # the next one on the loop's next turn
             self._hover_warm.start()
 
     def _warm_hidden(self):
-        """A hidden list (another tab): its first screen painted ahead, one row a turn, at the shown list's width — the
-        tab's first switch then blits. A width that comes out different (a scroll bar more or less) only misses."""
+        """A hidden list (another tab): the screen it will show painted ahead, one row a turn, at the shown list's width
+        — from the row at its own scroll place, so a list left scrolled keeps its real screen, not its top (review
+        C-1), and its open row's pixmaps are kept too. The tab's first switch then blits. A width that comes out
+        different (a scroll bar more or less) only misses."""
         like = self.warm_like
         if like is None or like is self or not like.isVisible():
             return False
         room = like.window().height()                # this list may stand taller (Current has the Goal strip under it)
         dpr = like.viewport().devicePixelRatioF() or 1.0
-        model, heights, total = self.model(), [], 0
-        for r in range(model.rowCount()):            # its first screen's rows, and whether it will have a scroll bar
+        model = self.model()
+        first = self.indexAt(QPoint(4, 1))           # where it stands (its layout is kept while hidden)
+        start = first.row() if first.isValid() else 0
+        top = self.visualRect(first).top() if first.isValid() else 0
+        heights, total = [], top
+        for r in range(start, model.rowCount()):     # its screen's rows, and whether it will have a scroll bar
             heights.append(self.delegate.sizeHint(None, model.index(r, 0)).height())
             total += heights[-1]
             if total >= room:
@@ -1410,13 +1471,16 @@ class RowsView(QListView):
             bar = like.width() - like.viewport().width()
         else:
             bar = self.verticalScrollBar().sizeHint().width()
-        width = like.width() - (bar if total > like.viewport().height() else 0)       # review B-4
-        top = 0
-        for r, h in enumerate(heights):
-            if self.delegate.warm(model.index(r, 0), dpr, QRect(0, top, width, h)):
+        scrolls = start > 0 or total > like.viewport().height()
+        width = like.width() - (bar if scrolls else 0)                                    # review B-4
+        for k, h in enumerate(heights):
+            if self.delegate.warm(model.index(start + k, 0), dpr, QRect(0, top, width, h)):
                 return True
             top += h
-        self.delegate.keep_only(model.entries[:len(heights)])     # its first screen only, while hidden
+        keep = model.entries[start:start + len(heights)]       # its screen only, while hidden
+        if model.open_key is not None:
+            keep = keep + [e for e in model.entries if e[0] in (HERO, ROW, FINISHED) and e[1].key == model.open_key]
+        self.delegate.keep_only(keep, dpr, width)
         return False
 
     def showEvent(self, event):

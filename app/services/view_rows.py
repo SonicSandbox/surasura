@@ -28,6 +28,8 @@ Every user-facing word is here or in the window's strings; nothing here imports 
 import re
 from collections import namedtuple
 
+from app.path_utils import infer_source_type
+
 CACHE_ROWS = 40                         # the first screen's rows kept in window_cache_<lang>.json
 LANGUAGE_NAMES = {"ja": "日本語", "zh": "中文"}
 HATO_FOLDER = "HighPriority/Hato/"
@@ -68,7 +70,8 @@ STRINGS = {
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
-    "tip_deleted": "It was mined, but none of its cards are in Anki now: it isn't mined again unless you ask",
+    "tip_deleted": "It was mined, but none of its cards are in Anki now: cards you deleted aren't made again "
+                   "unless you ask",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     "tip_mining": "Making its cards now",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -391,7 +394,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     elif media is None:                                  # no title: from this piece's files
         counts = {}
         for it in piece:
-            counts[it.get("source_type")] = counts.get(it.get("source_type"), 0) + 1
+            kind = _kind(it)
+            counts[kind] = counts.get(kind, 0) + 1
         media = media_type_guess(counts, work.get("anilist_id"), work.get("tmdb_id"))
     if media is None and first.get("source_type") in ("youtube", "bilibili"):
         media = "youtube"
@@ -460,6 +464,7 @@ class RowCache:
         self.same_global = False                      # set by `begin`: nothing global moved since the last build
         self._glob = self._cards = None
         self._next = {}
+        self.guess_seen, self.guess_counts = {}, {}   # `_Guesses`: each row counted once, kept while it is the same object
 
     def begin(self, version, cards=None, mining=None, in_top=None, line_n=None):
         if version != self.version:
@@ -529,22 +534,51 @@ def _current_items(items):
     return ordered_tier(items, "now") + ordered_tier(items, "soon")
 
 
+def _kind(item):
+    """A file's source type as the store counts it for a guess (`library_store.media_type`): its stamped type, else
+    its extension (`infer_source_type`; an unstamped .epub or .txt is text, an .srt a subtitle — review IK-29)."""
+    return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type"))
+
+
 class _Guesses:
     """A title's media type when nobody said (`media_type_guess` over **all** its files, as L3.1's store guesses it):
-    the files counted by title in one pass, once a build, when a title nobody typed is on the list. A cached row keeps
-    the guess in its key, so another piece's new file that moves the title's type rebuilds it."""
+    the files counted by title, once a build, when a title nobody typed is on the list. A cached row keeps the guess in
+    its key, so another piece's new file that moves the title's type rebuilds it. With the reader's RowCache the counts
+    are kept between builds and only the rows the feed replaced are counted again (review C-6: ~5 ms a build at 20,000
+    files, holding Python's lock against the window's thread)."""
 
-    def __init__(self, items):
+    def __init__(self, items, cache=None):
         self.items = items
+        self.cache = cache
         self.counts = None
 
     def of(self, work):
         if self.counts is None:
-            self.counts = {}
-            for r in self.items.values():
-                c = self.counts.setdefault(r.get("work_id"), {})
-                c[r.get("source_type")] = c.get(r.get("source_type"), 0) + 1
+            self.counts = self._count()
         return media_type_guess(self.counts.get(work.get("id")), work.get("anilist_id"), work.get("tmdb_id"))
+
+    def _count(self):
+        seen, counts = ({}, {}) if self.cache is None else (self.cache.guess_seen, self.cache.guess_counts)
+
+        def add(entry, n):
+            c = counts.setdefault(entry[1], {})
+            c[entry[2]] = c.get(entry[2], 0) + n
+            if c[entry[2]] <= 0:
+                del c[entry[2]]
+                if not c:
+                    del counts[entry[1]]
+        for i, r in self.items.items():
+            old = seen.get(i)
+            if old is not None and old[0] is r:          # the same row object: the feed didn't change it
+                continue
+            if old is not None:
+                add(old, -1)
+            seen[i] = entry = (r, r.get("work_id"), _kind(r))
+            add(entry, 1)
+        if len(seen) > len(self.items):                  # rows gone from the feed
+            for i in [i for i in seen if i not in self.items]:
+                add(seen.pop(i), -1)
+        return counts
 
 
 def _mine_ids(current, n):
@@ -586,7 +620,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 break
     if cache is not None:
         cache.begin(cache_version, cards, mining, in_top, line_n)
-    guessed = _Guesses(items)
+    guessed = _Guesses(items, cache)
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):

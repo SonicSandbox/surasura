@@ -14,8 +14,10 @@ GUI-thread stretch and frame after the first paint while the child:
   2. scrolls Current: 5 s at 60 Hz, 40 px a step, down then up — unbroken; with another program writing (a watched mark
      every 0.3 s, from a process of its own); resting 1 s at its turn; then as a wheel turns, notch by notch (bursts of
      3–5 notches 60 ms apart, a 0.4 s pause between: review B-8);
-  3. opens and closes 20 rows: the pointer rests on each (0.3 s), it opens, then closes;
-  4. switches tabs ten times;
+  3. opens and closes rows on a screen it hasn't opened before (the pointer rests on each 0.3 s, it opens, then
+     closes: "open-first"), the same rows again ("open-again"), then the rows of a third screen opened at once, with
+     no rest (a quick click, a key: "open-quick") — review C-9;
+  4. switches tabs ten times, with Current and Finished each scrolled a few screens down (review C-1);
   5. takes an outside commit (a hato drop at the top of Current) and repaints it;
   6. sits idle for 5 s; then reports memory and quits.
 Printed: per run and as the median of the runs.
@@ -70,6 +72,7 @@ def run_child(seed_path, out_path, scale, root):
         env.pop("QT_SCALE_FACTOR", None)
     env["SURASURA_FREEZE_MOTION"] = "1"
     env["SURASURA_READER_GC_FREEZE"] = "1" if GC_FREEZE else "0"
+    env["SURASURA_ROW_PIXMAPS"] = "1" if PIXMAPS else "0"
     cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--out", out_path]
     subprocess.run(cmd, env=env, cwd=ROOT, timeout=300, check=False)
     with open(out_path, encoding="utf-8") as f:
@@ -98,11 +101,13 @@ def summary(results):
 
 
 GC_FREEZE = False
+PIXMAPS = True
 
 
 def main_parent(a):
-    global GC_FREEZE
+    global GC_FREEZE, PIXMAPS
     GC_FREEZE = a.gc_freeze
+    PIXMAPS = a.pixmaps == "on"
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-")
     seed_path = os.path.join(work, "seed.pkl")
     t = time.perf_counter()
@@ -118,8 +123,12 @@ def main_parent(a):
         print(f"run {i + 1}: first frame {r.get('first_frame_ms')} ms · rows live {r.get('rows_live_ms')} ms · "
               f"steps max {hud.get('steps', {}).get('max_ms')} (>4 ms: {hud.get('steps', {}).get('over_4ms')}) · "
               f"frames p95 {hud.get('frames', {}).get('p95_ms')} max {hud.get('frames', {}).get('max_ms')} · "
-              f"late max {hud.get('late', {}).get('max_ms')} · mem {r.get('memory')}", flush=True)
-    out = {"files": files, "current_share": a.current_share, "scale": a.scale, "runs": results,
+              f"late max {hud.get('late', {}).get('max_ms')} · mem {r.get('memory')} · dpr {r.get('dpr')}", flush=True)
+        if a.scale and r.get("dpr") and abs(r["dpr"] - a.scale / 100) > 0.01:      # review C-13: the system scale
+            r["scale_mismatch"] = True                                             # read is the main screen's
+            print(f"WARNING: run {i + 1} ran at dpr {r['dpr']}, not {a.scale / 100}: its figures are not "
+                  f"{a.scale} %'s", flush=True)
+    out = {"files": files, "current_share": a.current_share, "scale": a.scale, "pixmaps": a.pixmaps, "runs": results,
            "median": summary(results)}
     target = a.out or os.path.join(ROOT, ".w22", "out", f"bench_scroll_{a.files}"
                                    f"{'_cur' if a.current_share else ''}.json")
@@ -284,7 +293,6 @@ def main_child(a):
         # three passes: unbroken; another program writing; and one that rests 1 s at its turn, as a person does (the
         # rows past the screen are painted ahead then)
         name = "scroll-rest" if rest else "scroll-writes" if writes else "scroll"
-        mark(name)
         bar = lst.verticalScrollBar()
         bar.setValue(0)
         # the second pass: another program writes while the person scrolls (review A-17) — a watched mark every 300 ms,
@@ -299,6 +307,7 @@ def main_child(a):
             writer.start()
             opener.inbox = mine
             result["scroll_commits_from"] = opener.library._meta["state_version"]
+        mark(name)                                       # after the writer's start (review C-12): its spawn isn't timed
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -351,18 +360,26 @@ def main_child(a):
         QTimer.singleShot(at + 100, lambda: mark("scroll-notches", end=True))
         QTimer.singleShot(at + 400, phase_open)
 
-    def phase_open():
-        # the pointer comes to rest on a row (0.3 s: its hover is drawn, its episodes painted ahead), the row opens,
-        # then closes; the next row
+    def phase_open(stage="open-first"):
+        # review C-9, three passes of the rows on one screen: "open-first" — a screen it hasn't opened before, the
+        # pointer resting on each row (0.3 s: its hover drawn, its episodes painted ahead), the row opens, then closes;
+        # "open-again" — the same rows again (their pixmaps kept); "open-quick" — a third screen's rows opened with no
+        # rest (a quick click, Enter): the open draws its episodes afresh
         from PyQt6.QtCore import QEvent, QPointF
         from PyQt6.QtGui import QHoverEvent, QMouseEvent
-        mark("open")
-        lst.verticalScrollBar().setValue(0)
-        vh = lst.viewport().height()                    # the rows on screen (a row below it is neither hovered nor
-        shown = [i for i in range(lst.model().rowCount())    # painted when it opens), taken in turn: 20 openings
-                 if lst.visualRect(lst.model().index(i, 0)).bottom() <= vh]
-        order = (shown * 20)[:20] if shown else []
+        bar = lst.verticalScrollBar()
+        vh = lst.viewport().height()
+        if stage != "open-again":
+            bar.setValue(min(bar.maximum(), vh * (2 if stage == "open-first" else 4)))
+        for _ in range(3):
+            QApplication.processEvents()
+        mark(stage)
+        shown = [i for i in range(lst.model().rowCount())    # the rows wholly on screen (a row below it is neither
+                 if 0 <= lst.visualRect(lst.model().index(i, 0)).top() and   # hovered nor painted when it opens)
+                 lst.visualRect(lst.model().index(i, 0)).bottom() <= vh]
+        order = shown[:10]
         n = len(order)
+        rest_ms, gap = (300, 600) if stage != "open-quick" else (30, 330)
         last = [QPointF(-1, -1)]
 
         def hover(i):
@@ -377,17 +394,28 @@ def main_child(a):
                                                        Qt.KeyboardModifier.NoModifier))
             last[0] = pos
         for k, i in enumerate(order):
-            t = 600 * k
+            t = gap * k
             QTimer.singleShot(t, lambda i=i: hover(i))
-            for dt in (300, 420):
+            for dt in (rest_ms, rest_ms + 120):
                 def toggle(i=i):
                     with hud.span("toggle"):
                         lst.toggle(lst.model().index(i, 0))
                 QTimer.singleShot(t + dt, toggle)
-        QTimer.singleShot(600 * n + 200, lambda: mark("open", end=True))
-        QTimer.singleShot(600 * n + 300, phase_tabs)
+        then = {"open-first": lambda: phase_open("open-again"), "open-again": lambda: phase_open("open-quick"),
+                "open-quick": phase_tabs}[stage]
+        QTimer.singleShot(gap * n + 200, lambda: mark(stage, end=True))
+        QTimer.singleShot(gap * n + 300, then)
 
     def phase_tabs():
+        # each list a few screens down first (review C-1: a hidden list kept its top, so a scrolled one's first switch
+        # drew its whole screen); a second's rest lets the hidden lists paint their screens ahead
+        fin_list = window.page_widgets["finished"].list
+        for view_ in (lst, fin_list):
+            vbar = view_.verticalScrollBar()
+            vbar.setValue(min(vbar.maximum(), lst.viewport().height() * 3))
+        QTimer.singleShot(1500, phase_tabs_go)
+
+    def phase_tabs_go():
         mark("tabs")
         names = ["finished", "needs", "current", "finished", "current", "finished", "current", "finished",
                  "current", "current"]
@@ -472,6 +500,8 @@ def main():
     ap.add_argument("--language", default="ja")
     ap.add_argument("--out", default=None)
     ap.add_argument("--gc-freeze", action="store_true", help="the reader freezes the collector after each view (A/B)")
+    ap.add_argument("--pixmaps", choices=("on", "off"), default="on",
+                    help="rows and episodes painted once into pixmaps (on) or drawn on every paint (off): review IK-30")
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
     if a.child:

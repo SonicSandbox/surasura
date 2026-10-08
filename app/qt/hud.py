@@ -740,11 +740,16 @@ class Probe(QObject):
             return
 
         def update(i=0):
-            # M2.1 row D: each update sets the next one off 1 ms after it ends, so a stretch is one update, as a real
-            # bar's are (the status service sends a few a second, never a queue of 500)
+            # M2.1 row D: each update sets the next one off 1 ms after it ends, as a real bar's are (the status service
+            # sends a few a second, never a queue of 500)
+            if i == 0:
+                self.result["burst"] = [time.perf_counter(), None]
             timed("bar-update", lambda: self.window.show_status(snap._replace(lines=(f"{i} / 500",))))
             if i + 1 < 500:
                 QTimer.singleShot(1, lambda: update(i + 1))
+            else:
+                self.result["burst"][1] = time.perf_counter()
+                self.window.show_status(snap)              # the bar idle again: its spinner stops
         QTimer.singleShot(600, update)
 
     def _finish(self):
@@ -752,6 +757,11 @@ class Probe(QObject):
         self.result["phases"] = phases()
         if self.hud is not None:
             self.result["hud"] = self.hud.report()
+            burst = self.result.pop("burst", None)
+            if burst and burst[1]:
+                outside = [ms for ms, end in self.hud.over if not (burst[0] <= end - ms / 1000.0 <= burst[1])]
+                self.result["hud"]["steps"]["over_4ms_outside_burst"] = len(outside)
+                self.result["hud"]["steps"]["max_ms_outside_burst"] = round(max(outside, default=0.0), 2)
         try:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.result, f)

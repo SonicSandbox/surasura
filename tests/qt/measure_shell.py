@@ -108,6 +108,8 @@ def main():
     }
     if args.hud:
         summary["steps_over_4ms_after_first_paint"] = [r["hud"]["steps"]["over_4ms"] for r in ok]
+        summary["steps_over_4ms_outside_the_burst"] = [r["hud"]["steps"].get("over_4ms_outside_burst") for r in ok]
+        summary["step_max_ms_outside_the_burst"] = max((r["hud"]["steps"].get("max_ms_outside_burst") or 0) for r in ok)
         summary["step_max_ms"] = max(r["hud"]["steps"]["max_ms"] for r in ok)
         summary["frame_p95_ms"] = max(r["hud"]["frames"]["p95_ms"] for r in ok)
         summary["late_ticks_over_4ms"] = [r["hud"]["late"]["over_4ms"] for r in ok]

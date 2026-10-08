@@ -42,9 +42,21 @@ def _system_scale():
         return 1.0
 
 
+def speed_ms():
+    """A plain Python loop's time in this process: this desktop runs some processes ~5× slower than others (row D),
+    so each run says which kind it was."""
+    import time
+    t = time.perf_counter()
+    n = 0
+    for i in range(3_000_000):
+        n += i & 7
+    return round((time.perf_counter() - t) * 1000, 1)
+
+
 # --- the child: the shell, the page, the overlays ------------------------------------------------------------------ #
 def child(rounds):
     sys.path.insert(0, ROOT)
+    speed = speed_ms()
     from PyQt6.QtCore import QAbstractListModel, QModelIndex, QRect, QRectF, QSize, Qt, QTimer
     from PyQt6.QtGui import QPainter
     from PyQt6.QtWidgets import QApplication, QLabel, QListView, QStyledItemDelegate, QVBoxLayout
@@ -205,6 +217,8 @@ def child(rounds):
             results["step_max_ms"] = round(max(steps_ms, default=0.0), 2)
             results["step_p95_ms"] = round(hud.p95(steps_ms), 2)
             results["scale_dpr"] = window.devicePixelRatioF()
+            results["speed_ms"] = speed
+            results["speed_ms_after"] = speed_ms()
             probe.result["bench"] = results
             probe._finish()
 
@@ -243,7 +257,8 @@ def verdict(r):
     b = r.get("bench", {})
     ok = (worst_p95 is not None and worst_p95 <= DESKTOP["frame_p95"] and worst_max <= DESKTOP["frame_max"]
           and b.get("steps_over_desktop") == 0 and b.get("idle_wakes") == 0)
-    return {"scale": r["scale"], "dpr": b.get("scale_dpr"), "frames_by_kind": tags, "overlays_n": len(overlays),
+    return {"scale": r["scale"], "dpr": b.get("scale_dpr"), "speed_ms": [b.get("speed_ms"), b.get("speed_ms_after")],
+            "frames_by_kind": tags, "overlays_n": len(overlays),
             "frame_p95_worst_ms": worst_p95, "frame_max_worst_ms": worst_max, "step_max_ms": b.get("step_max_ms"),
             "steps_over_1_6ms": b.get("steps_over_desktop"), "steps_over_4ms": b.get("steps_over_4ms"),
             "idle_wakes": b.get("idle_wakes"), "late": r.get("hud", {}).get("late", {}).get("causes"),
@@ -257,12 +272,13 @@ def main():
     ap.add_argument("--rounds", type=int, default=12)
     ap.add_argument("--scale", default="150", help="one or more, comma-separated: 150,200")
     ap.add_argument("--json", default="")
+    ap.add_argument("--repeat", type=int, default=1, help="runs per scale (this desktop's processes differ in speed)")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.child:
         return child(args.rounds)
     out = []
-    for s in [int(x) for x in args.scale.split(",") if x.strip()]:
+    for s in [int(x) for x in args.scale.split(",") if x.strip()] * args.repeat:
         r = one_scale(s, args.rounds)
         if "error" in r:
             print(json.dumps(r))

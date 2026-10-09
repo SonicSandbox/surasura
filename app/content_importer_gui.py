@@ -481,21 +481,24 @@ class ContentImporterApp:
                         # The tree was drawn before this token: a change made in between is checked against the
                         # versions it was drawn at (the fast path redraws only if they moved).
                         self._worker_results.put(("check", None, 0.0))
+                    sync, self._sync_wanted = self._sync_wanted, False
+                    if sync:
+                        lookout.focus()                  # the watch's health first (ended, or its root moved)
+                    jobs = lookout.jobs()
+                    found = []
+                    if jobs.round is not None and not (sync or jobs.full):
+                        # The round's batch only reads (listings, the store's rows): outside the work lock, so a
+                        # window command never waits for it (a tier folder's read at 200k: ~0.2 s).
+                        found = jobs.round.step()
+                        if jobs.round.done:
+                            lookout.round_done()
                     with self._store_work():
-                        sync, self._sync_wanted = self._sync_wanted, False
-                        if sync:
-                            lookout.focus()              # the watch's health first (ended, or its root moved)
-                        jobs = lookout.jobs()
-                        folders = list(jobs.folders)
+                        folders = list(jobs.folders) + found
                         if jobs.slow:                    # no watch: the folders that hold items, stat'ed
                             if poll is None:
                                 poll = library_store.DiskPoll(store)
                             if poll.check():
                                 folders += poll.changed
-                        if jobs.round is not None and not (sync or jobs.full):
-                            folders += jobs.round.step()
-                            if jobs.round.done:
-                                lookout.round_done()
                         t0 = time.perf_counter()
                         if sync or jobs.full:
                             summary = library_store.sync_for_window(store)

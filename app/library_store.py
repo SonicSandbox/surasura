@@ -6145,11 +6145,10 @@ class Round:
             n += 1
             files, subdirs = self._listing(rel)
             self.queue.extendleft(reversed(subdirs))       # top-down, as the sync walks
-            held, held_dirs = self._held(rel)
+            held, gone = self._held(rel, subdirs)
             # a sub-folder the store holds items in that is gone from disk is never listed itself: its parent differs
             # (one scoped sync of the parent: a folder renamed there is found as the same items, moved)
-            on_disk = {path_key(d) for d in subdirs}
-            if files != held or not held_dirs <= on_disk:
+            if files != held or gone:
                 differ.append(rel)
         self.listed += n
         self.batches.append((n, clock() - t0))
@@ -6178,26 +6177,45 @@ class Round:
                 continue                                   # a name the sync can't take either (K28)
         return files, subdirs
 
-    def _held(self, rel):
-        """({key: (size, mtime_ns)} of the available items directly in `rel`, {key of each sub-folder of `rel` that
-        holds available items, at any depth}): one range read of the `items_key` index, grouped inside SQLite (a tier
-        folder's 90k keys at 200k: ~tens of ms; one seek per sub-folder from here took 2.2 s)."""
+    def _held(self, rel, subdirs=()):
+        """({key: (size, mtime_ns)} of the available items directly in `rel`, [the sub-folders of `rel` (keys) that hold
+        available items and aren't among `subdirs`, the ones on disk]). One walk of the `items_key` index inside
+        SQLite: a seek per file and per sub-folder, never the range's rows (a tier folder at 200k: 9k sub-folders,
+        ~0.1 s, the grouped range read 0.19 s), and only the gone sub-folders come back to Python (usually none), so
+        the window's thread barely waits on this thread meanwhile."""
         prefix = path_key(rel) + "/"
-        n = len(prefix) + 1
+        on_disk = json.dumps(sorted(path_key(d) for d in subdirs), ensure_ascii=False)
         with self.store._reading():
-            rows = self.store.conn.execute(
-                "SELECT CASE WHEN instr(substr(rel_key, ?), '/') = 0 THEN rel_key "
-                "ELSE substr(rel_key, 1, ? + instr(substr(rel_key, ?), '/') - 2) END AS head, "
-                "instr(substr(rel_key, ?), '/') > 0, size, mtime_ns FROM items "
-                "WHERE rel_key > ? AND rel_key < ? AND availability = 'available' GROUP BY head, 2",
-                (n, n, n, n, prefix, prefix[:-1] + "0")).fetchall()           # '0' follows '/': past the prefix
-        files, dirs = {}, set()
-        for head, deeper, size, mtime_ns in rows:
-            if deeper:
-                dirs.add(head)
+            rows = self.store.conn.execute(_HELD_WALK, {"p": prefix, "hi": prefix[:-1] + "0",       # '0' follows '/'
+                                                        "n": len(prefix) + 1, "disk": on_disk}).fetchall()
+        files, gone = {}, []
+        for key, head, size, mtime_ns in rows:
+            if head is None:
+                files[key] = (size, mtime_ns)
             else:
-                files[head] = (size, mtime_ns)
-        return files, dirs
+                gone.append(head)
+        return files, gone
+
+
+# The round's walk of a folder's keys (`Round._held`): each step seeks the next available key past the last file, or
+# past the whole sub-folder the last key was in (its keys run from 'show/' to 'show0': '0' follows '/'); a file comes
+# back with its size and time, a sub-folder only when it isn't on disk (`:disk`, a JSON list of keys).
+_HELD_WALK = """
+WITH RECURSIVE w(k) AS (
+  SELECT (SELECT min(rel_key) FROM items WHERE rel_key > :p AND rel_key < :hi AND availability = 'available')
+  UNION ALL
+  SELECT (SELECT min(rel_key) FROM items WHERE rel_key < :hi AND availability = 'available' AND rel_key >=
+            CASE WHEN instr(substr(w.k, :n), '/') = 0 THEN w.k || char(1)
+                 ELSE substr(w.k, 1, :n + instr(substr(w.k, :n), '/') - 2) || '0' END)
+  FROM w WHERE w.k IS NOT NULL
+),
+heads(k, head) AS (
+  SELECT k, CASE WHEN instr(substr(k, :n), '/') = 0 THEN NULL
+                 ELSE substr(k, 1, :n + instr(substr(k, :n), '/') - 2) END FROM w WHERE k IS NOT NULL
+)
+SELECT h.k, h.head, i.size, i.mtime_ns FROM heads h JOIN items i ON i.rel_key = h.k
+WHERE h.head IS NULL OR h.head NOT IN (SELECT value FROM json_each(:disk))
+"""
 
 
 def _store_has_content(self):

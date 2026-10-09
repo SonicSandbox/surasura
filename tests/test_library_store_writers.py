@@ -999,3 +999,36 @@ def test_store_soon_sleeps_in_read_only_mode(window, language):
     app._store_waiting = None
     app._opener().reason = "damaged"
     assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_slow_look_that_finds_nothing_writes_signals_and_redraws_nothing(window, language, monkeypatch):
+    """S19: update only what changed. With no watch, a slow look that finds no new folder is silent: no sync call,
+    no "synced" or "changed" posted to the worker's results, and the store's state_version holds. Recording starts
+    once the window has settled (and its front change has drained), so the open's own writes are not counted."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    app._set_front(True)                                         # in front, so the slow look runs
+    _pump(app, lambda: False, timeout=0.3)                       # the front change's own effects, drained
+    assert lookout.slow and lookout.tree.state == "fallback"
+    store = app._store()
+    assert store is not None
+    version = store.meta()["state_version"]
+    syncs, posts = [], []
+    real_sync = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: syncs.append(folders) or real_sync(s, folders))
+    real_put = app._worker_results.put
+
+    def put(item, *args, **kwargs):
+        if item and item[0] in ("synced", "changed"):
+            posts.append(item[0])
+        return real_put(item, *args, **kwargs)
+    monkeypatch.setattr(app._worker_results, "put", put)
+    base = lookout.slow_looks
+    assert _pump(app, lambda: lookout.slow_looks >= base + 3, timeout=3.0), "the slow look never ran in front"
+    assert syncs == [], f"a look that found nothing synced: {syncs}"
+    assert posts == [], f"a look that found nothing posted: {posts}"
+    assert store.meta()["state_version"] == version, "a look that found nothing wrote to the store"

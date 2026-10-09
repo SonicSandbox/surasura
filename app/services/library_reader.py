@@ -79,8 +79,10 @@ class LibraryReader:
         self._mode = None
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._tiers, self._pos, self._dirty = None, {}, set()
+        self._moved_in = {}                # tier -> ids that came into it or moved in it since it was last sorted
         self._changed_ids = None
         self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
+        self._cache_due = None             # (view, key) to write as the first screen's cache, at the next quiet look
         self._cards_all_at = 0.0
         self._cards_stale = False
         self._mode_at = 0.0
@@ -128,6 +130,7 @@ class LibraryReader:
                 self._busy(e)
             self._wake.wait(self.poll)
             self._wake.clear()
+        self._flush_cache()                             # the last view's cache, as the window closes
         try:
             h = self.opener.handle()
             if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
@@ -166,6 +169,7 @@ class LibraryReader:
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due:
+            self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
         self.reads += 1
@@ -188,7 +192,9 @@ class LibraryReader:
         if self.freeze_gc:
             gc.freeze()
         if mode == "store" and self.cache_file:
-            self._write_cache(view, [self._store_id, feed["epoch"], feed["version"], version])
+            # written at the next look that finds nothing new, not now: the window is taking this view in at this
+            # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
+            self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
 
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't
@@ -234,6 +240,7 @@ class LibraryReader:
                     continue
                 if old is None or old.get("tier") != r.get("tier") or old.get("ord") != r.get("ord"):
                     self._dirty.add(r.get("tier"))      # it moved: its tiers are sorted again
+                    self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
                     if old is not None:
                         self._dirty.add(old.get("tier"))
                 else:                                   # the same place: swapped in, no sort
@@ -242,6 +249,7 @@ class LibraryReader:
                         self._tiers[at[0]][at[1]] = r
                     else:
                         self._dirty.add(r.get("tier"))
+                        self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
             for w in feed["works"]:
                 self._works[w["id"]] = w
             if self._build_changed is not None:
@@ -262,18 +270,22 @@ class LibraryReader:
         """Each tier's items in `(ord, id)` order: in full after a full read, else only the tiers something moved in."""
         if self._tiers is None:
             self._tiers = view_rows._by_tier(self._items)
-            self._dirty = set()
+            self._dirty, self._moved_in = set(), {}
             self._pos = {r["id"]: (t, i) for t, rows in self._tiers.items() for i, r in enumerate(rows)}
         elif self._dirty:
             for t in self._dirty:
                 if t is None:
                     continue
-                rows = [r for r in self._items.values() if r.get("tier") == t]
+                # the tier's own items and those that came into it, not all 20,000 (speed round 5: an arrival's
+                # sort walked every item on the reader's thread); one gone or moved out drops out here
+                ids = {r["id"] for r in self._tiers.get(t, ())} | self._moved_in.pop(t, set())
+                items = self._items
+                rows = [items[i] for i in ids if i in items and items[i].get("tier") == t]
                 rows.sort(key=lambda r: (r.get("ord") or 0.0, r["id"]))
                 self._tiers[t] = rows
                 for i, r in enumerate(rows):
                     self._pos[r["id"]] = (t, i)
-            self._dirty = set()
+            self._dirty, self._moved_in = set(), {}
         return self._tiers
 
     def _build(self, numbers, mode, reason, rows_known):
@@ -324,6 +336,11 @@ class LibraryReader:
         view = view_rows.from_cache(data.get("view"), language=self.language)
         if view is not None and self._view is None:
             self._publish(view)
+
+    def _flush_cache(self):
+        due, self._cache_due = self._cache_due, None
+        if due is not None:
+            self._write_cache(*due)
 
     def _write_cache(self, view, key):
         try:

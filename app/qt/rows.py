@@ -124,8 +124,18 @@ class Text:
 TEXT = Text()
 
 
+_QCOLOURS = {}                                       # (theme, name) -> QColor (`c`)
+
+
 def c(name):
-    return style.qcolor(style.colours()[name] if name in style.colours() else theme.FIXED[name])
+    """A colour of the applied theme by name, made once per theme: a row's first paint asks for ~12, and parsing each
+    afresh was ~10 % of it (W2.2 speed round 5). Callers never change it in place (Qt copies it into a pen or brush)."""
+    key = (style.current()[0], name)
+    q = _QCOLOURS.get(key)
+    if q is None:
+        colours = style.colours()
+        q = _QCOLOURS[key] = style.qcolor(colours[name] if name in colours else theme.FIXED[name])
+    return q
 
 
 def fz():

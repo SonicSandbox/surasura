@@ -1686,3 +1686,67 @@ def test_set_tier_and_a_small_insert_timed_at_100k(language):
            each(20, lambda n: store.insert(next(seasons), "soon")), 50, per_item=0.00012)
     probe.close()
     store.close()
+
+
+class _CountingLock:
+    """Stands in for the store's write lock and counts every take (a test's own proxy, restored in finally)."""
+
+    def __init__(self, lock):
+        self.lock, self.takes = lock, 0
+
+    def acquire(self, *args, **kwargs):
+        self.takes += 1
+        return self.lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self.lock.release()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_notes_gone_takes_the_notes_out_of_links_words_and_lines(language):
+    # Sonic, 2026-10-07: a note Anki no longer has loses its "in Anki" mark wherever it is read, while each made
+    # word keeps its row (never made again unless asked). Ids the store doesn't hold write nothing and take no lock.
+    store = migrated(language)
+    real_lock = store._wlock
+    try:
+        a, b = store.ids("now")[:2]
+        w1, w2 = names(language)[:2]
+        with store._writing():
+            store.conn.execute("CREATE TABLE IF NOT EXISTS made_lines (note_id INTEGER PRIMARY KEY, item_id INTEGER "
+                               "NOT NULL, start_ms INTEGER, end_ms INTEGER, line_fp TEXT, made_at TEXT)")
+            for sql in ls.ADDED_TABLES_SQL:
+                store.conn.execute(sql)
+            store.conn.executemany("INSERT INTO anki_links (item_id, note_id, source, linked_at) "
+                                   "VALUES (?, ?, ?, ?)",
+                                   [(a, 101, "anki_miner", "t"), (a, 102, "anki_miner", "t"),
+                                    (b, 103, "anki_miner", "t")])
+            store.conn.executemany("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) "
+                                   "VALUES (?, ?, ?, ?, ?)",
+                                   [(a, w1, json.dumps([201, 202]), "t", None), (b, w2, json.dumps([203]), "t", None)])
+            store.conn.executemany("INSERT INTO made_lines (note_id, item_id, start_ms, end_ms, line_fp, made_at) "
+                                   "VALUES (?, ?, ?, ?, ?, ?)",
+                                   [(201, a, 0, 1000, "fp1", "t"), (203, b, 0, 1000, "fp3", "t")])
+        v0 = store.versions()
+
+        assert store.notes_gone([101, 201, 203, 999]) == [101, 201, 203]
+        links = store.conn.execute("SELECT item_id, note_id FROM anki_links ORDER BY note_id").fetchall()
+        assert links == [(a, 102), (b, 103)]
+        words = {w: json.loads(n) for w, n in store.conn.execute(
+            "SELECT word, note_ids FROM made_words WHERE item_id IN (?, ?)", (a, b))}
+        assert words == {w1: [202], w2: []}, "each made word keeps its row, only the gone notes leave it"
+        assert store.conn.execute("SELECT note_id FROM made_lines").fetchall() == []
+        v1 = store.versions()
+        assert v1["state_version"] == v0["state_version"] + 1
+        assert v1["order_version"] == v0["order_version"]
+        assert store.export_due(), "a changed library is due an export"
+
+        # Nothing the store holds: no change, no version bump, and the write lock is never taken.
+        counter = _CountingLock(real_lock)
+        store._wlock = counter
+        assert store.notes_gone([101, 999]) == []
+        assert store.notes_gone([]) == []
+        assert counter.takes == 0, "a no-op must not take the write lock"
+        assert store.versions() == v1
+    finally:
+        store._wlock = real_lock
+        store.close()

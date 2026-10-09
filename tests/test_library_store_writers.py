@@ -722,3 +722,34 @@ def test_another_windows_change_waits_for_a_drag_to_end(window, language, monkey
     assert _tree_paths(app) == shown, "redrawn mid-drag"
     app.on_drag_stop(types.SimpleNamespace(y=-1))                # released over nothing
     assert _pump(app, lambda: _tree_paths(app) != shown, timeout=2.0)
+
+
+# --- L3.3: the mode check reads through the window's handle (P2.4's smoothness review, row 13) ------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drag_asks_the_mode_through_the_windows_handle_not_a_new_connection(window, language, monkeypatch):
+    """P2.4's verifier: a drag asked the mode twice, each a probe (a new connection, 5–7 ms on the window's thread).
+    With the store's handle open, a drag asks through it: no probe at all (charter S19). A store marked damaged
+    meanwhile is still caught: that check probes, and the drag is refused."""
+    data_dir, _uf, _doc = _store_library(language)
+    app = window(language)
+    app.target_folder_var.set("HighPriority")
+    rows = [os.path.join(data_dir, *p.split("/")) for p in _order(app, "now")]     # the window's handle is open
+    rel = [os.path.relpath(r, data_dir).replace("\\", "/") for r in rows]
+    probes = []
+    real = ls._probe
+    monkeypatch.setattr(ls, "_probe", lambda *a: probes.append(a) or real(*a))
+    app.move_manifest_items_relative([rows[0]], rows[-1], "after")
+    app.move_manifest_items_relative([rows[1]], rows[0], "after")
+    assert probes == [], "a drag with the handle open opens no connection to ask the mode"
+    order = _order(app, "now")
+    assert order[-3:] == [rel[-1], rel[0], rel[1]]
+    db = ls.library_db_path(language, data_dir)
+    ls.mark_damaged(db, "a test's damage")
+    try:
+        app.move_manifest_items_relative([rows[2]], rows[-1], "after")
+        assert probes, "a damaged store is asked afresh"
+        assert app._store_mode() == "read-only"
+    finally:
+        os.remove(ls.damaged_marker(db))
+    assert _order(app, "now") == order, "the drag on a damaged store was refused"

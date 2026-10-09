@@ -21,8 +21,9 @@ class Bridge(QObject):
     settings_written = pyqtSignal(object)        # tuple of the keys a landed write carried
     jobs_changed = pyqtSignal(object)            # tuple of job views (the registry's snapshot)
     status_changed = pyqtSignal(object)          # the status service's Snapshot
+    library_changed = pyqtSignal(object)         # the library reader's View (W2.2)
 
-    def __init__(self, settings=None, registry=None, status=None, parent=None):
+    def __init__(self, settings=None, registry=None, status=None, library=None, parent=None):
         super().__init__(parent)
         self._alive = True
         if settings is not None:
@@ -31,6 +32,8 @@ class Bridge(QObject):
             registry.subscribe(lambda views: self._emit("jobs_changed", tuple(views)))
         if status is not None:
             status.subscribe(lambda snap: self._emit("status_changed", snap))
+        if library is not None:
+            library.subscribe(lambda view: self._emit("library_changed", view))
         self.destroyed.connect(self._gone)
 
     def _gone(self, *_):

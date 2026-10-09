@@ -2,9 +2,10 @@
 
 The window, edge to edge under Windows' own title bar (n1); the header (the mark, the wordmark, the subline); the tabs
 (Current · Finished · Needs you · Settings) over one page each; the bottom bar (what runs, the newest command-line
-failure, the AnkiWeb mark and Connect's line when they exist). Each page shows its waiting state until its step builds
-it (Current W2.2; Finished and Needs you W3.2; Settings W3.3), and the header's controls arrive with their features:
-no control here does nothing (the wiring check, tests/qt/test_wiring.py).
+failure, the AnkiWeb mark and Connect's line when they exist). Given a library (`Services(library=…)`: W2.2's reader),
+Current, Finished and Needs you show it (`screens.py`, display only until W3.1 / W3.2); without one, and Settings until
+W3.3, a page shows its waiting state. The header's controls arrive with their features: no control here does nothing
+(the wiring check, tests/qt/test_wiring.py).
 
 What it holds is a view (02 §2.1): settings come from the settings service, jobs from the registry, the bar from the
 status service, all through `bridge.py`; the window's size, place and tab live in `window_state.json` in this
@@ -31,6 +32,7 @@ from app.qt import applog, bridge, hud, motion, strings, style, titlebar, toast,
 from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
+from app.qt import screens                                # W2.2: the pages a library fills
 
 TABS = ("current", "finished", "needs", "settings")
 STATE_FILE = "window_state.json"
@@ -46,13 +48,20 @@ LIVE_LOOK = True
 class Services:
     """The window's services, made once per window (the settings file is read here, before the first paint)."""
 
-    def __init__(self, settings=None, registry=None, status=None):
+    def __init__(self, settings=None, registry=None, status=None, library=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
+        self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
 
     def shutdown(self, timeout=2.0):
-        """At quit, after the window is gone: pending settings written, jobs told (their `on_quit`)."""
+        """At quit, after the window is gone: pending settings written, jobs told (their `on_quit`), the library's
+        reader stopped."""
+        if self.library is not None:
+            try:
+                self.library.stop(timeout)
+            except Exception as e:
+                applog.log("shell", f"library reader at quit: {e}")
         try:
             self.registry.quit(timeout)
         except Exception as e:
@@ -312,7 +321,7 @@ class ShellWindow(QMainWindow):
         self.pages.setObjectName("pages")
         self.page_widgets = {}
         for name in TABS:
-            page = self._waiting_page(name)
+            page = self._page(name)
             self.page_widgets[name] = page
             self.pages.addWidget(page)
         root.addWidget(self.pages, 1)
@@ -324,7 +333,17 @@ class ShellWindow(QMainWindow):
         # the services, through the bridge
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
+        self._library_needs = 0
         self.show_status(services.status.snapshot())
+        # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
+        if services.library is not None:
+            self.library_bridge = bridge.Bridge(library=services.library, parent=self)
+            self.library_bridge.library_changed.connect(self.show_library)
+            for page in self.page_widgets.values():
+                if hasattr(page, "message"):
+                    page.message.connect(self.bar_line.set_full)       # a file ▶ couldn't open: said in the bar
+            services.library.start()
+        # --- end W2.2 ------------------------------------------------------------------------------------------------ #
         self._poll = QTimer(self)
         self._poll.timeout.connect(self._poll_status)
         self._poll.start(POLL_MS)
@@ -340,6 +359,9 @@ class ShellWindow(QMainWindow):
         self.router = EscapeRouter(self, parent=self)
         app.installEventFilter(self.router)
         self.tooltips = tooltip.Tooltips(parent=self).install(app)
+        for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
+            if hasattr(page, "list"):
+                page.list.tooltips = self.tooltips
 
         self._restore_state(read_state(self.state_file))
 
@@ -391,6 +413,41 @@ class ShellWindow(QMainWindow):
         row.addStretch(1)
         self.tab_buttons["current"].setChecked(True)
         return bar
+
+    # --- W2.2: the pages a library fills ----------------------------------------------------------------------- #
+    def _page(self, name):
+        if self.services.library is None or name not in screens.PAGES:
+            return self._waiting_page(name)
+        return screens.make_page(name, language=self.language)
+
+    def show_library(self, view):
+        """The reader's newest view: the pages, the subline's counts, the tabs' counts."""
+        moved = False
+        for name in screens.PAGES:
+            page = self.page_widgets.get(name)
+            if hasattr(page, "set_view"):
+                moved = page.set_view(view) != "same" or page.list.looks_changed or moved
+        self.subline.setText(view.subline)
+        fin = self.tab_buttons["finished"]
+        label = strings.TABS["finished"][0]
+        fin.setText(strings.TAB_COUNT.format(name=label, count=view.counts.finished) if view.counts.finished
+                    else label)
+        if self._library_needs != len(view.needs):
+            self._library_needs = len(view.needs)
+            self.show_status(self.services.status.snapshot())
+        if moved:                                   # a view that changed no list paints nothing ahead
+            self._warm_hidden_pages()
+
+    def _warm_hidden_pages(self):
+        """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
+        shown = self.pages.currentWidget()
+        like = getattr(shown, "list", None)
+        for page in self.page_widgets.values():
+            lst = getattr(page, "list", None)
+            if lst is not None and page is not shown:
+                lst.warm_like = like
+                lst._rest()
+    # --- end W2.2 ---------------------------------------------------------------------------------------------- #
 
     def _waiting_page(self, name):
         page = QWidget()
@@ -463,6 +520,8 @@ class ShellWindow(QMainWindow):
         if not button.isChecked():
             button.setChecked(True)
         self.pages.setCurrentWidget(self.page_widgets[name])
+        if self.services.library is not None:                 # W2.2: the other tabs' first screens, ahead
+            self._warm_hidden_pages()
 
     def current_tab(self):
         for name, b in self.tab_buttons.items():
@@ -491,8 +550,11 @@ class ShellWindow(QMainWindow):
         for label, value in ((self.bar_ankiweb, snap.ankiweb), (self.bar_connect, snap.connect)):
             label.setText(value or "")
             label.setVisible(bool(value))
-        listed = len(snap.needs_you)
-        unseen = sum(1 for e in snap.needs_you if not e.seen)
+        listed = len(snap.needs_you) + self._library_needs          # W2.2: the library's entries count too
+        unseen = sum(1 for e in snap.needs_you if not e.seen) + self._library_needs
+        needs_page = self.page_widgets.get("needs")
+        if hasattr(needs_page, "set_failures"):
+            needs_page.set_failures(snap.needs_you)
         needs = self.tab_buttons["needs"]
         name = strings.TABS["needs"][0]
         needs.setText(strings.TAB_WITH_COUNT.format(name=name, count=unseen) if unseen else name)

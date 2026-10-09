@@ -1,6 +1,7 @@
 """One start of the window's single-instance claim, for tests/qt/test_single_instance.py's races (offscreen, its own
 pipe name and test root from the environment). Prints one line: `first <activations>` after `HOLD` seconds of
-listening, or how it ended (`handed-over`, `gave-up`)."""
+listening — then when it claimed and when it let go (`time.time()`), so a race can tell "one after the other" from "both
+at once" — or how it ended (`handed-over`, `gave-up`)."""
 import os
 import sys
 import time
@@ -24,13 +25,15 @@ if barrier:
         time.sleep(0.005)
 instance = SingleInstance()
 if instance.claim(sys.argv[1:], wait=float(os.environ.get("PROBE_WAIT", "10"))):
+    claimed = time.time()
     activations = []
     instance.activated.connect(activations.append)
     end = time.monotonic() + float(os.environ.get("HOLD", "2"))
     while time.monotonic() < end:
         app.processEvents()
         time.sleep(0.01)
-    print(f"first {len(activations)}", flush=True)
+    letting_go = time.time()                            # before the lock frees: no other start can claim before it
     instance.release()
+    print(f"first {len(activations)} {claimed:.3f} {letting_go:.3f}", flush=True)
 else:
     print(instance.outcome, flush=True)

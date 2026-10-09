@@ -91,6 +91,7 @@ class Tooltips(QObject):
         super().__init__(parent)
         self.bubble = Bubble()
         self._target = None
+        self._part = (None, None)                  # a painted part's (rect, text), or (None, None) for the widget's own
         self._last_hidden = 0.0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -131,11 +132,17 @@ class Tooltips(QObject):
                 self.hide()
         return False
 
-    def request(self, widget):
+    def request(self, widget, rect=None, text=None):
+        """Show `widget`'s tooltip after the delay — or, for a part a view paints (W2.2: a row's pill, a line), `text`
+        for `rect` (in the widget's coordinates): the bubble sits on that part, and goes when the pointer leaves it."""
         # Qt asks again on every pause of the mouse over the control (its own wait is 0): the first ask's clock runs.
-        if self._target is widget and (self.bubble.isVisible() or self._timer.isActive()):
+        if (self._target is widget and self._part == (rect, text)
+                and (self.bubble.isVisible() or self._timer.isActive())):
             return
+        if self._target is not None and (self._target is not widget or self._part != (rect, text)):
+            self.hide()
         self._target = widget
+        self._part = (rect, text)
         wait = self.delay()
         if wait <= 0:
             self._show_now()
@@ -146,9 +153,12 @@ class Tooltips(QObject):
         w = self._target
         if w is None or not w.isVisible():
             return
-        self.bubble.set_text(w.toolTip())
-        top_left = w.mapToGlobal(QPoint(0, 0))
-        target = QRect(top_left, w.size())
+        rect, text = self._part
+        self.bubble.set_text(text if text is not None else w.toolTip())
+        if rect is None:
+            target = QRect(w.mapToGlobal(QPoint(0, 0)), w.size())
+        else:
+            target = QRect(w.mapToGlobal(rect.topLeft()), rect.size())
         screen = (w.screen() or QGuiApplication.primaryScreen()).availableGeometry()
         self.bubble.move(place(self.bubble.size(), target, screen))
         self.bubble.show()
@@ -159,6 +169,13 @@ class Tooltips(QObject):
             self.bubble.hide()
             self._last_hidden = time.monotonic()
         self._target = None
+        self._part = (None, None)
+
+    def hide_part_unless(self, widget, pos):
+        """A painted part's bubble goes when the pointer (`pos`, in `widget`'s coordinates) leaves its part."""
+        rect = self._part[0]
+        if self._target is widget and rect is not None and not rect.contains(pos):
+            self.hide()
 
     def showing(self):
         """The text shown now, or None."""

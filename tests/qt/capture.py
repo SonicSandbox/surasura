@@ -15,6 +15,12 @@ Large text at 1024 × 720 and 200 % (E16) keeps the bar and the tabs inside the 
 **Screen:** the window shown for a moment without taking focus, captured with `PrintWindow` into a bitmap sized by
 `GetDpiForWindow / 96` (never `GetWindowRect`'s logical size): the title bar's pixels must be dark on Windows 10.
 
+**Screens** (W2.2 row 6: `--screens --scales …`): the first screens on the synthetic seed (the stand-in store, invented
+titles), each scale in its own process as above, each theme: Current (the hero and the top-20 line; then a row open with
+its missing episodes), Finished and Needs you; at Blue also the read-only state and an empty library. Checked: the page
+holds its ground (`bg`), Current shows the learned green (✓ in Anki), the open row the heads-up amber (no video in the top
+20) and the top-20 line's colour, and no other theme's ground.
+
 Motion is frozen; a temp `SURASURA_TEST_ROOT` is set and checked first (never the real settings or local data).
 Pictures go to `--out` (default: a new temp folder); every one is dark, on no one's library. Prints JSON lines and
 ends with `ALL CAPTURES PASS` or exits 1.
@@ -133,6 +139,129 @@ def run_scale(scale, out_dir):
     return results
 
 
+# --- W2.2: the first screens on the synthetic seed ---------------------------------------------------------------- #
+def run_screens(scale, out_dir):
+    """One process: Current, Finished and Needs you for every theme at `scale` %, on the seed. -> result dicts."""
+    _isolate()
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    import time
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
+    from app import theme
+    from app.qt import rows, shell
+    from app.services import library_reader
+    from tests.fixtures import standin_store, window_seed
+    from tests.qt.pixels import count, rgb_array
+
+    app = QApplication(["capture"])
+    results = []
+
+    def settle(n=30):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.005)
+
+    def open_seeded(seed):
+        reader = library_reader.LibraryReader(seed.opener, numbers=seed.numbers, mining=seed.mining, poll=0.02)
+        services = shell.Services(library=reader)
+        win = shell.open_window(app, services)
+        win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        win.resize(1280, 800)
+        win.show()
+        page = win.page_widgets["current"]
+        for _ in range(400):
+            app.processEvents()
+            if page.view_model is not None and not page.view_model.loading:
+                break
+            time.sleep(0.01)
+        settle()
+        return win, services
+
+    seed = window_seed.build(root=os.environ["SURASURA_TEST_ROOT"])
+    win, services = open_seeded(seed)
+    lst = win.page_widgets["current"].list
+    amber = next(i for i, e in enumerate(lst.model().entries)
+                 if e[0] == rows.ROW and sum(ep.missing for ep in e[1].episodes) == 3)
+    for theme_name in theme.THEMES:
+        win.set_look(theme_name, "M")
+        c = theme.colours(theme_name)
+        others = [theme.colours(t)["bg"] for t in theme.THEMES if t != theme_name]
+        for screen in ("current", "current-open", "finished", "needs"):
+            if lst.model().open_key is not None:
+                lst.model().open_key = None
+                lst.relayout()
+            win.show_tab("current" if screen.startswith("current") else screen)
+            settle(10)
+            if screen == "current-open":
+                lst.toggle(lst.model().index(amber, 0))
+                settle(10)
+                lst.scrollTo(lst.model().index(amber, 0), lst.ScrollHint.PositionAtTop)
+            elif screen == "current":
+                lst.scrollToTop()
+            settle()
+            page = win.pages.currentWidget()
+            pix = win.grab()
+            name = f"w22-{screen}-{theme_name}-{scale}.png"
+            pix.save(os.path.join(out_dir, name))
+            sub = rgb_array(page.grab())
+            problems = []
+            area = sub.shape[0] * sub.shape[1]
+            if count(sub, c["bg"], TOL) + count(sub, c["surface"], TOL) < 0.3 * area:
+                problems.append(f"{screen}: the page's ground (bg, an open row's surface) is under 30 %")
+            if count(sub, "#000000", 0) > 0.01 * area:
+                problems.append(f"{screen}: black (unpainted) areas")
+            for o in others:
+                if o != c["bg"] and count(sub, o, 1) > 0.005 * area:
+                    problems.append(f"{screen}: another theme's ground")
+            if screen == "current":
+                if count(sub, theme.STATUS["ok"], 40) < 5:
+                    problems.append("current: no learned green (in Anki)")
+                if count(sub, c["top20-line"], 12) < 40:
+                    problems.append("current: no top-20 line")
+            if screen == "current-open":
+                # only the open row's episodes (the closed row's own amber mark mustn't answer for them)
+                from PyQt6.QtCore import QRect
+                r = lst.visualRect(lst.model().index(amber, 0))
+                row_h = round(theme.SIZES["row"] * rows.fz())
+                eps = rgb_array(lst.viewport().grab(QRect(r.left(), r.top() + row_h, r.width(), r.height() - row_h)))
+                if count(eps, theme.STATUS["warn"], 40) < 5:
+                    problems.append("current-open: no heads-up amber on its episodes (no video in the top 20)")
+            results.append({"scale": scale, "theme": theme_name, "screen": screen, "file": name,
+                            "problems": problems})
+    win.close()
+    services.shutdown(1.0)
+    for mode, reason, label in (("read-only", "damaged", "read-only"), ("store", None, "empty")):
+        if label == "empty":
+            lib = standin_store.StandinLibrary([], [])
+            seed2 = window_seed.Seed(library=lib, opener=standin_store.StandinOpener(lib), numbers=lambda: (0, {}),
+                                     mining=lambda: (), root=None, language="ja", files=0, vocabulary=set(), items=[],
+                                     works=[], hero_work=None)
+        else:
+            seed2 = window_seed.build(root=os.environ["SURASURA_TEST_ROOT"], mode=mode, reason=reason)
+        win, services = open_seeded(seed2)
+        win.set_look("hb", "M")
+        settle()
+        pix = win.grab()
+        name = f"w22-{label}-hb-{scale}.png"
+        pix.save(os.path.join(out_dir, name))
+        page = win.page_widgets["current"]
+        problems = []
+        sub = rgb_array(page.grab())
+        if count(sub, theme.colours("hb")["bg"], TOL) < 0.3 * sub.shape[0] * sub.shape[1]:
+            problems.append(f"{label}: the page's ground is under 30 %")
+        if count(sub, "#000000", 0) > 0.01 * sub.shape[0] * sub.shape[1]:
+            problems.append(f"{label}: black (unpainted) areas")
+        if label == "read-only" and not (page.state_bar.isVisible() and page.state_bar.text()):
+            problems.append("read-only: no bar saying why")
+        if label == "empty" and page.list.model().entries[0][0] != rows.EMPTY:
+            problems.append("empty: no empty line")
+        results.append({"scale": scale, "theme": "hb", "screen": label, "file": name, "problems": problems})
+        win.close()
+        services.shutdown(1.0)
+    return results
+# --- end W2.2 ----------------------------------------------------------------------------------------------------------- #
+
+
 def run_screen(out_dir):
     """The window on screen for a moment (no focus taken), captured by PrintWindow at GetDpiForWindow / 96."""
     _isolate()
@@ -220,11 +349,12 @@ def main():
     ap.add_argument("--screen", action="store_true")
     ap.add_argument("--out", default="")
     ap.add_argument("--one", type=int, default=0, help=argparse.SUPPRESS)       # a child: one scale
+    ap.add_argument("--screens", action="store_true", help="W2.2: the first screens on the seed, per scale")
     args = ap.parse_args()
     out_dir = args.out or tempfile.mkdtemp(prefix="w21-captures-")
     os.makedirs(out_dir, exist_ok=True)
     if args.one:
-        for r in run_scale(args.one, out_dir):
+        for r in (run_screens if args.screens else run_scale)(args.one, out_dir):
             print(json.dumps(r), flush=True)
         return 0
     results = []
@@ -234,7 +364,8 @@ def main():
     for s in [int(x) for x in args.scales.split(",") if x.strip()]:
         env = dict(os.environ, QT_SCALE_FACTOR=f"{s / 100 / system:.6f}", QT_ENABLE_HIGHDPI_SCALING="1")
         env.pop("QT_QPA_PLATFORM", None)
-        proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--one", str(s), "--out", out_dir],
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--one", str(s), "--out", out_dir] +
+                              (["--screens"] if args.screens else []),
                               env=env, capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             results.append({"scale": s, "problems": [f"the capture process failed: {proc.stderr[-1500:]}"]})

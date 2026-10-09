@@ -153,6 +153,18 @@ QSplitter::handle {{ background: {c['line']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
 
+/* --- W2.2: the first screens (screens.py); their rows are painted by rows.py --- */
+QLabel#currentheading {{ color: {c['ink']}; {font('current-heading')} }}
+QLabel#pageheading {{ color: {c['ink']}; {font('page-heading')} font-weight: 700; }}
+QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
+  min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
+QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QLabel#statebar {{ color: {c['ink-dim']}; background: {c['raised']}; border-radius: 7px; padding: {px(5)} {px(10)};
+  {font('row-sub')} }}
+QListView#rows {{ background: {c['bg']}; border: 0; }}
+QListView#rows:focus {{ border: 0; }}
+/* --- end W2.2 --- */
+
 /* menus, tabs a later screen may use, Qt's own tooltip (the shell shows its own bubble: tooltip.py) */
 QMenu {{ background: {c['surface']}; color: {c['ink']}; border: 1px solid {c['line-hi']}; padding: 6px; {font('menu-item')} }}
 QMenu::item {{ padding: {px(7)} {px(12)}; border-radius: 7px; }}

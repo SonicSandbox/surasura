@@ -1307,13 +1307,10 @@ class MasterDashboardApp:
         """This process's own store handles (the dashboard's long-lived ones): Repair renames the files, which
         Windows refuses while any is open (§6.9). They reopen on the next use."""
         for opener in self.__dict__.get("_library_openers", {}).values():
-            store = getattr(opener._local, "store", None)
-            if store is not None:
-                try:
-                    store.close()
-                except Exception:
-                    pass
-                opener._local.store = None
+            try:
+                opener.close()
+            except Exception:
+                pass
 
     def _library_notice_action(self):
         """Repair (a damaged store) or Try again (a failed move), run as the helper. Repair first closes the
@@ -3542,6 +3539,9 @@ class MasterDashboardApp:
                 notice.at_close(self.var_language.get() or "ja")
             except Exception as e:
                 print(f"Arrivals notice at close: {e}")
+        # This window's own store handles closed first, through the store's close (§6.12: never at the process's
+        # end, where a plain close that is the last checkpoints outside the write lock)
+        self._close_library_handles()
         # The library store's close trigger (Library_Store_Spec §6.7): in-process, now that no window is left to
         # freeze — the copy brought up to date for each language with something to do. Never waits for a helper.
         try:

@@ -48,6 +48,7 @@ from contextlib import contextmanager
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app import library_watch
 from app.path_utils import (CONTENT_EXTENSIONS, backup_to_trash, infer_source_type, read_source_marker,
                             restart_trash_clock)
 
@@ -643,6 +644,7 @@ def mark_damaged(db_path, detail):
             f.write(f"{_now()}\n{detail}\n")
     except OSError:
         pass
+    library_watch.ring(db_path)          # a window sleeping on its watch looks again and turns read-only (L3.2)
 
 
 def quick_check(conn, db_path):
@@ -1282,6 +1284,7 @@ class Store:
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
         self._wlock.acquire()
+        committed = False
         try:
             self.conn.execute("PRAGMA query_only=0")
             if begin:
@@ -1307,6 +1310,7 @@ class Store:
                     if self.conn.in_transaction:
                         self.conn.execute("ROLLBACK")
                     raise
+                committed = True
         except sqlite3.DatabaseError as exc:
             if _is_malformed(exc):
                 mark_damaged(self.db_path, f"{self.role}: {exc}")
@@ -1317,6 +1321,8 @@ class Store:
                 self.conn.execute("PRAGMA query_only=1")
             finally:
                 self._wlock.release()
+                if committed:
+                    library_watch.ring(self.db_path)  # every writer's commit wakes the windows listening (L3.2)
 
     def checkpoint(self):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""
@@ -6077,10 +6083,11 @@ def _store_folders(self):
 
 
 class DiskPoll:
-    """The Content Manager's 500 ms poll (§6.10, G5), run on its worker: one versions read, and a stat of
-    every folder that holds items — a file dropped into a show's folder, or a new sub-folder (it changes
+    """The Content Manager's slow look (§6.10, G5; L3.2: only with no watch — not Windows, a drive that can't report,
+    no bell — every `library_watch.SLOW_S` while the window is in front), run on its worker: one versions read, and a
+    stat of every folder that holds items — a file dropped into a show's folder, or a new sub-folder (it changes
     its parent's modified time), is seen. `check()` answers "run a sync?"; the folder list is re-read only
-    when the versions move. A drop into an existing folder that holds no item waits for focus or Refresh."""
+    when the versions move. A drop into an existing folder that holds no item waits for focus, Refresh or the round."""
 
     def __init__(self, store):
         self.store = store
@@ -6105,6 +6112,110 @@ class DiskPoll:
         self.changed = [f for f, v in stats.items() if self.stats is not None and f in self.stats and self.stats[f] != v]
         self.stats = stats
         return bool(self.changed)
+
+
+ROUND_FOLDERS = 200              # the hourly round (L3.2): at most this many folders a batch,
+ROUND_BATCH_S = 0.05             # or this long, whichever comes first (one batch every 2 s: `library_watch.ROUND_GAP_S`)
+
+
+class Round:
+    """The hourly safety round (L3.2; the user's L3.1-4, "let windows handle it but with the fallback"): every folder
+    under the tier folders — folders that hold no item included, which the old poll never looked at — listed a batch
+    at a time (`step`), each folder's content files compared with the items the store holds directly in it.
+    Listings, sizes and times only; a folder whose listing differs is handed back for a scoped sync. Nothing is kept
+    between rounds: one a close interrupts starts over (the next open's full look covers it)."""
+
+    def __init__(self, store):
+        from collections import deque
+        self.store = store
+        self.queue = deque(FOLDER_OF_TIER[t] for t in ANALYSED)
+        self.listed = 0                  # folders listed so far
+        self.batches = []                # (folders, seconds) of each batch, for the figures
+
+    @property
+    def done(self):
+        return not self.queue
+
+    def step(self, max_folders=ROUND_FOLDERS, max_s=ROUND_BATCH_S, clock=time.perf_counter):
+        """One batch: -> the folders (relative to data/<lang>) whose content differs from the store."""
+        t0 = clock()
+        differ, n = [], 0
+        while self.queue and n < max_folders and (n == 0 or clock() - t0 < max_s):
+            rel = self.queue.popleft()
+            n += 1
+            files, subdirs = self._listing(rel)
+            self.queue.extendleft(reversed(subdirs))       # top-down, as the sync walks
+            held, gone = self._held(rel, subdirs)
+            # a sub-folder the store holds items in that is gone from disk is never listed itself: its parent differs
+            # (one scoped sync of the parent: a folder renamed there is found as the same items, moved)
+            if files != held or gone:
+                differ.append(rel)
+        self.listed += n
+        self.batches.append((n, clock() - t0))
+        return differ
+
+    def _listing(self, rel):
+        """{key: (size, mtime_ns)} of the content files directly in `rel`, and its sub-folders; a folder gone lists
+        nothing (its items, if any, differ)."""
+        files, subdirs = {}, []
+        try:
+            entries = list(os.scandir(os.path.join(self.store.data_dir, *rel.split("/"))))
+        except OSError:
+            return files, subdirs
+        for e in entries:
+            if e.name in SKIP_NAMES:
+                continue
+            child = f"{rel}/{e.name}"
+            try:
+                child.encode("utf-8")
+                if e.is_dir():
+                    subdirs.append(child)
+                elif is_content_name(e.name):
+                    st = e.stat()
+                    files[path_key(child)] = (st.st_size, st.st_mtime_ns)
+            except (OSError, UnicodeEncodeError):
+                continue                                   # a name the sync can't take either (K28)
+        return files, subdirs
+
+    def _held(self, rel, subdirs=()):
+        """({key: (size, mtime_ns)} of the available items directly in `rel`, [the sub-folders of `rel` (keys) that hold
+        available items and aren't among `subdirs`, the ones on disk]). One walk of the `items_key` index inside
+        SQLite: a seek per file and per sub-folder, never the range's rows (a tier folder at 200k: 9k sub-folders,
+        ~0.1 s, the grouped range read 0.19 s), and only the gone sub-folders come back to Python (usually none), so
+        the window's thread barely waits on this thread meanwhile."""
+        prefix = path_key(rel) + "/"
+        on_disk = json.dumps(sorted(path_key(d) for d in subdirs), ensure_ascii=False)
+        with self.store._reading():
+            rows = self.store.conn.execute(_HELD_WALK, {"p": prefix, "hi": prefix[:-1] + "0",       # '0' follows '/'
+                                                        "n": len(prefix) + 1, "disk": on_disk}).fetchall()
+        files, gone = {}, []
+        for key, head, size, mtime_ns in rows:
+            if head is None:
+                files[key] = (size, mtime_ns)
+            else:
+                gone.append(head)
+        return files, gone
+
+
+# The round's walk of a folder's keys (`Round._held`): each step seeks the next available key past the last file, or
+# past the whole sub-folder the last key was in (its keys run from 'show/' to 'show0': '0' follows '/'); a file comes
+# back with its size and time, a sub-folder only when it isn't on disk (`:disk`, a JSON list of keys).
+_HELD_WALK = """
+WITH RECURSIVE w(k) AS (
+  SELECT (SELECT min(rel_key) FROM items WHERE rel_key > :p AND rel_key < :hi AND availability = 'available')
+  UNION ALL
+  SELECT (SELECT min(rel_key) FROM items WHERE rel_key < :hi AND availability = 'available' AND rel_key >=
+            CASE WHEN instr(substr(w.k, :n), '/') = 0 THEN w.k || char(1)
+                 ELSE substr(w.k, 1, :n + instr(substr(w.k, :n), '/') - 2) || '0' END)
+  FROM w WHERE w.k IS NOT NULL
+),
+heads(k, head) AS (
+  SELECT k, CASE WHEN instr(substr(k, :n), '/') = 0 THEN NULL
+                 ELSE substr(k, 1, :n + instr(substr(k, :n), '/') - 2) END FROM w WHERE k IS NOT NULL
+)
+SELECT h.k, h.head, i.size, i.mtime_ns FROM heads h JOIN items i ON i.rel_key = h.k AND i.availability = 'available'
+WHERE h.head IS NULL OR h.head NOT IN (SELECT value FROM json_each(:disk))
+"""
 
 
 def _store_has_content(self):

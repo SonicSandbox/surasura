@@ -25,6 +25,22 @@ Design invariants (do not break)
    edited/added/removed outside the content importer is still caught.
 3. **Maintain the `aggregate` incrementally** — never re-sum the whole library on read.
 4. **Disposable/regenerable** — a schema-version mismatch or corruption simply rebuilds.
+
+Counted and kept (L2.2 05 §5.10, E2.2)
+---------------------------------------
+Each file is **counted** (`files.counted` 1: the analysed tiers, and a missing item until the user decides) or
+**kept** (0: Finished, New arrivals, removed items whose sentences weren't forgotten). `reconcile(files, ...,
+kept=)` takes both lists; a kept file is tokenized and cached like any other (`file_tokens` serves both), but every
+sum reads counted files only — the aggregate and `bound` (a file moving between the lists moves its counts in or out,
+never re-tokenized: invariant 3 holds), `total_tokens`, `has_tokens`, `file_count`, the name tables and their
+adjustment, the phrase table and its matches. A file in neither list leaves. A store made before the flag gets the
+column by an `ALTER TABLE`, every row counted (it was counted before): nothing is rebuilt.
+
+A kept file's text lives in `kept_text_<lang>_<key>.db` beside the library store (`_KeptText`), never in this cache:
+invariant 4 stays true for this file — a wipe or a reset deletes only it, and the next reconcile reads a kept file that
+is gone from the disk back in from its kept text. Kept rows and kept text go only when the user forgets a file
+(`reconcile`'s `forgotten`), never because a list left them out. A file that moves keeps its row (`reconcile`'s
+re-key: one leaving row and one new path with the same name, size and modified time).
 """
 
 import os
@@ -192,7 +208,8 @@ CREATE TABLE IF NOT EXISTS files (
     counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
     tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
     names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
-    bound  BLOB                -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
+    bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
+    counted INTEGER NOT NULL DEFAULT 1  -- 1 counted, 0 kept: tokenized, never summed (module docstring)
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
@@ -214,9 +231,11 @@ def _ensure_schema(conn):
             conn.execute("SELECT names, bound FROM files LIMIT 1")
             conn.execute("SELECT 1 FROM aggregate LIMIT 1")
             conn.execute("SELECT 1 FROM bound LIMIT 1")
-            return
         except sqlite3.DatabaseError:
             pass  # fall through to rebuild
+        else:
+            _add_counted(conn)
+            return
     conn.executescript(
         "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS aggregate; DROP TABLE IF EXISTS bound; "
         "DROP TABLE IF EXISTS meta;"
@@ -224,6 +243,26 @@ def _ensure_schema(conn):
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
+
+
+def _add_counted(conn):
+    """The counted / kept flag (E2.2) on a store made before it: added, every row counted — it was counted before — so
+    the store is read exactly as it was, nothing rebuilt and no version moved. Two first opens may race to add it; the
+    loser finds it there (looked at again inside the write lock; a "duplicate column" is success, never damage — open_store
+    deletes a store on any other database error)."""
+    def has_it():
+        return "counted" in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
+    if has_it():
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not has_it():
+            conn.execute("ALTER TABLE files ADD COLUMN counted INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        if "duplicate column" not in str(e).lower():
+            raise
 
 
 def _delete_db(path):
@@ -264,13 +303,13 @@ def open_store(language, path=None):
         return c
 
     try:
-        return Store(_connect(), language)
+        return Store(_connect(), language, db_path)
     except sqlite3.DatabaseError as e:
         if _locked(e):
             raise                       # busy, not damaged: another program has the file — never delete it
-        # Corrupt DB -> delete + rebuild (it's a regenerable cache).
+        # Corrupt DB -> delete + rebuild (it's a regenerable cache). The kept text beside it is another file: untouched.
         _delete_db(db_path)
-        return Store(_connect(), language)
+        return Store(_connect(), language, db_path)
 
 
 def _locked(error):
@@ -281,12 +320,160 @@ def _locked(error):
 
 
 # --------------------------------------------------------------------------- #
+# Kept text (L2.2 05 §5.10, E2.2): the sentences of the files the store keeps and may not read again from the disk
+# --------------------------------------------------------------------------- #
+_KEPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS kept (
+    rel   TEXT PRIMARY KEY,   -- the file's path relative to the data folder ('/'), as the store keys it (normcase)
+    text  TEXT,               -- what extract_text made of it (facts "rebuilt": its cached sentences, one a line)
+    facts TEXT,               -- JSON: what the file said of itself as it was read (extract_text's "captions")
+    mtime REAL, size INTEGER  -- the file's (mtime, size) when its text was read
+);
+"""
+
+
+def kept_text_path(language, data_dir):
+    """`kept_text_<lang>_<key>.db`: beside the library store's own file and keyed as it is (the language and the data
+    folder: `library_store.library_db_path`) — the local data folder, never %APPDATA% beside this cache; under the test
+    root as the library store's."""
+    from app import library_store
+    db = library_store.library_db_path(language, data_dir)
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    return os.path.join(os.path.dirname(db), "kept_text_" + os.path.basename(db)[len("library_"):])
+
+
+class _KeptText:
+    """`kept_text_<lang>_<key>.db` (`kept_text_path`): the text of each kept file, and of each counted file gone from the
+    disk, so a wipe of the token store (a cache: it deletes itself when damaged, a new schema or tokenizer identity
+    empties it) can read them back in. Its own file, `synchronous=FULL`, never touched by the store's wipe or reset; a
+    file's text goes only when the user forgets it (`reconcile`'s `forgotten`). Opened only
+    when something is kept, read or dropped — a reconcile with nothing kept never makes it. A file that isn't a
+    database any more is set aside once (renamed, with a printed line) and a new one started, never fatal; any other
+    error (locked, the disk full) is raised, so the reconcile rolls back and deletes nothing."""
+
+    def __init__(self, path, data_dir=None):
+        self.path = path
+        self.root = _norm(data_dir) if data_dir else None
+        self.conn = None
+
+    def _rel(self, key):
+        """The store's key (a normcase absolute path) as the kept text keys it: relative to the data folder."""
+        if self.root and key.startswith(self.root + os.sep):
+            return key[len(self.root) + 1:].replace(os.sep, "/")
+        return key
+
+    def _key(self, rel):
+        return _norm(os.path.join(self.root, rel)) if self.root and not os.path.isabs(rel) else rel
+
+    def _connect(self):
+        c = sqlite3.connect(self.path, timeout=5.0)
+        try:
+            c.execute("PRAGMA busy_timeout=5000")
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=FULL")
+            c.executescript(_KEPT_SCHEMA)
+            c.execute("SELECT rel, text, facts, mtime, size FROM kept LIMIT 1")
+        except Exception:
+            c.close()
+            raise
+        return c
+
+    def _set_aside(self, error):
+        aside = f"{self.path}.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.replace(self.path + suffix, aside + suffix)
+            except OSError:
+                pass
+        print(f"Some kept sentences couldn't be read ({error}): {os.path.basename(self.path)} was set aside as "
+              f"{os.path.basename(aside)} and a new one started.")
+
+    def _run(self, work, default, create=False):
+        """`work(conn)` on the file — `default` when it doesn't exist and isn't to be made (`create`)."""
+        for attempt in (0, 1):
+            try:
+                if self.conn is None:
+                    if not create and not os.path.exists(self.path):
+                        return default
+                    self.conn = self._connect()
+                return work(self.conn)
+            except sqlite3.DatabaseError as e:
+                if isinstance(e, sqlite3.OperationalError) or attempt:
+                    raise                           # locked, the disk full, an I/O error: nothing is set aside
+                self.close()
+                self._set_aside(e)                  # not a database (damaged): once
+                create = True
+        return default
+
+    def held(self):
+        """{key: whether its text was rebuilt from cached sentences} — every file whose text is kept."""
+        def work(conn):
+            return {self._key(rel): "rebuilt" in json.loads(facts or "{}")
+                    for rel, facts in conn.execute("SELECT rel, facts FROM kept")}
+        return self._run(work, {})
+
+    def get(self, key):
+        """(text, facts, mtime, size) kept for the store's `key`, or None."""
+        def work(conn):
+            row = conn.execute("SELECT text, facts, mtime, size FROM kept WHERE rel=?", (self._rel(key),)).fetchone()
+            return None if row is None else (row[0] or "", json.loads(row[1] or "{}"), row[2], row[3])
+        return self._run(work, None)
+
+    def put(self, rows):
+        """Keep {key: (text, facts, mtime, size)}, in one transaction, committed before this returns."""
+        if not rows:
+            return
+
+        def work(conn):
+            with conn:
+                conn.executemany("INSERT OR REPLACE INTO kept(rel, text, facts, mtime, size) VALUES(?,?,?,?,?)",
+                                 [(self._rel(key), text, json.dumps(facts or {}, ensure_ascii=False), mtime, size)
+                                  for key, (text, facts, mtime, size) in rows.items()])
+        self._run(work, None, create=True)
+
+    def drop(self, keys):
+        keys = list(keys)
+        if keys:
+            def work(conn):
+                with conn:
+                    conn.executemany("DELETE FROM kept WHERE rel=?", [(self._rel(key),) for key in keys])
+            self._run(work, None)
+
+    def rekey(self, old, new):
+        """A moved file's text follows it (9a)."""
+        def work(conn):
+            with conn:
+                conn.execute("DELETE FROM kept WHERE rel=?", (self._rel(new),))
+                conn.execute("UPDATE kept SET rel=? WHERE rel=?", (self._rel(new), self._rel(old)))
+        self._run(work, None)
+
+    def close(self):
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = None
+
+
+def _rebuilt_text(sentences, names=None):
+    """(text, facts) of a file read from its cached sentences, one a line — all there is to keep of a file gone from the
+    disk before its text was kept (the spaces the tagger drops are gone with it); `names`, its name record, says
+    whether its captions were auto-generated ("a")."""
+    facts = {"rebuilt": True}
+    if names and names.get("a"):
+        facts["auto"] = True
+    return "\n".join(s_text for s_text, _tokens in sentences), facts
+
+
+# --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
 class Store:
-    def __init__(self, conn, language=None):
+    def __init__(self, conn, language=None, path=None):
         self.conn = conn
         self.language = language
+        self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
 
@@ -304,16 +491,26 @@ class Store:
 
     # -- signatures / totals ------------------------------------------------- #
     def total_tokens(self):
-        r = self.conn.execute("SELECT COALESCE(SUM(total), 0) FROM files").fetchone()
+        """The counted files' tokens (a kept file's never count)."""
+        r = self.conn.execute("SELECT COALESCE(SUM(total), 0) FROM files WHERE counted = 1").fetchone()
         return int(r[0]) if r else 0
 
     def has_tokens(self):
-        """Does any file hold a token — `total_tokens()` > 0 (a file's total is never negative), without summing
-        every file."""
-        return self.conn.execute("SELECT 1 FROM files WHERE total > 0 LIMIT 1").fetchone() is not None
+        """Does any counted file hold a token — `total_tokens()` > 0 (a file's total is never negative), without
+        summing every file."""
+        return self.conn.execute("SELECT 1 FROM files WHERE total > 0 AND counted = 1 LIMIT 1").fetchone() is not None
 
     def file_count(self):
-        return int(self.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+        """How many counted files the store holds (the library's size, as the Rarity slider's average file reads it)."""
+        return int(self.conn.execute("SELECT COUNT(*) FROM files WHERE counted = 1").fetchone()[0])
+
+    def counted_files(self):
+        """The counted files' keys (normcase absolute paths), in the table's order."""
+        return [r[0] for r in self.conn.execute("SELECT path FROM files WHERE counted = 1 ORDER BY rowid")]
+
+    def kept_files(self):
+        """The kept files' keys: tokenized and cached, never counted."""
+        return [r[0] for r in self.conn.execute("SELECT path FROM files WHERE counted = 0 ORDER BY rowid")]
 
     def file_tokens(self, path):
         """Cached tokenized sentences for a file: [(s_text, [[lemma,reading,surface],...]),...].
@@ -356,7 +553,8 @@ class Store:
         except Exception:
             previous = None
         # In the table's own order (rowid, as a scan reads it): the tables and the adjustments sum the files in it.
-        files = cur.execute("SELECT path, mtime, size, names FROM files WHERE names IS NOT NULL ORDER BY rowid").fetchall()
+        files = cur.execute("SELECT path, mtime, size, names FROM files WHERE names IS NOT NULL AND counted = 1 "
+                            "ORDER BY rowid").fetchall()
         records = [_decode_counts(blob) for _path, _mtime, _size, blob in files]
         tables = names.compute_tables(records, previous, analyzer._sanitize_term)
         adjust = self._names_adjust(cur, tables, files, records, build_signature)
@@ -578,18 +776,46 @@ class Store:
             self.conn.rollback()
             raise
 
-    def needs_reconcile(self, files):
-        """Cheap disk-vs-store delta check (stat only, NO tokenizer) — for a GUI pre-gate."""
-        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute("SELECT path, mtime, size FROM files")}
-        current = {_norm(p): p for p in files}
-        if set(rows) != set(current):
+    def _listed(self, files, kept, flags, forgotten=None):
+        """The two lists as reconcile reads them: (counted, kept, forgotten), the first two {key: path} in their
+        lists' order. A path in both lists is counted. Kept: `kept`, then every kept row the store holds (`flags`: key
+        -> its counted flag) that neither list names — a kept row never goes because a list left it out — except the
+        `forgotten` ones (the user's *forget its sentences*), which go with their kept text: a set of keys, never one a
+        list names."""
+        counted = {_norm(p): p for p in files}
+        held = {}
+        for p in kept or ():
+            key = _norm(p)
+            if key not in counted:
+                held.setdefault(key, p)
+        gone = {_norm(p) for p in forgotten or ()} - set(counted) - set(held)
+        for key, flag in flags.items():
+            if not flag and key not in counted and key not in gone:
+                held.setdefault(key, key)
+        return counted, held, gone
+
+    def needs_reconcile(self, files, kept=None, elsewhere=None, forgotten=None):
+        """Cheap disk-vs-store delta check (stat only, NO tokenizer) — for a GUI pre-gate. `kept`, `elsewhere` and
+        `forgotten` as `reconcile` takes them. A listed file gone from the disk keeps its row as it is, so it is a change
+        only when its flag moved, or when the store lacks it and its file is elsewhere (a removed item's, in the
+        trash)."""
+        rows = {r[0]: (r[1], r[2], r[3]) for r in self.conn.execute("SELECT path, mtime, size, counted FROM files")}
+        counted, held, _gone = self._listed(files, kept, {key: row[2] for key, row in rows.items()}, forgotten)
+        if any(key not in counted and key not in held for key in rows):
             return True
-        for key, realpath in current.items():
-            try:
-                if rows[key] != file_signature(realpath):
+        others = {_norm(p): where for p, where in (elsewhere or {}).items()}
+        for listed, flag in ((counted, 1), (held, 0)):
+            for key, realpath in listed.items():
+                row = rows.get(key)
+                try:
+                    signature = file_signature(realpath)
+                except OSError:
+                    if (row is None and key in others and os.path.exists(others[key])) or (
+                            row is not None and row[2] != flag):
+                        return True
+                    continue
+                if row is None or row[:2] != signature or row[2] != flag:
                     return True
-            except OSError:
-                return True
         return False
 
     # -- reconcile (delta, one transaction) ---------------------------------- #
@@ -600,7 +826,16 @@ class Store:
             [(*split_key(key), n, n) for key, n in counts.items()],
         )
 
-    def reconcile(self, files, tokenize_file, build_signature=None, workers=None):
+    def _kept_text(self, data_dir=None):
+        """The library's kept text (`_KeptText`, `kept_text_path`), keyed relative to the data folder (default the
+        language's)."""
+        if data_dir is None:
+            from app.path_utils import get_data_path
+            data_dir = get_data_path(self.language)
+        return _KeptText(kept_text_path(self.language, data_dir), data_dir)
+
+    def reconcile(self, files, tokenize_file, build_signature=None, workers=None, kept=None, elsewhere=None,
+                  data_dir=None, forgotten=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -620,71 +855,188 @@ class Store:
         pool in the indexer only (the process holding the `indexer` lock), one process everywhere else; 0 or 1, one
         process. Every file's tokens are the same either way, and this process alone writes the store, file by file in
         the files' order.
+
+        Counted and kept (module docstring): `files` is the counted list, `kept` the kept one — tokenized and cached,
+        never summed; a path in both is counted, and a file moving between them moves its counts, never re-tokenized.
+        A kept row neither list names stays kept, its text too (`kept` None: a caller that knows only the run's list —
+        Generate, the sentence dictionary); a counted row neither list names goes, as ever. `forgotten`: the paths
+        whose sentences the user forgot (*This file is junk*) — their rows and kept text go, unless a list names them.
+        `elsewhere`: {listed path: where its file is now} (a removed item's, in the trash). `data_dir`: what the kept
+        text is keyed relative to (default the language's data folder). A listed file gone from the disk keeps its row
+        as it is.
+
+        Before anything is deleted or wiped, the text of every kept file and of every counted file gone from the disk
+        is kept (`_KeptText`, its own file, written first): read from its file (or `elsewhere`), else — the file gone
+        — rebuilt from its cached sentences. A wipe reads such a file back in from it (`tokenize_file.tokenize_text`).
+        A listed file the store lacks takes the row of a leaving one — or of a kept row no list names whose file is
+        gone — when they are the only two with that name, size and modified time (the file moved, 9a): re-keyed with
+        its kept text, never re-tokenized. Two or more alike: each read as it is.
         """
+        read = getattr(tokenize_file, "read_text", None)
+        from_text = getattr(tokenize_file, "tokenize_text", None)
+        texts = self._kept_text(data_dir)
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
-        changed = False
+        changed = False         # what the counted files hold changed: the name tables and the phrases are read again
         try:
-            if build_signature is not None:
-                _row = cur.execute("SELECT value FROM meta WHERE key='build_sig'").fetchone()
-                if _row is not None and _row[0] != build_signature:
-                    cur.execute("DELETE FROM files")      # tokenizer identity changed -> full rebuild
-                    cur.execute("DELETE FROM aggregate")
-                    cur.execute("DELETE FROM bound")
-                    changed = True
             existing = {
-                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4], "bound": r[5]}
-                for r in cur.execute("SELECT path, mtime, size, total, counts, bound FROM files")
+                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4], "bound": r[5], "counted": r[6]}
+                for r in cur.execute("SELECT path, mtime, size, total, counts, bound, counted FROM files")
             }
-            current = {_norm(p): p for p in files}
+            current, held, gone = self._listed(files, kept, {key: row["counted"] for key, row in existing.items()},
+                                               forgotten)
+            listed = dict(current)
+            listed.update(held)
+            others = {_norm(p): where for p, where in (elsewhere or {}).items()}
+            signatures = {}
+            for key, realpath in listed.items():
+                try:
+                    signatures[key] = file_signature(realpath)
+                except OSError:
+                    signatures[key] = None      # gone (or vanished between listing and stat): its row stays as it is
+            wipe, stored = False, None
+            if build_signature is not None:
+                stored = cur.execute("SELECT value FROM meta WHERE key='build_sig'").fetchone()
+                wipe = stored is not None and stored[0] != build_signature   # tokenizer identity changed -> full rebuild
+
+            # The file moved (9a): a listed file the store lacks takes the row of a leaving one (or of a kept row no list
+            # names, its file gone) — one to one, by name, size and modified time; its key changed, nothing else, and its
+            # kept text follows.
+            leaving = {key: None for key in existing if key not in listed}
+            named = {_norm(p) for p in kept or ()}
+            orphans = [key for key in held if key not in named and signatures[key] is None]
+            if leaving or orphans:
+                olds, news = {}, {}
+                for key in list(leaving) + orphans:
+                    row = existing[key]
+                    olds.setdefault((os.path.basename(key), row["mtime"], row["size"]), []).append(key)
+                for key, signature in signatures.items():
+                    if signature is not None and key not in existing:
+                        news.setdefault((os.path.basename(key), *signature), []).append(key)
+                for same, (key,) in ((same, keys) for same, keys in news.items() if len(keys) == 1):
+                    if len(olds.get(same, ())) != 1:
+                        continue
+                    old = olds[same][0]
+                    cur.execute("UPDATE files SET path=? WHERE path=?", (key, old))
+                    existing[key] = existing.pop(old)
+                    leaving.pop(old, None)
+                    if old in held:
+                        del held[old], listed[old], signatures[old]
+                    texts.rekey(old, key)
+
+            # Kept text first — before anything below is deleted or wiped: each kept file, and each counted file gone
+            # from the disk, whose row the store holds and whose text isn't kept yet (one rebuilt from cached sentences
+            # is read again once its file can be read).
+            have = texts.held() if (held or None in signatures.values()) else {}
+            keep_now = {}
+            for key in listed:
+                signature, row = signatures[key], existing.get(key)
+                if row is None or (key in current and signature is not None):
+                    continue
+                if signature is not None and (wipe or (row["mtime"], row["size"]) != signature):
+                    continue                                # read from its file below, its text kept then
+                source = listed[key] if signature is not None else others.get(key)
+                if key in have and not (have[key] and read is not None and source and os.path.exists(source)):
+                    continue
+                keep_now[key] = self._text_of(cur, key, row, source, read)
+            texts.put(keep_now)
+
+            if wipe:
+                cur.execute("DELETE FROM files")
+                cur.execute("DELETE FROM aggregate")
+                cur.execute("DELETE FROM bound")
+                existing, leaving, changed = {}, {}, True
             # What the files change in the aggregate, summed over the whole pass and written once at the end: a full
             # rebuild wrote a million rows (every word of every file) where the library has some 50,000 words.
             # Keys stay in the order they are first met, so new words are added in the same order as file by file.
-            # Likewise the one-kanji words' uses as pieces (`pieces`, the bound table).
+            # Likewise the one-kanji words' uses as pieces (`pieces`, the bound table). Counted files only.
             delta, pieces = Counter(), Counter()
 
-            # Removals — subtract vanished files.
-            for key in list(existing):
-                if key not in current:
-                    delta.subtract(_decode_counts(existing[key]["counts"]))
-                    pieces.subtract(_decode_counts(existing[key]["bound"]))
-                    cur.execute("DELETE FROM files WHERE path=?", (key,))
+            # Removals — subtract vanished files (a file in neither list).
+            for key in leaving:
+                row = existing.pop(key)
+                if row["counted"]:
+                    delta.subtract(_decode_counts(row["counts"]))
+                    pieces.subtract(_decode_counts(row["bound"]))
                     changed = True
+                cur.execute("DELETE FROM files WHERE path=?", (key,))
 
-            # Adds / changes — reuse unchanged (fast path), tokenize only the delta.
-            todo = []
-            for key, realpath in current.items():
-                try:
-                    mtime, size = file_signature(realpath)
-                except OSError:
-                    continue  # vanished between listing and stat — a later reconcile handles it
-                row = existing.get(key)
-                if row is not None and row["mtime"] == mtime and row["size"] == size:
-                    continue  # unchanged — no tokenization
-                todo.append((key, realpath, mtime, size, row))
-            tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
-            try:
-                for (key, realpath, mtime, size, row), result in zip(todo, tokenized):
-                    # result: {"sentences": [...], "counts": Counter}
-                    counts = {k: n for k, n in result["counts"].items() if n > 0}
-                    bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
-                    total = sum(counts.values())
-                    if row is not None:  # changed: subtract the stale contribution first
-                        delta.subtract(_decode_counts(row["counts"]))
-                        pieces.subtract(_decode_counts(row["bound"]))
+            def write(key, mtime, size, result, row, flag):
+                nonlocal changed
+                counts = {k: n for k, n in result["counts"].items() if n > 0}
+                bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
+                total = sum(counts.values())
+                if row is not None and row["counted"]:  # changed: subtract the stale contribution first
+                    delta.subtract(_decode_counts(row["counts"]))
+                    pieces.subtract(_decode_counts(row["bound"]))
+                    changed = True
+                if flag:
                     delta.update(counts)
                     pieces.update(bound)
-                    names = result.get("names")
-                    cur.execute(
-                        "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound) "
-                        "VALUES(?,?,?,?,?,?,?,?)",
-                        (key, mtime, size, total, _encode_counts(counts),
-                         _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
-                         _encode_counts(bound) if bound else None),
-                    )
                     changed = True
+                names = result.get("names")
+                cur.execute(
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, counted) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (key, mtime, size, total, _encode_counts(counts),
+                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
+                     _encode_counts(bound) if bound else None, flag),
+                )
+
+            # Adds / changes — reuse unchanged (fast path), tokenize only the delta; a flag that moved moves the counts.
+            todo, by_hand = [], []
+            for key, realpath in listed.items():
+                signature, row, flag = signatures[key], existing.get(key), 1 if key in current else 0
+                if row is not None and (signature is None or (row["mtime"], row["size"]) == signature):
+                    if row["counted"] != flag:          # unchanged, in the other list: its counts move, no tokenizing
+                        counts, bound = _decode_counts(row["counts"]), _decode_counts(row["bound"])
+                        if flag:
+                            delta.update(counts)
+                            pieces.update(bound)
+                        else:
+                            delta.subtract(counts)
+                            pieces.subtract(bound)
+                        cur.execute("UPDATE files SET counted=? WHERE path=?", (flag, key))
+                        changed = True
+                    continue
+                if signature is not None:
+                    if flag:
+                        todo.append((key, realpath, signature, row))
+                    else:
+                        by_hand.append((key, realpath, signature, row, flag, None))
+                    continue
+                source = others.get(key)                # gone, not in the store: its file elsewhere, else its kept text
+                if source:
+                    try:
+                        by_hand.append((key, source, file_signature(source), None, flag, None))
+                        continue
+                    except OSError:
+                        pass
+                kept_text = texts.get(key) if from_text is not None else None
+                if kept_text is not None:
+                    by_hand.append((key, None, kept_text[2:], None, flag, kept_text[:2]))
+            tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
+            try:
+                for (key, realpath, (mtime, size), row), result in zip(todo, tokenized):
+                    write(key, mtime, size, result, row, 1)
             finally:
                 tokenized.close()                 # the pool's workers end here, before the tables below
+            # A kept file, or one read back from elsewhere or from its kept text: here, its text kept as it is read.
+            keep_read = {}
+            for key, path, (mtime, size), row, flag, text_facts in by_hand:
+                if text_facts is not None:
+                    write(key, mtime, size, from_text(*text_facts), row, flag)
+                    continue
+                if read is not None and from_text is not None:
+                    text, facts = read(path)
+                    result = from_text(text, facts)
+                else:
+                    result = tokenize_file(path)
+                    text, facts = _rebuilt_text(result["sentences"], result.get("names"))
+                write(key, mtime, size, result, row, flag)
+                if not flag or signatures[key] is None:
+                    keep_read[key] = (text, facts, mtime, size)
+            texts.put(keep_read)
 
             self._apply(cur, delta)
             cur.execute("DELETE FROM aggregate WHERE count <= 0")  # prune emptied words
@@ -693,15 +1045,34 @@ class Store:
             if self.language == "ja" and (changed or cur.execute(
                     "SELECT 1 FROM meta WHERE key='names_tables'").fetchone() is None):
                 self._update_names_tables(cur, build_signature)
-            if build_signature is not None:
+            if build_signature is not None and (stored is None or stored[0] != build_signature):   # S19: once
                 cur.execute("INSERT INTO meta(key, value) VALUES('build_sig', ?) "
                             "ON CONFLICT(key) DO UPDATE SET value=?", (build_signature, build_signature))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
+            texts.close()
             raise
+        if gone:
+            # The sentences the user forgot leave the kept text too — only once the store's own change is committed.
+            texts.drop([key for key in texts.held() if key in gone])
+        texts.close()
         self._update_phrases(changed)
         return self
+
+    def _text_of(self, cur, key, row, source, read):
+        """(text, facts, mtime, size) to keep for a listed file the store holds: read from `source` (its file, or where
+        it is now) when it can be, else rebuilt from its cached sentences (`_rebuilt_text`)."""
+        if source and read is not None:
+            try:
+                mtime, size = file_signature(source)
+                text, facts = read(source)
+                return text, facts, mtime, size
+            except Exception:
+                pass
+        blob, names = cur.execute("SELECT tokens, names FROM files WHERE path=?", (key,)).fetchone()
+        return (*_rebuilt_text(_decode_tokens(blob), _decode_counts(names) if names else None),
+                row["mtime"], row["size"])
 
     # -- the phrase table (idioms and set phrases on the list, app/phrases.py) --------------------------------- #
     def _phrases_basis(self, revision):
@@ -721,8 +1092,9 @@ class Store:
         while the file reads the same: its (mtime, size), and what the name tables make of its name candidates
         (`_names_read_in`, looked at again only when what the tables join changed — not as their evidence grows) — so
         a change re-reads only the files it touched; all of them again when the phrase data, the tokenizer's identity
-        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`). After the
-        reconcile's own transaction: it reads what that wrote. Japanese with the switch on only; a failure leaves the
+        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`). Counted files only,
+        the table and the matches alike (a kept file is never Generate's to read). After the reconcile's own
+        transaction: it reads what that wrote. Japanese with the switch on only; a failure leaves the
         last table (never fatal)."""
         if self.language != "ja" or not phrase_rows_on(self.language):
             return
@@ -746,7 +1118,8 @@ class Store:
                 pass
             switches = _library_switches(self.language)
             files, matches = {}, {}
-            for path, mtime, size, blob in self.conn.execute("SELECT path, mtime, size, names FROM files").fetchall():
+            for path, mtime, size, blob in self.conn.execute(
+                    "SELECT path, mtime, size, names FROM files WHERE counted = 1").fetchall():
                 entry, met = held.get(path), held_matches.get(path)
                 same = (entry is not None and met is not None and entry[:2] == [mtime, size]
                         and met[:2] == [mtime, size])
@@ -768,8 +1141,8 @@ class Store:
 
     def phrase_matches(self, paths):
         """{path: (its sentences, [sentence, start, end, index, ...])} — the set phrases the last index found in each
-        of `paths`' cached tokens, read as `file_tokens` reads them (`_update_phrases`), for the files whose count is
-        current — none when the phrase data, the name tables' words or a switch changed since. Generate reads these
+        of `paths`' cached tokens, read as `file_tokens` reads them (`_update_phrases`), for the counted files whose
+        count is current — none when the phrase data, the name tables' words or a switch changed since. Generate reads these
         instead of searching every sentence again (analyzer.main checks them against its tokens too)."""
         if self.language != "ja":
             return {}
@@ -779,7 +1152,8 @@ class Store:
             base, _reads, names = self._phrases_basis(phrase_data.REVISION)
             if kept.get("state") != base or kept.get("names") != names:
                 return {}
-            rows = {path: [mtime, size] for path, mtime, size in self.conn.execute("SELECT path, mtime, size FROM files")}
+            rows = {path: [mtime, size] for path, mtime, size in self.conn.execute(
+                "SELECT path, mtime, size FROM files WHERE counted = 1")}
             files, out = kept.get("files", {}), {}
             for path in paths:
                 met = files.get(_norm(path))
@@ -1412,16 +1786,23 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     has_lang, extract, bound_uses = analyzer.has_target_language, analyzer.extract_text, analyzer.bound_uses
     lemma_in_language = {}      # lemma -> has_lang(lemma), asked once per word: the count below runs on every token
 
-    def tokenize_file(path):
+    def read_text(path):
+        """(text, facts): the file's text as every run reads it, and what it says of itself (a transcript of
+        auto-generated captions) — what the kept text keeps."""
+        facts = {}
+        return extract(path, language, facts), facts
+
+    def tokenize_text(text, facts=None):
+        """`tokenize_file`'s result for a file's text and facts (`read_text`) — a kept file read back in from its kept
+        text gives exactly what its file gave."""
         from app import names
+        facts = facts or {}
         record = names.Record() if language == "ja" else None
         if record is not None:
-            facts = {}                     # what the file says of itself: a transcript of auto-generated captions
-            text = extract(path, language, facts)
-            record.auto = facts.get("captions") in analyzer.AUTO_CAPTIONS
+            record.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
             sentences = list(tok.tokenize_sentences(text, names=record))
         else:
-            sentences = list(tok.tokenize_sentences(extract(path, language)))
+            sentences = list(tok.tokenize_sentences(text))
         counts, bound = Counter(), Counter()
         for s_text, s_tokens in sentences:
             for lemma, reading, surface, _orth in s_tokens:
@@ -1439,7 +1820,11 @@ def make_tokenizer(language, reinforce=False, script="asis"):
             result["bound"] = bound
         return result
 
+    def tokenize_file(path):
+        return tokenize_text(*read_text(path))
+
     tokenize_file.pool_spec = (language, reinforce, script)      # a pool's worker builds the same tokenizer
+    tokenize_file.read_text, tokenize_file.tokenize_text = read_text, tokenize_text   # kept files (reconcile)
     return tokenize_file
 
 

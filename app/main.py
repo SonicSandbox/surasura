@@ -1090,14 +1090,15 @@ class MasterDashboardApp:
         """Would the indexer have anything to do for `lang`? Stat-only (no tokenizer); False when it can't tell."""
         try:
             from app.path_utils import get_data_path, get_user_files_path
-            from app.indexer import _content_files
-            files = _content_files(get_data_path(lang), lang)
+            from app.indexer import _content_files, token_store_lists
+            data_dir = get_data_path(lang)
+            files, more = token_store_lists(lang, data_dir, _content_files(data_dir, lang))
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")
                 # needs_reconcile is stat-only, so a tokenizer change (the Chinese script)
                 # alone would never re-index: compare the identity the store was built with too.
-                return bool(store.needs_reconcile(files)
+                return bool(store.needs_reconcile(files, **more)
                             or store.get_meta("build_sig") != token_index.build_signature(lang, script=script)
                             or store.get_cached_known(token_index.known_signature(known_file, script)) is None)
             finally:

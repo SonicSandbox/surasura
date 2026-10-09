@@ -30,7 +30,8 @@ from array import array
 
 from app import plan_rules
 
-FORMAT = 1
+FORMAT = 2                                 # the newest plan file this engine reads; FORMATS: every one it reads
+FORMATS = (1, 2)                           # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
@@ -51,14 +52,16 @@ class PlanError(Exception):
 class Plan:
     """A plan file read: `header` (dict), `files` [[rel_path, tier, digest], …], `keys` [[Word, Reading, is_phrase,
     half, Occurrences], …], `rows` (parallel to keys: [Tier, phrase Tier, Modality, Sources, Orth, Forms, [Context 1,
-    Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …] and `per_file` (one dict per
-    file, in the run's order: "main", "ph", "sp", "prog")."""
+    Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …], `per_file` (one dict per
+    file, in the run's order: "main", "ph", "sp", "prog") and `spell` ({k: ({orth: n}, {surface: n})} for every
+    other listed word, each in the order first met — format 2; empty for format 1)."""
 
-    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file")
+    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file", "spell")
 
-    def __init__(self, header, files, keys, rows, ties, per_file):
+    def __init__(self, header, files, keys, rows, ties, per_file, spell=None):
         self.header, self.files, self.keys, self.rows, self.ties, self.per_file = \
             header, files, keys, rows, ties, per_file
+        self.spell = {} if spell is None else spell
 
 
 def load(path):
@@ -84,9 +87,11 @@ def load(path):
     if not decoded or not isinstance(decoded[0], dict):
         raise PlanError("the plan file has no header")
     header = decoded[0]
-    if header.get("format") != FORMAT:
-        raise PlanError(f"the plan file's format is {header.get('format')!r}, not {FORMAT}")
+    if header.get("format") not in FORMATS:
+        raise PlanError(f"the plan file's format is {header.get('format')!r}, not one of {FORMATS}")
     tables = {"files": [], "keys": [], "rows": [], "ties": []}
+    if header["format"] >= 2:
+        tables["spell"] = []
     per_file = []
     for line in decoded[1:]:
         if not isinstance(line, dict):
@@ -104,15 +109,30 @@ def load(path):
         if per_file:
             raise PlanError("the plan file's tables come after its files")
         tables[name].extend(chunk)
-    plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file)
+    plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file,
+                _spell_table(tables.get("spell", ())))
     _validate(plan)
     return plan
+
+
+def _spell_table(rows):
+    """{k: (orths, surfaces)} from the `spell` table's rows; a row that isn't [k, …, …] is a PlanError (`_validate`
+    checks the rest)."""
+    spell = {}
+    for row in rows:
+        if not (isinstance(row, list) and len(row) == 3 and type(row[0]) is int):
+            raise PlanError("the plan file's spell table is damaged")
+        if row[0] in spell:
+            raise PlanError("the plan file's spell table lists a word twice")
+        spell[row[0]] = (row[1], row[2])
+    return spell
 
 
 def _validate(plan):
     """Every value the engine reads, checked by type and range, every table against the header: a damaged or
     hand-edited plan is refused whole with a PlanError, never half-used and never a crash later (a TypeError in
-    `result()` on a worker). `format` 1 as `analyzer.plan_lines` writes it (01 §7)."""
+    `result()` on a worker). `format` 1 or 2 as `analyzer.plan_lines` writes it (01 §7; 2 adds `spell` and the
+    header's `phrase_entries`, E2.2 D8)."""
     h = plan.header
     for name, kinds in (("language", str), ("engine", str), ("run_signature", str), ("order_free_signature", str),
                         ("weights", dict), ("files", int), ("keys", int), ("shared_phrases", list)):
@@ -156,6 +176,19 @@ def _validate(plan):
                                         and set(tie[3]) <= set(tie[1])))):
             raise PlanError("the plan file's ties table is damaged")
     ties = {tie[0]: tie for tie in plan.ties}
+    # Format 2: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
+    # whose entry holds it. A format-1 plan holds neither.
+    if h.get("format") == 2:
+        listed_untied = {k for k, row in enumerate(plan.rows) if row is not None and k not in ties}
+        if set(plan.spell) != listed_untied or not all(_counts(o) and _counts(s) for o, s in plan.spell.values()):
+            raise PlanError("the plan file's spell table is damaged")
+        entries = h.get("phrase_entries")
+        if not (isinstance(entries, list) and all(
+                isinstance(e, list) and len(e) == 2 and _index(e[0], n_keys) and type(e[1]) is int and e[1] >= 0
+                for e in entries) and [e[0] for e in entries] == [k for k, key in enumerate(plan.keys) if key[2]]):
+            raise PlanError("the plan file's header 'phrase_entries' is damaged")
+    elif plan.spell:
+        raise PlanError("a format-1 plan file holds a spell table")
     uses = [0] * n_keys
     phrases = {k for k, key in enumerate(plan.keys) if key[2]}
     for line in plan.per_file:
@@ -370,7 +403,7 @@ class Engine:
             raise PlanError(f"the engine stands aside: {aside}")
         # The engine keeps what it reads, not the plan's per-file lines (most of a loaded plan's memory): once the
         # caller lets its plan go, only the tables below stay.
-        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None)
+        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
         files, keys = plan.files, plan.keys
         ids = [entry[0] for entry in files] if ids is None else list(ids)
         if len(ids) != len(files):

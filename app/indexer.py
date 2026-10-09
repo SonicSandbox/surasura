@@ -42,6 +42,45 @@ def _content_files(data_dir, language=None):
     return files
 
 
+def token_store_lists(language, data_dir, files):
+    """The token store's two lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
+    found files): (counted, {"kept", "elsewhere", "forgotten"}) — `Store.reconcile(counted, ..., **more)`, and
+    `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted items they lack
+    (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
+    removed items whose text wasn't forgotten); elsewhere = {a removed item's path: where its file is in the trash};
+    forgotten = the removed items whose sentences the user forgot. Absolute paths under `data_dir`. Without one (JSON
+    mode, read-only, busy, an error): (`files`, {}) — the kept rows and their text left as they are."""
+    try:
+        from app import library_store
+        from app.path_utils import get_user_files_path
+        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+            return files, {}
+        store = library_store.open_store(language, data_dir, get_user_files_path(language), role="reader",
+                                         busy_wait=0.0)
+        if store is None:
+            return files, {}
+        with store:
+            counted_rel, kept_rel = store.text_lists()
+            trashed, forgotten = store.text_elsewhere(), store.text_forgotten()
+    except Exception:
+        return files, {}
+
+    def full(rel):
+        return os.path.join(data_dir, *(rel[2:] if rel.startswith("./") else rel).split("/"))
+
+    from app.token_index import _norm
+    seen = {_norm(p) for p in files}
+    counted = list(files)
+    for rel in counted_rel:
+        path = full(rel)
+        if _norm(path) not in seen:
+            seen.add(_norm(path))
+            counted.append(path)
+    return counted, {"kept": [full(rel) for rel in kept_rel],
+                     "elsewhere": {full(rel): full(where) for rel, where in trashed.items()},
+                     "forgotten": [full(rel) for rel in forgotten]}
+
+
 def _holding_indexer(run):
     """Run `run` holding the `indexer` lock (`app/locks.py`): informative — `surasura-cli status` reports the indexer
     busy while it is held (P0.3 03) — and one index run at a time per install: a second waits for the first, then
@@ -79,7 +118,8 @@ def main():
         from app.path_utils import get_data_path, get_user_files_path
         from app.zh_script import effective
 
-        files = _content_files(get_data_path(language), language)
+        data_dir = get_data_path(language)
+        files, more = token_store_lists(language, data_dir, _content_files(data_dir, language))
 
         # Must match the tokenizer identity a Generate run uses, or the two would fight over the
         # store (each rebuilding the other's tokens). The GUI passes --reinforce and --zh-script to
@@ -90,9 +130,11 @@ def main():
 
         store = token_index.open_store(language)
         try:
-            # Delta reconcile: only changed/new files are tokenized; removed files are dropped.
+            # Delta reconcile: only changed/new files are tokenized; a file in neither list is dropped, a kept one's
+            # text kept (its own file) and never counted.
             store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
-                            build_signature=token_index.build_signature(language, reinforce, script))
+                            build_signature=token_index.build_signature(language, reinforce, script),
+                            data_dir=data_dir, **more)
             if language == "ja":
                 # The library's name tables the reconcile just computed: the known words read with them.
                 from app import names

@@ -32,10 +32,10 @@ csv.field_size_limit(1 << 30)
 # --------------------------------------------------------------------------------------------------------------- #
 
 def load_plan(path):
-    """{"header", "files", "keys", "rows", "ties", "per_file"} from a plan file."""
+    """{"header", "files", "keys", "rows", "ties", "spell", "per_file"} from a plan file."""
     with gzip.open(path, "rt", encoding="utf-8") as f:
         lines = [json.loads(line) for line in f]
-    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "per_file": []}
+    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": []}
     for line in lines[1:]:
         if "f" in line:
             plan["per_file"].append(line)
@@ -238,7 +238,7 @@ def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
     _root, run = runs[case]
     plan = run["plan"]
     h = plan["header"]
-    assert h["format"] == 1 and h["language"] == cases.ALL_CASES[case][0]
+    assert h["format"] == analyzer.PLAN_FORMAT == 2 and h["language"] == cases.ALL_CASES[case][0]
     assert h["run_signature"] == run["stamp"]
     assert h["files"] == len(plan["files"]) == len(plan["per_file"])
     assert h["keys"] == len(plan["keys"]) == len(plan["rows"]) > 0
@@ -288,6 +288,33 @@ def test_the_plan_replayed_in_another_order_is_that_orders_generate(runs, tmp_pa
     other = read_run(root)
     by_name = {path.rsplit("/", 1)[-1]: f for f, (path, _tier, *_digest) in enumerate(plan["files"])}
     check_replay(plan, [(by_name[name], tier) for tier, name in order], other)
+
+
+@pytest.mark.parametrize("case", list(cases.ALL_CASES))
+def test_format_2_holds_every_listed_words_spellings(runs, case):
+    """Format 2 (E2.2 D8): every listed word not in `ties` has its spelling counts in `spell`, each in the order first
+    met — the counts its row's Orth and Forms come from (`_display_orth` / `_display_forms` give the CSV's), and that
+    add up to its Occurrences less its rare-compound credits; every phrase row names the phrase whose entry holds it."""
+    plan = runs[case][1]["plan"]
+    ties = {tie[0] for tie in plan["ties"]}
+    spell = {row[0]: row for row in plan["spell"]}
+    assert set(spell) == {k for k, row in enumerate(plan["rows"]) if row is not None and k not in ties}
+    assert len(spell) == len(plan["spell"]) > 0
+    credits = [0] * len(plan["keys"])
+    for line in plan["per_file"]:
+        p = line["prog"][4]
+        for i in range(0, len(p), 2):
+            credits[p[i]] += p[i + 1]
+    for k, (_k, orths, surfaces) in spell.items():
+        word, _reading, is_phrase, _half, occurrences = plan["keys"][k]
+        row = plan["rows"][k]
+        assert analyzer._display_orth(word, analyzer.Counter(orths)) == row[4], word
+        assert analyzer._display_forms(word, analyzer.Counter(orths), analyzer.Counter(surfaces)) == row[5], word
+        assert sum(orths.values()) == sum(surfaces.values()) == occurrences - (0 if is_phrase else credits[k]), word
+    phrases = [k for k, key in enumerate(plan["keys"]) if key[2]]
+    assert [k for k, _index in plan["header"]["phrase_entries"]] == phrases
+    if case == "rp2-ja":
+        assert phrases, "a phrase row"
 
 
 def test_the_plans_signatures_are_the_runs(runs):

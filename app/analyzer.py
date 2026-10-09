@@ -1622,6 +1622,22 @@ def not_on_list(key):
             and key not in pieces)
 
 
+def word_flags(key, language, known_tuples, known_lemmas, ignore, skip_singles):
+    """What a run's per-token tests say of the word `key` (lemma, reading), asked once per word (main()'s `_word_state`,
+    the arrival record's too). Bit 1: known (KnownWord.json) or ignored; bit 2: a lemma with no Target characters (e.g.
+    SSA/ASS tags like {\\an8}, timestamps, markup, or other ASCII-only tokens) — such a token counts toward the totals,
+    or as an unknown, only when its surface has some. With the one-character rule on (`skip_singles`, § above): bit 4,
+    a one-character word the list never offers (bit 16: one the report names for its file); bit 8, a one-kanji word
+    it offers where it stands free."""
+    lemma = key[0]
+    state = ((0 if has_target_language(lemma, language) else 2)
+             + (1 if (lemma in ignore or key in known_tuples or lemma in known_lemmas) else 0))
+    kind = single_kind(key, skip_singles)
+    if kind:
+        state += 8 if kind == 2 else 4 + (16 if not_on_list(key) else 0)
+    return state
+
+
 def _numberish(ch):
     """A character a number ends in, or a one-kanji piece is: a digit or numeral (Ⅲ, 〇), or a kanji."""
     return ch.isnumeric() or _KANJI_RE.match(ch) is not None
@@ -2441,6 +2457,53 @@ def load_ignored_entries(user_files_dir, script="asis", language=None):
     (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts."""
     from app import token_index
     return _list_words(token_index.ignored_entries(user_files_dir, language), script)
+
+
+def load_ignore_set(user_files_dir, script="asis", language=None):
+    """Every word a run ignores, as `main()` reads them: the Ignore list, the Blacklist and the Graduated list, and
+    KnownWord.json's IGNORED entries (with Ignore names on, the library's names too). One reader: a Generate and the
+    arrival record (`app/arrivals.py`) ignore the same words."""
+    ignore = load_simple_list(os.path.join(user_files_dir, "IgnoreList.txt"), script, language)
+    ignore.update(load_simple_list(os.path.join(user_files_dir, "Blacklist.txt"), script, language))
+    ignore.update(load_simple_list(os.path.join(user_files_dir, "GraduatedList.txt"), script, language))
+    ignore.update(load_ignored_entries(user_files_dir, script, language))
+    return ignore
+
+
+def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
+    """(known (lemma, reading)s, known lemmas) as a run starts with them: the token store's cached normalization while
+    KnownWord.json is unchanged (`known_sig`), else read and normalized here — and kept in the store for the next run
+    when `keep` (a reader that writes nothing passes False). Japanese: read after the library's name tables are set."""
+    cached = store.get_cached_known(known_sig) if store else None
+    if cached is not None:
+        print("Reused cached known-words normalization.")
+        return cached
+    known = load_known_words(known_file, tokenizer)
+    if store and keep:
+        try:
+            store.set_cached_known(known_sig, *known)
+        except Exception:
+            pass
+    return known
+
+
+def file_sentences(store, tokenizer, file_path, language):
+    """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
+    tokenized here."""
+    if store is None:
+        return tokenizer.tokenize_sentences(extract_text(file_path, language))
+    sentences = store.file_tokens(file_path)
+    # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
+    # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
+    # Re-tokenize directly rather than silently drop the whole file's contribution.
+    if not sentences:
+        try:
+            if os.path.getsize(file_path) > 0:
+                sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
+        except OSError:
+            pass
+    return sentences
+
 
 def discover_yomitan_frequency_lists(user_files_dir, language='ja'):
     """
@@ -3366,7 +3429,7 @@ def _backfill_sidecars(results_dir):
 # (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
 # whose run_signature no stamp matches. Never fails a Generate.
 PLAN_FILE = "plan.json.gz"
-PLAN_FORMAT = 1
+PLAN_FORMAT = 2                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries
 _PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
 _PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
 
@@ -3452,7 +3515,7 @@ def plan_lines(run):
     listed = {(r["Word"], r["Reading"]): r for r in run["output_rows"]
               if valid is None or (r["Word"], r["Reading"]) in valid}
     n_contexts = run["max_contexts"]
-    rows, ties, tied = [], [], {}
+    rows, ties, tied, spell = [], [], {}, []
     for k, key in enumerate(keys):
         entry = word_stats[key]
         is_phrase = key in phrase_keys
@@ -3466,6 +3529,10 @@ def plan_lines(run):
             tied[key] = found
             ties.append([k, dict(entry["orths"]), dict(entry["surfaces"]),
                          {o: _plan_tier(o, run["freq_data"]) for o in found[0]} if is_phrase else None])
+        elif r is not None:
+            # Every other listed word's spelling counts, in the order first met (format 2, E2.2 D8): an arrival meeting
+            # it in a new spelling can tell whether its `Orth` or `Forms` would move, or a tie appear.
+            spell.append([k, dict(entry["orths"]), dict(entry["surfaces"])])
 
     library = run["library"] or {}
     header = {
@@ -3477,6 +3544,9 @@ def plan_lines(run):
         "target_coverage": run["target_coverage"], "only_i_plus_one": run["only_i_plus_one"],
         "max_contexts": n_contexts, "files": len(found_files), "keys": len(keys),
         "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
+        # [k, the phrase whose entry holds the row] for each phrase row (format 2): an arrival's phrase counts for the
+        # row only when it is that phrase (`_phrase_rows`), which the row's Word and Reading alone can't say.
+        "phrase_entries": [[k, phrase_keys[key]] for k, key in enumerate(keys) if key in phrase_keys],
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
@@ -3492,7 +3562,7 @@ def plan_lines(run):
     for name, table in (("files", files),
                         ("keys", [[key[0], key[1], key in phrase_keys, key in run["halved"],
                                    word_stats[key]["total_count"]] for key in keys]),
-                        ("rows", rows), ("ties", ties)):
+                        ("rows", rows), ("ties", ties), ("spell", spell)):
         for start in range(0, len(table), _PLAN_CHUNK):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
 
@@ -4537,9 +4607,6 @@ def main():
     data_dir = get_data_path(language)
     user_files_dir = get_user_files_path(language)
     known_file = os.path.join(user_files_dir, "KnownWord.json")
-    ignore_list_file = os.path.join(user_files_dir, "IgnoreList.txt")
-    black_list_file = os.path.join(user_files_dir, "Blacklist.txt")
-    graduated_list_file = os.path.join(user_files_dir, "GraduatedList.txt")
 
     # Open the persistent SQLite token store (known-words cache, delta reconcile, run-signature).
     from app import token_index as _token_index
@@ -4705,22 +4772,10 @@ def main():
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
     # above) and forces a fresh normalization, so a change to your known words is always reflected.
-    _cached_known = _store.get_cached_known(_known_sig) if _store else None
-    if _cached_known is not None:
-        known_words_initial, known_lemmas_initial = _cached_known
-        print("Reused cached known-words normalization.")
-    else:
-        known_words_initial, known_lemmas_initial = load_known_words(known_file, tokenizer)
-        if _store:
-            try:
-                _store.set_cached_known(_known_sig, known_words_initial, known_lemmas_initial)
-            except Exception:
-                pass
+    known_words_initial, known_lemmas_initial = read_known_words(_store, known_file, _known_sig, tokenizer)
 
-    ignore_list = load_simple_list(ignore_list_file, script, language)
-    ignore_list.update(load_simple_list(black_list_file, script, language))        # merge blacklist into ignore list
-    ignore_list.update(load_simple_list(graduated_list_file, script, language))    # merge graduated list into ignore list
-    ignore_list.update(load_ignored_entries(user_files_dir, script, language))     # and KnownWord.json's IGNORED entries
+    # The Ignore list, the Blacklist, the Graduated list and KnownWord.json's IGNORED entries, as one set.
+    ignore_list = load_ignore_set(user_files_dir, script, language)
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
@@ -4792,20 +4847,8 @@ def main():
 
     def _sentences_of(file_path):
         """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
-        tokenized here."""
-        if _store is None:
-            return tokenizer.tokenize_sentences(extract_text(file_path, language))
-        sentences = _store.file_tokens(file_path)
-        # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
-        # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
-        # Re-tokenize directly rather than silently drop the whole file's contribution.
-        if not sentences:
-            try:
-                if os.path.getsize(file_path) > 0:
-                    sentences = tokenizer.tokenize_sentences(extract_text(file_path, language))
-            except OSError:
-                pass
-        return sentences
+        tokenized here (`file_sentences`, the arrival record's reader too)."""
+        return file_sentences(_store, tokenizer, file_path, language)
 
     def _floor_count(total_tokens, own_freqs):
         """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a
@@ -5108,13 +5151,8 @@ def main():
                 known = _word_state.get((lemma, reading))
                 if known is None:
                     key = (lemma, reading)
-                    state = ((0 if has_target_language(lemma, language) else 2)
-                             + (1 if (lemma in ignore_list or key in known_words_initial
-                                      or lemma in known_lemmas_initial) else 0))
-                    kind = single_kind(key, skip_singles)
-                    if kind:
-                        state += 8 if kind == 2 else 4 + (16 if not_on_list(key) else 0)
-                    known = _word_state[key] = (state, key)
+                    known = _word_state[key] = (word_flags(key, language, known_words_initial, known_lemmas_initial,
+                                                           ignore_list, skip_singles), key)
                 state, key = known
                 # Cache EVERY token (before the target-language filter below) so the cached
                 # multiset matches what tokenizer.tokenize() yields for the progressive pass.

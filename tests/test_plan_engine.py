@@ -377,7 +377,9 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
 
     lines = _lines(good)
     header, rest = lines[0], lines[1:]
-    for broken, match in ((dict(header, format=2), "format"), (dict(header, files=header["files"] + 1), "files"),
+    for broken, match in ((dict(header, format=3), "format"), (dict(header, format=1), "unknown table"),
+                          ({k: v for k, v in header.items() if k != "phrase_entries"}, "phrase_entries"),
+                          (dict(header, files=header["files"] + 1), "files"),
                           (dict(header, keys=header["keys"] - 1), "keys"),
                           ({k: v for k, v in header.items() if k != "weights"}, "weights")):
         _write(bad, [broken] + rest)
@@ -402,13 +404,40 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
             (lambda t, f: f[sp_file].__setitem__("sp", 7), "spellings"),
             (lambda t, f: f[0]["prog"].__setitem__(0, "100"), "progressive"),
             (lambda t, f: f[0]["prog"].__setitem__(6, [["x", 1, 2]]), "progressive"),
-            (lambda t, f: t[0][next(iter(t[0]))][0].__setitem__(1, ["now"]), "damaged")):
+            (lambda t, f: t[0][next(iter(t[0]))][0].__setitem__(1, ["now"]), "damaged"),
+            # Format 2's spell table: a listed word's counts missing, a count that isn't one, a word twice.
+            (lambda t, f: _spell_line(t)["spell"].pop(), "spell"),
+            (lambda t, f: _spell_line(t)["spell"][0][1].__setitem__("x", "2"), "spell"),
+            (lambda t, f: _spell_line(t)["spell"].append(_spell_line(t)["spell"][0]), "twice")):
         t2, f2 = json.loads(json.dumps(tables)), json.loads(json.dumps(files))
         mutate(t2, f2)
         _write(bad, [header] + t2 + f2)
         refused(match)
     _write(bad, [header] + tables + files)
     assert plan_engine.load(bad).header["keys"] == header["keys"]
+
+
+def _spell_line(tables):
+    return next(line for line in tables if "spell" in line)
+
+
+@pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
+def test_a_format_1_plan_still_loads_and_replans_the_same(runs, tmp_path, case):
+    """A plan a 2.x Generate wrote (format 1: no `spell`, no `phrase_entries`) loads with an empty `spell` and gives
+    the very result its format-2 twin gives — the tables format 2 adds change no column."""
+    root, run = runs[case]
+    lines = _lines(os.path.join(_results_dir(root), analyzer.PLAN_FILE))
+    header = {k: v for k, v in lines[0].items() if k != "phrase_entries"}
+    old = str(tmp_path / "plan.json.gz")
+    _write(old, [dict(header, format=1)] + [line for line in lines[1:] if "spell" not in line])
+    plan1, plan2 = plan_engine.load(old), _plan(root)
+    assert plan1.spell == {} and plan2.spell
+    assert all(row is None or k in plan2.spell or k in {t[0] for t in plan2.ties} for k, row in enumerate(plan2.rows))
+    order = [(entry[0], entry[1]) for entry in plan2.files]
+    r1 = plan_engine.Engine(plan1).replan(order)
+    r2 = plan_engine.Engine(plan2).replan(order)
+    assert (r1.priority, r1.progressive, r1.first, r1.n_new) == (r2.priority, r2.progressive, r2.first, r2.n_new)
+    _check_parity(r1, run)
 
 
 def test_load_holds_no_file_open(runs, tmp_path):

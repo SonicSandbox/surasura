@@ -728,8 +728,7 @@ _HELD = threading.local()
 
 
 def _span():
-    spans = getattr(_HELD, "spans", None)
-    return spans[0] if spans else None
+    return getattr(_HELD, "span", None)
 
 
 @contextmanager
@@ -738,31 +737,20 @@ def held():
     the handle its first call opened, and that handle's `close()` waits for the span's end — so a job that asks for
     its store ten times opens it once. A span inside another joins the outer one. A store that isn't ready is asked
     again at each `open_store`, as outside a span; one marked damaged meanwhile is None, as outside."""
-    spans = _HELD.__dict__.setdefault("spans", [])
-    spans.append(spans[0] if spans else {})
+    if _span() is not None:
+        yield
+        return
+    span = _HELD.span = {}
     try:
         yield
     finally:
-        span = spans.pop()
-        if not spans:
-            for store in span.values():
-                store._held = False
-                try:
-                    store.close()
-                except sqlite3.Error:
-                    pass
-
-
-def _rederive_soon_line(store):
-    """The tiers win (§6.3): from 3.0 `meta.soon_line` is the number of Current's rows above the line;
-    at open and after any import it is re-derived from the `now` tier. Absent through 2.x: nothing."""
-    raw = store.conn.execute("SELECT value FROM meta WHERE key = 'soon_line'").fetchone()
-    if raw is None:
-        return
-    count = store.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
-    if str(count) != str(raw[0]):
-        with store._writing():
-            store._set_meta({"soon_line": count, "copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+        _HELD.span = None
+        for store in span.values():
+            store._held = False
+            try:
+                store.close()
+            except sqlite3.Error:
+                pass
 
 
 class StoreOpener:

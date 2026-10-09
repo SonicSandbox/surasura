@@ -739,7 +739,7 @@ def held():
     its store ten times opens it once. A span inside another joins the outer one. A store that isn't ready is asked
     again at each `open_store`, as outside a span; one marked damaged meanwhile is None, as outside."""
     spans = _HELD.__dict__.setdefault("spans", [])
-    spans.append({} if not spans else spans[0])
+    spans.append(spans[0] if spans else {})
     try:
         yield
     finally:
@@ -1262,8 +1262,8 @@ class Store:
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
         self._wlock.acquire()
-        changes = self.conn.total_changes
         try:
+            changes = self.conn.total_changes
             self.conn.execute("PRAGMA query_only=0")
             if begin:
                 try:

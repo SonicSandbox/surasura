@@ -996,7 +996,9 @@ def test_a_relayout_reuses_each_rows_height_and_only_an_opened_row_or_a_new_look
 
 def test_a_file_arriving_below_the_screen_draws_no_row_afresh_and_moves_nothing_on_screen(seeded):
     """A file that lands at the end of Soon, below where the learner is reading, is no change on his screen: the rows he
-    sees keep their places and their numbers, and none is drawn again. A redraw that isn't needed is a slow list."""
+    sees keep their places and their numbers, and none is drawn again. A redraw that isn't needed is a slow list. (The
+    screen's rows are still repainted from their kept pixmaps: Qt's list repaints its viewport on any row added — S19's
+    written skip, `RowsModel.set_entries`, IK-38 — so this checks that none is drawn afresh, not that none is blitted.)"""
     seed, win = seeded(files=2000)
     lst = current(win)
     lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 3)
@@ -1025,7 +1027,7 @@ def test_a_file_arriving_below_the_screen_draws_no_row_afresh_and_moves_nothing_
     lst.viewport().repaint()
     new_row = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == f"p{10 ** 6}")
     assert lst.visualRect(lst.model().index(new_row, 0)).top() > lst.viewport().height()   # it did land below the screen
-    assert lst.delegate.renders == renders                         # nothing on screen was drawn afresh
+    assert lst.delegate.renders == renders                         # nothing on screen drawn afresh (repainted from pixmaps)
     assert on_screen() == before                                   # same keys, same tops, same numbers
 
 
@@ -1428,3 +1430,37 @@ def test_a_relayout_makes_the_height_list_once_and_reads_it_for_every_row(seeded
         is_open = lst.model().open_key == getattr(e[1], "key", None)
         assert lst.delegate.sizeHint(None, lst.model().index(n, 0)) == lst.delegate._size_hint(e, is_open), n
     assert len(made) == 1
+
+
+def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
+    """A settings write that no screen shows (reduced motion, which no screen reads yet) must not repaint. The window
+    hears every landed write, but a change it doesn't show is no change on screen: a window that flickers on an
+    unrelated save looks broken to a learner, and every needless row redraw is work the laptop does for nothing."""
+    from PyQt6.QtCore import QEvent, QObject
+
+    class Paints(QObject):
+        def __init__(self):
+            super().__init__()
+            self.painted = []
+
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Paint:
+                self.painted.append((type(obj).__name__, obj.objectName()))
+            return False
+
+    seed, win = seeded()
+    lists = [p.list for p in win.page_widgets.values() if hasattr(p, "list")]
+    assert lists, "the window has at least one list to watch"
+    heard = []
+    win.bridge.settings_written.connect(lambda keys: heard.append(tuple(keys)))
+    before_paints = [lst.delegate.paints for lst in lists]
+    spy = Paints()
+    qapp.installEventFilter(spy)
+    try:
+        win.services.settings.set({"motion": "reduced"})   # the write is queued; it lands on the writer's thread
+        assert wait_until(lambda: any("motion" in keys for keys in heard))   # it really reached the window, so no no-op
+        QTest.qWait(500)                                    # nothing happens for a while: any repaint would show here
+    finally:
+        qapp.removeEventFilter(spy)
+    assert spy.painted == [], spy.painted
+    assert [lst.delegate.paints for lst in lists] == before_paints

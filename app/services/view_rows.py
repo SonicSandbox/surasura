@@ -468,6 +468,7 @@ class RowCache:
         # the ids changed since the counts were last brought up to date, kept until a build counts (a build with no
         # untyped title on the list never does: review 2026-10-08, the Haiku pass, four lenses); None: unknown, all
         self.guess_pending = None
+        self.sections = {}                            # "goal" / "finished": what `build` made of them last (`_kept`)
 
     def note_changed(self, changed):
         """The item ids the feed changed or let go since the last build (None: unknown — every item looked at)."""
@@ -618,12 +619,32 @@ def _mine_ids(current, n):
     return out
 
 
+def _kept(cache, name, tier_rows, changed, changed_works, more=()):
+    """What the last build made of a tier shown whole (Goal, Finished), when nothing in it can have changed: the
+    reader's tier list is the same object (it makes a new one when an item moves in or out), none of its items is
+    among the ids the feed changed, none of its works among the works it changed, and `more` (anything else it shows)
+    is equal. Else None: built again (S19; review IK-36 — at 20,000 files they were walked on every build)."""
+    if cache is None or changed is None or changed_works is None:
+        return None
+    hit = cache.sections.get(name)
+    if hit is None or hit[0] is not tier_rows or hit[3] != more:
+        return None
+    if not hit[1].isdisjoint(changed) or not hit[2].isdisjoint(changed_works):
+        return None
+    return hit[4]
+
+
+def _keep(cache, name, tier_rows, work_ids, more, made):
+    if cache is not None:
+        cache.sections[name] = (tier_rows, frozenset(r["id"] for r in tier_rows), frozenset(work_ids), more, made)
+
+
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False, cache=None, tiers=None, changed=None):
+          loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
-    since the cache's last build (None: unknown, every item looked at)."""
+    since the cache's last build (None: unknown, every item looked at); `changed_works`: the same for works."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -673,35 +694,61 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
     goal_items = tiers["goal"]
-    goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in` was
-    # quadratic: ~90 ms a build at 20,000 files, bench 7)
-    covers = tuple((works.get(w) or {}).get("title") or "" for w in goal_works[:9])
-    if goal_items:
-        g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(goal_works) == 1 else \
-            STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
+    kept = _kept(cache, "goal", goal_items, changed, changed_works)
+    if kept is not None:
+        goal, n_goal_works = kept
     else:
-        g_line = STRINGS["goal_empty"]
-    goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
-    # Finished: newest first, by month; no date last (*Earlier*)
-    fin_pieces = pieces(tiers["graduated"])
-    fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed, False)
-                for p in fin_pieces]
-    stamp_of = {}
-    for p in fin_pieces:
-        key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"
-        stamp_of[key] = max((it.get("graduated_at") or "" for it in p), default="")
-    fin_rows.sort(key=lambda r: stamp_of.get(r.key, ""), reverse=True)
-    months, by_label = [], {}
-    for r in fin_rows:
-        label = month_label(stamp_of.get(r.key))
-        if label not in by_label:
-            by_label[label] = []
-            months.append(label)
-        by_label[label].append(r)
-    if STRINGS["earlier"] in months:                 # *Earlier* always last
-        months.remove(STRINGS["earlier"])
-        months.append(STRINGS["earlier"])
-    finished = tuple(Month(m, tuple(by_label[m])) for m in months)
+        goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in`
+        # was quadratic: ~90 ms a build at 20,000 files, bench 7)
+        covers = tuple((works.get(w) or {}).get("title") or "" for w in goal_works[:9])
+        if goal_items:
+            g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(goal_works) == 1 else \
+                STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
+        else:
+            g_line = STRINGS["goal_empty"]
+        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
+        n_goal_works = len(goal_works)
+        _keep(cache, "goal", goal_items, goal_works[:9], (), (goal, n_goal_works))
+    # Finished: newest first, by month; no date last (*Earlier*). Its rows read the cards, the mining set, the line and
+    # the numbers (`same_global`, the cache's version) and an untyped title's guess (from all its files, any tier)
+    fin_items = tiers["graduated"]
+    hit = cache.sections.get("finished") if cache is not None else None
+    guesses = tuple((w, guessed.of(works[w])) for w in hit[4][2]) if hit is not None and guessed is not None and \
+        all(w in works for w in hit[4][2]) else None
+    kept = _kept(cache, "finished", fin_items, changed, changed_works,
+                 (cache.version, guesses) if cache is not None and cache.same_global else (object(),))
+    if kept is not None:
+        finished, n_fin, _untyped, rows_kept = kept
+        cache._next.update(rows_kept)                # its rows stay in the row cache for the next time it's built
+    else:
+        fin_pieces = pieces(fin_items)
+        before = set(cache._next) if cache is not None else None
+        fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed,
+                                False) for p in fin_pieces]
+        stamp_of = {}
+        for p in fin_pieces:
+            key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"
+            stamp_of[key] = max((it.get("graduated_at") or "" for it in p), default="")
+        fin_rows.sort(key=lambda r: stamp_of.get(r.key, ""), reverse=True)
+        months, by_label = [], {}
+        for r in fin_rows:
+            label = month_label(stamp_of.get(r.key))
+            if label not in by_label:
+                by_label[label] = []
+                months.append(label)
+            by_label[label].append(r)
+        if STRINGS["earlier"] in months:                 # *Earlier* always last
+            months.remove(STRINGS["earlier"])
+            months.append(STRINGS["earlier"])
+        finished = tuple(Month(m, tuple(by_label[m])) for m in months)
+        n_fin = len(fin_rows)
+        if cache is not None:
+            fin_works = {r.get("work_id") for r in fin_items}
+            untyped = tuple(w for w in fin_works if w in works and works[w].get("media_type") is None)
+            rows_kept = {k: v for k, v in cache._next.items() if k not in before}
+            more = (cache.version, tuple((w, guessed.of(works[w])) for w in untyped)) if cache.same_global \
+                else (object(),)
+            _keep(cache, "finished", fin_items, fin_works, more, (finished, n_fin, untyped, rows_kept))
     # Needs you: each show whose unmined files in the top wait on a missing file
     needs = []
     by_work, order = {}, []
@@ -731,8 +778,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     arrivals = tiers["arrivals"]
     if cache is not None:
         cache.end()
-    counts = Counts(current_rows=len(rows), current_files=len(current), goal_titles=len(goal_works),
-                    goal_files=len(goal_items), finished=len(fin_rows),
+    counts = Counts(current_rows=len(rows), current_files=len(current), goal_titles=n_goal_works,
+                    goal_files=len(goal_items), finished=n_fin,
                     arrivals=len(pieces(arrivals)), arrival_files=len(arrivals))
     lang = LANGUAGE_NAMES.get(language, "")
     if rows:

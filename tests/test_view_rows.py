@@ -565,3 +565,33 @@ def test_guess_counts_moved_only_by_the_changed_ids_equal_a_full_count():
                     title="夜明けの写本 04 霧.srt")                             # a new subtitle file arrives
     check([4])
     assert cache.guess_counts[12] == {"subtitle": 2, "epub": 1}
+
+
+def test_ids_changed_in_a_build_that_counts_nothing_are_counted_at_the_next_build_that_does():
+    """Speed round 5: a build with no untyped title on the list never counts the guesses, so an id the reader changed
+    in that build must wait, kept beside the next change, until a build does count. Had the earlier change been dropped,
+    a learner's untyped show would keep its old type after a file in it was renamed .srt → .epub, and the list would
+    say the wrong thing about what they are watching."""
+    work(13, "霧の燈台守", media=None)
+    items = items_of([("now", 13, 1, ["霧の燈台守 01 朝霧.srt", "霧の燈台守 02 潮騒.srt"],
+                       {k: {"source_type": "subtitle"} for k in range(2)}),
+                      ("now", 13, 2, ["霧の燈台守 03 灯台.txt"], {0: {"source_type": "text"}})])
+    cache = vr.RowCache()
+    vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, changed=None)
+    assert cache.guess_counts[13] == {"subtitle": 2, "text": 1}
+
+    items[1] = dict(items[1], rel_path="HighPriority/霧の燈台守 01 朝霧.epub",
+                    title="霧の燈台守 01 朝霧.epub", source_type="epub")       # item 1: .srt → .epub
+    work(13, "霧の燈台守", media="anime")                                     # typed: no untyped title this build
+    vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, changed=[1])
+    assert cache.guess_pending == {1}                                         # not counted, so still owed
+    assert cache.guess_counts[13] == {"subtitle": 2, "text": 1}
+
+    work(13, "霧の燈台守", media=None)                                        # untyped again
+    items[3] = dict(items[3], rel_path="HighPriority/霧の燈台守 03 灯台.srt",
+                    title="霧の燈台守 03 灯台.srt", source_type="subtitle")     # item 3: .txt → .srt
+    view = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, changed=[3])
+    assert cache.guess_counts == vr._Guesses(items, None)._count()            # item 1's change is in it too
+    assert cache.guess_counts[13] == {"epub": 1, "subtitle": 2}
+    assert [(r.piece_id, r.media) for r in view.rows] == \
+        [(r.piece_id, r.media) for r in vr.build(items, WORKS, {}).rows]

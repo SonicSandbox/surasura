@@ -453,3 +453,75 @@ def test_a_tier_re_sorted_from_its_own_items_stays_in_the_stores_order_through_e
     reader._look()
     assert now[-1]["id"] not in [r["id"] for r in reader._sorted_tiers()["now"]]
     assert_store_order("a removal from Now")
+
+
+def test_a_full_cards_re_ask_that_finds_the_same_counts_builds_and_publishes_nothing(monkeypatch):
+    """The ✓ counts on Current and Finished rows are asked again for every item every CARDS_ALL_S, because a card can
+    be made in Anki without moving its row. When the store answers with the same counts, the reader must keep the same
+    dict and build and publish nothing: a re-ask that changes nothing costs the learner no redraw."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()                                       # the first look: the full read and the first view
+    assert len(views) == 1
+    before, builds = reader._cards, reader.builds
+
+    handle = seed.opener.handle()                        # the reader's own handle (this thread's), so the spy sees its asks
+    asked = []
+    real_cards_of = handle.cards_of
+
+    def spy(item_ids):
+        asked.append(list(item_ids))
+        return real_cards_of(item_ids)
+    monkeypatch.setattr(handle, "cards_of", spy)
+    monkeypatch.setattr(library_reader, "CARDS_ALL_S", 0.0)  # every item is due again at once
+    reader._cards_stale = True
+
+    reader._look()                                       # the forced full re-ask, with the same answers
+
+    assert asked, "the full re-ask must really run, or the test proves nothing"
+    assert reader.builds == builds and len(views) == 1
+    assert reader._cards is before
+
+
+def _busy_commit(seed, n):
+    """One more episode for the store to report: another program writing to the library all the time."""
+    hero = next(r for r in seed.items if r["tier"] == "now")
+    new_id = max(r["id"] for r in seed.items) + 1 + n
+    seed.library.commit(items=[dict(hero, id=new_id, piece_id=9000 + n, ord=hero["ord"] - 512 - n,
+                                    rel_path="HighPriority/Busy/busy - %d.srt" % n, title="busy - %d.srt" % n)],
+                        order=True)
+
+
+def test_a_store_that_never_rests_still_gets_its_first_screen_cache_written_within_cache_latest_s(tmp_path, monkeypatch):
+    """A window keeps its first screen for the next start. A store that another program writes to all the time never
+    gives a quiet look, so without the time limit the cache would never be written; past CACHE_LATEST_S it is written
+    in a busy look too, and a restart still opens on the last screen."""
+    seed = window_seed.build()
+    cache = tmp_path / "window_cache_ja.json"
+    monkeypatch.setattr(library_reader, "CACHE_LATEST_S", 0.0)     # the time is already up at the first look
+    reader = _reader(seed, cache_file=str(cache))
+    views, _ = _collect(reader)
+    reader._look()                                       # the look that builds the view: nothing quiet has run
+    assert len(views) == 1 and cache.exists()
+    with open(cache, encoding="utf-8") as f:
+        assert json.load(f)["version"] == library_reader.CACHE_VERSION
+    for n in range(3):
+        _busy_commit(seed, n)
+        reader._look()                                   # every look finds a change: no quiet look ever runs
+        assert len(views) == n + 2                       # each look really was busy (a view was published)
+
+
+def test_busy_looks_inside_cache_latest_s_write_no_cache_while_the_window_takes_views_in(tmp_path, monkeypatch):
+    """The other side of the same rule: a store busy for less than CACHE_LATEST_S still waits for a quiet look, so no
+    cache JSON is written while the window is taking views in (speed round 5's hold on the window)."""
+    seed = window_seed.build()
+    cache = tmp_path / "window_cache_ja.json"
+    monkeypatch.setattr(library_reader, "CACHE_LATEST_S", 3600.0)
+    reader = _reader(seed, cache_file=str(cache))
+    views, _ = _collect(reader)
+    reader._look()
+    for n in range(3):
+        _busy_commit(seed, n)
+        reader._look()
+    assert len(views) == 4 and not cache.exists()

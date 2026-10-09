@@ -19,6 +19,7 @@ window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answe
 
 Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`play_requested`); a row opens and closes.
 """
+import bisect
 import os
 import time
 from collections import OrderedDict
@@ -359,7 +360,7 @@ class RowsModel(QAbstractListModel):
         self.keys = []
         self.open_key = None
         self.changed = []                           # rows a "same" refresh changed
-        self.looks_changed = []                     # ... and of those, the ones that look different (repainted alone)
+        self.before = []                            # the entries before it (`looks_different`)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.entries)
@@ -407,11 +408,20 @@ class RowsModel(QAbstractListModel):
             return (kind, payload.key)
         return (kind, str(payload))
 
-    @staticmethod
-    def shape_of(entry):
-        """What decides an entry's height: its kind, its episodes, its lines."""
-        kind, payload, lines = entry
-        return (kind, len(getattr(payload, "episodes", ()) or ()), len(lines))
+    def shape_of(self, entry):
+        """What decides an entry's height — the delegate's own rule (`RowDelegate._shape`): a closed row's episodes
+        decide none, so a file joining a closed row is a "same" refresh, not a relayout of every row (review D-3)."""
+        return RowDelegate._shape(entry, self.open_key is not None and
+                                  self.open_key == getattr(entry[1], "key", None))
+
+    def looks_different(self, i):
+        """Whether changed row `i` paints differently from before the last "same" refresh: a closed row rebuilt with
+        nothing it shows changed (`_same_face`) is no repaint (S19). The view asks it for the rows on screen and those
+        painted ahead only: a row further off is checked by `_sprite` when it comes into view (review D-1: comparing
+        every changed row cost ~6 ms on the window's thread after a numbers version at 2,000 rows)."""
+        old, new = self.before[i], self.entries[i]
+        return not (old[2] == new[2] and new[0] in (ROW, FINISHED) and
+                    getattr(new[1], "key", None) != self.open_key and _same_face(old[1], new[1], new[0]))
 
     def set_entries(self, entries):
         """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "relayout" (same keys,
@@ -421,15 +431,14 @@ class RowsModel(QAbstractListModel):
             old = self.entries
             shapes = [self.shape_of(e) for e in old] == [self.shape_of(e) for e in entries]
             self.changed = [i for i, (a, b) in enumerate(zip(old, entries)) if a[1] is not b[1] or a[2] != b[2]]
-            # a closed row rebuilt with nothing it shows changed (`_same_face`) is no repaint (S19)
-            self.looks_changed = [i for i in self.changed if not (
-                old[i][2] == entries[i][2] and entries[i][0] in (ROW, FINISHED) and
-                getattr(entries[i][1], "key", None) != self.open_key and
-                _same_face(old[i][1], entries[i][1], entries[i][0]))]
+            self.before = old                       # what `looks_different` compares with
             self.entries = list(entries)
             return "same" if shapes else "relayout"
+        # S19's written skip: a reset (a row added or gone, even below the screen) repaints the screen's rows — Qt's
+        # QListView relays out and repaints its viewport on any reset or insert — but from their kept pixmaps (no row
+        # drawn afresh: `_same_face`); an insert that repaints nothing on screen waits for W3.1's uniform rows (IK-38)
         self.beginResetModel()
-        self.changed = self.looks_changed = []
+        self.changed, self.before = [], []
         self.entries = list(entries)
         self.keys = keys
         if self.open_key is not None and not any(k[1] == self.open_key for k in keys):
@@ -489,7 +498,7 @@ class RowDelegate(QStyledItemDelegate):
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
         self._bytes = {"row": 0, "ep": 0}
 
-    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None):
+    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None, spare=False):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its width and height, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these. Its lines
@@ -513,6 +522,9 @@ class RowDelegate(QStyledItemDelegate):
                 cache[key] = (payload, hit[1])           # the moved row: the next look is by identity again
             cache.move_to_end(key)
             return hit[1]
+        if spare and (len(cache) >= kept or self._bytes[name] + round(size.width() * dpr) * round(size.height() * dpr)
+                      * 4 > SPRITE_MB[name] * 1024 * 1024):
+            return None                              # a guess drawn ahead takes only free room: it never evicts (D-4)
         pix = QPixmap(max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr)))
         pix.setDevicePixelRatio(dpr)
         pix.fill(c(ground))
@@ -529,6 +541,8 @@ class RowDelegate(QStyledItemDelegate):
         if old is not None:
             self._bytes[name] -= _size(old[1])
         cache[key] = (payload, pix)
+        if spare:
+            cache.move_to_end(key, last=False)       # ... and is the first to go when a row needs the room
         self._bytes[name] += _size(pix)
         cap = SPRITE_MB[name] * 1024 * 1024
         while len(cache) > 1 and (len(cache) > kept or self._bytes[name] > cap):
@@ -556,6 +570,12 @@ class RowDelegate(QStyledItemDelegate):
         row = index.row()
         heights = self._heights
         return heights[row] if 0 <= row < len(heights) else QSize(0, 0)
+
+    def same_heights(self, old_entries, new_entries):
+        """A "same" refresh: every shape is as it was, so the height list made for `old_entries` holds for the new ones
+        (review D-2: making it again walked every entry on the window's thread, ~6 ms at 20,000)."""
+        if self._h_entries is old_entries:
+            self._h_entries = new_entries
 
     def _heights_now(self, model):
         """Every entry's height, from the sizes kept by what decides them (`_shape`): a refresh makes every entry a new
@@ -980,7 +1000,7 @@ class RowDelegate(QStyledItemDelegate):
                 self._sprite(kind, row, QSize(rect.width(), head), dpr, True,
                              lambda q: self._paint_row(q, kind, row, local, True, False, dpr, lines, episodes=False,
                                                        number=False),
-                             ident=(row.key, "open"))
+                             ident=(row.key, "open"), spare=True)
             finally:
                 self._warming = False
             if self.warmed != before:
@@ -1421,6 +1441,7 @@ class RowsView(QListView):
         # 1, 7, 13 px at 150 % → 514 px painted)
         self.verticalScrollBar().actionTriggered.connect(self._snap_step)
         self._hover = None
+        self.looks_changed = False                   # the last set_entries changed what the list shows
         self._restore = None
         self.warm_like = None                        # the shown list, while this one is hidden (its width and height)
         self._moved = 0.0                            # when it last scrolled or changed (`_rest`)
@@ -1449,25 +1470,45 @@ class RowsView(QListView):
         """Show these entries; a reset keeps the row that was at the top where it was."""
         model = self.model()
         anchor = self._anchor()
+        before = model.entries
         how = model.set_entries(entries)
-        if how != "same" or model.looks_changed:    # nothing shown changed: nothing to paint ahead or again either
-            self._rest()
         if how == "same":
-            if len(model.looks_changed) > 40:
+            self.delegate.same_heights(before, model.entries)     # equal shapes: equal heights (review D-2)
+            lo, hi = self._near()
+            changed = model.changed
+            looks = [i for i in changed[bisect.bisect_left(changed, lo):bisect.bisect_right(changed, hi)]
+                     if model.looks_different(i)]
+            self.looks_changed = bool(looks)
+            if looks:                                # nothing shown changed: nothing to paint ahead or again either
+                self._rest()
+            if len(looks) > 40:
                 self.viewport().update()
             else:
-                for i in model.looks_changed:            # only the rows that look different (dirty rows, never all)
+                for i in looks:                          # only the rows that look different (dirty rows, never all)
                     self.update(model.index(i, 0))
         elif how == "relayout":
+            self.looks_changed = True
+            self._rest()
             self.relayout()
             self.viewport().update()
         else:
+            self.looks_changed = True
+            self._rest()
             self._hover = None
             if anchor is not None and self.isVisible():
                 self._restore = anchor
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         return how
+
+    def _near(self):
+        """The rows on screen and those painted ahead past each edge (`WARM_AHEAD`): (first, last), by place."""
+        n = self.model().rowCount()
+        first = self.indexAt(QPoint(4, 1))
+        last = self.indexAt(QPoint(4, self.viewport().height() - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else n - 1
+        return max(0, lo - WARM_AHEAD), hi + WARM_AHEAD
 
     def _anchor(self):
         """(entry key, its offset from the viewport's top) of the first row on screen, or None."""
@@ -1631,6 +1672,10 @@ class RowsView(QListView):
 
     def viewportEvent(self, event):
         from PyQt6.QtCore import QEvent
+        if event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate):
+            # QAbstractItemView repaints its whole viewport here, yet no row paints the window's active state:
+            # nothing visible changes (S19; review D-5). The focus ring follows focus in / out (`focusInEvent`).
+            return True
         if event.type() == QEvent.Type.ToolTip:
             idx, part = self.part_at(event.pos())
             if part is not None and part[2] and self.tooltips is not None:

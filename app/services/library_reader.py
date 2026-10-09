@@ -83,6 +83,7 @@ class LibraryReader:
         self._moved_in = {}                # tier -> ids that came into it or moved in it since it was last sorted
         self._changed_ids = None
         self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
+        self._build_works = None           # ... and the works (`view_rows.build`'s `changed_works`)
         self._cache_due = None             # (view, key) to write as the first screen's cache, at the next quiet look
         self._cache_due_at = 0.0           # when a write first fell due (a store busy for long still gets one)
         self._cards_all_at = 0.0
@@ -240,6 +241,7 @@ class LibraryReader:
             self._tiers = None                          # sorted again in full at the next build
             self._changed_ids = None
             self._build_changed = None
+            self._build_works = None
         else:
             changed = self._changed_ids if self._changed_ids is not None else set()
             for r in feed["items"]:
@@ -265,6 +267,9 @@ class LibraryReader:
             if self._build_changed is not None:
                 self._build_changed.update(r["id"] for r in feed["items"])
                 self._build_changed.update(ident for kind, ident in feed["gone"] if kind == "item")
+            if self._build_works is not None:
+                self._build_works.update(w["id"] for w in feed["works"])
+                self._build_works.update(ident for kind, ident in feed["gone"] if kind != "item")
             for kind, ident in feed["gone"]:
                 if kind == "item":
                     old = self._items.pop(ident, None)
@@ -303,8 +308,10 @@ class LibraryReader:
         view = view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
-                               tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed)
+                               tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
+                               changed_works=self._build_works)
         self._build_changed = set()                     # built: from here on, only what the feed changes
+        self._build_works = set()
         return view
 
     def _busy(self, error):

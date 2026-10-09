@@ -477,7 +477,8 @@ class _Lift(QWindow):
         self.owner = owner
         self.opening = opening
         self.store = QBackingStore(self)
-        self._flushed_hidden = False               # flushed while hidden: its show's expose finds it there
+        self._painted = None                       # what its store holds (`_state`), None: nothing yet
+        self._flushed = False                      # and that picture handed to Windows
 
     def paint(self):
         """Its picture drawn into its backing store (nothing reaches the screen): the shadow and the snapshot — or
@@ -487,10 +488,15 @@ class _Lift(QWindow):
         self.create()
         size = self.size()
         self.store.resize(size)
-        self.store.beginPaint(QRegion(QRect(QPoint(), size)))   # (a see-through store starts each paint clear)
+        o = self.opening
+        live = o is not None and o.pixmap is not None and not o.ended
+        clear = QRegion(QRect(QPoint(), size))
+        inner = o._opaque(QRect(o.target_in_picture, o.widget_size)) if live else None
+        if inner is not None:                      # only what the opaque snapshot won't cover is cleared (S19: a
+            clear = clear.subtracted(QRegion(inner.toRect()))   # scrim's whole window was ~1 ms of clearing at 150 %)
+        self.store.beginPaint(clear)               # (a see-through store clears the region it is given)
         try:
-            o = self.opening
-            if o is not None and o.pixmap is not None and not o.ended:
+            if live:
                 p = QPainter(self.store.paintDevice())
                 try:
                     o._draw(p)
@@ -498,19 +504,30 @@ class _Lift(QWindow):
                     p.end()
         finally:
             self.store.endPaint()                  # (a draw's error leaves no paint open on a kept lift)
+        self._painted, self._flushed = self._state(), False
+
+    def _state(self):
+        """What its picture shows: its opening (None once ended or resting), its size and device-pixel ratio."""
+        o = self.opening
+        live = o is not None and o.pixmap is not None and not o.ended
+        return (id(o) if live else None, self.size(), self.devicePixelRatio())
 
     def flush(self):
         """The painted picture handed to Windows (while hidden: it shows with the window)."""
         self.store.flush(QRegion(QRect(QPoint(), self.size())))
-        self._flushed_hidden = not self.isVisible()
+        self._flushed = True
 
     def exposeEvent(self, _event):
+        """Only what changed (charter S19): Windows keeps a see-through window's picture, so an expose that changes
+        nothing — its show after the hidden flush, a move (offscreen exposes on every move) — redraws and hands over
+        nothing; a new size or scale (a screen change), or its opening ended, repaints; a picture painted and not yet
+        handed over is flushed."""
         if not self.isExposed():
             return
-        if self._flushed_hidden:                   # its show: the picture flushed before is on screen with it
-            self._flushed_hidden = False
+        if self._painted != self._state():
+            self.paint()
+        elif self._flushed:
             return
-        self.paint()                               # exposed again (a screen change): drawn as it is now
         self.flush()
 
 

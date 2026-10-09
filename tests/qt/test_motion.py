@@ -19,7 +19,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6 import sip
-from PyQt6.QtCore import QByteArray, QPoint, QRect, Qt
+from PyQt6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, Qt
 from PyQt6.QtGui import QExposeEvent, QRegion
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
@@ -733,6 +733,61 @@ def test_a_lifted_opening_is_a_see_through_window_moved_and_faded_then_the_overl
     assert wait_until(lambda: sip.isdeleted(lift) or not lift.isVisible(), 2)       # gone a frame after the overlay
 
 
+class _PaintCount(QObject):
+    """Counts the Paint events a widget gets (an event filter that never takes one)."""
+
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+        self.count = 0
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Paint:
+            self.count += 1
+        return False
+
+    def stop(self):
+        self.widget.removeEventFilter(self)
+
+
+def test_each_lifted_frame_repaints_nothing_not_the_window_nor_what_is_under_it(clock, stage, lifted, monkeypatch):
+    # S19: a frame moves and fades the lift window alone (the compositor blends it), so no paint of the window, of a
+    # widget under the overlay, or of the lift's own paint and flush
+    sibling = QWidget(stage)
+    sibling.setGeometry(180, 100, 360, 180)            # under the card that opens over it
+    sibling.show()
+    QApplication.processEvents()
+    card = Card(stage, "up")
+    opening = card.open()
+    lift = opening.lift
+    assert lift is not None
+    QTest.qWait(60)                                    # the show's own expose pass is over: count from here
+    calls = []
+
+    def counted(name, real):
+        def wrapper(self):
+            calls.append(name)
+            return real(self)
+        return wrapper
+
+    monkeypatch.setattr(motion._Lift, "paint", counted("paint", motion._Lift.paint))
+    monkeypatch.setattr(motion._Lift, "flush", counted("flush", motion._Lift.flush))
+    win_paints, sib_paints = _PaintCount(stage), _PaintCount(sibling)
+    try:
+        clock.advance(150)
+        QTest.qWait(60)                                # any posted paint is delivered
+        assert 0.0 < lift.opacity() < 1.0              # mid-motion: the frames really ran
+        assert win_paints.count == 0 and sib_paints.count == 0
+        assert calls == []
+        sibling.update()                               # contrast: the counter does see a real repaint
+        QTest.qWait(60)
+        assert sib_paints.count > 0
+    finally:
+        win_paints.stop()
+        sib_paints.stop()
+
+
 def test_a_press_on_a_lifted_opening_reaches_its_button(clock, stage, lifted):
     card = Card(stage)
     opening = card.open()
@@ -1027,7 +1082,8 @@ def test_a_lift_is_painted_and_flushed_while_hidden_so_its_show_is_only_a_show(c
     from tests.qt.conftest import wait_until
     # why (M2.1-3): a widget's show painted it and flushed the whole see-through window in that one pass (8 ms at 150 %,
     # a scrim); the lift paints into its backing store and hands the picture over while hidden, each a pass of its own,
-    # and its show's expose flushes nothing again. An expose later (a screen change) still repaints and flushes.
+    # and its show's expose flushes nothing again. A later expose that changes nothing redraws nothing (S19); one with
+    # a new size (a screen change) repaints and flushes.
     calls = []
     for name in ("paint", "flush"):
         real = getattr(motion._Lift, name)
@@ -1039,8 +1095,11 @@ def test_a_lift_is_painted_and_flushed_while_hidden_so_its_show_is_only_a_show(c
     lift = o1.lift
     QTest.qWait(60)                                              # the show's expose, and anything it would ask for
     assert lift.isVisible() and calls == [("paint", False), ("flush", False)]
+    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # exposed again, nothing changed
+    assert calls == [("paint", False), ("flush", False)]
     calls.clear()
-    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # exposed again later
+    lift.resize(lift.width() + 8, lift.height())                 # a screen change gave it a new size
+    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))
     assert calls == [("paint", True), ("flush", True)]
     clock.advance(400)
     assert wait_until(lambda: not lift.isVisible(), 2)
@@ -1060,7 +1119,8 @@ def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypa
     from PyQt6.QtTest import QTest
     from tests.qt.conftest import wait_until
     # why (M2.1-3): a hidden lift has no screen to repaint; its hide (an expose that leaves it not exposed) and any
-    # expose while hidden leave its store and Windows' picture alone. While shown, an expose repaints (the contrast).
+    # expose while hidden leave its store and Windows' picture alone. While shown, an expose with a new size repaints
+    # (the contrast).
     card = Card(stage, "up")
     lift = card.open().lift
     QTest.qWait(60)                                              # the show's expose, past
@@ -1069,7 +1129,8 @@ def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypa
         real = getattr(motion._Lift, name)
         monkeypatch.setattr(motion._Lift, name,
                             lambda self, real=real, name=name: (calls.append((name, self.isVisible())), real(self))[1])
-    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # shown: repaints
+    lift.resize(lift.width() + 8, lift.height())
+    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # shown, a new size: repaints
     assert calls == [("paint", True), ("flush", True)]
     clock.advance(400)                                           # the opening ends; its lift is given back, hidden
     assert wait_until(lambda: not lift.isVisible(), 2)
@@ -1077,6 +1138,27 @@ def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypa
     assert lift.opening is None and not lift.isExposed()
     lift.exposeEvent(QExposeEvent(QRegion()))                    # and one more while hidden
     assert [c for c in calls if not c[1]] == []                  # nothing painted or flushed while hidden
+
+
+@pytest.mark.parametrize("opaque", [True, False])
+def test_a_lift_clears_only_what_its_opaque_snapshot_will_not_cover(clock, stage, lifted, monkeypatch, opaque):
+    # why (S19, M2.1-3): clearing a scrim's whole see-through store was ~1 ms of the paint piece at 150 %; an overlay
+    # that paints its whole background covers its own rect (inside the corners) with opaque pixels, so only the rest —
+    # its shadow, its corners — is cleared. One that doesn't (a translucent toast) is cleared whole.
+    regions = []
+
+    class Recording(motion.QBackingStore):
+        def beginPaint(self, region):
+            regions.append(QRegion(region))
+            return super().beginPaint(region)
+    monkeypatch.setattr(motion, "QBackingStore", Recording)
+    card = Card(stage, "up")
+    card.setAutoFillBackground(opaque)
+    opening = card.open()
+    assert opening.lift is not None and len(regions) == 1
+    r = QRect(opening.target_in_picture, opening.widget_size)
+    assert regions[0].contains(QPoint(0, 0)) and regions[0].contains(r.topLeft())   # a corner: cleared
+    assert regions[0].contains(r.center()) is not opaque         # the middle: left to the snapshot when opaque
 
 
 def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):

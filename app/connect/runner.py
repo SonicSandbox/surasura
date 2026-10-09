@@ -598,7 +598,7 @@ def _full(steps, lang):
     again at every look."""
     if not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
         return None
-    cap = steps.cap()
+    cap = steps.cap(lang)
     if not cap:
         return None
     count = steps.waiting_count(lang)
@@ -610,7 +610,7 @@ def _full(steps, lang):
 def _at_cap(steps, ledger, lang, todo):
     """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
     cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go."""
-    cap = steps.cap()
+    cap = steps.cap(lang)
     if not cap:
         return None
     count = steps.waiting_count(lang)
@@ -940,18 +940,27 @@ class Steps:
         from app.connect import shelf
         return shelf.AnkiConnectAnki(self.url)
 
-    def cap(self):
-        """`connect_backlog_cap` (default 300); 0: no cap; not a number: the default (review B #1)."""
+    def cap(self, lang=None):
+        """`connect_backlog_cap` for `lang` — one cap per language (Sonic 2026-10-08, P2.4-B-SD4 changed; charter D31):
+        a number is every language's cap, `{lang: n}` each its own (300 for one it doesn't name); 0: no cap; not a
+        number: the default (review B #1)."""
+        value = self.loaded.get("connect_backlog_cap", 300)
+        if isinstance(value, dict):
+            value = value.get(lang, 300)
         try:
-            return max(0, int(self.loaded.get("connect_backlog_cap", 300)))
+            return max(0, int(value))
         except (TypeError, ValueError):
             return 300
 
     def waiting_count(self, lang):
+        """Connect's waiting cards of `lang`: its tagged new, unsuspended cards whose notes this language's store made
+        (one cap per language, D31)."""
         from app import anki_connect
         from app.connect import shelf
+        with self._open(lang) as store:
+            made = shelf.made_notes(store)
         try:
-            return shelf.waiting_count(self._anki())
+            return shelf.waiting_count(self._anki(), made)
         except anki_connect.AnkiError:
             raise Wait(ANKI_CLOSED, resume="mining") from None
 

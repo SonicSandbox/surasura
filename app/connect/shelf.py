@@ -1,8 +1,9 @@
 """Connect's backlog and its shelf (P2.4 Part B rows 2.4.10–2.4.12; Sonic, 2026-10-07 *restart, the backlog's size*,
 *Windows' change reports; Connect's card rules*, *the shelf*, *the swap-in*; 2026-10-08 *P2.4's six*, *the big gap*).
 
-- **The cap** (`connect_backlog_cap`, default 300, "keep up to N Surasura cards waiting"): *waiting* = Connect's own
-  notes (its tag `surasura::connect::<job>`), new, not suspended — one `findCards` (`waiting_count`). Connect tops up:
+- **The cap** (`connect_backlog_cap`, default 300, "keep up to N Surasura cards waiting"), **one per language** (✅
+  SD4 changed, charter D31: a number is each language's, `{lang: n}` each its own): *waiting* = Connect's own notes
+  (its tag `surasura::connect::<job>`), new, not suspended, made by this language's store (`waiting_count`). Connect tops up:
   it mines while fewer than N wait, checked before a job's first batch (never mid-episode), and waits (*Your N cards are waiting*) at the cap; as
   you study, the next look tops up. A whole episode at a time: one batch can take it over N by its own words. The
   learner's own cards never count and are never touched (they don't carry Connect's tag).
@@ -175,9 +176,12 @@ class Reviewing(Exception):
     """You started reviewing: nothing was written."""
 
 
-def waiting_count(anki):
-    """How many of Connect's cards wait (new, not suspended) — one request."""
-    return len(anki.find_cards(WAITING_QUERY))
+def waiting_count(anki, made=None):
+    """How many of Connect's cards wait (new, not suspended): with `made` ({note id: (item, word)}, one language's
+    store), only that language's — one cap per language (D31); without it, every language's (one request)."""
+    if made is None:
+        return len(anki.find_cards(WAITING_QUERY))
+    return len(cards(anki, WAITING_QUERY, made))
 
 
 def cards(anki, query, made):

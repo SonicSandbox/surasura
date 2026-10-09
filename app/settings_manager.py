@@ -89,8 +89,9 @@ DEFAULT_SETTINGS = {
     # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
     # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
     "connect_open_anki": False,
-    # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"): Connect makes cards while fewer
-    # than this many of its own new, unsuspended cards wait in Anki, and tops up as you study; at the cap the least
+    # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
+    # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
+    # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least
     # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own cards never count. Never in a
     # signature.
     "connect_backlog_cap": 300,

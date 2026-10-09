@@ -235,7 +235,7 @@ class FakeSteps:
             raise runner.Skip("backfill absent")
 
     # --- P2.4 Part B: the cap, the shelf, media names
-    def cap(self):
+    def cap(self, lang=None):
         return self.plan.get("cap")
 
     def waiting_count(self, lang):

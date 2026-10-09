@@ -4,13 +4,14 @@ Why these matter: SQLite checkpoints a WAL database when its last connection clo
 opens the store about ten times a job; with Surasura closed every one of those closes was the last, so each ran a
 checkpoint outside the store's write lock (the spec allows checkpoints only under it: SQLite 3.39.4's WAL-reset bug)
 and the next write paid for a new `-wal` (a receipt's hold up to 62 ms, P2.4's verifier). Now a close never
-checkpoints outside the lock, Connect can hold one handle for a job (`held()`), the copy follows Connect's and the
-command line's writes on its own trigger, and the Content Manager's mode check, run twice a drag, reads through the
+checkpoints outside the lock, Connect can hold one handle for a job (`held()`), the copy follows Connect's writes on
+its own trigger, and the Content Manager's mode check, run twice a drag, reads through the
 handle it already has instead of opening a connection each time (charter S19: a check that finds nothing does nothing).
 Every test runs for Japanese and Chinese alike, under the per-test SURASURA_TEST_ROOT that tests/conftest.py sets.
 """
 
 import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -685,3 +686,348 @@ def test_every_reader_connection_the_store_opens_is_closed_through_close():
         if "= _connect(" in block and name not in ("_probe",) and "_close(" not in block:
             offenders.append(name)
     assert offenders == [], offenders
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_restore_never_brings_back_a_gone_notes_mark(language):
+    """A removed item keeps its Anki links in its trash row, so Put back restores them. A note Anki no longer has
+    (`notes_gone`) must leave that kept list too: the restore brings back only the links whose notes still exist. Why:
+    a deleted card must never show as "in Anki" again after its item comes back."""
+    store = migrated(language)
+    try:
+        victim = store.ids("now")[2]
+        with store._writing():
+            store.conn.executemany("INSERT INTO anki_links (item_id, note_id, source, linked_at) VALUES (?, ?, ?, ?)",
+                                   [(victim, 701, "anki_miner", "t"), (victim, 702, "anki_miner", "t")])
+        removed = store.remove([victim])
+        assert store.notes_gone([701]) == [701]
+        assert store.notes_gone([701]) == [], "a note already gone is no longer held anywhere"
+        store.restore(removed.trash_ids)
+        links = store.conn.execute("SELECT note_id FROM anki_links WHERE item_id = ?", (victim,)).fetchall()
+        assert links == [(702,)], "the gone note's mark stays gone after Put back"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_made_word_keeps_its_odd_note_entries_and_loses_only_the_gone_ids(language):
+    """A made word's `note_ids` may hold entries that aren't note numbers (`null`, `"x"`): `notes_gone` must keep them
+    as they are, never stop on them, and still take out the gone note's id. A second `notes_gone` for the same note
+    finds nothing left to take out."""
+    store = migrated(language)
+    try:
+        with store._writing():
+            for sql in ls.ADDED_TABLES_SQL:
+                store.conn.execute(sql)
+            store.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) "
+                               "VALUES (?, ?, ?, ?, ?)",
+                               (901, "上層部", json.dumps([801, None, "x", 802]), "t", None))
+        assert store.notes_gone([801]) == [801]
+        row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                 (901, "上層部")).fetchone()
+        assert json.loads(row[0]) == [None, "x", 802]
+        assert store.notes_gone([801]) == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_span_handle_on_a_store_no_longer_migrated_is_let_go_at_once(language):
+    """A store whose `migrated_at` is gone is no longer a ready store, though its file is not damaged: a span that
+    opened it earlier must not keep handing it out. The mode is read again on the handle's own connection each time,
+    so the check it does is the one that finds the store not ready, and the handle is closed there and then."""
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    with ls.held():
+        held = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert held is not None
+        with held._writing():
+            held.conn.execute("DELETE FROM meta WHERE key = 'migrated_at'")
+        assert ls.open_store(language, data_dir, user_files_dir, role="connect") is None
+        with pytest.raises(sqlite3.ProgrammingError):
+            held.conn.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_whose_open_fails_after_its_connection_opened_is_closed_through_close(language, monkeypatch):
+    """A failed open: `open_store` builds the `Store`, then the soon-line read raises a database error. The connection
+    the store already holds must go through `_close` (never the collector's plain close, which may checkpoint outside
+    the write lock), exactly once, and `open_store` returns None."""
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    closed = []
+    real_close = ls._close
+
+    def spy_close(conn, db_path, role):
+        closed.append((db_path, role))
+        return real_close(conn, db_path, role)
+
+    def failing_soon_line(store):
+        raise sqlite3.DatabaseError("x")
+
+    monkeypatch.setattr(ls, "_rederive_soon_line", failing_soon_line)
+    monkeypatch.setattr(ls, "_close", spy_close)
+    assert ls.open_store(language, data_dir, user_files_dir, role="window") is None
+    assert len(closed) == 1, closed
+    assert closed[0][1] == "window"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_reimport_question_still_gets_a_checkpoint(language, monkeypatch):
+    """A re-import question waiting on the user (meta `reimport_pending` holding the copy's current stat) must not
+    leave the `-wal` growing: `maintain` checkpoints before it returns EXIT_NEEDS_YOU (§6.12). The copy is made first
+    by one clean run, so the stat the question holds is a real one, and the checkpoint count is taken only for the
+    waiting run."""
+    checkpoints = []
+    real_checkpoint = ls.Store.checkpoint
+
+    def counting(self, *args, **kwargs):
+        checkpoints.append(1)
+        return real_checkpoint(self, *args, **kwargs)
+
+    monkeypatch.setattr(ls.Store, "checkpoint", counting)
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    try:
+        assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+        window.bookkeeping({"reimport_pending": json.dumps({"stat": window.copy_stat()})})
+        checkpoints.clear()                   # the setup's own checkpoints are not the waiting run's
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+        assert len(checkpoints) >= 1, "a waiting question must still checkpoint the store"
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_close_trigger_with_nothing_to_export_checkpoints_exactly_once(language, monkeypatch):
+    """Nothing due (the copy is current, no re-import waiting): the close trigger exports nothing, and its single
+    checkpoint is the one that keeps the `-wal` for the write lock (§6.12). Exactly one: zero would leave the `-wal`
+    for the next writer to pay for, and two would checkpoint twice at every exit."""
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        assert not ls.maintain_due(window)[0], "precondition: the copy must be up to date"
+    finally:
+        window.close()                          # every handle is closed before the trigger runs
+    checkpoints = []
+    real_checkpoint = ls.Store.checkpoint
+
+    def counting(self, *args, **kwargs):
+        checkpoints.append(1)
+        return real_checkpoint(self, *args, **kwargs)
+
+    monkeypatch.setattr(ls.Store, "checkpoint", counting)
+    assert ls.maintain_at_close(language, data_dir, user_files_dir) is None
+    assert len(checkpoints) == 1, "an empty close trigger checkpoints exactly once"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_close_trigger_with_nothing_to_export_never_waits_for_a_held_write_lock(language):
+    """Another thread holds the write lock for 2 s: the close trigger's checkpoint is skipped (wait=0), so it returns
+    None well before the holder lets go. A waiting checkpoint would run out the holder's 2 s and fail the bound."""
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        assert not ls.maintain_due(window)[0], "precondition: the copy must be up to date"
+    finally:
+        window.close()
+    db = ls.library_db_path(language, data_dir)
+    holding = threading.Event()
+
+    def hold():
+        lock = ls._write_lock_for(db)
+        lock.acquire()
+        try:
+            holding.set()
+            time.sleep(2.0)
+        finally:
+            lock.release()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert _until(holding.is_set), "the holder never took the write lock"
+        started = time.perf_counter()
+        result = ls.maintain_at_close(language, data_dir, user_files_dir)
+        elapsed = time.perf_counter() - started
+        assert result is None
+        assert elapsed < 1.0, "the close trigger waited for a write lock another thread holds"
+    finally:
+        holder.join(5.0)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_openers_close_closes_its_handle_and_the_next_handle_is_a_new_working_one(language):
+    """StoreOpener.close() (§6.12) closes this thread's handle through `_close` and forgets it: the old handle's
+    connection is shut, and the next handle() opens a fresh, working store rather than handing back the closed one.
+    The opener's own close in the finally also closes the fresh handle, so no connection outlives the test."""
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    opener = ls.StoreOpener(language, data_dir, user_files_dir)
+    try:
+        assert opener.check() == "store"
+        first = opener.handle()
+        assert first is not None
+        opener.close()
+        with pytest.raises(sqlite3.ProgrammingError):
+            first.conn.execute("SELECT 1")
+        fresh = opener.handle()
+        assert fresh is not None and fresh is not first
+        assert fresh.meta()["state_version"] >= 0  # a working connection, not the closed one
+    finally:
+        opener.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_content_manager_close_ends_its_worker_and_closes_its_own_handle(language):
+    """The window's close (§6.12, the Content Manager's `_close_store_handles`): its worker is stopped and ended, and
+    the handle its opener holds on this thread is closed through the store's close, so its connection can no longer
+    be used. The worker is a stand-in that waits on the stop event, so the test needs no window; the real app's
+    short join (STORE_CLOSE_WAIT_S) is far longer than the stop event takes to end it."""
+    from app.content_importer_gui import ContentImporterApp
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    opener = ls.StoreOpener(language, data_dir, user_files_dir)
+    assert opener.check() == "store"
+    handle = opener.handle()
+    assert handle is not None
+    stop, wake = threading.Event(), threading.Event()
+    worker = threading.Thread(target=lambda: stop.wait(30), daemon=True)
+    worker.start()
+    app = ContentImporterApp.__new__(ContentImporterApp)
+    app._worker_stop, app._worker_wake, app._worker, app._store_opener = stop, wake, worker, opener
+    try:
+        app._close_store_handles()
+        assert not worker.is_alive()
+        with pytest.raises(sqlite3.ProgrammingError):
+            handle.conn.execute("SELECT 1")
+    finally:
+        stop.set()
+        worker.join(5.0)
+        opener.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_triggers_own_open_arms_no_second_trigger(language, monkeypatch, store_helper_spawns):
+    """The idle trigger's own open rewrites a wrong soon line (the rederive). That write must arm NO new trigger, or the
+    trigger would keep re-arming itself: the guard in `_outside_wrote` is what stops it."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)       # long: a receipt's trigger must still be waiting when read
+    monkeypatch.setattr(ls, "_IDLE", {})
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    connect = None
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        store_helper_spawns.clear()
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        connect.receipt(connect.ids("now")[0], "2026-10-08T10:00:00Z")
+        assert len(ls._IDLE) == 1, "the receipt leaves one idle trigger waiting"
+        with window._writing():                               # written after the receipt, so nothing repairs it first
+            window._set_meta({"soon_line": 9999})             # a wrong soon line for the trigger's open to rewrite
+        timer = next(iter(ls._IDLE.values()))[0]
+        ls._outside_idle_now()
+        timer.join(5.0)
+        assert str(window.meta().get("soon_line")) != "9999", "the trigger's own open rewrote the wrong soon line"
+        assert ls._IDLE == {}, "a trigger's own write arms no second trigger"
+    finally:
+        for pending_timer, _args in list(ls._IDLE.values()):
+            pending_timer.cancel()
+        ls._IDLE.clear()
+        if connect is not None:
+            connect.close()
+        window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_idle_trigger_spawns_no_helper_when_the_data_folder_is_another_one_now(language, monkeypatch,
+                                                                               store_helper_spawns):
+    """The copy is behind, but the language's data folder has moved since the store was written: a helper would
+    export into a folder the app no longer reads. The trigger spawns nothing and logs, beside the db, that the copy
+    waits for the next open or write. The copy-behind precondition keeps the test from passing on a copy that was
+    never due (the no-helper branch is only reached when `due`)."""
+    from app import path_utils
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    data_dir, user_files_dir = roots(language)
+    moved = os.path.join(os.environ["SURASURA_TEST_ROOT"], "another data folder", language)
+    window = migrated(language)
+    connect = None
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        store_helper_spawns.clear()
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        connect.receipt(connect.ids("now")[0], "2026-10-08T10:00:00Z")
+        assert ls.maintain_due(window)[0], "precondition: the copy must be behind"
+        assert len(ls._IDLE) == 1, "the receipt leaves one idle trigger waiting"
+        monkeypatch.setattr(path_utils, "get_data_path", lambda *args, **kwargs: moved)
+        ls._outside_idle_now()
+        assert ls._IDLE == {}, "exit takes every pending trigger off the list"
+        assert store_helper_spawns == [], "a copy behind for another data folder spawns no helper"
+        log = os.path.join(os.path.dirname(connect.db_path), "library_maintain.log")
+        with open(log, encoding="utf-8") as f:
+            assert "data folder is another one now" in f.read()
+    finally:
+        if connect is not None:
+            connect.close()
+        window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_idle_trigger_checkpoint_gives_up_on_a_busy_lock_within_its_short_wait(language, monkeypatch):
+    """The idle trigger's checkpoint waits OUTSIDE_IDLE_WAIT (0.2 s) for the write lock, not the 5 s the store allows:
+    another thread holds the lock for up to 3 s, so the trigger returns at once, the checkpoint is left to the next
+    one and the log says so. Why: a trigger that waited the full lock timeout would hold up the exit behind a writer."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_WAIT", 0.2)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    connect = None
+    holder = None
+    release = threading.Event()
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        assert not ls.maintain_due(window)[0], "precondition: the copy must be up to date"
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        key = os.path.normcase(os.path.abspath(connect.db_path))
+        connect.bookkeeping({"analysed_order_version": connect.meta().get("analysed_order_version", 0) + 1})
+        assert key in ls._IDLE, "precondition: the write arms one idle trigger"
+
+        locked = threading.Event()
+
+        def hold_write_lock():
+            # Another connection in this process takes the same write lock and keeps it until released (3 s at most).
+            other = ls.open_store(language, data_dir, user_files_dir, role="connect")
+            try:
+                with other._writing(begin=False):
+                    locked.set()
+                    release.wait(3.0)
+            finally:
+                other.close()
+
+        holder = threading.Thread(target=hold_write_lock, daemon=True)
+        holder.start()
+        assert locked.wait(5.0), "the other connection never took the write lock"
+
+        started = time.perf_counter()
+        ls._outside_idle_now()
+        elapsed = time.perf_counter() - started
+        release.set()
+        assert elapsed < 1.5, f"the trigger waited {elapsed:.2f} s for a busy lock; its wait is 0.2 s"
+        with open(os.path.join(os.path.dirname(connect.db_path), "library_maintain.log"), encoding="utf-8") as f:
+            assert "write lock was busy" in f.read()
+    finally:
+        release.set()
+        if holder is not None:
+            holder.join(5.0)
+        if connect is not None:
+            connect.close()
+        window.close()

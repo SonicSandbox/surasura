@@ -28,10 +28,13 @@ BAR_FAILURE_PREFIX = "⚠ "
 BAR_LOGS = "Open the logs folder"
 BAR_LOGS_TIP = "Open the folder where Surasura keeps its logs, to look at them or send them"
 BAR_FAILURE_TIP = "The newest problem a command-line run reported. Its details are in the logs folder"
-BAR_BUSY_GLYPH = "●"
 
 # The look (G1.2-21): shown only if a live switch is ever too slow.
 RESTART_TO_APPLY = "Restart Surasura to apply"
 
 # The frame-time HUD (a developer's overlay, SURASURA_HUD=1).
 HUD_LINE = "step p95 {sp} max {sm} >4ms {so}  ·  frame p95 {fp} max {fm}"
+
+# --- M2.1: toasts (05 §5.4) and the motion
+TOAST_UNDO = "Undo"
+TOAST_UNDO_TIP = "Undo this change"

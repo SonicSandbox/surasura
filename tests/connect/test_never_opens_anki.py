@@ -54,7 +54,7 @@ def test_the_library_verbs_and_connect_never_open_anki(anki_stand_in):
     c.library("ja", connect=True, connect_open_anki=True)
     record = c.write_record(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
     for argv in (["register", "--pairing", record], ["place", "--file", "1", "--to", "now", "--source", "test"],
-                 ["connect", "--consume-only"], ["setup"], ["known-sync"], ["junban", "--auto"],
+                 ["connect", "--consume-only"], ["connect", "--looks", "1"], ["setup"], ["known-sync"], ["junban", "--auto"],
                  ["backfill", "--tag", "surasura::connect::job-1"]):
         h.call(*argv)
     anki_stand_in()

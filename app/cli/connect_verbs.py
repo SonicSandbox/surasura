@@ -4,6 +4,8 @@ and `connect` (in P2.1: `--consume-only`, the inbox read once).
 - `register` takes hato's pairing record v1 on stdin (`--pairing -`) or from a file — never on the command line, which
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
   nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5.
+- `connect` (P2.4) runs Connect's loop (`app/connect/runner.py`) until no job is left; `--consume-only` reads the
+  inbox once and exits (P2.1).
 - `place` and `finish` are a person's verbs, accepted from any program: each placement is logged with `--source`
   (✅ G1.3-5: another program's placement counts like yours, its name recorded). `finish` comes with Surasura 3.0
   (✅ P2.1-1): through 2.x the window's Graduate still marks an item's words known, and finish never does (✅ Q2-5).
@@ -354,14 +356,16 @@ def finish(args):
 
 
 # --------------------------------------------------------------------------- #
-# connect (P2.1: the inbox, once; the loop is P2.4's)
+# connect (P2.1: the inbox, once; P2.4: the loop)
 # --------------------------------------------------------------------------- #
 ROUNDS = 20         # reads of the log a Connect makes before it leaves the rest to the next one
 
 
 def connect_args(parser):
+    import argparse
     parser.add_argument("--consume-only", action="store_true",
-                        help="read the library's new placements into Connect's queue, then exit")
+                        help="read the library's new placements into Connect's queue, then exit (no mining)")
+    parser.add_argument("--looks", type=int, default=None, help=argparse.SUPPRESS)    # tests and drills: at most N
 
 
 def connect(args):
@@ -372,14 +376,19 @@ def connect(args):
     loaded = settings()
     if not loaded.get("connect_enabled"):
         return {"skipped": PREVIEW_OFF}
-    if not args.consume_only:
-        raise CliError("usage", "Connect's mining isn't built yet: run it with --consume-only.")
     from app import locks
     from app.connect import inbox, kick, library
     from app.path_utils import get_user_files_path
     languages = [lang for lang in LANGUAGES if os.path.isdir(get_user_files_path(lang))]
     if not languages:
         raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
+    from app.connect.ledger import Ledger, TooNew
+    try:
+        Ledger().close()                    # a ledger a newer Surasura wrote: refused, said so (both paths)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    if not args.consume_only:
+        return _loop(loaded, languages, getattr(args, "looks", None))
     out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []} for lang in languages}
     rounds = 0
     while rounds < ROUNDS:
@@ -415,6 +424,26 @@ def connect(args):
         from app import anki_connect
         session.settle(anki_connect.address(loaded), loaded)
     return {"languages": out, "rounds": rounds}
+
+
+def _loop(loaded, languages, looks=None):
+    """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
+    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
+    from app import batch_gc, locks
+    from app.connect import kick, runner
+    from app.connect.ledger import TooNew
+    try:
+        held = locks.take(kick.LOCK, "Connect", wait=1.0)
+    except locks.Busy:
+        return {"skipped": "already running"}
+    try:
+        with held:
+            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    if not summary.get("stopped") and any(_pending(lang) for lang in languages):
+        _kick(loaded)                   # logged after its last read: the next Connect reads it
+    return summary
 
 
 def _level(store, lang, loaded):

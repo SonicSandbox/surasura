@@ -207,7 +207,7 @@ def test_a_schema_1_ledger_is_upgraded_in_place_and_its_jobs_stay():
     with Ledger() as ledger:
         (job,) = ledger.jobs("ja")
         assert job["kind"] == "mine" and job["words"] is None
-        assert ledger.conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == "2"
+        assert ledger.conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == str(book.SCHEMA)
 
 
 # --------------------------------------------------------------------------- #

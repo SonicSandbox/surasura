@@ -461,7 +461,8 @@ class _Lift(QWindow):
     a widget's show paints it and flushes the whole see-through window in that one pass of the loop (8 ms at 150 % for a
     scrim; Qt's Windows plugin exposes a see-through window itself as it shows, qwindowswindow.cpp fireFullExpose); here
     the paint (into the backing store), the flush (the picture handed to Windows while the lift is hidden) and the show
-    are three pieces, each a pass of its own. Painted once an opening; each frame only its opacity and place change."""
+    are three pieces, each a pass of its own. Painted once an opening (again only if Windows exposes it anew, a screen
+    change); each frame only its opacity and place change."""
 
     def __init__(self, opening, owner):
         super().__init__()
@@ -487,12 +488,16 @@ class _Lift(QWindow):
         size = self.size()
         self.store.resize(size)
         self.store.beginPaint(QRegion(QRect(QPoint(), size)))   # (a see-through store starts each paint clear)
-        o = self.opening
-        if o is not None and o.pixmap is not None and not o.ended:
-            p = QPainter(self.store.paintDevice())
-            o._draw(p)
-            p.end()
-        self.store.endPaint()
+        try:
+            o = self.opening
+            if o is not None and o.pixmap is not None and not o.ended:
+                p = QPainter(self.store.paintDevice())
+                try:
+                    o._draw(p)
+                finally:
+                    p.end()
+        finally:
+            self.store.endPaint()                  # (a draw's error leaves no paint open on a kept lift)
 
     def flush(self):
         """The painted picture handed to Windows (while hidden: it shows with the window)."""
@@ -510,7 +515,7 @@ class _Lift(QWindow):
 
 
 # The lifts kept for the next opening in the same window (row 7): making a top-level window is a native window's birth
-# each time; a kept one, hidden, is only shown again. id(top window) -> the free lifts (children of it: they go with it).
+# each time; a kept one, hidden, is only placed, painted and shown again. id(top window) -> the free lifts (children of it: they go with it).
 _LIFTS = {}
 LIFTS_KEPT = 2
 
@@ -739,13 +744,18 @@ class OverlayOpening:
         if parent is None or not parent.isVisible() or self._top.isMinimized():
             self._cut_short()
             return
-        if self._lifts and not _in_front(self._top):
-            self._lifts = False                    # (behind another program's since it was placed: the ghost after all)
+        if self._lifts and (self.lift is None or not _in_front(self._top)):
+            self._lifts = False                    # (behind another program's since it was placed, or its page or window
+                                                   # came back after none was placed: the ghost after all)
             lift, self.lift = self.lift, None
             if lift is not None:
                 _give_back(lift)
             self.picture = self._compose(self._size)
         if self._lifts:
+            at = parent.mapToGlobal(area.topLeft())
+            if at != self._lift_at:                # its page moved in the window since the lift was placed
+                self._lift_at = at
+                self.lift.setPosition(at + self.delta)
             self.lift.show()                       # (painted and flushed already: Windows shows its picture)
             owner = self.lift
         else:

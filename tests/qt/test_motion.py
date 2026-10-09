@@ -788,6 +788,29 @@ def test_a_minimised_window_opens_its_overlay_at_once_with_no_lift_and_no_ghost(
     assert not card.isHidden()
 
 
+def test_a_minimised_window_takes_no_lift_so_take_lift_is_never_called(clock, stage, lifted, monkeypatch):
+    # why (M2.1-A1): a lift is a window kept or made for the opening; a minimised window has none to be placed on, so
+    # the lift is not taken at all (not taken and given back) and the overlay is shown as asked at once
+    taken = []                                                   # records every lift the opening asks for
+    real_take = motion._take_lift
+
+    def recording_take(opening, top):
+        taken.append(top)
+        return real_take(opening, top)
+
+    monkeypatch.setattr(motion, "_take_lift", recording_take)
+    stage.showMinimized()
+    QApplication.processEvents()
+    if not stage.isMinimized():
+        stage.setWindowState(Qt.WindowState.WindowMinimized)
+    assert stage.isMinimized()
+    card = Card(stage, "up")
+    card.open()                                                  # (ended by the time it returns: no opening to hold)
+    assert taken == []
+    assert motion.opening_of(card) is None
+    assert not card.isHidden()
+
+
 def test_a_window_not_in_front_opens_with_the_painted_ghost_not_a_lift(clock, stage, lifted, monkeypatch):
     # why (M2.1-A2): a lift is a window of its own and would show over another program's window, so a window behind
     # another program's is opened with the painted stand-in even though lifting is chosen; it still ends with the overlay
@@ -799,6 +822,112 @@ def test_a_window_not_in_front_opens_with_the_painted_ghost_not_a_lift(clock, st
     assert opening.ghost is not None and opening.lift is None
     clock.advance(400)
     assert card.isVisible() and motion.opening_of(card) is None
+
+
+def test_a_page_back_on_screen_before_the_show_opens_painted_when_no_lift_was_placed(clock, stage, lifted, monkeypatch):
+    # why (M2.1-3, review L1): the page was hidden when the lift would have been placed (none taken), and shown again
+    # before the show piece: the opening uses the painted ghost — never a show of a lift that was never placed (an
+    # error the harness would report) — and ends with the overlay shown
+    page = QWidget(stage)
+    page.setGeometry(0, 0, 900, 640)
+    page.show()
+    place = motion.OverlayOpening._lift_place
+
+    def hidden_while_placed(self):
+        page.hide()
+        place(self)
+        page.show()
+    monkeypatch.setattr(motion.OverlayOpening, "_lift_place", hidden_while_placed)
+    card = Card(page, "up")
+    opening = card.open()
+    assert opening is not None and opening.lift is None and opening.ghost is not None
+    clock.advance(400)
+    assert card.isVisible() and motion.opening_of(card) is None
+
+
+def test_a_page_moved_while_its_lift_is_prepared_shows_the_lift_at_its_new_place(clock, stage, lifted, monkeypatch):
+    # why (M2.1-3, review L6): the lift's place is read when it is placed, three passes before its show; a page moved
+    # in the window meanwhile would show it at the old place. The show reads the place again.
+    page = QWidget(stage)
+    page.setGeometry(0, 0, 900, 640)
+    page.show()
+    paint = motion.OverlayOpening._lift_paint
+
+    def moved_while_painted(self):
+        page.move(page.pos() + QPoint(30, 20))
+        paint(self)
+    monkeypatch.setattr(motion.OverlayOpening, "_lift_paint", moved_while_painted)
+    card = Card(page, "up")
+    opening = card.open()
+    lift = opening.lift
+    now = page.mapToGlobal(opening._area.topLeft())
+    assert opening._lift_at == now and lift.position() == now + opening.delta
+
+
+def test_a_window_that_goes_behind_while_its_lift_is_prepared_opens_with_the_painted_ghost(clock, stage, lifted,
+                                                                                           monkeypatch):
+    # why (M2.1-A2b): the lift is placed while the window is in front, then the window goes behind another program's
+    # before the show; the lift is given back and the opening uses the painted ghost with its picture composed there
+    answers = [True, False]                                      # the place piece asks first, `_go` second
+    monkeypatch.setattr(motion, "_in_front", lambda top: answers.pop(0) if answers else False)
+    given = []                                                   # records the lift given back (wrapping, not replacing)
+    real_give_back = motion._give_back
+    monkeypatch.setattr(motion, "_give_back", lambda lift: (given.append(lift), real_give_back(lift))[1])
+    card = Card(stage, "up")
+    opening = card.open()
+    assert len(given) == 1                                       # the placed lift went back to the pool
+    assert opening.ghost is not None and opening.lift is None
+    assert opening.picture is not None                           # the ghost's picture composed behind the other program
+    clock.advance(400)
+    assert card.isVisible() and motion.opening_of(card) is None
+
+
+def test_a_lift_taken_for_a_window_that_went_behind_is_given_back_hidden_at_once(clock, stage, split, lifted, monkeypatch):
+    # why (M2.1-A3): the lift is placed while the window is in front and the window goes behind another program's before
+    # its show; the lift must not be left on the opening or shown over that program, but given back to the window's pool
+    # at once, so the next opening can take it (the ghost shows instead, and the overlay still ends shown)
+    answers = [True, False]                                      # the place piece asks first, `_go` second
+    monkeypatch.setattr(motion, "_in_front", lambda top: answers.pop(0) if answers else False)
+    taken = []
+    real_take = motion._take_lift
+
+    def recording_take(opening, top):
+        lift = real_take(opening, top)
+        taken.append(lift)
+        return lift
+
+    monkeypatch.setattr(motion, "_take_lift", recording_take)
+    card = Card(stage, "slide")
+    opening = card.open()
+    _passes(opening)
+    assert len(taken) == 1
+    lift = taken[0]
+    assert opening.ghost is not None and opening.lift is None
+    assert not lift.isVisible() and lift.opening is None
+    assert lift in motion._LIFTS[id(stage)]
+    clock.advance(400)
+    assert card.isVisible() and motion.opening_of(card) is None
+
+
+def test_a_window_not_in_front_composes_the_ghosts_picture_before_it_shows(clock, stage, lifted, monkeypatch):
+    # why (M2.1-A2): the stand-in is painted from its picture (shadow + snapshot), so that picture must be composed
+    # before the ghost shows — otherwise the first frames paint nothing over the window
+    monkeypatch.setattr(motion, "_in_front", lambda top: False)
+    card = Card(stage, "up")
+    opening = card.open()
+    assert opening.lift is None and opening.ghost is not None
+    assert opening.picture is not None
+    dpr = opening.picture.devicePixelRatio()
+    assert opening.picture.width() >= opening.widget_size.width() * dpr
+    assert opening.picture.height() >= opening.widget_size.height() * dpr
+    clock.advance(32)
+    assert motion.opening_of(card) is opening                    # still opening: the ghost is what is on screen
+    ghost = opening.ghost
+    ghost.opacity, ghost.offset = 1.0, opening._offset(1.0)      # (the neighbour's way: the overlay at its place)
+    img = ghost.grab().toImage()
+    centre = ghost.content_rect().center()
+    px = QPoint(round(centre.x() * img.devicePixelRatio()), round(centre.y() * img.devicePixelRatio()))
+    assert img.pixelColor(px).alpha() == 255                     # the picture is painted: an opaque pixel at the centre
 
 
 def test_a_painted_opening_survives_a_window_move_and_a_resize_lands_it(clock, stage):
@@ -925,6 +1054,29 @@ def test_a_lift_is_painted_and_flushed_while_hidden_so_its_show_is_only_a_show(c
     QTest.qWait(60)
     assert calls == [("paint", False), ("flush", False)]
     assert lift.store.size() == lift.size() == o2._size          # its store painted at the new size
+
+
+def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypatch):
+    from PyQt6.QtTest import QTest
+    from tests.qt.conftest import wait_until
+    # why (M2.1-3): a hidden lift has no screen to repaint; its hide (an expose that leaves it not exposed) and any
+    # expose while hidden leave its store and Windows' picture alone. While shown, an expose repaints (the contrast).
+    card = Card(stage, "up")
+    lift = card.open().lift
+    QTest.qWait(60)                                              # the show's expose, past
+    calls = []
+    for name in ("paint", "flush"):
+        real = getattr(motion._Lift, name)
+        monkeypatch.setattr(motion._Lift, name,
+                            lambda self, real=real, name=name: (calls.append((name, self.isVisible())), real(self))[1])
+    lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # shown: repaints
+    assert calls == [("paint", True), ("flush", True)]
+    clock.advance(400)                                           # the opening ends; its lift is given back, hidden
+    assert wait_until(lambda: not lift.isVisible(), 2)
+    QTest.qWait(60)                                              # the hide's own expose
+    assert lift.opening is None and not lift.isExposed()
+    lift.exposeEvent(QExposeEvent(QRegion()))                    # and one more while hidden
+    assert [c for c in calls if not c[1]] == []                  # nothing painted or flushed while hidden
 
 
 def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):

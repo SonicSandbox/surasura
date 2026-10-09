@@ -155,6 +155,7 @@ def paired_library():
     (["place", "--file", "1", "--to", "soon", "--source", "test"], 0),
     (["finish", "--file", "1", "--source", "test"], 2),            # held to 3.0
     (["connect", "--consume-only"], 0),
+    (["connect"], 0),                   # P2.4's loop: Anki switched off under the suites, the job waits; nothing heavy
 ])
 def test_p2_1s_verbs_load_nothing_heavy_and_no_tokenizer(paired_library, argv, exit_code):
     root, record = paired_library

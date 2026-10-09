@@ -83,6 +83,49 @@ def pairings(store):
     return out
 
 
+def pairing_of(store, item_id):
+    """The item's newest pairing record (hato's, as written), or None."""
+    row = store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ? ORDER BY paired_at DESC, rowid DESC "
+                             "LIMIT 1", (item_id,)).fetchone()
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return None
+
+
+def store_id(store):
+    """The store's identity (a new one when the library is set up again): a job is kept with it (P2.1 adversary
+    #12)."""
+    return store.meta().get("store_id")
+
+
+# --------------------------------------------------------------------------- #
+# P2.4: Connect's one store write per batch (S-R-6, G1.1-10)
+# --------------------------------------------------------------------------- #
+def record_batch(store, item_id, made, mined_at, batch=None):
+    """A batch's receipt (N8, `mined_at`) and its made-words record (N15: `{word: [note id, …]}`) in **one short
+    write**, as role `connect`'s command: the made-words table made inside the write before its rows (Kura's N15 note:
+    `ADDED_TABLES_SQL`, no schema step), then the receipt joins the same transaction. A word recorded again gains its
+    new note ids (G1.3-4: never made again automatically, whatever became of its card). Raises the store's `StoreBusy`
+    when the window holds the write lock past the store's 5 s (the caller tries again later), `StoreReadOnly` when it
+    can't be written. On the 3.0 line the store rings its bell after the commit (L3.2, `_writing`): nothing to ring
+    here."""
+    from app import library_store
+    at = mined_at or library_store._now()
+    with store._command("receipt", by=READER):
+        for sql in library_store.ADDED_TABLES_SQL:
+            store.conn.execute(sql)
+        for word, note_ids in (made or {}).items():
+            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                     (item_id, word)).fetchone()
+            ids = list(json.loads(row[0])) if row else []
+            ids += [n for n in note_ids if n not in ids]
+            store.conn.execute("INSERT OR REPLACE INTO made_words (item_id, word, note_ids, made_at, batch) "
+                               "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), at, batch))
+        if mined_at is not None:                # a level job's batch keeps the item's first receipt
+            store.receipt(item_id, mined_at)
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op."""

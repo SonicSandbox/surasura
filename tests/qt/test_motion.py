@@ -733,6 +733,28 @@ def test_a_lifted_opening_is_a_see_through_window_moved_and_faded_then_the_overl
     assert wait_until(lambda: sip.isdeleted(lift) or not lift.isVisible(), 2)       # gone a frame after the overlay
 
 
+def test_the_snapshot_is_drawn_over_the_shadow_and_never_clears_it(clock, stage, lifted):
+    from PyQt6.QtGui import QImage
+    from tests.qt.conftest import wait_until
+    # why (M2.1-3): a lifted opening paints in two pieces: "under" clears the store and draws the shadow, "over" draws
+    # the snapshot onto what is there and clears nothing. An over piece that clears would wipe the shadow away, and
+    # the card would sit on a bare see-through window with no edge. Checked after the pieces ran, while still open.
+    card = Card(stage, "up")
+    card.shadow_name = "dialog"
+    opening = card.open()
+    assert wait_until(lambda: opening._pieces is None, 2)
+    assert opening.lift is not None and not opening.ended
+    picture = sip.cast(opening.lift.store.paintDevice(), QImage)
+    dpr = picture.devicePixelRatio()
+    top = opening.target_in_picture.y()
+    centre_x = opening.target_in_picture.x() + card.width() // 2
+    below = top + card.height() + 6                              # a few pixels under the card, in the shadow's margin
+    shadow_alpha = picture.pixelColor(round(centre_x * dpr), round(below * dpr)).alpha()
+    snapshot_alpha = picture.pixelColor(round(centre_x * dpr), round((top + card.height() // 2) * dpr)).alpha()
+    assert shadow_alpha > 0                                      # the shadow survived the snapshot's piece
+    assert snapshot_alpha == 255                                 # and the snapshot is drawn on top of it
+
+
 class _PaintCount(QObject):
     """Counts the Paint events a widget gets (an event filter that never takes one)."""
 
@@ -1211,6 +1233,26 @@ def test_a_split_lifted_opening_is_six_pieces_and_shows_its_window_only_in_the_l
     assert opening.lift is not None and opening.lift.isVisible() and opening.lift.opacity() == 0.0
     clock.advance(400)
     assert card.isVisible()
+
+
+def test_each_paint_piece_of_a_lifted_opening_draws_only_its_own_part(clock, stage, lifted, monkeypatch):
+    from tests.qt.conftest import wait_until
+    # why (M2.1-3): the snapshot is the costlier drawing (a scrim's whole window), so it is drawn once, by the "over"
+    # piece; the "under" piece draws the shadow alone. Each call to the opening's _draw is recorded with its flags, and
+    # the real _draw still does the drawing.
+    calls = []
+    real = motion.OverlayOpening._draw
+
+    def record(self, p, shadow=True, snapshot=True):
+        calls.append((shadow, snapshot))
+        return real(self, p, shadow=shadow, snapshot=snapshot)
+
+    monkeypatch.setattr(motion.OverlayOpening, "_draw", record)
+    card = Card(stage, "up")
+    card.shadow_name = "dialog"                                  # a shadow in the margins, so "under" has one to draw
+    opening = card.open()
+    assert wait_until(lambda: opening._pieces is None, 2)
+    assert calls == [(True, False), (False, True)]               # under, over
 
 
 def test_split_pieces_wait_the_gap_between_their_passes(clock, stage, split, monkeypatch):

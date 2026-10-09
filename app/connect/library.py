@@ -108,22 +108,45 @@ def record_batch(store, item_id, made, mined_at, batch=None):
     `ADDED_TABLES_SQL`, no schema step), then the receipt joins the same transaction. A word recorded again gains its
     new note ids (G1.3-4: never made again automatically, whatever became of its card). Raises the store's `StoreBusy`
     when the window holds the write lock past the store's 5 s (the caller tries again later), `StoreReadOnly` when it
-    can't be written. On the 3.0 line the store rings its bell after the commit (L3.2, `_writing`): nothing to ring
-    here."""
+    can't be written. A word written moves `state_version` (P2.4 row 11, L3.3: a level job's batch has no receipt to
+    move it, and the copy and the window read the step); a word whose note ids are all recorded already is not
+    written again, and a level job's batch with nothing new takes no write at all (S19). The store rings its bell
+    after the commit (L3.2, `_writing`): nothing to ring here."""
     from app import library_store
+    if mined_at is None and _recorded(store, item_id, made):
+        return                                  # a level job's batch with nothing new: no write lock taken (S19)
     at = mined_at or library_store._now()
-    with store._command("receipt", by=READER):
+    with store._command("receipt", by=READER) as cmd:
         for sql in library_store.ADDED_TABLES_SQL:
             store.conn.execute(sql)
         for word, note_ids in (made or {}).items():
             row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
                                      (item_id, word)).fetchone()
-            ids = list(json.loads(row[0])) if row else []
-            ids += [n for n in note_ids if n not in ids]
+            had = list(json.loads(row[0])) if row else []
+            ids = had + [n for n in note_ids if n not in had]
+            if row is not None and ids == had:
+                continue                        # nothing new for this word: its row as it is
             store.conn.execute("INSERT OR REPLACE INTO made_words (item_id, word, note_ids, made_at, batch) "
                                "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), at, batch))
+            cmd.touch()
         if mined_at is not None:                # a level job's batch keeps the item's first receipt
             store.receipt(item_id, mined_at)
+
+
+def _recorded(store, item_id, made):
+    """Is every word of `made` recorded for the item with all its note ids already (nothing to write)? Read outside
+    the write lock (adversary L3.3 wiring #6)."""
+    if not made:
+        return True
+    if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'").fetchone():
+        return False
+    with store._reading():
+        for word, note_ids in made.items():
+            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                     (item_id, word)).fetchone()
+            if row is None or any(n not in json.loads(row[0]) for n in note_ids):
+                return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -143,14 +166,13 @@ def note_ids(store):
 
 
 def notes_gone(store, gone):
-    """Tell the store these notes are gone from Anki: it takes them out of what reads *in Anki* (`cards_of`,
-    `card_lines`, `anki_links`) and keeps the made word (G1.3-4: never made again unless you ask). The store's half is
-    Kura's (`Store.notes_gone`, asked at P2.4 row 2.4.14): a no-op until the store has it -> True when it was told."""
-    told = getattr(store, "notes_gone", None)
-    if not gone or told is None:
-        return False
-    told(sorted(gone))
-    return True
+    """Tell the store these notes are gone from Anki: it takes them out of what reads *in Anki* (`anki_links`, the
+    note ids in `made_words`, 3.0's `made_lines`) and keeps the made word (G1.3-4: never made again unless you ask).
+    The store's half is Kura's (`Store.notes_gone`, L3.3, P2.4 row 2.4.14) -> the note ids it took out (nothing gone:
+    the store isn't asked)."""
+    if not gone:
+        return []
+    return store.notes_gone(sorted(gone), by=READER)
 
 
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):

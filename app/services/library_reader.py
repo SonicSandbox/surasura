@@ -36,6 +36,7 @@ from app.services import view_rows
 
 POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
+CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
 CACHE_VERSION = 3                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`
 
@@ -83,6 +84,7 @@ class LibraryReader:
         self._changed_ids = None
         self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
         self._cache_due = None             # (view, key) to write as the first screen's cache, at the next quiet look
+        self._cache_due_at = 0.0           # when a write first fell due (a store busy for long still gets one)
         self._cards_all_at = 0.0
         self._cards_stale = False
         self._mode_at = 0.0
@@ -130,7 +132,10 @@ class LibraryReader:
                 self._busy(e)
             self._wake.wait(self.poll)
             self._wake.clear()
-        self._flush_cache()                             # the last view's cache, as the window closes
+        try:
+            self._flush_cache()                         # the last view's cache, as the window closes
+        except Exception:
+            pass                                        # never in the way of closing (the store's handle below)
         try:
             h = self.opener.handle()
             if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
@@ -186,6 +191,7 @@ class LibraryReader:
             self._store_id = h.meta().get("store_id")
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
+            self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
@@ -194,7 +200,11 @@ class LibraryReader:
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
+            if self._cache_due is None:
+                self._cache_due_at = time.monotonic()
             self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
+            if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
+                self._flush_cache()                     # a store that never rests: written anyway, now and then
 
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't

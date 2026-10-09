@@ -203,7 +203,7 @@ class Page(QWidget):
         if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):   # only when it changes
             self.state_bar.show_line(line)
         if old is not None and view is not None and old.loading == view.loading and self.unchanged(old, view):
-            self.list.model().changed = []
+            self.list.model().changed = self.list.model().looks_changed = []
             return "same"                               # another page's change: this list's diff costs nothing
         return self.list.set_entries(self.entries(view))
 

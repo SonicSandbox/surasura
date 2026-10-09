@@ -465,6 +465,16 @@ class RowCache:
         self._glob = self._cards = None
         self._next = {}
         self.guess_seen, self.guess_counts = {}, {}   # `_Guesses`: each row counted once, kept while it is the same object
+        # the ids changed since the counts were last brought up to date, kept until a build counts (a build with no
+        # untyped title on the list never does: review 2026-10-08, the Haiku pass, four lenses); None: unknown, all
+        self.guess_pending = None
+
+    def note_changed(self, changed):
+        """The item ids the feed changed or let go since the last build (None: unknown — every item looked at)."""
+        if changed is None or self.guess_pending is None:
+            self.guess_pending = None                # a full count is owed: it stays owed until a build counts
+        else:
+            self.guess_pending |= set(changed)
 
     def begin(self, version, cards=None, mining=None, in_top=None, line_n=None):
         if version != self.version:
@@ -547,10 +557,9 @@ class _Guesses:
     are kept between builds and only the rows the feed replaced are counted again (review C-6: ~5 ms a build at 20,000
     files, holding Python's lock against the window's thread)."""
 
-    def __init__(self, items, cache=None, changed=None):
+    def __init__(self, items, cache=None):
         self.items = items
         self.cache = cache
-        self.changed = changed                       # the item ids the feed changed or let go since the last build
         self.counts = None
 
     def of(self, work):
@@ -568,10 +577,13 @@ class _Guesses:
                 del c[entry[2]]
                 if not c:
                     del counts[entry[1]]
-        if self.cache is not None and self.changed is not None and seen:
+        pending = None if self.cache is None else self.cache.guess_pending
+        if self.cache is not None:
+            self.cache.guess_pending = set()             # brought up to date below: from here on, only what changes
+        if pending is not None and seen:
             # the reader said which ids changed (speed round 5: a walk of all 20,000 items on every build, on the
             # reader's thread, holding Python's lock against the window's); the rest are the same objects
-            for i in self.changed:
+            for i in pending:
                 r, old = self.items.get(i), seen.get(i)
                 if old is not None and old[0] is r:
                     continue
@@ -635,7 +647,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 break
     if cache is not None:
         cache.begin(cache_version, cards, mining, in_top, line_n)
-    guessed = _Guesses(items, cache, changed)
+    if cache is not None:
+        cache.note_changed(changed)
+    guessed = _Guesses(items, cache)
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):

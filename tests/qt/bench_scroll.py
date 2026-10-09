@@ -243,8 +243,12 @@ def main_child(a):
     result = {"first_frame_ms": None, "rows_live_ms": None}
     phases = {}                                          # name -> [start, end] (perf_counter)
 
+    counts = {}                                          # name -> [(paints, renders, warmed) at start, at end]
+
     def mark(name, end=False):
         phases.setdefault(name, [None, None])[1 if end else 0] = time.perf_counter()
+        d = lst.delegate                                 # what Current drew in the phase: blits, afresh, ahead
+        counts.setdefault(name, [None, None])[1 if end else 0] = (d.paints, d.renders, d.warmed)
 
     # Python's collector: every collection, its generation, its length and the thread it ran on (a full one on a big
     # heap holds Python's lock — every thread waits — so it shows here before anywhere else)
@@ -501,6 +505,9 @@ def main_child(a):
                          "gc": [(g, ms, th) for g, ms, th, at in gc_log if t0 <= at <= t1 and ms > 2],
                          "over_during_reader": len(during),
                          "reader": [(n, round(ms, 2)) for n, r0, ms in reader_log if t0 <= r0 <= t1 and ms > 2][:30]}
+            c0, c1 = counts.get(name, (None, None))
+            if c0 and c1:
+                per[name]["painted_rendered_warmed"] = [b - a for a, b in zip(c0, c1)]
         result["phases"] = per
         result["gc_over_2ms"] = [(g, ms, th) for g, ms, th, _at in gc_log if ms > 2]
         result["gc_count"] = len(gc_log)

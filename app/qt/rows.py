@@ -358,7 +358,8 @@ class RowsModel(QAbstractListModel):
         self.entries = []
         self.keys = []
         self.open_key = None
-        self.changed = []                           # rows a "same" refresh changed (repainted alone)
+        self.changed = []                           # rows a "same" refresh changed
+        self.looks_changed = []                     # ... and of those, the ones that look different (repainted alone)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.entries)
@@ -420,9 +421,15 @@ class RowsModel(QAbstractListModel):
             old = self.entries
             shapes = [self.shape_of(e) for e in old] == [self.shape_of(e) for e in entries]
             self.changed = [i for i, (a, b) in enumerate(zip(old, entries)) if a[1] is not b[1] or a[2] != b[2]]
+            # a closed row rebuilt with nothing it shows changed (`_same_face`) is no repaint (S19)
+            self.looks_changed = [i for i in self.changed if not (
+                old[i][2] == entries[i][2] and entries[i][0] in (ROW, FINISHED) and
+                getattr(entries[i][1], "key", None) != self.open_key and
+                _same_face(old[i][1], entries[i][1], entries[i][0]))]
             self.entries = list(entries)
             return "same" if shapes else "relayout"
         self.beginResetModel()
+        self.changed = self.looks_changed = []
         self.entries = list(entries)
         self.keys = keys
         if self.open_key is not None and not any(k[1] == self.open_key for k in keys):
@@ -562,7 +569,7 @@ class RowDelegate(QStyledItemDelegate):
     @staticmethod
     def _shape(entry, is_open):
         """What an entry's height is made of (`_size_hint` reads nothing else): its kind, its lines, open or not, and,
-        open or a Needs-you item, how many episodes it lists. A closed row is as tall as every other closed row."""
+        open or a Needs-you item, how many episodes it lists. Closed rows with as many lines under them are as tall."""
         kind, payload, lines = entry
         n = len(payload.episodes) if (is_open and kind in (HERO, ROW)) or kind == NEED else 0
         return kind, len(lines), is_open and kind in (HERO, ROW), n
@@ -862,7 +869,8 @@ class RowDelegate(QStyledItemDelegate):
     def _paint_open_row(self, p, kind, row, body, hovered, focused, dpr, lines):
         """An open row: its head painted once into a pixmap (its top corners rounded on the list's ground), the ground
         under it filled, then the episodes (each its own pixmap) — opening a row costs a relayout and blits, and a
-        repaint of an open row draws no text or cover afresh (its ground, rule and focus ring are a few strokes)."""
+        repaint of an open row draws no row text or cover afresh: only its number, over the head (its ground, rule
+        and focus ring are a few strokes)."""
         h = round(theme.SIZES["row"] * fz())
         local = QRect(0, 0, body.width(), body.height())
         radius = theme.RADII["r-sm"]
@@ -1081,8 +1089,8 @@ class RowDelegate(QStyledItemDelegate):
         and with the number inside, every row on screen was drawn again (~21 ms an arrival, bench 10; review B-5)."""
         f = fz()
         h = round(theme.SIZES["row"] * f)
-        TEXT.draw(p, body.left() + 4, body.top() + h // 2, str(row.index), "position", round(20 * f), c("ink-faint"),
-                  align="right", dpr=dpr)
+        TEXT.draw(p, body.left() + 4, QRect(body.left(), body.top(), body.width(), h).center().y(), str(row.index),
+                  "position", round(20 * f), c("ink-faint"), align="right", dpr=dpr)
 
     def _paint_studying(self, p, x, y_mid, dpr):
         f = fz()
@@ -1432,13 +1440,13 @@ class RowsView(QListView):
         model = self.model()
         anchor = self._anchor()
         how = model.set_entries(entries)
-        if how != "same" or model.changed:          # nothing changed: nothing to paint ahead or again either
+        if how != "same" or model.looks_changed:    # nothing shown changed: nothing to paint ahead or again either
             self._rest()
         if how == "same":
-            if len(model.changed) > 40:
+            if len(model.looks_changed) > 40:
                 self.viewport().update()
             else:
-                for i in model.changed:                  # only the rows that changed (dirty rows, never all)
+                for i in model.looks_changed:            # only the rows that look different (dirty rows, never all)
                     self.update(model.index(i, 0))
         elif how == "relayout":
             self.relayout()

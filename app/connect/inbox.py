@@ -59,7 +59,8 @@ def consume(store, language, ledger=None):
                             queued.append(item_id)
                     elif ledger.drop(language, item_id, "left the top 20"):
                         dropped.append(item_id)
-            ledger.mark_read(language)
+            if rows or gap or ledger.last_read(language) is None:   # an idle look writes nothing (charter S19)
+                ledger.mark_read(language)
         last = max([r[0] for r in rows] + ([end] if gap else []), default=None)
         if last is not None:
             store.advance_reader(library.READER, last)

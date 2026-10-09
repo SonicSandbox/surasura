@@ -533,35 +533,37 @@ def test_under_the_suites_a_connect_receipt_arms_no_idle_trigger(language, store
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_command_line_register_receipt_arms_the_idle_trigger(language, monkeypatch, store_helper_spawns):
-    """The command line (role "register") writes with no window of its own, so its commit is a cue like Connect's: its
-    receipt arms the idle trigger, and at exit the behind copy is exported once. An analyzer's bookkeeping write is a
-    window-less write too but not one that leaves the copy behind, so it arms nothing. The trigger is 30 s, so it
-    stays pending until the exit call; nothing spawns before it."""
+def test_only_connects_writes_arm_the_idle_trigger_not_the_command_lines(language, monkeypatch, store_helper_spawns):
+    """Connect's process lives long enough to batch a burst into one export; the command line (role "register") is one
+    process a hato drop, so arming it would export once a drop (the intent keeper's IK-3). Its receipt arms nothing,
+    nor does an analyzer's bookkeeping write; a Connect receipt arms the trigger, and at exit the behind copy is
+    exported once. The trigger is 30 s, so it stays pending until the exit call."""
     monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
     monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
     monkeypatch.setattr(ls, "_IDLE", {})
     data_dir, user_files_dir = roots(language)
     migrated(language).close()                # no maintain: the copy is behind from here on
     store_helper_spawns.clear()
-    analyst = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+    for role in ("analyzer", "register"):
+        other = ls.open_store(language, data_dir, user_files_dir, role=role)
+        try:
+            assert other is not None
+            if role == "analyzer":
+                other.bookkeeping({"analysed_order_version": other.meta().get("analysed_order_version", 0) + 1})
+            else:
+                assert other.receipt(other.ids("now")[1], "2026-10-08T09:00:00Z") is not None
+            assert ls._IDLE == {}, f"a {role} write armed the idle trigger"
+        finally:
+            other.close()
+    connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
     try:
-        assert analyst is not None
-        analyst.bookkeeping({"analysed_order_version": analyst.meta().get("analysed_order_version", 0) + 1})
-        assert _idle_key(analyst) not in ls._IDLE, "an analyzer's bookkeeping write armed the idle trigger"
-    finally:
-        analyst.close()
-    register = ls.open_store(language, data_dir, user_files_dir, role="register")
-    try:
-        assert register is not None
-        assert register.receipt(register.ids("now")[0], "2026-10-08T10:00:00Z") is not None
-        key = _idle_key(register)
-        assert key in ls._IDLE, "the command line's receipt did not arm the idle trigger"
+        assert connect.receipt(connect.ids("now")[0], "2026-10-08T10:00:00Z") is not None
+        assert _idle_key(connect) in ls._IDLE, "Connect's receipt did not arm the idle trigger"
         assert not _until(lambda: store_helper_spawns, limit=0.5), "the pending trigger spawned before exit"
         ls._outside_idle_now()
-        assert store_helper_spawns == [(language,)], "the command line's behind copy is exported at exit, once"
+        assert store_helper_spawns == [(language,)], "the behind copy is exported at exit, once"
     finally:
-        register.close()
+        connect.close()
         ls._outside_idle_now()
 
 
@@ -645,3 +647,41 @@ def test_exit_waits_for_a_trigger_its_timer_is_already_running(language, store_h
         ls._outside_idle_now()
         if connect is not None:
             connect.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_spans_handle_on_a_store_marked_damaged_is_let_go_at_once(language):
+    """Repair sets a damaged store's files aside, which Windows refuses while any handle is open (the intent keeper's
+    IK-4): a span that finds the damage marker closes its handle there and then, not at the span's end."""
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    db = ls.library_db_path(language, data_dir)
+    try:
+        with ls.held():
+            held = ls.open_store(language, data_dir, user_files_dir, role="connect")
+            assert held is not None
+            ls.mark_damaged(db, "a test's damage")
+            assert ls.open_store(language, data_dir, user_files_dir, role="connect") is None
+            with pytest.raises(sqlite3.ProgrammingError):
+                held.conn.execute("SELECT 1")
+            os.remove(ls.damaged_marker(db))            # repaired meanwhile: the span opens a working handle again
+            again = ls.open_store(language, data_dir, user_files_dir, role="connect")
+            assert again is not None and again is not held
+            assert again.meta()["state_version"] >= 0
+    finally:
+        if os.path.exists(ls.damaged_marker(db)):
+            os.remove(ls.damaged_marker(db))
+
+
+def test_every_reader_connection_the_store_opens_is_closed_through_close():
+    """A source scan (the intent keeper's IK-2): a plain `close()` of a read-write connection that is the database's
+    last checkpoints it outside the write lock. Every function that opens one with `_connect(` closes it through
+    `_close(` (a `Store` closes its own through `Store.close`)."""
+    import inspect
+    source = inspect.getsource(ls)
+    offenders = []
+    for block in source.split("\ndef ")[1:]:
+        name = block.split("(", 1)[0]
+        if "= _connect(" in block and name not in ("_probe",) and "_close(" not in block:
+            offenders.append(name)
+    assert offenders == [], offenders

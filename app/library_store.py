@@ -98,8 +98,8 @@ LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
 BUSY_AT_OPEN = 1.0               # "database is locked" at open is retried this long (§6.2)
 MAINT_WAIT = 10.0                # a helper waits this long for the maintenance lock, then exits 5
 BAK_KEEP = 10                    # the store's own .bak files kept (R-5)
-OUTSIDE_ROLES = ("connect", "register")    # writers with no window of their own: Connect, the command line (§6.12)
-OUTSIDE_IDLE_S = 2.0             # their copy trigger fires this long after their last commit (a burst, one export)
+OUTSIDE_ROLES = ("connect",)     # a writer with no window of its own and a life long enough to batch (§6.12)
+OUTSIDE_IDLE_S = 2.0             # its copy trigger fires this long after its last commit (a burst, one export)
 
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
@@ -707,6 +707,12 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     if span is not None and key in span:
         if not os.path.exists(damaged_marker(db_path)):
             return span[key]
+        store = span.pop(key)                           # damaged: let go of it now, so Repair can set the file aside
+        store._held = False
+        try:
+            store.close()
+        except Exception:
+            pass
         return None
     mode, _reason = _probe(db_path, busy_wait)
     if mode != "store":
@@ -1301,7 +1307,7 @@ class Store:
                 self.conn.execute("PRAGMA query_only=1")
             finally:
                 self._wlock.release()
-        if wrote:                                # Connect's or the command line's commit: the copy's trigger
+        if wrote:                                # Connect's commit: the copy's trigger
             try:
                 _outside_wrote(self)
             except Exception:                    # a committed write never fails for its trigger
@@ -2274,19 +2280,31 @@ class Store:
             found, made = self._notes_held(gone)
         if not found:
             return []
+        wanted = set(gone)
         with self._command("notes_gone", by) as cmd:
-            found, made = self._notes_held(gone)            # again inside the write: what holds now
-            if not found:
-                return []
+            # Inside the write only what the read found, by its keys (never the whole made-words table under the
+            # lock: it only grows). Rows another writer changed meanwhile are read again here.
+            changed = 0
             lines = self._has_table("made_lines")
             for chunk in _chunks(gone, 500):
                 marks = ",".join("?" * len(chunk))
-                self.conn.execute(f"DELETE FROM anki_links WHERE note_id IN ({marks})", chunk)
+                changed += self.conn.execute(f"DELETE FROM anki_links WHERE note_id IN ({marks})", chunk).rowcount
                 if lines:
-                    self.conn.execute(f"DELETE FROM made_lines WHERE note_id IN ({marks})", chunk)
-            self.conn.executemany("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
-                                  [(json.dumps(kept), item_id, word) for item_id, word, kept in made])
-            cmd.touch()
+                    changed += self.conn.execute(f"DELETE FROM made_lines WHERE note_id IN ({marks})", chunk).rowcount
+            for item_id, word, _kept in made:
+                row = self.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                        (item_id, word)).fetchone()
+                try:
+                    ids = [int(n) for n in json.loads(row[0])] if row else []
+                except (ValueError, TypeError):
+                    continue
+                kept = [n for n in ids if n not in wanted]
+                if len(kept) != len(ids):
+                    self.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                      (json.dumps(kept), item_id, word))
+                    changed += 1
+            if changed:
+                cmd.touch()
         return sorted(found)
 
     def _has_table(self, name):
@@ -3727,7 +3745,7 @@ def _db_state(db_path):
             return "ready"
         return "failed" if "migration_failed" in rows else "empty"
     finally:
-        conn.close()
+        _close(conn, db_path, "reader")                # the helper's checkpoint comes at its store's close
 
 
 def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
@@ -3890,12 +3908,14 @@ def _helper_env():
     return build_subprocess_env()
 
 
-# The copy's trigger after a writer with no window (§6.12: Connect's receipts, the command line's verbs): a window
-# hands the copy to the helper after its own last change; Connect and the command line run with Surasura closed as
-# often as open, so they do the same — OUTSIDE_IDLE_S after their last commit (a burst coalesced into one export),
-# `maintain` when the copy is behind (it checkpoints, under the write lock), else Connect's idle checkpoint here
-# (under the write lock too). Nothing written, nothing scheduled; a process that exits first runs it at exit.
-# Off under the test suites (SURASURA_NO_IDLE_EXPORT, inherited by the command lines they start).
+# The copy's trigger after Connect's writes (§6.12: Connect's receipts → re-export): a window hands the copy to the
+# helper after its own last change; Connect runs with Surasura closed as often as open, so it does the same —
+# OUTSIDE_IDLE_S after its last commit (a burst coalesced into one export), `maintain` when the copy is behind (it
+# checkpoints, under the write lock), else Connect's idle checkpoint here (under the write lock too). Nothing written,
+# nothing scheduled; a process that exits first runs it at exit. Not the command line's role (`register`): one process
+# a hato drop, so a burst of drops would be one export each; its changes reach the copy with Connect's next write, a
+# window's, or the next open, as before. Off under the test suites (SURASURA_NO_IDLE_EXPORT, inherited by the command
+# lines they start).
 _IDLE = {}                       # db key -> (the pending Timer, its arguments)
 _IDLE_GUARD = threading.Lock()
 _IDLE_AT_EXIT = []               # [True] once the exit hook is registered

@@ -403,9 +403,9 @@ def test_idle_trigger_checkpoints_and_spawns_nothing_when_the_copy_is_up_to_date
     checkpoints = []
     real_checkpoint = ls.Store.checkpoint
 
-    def counting(self):
+    def counting(self, *args, **kwargs):
         checkpoints.append(1)
-        return real_checkpoint(self)
+        return real_checkpoint(self, *args, **kwargs)
 
     monkeypatch.setattr(ls.Store, "checkpoint", counting)
     data_dir, user_files_dir = roots(language)
@@ -578,9 +578,9 @@ def test_a_trigger_called_off_its_own_timer_thread_does_nothing(language, monkey
     checkpoints = []
     real_checkpoint = ls.Store.checkpoint
 
-    def counting(self):
+    def counting(self, *args, **kwargs):
         checkpoints.append(1)
-        return real_checkpoint(self)
+        return real_checkpoint(self, *args, **kwargs)
 
     monkeypatch.setattr(ls.Store, "checkpoint", counting)
     data_dir, user_files_dir = roots(language)

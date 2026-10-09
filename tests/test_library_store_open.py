@@ -266,7 +266,7 @@ def test_no_checkpoint_outside_the_write_helper():
             if "wal_checkpoint" in body:
                 inner = [n for n in ast.walk(node) if isinstance(n, ast.FunctionDef) and n is not node]
                 if not inner:
-                    found.append((node.name, "self._writing(begin=False)" in body))
+                    found.append((node.name, "self._writing(begin=False" in body))     # its wait may follow
     code_lines = [l for l in source.splitlines() if "wal_checkpoint" in l and not l.strip().startswith("#")]
     assert found == [("checkpoint", True)], found
     assert len([l for l in code_lines if "execute(" in l]) == 1

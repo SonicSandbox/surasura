@@ -34,6 +34,7 @@ BATCH_STATUS_EVERY = 100
 # The library store (Library_Store_Spec §6.7, §6.10): the worker's poll, its results' drain on the window's
 # thread, the idle export after this window's last change, and how long a build at open holds changes.
 STORE_POLL_S = 0.5
+STORE_CLOSE_WAIT_S = 2.0         # at the window's close, how long the worker is given to close its handle
 STORE_DRAIN_MS = 100
 BIG_BLOCK = 1000             # items: a command over this many runs behind a progress mark (§6.12)
 STORE_IDLE_MS = 2000
@@ -465,6 +466,10 @@ class ContentImporterApp:
                 self._worker_results.put(("error", str(e), 0.0))
                 self._sync_wanted = True                 # asked again at the next poll, not left for a focus
                 store = poll = token = None
+        try:
+            self._opener().close()                       # its own handle, through the store's close (§6.12)
+        except Exception:
+            pass
 
     def _drain_store_worker(self):
         """On this thread, every STORE_DRAIN_MS: apply the worker's results, the banners and the build's end."""
@@ -1112,6 +1117,24 @@ class ContentImporterApp:
         if host is not None:
             host.stop()
         self.root.destroy()
+        self._close_store_handles()
+
+    def _close_store_handles(self):
+        """At the window's close: the worker stopped (it closes its own handle as it ends) and this thread's handle
+        closed, both through the store's close (§6.12) — never left to the process's end, where a plain close that
+        is the last checkpoints outside the write lock. The window is gone: the short wait is no one's."""
+        stop, worker = self.__dict__.get("_worker_stop"), self.__dict__.get("_worker")
+        if stop is not None:
+            stop.set()
+            self._worker_wake.set()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(STORE_CLOSE_WAIT_S)
+        opener = self.__dict__.get("_store_opener")
+        if opener is not None:
+            try:
+                opener.close()
+            except Exception:
+                pass
 
     def get_current_dir(self):
         folder_name = self.target_folder_var.get()

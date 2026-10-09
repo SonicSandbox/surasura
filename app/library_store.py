@@ -95,10 +95,12 @@ EXIT_BAD_DATA = 6
 
 LOCK_TIMEOUT = 5.0               # the write lock and SQLite's busy wait
 LOCK_RETRY = 0.0005              # 0.5 ms between tries of the OS write lock
+CLOSE_WAIT_MS = 50               # a close's anchor and its write lock are waited for this long (§6.12)
 BUSY_AT_OPEN = 1.0               # "database is locked" at open is retried this long (§6.2)
 MAINT_WAIT = 10.0                # a helper waits this long for the maintenance lock, then exits 5
 BAK_KEEP = 10                    # the store's own .bak files kept (R-5)
 OUTSIDE_ROLES = ("connect",)     # a writer with no window of its own and a life long enough to batch (§6.12)
+OUTSIDE_IDLE_WAIT = 1.0          # its checkpoint waits this long for the write lock (a writer then has it: skipped)
 OUTSIDE_IDLE_S = 2.0             # its copy trigger fires this long after its last commit (a burst, one export)
 
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
@@ -528,10 +530,12 @@ def _close(conn, db_path, role):
     closed, that ran outside the write lock at every close (P2.4's verifier: 406 of 406), and the next write paid for
     a new `-wal` (a receipt's hold up to 62 ms). A read-only connection never checkpoints, and while one is open no
     other close is the last: so a reader opened for the close (an anchor) keeps the `-wal` for the next checkpoint
-    under the lock (the helper's run, or Connect's idle trigger). The helper is the checkpointer: its close keeps
-    SQLite's checkpoint, under the write lock. With no anchor (the file can't be read just now), the close goes under
-    the write lock if it's free; if another connection holds it, that connection is open, so this close isn't the
-    last and checkpoints nothing."""
+    under the lock (the helper's run, Connect's idle trigger, or the close trigger). The helper is the checkpointer:
+    its close keeps SQLite's checkpoint, under the write lock. The anchor and the lock are each waited for briefly
+    (CLOSE_WAIT_MS: every close in WAL mode holds a lock for a moment, so two closes at once can meet). With no
+    anchor, the close goes under the write lock; if it's still held after that wait, the close is plain: almost
+    always a writer with its connection open, so this close isn't the last; rarely another close, and then this one
+    may checkpoint outside the lock (SQLite's exclusive lock still guards that checkpoint)."""
     if role == "helper":
         lock = _write_lock_for(db_path)
         try:
@@ -546,7 +550,7 @@ def _close(conn, db_path, role):
         return
     anchor = None
     try:
-        anchor = _read_only(db_path, 0)
+        anchor = _read_only(db_path, CLOSE_WAIT_MS)
         anchor.execute("PRAGMA user_version").fetchone()           # a read: the anchor's shared lock taken
     except sqlite3.Error:
         if anchor is not None:
@@ -558,7 +562,7 @@ def _close(conn, db_path, role):
             return
         lock = _write_lock_for(db_path)
         try:
-            lock.acquire(timeout=0.0)
+            lock.acquire(timeout=CLOSE_WAIT_MS / 1000)
         except StoreBusy:
             conn.close()
             return
@@ -700,14 +704,21 @@ def check_mode(language, data_dir, busy_wait=BUSY_AT_OPEN):
 def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY_AT_OPEN):
     """A `Store` handle for this thread, or None when no store is ready (not built, JSON mode,
     read-only). Cheap: it checks the version, the damage marker and readiness, nothing more (§6.2).
-    Inside `held()` on this thread, the span's handle for this store and role (opened by the first call)."""
+    Inside `held()` on this thread, the span's handle for this store and role (opened by the first call), its mode
+    read again through it each time (two cached reads): a store marked damaged, made newer or no longer migrated
+    meanwhile is let go of and None, as outside a span."""
     db_path = library_db_path(language, data_dir)
     span = _span()
     key = (os.path.normcase(os.path.abspath(db_path)), role)
     if span is not None and key in span:
-        if not os.path.exists(damaged_marker(db_path)):
-            return span[key]
-        store = span.pop(key)                           # damaged: let go of it now, so Repair can set the file aside
+        store = span[key]
+        try:
+            ready = not os.path.exists(damaged_marker(db_path)) and _mode_on(store.conn)[0] == "store"
+        except sqlite3.Error:
+            ready = False
+        if ready:
+            return store
+        span.pop(key)                                   # let go of it now (damaged: so Repair can set the file aside)
         store._held = False
         try:
             store.close()
@@ -717,12 +728,16 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     mode, _reason = _probe(db_path, busy_wait)
     if mode != "store":
         return None
+    store = None
     try:
         store = Store(db_path, language, data_dir, user_files_dir, role)
         _rederive_soon_line(store)
-    except sqlite3.DatabaseError:
-        return None
-    except StoreError:
+    except (sqlite3.DatabaseError, StoreError):
+        if store is not None:                           # never left to the collector's plain close (§6.12)
+            try:
+                store.close()
+            except Exception:
+                pass
         return None
     if span is not None:
         store._held = True
@@ -822,6 +837,14 @@ class StoreOpener:
             store = open_store(self.language, self.data_dir, self.user_files_dir, self.role, busy_wait=0.0)
             self._local.store = store
         return store
+
+    def close(self):
+        """Close this thread's handle through `_close` (§6.12: never left to the collector's plain close, which
+        checkpoints outside the write lock when it is the last). The next `handle()` opens a new one."""
+        store = getattr(self._local, "store", None)
+        self._local.store = None
+        if store is not None:
+            store.close()
 
     def wait(self, timeout=5.0):
         """For tests and headless callers: let a running worker settle."""
@@ -965,6 +988,33 @@ def _same_record(text, pairing):
 
 def _rel_dir(rel):
     return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def _json_list(raw):
+    """A JSON list read leniently: [] for anything that isn't one."""
+    try:
+        value = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _json_dict(raw):
+    try:
+        value = json.loads(raw) if raw else None
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _note_id(value):
+    """A note id as an int, or None (a `null`, a string that isn't a number, a nested list)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _chunks(seq, size):
@@ -1232,8 +1282,12 @@ class Store:
         self.user_files_dir = user_files_dir
         self.role = role
         self.conn = _connect(db_path, role)
-        self._wlock = _write_lock_for(db_path)
-        self._own = _own_bumps(db_path)
+        try:
+            self._wlock = _write_lock_for(db_path)
+            self._own = _own_bumps(db_path)
+        except BaseException:                    # never left to the collector's plain close (§6.12)
+            _close(self.conn, db_path, role)
+            raise
         self._depth = 0
         self._cmd = None
         self._repairing = False          # Repair writes past the damage marker it is about to clear
@@ -1255,10 +1309,10 @@ class Store:
     # --- the one write helper (§6.2, K32) ------------------------------------------------------- #
 
     @contextmanager
-    def _writing(self, begin=True):
-        """Every write and every explicit checkpoint, under the write lock. Re-entrant: a command
-        called inside another joins the outer transaction; only the outermost call takes the OS lock,
-        begins and commits. `query_only` is lifted here and nowhere else."""
+    def _writing(self, begin=True, wait=LOCK_TIMEOUT):
+        """Every write and every explicit checkpoint, under the write lock (waited for `wait` s, then StoreBusy).
+        Re-entrant: a command called inside another joins the outer transaction; only the outermost call takes the
+        OS lock, begins and commits. `query_only` is lifted here and nowhere else."""
         if self._depth:
             self._depth += 1
             try:
@@ -1268,7 +1322,7 @@ class Store:
             return
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
-        self._wlock.acquire()
+        self._wlock.acquire(wait)
         wrote = False
         try:
             changes = self.conn.total_changes
@@ -1313,9 +1367,9 @@ class Store:
             except Exception:                    # a committed write never fails for its trigger
                 pass
 
-    def checkpoint(self):
+    def checkpoint(self, wait=LOCK_TIMEOUT):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""
-        with self._writing(begin=False):
+        with self._writing(begin=False, wait=wait):
             return self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
 
     @contextmanager
@@ -2270,14 +2324,16 @@ class Store:
         """Notes Anki no longer has (P2.4 row 2.4.14; Sonic, 2026-10-07: a card the learner deletes, theirs or
         Connect's, loses its *in Anki* mark at the next sync and is never offered): taken out of everything that reads
         a note as in Anki — `anki_links`, the note ids in `made_words` and, where it exists (3.0), `made_lines` —
-        while each made word keeps its row (G1.3-4: never made again unless you ask). A status write, `state_version`
-        only (the copy carries these tables where it carries them). Notes the store doesn't hold change nothing and
-        write nothing: no write lock is taken (S19). Returns the note ids taken out, sorted."""
+        while each made word keeps its row (G1.3-4: never made again unless you ask); and out of what a removed item
+        keeps for its Put back or undo (its trash row's `anki_links`), so a restore never brings the mark back. A
+        status write, `state_version` only (the copy carries these tables where it carries them). Notes the store
+        doesn't hold change nothing and write nothing: no write lock is taken (S19). Returns the note ids taken out,
+        sorted."""
         gone = sorted({int(n) for n in note_ids})
         if not gone:
             return []
         with self._reading():
-            found, made = self._notes_held(gone)
+            found, made, trashed = self._notes_held(gone)
         if not found:
             return []
         wanted = set(gone)
@@ -2291,17 +2347,26 @@ class Store:
                 changed += self.conn.execute(f"DELETE FROM anki_links WHERE note_id IN ({marks})", chunk).rowcount
                 if lines:
                     changed += self.conn.execute(f"DELETE FROM made_lines WHERE note_id IN ({marks})", chunk).rowcount
-            for item_id, word, _kept in made:
+            for item_id, word in made:
                 row = self.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
                                         (item_id, word)).fetchone()
-                try:
-                    ids = [int(n) for n in json.loads(row[0])] if row else []
-                except (ValueError, TypeError):
-                    continue
-                kept = [n for n in ids if n not in wanted]
+                ids = _json_list(row[0]) if row else []
+                kept = [n for n in ids if _note_id(n) not in wanted]
                 if len(kept) != len(ids):
                     self.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
                                       (json.dumps(kept), item_id, word))
+                    changed += 1
+            for trash_id in trashed:
+                row = self.conn.execute("SELECT item_state FROM trash WHERE id = ? AND restored_at IS NULL",
+                                        (trash_id,)).fetchone()
+                state = _json_dict(row[0]) if row else None
+                links = state.get("anki_links") if state else None
+                if not isinstance(links, list):
+                    continue
+                kept = [a for a in links if not (isinstance(a, list) and a and _note_id(a[0]) in wanted)]
+                if len(kept) != len(links):
+                    state["anki_links"] = kept
+                    self.conn.execute("UPDATE trash SET item_state = ? WHERE id = ?", (_dumps(state), trash_id))
                     changed += 1
             if changed:
                 cmd.touch()
@@ -2312,8 +2377,10 @@ class Store:
                                  (name,)).fetchone() is not None
 
     def _notes_held(self, gone):
-        """(the gone notes the store holds, [(item_id, word, the note ids kept)] for each made word that names one)."""
-        wanted, found, made = set(gone), set(), []
+        """(the gone notes the store holds, [(item_id, word)] for each made word that names one, [trash ids] for each
+        removed item whose kept links name one). A list entry that isn't a note id is kept as it is, never a reason
+        to skip its row."""
+        wanted, found, made, trashed = set(gone), set(), [], []
         lines = self._has_table("made_lines")
         for chunk in _chunks(gone, 500):
             marks = ",".join("?" * len(chunk))
@@ -2324,15 +2391,22 @@ class Store:
                                                              f"({marks})", chunk))
         if self._has_table("made_words"):
             for item_id, word, raw in self.conn.execute("SELECT item_id, word, note_ids FROM made_words"):
-                try:
-                    ids = [int(n) for n in json.loads(raw)]
-                except (ValueError, TypeError):
-                    continue
-                hit = wanted.intersection(ids)
+                hit = wanted.intersection(_note_id(n) for n in _json_list(raw))
                 if hit:
                     found.update(hit)
-                    made.append((item_id, word, [n for n in ids if n not in hit]))
-        return found, made
+                    made.append((item_id, word))
+        # a removed item's kept links (`_dumps` writes `"anki_links": [[` only when it kept one)
+        for trash_id, raw in self.conn.execute("SELECT id, item_state FROM trash WHERE restored_at IS NULL "
+                                               "AND item_state LIKE '%\"anki_links\": [[%'"):
+            state = _json_dict(raw)
+            links = state.get("anki_links") if state else None
+            if not isinstance(links, list):
+                continue
+            hit = wanted.intersection(_note_id(a[0]) for a in links if isinstance(a, list) and a)
+            if hit:
+                found.update(hit)
+                trashed.append(trash_id)
+        return found, made, trashed
 
     # --- bookkeeping (§6.6): no version moves ---------------------------------------------------- #
 
@@ -3865,6 +3939,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
                 return EXIT_NEEDS_YOU
         found = _check_copy(store)
         if found in ("pending", "damaged"):
+            store.checkpoint()                   # closes keep the `-wal` (§6.12): it never grows while a question waits
             return EXIT_NEEDS_YOU
         if found == "backup failed":
             return EXIT_FAILED
@@ -3920,10 +3995,11 @@ _IDLE = {}                       # db key -> (the pending Timer, its arguments)
 _IDLE_GUARD = threading.Lock()
 _IDLE_AT_EXIT = []               # [True] once the exit hook is registered
 _IDLE_RUNNING = set()            # timer threads running a trigger now: the exit hook waits for them
+_IDLE_QUIET = threading.local()  # set while a trigger runs on this thread: its own open's write arms no other
 
 
 def _outside_wrote(store):
-    if OUTSIDE_IDLE_S is None or os.environ.get("SURASURA_NO_IDLE_EXPORT"):
+    if OUTSIDE_IDLE_S is None or os.environ.get("SURASURA_NO_IDLE_EXPORT") or getattr(_IDLE_QUIET, "on", False):
         return
     key = os.path.normcase(os.path.abspath(store.db_path))
     args = (store.language, store.data_dir, store.user_files_dir, key)
@@ -3949,7 +4025,7 @@ def _outside_idle_now():
         _IDLE.clear()
         running = list(_IDLE_RUNNING)
     for thread in running:
-        thread.join(LOCK_TIMEOUT * 2)
+        thread.join(BUSY_AT_OPEN + OUTSIDE_IDLE_WAIT + LOCK_TIMEOUT)    # its waits are bounded: never forever
     for timer, args in pending:
         timer.cancel()
         _outside_idle(*args, at_exit=True)
@@ -3967,6 +4043,7 @@ def _outside_idle(language, data_dir, user_files_dir, key, at_exit=False):
             del _IDLE[key]
             _IDLE_RUNNING.add(me)
     due = False
+    _IDLE_QUIET.on = True
     try:
         store = open_store(language, data_dir, user_files_dir, role="connect")    # off any window: it may wait
         if store is None:
@@ -3975,14 +4052,23 @@ def _outside_idle(language, data_dir, user_files_dir, key, at_exit=False):
         try:
             due, _seen = maintain_due(store)
             if not due:
-                store.checkpoint()
+                try:
+                    store.checkpoint(wait=OUTSIDE_IDLE_WAIT)
+                except StoreBusy:            # a writer holds the lock: the -wal waits for the next checkpoint
+                    _log(key, "idle trigger: the write lock was busy; the checkpoint is left to the next one")
         finally:
             store.close()
         if due:
-            spawn_maintain(language)
+            from app.path_utils import get_data_path
+            if os.path.normcase(os.path.abspath(get_data_path(language))) == os.path.normcase(os.path.abspath(data_dir)):
+                spawn_maintain(language)         # the helper finds its folders by language (the one install's)
+            else:
+                _log(key, "idle trigger: the language's data folder is another one now; the copy waits for the "
+                          "next open or write")
     except Exception as exc:                     # never the writer's failure: the next window's open exports
         _log(key, f"idle trigger: {type(exc).__name__}: {exc}")
     finally:
+        _IDLE_QUIET.on = False
         with _IDLE_GUARD:
             _IDLE_RUNNING.discard(me)
 
@@ -4324,6 +4410,14 @@ def maintain_at_close(language, data_dir=None, user_files_dir=None):
         return None
     with store:
         due, _seen = maintain_due(store)
+        if not due:
+            # Closes keep the `-wal` for a checkpoint under the lock (§6.12): with no helper to run (nothing to
+            # export, or a re-import question waiting), it is this one, never waited for (a writer holding the lock
+            # has its own trigger, or the next close)
+            try:
+                store.checkpoint(wait=0.0)
+            except (StoreError, sqlite3.Error):
+                pass
     if not due:
         return None
     lock = MaintenanceLock(library_db_path(language, data_dir))

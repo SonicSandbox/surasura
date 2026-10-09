@@ -326,9 +326,12 @@ def test_manifest_rephase_forces_rerun_not_skip(env):
     manifest = root / "User Files" / "ja" / "master_manifest.json"
 
     def write_manifest(b_now):
+        # every file in HighPriority listed (t.txt too): a sync that adds one at the top of NOW would push NOW's last
+        # row below the Soon line (L3.1, G2.2-1) before the re-phase this test is about
         b_item = {"physical_path": "HighPriority/b.txt", "origin_source": "01_NOW" if b_now else "02_SOON"}
         manifest.write_text(_json.dumps({"schedule": {
-            "PHASE_1_NOW": [{"physical_path": "HighPriority/a.txt", "origin_source": "01_NOW"}]
+            "PHASE_1_NOW": [{"physical_path": "HighPriority/t.txt", "origin_source": "01_NOW"},
+                            {"physical_path": "HighPriority/a.txt", "origin_source": "01_NOW"}]
                            + ([b_item] if b_now else []),
             "PHASE_2_SOON": [] if b_now else [b_item],
             "PHASE_3_LATER": [],

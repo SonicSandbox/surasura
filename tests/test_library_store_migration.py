@@ -886,25 +886,34 @@ def test_ids_and_log_ids_are_never_reused(language, how):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_soon_line_is_re_derived_from_the_tiers(language):
+def test_the_soon_line_is_canonical_and_a_rebuild_keeps_or_re_derives_it(language):
+    """Schema 2 (L2.2 05 §5.1): the line is stored and the tiers follow it. A migration from a 2.x list puts it at
+    NOW's count (Q2-4: nobody's list changes); an open never re-counts it; a rebuild from the store's own 3.0 copy keeps
+    it, the fewer-rows case included (06 §6.4); a copy an older Surasura edited re-derives it from its tiers (06 §6.1)."""
     store = migrated(language)
     data_dir, user_files_dir = roots(language)
-    now = len(store.ids("now"))
-    with store._writing():
-        store._set_meta({"soon_line": now + 7})               # disagrees with the tiers
+    now, current = len(store.ids("now")), len(store.ids("now")) + len(store.ids("soon"))
+    assert store.meta()["soon_line"] == now, "a migration: NOW's count"
+    store.set_soon_line(current + 7)                          # below every row: all of Current is NOW
+    assert len(store.ids("soon")) == 0 and len(store.ids("now")) == current
     store.close()
     store = ls.open_store(language, data_dir, user_files_dir)
-    assert store.meta()["soon_line"] == now, "at open"
-    with store._writing():
-        store._set_meta({"soon_line": 2})
+    assert store.meta()["soon_line"] == current + 7, "an open doesn't re-count it"
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    doc = read_doc(user_files_dir)
-    doc["surasura_library"]["meta"]["soon_line"] = 3
-    write_manifest(user_files_dir, doc)
     _new_pc(store)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
-    assert store.meta()["soon_line"] == now, "and after the rebuild"
+    assert store.meta()["soon_line"] == current + 7, "a rebuild from its own copy keeps it"
+    store.close()
+    doc = read_doc(user_files_dir)                            # an older Surasura moves two rows down a tier
+    moved = doc["schedule"]["PHASE_1_NOW"][:2]
+    doc["schedule"]["PHASE_1_NOW"] = doc["schedule"]["PHASE_1_NOW"][2:]
+    doc["schedule"]["PHASE_2_SOON"] = moved + doc["schedule"]["PHASE_2_SOON"]
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.meta()["soon_line"] == current - 2, "its tiers win: the line follows them"
+    assert [e["physical_path"] for _i, e, _a in store.ordered("soon")] == [e["physical_path"] for e in moved]
     store.close()
 
 

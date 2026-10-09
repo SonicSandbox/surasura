@@ -86,7 +86,9 @@ def test_the_copy_is_its_manifest_plus_one_key(language):
     lib = copy.pop("surasura_library")
     assert copy == doc
     assert lib["arrivals"] == [] and lib["graduated"] == [] and lib["store_id"] == store.meta()["store_id"]
-    assert lib["meta"] == {"epoch": 1, "log_seq": 0, "mine_line": 20, "arrivals_on": 0}
+    # 3.0 (schema 2): New arrivals on (D30) and the Soon line at NOW's count (Q2-4: nobody's list changes)
+    assert lib["meta"] == {"epoch": 1, "log_seq": 0, "mine_line": 20, "arrivals_on": 1,
+                           "soon_line": len(store.ids("now"))}
     assert lib["content_sha"] == ls.content_sha(dict(copy, surasura_library=lib))
     store.close()
 
@@ -411,7 +413,9 @@ def test_the_target_is_a_complete_manifest_at_every_instant(language, monkeypatc
     exported = 0
     for n in range(1000):
         store.move([ids[0]], "now", after_id=ids[5]) if n % 2 == 0 else store.move([ids[0]], "now")
-        exported += ls.export_copy(helper)
+        # An export that gave up (the reader held the file past the shortened back-off: a loaded machine) is asked
+        # again, as the helper's next run would: what this proves is that no reader ever sees half a file.
+        exported += any(ls.export_copy(helper) for _try in range(5))
     stop.set()
     t.join()
     helper.close()
@@ -716,6 +720,28 @@ def test_connects_made_words_travel_in_the_copy_and_back(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_each_cards_line_travels_in_the_copy_and_back(language):
+    # Why: D1 — a card's line address (its note, item, start / end and fingerprint) is the library's record like the
+    # made words: the copy carries it and a rebuild (a new PC) brings it back, a removed item's lines with its trash row.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, gone = store.ids("now")[:2]
+    store.record_lines(item, [(801, 1_000, 2_500, names(language)[4])])
+    store.record_lines(gone, [(802, 3_000, 4_000, names(language)[5])])
+    store.remove([gone])
+    lines = store.card_lines([item, gone])
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert len(read_doc(user_files_dir)["surasura_library"]["tables"]["made_lines"]["rows"]) == 2
+    db = store.db_path
+    store.close()
+    _db_aside(db)                                              # a new PC
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.card_lines([item, gone]) == lines
+    store.close()
+
+
 def _made_word(store, item, word):
     with store._writing():
         for sql in ls.ADDED_TABLES_SQL:
@@ -851,3 +877,88 @@ def test_no_store_means_no_remembered_band_and_nothing_written(language):
     assert ls.read_auto_band(language, data_dir) is None
     assert ls.record_auto_band(language, data_dir, user_files_dir, "rare", 900) is False
     assert not os.path.exists(ls.library_db_path(language, data_dir))
+
+
+# --- schema 2 (L3.1 row 3.1.1; the L2.2 pack 02 §2.7) --------------------------------------------- #
+
+def _schema2_state(store, language):
+    """Give a store some of everything 3.0 adds: a work the user renamed with its own type and other titles, a made
+    word, a removed item whose text was forgotten, an open rename question and *Mine it too*."""
+    w = names(language)
+    item = store.ids("now")[0]
+    work = store.item(item)["work_id"]
+    removed = store.ids("soon")[0]
+    store.remove([removed])
+    with store._writing():
+        store.conn.execute("UPDATE works SET title = ?, title_by_user = 1, titles = ?, media_type = 'drama', "
+                           "media_type_by = 'user', anilist_id = 154587 WHERE id = ?",
+                           (w[20], json.dumps([w[21]], ensure_ascii=False), work))
+        store.conn.execute("UPDATE items SET mine_asked = '2026-10-06T12:00:00Z', availability = 'missing' WHERE id = ?",
+                           (item,))                    # a question's candidate is a missing item (else it is tidied)
+        store.conn.execute("INSERT INTO made_words VALUES (?, ?, '[1700000000003]', '2026-10-06T01:00:00', 'b3')",
+                           (item, w[22]))
+        store.conn.execute("UPDATE trash SET text_forgotten = 1 WHERE item_id = ?", (removed,))
+        store._set_meta({"rename_asks": json.dumps([{"rel": "HighPriority/x.srt", "size": 3, "mtime_ns": 1,
+                                                     "candidates": [item]}]),
+                         "copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+    return item, work, removed
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_copy_carries_works_made_words_rename_asks_text_forgotten(language):
+    # Why: the copy carries all library state (D15) — a rebuild on a new PC must lose none of 3.0's records. The
+    # derived columns (search keys, feed versions) and the feed's tombstones are left out: a rebuild re-derives them.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, work, removed = _schema2_state(store, language)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    lib = read_doc(user_files_dir)["surasura_library"]
+    assert lib["store_schema"] == 2
+    works = lib["tables"]["works"]
+    assert "search_key" not in works["fields"] and "feed_in" not in works["fields"] and "gone" not in lib["tables"]
+    row = dict(zip(works["fields"], next(r for r in works["rows"] if r[works["fields"].index("id")] == work)))
+    assert (row["title_by_user"], row["media_type"], row["media_type_by"], row["anilist_id"]) == (1, "drama", "user",
+                                                                                                    154587)
+    fields = lib["items"]["fields"]
+    assert "work_id" in fields and "mine_asked" in fields and "feed_in" not in fields and "search_key" not in fields
+    rec = dict(zip(fields, next(r for r in lib["items"]["rows"] if r[0] == item)))
+    assert rec["work_id"] == work and rec["mine_asked"] == "2026-10-06T12:00:00Z"
+    assert [r[1] for r in lib["tables"]["made_words"]["rows"]] == [names(language)[22]]
+    trash = lib["tables"]["trash"]
+    assert dict(zip(trash["fields"], trash["rows"][0]))["text_forgotten"] == 1
+    assert json.loads(lib["meta"]["rename_asks"])[0]["candidates"] == [item]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rebuild_from_the_copy_brings_them_back(language):
+    # Why: a moved folder or a new PC rebuilds from the copy (§6.8): works, their user-set title and type, made words,
+    # forgotten text, the open questions and the line come back; the search keys and the feed are derived again.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, work, removed = _schema2_state(store, language)
+    store.set_soon_line(3)
+    line = store.meta()["soon_line"]
+    works = store.conn.execute("SELECT id, title, title_by_user, titles, media_type, anilist_id FROM works "
+                               "ORDER BY id").fetchall()
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    db = store.db_path
+    store.close()
+    _db_aside(db)                                              # a new PC
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.conn.execute("SELECT id, title, title_by_user, titles, media_type, anilist_id FROM works "
+                              "ORDER BY id").fetchall() == works
+    assert store.item(item)["work_id"] == work and store.item(item)["mine_asked"] == "2026-10-06T12:00:00Z"
+    assert store.conn.execute("SELECT word FROM made_words").fetchall() == [(names(language)[22],)]
+    assert store.conn.execute("SELECT text_forgotten FROM trash WHERE item_id = ?", (removed,)).fetchone()[0] == 1
+    assert json.loads(store.meta()["rename_asks"])[0]["candidates"] == [item]
+    assert store.meta()["soon_line"] == line == 3 and len(store.ids("now")) == 3
+    version = store.meta()["state_version"]
+    for title, key, feed in store.conn.execute("SELECT title, search_key, feed_in FROM works"):
+        assert key.split("\n")[0] == ls.search_fold(title, language) and feed == version
+    assert {r[0] for r in store.conn.execute("SELECT DISTINCT feed_in FROM items")} == {version}
+    assert store.conn.execute("SELECT COUNT(*) FROM gone").fetchone()[0] == 0
+    from tests.test_library_store_support import pieces_ok
+    assert pieces_ok(store) is None
+    store.close()

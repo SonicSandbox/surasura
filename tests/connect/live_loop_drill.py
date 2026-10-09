@@ -124,13 +124,15 @@ class Drill:
         path = os.path.join(folder, name)
         with open(self.a.subtitle, "rb") as f:
             data = f.read()
-        # one new word a drop, on the last line's time (inside the video): every drop of the burst makes its own card,
-        # so the burst times 20 real Anki Miner batches, not one batch and 19 empty picks
-        times = re.findall(r"(\d\d:\d\d:\d\d,\d\d\d) --> (\d\d:\d\d:\d\d,\d\d\d)", data.decode("utf-8-sig"))
-        start, end = times[-1] if times else ("00:00:01,000", "00:00:02,000")
+        # one new word a drop, as the last line's own text (its time is inside the video, and Anki Miner finds a
+        # word in the line at that time: a second line on the same time reads as not found): every drop of the burst
+        # makes its own card, so the burst times 20 real Anki Miner batches, not one batch and 19 empty picks
+        text = data.decode("utf-8-sig").rstrip()
+        last = list(re.finditer(r"\d\d:\d\d:\d\d,\d\d\d --> \d\d:\d\d:\d\d,\d\d\d[^\n]*\n", text))[-1]
         word = DROP_WORDS[(self.n - 1) % len(DROP_WORDS)]
+        text = text[:last.end()] + f"{word}が見えた。\n"
         with open(path, "wb") as f:
-            f.write(data + f"\n\n{9000 + self.n}\n{start} --> {end}\n{word}が見えた。\n".encode("utf-8"))
+            f.write(text.encode("utf-8"))
         with open(path, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()
         with open(os.path.join(RESOURCES, "connect", "pairing_v1.json"), encoding="utf-8") as f:

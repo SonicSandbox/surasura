@@ -30,11 +30,17 @@ def test_signal_keeps_the_picked_terms_in_the_order_the_user_picked_them():
     assert known_signal.signal(_on(known_from_anki=picked)) == ["flag:3", "suspended", "marked"]
 
 
-def test_signal_cleans_case_spaces_duplicates_and_unknown_terms():
-    # A hand-edited settings.json can hold "Marked", padded spaces, a repeat and a typo; only valid terms survive,
-    # each once, in first-seen order. "flag:9" is not one of the seven flags, so it is dropped.
-    messy = [" Marked ", "flag:3", "marked", "flag:9", "bogus", "SUSPENDED"]
+def test_signal_cleans_case_spaces_and_duplicates():
+    # A hand-edited settings.json can hold "Marked", padded spaces and a repeat: each term once, in first-seen order.
+    messy = [" Marked ", "flag:3", "marked", "SUSPENDED"]
     assert known_signal.signal(_on(known_from_anki=messy)) == ["marked", "flag:3", "suspended"]
+
+
+def test_a_term_it_does_not_know_turns_the_signal_off():
+    # "and" logic (review B #21): dropping the typo "flag:9" would widen the signal to every suspended, marked card,
+    # a flood of false known words. One term it doesn't know: the signal is off.
+    messy = [" Marked ", "flag:3", "flag:9", "SUSPENDED"]
+    assert known_signal.signal(_on(known_from_anki=messy)) == []
 
 
 def test_empty_list_means_the_signal_is_off():

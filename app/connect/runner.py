@@ -474,6 +474,7 @@ def _mine(steps, ledger, lang, job, record=True):
         except Skip as s:
             ledger.end_batch(jid, attempt, "refused")
             _record_made(steps, ledger, lang, job, record)
+            _name_media_at_end(steps, ledger, lang, job)
             ledger.set_state(jid, "skipped", reason=s.why, skipped=_skipped(ledger, jid, "mining", s.why))
             raise _Finished("skipped") from None
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
@@ -508,13 +509,29 @@ def _mine(steps, ledger, lang, job, record=True):
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
     _record_made(steps, ledger, lang, job, record)
-    lines = [(o["note_id"], o["line_start"], o["line_end"], o["sentence"]) for o in ledger.outcomes(jid)
-             if o["outcome"] == "made" and o["note_id"] is not None]
     try:
-        steps.name_media(lang, job, picked, lines)      # P2.4-4: one file a line, before Anki's next sync
+        _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
     ledger.set_state(jid, "filling")
+
+
+def _name_media(steps, ledger, lang, job, picked=None):
+    """The job's made notes' clip and picture renamed by the line (every batch's: a rename a Wait put off is done
+    by the next look)."""
+    lines = [(o["note_id"], o["line_start"], o["line_end"], o["sentence"]) for o in ledger.outcomes(job["id"])
+             if o["outcome"] == "made" and o["note_id"] is not None]
+    if lines:
+        steps.name_media(lang, job, picked if picked is not None else (ledger.picked(job["id"]) or {}), lines)
+
+
+def _name_media_at_end(steps, ledger, lang, job):
+    """A job that ends here (skipped, failed) still renames the cards it made; one that can't now is left (logged):
+    the names are tidiness, never a reason to keep the job (review B #4)."""
+    try:
+        _name_media(steps, ledger, lang, job)
+    except Exception:
+        log.warning("Connect couldn't rename the media of a job that ended", exc_info=True)
 
 
 def _made(ledger, jid):
@@ -548,6 +565,7 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     """A second failure (E11): the cards it did make recorded (and their order owed), the job `failed`, named once in
     Needs you; nothing is tried a third time."""
     _record_made(steps, ledger, lang, job, record)
+    _name_media_at_end(steps, ledger, lang, job)
     if _made(ledger, job["id"]):
         with ledger.transaction():
             ledger.owe_resort(lang)
@@ -889,7 +907,7 @@ class Steps:
         return shelf.AnkiConnectAnki(self.url)
 
     def cap(self):
-        """`connect_backlog_cap` (default 300); 0 or not a number: no cap."""
+        """`connect_backlog_cap` (default 300); 0: no cap; not a number: the default (review B #1)."""
         try:
             return max(0, int(self.loaded.get("connect_backlog_cap", 300)))
         except (TypeError, ValueError):
@@ -913,11 +931,25 @@ class Steps:
             return None
 
     def shelve(self, lang, ledger, todo, count, cap):
-        """At the cap, once a run per language: the shelf's plan (a big gap only), shelved -> how many."""
+        """At the cap, once a run per language: the shelf's plan (a big gap only), shelved -> how many. A look that
+        waits (you review, another writer, Anki gone) spends no try (review B #2, #3)."""
+        from app import anki_connect, locks
         from app.connect import shelf
         if lang in getattr(self, "_shelved", set()):
             return 0
+        try:
+            shelved = self._shelve(lang, ledger, todo, count, cap)
+        except shelf.Reviewing:
+            raise Wait(REVIEWING, resume="mining") from None
+        except locks.Busy:
+            raise Wait(WRITER_BUSY, resume="mining") from None
+        except anki_connect.AnkiError:
+            raise Wait(ANKI_CLOSED, resume="mining") from None
         self._shelved = getattr(self, "_shelved", set()) | {lang}
+        return shelved
+
+    def _shelve(self, lang, ledger, todo, count, cap):
+        from app.connect import shelf
         order = self._list_order(lang) or {}
         ranks = shelf.ranks(order)
         with self._open(lang) as store:
@@ -931,10 +963,7 @@ class Steps:
         chosen = shelf.plan(waiting, needed, cap, count, pinned)
         if not chosen:
             return 0
-        try:
-            shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
-        except shelf.Reviewing:
-            raise Wait(REVIEWING, resume="mining") from None
+        shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
         return len(chosen)
 
     def shelf_session(self, lang, ledger):
@@ -974,10 +1003,12 @@ class Steps:
         return gone
 
     def name_media(self, lang, job, picked, lines):
-        """P2.4-4: the batch's clip and picture renamed by the line (`media_names.rename`)."""
+        """P2.4-4: the batch's clip and picture renamed by the line (`media_names.rename`). The field mapping is this
+        run's, else the job's own settings export (a run after a kill: review B #4); Anki busy or gone -> a Wait
+        (review B #2)."""
+        from app import anki_connect, locks
         from app.connect import media_names
-        mapping = getattr(self, "_mapping", None)
-        fields = getattr(mapping, "fields", None) or {}
+        fields = getattr(getattr(self, "_mapping", None), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
         pairing = self.pairing(lang, job) or {}
@@ -990,6 +1021,19 @@ class Steps:
                                       fields.get("picture"))
         except media_names.Reviewing:
             raise Wait(REVIEWING, resume="mining") from None
+        except locks.Busy:
+            raise Wait(WRITER_BUSY, resume="mining") from None
+        except anki_connect.AnkiError:
+            raise Wait(ANKI_CLOSED, resume="mining") from None
+
+    def _export_fields(self, lang, job):
+        """{role: field} from the settings export Anki Miner wrote in the job's run folder, or {}."""
+        from app.connect import fields
+        try:
+            with open(os.path.join(self.run_dir(job), "settings-export.json"), encoding="utf-8") as f:
+                return dict(fields.from_export(json.load(f), lang).fields)
+        except Exception:
+            return {}
 
     def run_dir(self, job):
         from app.cli.verbs import _connect_folder

@@ -3,7 +3,7 @@
 
 - **The cap** (`connect_backlog_cap`, default 300, "keep up to N Surasura cards waiting"): *waiting* = Connect's own
   notes (its tag `surasura::connect::<job>`), new, not suspended — one `findCards` (`waiting_count`). Connect tops up:
-  it mines while fewer than N wait, checked before each batch, and waits (*Your N cards are waiting*) at the cap; as
+  it mines while fewer than N wait, checked before a job's first batch (never mid-episode), and waits (*Your N cards are waiting*) at the cap; as
   you study, the next look tops up. A whole episode at a time: one batch can take it over N by its own words. The
   learner's own cards never count and are never touched (they don't carry Connect's tag).
 - **The shelf** (in 2.x too, ✅ P2.4-1): at the cap, once a run, Connect's waiting cards are ranked by Junban's order
@@ -108,12 +108,19 @@ class AnkiConnectAnki:
         self.url = url
 
     def find_cards(self, query):
-        from app import anki_connect
-        return anki_connect.find_cards(self.url, query)
+        return self._ids("findCards", query)
 
     def find_notes(self, query):
+        return self._ids("findNotes", query)
+
+    def _ids(self, action, query):
+        """A search's ids; an answer that isn't a list raises (never read as "none": every note would read as gone,
+        review B #11)."""
         from app import anki_connect
-        return anki_connect.find_notes(self.url, query)
+        found = anki_connect.invoke(action, self.url, query=query)
+        if not isinstance(found, list):
+            raise anki_connect.AnkiError(f"{action} answered {type(found).__name__}, not a list", kind="protocol")
+        return anki_connect._int_ids(found)
 
     def cards_info(self, ids):
         from app import anki_connect
@@ -129,19 +136,28 @@ class AnkiConnectAnki:
 
     def suspend(self, card_ids):
         from modules.junban import ankiconnect
-        ankiconnect.suspend(self.url, card_ids)
+        _taken(ankiconnect.suspend(self.url, card_ids), "suspend")
 
     def unsuspend(self, card_ids):
         from modules.junban import ankiconnect
-        ankiconnect.unsuspend(self.url, card_ids)
+        _taken(ankiconnect.unsuspend(self.url, card_ids), "unsuspend")
 
     def add_tag(self, note_ids, tag):
         from modules.junban import ankiconnect
-        ankiconnect.add_tags(self.url, note_ids, tag)
+        _taken(ankiconnect.add_tags(self.url, note_ids, tag), "addTags")
 
     def remove_tag(self, note_ids, tag):
         from modules.junban import ankiconnect
-        ankiconnect.remove_tags(self.url, note_ids, tag)
+        _taken(ankiconnect.remove_tags(self.url, note_ids, tag), "removeTags")
+
+
+def _taken(result, action):
+    """Junban's write answers (done, failures), never raising: a write Anki didn't take raises here, so nothing is
+    recorded as done (review B #8)."""
+    from app import anki_connect
+    failures = (result or ((), ()))[1]
+    if failures:
+        raise anki_connect.AnkiError(f"Anki didn't take {action} for {len(failures)}: {failures[0][1]}")
 
 
 class Reviewing(Exception):
@@ -170,15 +186,17 @@ def cards(anki, query, made):
 
 def shelve(anki, ledger, language, chosen, why, run=None):
     """Suspend `chosen` (cards) and tag their notes `surasura::shelf`, holding Anki's writer, asked first whether
-    you're reviewing; each recorded in the ledger under `run` (the restore point) -> the run id."""
+    you're reviewing; each recorded in the ledger under `run` (the restore point) -> the run id. The tag goes on
+    first: a suspend Anki doesn't take leaves a tagged waiting card (`tidy` takes the tag off), never a suspended card
+    without the tag, which would read as yours (review B #8). A write Anki doesn't take raises; nothing recorded."""
     if not chosen:
         return None
     run = run or datetime.datetime.now().strftime("shelf-%Y%m%d-%H%M%S-%f")
     with anki.writer("Connect's shelf"):
         if anki.reviewing():
             raise Reviewing()
-        anki.suspend([c.card_id for c in chosen])
         anki.add_tag(sorted({c.note_id for c in chosen}), SHELF_TAG)
+        anki.suspend([c.card_id for c in chosen])
     now = _now()
     with ledger.transaction():
         ensure(ledger)
@@ -214,12 +232,17 @@ def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=
 
 
 def tidy(anki, ledger):
-    """A shelved card you un-suspended in Anki: its shelf tag taken off (it counts as waiting again) -> how many."""
-    ids = anki.find_cards(f"{SHELVED_QUERY} -is:suspended")
-    if not ids:
+    """A shelved card you un-suspended in Anki: its shelf tag taken off (it counts as waiting again) -> how many. The
+    tag is the note's: a note with another card still on the shelf keeps it (review B #10)."""
+    if not anki.find_cards(f"{SHELVED_QUERY} -is:suspended"):
         return 0
-    notes = sorted({info.get("note") for info in anki.cards_info(ids) if info.get("note") is not None})
-    with anki.writer("Connect's shelf"):
+    with anki.writer("Connect's shelf"):        # what it writes is read again under the writer (review B #25)
+        ids = anki.find_cards(f"{SHELVED_QUERY} -is:suspended")
+        still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended"))
+        kept = {info.get("note") for info in anki.cards_info(sorted(still))} if still else set()
+        notes = sorted({info.get("note") for info in anki.cards_info(ids) if info.get("note") is not None} - kept)
+        if not notes:
+            return 0
         if anki.reviewing():
             raise Reviewing()
         anki.remove_tag(notes, SHELF_TAG)
@@ -238,9 +261,11 @@ def restore(anki, ledger, run):
                                (run,)).fetchall()
     if not rows:
         return 0
-    still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended"))
-    cards_back = [c for c, _n in rows if c in still]
     with anki.writer("Connect's shelf (restore)"):
+        still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended"))
+        cards_back = [c for c, _n in rows if c in still]
+        if anki.reviewing():                    # review B #9
+            raise Reviewing()
         if cards_back:
             anki.unsuspend(cards_back)
             anki.remove_tag(sorted({n for c, n in rows if c in still}), SHELF_TAG)

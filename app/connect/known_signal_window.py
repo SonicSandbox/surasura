@@ -23,9 +23,13 @@ def _since(marked):
 def show(parent, language, url, tooltip, offer=None, marked=None):
     """The window, or None when there is nothing to say. `tooltip(widget, text)`: the app's ToolTip."""
     from app.connect import known_signal
-    marked = known_signal.unshown(language) if marked is None else marked
-    if offer is None:
-        offer = (known_signal.load(language).get("offer") or {})
+    try:
+        marked = known_signal.unshown(language) if marked is None else marked
+        if offer is None:
+            offer = (known_signal.load(language).get("offer") or {})
+    except known_signal.Unreadable as e:     # left as it is (review B #17): nothing to show
+        print(e)
+        return None
     pending = offer.get("state") == "pending" and offer.get("cards")
     if not marked and not pending:
         return None
@@ -46,7 +50,7 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
         def run():
             try:
                 out = job()
-            except Exception as e:          # Anki closed, the known-words lock held: said, nothing changed
+            except Exception as e:          # Anki closed or busy, the known-words lock held: said (review B #13)
                 out = e
             win.after(0, lambda: then(out))
         threading.Thread(target=run, daemon=True).start()
@@ -66,9 +70,14 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
 
             def undo(w=word, b=button, s=state):
                 b.config(state=tk.DISABLED)
-                worker(lambda: known_signal.undo(language, w, url),
-                       lambda out: s.config(text=("Couldn't undo: " + str(out)) if isinstance(out, Exception)
-                                            else "Undone: back in your reviews"))
+
+                def done(out):
+                    if isinstance(out, Exception):
+                        s.config(text="Couldn't undo: " + str(out))
+                        b.config(state=tk.NORMAL)       # try again (review B #13)
+                    else:
+                        s.config(text="Undone: back in your reviews")
+                worker(lambda: known_signal.undo(language, w, url), done)
             button.config(command=undo)
             tooltip(button, f"Take {word} off your known words and un-suspend its card in Anki, so it comes back to "
                             "your reviews.")
@@ -90,11 +99,13 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
             yes.config(state=tk.DISABLED)
             no.config(state=tk.DISABLED)
             note.config(text=text)
-        yes.config(command=lambda: worker(lambda: known_signal.accept_offer(language),
+        yes.config(command=lambda: worker(lambda: known_signal.accept_offer(language, url),
                                           lambda out: answered(("Couldn't mark them: " + str(out))
                                                                if isinstance(out, Exception)
                                                                else f"{len(out)} words marked known")))
-        no.config(command=lambda: (known_signal.decline_offer(language), answered("Left as they are")))
+        no.config(command=lambda: worker(lambda: known_signal.decline_offer(language),
+                                         lambda out: answered(("Couldn't answer: " + str(out))
+                                                              if isinstance(out, Exception) else "Left as they are")))
         yes.pack(side=tk.LEFT, padx=(0, 6))
         no.pack(side=tk.LEFT)
         tooltip(yes, "Every word of those suspended cards becomes known in Surasura (you can undo each later).")

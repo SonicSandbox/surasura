@@ -3,8 +3,8 @@
 
 Anki Miner 3.7.0 names each card's clip and picture by its word (`<word>_<ms>_<seq>_<sha1[:12]>.mp3`, its
 `services/media_extractor.py` and `anki_media_store.py`): three words cut from one line make three audio files and
-three pictures, and a card made again for the same line uploads its files again. Surasura renames them **right after
-each batch, before Anki's next sync**, to one short fixed-length name per line:
+three pictures, and a card made again for the same line uploads its files again. Surasura renames them **at the end of
+the mining step** (every batch's notes; a job that ends skipped or failed too), to one short fixed-length name per line:
 
     sl-<16 hex>.<ext>   the sha256 of (the episode's key, the line's start and end in ms, the line's fingerprint)
 
@@ -15,9 +15,9 @@ each batch, before Anki's next sync**, to one short fixed-length name per line:
   `storeMediaFile`); every note of the line is pointed at it (`updateNoteFields`), and each old name is deleted once no
   note uses it. **A name already in Anki is reused**, never uploaded again — a card made again for the same line (the
   shelf's swap back, a deleted card made again on request) costs no upload.
-- **Killed half-way**: run again, it finishes — a note already pointing at the new name is left; one still on its old
+- **Killed half-way**: run again, it finishes (the field mapping read back from the job's settings export) — a note already pointing at the new name is left; one still on its old
   name whose new file exists is pointed at it; no note ever points at a file that isn't there.
-- Holds Anki's write lock; never while you review (K88, asked first). The next request to Zero asks for a run-file key
+- Holds Anki's write lock from its first read; never while you review (K88, asked before each note's writes). The next request to Zero asks for a run-file key
   that names each line's media, and then this step goes (P2.4-4).
 
 Standard library only; Anki through the adapter it is handed (`AnkiConnectMedia`; tests hand a fake).
@@ -84,9 +84,13 @@ class AnkiConnectMedia:
         return self._ask("deleteMediaFile", filename=name)
 
     def users(self, name):
-        """The notes whose fields name the file (a search for the name, as written)."""
+        """The notes whose fields name the file (a search for the name, as written). An answer that isn't a list
+        raises: never read as "no one", which would delete a file in use (review B #11)."""
         from app import anki_connect
-        return anki_connect.find_notes(self.url, f'"{anki_connect.escape_query(name)}"')
+        found = self._ask("findNotes", query=f'"{anki_connect.escape_query(name)}"')
+        if not isinstance(found, list):
+            raise anki_connect.AnkiError(f"findNotes answered {type(found).__name__}, not a list", kind="protocol")
+        return found
 
     def reviewing(self):
         from app import anki_connect
@@ -104,16 +108,16 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
     out = {"renamed": 0, "stored": 0, "reused": 0, "deleted": 0}
     if not made:
         return out
-    by_id = {n.get("noteId"): n for n in media.notes([m[0] for m in made])}
-    with media.writer("Connect's media names"):
-        if media.reviewing():
-            raise Reviewing()
+    with media.writer("Connect's media names"):     # held from the first read (review B #25)
+        by_id = {n.get("noteId"): n for n in media.notes([m[0] for m in made])}
         seen = set()                    # new names stored (or found) in this call
         old_names = set()
         for note_id, start, end, text in made:
             note = by_id.get(note_id)
             if note is None:
                 continue                # deleted meanwhile: nothing to point
+            if media.reviewing():       # asked before each note's writes (K88, review B #6): resumed next look
+                raise Reviewing()
             print_ = (fingerprints or {}).get((start, end)) or fingerprint(text)
             fields = {}
             for field, pattern in ((audio_field, _SOUND), (picture_field, _IMG)):
@@ -139,6 +143,8 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
             if fields:
                 media.point(note_id, fields)
                 out["renamed"] += 1
+        if old_names and media.reviewing():
+            raise Reviewing()
         for old in sorted(old_names):
             if not media.users(old):
                 media.delete(old)

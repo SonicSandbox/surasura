@@ -1359,3 +1359,72 @@ def test_a_refresh_that_changes_nothing_starts_no_paint_ahead_and_paints_nothing
     entries[i] = (kind, row._replace(title=row.title + "（改）"), lines)     # one row changed: work restarts
     assert lst.set_entries(entries) == "same" and lst.model().changed == [i]
     assert lst._warm.isActive()
+
+
+_FACE = ("title", "line", "pct", "pct_tone", "n_new", "status", "mark", "can_play", "cover_title", "studying",
+         "n_files", "n_watched", "chips", "date")
+
+
+def _face(row):
+    """What the learner would see of a closed row: the shown fields as one tuple."""
+    return tuple(getattr(row, name) for name in _FACE)
+
+
+def test_an_available_file_arriving_on_screen_draws_afresh_only_the_new_row_and_the_rows_whose_face_changed(seeded):
+    """A file that lands where the learner is reading pushes one row past the top-20 line. That row is rebuilt because
+    its episodes moved, but usually it looks the same, so it keeps its picture: only the new row and the rows whose
+    look really changed are drawn again, and the list never redraws what the learner cannot see change."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    line_at = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2]))
+    lst.scrollTo(lst.model().index(line_at, 0))
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    on = _rows_on_screen(lst)
+    assert line_at in [i for i, _r in on], line_at                 # the row holding the top-20 line is on screen
+    above = [r for i, r in on if i < line_at]
+    assert len(above) >= 2, len(above)                             # two rows above the line, to land a file between them
+    target = above[1]
+    before = {r.key: r for _i, r in on}
+    renders = lst.delegate.renders
+    item = next(r for r in seed.items if r["id"] == target.episodes[0].id)
+    new_key = f"p{10 ** 6}"
+    new = dict(item, id=10 ** 6, ord=item["ord"] - 0.5, piece_id=10 ** 6,
+               rel_path=item["rel_path"].rsplit("/", 1)[0] + "/new - 01.srt", title="new - 01.srt",
+               availability="available")                           # an available file: it takes a place in the top 20
+    seed.library.commit(items=[new], order=True)
+    assert wait_until(lambda: any(getattr(e[1], "key", None) == new_key for e in lst.model().entries))
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    shown = _rows_on_screen(lst)
+    after = {r.key: r for _i, r in shown}
+    assert [r.key for _i, r in shown][1] == new_key, [r.key for _i, r in shown][:4]   # it landed just above the target
+    changed = [k for k in before if k in after and _face(before[k]) != _face(after[k])]
+    crossed = [k for k in before if k in after and after[k] is not before[k] and _face(after[k]) == _face(before[k])
+               and after[k].episodes != before[k].episodes]        # rebuilt (its episodes moved), same look: kept
+    assert crossed, "no on-screen row was rebuilt with an unchanged face, so the test would prove nothing"
+    assert lst.delegate.renders == renders + 1 + len(changed)      # the new row, and each row whose look changed
+
+
+def test_a_relayout_makes_the_height_list_once_and_reads_it_for_every_row(seeded, monkeypatch):
+    """Speed round 5: Qt asks every row's height on a relayout, one call each, so each answer must be one look in a
+    list made once for the entries, the open row and the look: a second relayout makes it no more, opening a row makes
+    it once, and the heights it answers are each row's own."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.doItemsLayout()
+    made = []
+    real = lst.delegate._heights_now
+    monkeypatch.setattr(lst.delegate, "_heights_now", lambda model: (made.append(1), real(model))[1])
+    lst.doItemsLayout()
+    assert made == []                                           # the same entries, open row and look: the list kept
+    i = next(n for n, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    lst.toggle(lst.model().index(i, 0))
+    lst.doItemsLayout()
+    assert len(made) == 1                                       # another open row: made once, for every row
+    for n, e in enumerate(lst.model().entries):
+        is_open = lst.model().open_key == getattr(e[1], "key", None)
+        assert lst.delegate.sizeHint(None, lst.model().index(n, 0)) == lst.delegate._size_hint(e, is_open), n
+    assert len(made) == 1

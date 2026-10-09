@@ -457,3 +457,152 @@ def test_exit_runs_a_pending_idle_trigger_at_once(language, monkeypatch, store_h
         if connect is not None:
             connect.close()
         window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_mode_check_falls_back_to_a_reader_when_a_read_only_open_says_readonly(language, monkeypatch):
+    """A read-only open that fails with a "readonly" error does not make the store read-only: the mode check reads
+    again on a reader's connection and answers that the store is live. Why: a library the read-only connection can't
+    open just now is still a working library, and reporting it read-only would lock the Content Manager out of it."""
+    data_dir, _user_files_dir = roots(language)
+    store = migrated(language)
+    store.close()
+    attempts = []
+
+    def read_only_refused(path, busy_ms):
+        attempts.append(path)
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    monkeypatch.setattr(ls, "_read_only", read_only_refused)
+    assert ls.check_mode(language, data_dir, busy_wait=0.0) == ("store", None)
+    # Premise: the read-only open really was tried and refused, so the answer came from the reader's retry. (The
+    # reader's close also asks for a read-only anchor, so the count can be more than one.)
+    assert attempts
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_mode_check_reads_any_read_only_failure_again_and_reports_a_reader_failure_as_io(language, monkeypatch):
+    """Any failure of the read-only open that isn't busy or damage (here a disk error) is read again on a reader's
+    connection, as before L3.3: a store that one kind of connection can't open isn't called read-only for it. Only
+    when the reader fails too is the answer ("read-only", "io: ...")."""
+    data_dir, _user_files_dir = roots(language)
+    store = migrated(language)
+    store.close()
+    attempts = []
+
+    def disk_failed(path, busy_ms):
+        attempts.append(path)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(ls, "_read_only", disk_failed)
+    assert ls.check_mode(language, data_dir, busy_wait=0.0) == ("store", None), "read again on a reader"
+    attempts.clear()
+    monkeypatch.setattr(ls, "_connect", lambda *a, **k: disk_failed(*a[:1], 0))
+    assert ls.check_mode(language, data_dir, busy_wait=0.0) == ("read-only", "io: disk I/O error")
+    assert len(attempts) == 2, "one read-only try, one reader try"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_under_the_suites_a_connect_receipt_arms_no_idle_trigger(language, store_helper_spawns, monkeypatch):
+    """The suites set SURASURA_NO_IDLE_EXPORT, so a Connect receipt that changes a row must arm no idle trigger and
+    spawn no helper. The contrast in the same test (switch off, a second receipt) arms one, so the first half
+    can't pass just because the trigger is broken."""
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 0.2)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    assert os.environ.get("SURASURA_NO_IDLE_EXPORT"), "the suites set the switch; this test relies on it"
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    store_helper_spawns.clear()
+    connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+    try:
+        ids = connect.ids("now")
+        assert len(ids) >= 2, "the library needs two items for the two receipts"
+        assert connect.receipt(ids[0], "2026-10-08T10:00:00Z") is not None, "the receipt must change the row"
+        assert _idle_key(connect) not in ls._IDLE, "under the suites' switch a receipt armed the idle trigger"
+        assert not _until(lambda: store_helper_spawns, limit=0.5), "under the suites a receipt spawned the helper"
+
+        # The contrast: with the switch off the same kind of receipt arms the trigger. The wait is long here so
+        # the timer cannot fire before the check.
+        monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT")
+        monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 5.0)
+        assert connect.receipt(ids[1], "2026-10-08T10:01:00Z") is not None, "the second receipt must change its row"
+        assert _idle_key(connect) in ls._IDLE, "with the switch off a receipt must arm the idle trigger"
+    finally:
+        connect.close()
+        ls._outside_idle_now()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_command_line_register_receipt_arms_the_idle_trigger(language, monkeypatch, store_helper_spawns):
+    """The command line (role "register") writes with no window of its own, so its commit is a cue like Connect's: its
+    receipt arms the idle trigger, and at exit the behind copy is exported once. An analyzer's bookkeeping write is a
+    window-less write too but not one that leaves the copy behind, so it arms nothing. The trigger is 30 s, so it
+    stays pending until the exit call; nothing spawns before it."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()                # no maintain: the copy is behind from here on
+    store_helper_spawns.clear()
+    analyst = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+    try:
+        assert analyst is not None
+        analyst.bookkeeping({"analysed_order_version": analyst.meta().get("analysed_order_version", 0) + 1})
+        assert _idle_key(analyst) not in ls._IDLE, "an analyzer's bookkeeping write armed the idle trigger"
+    finally:
+        analyst.close()
+    register = ls.open_store(language, data_dir, user_files_dir, role="register")
+    try:
+        assert register is not None
+        assert register.receipt(register.ids("now")[0], "2026-10-08T10:00:00Z") is not None
+        key = _idle_key(register)
+        assert key in ls._IDLE, "the command line's receipt did not arm the idle trigger"
+        assert not _until(lambda: store_helper_spawns, limit=0.5), "the pending trigger spawned before exit"
+        ls._outside_idle_now()
+        assert store_helper_spawns == [(language,)], "the command line's behind copy is exported at exit, once"
+    finally:
+        register.close()
+        ls._outside_idle_now()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_trigger_called_off_its_own_timer_thread_does_nothing(language, monkeypatch, store_helper_spawns):
+    """Only the thread that owns a pending trigger (its timer) or the exit hook takes it. A call from any other thread
+    must leave the entry on the list, spawn nothing and checkpoint nothing: a trigger a later commit replaced must not
+    fire on its own. Exit then runs the waiting trigger once."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    checkpoints = []
+    real_checkpoint = ls.Store.checkpoint
+
+    def counting(self):
+        checkpoints.append(1)
+        return real_checkpoint(self)
+
+    monkeypatch.setattr(ls.Store, "checkpoint", counting)
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    connect = None
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        store_helper_spawns.clear()
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        key = _idle_key(connect)
+        assert connect.receipt(connect.ids("now")[0], "2026-10-08T10:00:00Z") is not None
+        assert key in ls._IDLE, "the receipt leaves one idle trigger waiting"
+        store_helper_spawns.clear()
+        checkpoints.clear()
+        ls._outside_idle(language, data_dir, user_files_dir, key)   # this test's thread is not the timer
+        assert key in ls._IDLE, "a call off the timer's thread took the pending trigger off the list"
+        assert not _until(lambda: store_helper_spawns, limit=0.5), "a call off the timer's thread spawned the helper"
+        assert checkpoints == [], "a call off the timer's thread checkpointed"
+        ls._outside_idle_now()                  # exit: the waiting trigger runs now, once
+        assert ls._IDLE == {}, "exit left the trigger on the list"
+        assert store_helper_spawns == [(language,)], "exit did not export the behind copy exactly once"
+    finally:
+        ls._outside_idle_now()                  # no-op when the test got this far; clears a waiting timer on failure
+        if connect is not None:
+            connect.close()
+        window.close()

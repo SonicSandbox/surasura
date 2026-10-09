@@ -652,8 +652,8 @@ def _mode_on(conn):
 
 def _probe(db_path, busy_wait):
     """(mode, reason) for the database at `db_path`, retrying a busy database for `busy_wait` s. Read on a read-only
-    connection, which never checkpoints at its close (§6.12); a database a read-only connection can't read just now
-    is read the way it was before L3.3, on a reader's connection closed by `_close`."""
+    connection, which never checkpoints at its close (§6.12); a database a read-only connection can't read (an error
+    that isn't busy or damage) is read the way it was before L3.3, on a reader's connection closed by `_close`."""
     if not os.path.exists(db_path):
         return "json", "no store"
     if os.path.exists(damaged_marker(db_path)):
@@ -672,7 +672,7 @@ def _probe(db_path, busy_wait):
                     time.sleep(0.02)
                     continue
                 return "read-only", "busy"
-            if ro and "readonly" in str(exc).lower().replace("-", "").replace(" ", ""):
+            if ro and not _is_malformed(exc):  # e.g. a -shm a read-only open can't make: read it as before
                 read_only = False
                 continue
             if _is_malformed(exc):
@@ -705,7 +705,7 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     span = _span()
     key = (os.path.normcase(os.path.abspath(db_path)), role)
     if span is not None and key in span:
-        if not os.path.exists(damaged_marker(db_path)):
+        if os.path.exists(db_path) and not os.path.exists(damaged_marker(db_path)):
             return span[key]
         return None
     mode, _reason = _probe(db_path, busy_wait)
@@ -736,7 +736,8 @@ def held():
     """One handle a store and role for a span on this thread (Connect's job, §6.12): `open_store` inside it returns
     the handle its first call opened, and that handle's `close()` waits for the span's end — so a job that asks for
     its store ten times opens it once. A span inside another joins the outer one. A store that isn't ready is asked
-    again at each `open_store`, as outside a span; one marked damaged meanwhile is None, as outside."""
+    again at each `open_store`, as outside a span; one marked damaged or gone meanwhile is None, as outside. Never
+    around a window's `StoreOpener.handle()` (it keeps its handle for the window's life)."""
     if _span() is not None:
         yield
         return
@@ -749,7 +750,7 @@ def held():
             store._held = False
             try:
                 store.close()
-            except sqlite3.Error:
+            except Exception:                    # one handle's failure never leaves the others open
                 pass
 
 
@@ -785,7 +786,7 @@ class StoreOpener:
             if self._worker is not None and self._worker.is_alive():
                 return self.mode
         store = getattr(self._local, "store", None)
-        if store is not None and not os.path.exists(damaged_marker(store.db_path)):
+        if store is not None and os.path.exists(store.db_path) and not os.path.exists(damaged_marker(store.db_path)):
             try:
                 if _mode_on(store.conn)[0] == "store":
                     self.mode, self.reason = "store", None
@@ -1262,6 +1263,7 @@ class Store:
         if not self._repairing and os.path.exists(damaged_marker(self.db_path)):
             raise StoreReadOnly("the library store is damaged and needs Repair")
         self._wlock.acquire()
+        wrote = False
         try:
             changes = self.conn.total_changes
             self.conn.execute("PRAGMA query_only=0")
@@ -1288,8 +1290,7 @@ class Store:
                     if self.conn.in_transaction:
                         self.conn.execute("ROLLBACK")
                     raise
-                if self.role in OUTSIDE_ROLES and self.conn.total_changes != changes:
-                    _outside_wrote(self)
+                wrote = self.role in OUTSIDE_ROLES and self.conn.total_changes != changes
         except sqlite3.DatabaseError as exc:
             if _is_malformed(exc):
                 mark_damaged(self.db_path, f"{self.role}: {exc}")
@@ -1300,6 +1301,11 @@ class Store:
                 self.conn.execute("PRAGMA query_only=1")
             finally:
                 self._wlock.release()
+        if wrote:                                # Connect's or the command line's commit: the copy's trigger
+            try:
+                _outside_wrote(self)
+            except Exception:                    # a committed write never fails for its trigger
+                pass
 
     def checkpoint(self):
         """A PASSIVE checkpoint (never TRUNCATE: K18), under the write lock like every write."""
@@ -2257,10 +2263,10 @@ class Store:
     def notes_gone(self, note_ids, by="connect"):
         """Notes Anki no longer has (P2.4 row 2.4.14; Sonic, 2026-10-07: a card the learner deletes, theirs or
         Connect's, loses its *in Anki* mark at the next sync and is never offered): taken out of everything that reads
-        a note as in Anki — `anki_links`, the note ids in `made_words` and, where it exists, `made_lines` — while each
-        made word keeps its row (G1.3-4: never made again unless you ask). A status write, `state_version` only (the
-        copy carries these tables). Notes the store doesn't hold change nothing and write nothing: no write lock is
-        taken (S19). Returns the note ids taken out, sorted."""
+        a note as in Anki — `anki_links`, the note ids in `made_words` and, where it exists (3.0), `made_lines` —
+        while each made word keeps its row (G1.3-4: never made again unless you ask). A status write, `state_version`
+        only (the copy carries these tables where it carries them). Notes the store doesn't hold change nothing and
+        write nothing: no write lock is taken (S19). Returns the note ids taken out, sorted."""
         gone = sorted({int(n) for n in note_ids})
         if not gone:
             return []
@@ -2272,10 +2278,11 @@ class Store:
             found, made = self._notes_held(gone)            # again inside the write: what holds now
             if not found:
                 return []
+            lines = self._has_table("made_lines")
             for chunk in _chunks(gone, 500):
                 marks = ",".join("?" * len(chunk))
                 self.conn.execute(f"DELETE FROM anki_links WHERE note_id IN ({marks})", chunk)
-                if self._has_table("made_lines"):
+                if lines:
                     self.conn.execute(f"DELETE FROM made_lines WHERE note_id IN ({marks})", chunk)
             self.conn.executemany("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
                                   [(json.dumps(kept), item_id, word) for item_id, word, kept in made])
@@ -2289,11 +2296,12 @@ class Store:
     def _notes_held(self, gone):
         """(the gone notes the store holds, [(item_id, word, the note ids kept)] for each made word that names one)."""
         wanted, found, made = set(gone), set(), []
+        lines = self._has_table("made_lines")
         for chunk in _chunks(gone, 500):
             marks = ",".join("?" * len(chunk))
             found.update(r[0] for r in self.conn.execute(f"SELECT DISTINCT note_id FROM anki_links WHERE note_id IN "
                                                          f"({marks})", chunk))
-            if self._has_table("made_lines"):
+            if lines:
                 found.update(r[0] for r in self.conn.execute(f"SELECT note_id FROM made_lines WHERE note_id IN "
                                                              f"({marks})", chunk))
         if self._has_table("made_words"):
@@ -3891,6 +3899,7 @@ def _helper_env():
 _IDLE = {}                       # db key -> (the pending Timer, its arguments)
 _IDLE_GUARD = threading.Lock()
 _IDLE_AT_EXIT = []               # [True] once the exit hook is registered
+_IDLE_RUNNING = set()            # timer threads running a trigger now: the exit hook waits for them
 
 
 def _outside_wrote(store):
@@ -3913,10 +3922,14 @@ def _outside_wrote(store):
 
 
 def _outside_idle_now():
-    """At exit: every pending trigger now, in this thread."""
+    """At exit: every pending trigger now, in this thread, and one a timer is running finished first (its thread is
+    a daemon: the interpreter would stop it mid-way)."""
     with _IDLE_GUARD:
         pending = list(_IDLE.values())
         _IDLE.clear()
+        running = list(_IDLE_RUNNING)
+    for thread in running:
+        thread.join(LOCK_TIMEOUT * 2)
     for timer, args in pending:
         timer.cancel()
         _outside_idle(*args, at_exit=True)
@@ -3925,16 +3938,19 @@ def _outside_idle_now():
 def _outside_idle(language, data_dir, user_files_dir, key, at_exit=False):
     """One trigger: `maintain` when the copy is behind, else the idle checkpoint. A trigger a later commit replaced
     does nothing (`at_exit`: already taken off the list)."""
+    me = threading.current_thread()
     if not at_exit:
         with _IDLE_GUARD:
             pending = _IDLE.get(key)
-            if pending is None or pending[0] is not threading.current_thread():
+            if pending is None or pending[0] is not me:
                 return
             del _IDLE[key]
+            _IDLE_RUNNING.add(me)
     due = False
     try:
-        store = open_store(language, data_dir, user_files_dir, role="connect", busy_wait=0.0)
+        store = open_store(language, data_dir, user_files_dir, role="connect")    # off any window: it may wait
         if store is None:
+            _log(key, "idle trigger: no store to write just now; the next open or write exports")
             return
         try:
             due, _seen = maintain_due(store)
@@ -3946,6 +3962,9 @@ def _outside_idle(language, data_dir, user_files_dir, key, at_exit=False):
             spawn_maintain(language)
     except Exception as exc:                     # never the writer's failure: the next window's open exports
         _log(key, f"idle trigger: {type(exc).__name__}: {exc}")
+    finally:
+        with _IDLE_GUARD:
+            _IDLE_RUNNING.discard(me)
 
 
 # ------------------------------------------------------------------------------------------------ #

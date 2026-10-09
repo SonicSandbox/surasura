@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
@@ -1464,3 +1465,193 @@ def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
         qapp.removeEventFilter(spy)
     assert spy.painted == [], spy.painted
     assert [lst.delegate.paints for lst in lists] == before_paints
+
+
+def test_a_closed_rows_picture_never_shows_its_number_its_episode_count_or_its_descriptions(seeded):
+    """A closed row's picture shows its title, cover, line, status and the diff, never its place in Current, how many
+    episodes it has, or its screen-reader and tooltip text. So when a rebuilt row differs only there, its picture is
+    kept and nothing is redrawn: the learner sees the same row either way (Sonic's S19)."""
+    seed, win = seeded()
+    lst = current(win)
+    i, (kind, row, lines) = next(
+        (n, e) for n, e in enumerate(lst.model().entries)
+        if e[0] == rows.ROW and len(e[1].episodes) >= 2 and len(e[1].title) <= 12 and e[1].key != lst.model().open_key)
+    row = row._replace(title="霧の町")      # short: a title one character longer must still fit, not be cut to the same "…"
+    other = row._replace(episodes=row.episodes[:1], accessible="別の説明", description="別の説明", index=row.index + 7)
+    assert other != row and len(other.episodes) != len(row.episodes)
+    size = lst.visualRect(lst.model().index(i, 0)).size()
+    size.setWidth(1100)            # a narrower picture elides the title away, and then no title change can show
+
+    def paint(payload):
+        img = QImage(size, QImage.Format.Format_RGB32)
+        img.fill(QColor("#1e1e1e"))
+        p = QPainter(img)
+        lst.delegate._paint_row(p, rows.ROW, payload, QRect(0, 0, size.width(), size.height()), False, False,
+                                1.0, lines, number=False)
+        p.end()
+        return rgb_array(img)
+
+    before, after = paint(row), paint(other)
+    assert (before != before[0, 0]).any(), "the closed row painted nothing, so the test would prove nothing"
+    retitled = paint(row._replace(title=row.title + "改"))
+    assert (retitled != before).any(), "a changed title left the picture as it was, so the comparison could not see text"
+    assert before.shape == after.shape and (before == after).all()     # the number, the count and the text stay off the picture
+    assert rows._same_face(row, other, rows.ROW)
+
+
+def test_a_numbers_refresh_compares_only_the_rows_near_the_screen_and_repaints_none(seeded, monkeypatch):
+    """Bench D-1: a numbers version rebuilt every row as a new object with the same fields, and the window's thread
+    compared all 2,000 of them (~6 ms). A refresh that changes nothing a learner sees now asks about the rows on
+    screen and those painted ahead only, and paints no row again."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    model = lst.model()
+    bar = lst.verticalScrollBar()
+    bar.setValue(bar.maximum() // 3)                          # about a third of the way down the list
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    QTest.qWait(500)                                          # the list rests: the rows ahead are painted
+    n = model.rowCount()
+    first = lst.indexAt(QPoint(4, 1)).row()
+    last = lst.indexAt(QPoint(4, lst.viewport().height() - 2)).row()
+    on_screen = last - first + 1
+    new = [(kind, payload._replace() if kind in (rows.ROW, rows.FINISHED) else payload, lines)
+           for kind, payload, lines in model.entries]
+    calls = []
+    real = model.looks_different
+    monkeypatch.setattr(model, "looks_different", lambda i: (calls.append(i), real(i))[1])
+    renders = lst.delegate.renders
+    assert lst.set_entries(new) == "same"
+    assert len(calls) <= on_screen + 2 * rows.WARM_AHEAD + 2, (len(calls), on_screen)
+    assert len(calls) < n, (len(calls), n)                    # not every row: the rows far off are never compared
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders
+
+
+def test_a_same_refresh_keeps_the_list_heights_and_works_no_height_out_again(seeded, monkeypatch):
+    """Review D-2: a refresh that changes only what a row shows (one show's next-episode line) leaves every row as tall
+    as it was, so the height list is carried over and no height is worked out again on the window's thread. Making it
+    again walked every entry (~6 ms at 20,000), a stutter a learner feels while the library updates under the scroll."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    i = next(n for n, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    assert lst.viewport().rect().intersects(lst.visualRect(lst.model().index(i, 0))), "the row must be on screen"
+    lst.delegate.sizeHint(None, lst.model().index(i, 0))      # the heights exist before the refresh
+    made = []
+    real = lst.delegate._heights_now
+    monkeypatch.setattr(lst.delegate, "_heights_now", lambda m: (made.append(1), real(m))[1])
+    entries = [tuple(e) for e in lst.model().entries]
+    kind, row, lines = entries[i]
+    entries[i] = (kind, row._replace(line="次は第4話 · 残り3話"), lines)
+    assert lst.set_entries(entries) == "same"                 # every shape as it was: a "same" refresh
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    for n in range(max(0, i - 3), min(len(lst.model().entries), i + 4)):
+        lst.delegate.sizeHint(None, lst.model().index(n, 0))
+        lst.visualRect(lst.model().index(n, 0))
+    assert made == [], "the heights were worked out again after a same refresh"
+
+
+def test_a_file_joining_a_closed_row_is_a_same_refresh_and_one_joining_the_open_row_is_a_relayout(seeded):
+    """D-3: a closed row's episodes decide no height, so a new file joining a closed row changes nothing about how tall
+    the list is. That refresh is "same" and only that row is repainted. The open row's episodes do decide its height,
+    so a new file joining it is a relayout. Both matter because files arrive while a learner has a row open on his
+    desk: a closed row must not push every other row around."""
+    seed, win = seeded()
+    lst = current(win)
+    i, (kind, row, lines) = next((n, e) for n, e in enumerate(lst.model().entries)
+                                 if e[0] == rows.ROW and len(e[1].episodes) >= 2)
+    key = row.key
+    entries = list(lst.model().entries)
+    entries[i] = (kind, row._replace(episodes=row.episodes + (row.episodes[-1]._replace(id=10 ** 7),)), lines)
+    assert lst.set_entries(entries) == "same"                  # the closed row gained an episode: no height moved
+    assert len(entry_of(lst, key)[1][1].episodes) == len(row.episodes) + 1
+
+    lst.toggle(lst.model().index(i, 0))                        # open the same row, as a click does
+    lst.doItemsLayout()
+    lst.viewport().repaint()
+    assert lst.model().open_key == key
+    i, (kind, row, lines) = entry_of(lst, key)
+    entries = list(lst.model().entries)
+    entries[i] = (kind, row._replace(episodes=row.episodes + (row.episodes[-1]._replace(id=10 ** 7 + 1),)), lines)
+    assert lst.set_entries(entries) == "relayout"              # the open row grew: its height grew too
+
+
+def test_an_open_head_painted_ahead_takes_only_free_room_and_never_pushes_a_row_out(seeded, monkeypatch):
+    """Bench 9, speed round 5 (review D-4): an open head painted ahead is only a guess at what a click will want, so it
+    takes free room and never evicts. With room it is drawn and goes first in the cache's order (the first to go when a
+    real row needs the room); with none it is not drawn, and every row already painted is still in the cache, so a
+    pointer resting on a closed row never pushes out the rows a learner is looking at."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QHoverEvent, QMouseEvent
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    closed = [i for i, e in enumerate(lst.model().entries)
+              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i)]
+    assert len(closed) >= 2, "two closed rows with episodes on screen: one to hover, then another"
+    i, j = closed[0], closed[1]
+    row_i, row_j = lst.model().entries[i][1], lst.model().entries[j][1]
+    cache = lst.delegate._sprites["row"]
+
+    def hover(index):
+        pos = QPointF(lst.visualRect(lst.model().index(index, 0)).center())
+        QApplication.sendEvent(lst.viewport(), QHoverEvent(QEvent.Type.HoverMove, pos,
+                                                           QPointF(lst.viewport().mapToGlobal(pos.toPoint())),
+                                                           QPointF(-1, -1)))
+        QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
+                                                           Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+
+    # with room: the head is drawn and goes first in the cache's order
+    hover(i)
+    assert wait_until(lambda: any(k[1] == (row_i.key, "open") for k in cache))
+    assert wait_until(lambda: not lst._hover_warm.isActive())       # its episodes too: the warm looked at the head again
+    assert next(iter(cache))[1] == (row_i.key, "open")             # ... and left it first to go
+    # no room: the cache holds what it holds now, with room for the hovered row's own paint and none for a head
+    assert wait_until(lambda: not lst._warm.isActive())               # the list at rest has finished its paint ahead
+    before = list(cache)
+    monkeypatch.setattr(rows, "SPRITES_KEPT", len(cache) + 1)
+    hover(j)
+    assert wait_until(lambda: any(k[1] == row_j.key and k[6] for k in cache))   # the hovered row itself is painted
+    assert wait_until(lambda: not lst._hover_warm.isActive())                   # then the head's warm has had its turn
+    assert not any(k[1] == (row_j.key, "open") for k in cache)        # no head drawn without room
+    assert all(k in cache for k in before)                            # and no row pushed out for it
+
+
+def test_the_window_turning_active_or_inactive_repaints_no_row(seeded):
+    """Qt's item view repaints its whole viewport when the window turns active or inactive, yet no row shows that state:
+    a learner who clicks away to another app must not see every visible row drawn again for nothing (charter S19)."""
+    from PyQt6.QtCore import QEvent, QObject
+
+    class Paints(QObject):
+        def __init__(self):
+            super().__init__()
+            self.painted = []
+
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Paint:
+                self.painted.append(type(obj).__name__)
+            return False
+
+    seed, win = seeded()
+    lst = current(win)
+    assert wait_until(lambda: not lst._warm.isActive(), 10)     # at rest: the rows ahead are painted, nothing more
+    QTest.qWait(400)
+    before = lst.delegate.paints
+    spy = Paints()
+    vp = lst.viewport()
+    vp.installEventFilter(spy)
+    try:
+        QApplication.sendEvent(vp, QEvent(QEvent.Type.WindowDeactivate))
+        QApplication.sendEvent(vp, QEvent(QEvent.Type.WindowActivate))
+        QTest.qWait(500)                                        # nothing happens for a while: any repaint would show here
+    finally:
+        vp.removeEventFilter(spy)
+    assert spy.painted == [], spy.painted
+    assert lst.delegate.paints == before

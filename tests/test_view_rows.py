@@ -595,3 +595,84 @@ def test_ids_changed_in_a_build_that_counts_nothing_are_counted_at_the_next_buil
     assert cache.guess_counts[13] == {"epub": 1, "subtitle": 2}
     assert [(r.piece_id, r.media) for r in view.rows] == \
         [(r.piece_id, r.media) for r in vr.build(items, WORKS, {}).rows]
+
+
+def test_a_goal_or_finished_part_that_changed_is_built_again_and_never_given_back_stale():
+    """Sonic's rule (S19, review IK-36): a Goal or Finished section nothing changed in is given back as it was, but one
+    that changed is built again. A finished file moved to another month, a Goal title's work renamed, and a Finished
+    row's work renamed must each show at once, equal to a build without the cache, never the old object — or the
+    window keeps a title or a month the library no longer has."""
+    cards = {1: 0}                                   # one non-empty dict on every build: the cache's global state holds
+    items = items_of([("graduated", 1, 1, eps("星降る街の小さな工房", 1, 2), {}),
+                      ("goal", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {}),
+                      ("graduated", 3, 3, ["白銀の書庫番 01 章.txt"], {0: {"graduated_at": "2026-09-21T12:00:00Z"}})])
+    tiers = vr._by_tier(items)
+    cache = vr.RowCache()
+
+    def view(changed=(), changed_works=()):
+        return vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, tiers=tiers,
+                        changed=list(changed), changed_works=list(changed_works))
+
+    def without_cache():
+        return vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, tiers=tiers)
+
+    first = view()
+    warm = view()                                    # the first build after a cache is new never keeps a section
+    assert view().finished is warm.finished          # nothing changed: the section is given back as it was
+    assert [m.label for m in first.finished] == ["September 2026", "Earlier"]
+
+    # (a) a Finished file changed in place (a new dict, another month), swapped into its place in the same tier list
+    old = items[5]
+    new = dict(old, graduated_at="2026-08-02T12:00:00Z")
+    items[5] = new
+    tiers["graduated"][[r is old for r in tiers["graduated"]].index(True)] = new
+    moved = view(changed=[5])
+    assert moved.finished is not first.finished
+    assert [(m.label, [r.date for r in m.rows]) for m in moved.finished] == \
+        [(m.label, [r.date for r in m.rows]) for m in without_cache().finished]
+    assert [m.label for m in moved.finished] == ["August 2026", "Earlier"]
+
+    # (b) a Goal title's work renamed: the strip's covers show the new title
+    assert first.goal.covers == ("雲の上の郵便屋さん",)
+    work(2, "雲の上の郵便屋さんと空の手紙")
+    renamed_goal = view(changed_works=[2])
+    assert renamed_goal.goal.covers == ("雲の上の郵便屋さんと空の手紙",)
+    assert renamed_goal.goal == without_cache().goal
+
+    # (c) the work of a Finished row renamed: its row carries the new title
+    work(3, "白銀の書庫番 改訂版", media="lightnovel")
+    renamed_row = view(changed_works=[3])
+    rows = [r for m in renamed_row.finished for r in m.rows if r.work_id == 3]
+    assert [r.title for r in rows] == ["白銀の書庫番 改訂版"]
+    assert [(m.label, [r.title for r in m.rows]) for m in renamed_row.finished] == \
+        [(m.label, [r.title for r in m.rows]) for m in without_cache().finished]
+
+
+def test_goal_and_finished_are_given_back_unbuilt_when_only_a_current_file_changed():
+    """Speed (review IK-36): at 20,000 files the Goal strip and the Finished months were walked on every build, though a
+    learner's usual change is one episode they are watching. A build told that only a Current file changed must hand back
+    last build's Goal and Finished objects; they must still equal a build made with no cache, or the strip and the months
+    would show a count that is out of date."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}),
+                      ("goal", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("graduated", 3, 3, ["白銀の書庫番 01 章.txt"],
+                       {0: {"graduated_at": "2026-09-21T00:00:00Z"}})])
+    tiers = vr._by_tier(items)
+    cards = {2: 3}      # one shared, non-empty dict: a build keeps Finished only while it is the same object
+    cache = vr.RowCache()
+    view1 = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, tiers=tiers,
+                     changed=None, changed_works=None)
+    # the first build after a new cache stores Finished unkeepable (no same-global key yet), so the reference is the
+    # second build, the one that stores the key the next build can give back
+    view1 = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, tiers=tiers,
+                     changed=[], changed_works=set())
+    items[1] = dict(items[1], watched=1)                  # a new dict: the first Current episode is now watched
+    k = next(i for i, r in enumerate(tiers["now"]) if r["id"] == 1)
+    tiers["now"][k] = items[1]                            # the same tier and place, in the reader's list too
+    view2 = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, tiers=tiers,
+                     changed=[1], changed_works=set())
+    assert view2.goal is view1.goal
+    assert view2.finished is view1.finished
+    assert view2.counts == view1.counts
+    fresh = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards)
+    assert view2.goal == fresh.goal and view2.finished == fresh.finished

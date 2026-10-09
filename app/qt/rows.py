@@ -520,7 +520,8 @@ class RowDelegate(QStyledItemDelegate):
         if hit is not None and (hit[0] is payload or _same_face(hit[0], payload, kind)):
             if hit[0] is not payload:
                 cache[key] = (payload, hit[1])           # the moved row: the next look is by identity again
-            cache.move_to_end(key)
+            if not spare:                                # a guess looked at again ahead stays first to go (D-4)
+                cache.move_to_end(key)
             return hit[1]
         if spare and (len(cache) >= kept or self._bytes[name] + round(size.width() * dpr) * round(size.height() * dpr)
                       * 4 > SPRITE_MB[name] * 1024 * 1024):

@@ -21,8 +21,10 @@
 - **A shelved card you un-suspended in Anki** → its shelf tag taken off; it counts as waiting again.
 - **The restore point**: every shelving is recorded in Connect's ledger (`shelf`, its run id) before Anki is
   written (adversary B #12); `restore(run)` puts every card of a run back (un-suspended, tag off) — the cards still
-  suspended by the shelf only. **No 2.x window offers `restore` or `shelve_item` yet**: 3.0's window (Mado) does
-  (adversary B #14); until then they are Connect's own and the tests'.
+  suspended by the shelf only. P2.5 shows the restore points (`status`) and puts one back (`undo.restore_shelf`,
+  `surasura-cli undo --shelf RUN`). Each row records who took its card off the shelf (`back_by`, ✅ P2.5-2): you (put
+  back, or un-suspended in Anki) → never shelved again (`kept`); the swap-in → it may be shelved again later. `shelve_item` has no
+  2.x caller: 3.0's window (Mado) offers *remove* (adversary B #14).
 - **The tag is the note's**: taking a card off the shelf (the swap-in, a restore, a card you un-suspended) leaves
   the tag on a note whose other card is still shelved (review B #10, adversary B #13).
 
@@ -70,9 +72,17 @@ def gap_needed(cap):
     return max(1, -(-int(cap) // 4))
 
 
+# Who took a card off the shelf (P2.5, ✅ Sonic 2026-10-08 P2.5-2): you — put back (a restore point) or un-suspended in
+# Anki — and it is never shelved again; Surasura — the swap-in, its word relevant again — and it may be shelved again
+BACK_BY_YOU, BACK_IN_ANKI, BACK_BY_SURASURA = "you", "you-in-anki", "surasura"
+YOURS = (BACK_BY_YOU, BACK_IN_ANKI)
+
+
 def ensure(ledger):
     for sql in _SQL:
         ledger.conn.execute(sql)
+    if "back_by" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(shelf)")}:
+        ledger.conn.execute("ALTER TABLE shelf ADD COLUMN back_by TEXT")
 
 
 class Card:
@@ -255,7 +265,8 @@ def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=
     with ledger.transaction():
         ensure(ledger)
         for c in back:
-            ledger.conn.execute("UPDATE shelf SET back_at = ? WHERE card_id = ? AND back_at IS NULL", (now, c.card_id))
+            ledger.conn.execute("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND back_at IS NULL",
+                                (now, BACK_BY_SURASURA, c.card_id))
             if c.item_id in finished:
                 to = journey_item_of(c.word) if journey_item_of else None
                 ledger.conn.execute("INSERT OR REPLACE INTO rewrites (note_id, language, word, from_item, to_item, "
@@ -283,8 +294,8 @@ def tidy(anki, ledger):
     now = _now()
     with ledger.transaction():
         ensure(ledger)
-        ledger.conn.executemany("UPDATE shelf SET back_at = ? WHERE card_id = ? AND back_at IS NULL",
-                                [(now, c) for c in ids])
+        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND back_at IS NULL",
+                                [(now, BACK_IN_ANKI, c) for c in ids])
     return len(notes)
 
 
@@ -306,9 +317,20 @@ def restore(anki, ledger, run):
             _untag(anki, [(c, n) for c, n in rows if c in still])
     now = _now()
     with ledger.transaction():
-        ledger.conn.executemany("UPDATE shelf SET back_at = ? WHERE card_id = ? AND run = ?",
-                                [(now, c, run) for c, _n in rows])
+        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND run = ?",
+                                [(now, BACK_BY_YOU, c, run) for c, _n in rows])
     return len(cards_back)
+
+
+def kept(ledger):
+    """The card ids you took off the shelf yourself (put back, or un-suspended in Anki): never shelved again by
+    Connect (✅ P2.5-2). One the swap-in brought back (`surasura`) may be shelved again, like any card."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shelf'").fetchone():
+        return set()
+    if "back_by" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(shelf)")}:
+        return set()
+    return {r[0] for r in ledger.conn.execute(f"SELECT DISTINCT card_id FROM shelf WHERE back_by IN "
+                                              f"({','.join('?' * len(YOURS))})", YOURS)}
 
 
 def runs(ledger, language=None):

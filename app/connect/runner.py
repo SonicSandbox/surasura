@@ -41,7 +41,7 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check
-from app.connect.ledger import BEFORE_MINING, IN_FLIGHT, Ledger
+from app.connect.ledger import BEFORE_MINING, IN_FLIGHT, PREPARE_KINDS, Ledger
 
 log = logging.getLogger("surasura-cli")
 
@@ -122,6 +122,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
     ledger = ledger or Ledger()
     summary = {"languages": {lang: _empty() for lang in languages}, "looks": 0}
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
+    begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
     parked = set()              # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
     try:
         while True:
@@ -137,6 +138,9 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
                 if not _open_jobs(ledger, lang, parked):
                     continue
                 work = True
+                if lang not in begun:
+                    ledger.mark_run(lang)
+                    begun.add(lang)
                 outside |= _language(steps, ledger, lang, prepared, parked, summary["languages"][lang])
                 _said(steps, lang, summary["languages"][lang])
                 stop = _stop(steps)                 # staged or switched off while its jobs ran: this step boundary
@@ -236,6 +240,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if lang not in prepared:
                 steps.prepare(lang, ledger)
                 prepared.add(lang)
+                _fixed(ledger, lang, kinds=PREPARE_KINDS)     # the sync, known-sync and Generate went through
     except Wait as w:
         wait = Wait(w.reason, w.look)       # its fields only: never the caught exception's frame (#17)
     except Needs as n:
@@ -267,6 +272,9 @@ def _language(steps, ledger, lang, prepared, parked, out):
         tried.add(job["id"])
         try:
             _job(steps, ledger, lang, job, store_now, set(line), out)
+            ended = ledger.job_by_id(job["id"]) or {}
+            if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
+                _fixed(ledger, lang, item_id=job["item_id"], keep=_skipped_says(ended))
         except Wait as w:
             _wait(ledger, job, w, out, parked)
             outside |= w.look
@@ -283,6 +291,26 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if _stop(steps):
             break
     return outside
+
+
+# A job that ended one of these ways took its item's needs with it (03 §4: fixed by itself); `failed` just named one
+ENDED = ("done", "dropped", "skipped", "undone")
+
+
+def _fixed(ledger, lang, kinds=None, item_id=None, keep=()):
+    """Needs whose cause went away (03 §4), each named once in the log -> how many."""
+    rows = ledger.fix(lang, kinds=kinds, item_id=item_id, keep=keep)
+    for row in rows:
+        log.info("Connect: fixed by itself (%s, %s): %s", lang, row["kind"], row["say"])
+    return len(rows)
+
+
+def _skipped_says(job):
+    """The words of the steps a job ended without (its `skipped` column): their needs stay open (03 §4)."""
+    try:
+        return set((json.loads(job.get("skipped") or "{}") or {}).values())
+    except (ValueError, AttributeError):
+        return set()
 
 
 def _blocked(steps, lang, resume):
@@ -847,15 +875,39 @@ class Steps:
 
     def video(self, lang, job):
         """The episode's video on this computer: hato's pairing names it; else a video beside the subtitle with its
-        name. None when there's none, or it's a cloud placeholder (never opened, RD-S1)."""
+        name; else the video index (P2.5 row 2.5.8, G1.3-12: the paired videos' folders and the ones you added — by
+        name, and size when the pairing gives one). None when there's none, or only a cloud placeholder (never
+        opened, RD-S1)."""
         with _held():                       # the store's two reads, one open; the disk is looked at after
             pairing = self.pairing(lang, job) or {}
             named = pairing.get("video_path")
             paired = isinstance(named, str) and bool(named)
             subtitle = None if paired else self.subtitle(lang, job)
         if paired:
-            return named if _on_disk(named) else None
-        return beside(subtitle) if subtitle else None
+            if _on_disk(named):
+                return named
+            size = pairing.get("video_size")
+            return self._videos(lang).find([os.path.basename(named)],
+                                           size if isinstance(size, int) and size > 0 else None)
+        if not subtitle:
+            return None
+        from app.connect import videos
+        return beside(subtitle) or self._videos(lang).find(videos.names_for(subtitle))
+
+    def _videos(self, lang):
+        """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders
+        whose time moved are listed again)."""
+        from app.connect import library, videos
+        made = getattr(self, "_video_index", {})
+        if lang not in made:
+            with self._open(lang) as store:
+                shallow = sorted({os.path.dirname(r["video_path"]) for records in library.pairings(store).values()
+                                  for r in records if isinstance(r.get("video_path"), str) and r["video_path"]})
+            index = videos.Index(lang)
+            index.refresh(shallow, videos.configured(self.loaded, lang))
+            made[lang] = index
+            self._video_index = made
+        return made[lang]
 
     def record(self, lang, job, made, mined_at, batch):
         """The mining's one store write (receipt + made words): a busy store is looked at again, one that can't be
@@ -941,6 +993,7 @@ class Steps:
                 from None
         self._shelved = set()
         try:
+            self.finish_undos(lang, ledger)
             self.notes_gone(lang)
             self.shelf_session(lang, ledger)
         except ImportError:                 # Junban isn't installed: no shelf, named (S10)
@@ -1022,7 +1075,8 @@ class Steps:
             finished = shelf.finished_items(store, made)
             holder = self._top_words(lang, store)
         anki = self._anki()
-        waiting = shelf.cards(anki, shelf.WAITING_QUERY, made)
+        kept = shelf.kept(ledger)               # taken off the shelf by you: never shelved again (✅ P2.5-2)
+        waiting = [c for c in shelf.cards(anki, shelf.WAITING_QUERY, made) if c.card_id not in kept]
         for card in waiting:
             card.rank = ranks.get(card.word, shelf.NOT_LISTED)
         needed = [ranks.get(w["word"], shelf.NOT_LISTED) for w in todo]
@@ -1068,6 +1122,14 @@ class Steps:
             for word in file_words.get(names.get(item), ()) or ():
                 holder.setdefault(word, item)
         return holder
+
+    def finish_undos(self, lang, ledger):
+        """An *Undo this batch* a kill left half-way (recorded before Anki was written) finished now (P2.5, intent
+        keeper #4): its gone notes' words freed, the job `undone`."""
+        if not ledger.pending_undos(lang):
+            return 0
+        from app.connect import library, undo
+        return undo.finish_pending(undo.AnkiConnectUndo(self.url), ledger, lang, lambda: library.open_store(lang))
 
     def notes_gone(self, lang):
         """Row 2.4.14: the store's note ids (yours and Connect's) checked against Anki once a run; the gone ones

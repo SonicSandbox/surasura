@@ -4094,6 +4094,7 @@ def run_signature_parts(language, found_files, args):
             "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
             "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
             "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
+            "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
             # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
             "anki_sync_delay_min",
             # Optional-module switches that change what the app SHOWS, never what a run computes.

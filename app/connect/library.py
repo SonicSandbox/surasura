@@ -175,6 +175,44 @@ def notes_gone(store, gone):
     return store.notes_gone(sorted(gone), by=READER)
 
 
+def unmake(store, item_id, note_ids, words=()):
+    """*Undo this batch* (P2.5 row 2.5.5, ✅ P2.5-1): the undone notes out of the item's made words, in one short write
+    as role `connect`'s command — a word left with no note is free again (its row goes: Connect may make it again),
+    and so is one of `words` (the undone notes' words) whose row the deleted-card check already emptied; the item's
+    receipt cleared when none of its made words is left -> the words freed. Nothing to change → nothing written
+    (S19)."""
+    gone = {int(n) for n in note_ids or ()}
+    undone = set(words or ())
+    if not gone or not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'"
+                                          ).fetchone():
+        return []
+    with store._reading():
+        rows = store.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?", (item_id,)).fetchall()
+    changed = {}
+    for word, ids in rows:
+        try:
+            had = [int(n) for n in json.loads(ids)]
+        except (ValueError, TypeError):
+            continue
+        left = [n for n in had if n not in gone]
+        if left != had or (not left and word in undone):
+            changed[word] = left
+    if not changed:
+        return []
+    freed = sorted(w for w, left in changed.items() if not left)
+    with store._command("receipt", by=READER) as cmd:
+        for word, left in changed.items():
+            if left:
+                store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                   (json.dumps(left), item_id, word))
+            else:
+                store.conn.execute("DELETE FROM made_words WHERE item_id = ? AND word = ?", (item_id, word))
+        cmd.touch()
+        if not store.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? LIMIT 1", (item_id,)).fetchone():
+            store.receipt(item_id, None)
+    return freed
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op."""

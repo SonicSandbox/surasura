@@ -1,5 +1,5 @@
 """surasura-cli's library verbs for Connect (P2.1; P1.5 09-hato-layer §2, P0.3 03-verbs): `register`, `place`, `finish`,
-and `connect` (in P2.1: `--consume-only`, the inbox read once).
+and `connect` (in P2.1: `--consume-only`, the inbox read once); P2.5's `undo` (a batch, the shelf) and `logs`.
 
 - `register` takes hato's pairing record v1 on stdin (`--pairing -`) or from a file — never on the command line, which
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
@@ -532,3 +532,89 @@ def setup(args):
             raise CliError("failed", "Surasura couldn't save Connect's setup record. Try again in a moment.")
     contract.emit_progress("done", 1, 1)
     return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))
+
+
+# --------------------------------------------------------------------------- #
+# undo, logs (P2.5: *Undo this batch*, the shelf put back; 03-actors §4's logs)
+# --------------------------------------------------------------------------- #
+def undo_args(parser):
+    add_language(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--job", type=int, metavar="N", help="the batch (Connect's job, as `status` lists it) to undo")
+    which.add_argument("--shelf", metavar="RUN", help="a shelf restore point to put back (as `status` lists it)")
+    parser.add_argument("--confirm", action="store_true",
+                        help="do it (it can't be undone); without it, only what it would do")
+
+
+def undo(args):
+    """*Undo this batch* (`--job`): the batch's cards nobody studied or changed, deleted from Anki; the rest listed
+    with why (`app/connect/undo.py`). `--shelf`: a shelf restore point put back. Without `--confirm`, the plan only
+    (nothing written). The window's in 2.x; only with Connect's preview on. Never while you review."""
+    loaded = settings()
+    if not loaded.get("connect_enabled"):
+        return {"skipped": PREVIEW_OFF}
+    lang = language(args, loaded)
+    require_set_up(lang)
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
+        return {"skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
+    from app import anki_connect, locks
+    from app.connect import library, shelf, undo as undoing
+    from app.connect.ledger import Ledger, TooNew, path
+    if not os.path.exists(path()):
+        raise _bad("Connect hasn't made any cards here yet.")
+    anki = undoing.AnkiConnectUndo(anki_connect.address(loaded))
+    try:
+        with Ledger() as ledger:
+            if args.shelf is not None:
+                run = next((r for r in shelf.runs(ledger, lang) if r["run"] == args.shelf), None)
+                if run is None:
+                    raise _bad("There's no shelf restore point with that name.", shelf=args.shelf)
+                if not args.confirm:
+                    return dict(run, language=lang, confirm=False)
+                back = undoing.restore_shelf(anki, ledger, args.shelf)
+                _owe_sync(loaded)
+                return {"language": lang, "shelf": args.shelf, "back": back, "confirm": True}
+            job = ledger.job_by_id(args.job)
+            if job is None or job["language"] != lang:
+                raise _bad(f"There's no batch {args.job} in the {lang} library.", job=args.job)
+            if not args.confirm:
+                return dict(undoing.summary(undoing.plan(anki, ledger, args.job)), language=lang, confirm=False)
+            done = undoing.run(anki, ledger, args.job, open_store=lambda: library.open_store(lang))
+            _owe_sync(loaded)
+            return dict(undoing.summary(done), language=lang, confirm=True)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    except undoing.Refused as e:
+        raise _bad(e.say, job=args.job) from None
+    except (undoing.Reviewing, shelf.Reviewing):
+        raise CliError("anki-busy", "You're reviewing in Anki. Undo once you've finished.") from None
+    except locks.Busy as e:
+        raise contract.busy_error("anki-writer", e.holder,
+                                  "Another program is writing to Anki. Try again in a moment.") from None
+    except anki_connect.AnkiError as e:
+        raise CliError("anki-closed", f"Anki isn't open (or stopped answering): {e}") from None
+
+
+def _owe_sync(loaded):
+    """Cards deleted or back from the shelf change tomorrow's cards: the session's sync (P2.3), sent by Connect."""
+    from app.cli.verbs import _sync_pending
+    from app.connect import anki_session
+    try:
+        _sync_pending(loaded, anki_session.after_write(loaded, True))
+    except Exception:
+        contract.log.exception("the sync after an undo wasn't arranged")
+
+
+def logs_args(parser):
+    parser.add_argument("--path", action="store_true", help="print the logs folder (the default)")
+    parser.add_argument("--save", metavar="ZIP", help="save Surasura's logs and Anki Miner's results of the last "
+                                                      "7 days to one zip")
+
+
+def logs(args):
+    """Where Surasura's logs are (`--path`), or one zip of them (`--save`): never a key or a token (CLAUDE.md §6)."""
+    from app.connect import status
+    if args.save:
+        names = status.save_logs(args.save)
+        return {"saved": args.save, "files": len(names)}
+    return {"path": status.logs_folder()}

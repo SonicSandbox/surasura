@@ -915,3 +915,33 @@ def test_a_show_folder_deleted_from_disk_makes_its_tier_folder_differ():
         assert show not in found
     finally:
         store.close()
+
+
+def test_the_rounds_walk_reads_exactly_what_a_full_read_of_the_store_reads():
+    # Why: `Round._held` walks the index inside SQLite (a seek past each file, past each sub-folder's whole run of
+    # keys) instead of reading every key under a folder. Names that sort right beside a folder's own keys — a file
+    # named like the folder ('番組.srt' sorts before '番組/…'), a folder named like it plus more ('番組0', '番組-2') —
+    # must neither be skipped nor swallowed. Checked against a plain read of every available key, folder by folder.
+    store = migrated("ja")
+    try:
+        now = ls.FOLDER_OF_TIER["now"]
+        for rel in (f"{now}/番組.srt", f"{now}/番組/第01話.srt", f"{now}/番組/特典/第02話.srt",
+                    f"{now}/番組0/第01話.srt", f"{now}/番組-2/第01話.srt", f"{now}/番組0.srt"):
+            touch(store.data_dir, rel, f"{rel} 本編\n")
+        store.sync_disk()
+        rows = store.conn.execute(
+            "SELECT rel_key, size, mtime_ns FROM items WHERE availability = 'available'").fetchall()
+        rnd = ls.Round(store)
+        for rel in [now, f"{now}/番組", f"{now}/番組0"] + [ls.FOLDER_OF_TIER[t] for t in ("soon", "goal")]:
+            prefix = ls.path_key(rel) + "/"
+            files = {k: (s, m) for k, s, m in rows if k.startswith(prefix) and "/" not in k[len(prefix):]}
+            subs = {prefix + k[len(prefix):].split("/", 1)[0] for k, _s, _m in rows
+                    if k.startswith(prefix) and "/" in k[len(prefix):]}
+            held, gone = rnd._held(rel)                      # nothing on disk named: every sub-folder reads as gone
+            assert held == files, rel
+            assert set(gone) == subs and len(gone) == len(subs), rel
+            assert rnd._held(rel, sorted(subs))[1] == []          # all on disk: none gone
+        assert ls.path_key(f"{now}/番組.srt") in rnd._held(now)[0]
+        assert _full_round(store) == []                      # a synced library: nothing differs
+    finally:
+        store.close()

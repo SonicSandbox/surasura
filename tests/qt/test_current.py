@@ -275,7 +275,7 @@ def test_needs_you_shows_the_show_waiting_on_videos_and_its_tab_appears(seeded):
     needs = [p for k, p, _l in page.list.model().entries if k == rows.NEED]
     assert len(needs) == 1 and needs[0].title.endswith("3 episodes have no video")
     assert not win.tab_buttons["needs"].isHidden()
-    assert win.tab_buttons["needs"].text() == strings.TAB_WITH_COUNT.format(name="Needs you", count=1)
+    assert win.tab_buttons["needs"].text() == strings.TAB_COUNT.format(name="Needs you", count=1)
 
 
 def test_the_subline_counts_current(seeded):

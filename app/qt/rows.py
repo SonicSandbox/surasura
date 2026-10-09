@@ -330,7 +330,7 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
 
 
 def paint_mark(p, mark, right, y_mid, dpr=1.0, audio=False):
-    """The on-disk mark (⌀ N) ending at `right`; -> its rect."""
+    """The on-disk mark (a struck camera or speaker, then N) ending at `right`; -> its rect."""
     f = fz()
     col = style.colours()
     colour = style.qcolor(col["warn"] if mark.tone == "warn" else col["ink-faint"])
@@ -1054,7 +1054,7 @@ class RowDelegate(QStyledItemDelegate):
                 w, h = r.width(), r.height()
                 self._sprite("ep", ep, r.size(), dpr, False,
                              lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr, audio),
-                             ident=(ep.id, kind == HERO), ground="surface" if kind == HERO else "bg")
+                             ident=(ep.id, kind == HERO, audio), ground="surface" if kind == HERO else "bg")
                 if self.warmed != before:
                     return True
         finally:
@@ -1205,7 +1205,7 @@ class RowDelegate(QStyledItemDelegate):
                 pix = self._sprite("ep", ep, r.size(), dpr, False,
                                    lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr,
                                                                                   audio),
-                                   ident=(ep.id, hero), ground="surface" if hero else "bg", to=(p, r.topLeft()))
+                                   ident=(ep.id, hero, audio), ground="surface" if hero else "bg", to=(p, r.topLeft()))
                 if pix is not None:
                     p.drawPixmap(r.topLeft(), pix)
             else:
@@ -1781,8 +1781,11 @@ class RowsView(QListView):
                     return
         super().mousePressEvent(event)
 
+    MODIFIERS = frozenset({Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta, Qt.Key.Key_AltGr})
+
     def keyPressEvent(self, event):
-        self._show_focus(True)
+        if event.key() not in self.MODIFIERS:        # Ctrl held for a Ctrl+wheel is no navigation (D-6)
+            self._show_focus(True)
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             idx = self.currentIndex()
             if idx.isValid():

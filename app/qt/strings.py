@@ -17,7 +17,6 @@ TABS = {
     "settings": ("Settings", "Every setting, on one page"),
 }
 TABS_NAME = "Sections"
-TAB_WITH_COUNT = "{name}  {count}"             # Needs you's unseen entries
 
 # Each page until its step builds it (W2.2 Current, W3.2 Finished and Needs you, W3.3 Settings).
 PAGE_WAITING = "This page arrives in a later build of 3.0."

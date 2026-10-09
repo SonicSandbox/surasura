@@ -417,9 +417,9 @@ def test_studying_first_is_an_arrow_and_words_with_no_pill_under_them(qapp, monk
     p.end()
     assert width > 0
     assert "badge-new" not in asked, "the old pill's fill came back under the words"
-    reach = round(19 * rows.fz()) // 2 + 1                      # a pill reached ±(19 f + 4) / 2 from the midline
+    half = round(19 * rows.fz()) / 2                            # the old pill: 19 f tall, filled, on the midline
     arr = rgb_array(image)
-    for y in (30 - reach - 1, 30 + reach):
+    for y in (round(30 - half + 1), round(30 + half - 2)):      # just inside its top and bottom edges (D-2)
         band = arr[y:y + 1, 10:10 + width]
         assert count(band, ground.name(), 2) == band.shape[1], f"something drawn {y - 30} px off the midline"
 
@@ -525,3 +525,57 @@ def test_no_video_is_a_struck_camera_and_no_audio_a_struck_speaker(qapp, monkeyp
         q.end()
         shapes.append(rgb_array(img))
     assert (shapes[0] != shapes[1]).any(), "the two glyphs must differ"
+
+
+def test_a_click_on_a_row_leaves_no_ring_when_the_row_is_painted_again(seeded, monkeypatch):
+    """G2.3 R1 as Sonic sees it (review D-1): after the keyboard showed the ring, a click on a row and any later repaint
+    of the list (a hover, a scroll) draw no focus ring at all — the flag alone could be right while the paint ignored
+    it."""
+    seed, win = seeded()
+    lst = current(win)
+    rings = []
+    real_ring = lst.delegate._focus_ring
+    monkeypatch.setattr(lst.delegate, "_focus_ring", lambda *a, **kw: (rings.append(1), real_ring(*a, **kw))[1])
+    lst.setFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    lst.viewport().repaint()
+    QApplication.processEvents()
+    assert rings, "the keyboard's ring must be drawn, or this test proves nothing"
+    i = next(n for n, e in enumerate(lst.model().entries)
+             if e[0] == rows.ROW and lst.viewport().rect().contains(lst.visualRect(lst.model().index(n, 0)).center()))
+    rect = lst.visualRect(lst.model().index(i, 0))
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    QApplication.processEvents()
+    rings.clear()
+    lst.viewport().repaint()                                   # every row on screen painted again
+    QApplication.processEvents()
+    assert lst.hasFocus()
+    assert rings == [], "a click left the focus ring on screen"
+
+
+def test_a_modifier_key_alone_shows_no_ring(seeded):
+    """Review D-6: Ctrl, Shift or Alt held for a Ctrl+wheel or a Shift+click is no keyboard navigation (CSS's
+    :focus-visible ignores them); an arrow is."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.setFocus(Qt.FocusReason.MouseFocusReason)
+    for key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta):
+        QTest.keyClick(lst, key)
+        assert not lst.focus_visible, key
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    assert lst.focus_visible
+
+
+def test_the_finished_tab_is_not_set_again_when_its_count_did_not_change(seeded, monkeypatch):
+    """Review D-8 (S19): the Finished tab, like Needs you's, is set again only when its count changed."""
+    seed, win = seeded()
+    view = win.services.library.view()
+    assert view is not None and view.counts.finished > 0, "the seed must finish something, or this proves nothing"
+    tab = win.tab_buttons["finished"]
+    calls = []
+    real = tab.set_name
+    monkeypatch.setattr(tab, "set_name", lambda *a, **kw: (calls.append(a), real(*a, **kw))[1])
+    win.show_library(view)                                     # the same count again: not set
+    assert calls == []
+    win.show_library(view._replace(counts=view.counts._replace(finished=view.counts.finished + 1)))
+    assert len(calls) == 1                                     # a new count: set once

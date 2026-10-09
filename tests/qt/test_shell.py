@@ -93,10 +93,11 @@ def test_the_keyboard_reaches_every_tab_and_space_opens_its_page(window):
 
 def test_the_focus_ring_is_the_accent(window):
     b = window.tab_buttons["finished"]
-    before = count(rgb_array(b.grab()), theme.colours("hb")["accent"], 3)
+    accent = style.colours()["accent"]                      # the window's own theme (Sapphire by default since G2.3)
+    before = count(rgb_array(b.grab()), accent, 3)
     b.setFocus(Qt.FocusReason.TabFocusReason)
     QApplication.processEvents()
-    after = count(rgb_array(b.grab()), theme.colours("hb")["accent"], 3)
+    after = count(rgb_array(b.grab()), accent, 3)
     assert before == 0 and after >= 2 * (b.width() + b.height())
 
 
@@ -105,7 +106,7 @@ def test_needs_you_shows_while_anything_is_listed_and_counts_only_unseen(window)
     unseen = status_service.Entry("Command line (status): it failed", "t", False)
     window.show_status(_snap(needs_you=(unseen,)))
     assert not window.tab_buttons["needs"].isHidden()
-    assert window.tab_buttons["needs"].text() == strings.TAB_WITH_COUNT.format(name="Needs you", count=1)
+    assert window.tab_buttons["needs"].text() == strings.TAB_COUNT.format(name="Needs you", count=1)
     window.show_tab("needs")
     window.show_status(_snap(needs_you=(unseen._replace(seen=True),)))
     assert not window.tab_buttons["needs"].isHidden()          # looked at: still listed (P1.2-1)

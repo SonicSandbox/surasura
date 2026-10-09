@@ -11,7 +11,7 @@ With the freeze switch on (tests, captures) it shows at once.
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt, QTimer
-from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QPen, QTextDocument
+from PyQt6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QPen, QTextDocument
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app import theme
@@ -19,6 +19,22 @@ from app.qt import freeze, style
 
 GAP = 8
 PAD = (10, 7)                                     # x, y (A4: padding 7px 10px)
+BULLET = "\n• "                                   # a plain tip's action, on a line of its own (G2.3 T1)
+
+
+def bulleted(text, indent):
+    """A plain tip whose lines start "• " as rich text: each such line a bullet whose wrapped words stay indented under
+    its first word (`indent`: the bullet and its space, measured in the tip's font), the other lines plain (G2.3 T1: an
+    action on its own line reads at a glance)."""
+    from html import escape
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("• "):
+            out.append(f'<p style="margin-top:3px; margin-left:{indent}px; text-indent:-{indent}px">'
+                       f'•&nbsp;{escape(line[2:])}</p>')
+        else:
+            out.append(f'<p style="margin:0">{escape(line)}</p>')
+    return "".join(out)
 
 
 class Bubble(QWidget):
@@ -41,7 +57,9 @@ class Bubble(QWidget):
         font.setWeight(QFont.Weight(weight))
         self._doc.setDefaultFont(font)
         self._doc.setDefaultStyleSheet(f"body {{ color: {style.colours()['ink']}; }}")
-        if Qt.mightBeRichText(text):
+        if BULLET in text or text.startswith(BULLET[1:]):   # first: a bulleted tip is plain words (names escaped)
+            self._doc.setHtml(bulleted(text, round(QFontMetricsF(font).horizontalAdvance("• "))))
+        elif Qt.mightBeRichText(text):
             self._doc.setHtml(text)
         else:
             self._doc.setPlainText(text)

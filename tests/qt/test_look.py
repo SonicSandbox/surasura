@@ -79,6 +79,6 @@ def test_without_a_live_switch_it_asks_for_a_restart(opened, monkeypatch):
     win, services = opened
     monkeypatch.setattr(shell, "LIVE_LOOK", False)
     assert win.set_look("sky", "L") is None
-    assert style.current()[:2] == ("hb", "M")                # unchanged until the next start
+    assert style.current()[:2] == (theme.DEFAULT_THEME, "M")  # unchanged until the next start (no theme saved: the default)
     assert win.bar_line.full() == strings.RESTART_TO_APPLY
     assert services.settings.get()["app_theme"] == "sky"     # saved for that start

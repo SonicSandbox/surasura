@@ -753,6 +753,18 @@ def held():
                 pass
 
 
+def _rederive_soon_line(store):
+    """The tiers win (§6.3): from 3.0 `meta.soon_line` is the number of Current's rows above the line;
+    at open and after any import it is re-derived from the `now` tier. Absent through 2.x: nothing."""
+    raw = store.conn.execute("SELECT value FROM meta WHERE key = 'soon_line'").fetchone()
+    if raw is None:
+        return
+    count = store.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
+    if str(count) != str(raw[0]):
+        with store._writing():
+            store._set_meta({"soon_line": count, "copy_dirty": store._meta().get("copy_dirty", 0) + 1})
+
+
 class StoreOpener:
     """A window's view of its store (§6.2): `check()` never waits on the window's thread. A busy
     database is retried on a worker, and the window uses the mode it cached at its last check until the

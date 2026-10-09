@@ -547,9 +547,10 @@ class _Guesses:
     are kept between builds and only the rows the feed replaced are counted again (review C-6: ~5 ms a build at 20,000
     files, holding Python's lock against the window's thread)."""
 
-    def __init__(self, items, cache=None):
+    def __init__(self, items, cache=None, changed=None):
         self.items = items
         self.cache = cache
+        self.changed = changed                       # the item ids the feed changed or let go since the last build
         self.counts = None
 
     def of(self, work):
@@ -567,6 +568,19 @@ class _Guesses:
                 del c[entry[2]]
                 if not c:
                     del counts[entry[1]]
+        if self.cache is not None and self.changed is not None and seen:
+            # the reader said which ids changed (speed round 5: a walk of all 20,000 items on every build, on the
+            # reader's thread, holding Python's lock against the window's); the rest are the same objects
+            for i in self.changed:
+                r, old = self.items.get(i), seen.get(i)
+                if old is not None and old[0] is r:
+                    continue
+                if old is not None:
+                    add(seen.pop(i), -1)
+                if r is not None:
+                    seen[i] = entry = (r, r.get("work_id"), _kind(r))
+                    add(entry, 1)
+            return counts
         for i, r in self.items.items():
             old = seen.get(i)
             if old is not None and old[0] is r:          # the same row object: the feed didn't change it
@@ -593,10 +607,11 @@ def _mine_ids(current, n):
 
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False, cache=None, tiers=None):
+          loading=False, busy=False, cache=None, tiers=None, changed=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
-    `cards`: {item_id: count}; `mining`: item ids being mined now."""
+    `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
+    since the cache's last build (None: unknown, every item looked at)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -620,7 +635,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 break
     if cache is not None:
         cache.begin(cache_version, cards, mining, in_top, line_n)
-    guessed = _Guesses(items, cache)
+    guessed = _Guesses(items, cache, changed)
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):

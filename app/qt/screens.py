@@ -300,7 +300,10 @@ class NeedsPage(Page):
         self.failures = ()
 
     def set_failures(self, entries):
-        self.failures = tuple(entries or ())
+        entries = tuple(entries or ())
+        if same_objects(entries, self.failures):    # the bar's every snapshot comes here: unchanged, nothing to do
+            return
+        self.failures = entries
         if self.view_model is not None:
             self.list.set_entries(self.entries(self.view_model))
 

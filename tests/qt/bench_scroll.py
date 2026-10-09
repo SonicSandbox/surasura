@@ -73,6 +73,8 @@ def run_child(seed_path, out_path, scale, root):
     env["SURASURA_FREEZE_MOTION"] = "1"
     env["SURASURA_READER_GC_FREEZE"] = "1" if GC_FREEZE else "0"
     env["SURASURA_ROW_PIXMAPS"] = "1" if PIXMAPS else "0"
+    if SWITCH is not None:
+        env["SURASURA_BENCH_SWITCH_S"] = str(SWITCH)
     cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--out", out_path]
     subprocess.run(cmd, env=env, cwd=ROOT, timeout=300, check=False)
     with open(out_path, encoding="utf-8") as f:
@@ -102,11 +104,13 @@ def summary(results):
 
 GC_FREEZE = False
 PIXMAPS = True
+SWITCH = None
 
 
 def main_parent(a):
-    global GC_FREEZE, PIXMAPS
+    global GC_FREEZE, PIXMAPS, SWITCH
     GC_FREEZE = a.gc_freeze
+    SWITCH = a.switch
     PIXMAPS = a.pixmaps == "on"
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-")
     seed_path = os.path.join(work, "seed.pkl")
@@ -202,6 +206,19 @@ class _LazyOpener:
         return self._load().fallback_handle()
 
 
+def _timer_resolution_ms():
+    """Windows' timer resolution now (a 1 ms wait lasts up to this long), or None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        lo, hi, now = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_ulong()
+        ctypes.windll.ntdll.NtQueryTimerResolution(ctypes.byref(lo), ctypes.byref(hi), ctypes.byref(now))
+        return now.value / 10000
+    except Exception:
+        return None
+
+
 def main_child(a):
     from PyQt6.QtCore import QTimer, Qt
     from PyQt6.QtWidgets import QApplication
@@ -211,6 +228,8 @@ def main_child(a):
 
     app = QApplication([sys.argv[0]])
     shell.prepare_process()
+    if os.environ.get("SURASURA_BENCH_SWITCH_S"):           # the A/B of Python's lock hand-over (speed round 5)
+        sys.setswitchinterval(float(os.environ["SURASURA_BENCH_SWITCH_S"]))
     opener = _LazyOpener(a.child)
     reader = library_reader.LibraryReader(opener, numbers=lambda: (1, opener.numbers_table),
                                           mining=lambda: opener.mining_ids,
@@ -487,6 +506,8 @@ def main_child(a):
         result["gc_count"] = len(gc_log)
         result["paints"] = lst.delegate.paints if hasattr(lst.delegate, "paints") else None
         result["dpr"] = lst.viewport().devicePixelRatioF()
+        result["switch_s"] = sys.getswitchinterval()
+        result["timer_resolution_ms"] = _timer_resolution_ms()
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(result, f)
         app.quit()
@@ -519,6 +540,8 @@ def main():
     ap.add_argument("--gc-freeze", action="store_true", help="the reader freezes the collector after each view (A/B)")
     ap.add_argument("--pixmaps", choices=("on", "off"), default="on",
                     help="rows and episodes painted once into pixmaps (on) or drawn on every paint (off): review IK-30")
+    ap.add_argument("--switch", type=float, default=None,
+                    help="Python's switch interval in s for the window process (A/B; default: the shell's own)")
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
     if a.child:

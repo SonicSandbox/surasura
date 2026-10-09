@@ -80,6 +80,7 @@ class LibraryReader:
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._tiers, self._pos, self._dirty = None, {}, set()
         self._changed_ids = None
+        self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
         self._cards_all_at = 0.0
         self._cards_stale = False
         self._mode_at = 0.0
@@ -222,6 +223,7 @@ class LibraryReader:
             self._works = {w["id"]: w for w in feed["works"]}
             self._tiers = None                          # sorted again in full at the next build
             self._changed_ids = None
+            self._build_changed = None
         else:
             changed = self._changed_ids if self._changed_ids is not None else set()
             for r in feed["items"]:
@@ -242,6 +244,9 @@ class LibraryReader:
                         self._dirty.add(r.get("tier"))
             for w in feed["works"]:
                 self._works[w["id"]] = w
+            if self._build_changed is not None:
+                self._build_changed.update(r["id"] for r in feed["items"])
+                self._build_changed.update(ident for kind, ident in feed["gone"] if kind == "item")
             for kind, ident in feed["gone"]:
                 if kind == "item":
                     old = self._items.pop(ident, None)
@@ -273,10 +278,12 @@ class LibraryReader:
 
     def _build(self, numbers, mode, reason, rows_known):
         self.builds += 1
-        return view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
+        view = view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
-                               tiers=self._sorted_tiers() if self._items else None)
+                               tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed)
+        self._build_changed = set()                     # built: from here on, only what the feed changes
+        return view
 
     def _busy(self, error):
         self._recheck = True                            # a failed read: ask the store's mode again next time

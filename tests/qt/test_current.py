@@ -921,3 +921,74 @@ def test_the_list_ground_shows_under_the_last_row_before_and_after_it_is_opened_
     height, share = _ground_strip_below_last_row(lst)
     assert height >= 20, height
     assert share >= 0.95, share
+
+
+def test_a_file_arriving_above_moves_the_numbers_and_draws_no_row_afresh(seeded):
+    """A file that lands above the screen moves every row below it one place, so each row's number changes. The number
+    is drawn over the row's pixmap, so the rows on screen are shown again from their pixmaps and none is painted afresh:
+    a learner's list keeps its speed when a file arrives above where he is reading."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 2)
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    idx = lst.indexAt(QPoint(4, 1))
+    assert lst.model().entries[idx.row()][0] == rows.ROW          # the row on screen is a closed row, not a line
+    key = rows.RowsModel.key_of(lst.model().entries[idx.row()])
+    before = lst.model().entries[idx.row()][1].index
+    renders = lst.delegate.renders
+    first = next(r for r in seed.items if r["tier"] == "now")
+    seed.library.commit(items=[dict(first, id=10 ** 6, ord=first["ord"] - 512, piece_id=10 ** 6,
+                                    rel_path="HighPriority/Hato/new - 01.srt", title="new - 01.srt")], order=True)
+    assert wait_until(lambda: lst.model().entries[0][1].key == f"p{10 ** 6}")
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    assert lst.delegate.renders == renders                         # nothing on screen was drawn afresh
+    row = lst.model().keys.index(key)
+    assert lst.model().entries[row][1].index == before + 1         # ... yet its number moved (the test is not a no-op)
+
+
+def test_a_relayout_reuses_each_rows_height_and_only_an_opened_row_or_a_new_look_works_one_out(qapp, seeded, monkeypatch):
+    """A relayout (a row opened, a file arrived) asks every row its height. Working each one out again was most of a
+    relayout's time at a few hundred rows, so a row's height is kept per entry, open or not, and look: a second relayout
+    works out none, opening one row works out only that row, and a new text size works them all out again, once. The
+    heights kept must be the ones a row would get afresh, or a row would paint over its neighbours."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.doItemsLayout()                                    # the first relayout fills the cache before the spy is put in
+    QApplication.processEvents()
+    real = lst.delegate._size_hint
+    calls = []
+
+    def spy(entry, is_open):
+        calls.append((entry, is_open))
+        return real(entry, is_open)
+
+    monkeypatch.setattr(lst.delegate, "_size_hint", spy)
+    try:
+        lst.doItemsLayout()
+        assert calls == [], len(calls)                     # a second relayout: every height is kept
+
+        i = next(n for n, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+        calls.clear()
+        lst.toggle(lst.model().index(i, 0))                # open one row ...
+        lst.doItemsLayout()
+        assert len(calls) == 1, len(calls)                 # ... and only that row's height is worked out
+        assert calls[0][1] is True
+
+        calls.clear()
+        style.apply(qapp, "hb", "L", "ja")                 # a new text size: the heights are worked out again
+        lst.doItemsLayout()
+        assert len(calls) >= 1, len(calls)
+        calls.clear()
+        lst.doItemsLayout()
+        assert calls == []                                 # and then kept again
+
+        for n, e in enumerate(lst.model().entries):       # the kept heights are the ones a row gets afresh
+            is_open = lst.model().open_key == getattr(e[1], "key", None)
+            kept = lst.delegate.sizeHint(None, lst.model().index(n, 0))
+            assert kept.height() == real(e, is_open).height(), (n, kept.height())
+    finally:
+        style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size

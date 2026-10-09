@@ -415,10 +415,11 @@ class ShellWindow(QMainWindow):
 
     def show_library(self, view):
         """The reader's newest view: the pages, the subline's counts, the tabs' counts."""
+        moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
             if hasattr(page, "set_view"):
-                page.set_view(view)
+                moved = page.set_view(view) != "same" or bool(page.list.model().changed) or moved
         self.subline.setText(view.subline)
         fin = self.tab_buttons["finished"]
         label = strings.TABS["finished"][0]
@@ -427,7 +428,8 @@ class ShellWindow(QMainWindow):
         if self._library_needs != len(view.needs):
             self._library_needs = len(view.needs)
             self.show_status(self.services.status.snapshot())
-        self._warm_hidden_pages()
+        if moved:                                   # a view that changed no list paints nothing ahead
+            self._warm_hidden_pages()
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""

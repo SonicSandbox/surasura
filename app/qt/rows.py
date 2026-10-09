@@ -23,8 +23,8 @@ import os
 import time
 from collections import OrderedDict
 
-from PyQt6.QtCore import (QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
-                          pyqtSignal)
+from PyQt6.QtCore import (QAbstractListModel, QItemSelectionModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize,
+                          Qt, QTimer, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                          QStaticText, QTextOption)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
@@ -456,7 +456,8 @@ class RowDelegate(QStyledItemDelegate):
         self.warmed = 0                              # rows drawn ahead, before they came on screen (`warm`)
         self._warming = False
         self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
-        self._hints = {}                             # (id(entry), open) -> (entry, look, QSize): `sizeHint`
+        self._hints = {}                             # an entry's shape -> its QSize, for `_hints_look` (`sizeHint`)
+        self._hints_look = None
         self._bytes = {"row": 0, "ep": 0}
 
     def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None):
@@ -517,22 +518,34 @@ class RowDelegate(QStyledItemDelegate):
         return entries[row] if 0 <= row < len(entries) else None
 
     def sizeHint(self, option, index):
-        """An entry's height, kept per entry object, open or not, and look: a relayout (a row opened, a file arrived)
-        asks every row, and at a few hundred rows working each out again was most of its ~2.5 ms (W2.2 round 4)."""
-        entry = self._entry(index)
-        if entry is None:
+        """An entry's height, kept by what decides it (`_shape`) and the look: a relayout (a row opened, a file
+        arrived) asks every row, and at a few hundred rows working each out again was most of its ~2.5 ms (W2.2 round
+        4). Kept by shape, not by entry: a refresh makes every entry a new tuple, and an arrival every row a new object
+        (its number moved), so a key by object missed on every arrival."""
+        model = self.view.model()
+        entries = model.entries
+        row = index.row()
+        if not 0 <= row < len(entries):
             return QSize(0, 0)
-        is_open = self.view.model().open_key == getattr(entry[1], "key", None)
-        key = (id(entry), is_open)
-        hit = self._hints.get(key)
+        entry = entries[row]
         look = style.current()
-        if hit is not None and hit[0] is entry and hit[1] == look:
-            return hit[2]
-        size = self._size_hint(entry, is_open)
-        if len(self._hints) > 4 * max(64, len(self.view.model().entries)):
-            self._hints.clear()                      # entries let go long ago: never more than a few lists' worth
-        self._hints[key] = (entry, look, size)
+        if look != self._hints_look:                 # a new look: every height again
+            self._hints.clear()
+            self._hints_look = look
+        is_open = model.open_key == getattr(entry[1], "key", None)
+        key = self._shape(entry, is_open)
+        size = self._hints.get(key)
+        if size is None:
+            size = self._hints[key] = self._size_hint(entry, is_open)
         return size
+
+    @staticmethod
+    def _shape(entry, is_open):
+        """What an entry's height is made of (`_size_hint` reads nothing else): its kind, its lines, open or not, and,
+        open or a Needs-you item, how many episodes it lists. A closed row is as tall as every other closed row."""
+        kind, payload, lines = entry
+        n = len(payload.episodes) if (is_open and kind in (HERO, ROW)) or kind == NEED else 0
+        return kind, len(lines), is_open and kind in (HERO, ROW), n
 
     def _size_hint(self, entry, is_open):
         kind, payload, lines = entry
@@ -919,6 +932,21 @@ class RowDelegate(QStyledItemDelegate):
             head = round(theme.SIZES["row"] * fz())
         area = QRect(rect.left(), rect.top() + head + 1, rect.width(), 1 << 20)
         before = self.warmed
+        if kind == ROW:
+            # its open head first, as the click will show it — under the pointer, so hovered (drawn the same open or
+            # not: the hover draws the open row's ground), the body's whole height below it as `_paint_open_row` lays
+            # it: opening it then draws no head afresh (speed round 5: the head was each first opening's own render)
+            local = QRect(0, 0, rect.width(), head + self._episodes_h(row) + 10)
+            self._warming = True
+            try:
+                self._sprite(kind, row, QSize(rect.width(), head), dpr, True,
+                             lambda q: self._paint_row(q, kind, row, local, True, False, dpr, lines, episodes=False,
+                                                       number=False),
+                             ident=(row.key, "open"))
+            finally:
+                self._warming = False
+            if self.warmed != before:
+                return True
         budget = SPRITE_MB["ep"] * 1024 * 1024 // 2    # never more than half the episodes' cache: past it, each one
         self._warming = True                            # drawn would push out one drawn before, again and again
         try:
@@ -1384,7 +1412,8 @@ class RowsView(QListView):
         model = self.model()
         anchor = self._anchor()
         how = model.set_entries(entries)
-        self._rest()
+        if how != "same" or model.changed:          # nothing changed: nothing to paint ahead or again either
+            self._rest()
         if how == "same":
             if len(model.changed) > 40:
                 self.viewport().update()
@@ -1620,6 +1649,29 @@ class RowsView(QListView):
                 event.accept()
                 return
         super().keyPressEvent(event)
+
+    def focusInEvent(self, event):
+        """Qt repaints the whole list when it gains or loses focus, yet only the current row's ring changes: that row
+        alone is repainted (Sonic, 2026-10-08: nothing visible changed, nothing redrawn). Qt's own step is kept: by the
+        keyboard, a list with no current row makes its first one current (`moveCursor`, as QAbstractItemView does)."""
+        if not self.currentIndex().isValid() and event.reason() != Qt.FocusReason.MouseFocusReason:
+            index = self.moveCursor(QAbstractItemView.CursorAction.MoveNext, Qt.KeyboardModifier.NoModifier)
+            if index.isValid() and index.flags() & Qt.ItemFlag.ItemIsEnabled:
+                scrolls = self.hasAutoScroll()
+                self.setAutoScroll(False)                # made current where it stands: the list doesn't jump
+                self.selectionModel().setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+                self.setAutoScroll(scrolls)
+        self._update_current()
+        event.accept()
+
+    def focusOutEvent(self, event):
+        self._update_current()
+        event.accept()
+
+    def _update_current(self):
+        index = self.currentIndex()
+        if index.isValid():
+            self.update(index)
 
     def changeEvent(self, event):
         super().changeEvent(event)

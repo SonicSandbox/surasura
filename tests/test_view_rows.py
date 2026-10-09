@@ -531,3 +531,37 @@ def test_an_unstamped_file_is_counted_by_its_extension_as_the_store_does():
     assert rows[9].media == "anime"                       # a title nobody typed: its .srt files and its id
     assert rows[10].media == "text" and rows[10].verb == "Open"
     assert rows[11].media == "text"                       # no work on the list: this piece's own .txt file
+
+
+def test_guess_counts_moved_only_by_the_changed_ids_equal_a_full_count():
+    """Speed round 5: the reader names the items that changed, and the untyped title's guess counts move by those alone
+    instead of walking every item on each build. A file renamed .srt → .epub, one removed and one added must leave the
+    kept counts exactly as a full count gives them, or the title's type drifts from what the store would guess."""
+    work(12, "夜明けの写本", media=None)
+    items = items_of([("now", 12, 1, ["夜明けの写本 01 朝霧.srt", "夜明けの写本 02 潮騒.srt"],
+                       {k: {"source_type": "subtitle"} for k in range(2)}),
+                      ("now", 12, 2, ["夜明けの写本 03 灯台.txt"], {0: {"source_type": "text"}})])
+    cache = vr.RowCache()
+
+    def untyped_media(view):
+        return [(r.piece_id, r.media) for r in view.rows]
+
+    def check(changed):
+        view = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, changed=changed)
+        assert cache.guess_counts == vr._Guesses(items, None)._count()
+        assert untyped_media(view) == untyped_media(vr.build(items, WORKS, {}))
+        return view
+
+    check(None)
+    assert cache.guess_counts[12] == {"subtitle": 2, "text": 1}
+    items[1] = dict(items[1], rel_path="HighPriority/夜明けの写本 02 潮騒.epub",
+                    title="夜明けの写本 02 潮騒.epub", source_type="epub")       # a new dict: .srt → .epub
+    check([1])
+    assert cache.guess_counts[12] == {"subtitle": 1, "epub": 1, "text": 1}
+    del items[3]                                                              # the text file leaves the feed
+    check([3])
+    assert cache.guess_counts[12] == {"subtitle": 1, "epub": 1}
+    items[4] = dict(items[2], id=4, rel_path="HighPriority/夜明けの写本 04 霧.srt",
+                    title="夜明けの写本 04 霧.srt")                             # a new subtitle file arrives
+    check([4])
+    assert cache.guess_counts[12] == {"subtitle": 2, "epub": 1}

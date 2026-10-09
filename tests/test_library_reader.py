@@ -369,3 +369,87 @@ def test_with_no_handle_a_new_numbers_version_builds_and_the_same_version_builds
         assert reader.builds > builds
     finally:
         reader.stop()
+
+
+def test_the_first_screens_cache_is_written_at_the_next_quiet_look_not_in_the_look_that_built_it(tmp_path, monkeypatch):
+    """Speed round 5: the cache's JSON used to be written in the same look that published the view, holding Python's
+    lock while the window took that view in. Now the view's cache waits for the next look that finds the store
+    unchanged, and a reader stopped after one view still leaves its cache written (the stop's flush)."""
+    seed = window_seed.build()
+    cache = tmp_path / "window_cache_ja.json"
+    reader = _reader(seed, cache_file=str(cache))
+    writes = []
+    real_write = reader._write_cache
+
+    def spy(view, key):
+        writes.append(key)
+        real_write(view, key)
+    monkeypatch.setattr(reader, "_write_cache", spy)
+    views, _ = _collect(reader)
+    reader._look()                                       # the look that builds the view
+    assert len(views) == 1 and writes == [] and not cache.exists()
+    reader._look()                                       # a quiet look: the store is unchanged
+    assert len(writes) == 1 and cache.exists()
+    reader._look()                                       # nothing due any more
+    assert len(writes) == 1
+
+    # the stop's flush, isolated: a long poll means no quiet look runs before the reader is stopped
+    stopper_cache = tmp_path / "window_cache_stop_ja.json"
+    stopper = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                           poll=5.0, cache_file=str(stopper_cache))
+    views2, _ = _collect(stopper)
+    stopper.start()
+    try:
+        assert _wait(lambda: views2)
+        time.sleep(0.5)                                  # the poll is 5 s: no second look has run yet
+        assert not stopper_cache.exists()
+    finally:
+        stopper.stop()
+    assert stopper_cache.exists()
+
+
+def test_a_tier_re_sorted_from_its_own_items_stays_in_the_stores_order_through_every_change():
+    """Speed round 5: a tier that moved is sorted again from its own items and the items that came into it, never from
+    every item. Whatever the change — an arrival in Now, an item moved from Soon into Now, a new place inside Goal, an
+    item removed — every tier must still list its items in the store's order, or the learner sees the wrong next word.
+    No thread here: the reader's look is run by hand, so each change is checked the moment it lands."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    reader._look()
+
+    def assert_store_order(why):
+        tiers = reader._sorted_tiers()
+        ref = view_rows._by_tier(reader._items)
+        for t in set(tiers) | set(ref):
+            got = [r["id"] for r in tiers.get(t, [])]
+            want = [r["id"] for r in ref.get(t, [])]
+            assert got == want, f"{why}: tier {t} is out of the store's order"
+
+    assert_store_order("the first view")
+    now = [r for r in seed.items if r["tier"] == "now"]
+    top = min(r["ord"] for r in now)
+
+    newcomer = dict(now[0], id=10 ** 6, piece_id=10 ** 6, ord=now[0]["ord"] - 0.5,
+                    rel_path="HighPriority/新着/新着 - 01.srt", title="新着 - 01.srt")
+    seed.library.commit(items=[newcomer], order=True)                 # an arrival in Now
+    reader._look()
+    assert 10 ** 6 in [r["id"] for r in reader._sorted_tiers()["now"]]
+    assert_store_order("an arrival in Now")
+
+    mover = next(r["id"] for r in seed.items if r["tier"] == "soon")
+    seed.library.commit(items=[{"id": mover, "tier": "now", "ord": top - 100}], order=True)   # Soon -> Now
+    reader._look()
+    assert mover in [r["id"] for r in reader._sorted_tiers()["now"]]
+    assert_store_order("an item moved from Soon into Now")
+
+    goal = [r for r in seed.items if r["tier"] == "goal"]
+    last = max(r["ord"] for r in goal)
+    first_goal = min(goal, key=lambda r: r["ord"])
+    seed.library.commit(items=[{"id": first_goal["id"], "ord": last + 1}], order=True)       # to the end of Goal
+    reader._look()
+    assert_store_order("an ord change within Goal")
+
+    seed.library.commit(gone=[("item", now[-1]["id"])], order=True)  # a removal from Now
+    reader._look()
+    assert now[-1]["id"] not in [r["id"] for r in reader._sorted_tiers()["now"]]
+    assert_store_order("a removal from Now")

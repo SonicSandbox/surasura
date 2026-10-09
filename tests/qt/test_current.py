@@ -992,3 +992,349 @@ def test_a_relayout_reuses_each_rows_height_and_only_an_opened_row_or_a_new_look
             assert kept.height() == real(e, is_open).height(), (n, kept.height())
     finally:
         style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size
+
+
+def test_a_file_arriving_below_the_screen_draws_no_row_afresh_and_moves_nothing_on_screen(seeded):
+    """A file that lands at the end of Soon, below where the learner is reading, is no change on his screen: the rows he
+    sees keep their places and their numbers, and none is drawn again. A redraw that isn't needed is a slow list."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 3)
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+
+    def on_screen():
+        seen = {}
+        for y in range(1, lst.viewport().height(), 8):
+            idx = lst.indexAt(QPoint(4, y))
+            if idx.isValid():
+                entry = lst.model().entries[idx.row()]
+                seen[rows.RowsModel.key_of(entry)] = (lst.visualRect(idx).top(), getattr(entry[1], "index", None))
+        return seen
+
+    before = on_screen()
+    assert before                                                  # something is on screen to compare
+    renders = lst.delegate.renders
+    last = max((r for r in seed.items if r["tier"] == "soon"), key=lambda r: r["ord"])
+    seed.library.commit(items=[dict(last, id=10 ** 6, ord=last["ord"] + 512, piece_id=10 ** 6,
+                                    rel_path="LowPriority/Hato/新着 - 01.srt", title="新着 - 01.srt")], order=True)
+    assert wait_until(lambda: any(getattr(e[1], "key", None) == f"p{10 ** 6}" for e in lst.model().entries))
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    new_row = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == f"p{10 ** 6}")
+    assert lst.visualRect(lst.model().index(new_row, 0)).top() > lst.viewport().height()   # it did land below the screen
+    assert lst.delegate.renders == renders                         # nothing on screen was drawn afresh
+    assert on_screen() == before                                   # same keys, same tops, same numbers
+
+
+def test_the_same_status_snapshot_published_again_paints_no_widget_and_no_row(seeded, qapp):
+    """The status service hands the bar a snapshot on every job tick and every events-file look. When nothing new
+    came, the bar and the lists must not repaint: a window that flickers on every tick looks broken to a learner, and
+    every needless row redraw is work the laptop does for nothing."""
+    from PyQt6.QtCore import QEvent, QObject
+
+    class Paints(QObject):
+        def __init__(self):
+            super().__init__()
+            self.painted = []
+
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Paint:
+                self.painted.append((type(obj).__name__, obj.objectName()))
+            return False
+
+    seed, win = seeded()
+    status = win.services.status
+    lists = [p.list for p in win.page_widgets.values() if hasattr(p, "list")]
+    assert lists, "the window has at least one list to watch"
+    before_snapshot = status._snapshot
+    before_paints = [lst.delegate.paints for lst in lists]
+    spy = Paints()
+    qapp.installEventFilter(spy)
+    try:
+        status._publish()                                   # the same state, delivered again
+        QTest.qWait(500)
+    finally:
+        qapp.removeEventFilter(spy)
+    assert status._snapshot is not before_snapshot          # the publish really happened, so the test isn't a no-op
+    assert spy.painted == [], spy.painted
+    assert [lst.delegate.paints for lst in lists] == before_paints
+
+
+def test_a_goal_only_change_leaves_current_and_finished_entries_and_paint_alone(seeded):
+    """A Goal item's watch is no row on Current or Finished: the reader builds a new view for it, but both lists keep
+    the very same entries (nothing rebuilt, nothing marked changed) and paint no row again, so a write elsewhere never
+    costs the learner a redraw of a list it didn't touch."""
+    seed, win = seeded()
+    goal = [r for r in seed.items if r["tier"] == "goal"]
+    assert goal, "the small seed holds a Goal item"
+    page = win.page_widgets["current"]
+    lst = current(win)
+    fin = win.page_widgets["finished"].list
+    cur_entries, fin_entries = lst.model().entries, fin.model().entries
+    cur_paints, fin_paints = lst.delegate.paints, fin.delegate.paints
+    view_before = page.view_model
+    builds = win.services.library.builds
+    seed.library.commit(items=[{"id": goal[0]["id"], "watched": 1}])
+    assert wait_until(lambda: win.services.library.builds > builds)
+    assert wait_until(lambda: page.view_model is not view_before)    # the new view has reached the Current page
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst.model().entries is cur_entries and lst.model().changed == []
+    assert fin.model().entries is fin_entries and fin.model().changed == []
+    assert lst.delegate.paints == cur_paints and fin.delegate.paints == fin_paints
+
+
+def test_the_pointer_leaving_a_row_repaints_that_row_alone_from_its_kept_pixmap(seeded):
+    """A learner moving the pointer down the list sees each row light up and go back. Leaving a row must repaint only
+    that row, from the pixmap it kept before the hover: repainting the whole list (or drawing rows afresh) on every
+    pointer move is what makes a long list stutter."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()                                             # every row on screen: its unhovered pixmap
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    shown = [i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and on_screen(i)]
+    assert len(shown) > 3, shown
+    i = shown[len(shown) // 2]
+    pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
+    QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
+                                                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst._hover == i                                               # the row is hovered: the test isn't a no-op
+    assert wait_until(lambda: not lst._hover_warm.isActive() and not lst._warm.isActive())   # the hover has settled
+    paints, renders = lst.delegate.paints, lst.delegate.renders
+    QApplication.sendEvent(lst, QEvent(QEvent.Type.Leave))
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst._hover is None
+    assert lst.delegate.paints - paints == 1, (lst.delegate.paints - paints, len(shown))   # exactly the row left
+    assert lst.delegate.renders == renders                               # from its kept pixmap: nothing drawn afresh
+
+
+def test_a_list_at_rest_paints_nothing_on_screen_while_it_paints_ahead(seeded):
+    """Bench 10: once a list rests, it draws the rows just past its screen ahead, one per turn of the loop, and trims
+    its pixmaps. All of that is off screen, so a resting list must not repaint what the reader can see: no row on
+    screen is painted again or drawn afresh, while the rows ahead are drawn in the background."""
+    seed, win = seeded()
+    lst = current(win)
+    bar = lst.verticalScrollBar()
+    bar.setValue(bar.value() + round(theme.SIZES["row"] * rows.fz()) * 3)      # a few rows down, then the list rests
+    for _ in range(5):
+        QApplication.processEvents()
+    paints, renders, warmed = lst.delegate.paints, lst.delegate.renders, lst.delegate.warmed
+    QTest.qWait(1200)                                                          # nothing happens for a while
+    assert lst.delegate.warmed > warmed, (warmed, lst.delegate.warmed)         # it did work ahead, off screen
+    assert lst.delegate.paints == paints, (paints, lst.delegate.paints)        # no on-screen row painted again
+    assert lst.delegate.renders == renders, (renders, lst.delegate.renders)    # and none drawn afresh
+
+
+def test_a_row_takes_each_colour_from_the_theme_now_applied_and_asking_twice_gives_the_same(qapp):
+    """A row's colours are kept once per theme (its first paint asks for about twelve), so a theme change must hand the
+    new theme's colour, not the one kept from the last theme, or rows would keep painting in the old theme's inks until
+    the app restarts. Asking a second time gives the same colour."""
+    try:
+        for t in theme.THEMES:
+            style.apply(qapp, t, "M", "ja")
+            for name in ("bg", "surface", "ink", "ink-dim", "accent"):
+                want = style.qcolor(style.colours()[name]).rgba()
+                assert rows.c(name).rgba() == want, (t, name)
+                assert rows.c(name).rgba() == want, (t, name, "second ask")
+    finally:
+        style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size
+
+
+def test_the_pointer_resting_on_a_closed_row_paints_its_open_head_ahead_so_opening_it_draws_no_head_afresh(seeded):
+    """Bench 9, speed round 5: opening a row was also its head's first paint. A pointer resting on a closed row paints
+    the row's open head ahead, hovered as the click will show it, so opening blits the head from its pixmap; the head
+    is drawn afresh by nothing the click does (the renders count is kept across the open)."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QHoverEvent, QMouseEvent
+    seed, win = seeded()
+    lst = current(win)
+    lst.viewport().repaint()
+    on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
+    i = next(i for i, e in enumerate(lst.model().entries)
+             if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
+    row = lst.model().entries[i][1]
+    head_warmed = lambda: any(k[1] == (row.key, "open") for k in lst.delegate._sprites["row"])
+    assert not head_warmed()                                             # nothing warmed before the pointer arrives
+    pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
+    QApplication.sendEvent(lst.viewport(), QHoverEvent(QEvent.Type.HoverMove, pos,
+                                                       QPointF(lst.viewport().mapToGlobal(pos.toPoint())),
+                                                       QPointF(-1, -1)))
+    QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
+                                                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert wait_until(head_warmed)                                       # the open head is painted ahead
+    assert wait_until(lambda: not lst._hover_warm.isActive())            # the warm has run out of work in view
+    renders = lst.delegate.renders
+    lst.toggle(lst.model().index(i, 0))
+    lst.doItemsLayout()
+    lst.viewport().repaint()
+    assert lst.model().open_key == row.key
+    assert lst.delegate.renders == renders                               # opening draws no row, its head included
+
+
+def test_a_look_that_finds_the_store_unchanged_reads_builds_and_paints_nothing(seeded):
+    """The reader looks every 20 ms and most looks find the store as it was. Each must return before it reads the feed
+    or builds a view, so a window left open on a learner's desk costs nothing while he reads. A real change still reads
+    and builds, so the quiet check is not a no-op."""
+    seed, win = seeded()
+    reader = win.services.library
+    lists = [current(win), win.page_widgets["finished"].list]
+    QTest.qWait(500)                                          # the first looks after the open settle
+    reads, builds = reader.reads, reader.builds
+    paints = [lst.delegate.paints for lst in lists]
+    reader.refresh()
+    QTest.qWait(500)
+    assert reader.reads == reads and reader.builds == builds
+    assert [lst.delegate.paints for lst in lists] == paints
+    lst = current(win)
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1 - int(row.episodes[0].watched)}])
+    assert wait_until(lambda: reader.reads > reads and reader.builds > builds)
+    assert wait_until(lambda: lst.model().entries[i][1] is not row)
+
+
+def test_focus_in_and_out_repaints_only_the_current_row(seeded):
+    """Qt repaints a whole list when it gains or loses focus, but only the current row's ring changes. Each focus change
+    paints that one row and no other: a learner tabbing between his list and the tabs sees no needless redraw."""
+    seed, win = seeded()
+    lst = current(win)
+    win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    i = next(n for n, e in enumerate(lst.model().entries)          # a closed row on screen (the hero is not one)
+             if e[0] == rows.ROW and lst.visualRect(lst.model().index(n, 0)).intersects(lst.viewport().rect()))
+    lst.setCurrentIndex(lst.model().index(i, 0))                  # made current while the list has no focus
+    for _ in range(5):
+        QApplication.processEvents()
+    before = lst.delegate.paints
+
+    lst.setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst.hasFocus()
+    assert lst.delegate.paints == before + 1, lst.delegate.paints - before  # focus in: the current row alone
+
+    before = lst.delegate.paints
+    win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert not lst.hasFocus()
+    assert lst.delegate.paints == before + 1, lst.delegate.paints - before  # focus out: the current row alone
+
+
+def test_keyboard_focus_in_makes_the_first_row_current_without_scrolling(seeded):
+    """With no current row, a keyboard focus-in makes one current where the list stands: Qt's own first-row step is kept,
+    but the list does not jump to show it, so a learner who scrolled half way stays where he was."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    lst.setCurrentIndex(lst.model().index(-1, 0))                 # no current row
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 2)
+    for _ in range(5):
+        QApplication.processEvents()
+    scrolled = lst.verticalScrollBar().value()
+    assert scrolled > 0                                           # really scrolled, not left at the top
+
+    lst.setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst.currentIndex().isValid()
+    assert lst.verticalScrollBar().value() == scrolled
+
+
+def _number_spy(lst, monkeypatch):
+    """Record the place each _paint_number call draws, and still draw it (the real call)."""
+    drawn = []
+    real = lst.delegate._paint_number
+
+    def spy(p, row, body, dpr):
+        drawn.append(row.index)
+        real(p, row, body, dpr)
+    monkeypatch.setattr(lst.delegate, "_paint_number", spy)
+    return drawn
+
+
+def test_every_closed_row_on_screen_shows_its_own_number_and_no_other_entry_does(seeded, monkeypatch):
+    """A learner finds his place in Current by the number on each row: every closed row on screen draws its own
+    place, and only rows do — never the hero, a month or a finished row."""
+    seed, win = seeded()
+    lst = current(win)
+    drawn = _number_spy(lst, monkeypatch)
+    lst.doItemsLayout()                                   # the rows' places settle before the repaint
+    lst.viewport().repaint()
+    model = lst.model()
+    view = lst.viewport().rect()
+    expected = [e[1].index for i, e in enumerate(model.entries)
+                if e[0] == rows.ROW and e[1].key != model.open_key
+                and lst.visualRect(model.index(i, 0)).intersects(view)]
+    assert expected, "the seed should put at least one closed row on screen"
+    assert sorted(drawn) == sorted(expected)
+
+
+def test_an_open_rows_head_draws_its_number_too(seeded, monkeypatch):
+    """Opening a row must not lose its place: the open row's head draws its number over its pixmap, as a closed row
+    does."""
+    seed, win = seeded()
+    lst = current(win)
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
+    before = lst.visualRect(lst.model().index(i, 0)).height()
+    lst.toggle(lst.model().index(i, 0))
+    assert wait_until(lambda: lst.visualRect(lst.model().index(i, 0)).height() > before)
+    assert lst.model().open_key == row.key
+    drawn = _number_spy(lst, monkeypatch)
+    lst.viewport().repaint()
+    assert drawn.count(row.index) == 1
+
+
+def _rows_on_screen(lst):
+    """The closed rows on screen, top to bottom, as (entry index, row payload)."""
+    screen = lst.viewport().rect()
+    return [(i, e[1]) for i, e in enumerate(lst.model().entries)
+            if e[0] == rows.ROW and lst.visualRect(lst.model().index(i, 0)).intersects(screen)]
+
+
+def test_a_file_arriving_on_screen_draws_exactly_one_row_afresh_and_only_moves_the_numbers_below_it(seeded):
+    """A file that lands where the learner is reading gets a row of its own, and that row is the only one drawn: the rows
+    below it stay on their pixmaps and only their numbers move down one, so a new file never makes the list stutter
+    under his eyes."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    lst.viewport().repaint()
+    on = _rows_on_screen(lst)
+    assert len(on) >= 6, len(on)                                   # rows below the 4th are on screen to be checked
+    fourth = on[3][1]
+    item = next(r for r in seed.items if r["id"] == fourth.episodes[0].id)
+    before = {r.key: r.index for _i, r in on}
+    renders = lst.delegate.renders
+    new_key = f"p{10 ** 6}"
+    new = dict(item, id=10 ** 6, ord=item["ord"] - 0.5, piece_id=10 ** 6,
+               rel_path=item["rel_path"].rsplit("/", 1)[0] + "/new - 01.srt", title="new - 01.srt",
+               availability="missing")                             # a file not yet on disk: the top 20 (available files) stay put
+    seed.library.commit(items=[new], order=True, availability=True)
+    assert wait_until(lambda: any(getattr(e[1], "key", None) == new_key for e in lst.model().entries))
+    for _ in range(20):
+        QApplication.processEvents()
+    lst.viewport().repaint()
+    shown = _rows_on_screen(lst)
+    keys = [r.key for _i, r in shown]
+    assert keys[3] == new_key, keys[:5]                            # it landed just above the 4th row
+    assert lst.delegate.renders == renders + 1                     # the new row, and no other row drawn afresh
+    moved = 0
+    for pos, (_i, r) in enumerate(shown):
+        if r.key == new_key or r.key not in before:
+            continue
+        if pos < 3:
+            assert r.index == before[r.key], (pos, r.index)        # the rows above it keep their numbers
+        else:
+            assert r.index == before[r.key] + 1, (pos, r.index)    # the rows below it moved one number down
+            moved += 1
+    assert moved >= 2, moved                                       # the 4th and 5th rows were really checked, not an empty screen

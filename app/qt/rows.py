@@ -457,6 +457,24 @@ def _same_but_index(old, new):
     return all(a is b for name, a, b in zip(fields, old, new) if name != "index")
 
 
+# What a closed row's or an episode's pixmap never shows: a new object that differs from the kept one only here looks
+# the same, so its pixmap is kept (Sonic's S19, 2026-10-08: nothing visible changed, nothing redrawn). A row leaving the
+# top 20 is rebuilt (its episodes' place in the top moved) yet usually shows nothing new (W2.2 speed round 5, R2).
+# The hero paints its episodes, so it is never compared so (only by `_same_but_index`).
+_UNSHOWN = {ROW: frozenset(("index", "episodes", "accessible", "description")),
+            FINISHED: frozenset(("index", "episodes", "accessible", "description")),
+            "ep": frozenset(("in_top", "rel_path"))}
+
+
+def _same_face(old, new, kind):
+    """Whether `new` would paint exactly as `old`: the same type, and every field the pixmap shows equal."""
+    unshown = _UNSHOWN.get(kind)
+    fields = getattr(new, "_fields", None)
+    if unshown is None or fields is None or type(old) is not type(new):
+        return False
+    return all(a is b or a == b for name, a, b in zip(fields, old, new) if name not in unshown)
+
+
 class RowDelegate(QStyledItemDelegate):
     def __init__(self, view):
         super().__init__(view)
@@ -489,7 +507,8 @@ class RowDelegate(QStyledItemDelegate):
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
                hovered)
         hit = cache.get(key)
-        if hit is not None and (hit[0] is payload or _same_but_index(hit[0], payload)):
+        if hit is not None and (hit[0] is payload or _same_but_index(hit[0], payload) or
+                                _same_face(hit[0], payload, kind)):
             if hit[0] is not payload:
                 cache[key] = (payload, hit[1])           # the moved row: the next look is by identity again
             cache.move_to_end(key)

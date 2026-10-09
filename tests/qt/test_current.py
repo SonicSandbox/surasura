@@ -639,7 +639,7 @@ def test_the_pointer_resting_on_a_closed_row_paints_its_episodes_ahead_so_openin
     i = next(i for i, e in enumerate(lst.model().entries)
              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
     row = lst.model().entries[i][1]
-    ids = {(ep.id, False) for ep in row.episodes}
+    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph)
     assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])     # nothing warmed before the pointer arrives
     pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
     QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
@@ -811,7 +811,7 @@ def test_a_stale_hover_warms_nothing_while_the_list_is_still_moving_and_warms_on
     i = next(i for i, e in enumerate(lst.model().entries)
              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
     row = lst.model().entries[i][1]
-    ids = {(ep.id, False) for ep in row.episodes}
+    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph)
     before = lst.delegate.warmed
     lst._hover = i
     lst._rest()                                          # the list has just moved
@@ -873,7 +873,7 @@ def test_a_stale_hover_scrolled_off_screen_warms_no_episodes_once_the_list_rests
     model = lst.model()
     i = next(i for i, e in enumerate(model.entries)
              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and e[1].key != model.open_key)
-    ids = {(ep.id, False) for ep in model.entries[i][1].episodes}
+    ids = {(ep.id, False, model.entries[i][1].media_word == "audio") for ep in model.entries[i][1].episodes}
     index = model.index(i, 0)
     bar.setValue(bar.value() + lst.visualRect(index).top())             # the row at the top of the screen...
     bar.setValue(bar.value() + 2 * vp.height())                         # ...then scrolled well past it

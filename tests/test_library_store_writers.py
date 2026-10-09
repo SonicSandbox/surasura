@@ -731,3 +731,325 @@ def test_another_windows_change_waits_for_a_drag_to_end(window, language, monkey
     assert _tree_paths(app) == shown, "redrawn mid-drag"
     app.on_drag_stop(types.SimpleNamespace(y=-1))                # released over nothing
     assert _pump(app, lambda: _tree_paths(app) != shown, timeout=2.0)
+
+
+# --- L3.2 The library watched, not checked ---------------------------------------------------------------- #
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows' change reports")
+
+
+def _settled_window(window, language, monkeypatch):
+    """A store-mode window whose open has walked and whose watch is up (its worker idle from here)."""
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    assert _pump(app, lambda: bool(_tree_paths(app)) and app.__dict__.get("_lookout") is not None
+                 and app._open_walked, timeout=10)
+    _pump(app, lambda: False, timeout=0.5)                       # the open's own commit's ring, drained
+    return app
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_idle_watched_window_never_wakes_its_worker(window, language, monkeypatch):
+    """The old poll woke the worker twice a second, all day; watched, an idle window's worker sleeps until the
+    hourly round (the Tk drain's 100 ms timer is the window's own, counted apart)."""
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.tree.alive and not lookout.slow
+    assert lookout.timeout() > 3000                              # the next thing due: the round, an hour away
+    before = lookout.wakes
+    _pump(app, lambda: False, timeout=1.5)
+    assert lookout.wakes == before, f"{lookout.wakes - before} wake-ups idle"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_dropped_into_a_folder_without_items_shows_through_the_watch(window, language, monkeypatch):
+    """The old poll only stat'ed folders that hold items: a drop into a new show folder waited for a focus. The
+    watch reports it; its folder alone is synced (a scoped sync), and the tree shows it."""
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # only the watch may bring it in here
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    word = names(language)[30]
+    rel = f"HighPriority/{word}/{word}_第01話.srt"           # NOW: the tab the tree shows
+    t0 = time.monotonic()
+    touch(app.data_root, rel, f"{word}\n")
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "a drop into a new folder never showed"
+    took = time.monotonic() - t0
+    assert [f"HighPriority/{word}"] in scoped, scoped              # its folder, never the whole library
+    assert took < (1.0 if BENCH else 5.0), took
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_without_a_watch_the_slow_look_runs_in_front_only(window, language, monkeypatch):
+    """No watch (macOS / Linux, a drive that can't report): the folders are looked at every SLOW_S while the
+    window is in front, never behind or minimized; a drop is still found while in front."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.slow and lookout.tree.state == "fallback"
+    app._set_front(True)                                         # in front (the test's window may never get focus)
+    _pump(app, lambda: lookout.slow_looks >= 3, timeout=3.0)
+    assert lookout.slow_looks >= 3
+    app._set_front(False)                                        # behind, or minimized (<Unmap>)
+    _pump(app, lambda: False, timeout=0.3)
+    behind = lookout.slow_looks
+    _pump(app, lambda: False, timeout=1.0)
+    assert lookout.slow_looks == behind, "looked while behind"
+    app._set_front(True)
+    rel = _tree_paths(app)[0]
+    os.remove(os.path.join(app.data_root, *rel.split("/")))
+    assert _pump(app, lambda: rel not in _tree_paths(app), timeout=3.0), "the slow look never found the change"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_hourly_round_finds_a_drop_the_blinded_watch_missed(window, language, monkeypatch):
+    """The watch is blind to this tree (its events never reach the worker), so only the round can find a drop into
+    a show folder that holds no items yet. The round is made due at once (a 1 s hour, batches 0.1 s apart); its
+    folder alone is synced, and the tree shows the file within 5 s."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None                       # neither focus nor Refresh may bring it in here
+    lookout = app._lookout
+    word = names(language)[31]
+    os.makedirs(os.path.join(app.data_root, "HighPriority", word), exist_ok=True)
+    _pump(app, lambda: False, timeout=0.3)                       # the empty folder settles while the watch still sees it
+    lookout.tree.under = ("見ない",)                              # blind: no event from this tree reaches the worker
+    monkeypatch.setattr(lw, "ROUND_S", 1.0)
+    monkeypatch.setattr(lw, "ROUND_GAP_S", 0.1)
+    lookout._last_full = time.monotonic() - 2.0                  # the round's hour has passed
+    scoped = []
+    real = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: scoped.append(folders) or real(s, folders))
+    rel = f"HighPriority/{word}/{word}_第01話.srt"
+    touch(app.data_root, rel, f"{word}\n")
+    app._worker_wake.set()                                       # the worker may be waiting for the hourly round
+    assert _pump(app, lambda: rel in _tree_paths(app), timeout=5.0), "the round never found the drop"
+    assert [f"HighPriority/{word}"] in scoped, scoped            # the round's folder, never the whole library
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_return_restarts_a_watch_that_stopped(window, language, monkeypatch):
+    """A watch that ended (closed here, as after a failure) is not left dead until the retry or the hourly round:
+    the focus return's look starts it again at once. The retry in jobs() waits RETRY_S (300 s) after the open, so
+    only the focus path can bring the watch back inside the 5 s bound."""
+    app = _settled_window(window, language, monkeypatch)
+    assert app._lookout.tree.alive
+    app._lookout.tree.close()                                    # the watch ended: its handle and thread are gone
+    assert not app._lookout.tree.alive
+    app._refresh_from_focus()
+    assert _pump(app, lambda: app._lookout.tree.alive, timeout=5.0), "a focus return left the watch dead"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_closing_a_settled_window_ends_its_worker_and_lookout_at_once(window, language, monkeypatch):
+    """A settled window's worker sleeps up to an hour waiting for the round; closing the window must wake it (the
+    <Destroy> stop), not leave a thread and a watch alive until the next hourly round."""
+    app = _settled_window(window, language, monkeypatch)
+    worker = app._worker
+    assert worker.is_alive() and app._lookout is not None           # sanity: idle and watched before the close
+    app.root.destroy()
+    deadline = time.monotonic() + 2.0                                # no Tk pump here: the root is gone
+    while worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not worker.is_alive(), "the worker waited out its hour after the window closed"
+    assert app._lookout is None, "the watch outlived its window"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_look_restarts_the_rounds_hour(window, language, monkeypatch):
+    """A focus return's full look covers the round, so it restarts the round's hour: a round that was due is put off
+    for an hour, not run on top of the look that just read the whole library."""
+    from app import library_watch as lw
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    lookout._last_full = lookout.clock() - (lw.ROUND_S + 10)     # the round would be due now
+    full_looks, looked = [], []
+    real_sync = ls.sync_for_window
+
+    def counting_sync(store, folders=None):
+        if folders is None:                                       # a full look, not a round's batch or a drop
+            full_looks.append(1)
+        return real_sync(store, folders=folders)
+
+    real_looked = lookout.looked
+
+    def recording_looked(now=None):
+        result = real_looked(now)
+        looked.append(1)                                          # after the real call, so the state is set
+        return result
+
+    monkeypatch.setattr(ls, "sync_for_window", counting_sync)
+    monkeypatch.setattr(lookout, "looked", recording_looked)
+    app._refresh_from_focus()
+    assert _pump(app, lambda: bool(looked), timeout=5.0), "the focus return never ran its full look"
+    assert full_looks, "the focus return ran no full look"
+    assert lookout.timeout() > lw.ROUND_S - 60, f"the round's hour did not restart: {lookout.timeout()} s"
+    assert lookout.round is None, "a round was still under way after the full look covered it"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_focus_out_while_the_worker_makes_its_lookout_is_kept(window, language, monkeypatch):
+    """A FocusOut that lands while the worker is making its watch (after `_make_lookout` copied the window's front
+    flag into the new lookout, before the lookout is up) is kept: the worker re-reads the flag once the lookout
+    exists, so the watch never believes a window behind it is in front. Without that re-read the lookout keeps the
+    stale True and would look at a window that is behind."""
+    from app import library_watch as lw
+    holder, ready = [], threading.Event()
+    real_open = lw.Lookout.open
+
+    def focus_out_during_make(self):
+        # Bounded: the test thread hands over the window once the constructor has returned.
+        assert ready.wait(5), "the test window never handed over to the worker"
+        holder[0]._set_front(False)                               # the FocusOut, landing mid-make
+        return real_open(self)
+
+    monkeypatch.setattr(lw.Lookout, "open", focus_out_during_make)
+    _store_library(language)
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    holder.append(app)
+    ready.set()
+    assert _pump(app, lambda: app.__dict__.get("_lookout") is not None and app._open_walked, timeout=10)
+    assert app._lookout.front is False, "a focus out during the make was lost"
+
+
+# --- L3.2: with no store and nothing coming, the worker sleeps (`_store_soon`) -------------------------------- #
+
+class _HelperStillRunning:
+    """A store helper that has not exited yet (its poll() says None), as `_start_store_build` leaves it."""
+
+    def poll(self):
+        return None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_keeps_polling_after_a_failed_pass(window, language):
+    """A pass that failed keeps its lookout, so the worker checks every STORE_POLL_S whatever the store's state:
+    the lookout alone decides it, the reason is set to 'no store' to show it does not."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(object()) is True
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("reason", ["busy", "not ready"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_a_busy_or_not_ready_database_is_retried(window, language, reason):
+    """A database another process holds (busy) or not ready yet opens as soon as it frees, so the worker polls."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = reason
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_opener_settle_retry_is_still_running(window, language):
+    """The opener retries a busy database on its own thread; while that thread lives the store is coming. The
+    reason stays 'no store' so only the live retry can make the answer True."""
+    app = window(language)
+    app._store_waiting = None
+    opener = app._opener()
+    opener.reason = "no store"
+    release = threading.Event()
+    settle = threading.Thread(target=release.wait, args=(5,), daemon=True)
+    opener._worker = settle
+    settle.start()
+    try:
+        assert app._store_soon(None) is True
+    finally:
+        release.set()
+        settle.join(5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_polls_while_the_open_helper_builds_the_store(window, language):
+    """JSON mode with the helper started at open still building the store (before its deadline): poll."""
+    app = window(language)
+    app._opener().reason = "no store"
+    app._store_waiting = (_HelperStillRunning(), time.monotonic() + 60)
+    assert app._store_soon(None) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_json_mode_with_nothing_building(window, language):
+    """No store file and no helper running: nothing changes until the window wakes the worker (focus, Refresh), so
+    there is no timer while nothing can change."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "no store"
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_sleeps_in_read_only_mode(window, language):
+    """A damaged store opens read-only and stays that way, so no timer can bring a change: the worker sleeps."""
+    app = window(language)
+    app._store_waiting = None
+    app._opener().reason = "damaged"
+    assert app._store_soon(None) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_slow_look_that_finds_nothing_writes_signals_and_redraws_nothing(window, language, monkeypatch):
+    """S19: update only what changed. With no watch, a slow look that finds no new folder is silent: no sync call,
+    no "synced" or "changed" posted to the worker's results, and the store's state_version holds. Recording starts
+    once the window has settled (and its front change has drained), so the open's own writes are not counted."""
+    from app import library_watch as lw
+    monkeypatch.setattr(lw, "watchable", lambda: False)
+    monkeypatch.setattr(lw, "SLOW_S", 0.1)
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    app._set_front(True)                                         # in front, so the slow look runs
+    _pump(app, lambda: False, timeout=0.3)                       # the front change's own effects, drained
+    assert lookout.slow and lookout.tree.state == "fallback"
+    store = app._store()
+    assert store is not None
+    version = store.meta()["state_version"]
+    syncs, posts = [], []
+    real_sync = ls.sync_for_window
+    monkeypatch.setattr(ls, "sync_for_window", lambda s, folders=None: syncs.append(folders) or real_sync(s, folders))
+    real_put = app._worker_results.put
+
+    def put(item, *args, **kwargs):
+        if item and item[0] in ("synced", "changed"):
+            posts.append(item[0])
+        return real_put(item, *args, **kwargs)
+    monkeypatch.setattr(app._worker_results, "put", put)
+    base = lookout.slow_looks
+    assert _pump(app, lambda: lookout.slow_looks >= base + 3, timeout=3.0), "the slow look never ran in front"
+    assert syncs == [], f"a look that found nothing synced: {syncs}"
+    assert posts == [], f"a look that found nothing posted: {posts}"
+    assert store.meta()["state_version"] == version, "a look that found nothing wrote to the store"
+
+
+class _HelperDone:
+    """A store helper that has exited (its poll() gives its exit code)."""
+
+    def poll(self):
+        return 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_never_clears_the_builds_mark_the_drain_reads(window, language):
+    """The worker's question must not answer it for the window: once the open's helper has exited, `_store_soon` says
+    nothing is coming but leaves `_store_waiting` set, so the window's drain still sees the build end (its "Ready",
+    the sync that follows, or the note that the library stays in its file). Cleared here, ~1 build in 10 kept
+    "Getting your library ready…" on screen for good (the delta review's B1)."""
+    app = window(language)
+    app._opener().reason = "no store"
+    mark = (_HelperDone(), time.monotonic() + 60)
+    app._store_waiting = mark
+    assert app._store_soon(None) is False
+    assert app._store_waiting is mark

@@ -33,6 +33,8 @@ class FakeAnki:
         self.words = {}      # note id -> the Expression field
         self.suspended = set()
         monkeypatch.setattr(anki_connect, "find_cards", self._find_cards)
+        monkeypatch.setattr(anki_connect, "invoke",                     # the scope's Anki profile: never a real Anki
+                            lambda action, url, **kw: "User 1" if action == "getActiveProfile" else None)
         monkeypatch.setattr(anki_connect, "cards_info", self._cards_info)
         monkeypatch.setattr(anki_connect, "notes_info", self._notes_info)
 

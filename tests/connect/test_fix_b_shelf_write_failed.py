@@ -42,7 +42,7 @@ def test_a_write_anki_did_not_take_raises_and_a_taken_one_passes():
 
 def test_shelve_refused_by_anki_raises_and_records_no_restore_point(ledger, monkeypatch):
     # Why: a suspend Anki refused must leave no ledger row, or the shelf would claim a card it never suspended.
-    from modules.junban import ankiconnect
+    ankiconnect = pytest.importorskip("modules.junban.ankiconnect")    # the public repo has no modules/
     monkeypatch.setattr(ankiconnect, "suspend", lambda url, card_ids, chunk=150: ([], [(5, "busy")]))
     adapter = AnkiConnectAnki("http://127.0.0.1:8765")
     adapter.writer = lambda verb: contextlib.nullcontext()

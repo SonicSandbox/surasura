@@ -1338,3 +1338,24 @@ def test_a_file_arriving_on_screen_draws_exactly_one_row_afresh_and_only_moves_t
             assert r.index == before[r.key] + 1, (pos, r.index)    # the rows below it moved one number down
             moved += 1
     assert moved >= 2, moved                                       # the 4th and 5th rows were really checked, not an empty screen
+
+
+def test_a_refresh_that_changes_nothing_starts_no_paint_ahead_and_paints_nothing(seeded):
+    """S19 (Sonic, 2026-10-08): a refresh that came back the same is no reason to work. The same entries handed to a
+    list again repaint no row and don't restart its paint-ahead timer (the idle walk over the rows ahead and the trim);
+    a refresh that did change a row still restarts it."""
+    seed, win = seeded()
+    lst = current(win)
+    assert wait_until(lambda: not lst._warm.isActive())         # the list has rested and painted ahead
+    paints = lst.delegate.paints
+    assert lst.set_entries(list(lst.model().entries)) == "same"
+    for _ in range(5):
+        QApplication.processEvents()
+    assert not lst._warm.isActive()
+    assert lst.delegate.paints == paints
+    entries = list(lst.model().entries)
+    i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW)
+    kind, row, lines = entries[i]
+    entries[i] = (kind, row._replace(title=row.title + "（改）"), lines)     # one row changed: work restarts
+    assert lst.set_entries(entries) == "same" and lst.model().changed == [i]
+    assert lst._warm.isActive()

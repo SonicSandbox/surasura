@@ -448,19 +448,11 @@ def _size(pix):
     return pix.width() * pix.height() * 4
 
 
-def _same_but_index(old, new):
-    """The same row in another place: a `view_rows.Row` that only `_replace(index=…)` made (every other field the same
-    object). Its pixmap holds no number (`_paint_number` draws it over), so the pixmap still fits."""
-    fields = getattr(new, "_fields", None)
-    if fields is None or type(old) is not type(new) or "index" not in fields:
-        return False
-    return all(a is b for name, a, b in zip(fields, old, new) if name != "index")
-
-
 # What a closed row's or an episode's pixmap never shows: a new object that differs from the kept one only here looks
-# the same, so its pixmap is kept (Sonic's S19, 2026-10-08: nothing visible changed, nothing redrawn). A row leaving the
-# top 20 is rebuilt (its episodes' place in the top moved) yet usually shows nothing new (W2.2 speed round 5, R2).
-# The hero paints its episodes, so it is never compared so (only by `_same_but_index`).
+# the same, so its pixmap is kept (Sonic's S19, 2026-10-08: nothing visible changed, nothing redrawn). A row in another
+# place (`_replace(index=…)`: its number is drawn over the pixmap, `_paint_number`), and a row leaving the top 20,
+# rebuilt as its episodes' place in the top moved yet usually showing nothing new (W2.2 speed round 5, R2). The hero
+# paints its episodes, so it is compared by identity alone.
 _UNSHOWN = {ROW: frozenset(("index", "episodes", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
             "ep": frozenset(("in_top", "rel_path"))}
@@ -507,8 +499,7 @@ class RowDelegate(QStyledItemDelegate):
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
                hovered)
         hit = cache.get(key)
-        if hit is not None and (hit[0] is payload or _same_but_index(hit[0], payload) or
-                                _same_face(hit[0], payload, kind)):
+        if hit is not None and (hit[0] is payload or _same_face(hit[0], payload, kind)):
             if hit[0] is not payload:
                 cache[key] = (payload, hit[1])           # the moved row: the next look is by identity again
             cache.move_to_end(key)

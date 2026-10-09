@@ -300,7 +300,7 @@ TYPE = {
 LETTER_SPACING_EM = {"eyebrow": 0.12, "group-label": 0.1}
 # --- W2.2: the type roles the mock draws that A4 didn't name (the anatomy digest, tracks/window/work/w22) ---------- #
 TYPE.update({
-    "subline": (11.5, 400), "position": (12, 400), "tab-count": (12, 400), "month": (11.5, 700), "goal-label": (13, 650),
+    "subline": (11.5, 400), "position": (12, 400), "tab-count": (12, 400), "needs-file": (11.5, 400), "month": (11.5, 700), "goal-label": (13, 650),
     "disk-mark": (11, 650), "episode-label": (13, 400), "date": (12, 400), "cover-title": (7, 700),
     "cover-title-large": (12, 700),
 })
@@ -340,7 +340,7 @@ SIZES = {
     "switch-h": 20, "arrival-number": 56, "icon-square": 26, "title-to-number": 28, "channel-cap": 130,
     "wizard-steps": 244,
 }
-# the footer: the Windows taskbar's height with the line above it (40 px at 100 %, Windows' scale only; G2.3 C3)
+# the footer: 39 px + the 1 px line above it = the Windows taskbar's 40 px at 100 % (Windows' scale only; G2.3 C3)
 FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer"})
 ICON_PX = (13, 20)                       # icons are fixed sizes in this range
 WINDOW_MIN = (1000, 620)

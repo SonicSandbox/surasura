@@ -70,7 +70,7 @@ class Text:
             _theme, size, language = style.current()
             px, w = theme.font(role, size)
             f = QFont()
-            f.setFamilies(list(theme.font_families(language)))
+            f.setFamilies(list(theme.MONO) if role in MONO_ROLES else list(theme.font_families(language)))
             f.setPointSizeF(px * style.PT_PER_PX)
             f.setWeight(QFont.Weight(weight or w))
             spacing = theme.LETTER_SPACING_EM.get(role)
@@ -91,14 +91,15 @@ class Text:
             m = self._metrics[k] = QFontMetrics(self.font(role, weight, dpr))
         return m
 
-    def static(self, text, role, width, weight=None, dpr=1.0):
-        """(QStaticText, its width) of `text` in `role`, elided to `width` px."""
+    def static(self, text, role, width, weight=None, dpr=1.0, elide=True):
+        """(QStaticText, its width, whether it was cut) of `text` in `role`, elided to `width` px (`elide=False`:
+        never cut — a number, whose figures' tabular widths `elidedText` measures wider than `horizontalAdvance`)."""
         self._check(dpr)
-        k = (text, role, weight, int(width))
+        k = (text, role, weight, int(width) if elide else None)
         hit = self._static.get(k)
         if hit is None:
             fm = self.metrics(role, weight, dpr)
-            shown = fm.elidedText(text, Qt.TextElideMode.ElideRight, max(0, int(width)))
+            shown = fm.elidedText(text, Qt.TextElideMode.ElideRight, max(0, int(width))) if elide else text
             st = QStaticText(shown)
             st.setTextFormat(Qt.TextFormat.PlainText)
             opt = QTextOption()
@@ -111,9 +112,9 @@ class Text:
             self._static[k] = hit
         return hit
 
-    def draw(self, p, x, y_mid, text, role, width, colour, weight=None, align="left", dpr=1.0):
+    def draw(self, p, x, y_mid, text, role, width, colour, weight=None, align="left", dpr=1.0, elide=True):
         """Draw `text` vertically centred on `y_mid`; -> (the width drawn, whether it was elided)."""
-        st, w, elided = self.static(text, role, width, weight, dpr)
+        st, w, elided = self.static(text, role, width, weight, dpr, elide)
         fm = self.metrics(role, weight, dpr)
         p.setFont(self.font(role, weight, dpr))
         p.setPen(colour)
@@ -122,6 +123,7 @@ class Text:
         return w, elided
 
 
+MONO_ROLES = frozenset({"needs-file"})               # a file's name or its state, as the mock's `.fn` (Consolas)
 TEXT = Text()
 
 
@@ -745,7 +747,7 @@ class RowDelegate(QStyledItemDelegate):
     def _episode_rows(self, row, area, hero=False):
         """An open row's episodes, one rect each: from its rule (a tick and a gap before the label) to the row's own
         right edge, so an episode's label starts where its show's title does and its numbers, status and ▶ stand in
-        the show's columns (G2.3 A1, A2; `_episode_cols`)."""
+        the list's columns — a row's own, and in the hero those of the rows under it (G2.3 A1, A2; `_episode_cols`)."""
         f = fz()
         if hero:
             title_x = area.left() + 20 + theme.SIZES["hero-cover-w"] - 1 + 18      # `_hero_geometry`'s main column
@@ -757,7 +759,7 @@ class RowDelegate(QStyledItemDelegate):
         y = area.top() + 4
         out = []
         for ep in row.episodes:
-            out.append((QRect(left, y, right - left, h), ep))
+            out.append((QRect(left, y, right - left + 1, h), ep))     # its right is the row's (haiku-code G1: 1 px)
             y += h
         return out
 
@@ -792,13 +794,14 @@ class RowDelegate(QStyledItemDelegate):
         is_open = self.view.model().open_key == row.key
         head_h = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
         head = QRect(box.left(), box.top(), box.width(), head_h)
-        cov = QRect(head.left() + 20, head.top() + 16, theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])
+        cov = QRect(head.left() + 20, head.top() + (head_h - theme.SIZES["hero-cover-h"]) // 2,     # centred, as the
+                    theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])                      # mock's heroline
         side_w = round(max(150 * f, 120))
         side = QRect(head.right() - 18 - side_w, head.top() + 16, side_w, head_h - 32)
         main = QRect(cov.right() + 18, head.top() + 16, side.left() - 18 - cov.right() - 18, head_h - 32)
         btn_h = round(theme.SIZES["button"] * f)
-        play_w = round(TEXT.metrics("button").horizontalAdvance(strings.ROWS_NO_MEDIA_BUTTON.format(word="video")) +
-                       13 * f * 2 + 18)
+        play_w = round(TEXT.metrics("button").horizontalAdvance(self._watch_label(row)) + 13 * 2 + 18)  # its own
+        #                                                                       label (the mock's .btn: padding 13)
         play = QRect(side.right() - play_w, side.center().y() - btn_h - 5, play_w, btn_h)
         status = QRect(side.left(), side.center().y() + 5, side.width(), round(theme.SIZES["status-pill"] * f))
         if row.episodes[row.next_index].status is not None:
@@ -927,7 +930,7 @@ class RowDelegate(QStyledItemDelegate):
         repaint of an open row draws no row text or cover afresh: only its number, over the head (its rule and focus
         ring are a few strokes)."""
         h = round(theme.SIZES["row"] * fz())
-        local = QRect(0, 0, body.width(), body.height())
+        local = QRect(0, 0, body.width(), h)         # the head alone: its hover a whole rounded head, warmed or not
         radius = theme.RADII["r-sm"]
         rest = QRect(body.left(), body.top() + h, body.width(), body.height() - h)
         pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
@@ -1014,7 +1017,7 @@ class RowDelegate(QStyledItemDelegate):
             # its open head first, as the click will show it — under the pointer, so hovered (an open row's hover
             # lights its head only), the body's whole height below it as `_paint_open_row` lays
             # it: opening it then draws no head afresh (speed round 5: the head was each first opening's own render)
-            local = QRect(0, 0, rect.width(), head + self._episodes_h(row) + 10)
+            local = QRect(0, 0, rect.width(), head)       # the head alone, as `_paint_open_row` draws it
             self._warming = True
             try:
                 self._sprite(kind, row, QSize(rect.width(), head), dpr, True,
@@ -1141,7 +1144,7 @@ class RowDelegate(QStyledItemDelegate):
         slot_right = self.lead(ROW, body.left())[0] + round(20 * f)
         w = max(round(20 * f), TEXT.metrics("position", dpr=dpr).horizontalAdvance(text) + 2)
         TEXT.draw(p, slot_right - w, QRect(body.left(), body.top(), body.width(), h).center().y(), text,
-                  "position", w, c("ink-dim"), align="right", dpr=dpr)
+                  "position", w, c("ink-dim"), align="right", dpr=dpr, elide=False)
 
     def _studying_w(self, dpr=1.0):
         fm = TEXT.metrics("row-sub", 600, dpr)
@@ -1323,6 +1326,13 @@ class RowDelegate(QStyledItemDelegate):
         if chip.mined:
             icon(p, "dot", QRectF(x + tw + CHIP_DOT - 6, mid - 3, 6, 6), c("ok"))
 
+    @staticmethod
+    def _watch_label(row):
+        """The hero's button's words: its verb (Watch / Listen / Read), *Online*, or *No video*."""
+        if row.episodes[row.next_index].can_play:
+            return row.verb
+        return strings.ROWS_ONLINE_BUTTON if row.media == "youtube" else             strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
+
     def _paint_watch(self, p, r, row, nxt, dpr):
         f = fz()
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -1340,10 +1350,7 @@ class RowDelegate(QStyledItemDelegate):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
             ink = c("ink-faint")
-            if row.media == "youtube":
-                label = strings.ROWS_ONLINE_BUTTON
-            else:
-                label = strings.ROWS_NO_MEDIA_BUTTON.format(word=word)
+            label = self._watch_label(row)
         fm = TEXT.metrics("button", dpr=dpr)
         total = 12 + 6 + fm.horizontalAdvance(label)
         x = r.center().x() - total / 2
@@ -1381,10 +1388,10 @@ class RowDelegate(QStyledItemDelegate):
             if i:
                 p.setPen(QPen(c("needs-row-border"), 1))
                 p.drawLine(QPointF(listbox.left() + 1, ry + 0.5), QPointF(listbox.right() - 1, ry + 0.5))
-            lw, _ = TEXT.draw(p, listbox.left() + 10, ry + rows_h / 2, label, "hero-sub", 120 * f, c("ink"), weight=600,
-                              dpr=dpr)
-            TEXT.draw(p, listbox.left() + 10 + lw + 12, ry + rows_h / 2, what, "hero-sub", listbox.width() - lw - 40,
-                      c("ink-faint"), dpr=dpr)
+            slot = max(round(52 * f), TEXT.draw(p, listbox.left() + 10, ry + rows_h / 2, label, "hero-sub", 120 * f,
+                                                c("ink"), weight=600, dpr=dpr)[0])     # the mock's .mrow .epn: 52 px
+            x0 = listbox.left() + 10 + slot + 10
+            TEXT.draw(p, x0, ry + rows_h / 2, what, "needs-file", listbox.right() - 10 - x0, c("ink-dim"), dpr=dpr)
 
     def _paint_failure(self, p, entry, rect, dpr):
         f = fz()
@@ -1779,11 +1786,13 @@ class RowsView(QListView):
         if event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason,
                               Qt.FocusReason.ShortcutFocusReason):
             self.focus_visible = True                # reached by the keyboard: its ring shows (`_update_current`)
-        self._update_current()
+        if self.focus_visible:                       # no ring shown (focus by a click): nothing to repaint (S19)
+            self._update_current()
         event.accept()
 
     def focusOutEvent(self, event):
-        self._update_current()
+        if self.focus_visible:
+            self._update_current()
         event.accept()
 
     def _update_current(self):

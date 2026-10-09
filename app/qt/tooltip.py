@@ -57,10 +57,10 @@ class Bubble(QWidget):
         font.setWeight(QFont.Weight(weight))
         self._doc.setDefaultFont(font)
         self._doc.setDefaultStyleSheet(f"body {{ color: {style.colours()['ink']}; }}")
-        if Qt.mightBeRichText(text):
-            self._doc.setHtml(text)
-        elif BULLET in text:
+        if BULLET in text:                       # first: a bulleted tip is plain words (a file's name escaped)
             self._doc.setHtml(bulleted(text, f))
+        elif Qt.mightBeRichText(text):
+            self._doc.setHtml(text)
         else:
             self._doc.setPlainText(text)
         self._doc.setTextWidth(-1)

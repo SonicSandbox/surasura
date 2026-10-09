@@ -485,6 +485,8 @@ class RowDelegate(QStyledItemDelegate):
         self._sprites = {"row": OrderedDict(), "ep": OrderedDict()}     # two caches: episodes never evict rows
         self._hints = {}                             # an entry's shape -> its QSize, for `_hints_look` (`sizeHint`)
         self._hints_look = None
+        self._model = view.model()                   # the list's own model, set before its delegate (`RowsView`)
+        self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
         self._bytes = {"row": 0, "ep": 0}
 
     def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None):
@@ -545,26 +547,34 @@ class RowDelegate(QStyledItemDelegate):
         return entries[row] if 0 <= row < len(entries) else None
 
     def sizeHint(self, option, index):
-        """An entry's height, kept by what decides it (`_shape`) and the look: a relayout (a row opened, a file
-        arrived) asks every row, and at a few hundred rows working each out again was most of its ~2.5 ms (W2.2 round
-        4). Kept by shape, not by entry: a refresh makes every entry a new tuple, and an arrival every row a new object
-        (its number moved), so a key by object missed on every arrival."""
-        model = self.view.model()
-        entries = model.entries
+        """An entry's height: a relayout (a row opened, a file arrived) asks every row, one call each from Qt, so each
+        answer is one look in a list made once per entries, open row and look (`_heights_now`); a call that does any
+        more is paid a few hundred times (W2.2 speed round 5: 1.4 ms of an opening's ~3.5)."""
+        model = self._model
+        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look:
+            self._heights_now(model)
         row = index.row()
-        if not 0 <= row < len(entries):
-            return QSize(0, 0)
-        entry = entries[row]
+        heights = self._heights
+        return heights[row] if 0 <= row < len(heights) else QSize(0, 0)
+
+    def _heights_now(self, model):
+        """Every entry's height, from the sizes kept by what decides them (`_shape`): a refresh makes every entry a new
+        tuple and an arrival every row a new object (its number moved), yet only a shape not seen before is worked out
+        (`_size_hint`)."""
         look = style.current()
         if look != self._hints_look:                 # a new look: every height again
             self._hints.clear()
             self._hints_look = look
-        is_open = model.open_key == getattr(entry[1], "key", None)
-        key = self._shape(entry, is_open)
-        size = self._hints.get(key)
-        if size is None:
-            size = self._hints[key] = self._size_hint(entry, is_open)
-        return size
+        open_key, hints, shape = model.open_key, self._hints, self._shape
+        out = []
+        for entry in model.entries:
+            is_open = open_key is not None and open_key == getattr(entry[1], "key", None)
+            key = shape(entry, is_open)
+            size = hints.get(key)
+            if size is None:
+                size = hints[key] = self._size_hint(entry, is_open)
+            out.append(size)
+        self._heights, self._h_entries, self._h_open, self._h_look = out, model.entries, open_key, look
 
     @staticmethod
     def _shape(entry, is_open):

@@ -623,6 +623,20 @@ def _backlog_entry(note, fields, language):
             "freqsort": int(freq) if freq.isdigit() else None}
 
 
+def read_known_signal(language, url, decks, fields, settings):
+    """Known from Anki (P2.4 row 2.4.15), beside this sync, in the same decks: cards you suspended (or the signal you
+    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect's preview is
+    on: off, nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
+    if not (settings or {}).get("connect_enabled"):
+        return None
+    try:
+        from app.connect import known_signal
+        return known_signal.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
+    except Exception as e:
+        print(f"Known from Anki skipped: {e}")
+        return None
+
+
 def sync_backlog(language, url, decks, fields):
     """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
 

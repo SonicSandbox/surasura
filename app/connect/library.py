@@ -126,6 +126,33 @@ def record_batch(store, item_id, made, mined_at, batch=None):
             store.receipt(item_id, mined_at)
 
 
+# --------------------------------------------------------------------------- #
+# P2.4 Part B: cards deleted in Anki (Sonic, *restart, the backlog's size*)
+# --------------------------------------------------------------------------- #
+def note_ids(store):
+    """Every note id the store holds: the learner's own (`anki_links`, from the known-words sync and the window) and
+    Connect's (`made_words`) -> a set."""
+    out = {row[0] for row in store.conn.execute("SELECT DISTINCT note_id FROM anki_links")}
+    if store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'").fetchone():
+        for (ids,) in store.conn.execute("SELECT note_ids FROM made_words"):
+            try:
+                out.update(int(n) for n in json.loads(ids))
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+def notes_gone(store, gone):
+    """Tell the store these notes are gone from Anki: it takes them out of what reads *in Anki* (`cards_of`,
+    `card_lines`, `anki_links`) and keeps the made word (G1.3-4: never made again unless you ask). The store's half is
+    Kura's (`Store.notes_gone`, asked at P2.4 row 2.4.14): a no-op until the store has it -> True when it was told."""
+    told = getattr(store, "notes_gone", None)
+    if not gone or told is None:
+        return False
+    told(sorted(gone))
+    return True
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op."""

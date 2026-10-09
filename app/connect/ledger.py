@@ -24,6 +24,7 @@ import datetime
 import json
 import os
 import sqlite3
+import time
 import uuid
 
 SCHEMA = 3
@@ -153,8 +154,16 @@ class Ledger:
         db_path = db_path or path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path, timeout=5.0, isolation_level=None)
-        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        for wait in (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, None):
+            try:            # two Connects opening a new ledger at once: switching it to WAL skips the busy handler
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as e:
+                if wait is None or "locked" not in str(e):
+                    self.conn.close()
+                    raise
+                time.sleep(wait)
         self._uid = None
         try:
             self._refuse_newer()

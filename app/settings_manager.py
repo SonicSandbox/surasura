@@ -89,6 +89,17 @@ DEFAULT_SETTINGS = {
     # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
     # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
     "connect_open_anki": False,
+    # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
+    # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
+    # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least
+    # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own cards never count. Never in a
+    # signature.
+    "connect_backlog_cap": 300,
+    # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
+    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
+    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
+    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
+    "known_from_anki": ["suspended"],
     "logic": {
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:

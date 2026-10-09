@@ -142,6 +142,7 @@ class TreeWatch:
         self._handle = self._io = self._stop = None
         self._thread = None
         self._gen = 0                                         # which start() a watch thread belongs to
+        self._mine = threading.local()                        # each watch thread's own handles (`_run`)
 
     # --- life ------------------------------------------------------------------------------------------ #
 
@@ -174,7 +175,8 @@ class TreeWatch:
             return False
         self.state = "watching"
         self._gen += 1
-        self._thread = threading.Thread(target=self._run, args=(self._gen,), name="library-watch", daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(self._gen, (handle, self._io, self._stop)),
+                                        name="library-watch", daemon=True)
         self._thread.start()
         return True
 
@@ -185,6 +187,7 @@ class TreeWatch:
             return
         if self.state == "watching":
             self.state = "closed"
+        self._gen += 1                                        # the thread now belongs to no watch: it marks nothing
         self._k32.SetEvent(self._stop)
         thread, self._thread = self._thread, None
         if thread is not None and thread is not threading.current_thread():
@@ -245,23 +248,25 @@ class TreeWatch:
         import ctypes
         import ctypes.wintypes as wt
         k32 = self._k32
+        handle, io, stop = getattr(self._mine, "handles", None) or (self._handle, self._io, self._stop)
         ov = _Overlapped()
-        ov.hEvent = self._io
-        k32.ResetEvent(self._io)
-        if not k32.ReadDirectoryChangesW(self._handle, buf, len(buf), self.subtree, self.notify, None,
+        ov.hEvent = io
+        k32.ResetEvent(io)
+        if not k32.ReadDirectoryChangesW(handle, buf, len(buf), self.subtree, self.notify, None,
                                          ctypes.byref(ov), None):
             return False
-        handles = (wt.HANDLE * 2)(self._io, self._stop)
+        handles = (wt.HANDLE * 2)(io, stop)
         if k32.WaitForMultipleObjects(2, handles, False, 0xFFFFFFFF) != 0:
-            k32.CancelIoEx(self._handle, ctypes.byref(ov))
-            k32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(got), True)   # ov outlives the read
+            k32.CancelIoEx(handle, ctypes.byref(ov))
+            k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(got), True)   # ov outlives the read
             return None
-        return bool(k32.GetOverlappedResult(self._handle, ctypes.byref(ov), ctypes.byref(got), False))
+        return bool(k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(got), False))
 
-    def _run(self, gen):
+    def _run(self, gen, handles=None):
         """The watch thread. However it ends — close() asked, the read failed, Windows' wait failed, an error here —
         a watch that wasn't closed reads "ended" and wakes the window, so its retry and the slow look take over. A
         thread that outlived close()'s wait (a hung share) and ends after a new start() leaves the new watch alone."""
+        self._mine.handles = handles                          # this thread's own watch's handles, never a newer one's
         try:
             self._loop(gen)
         except Exception as exc:                                # a report it couldn't read: the watch ends, never silent

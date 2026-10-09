@@ -1032,3 +1032,24 @@ def test_a_slow_look_that_finds_nothing_writes_signals_and_redraws_nothing(windo
     assert syncs == [], f"a look that found nothing synced: {syncs}"
     assert posts == [], f"a look that found nothing posted: {posts}"
     assert store.meta()["state_version"] == version, "a look that found nothing wrote to the store"
+
+
+class _HelperDone:
+    """A store helper that has exited (its poll() gives its exit code)."""
+
+    def poll(self):
+        return 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_store_soon_never_clears_the_builds_mark_the_drain_reads(window, language):
+    """The worker's question must not answer it for the window: once the open's helper has exited, `_store_soon` says
+    nothing is coming but leaves `_store_waiting` set, so the window's drain still sees the build end (its "Ready",
+    the sync that follows, or the note that the library stays in its file). Cleared here, ~1 build in 10 kept
+    "Getting your library ready…" on screen for good (the delta review's B1)."""
+    app = window(language)
+    app._opener().reason = "no store"
+    mark = (_HelperDone(), time.monotonic() + 60)
+    app._store_waiting = mark
+    assert app._store_soon(None) is False
+    assert app._store_waiting is mark

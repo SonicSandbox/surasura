@@ -539,7 +539,11 @@ class ContentImporterApp:
             return True
         opener = self._opener()
         settling = opener._worker is not None and opener._worker.is_alive()     # a busy database, retried meanwhile
-        return settling or opener.reason in ("busy", "not ready") or self._store_building()
+        # The open's build, read as `_store_building` reads it but never cleared here: the window's drain clears it
+        # when it sees the build end (its "Ready" and the sync that follows).
+        waiting = self.__dict__.get("_store_waiting")
+        building = bool(waiting) and waiting[0] is not None and waiting[0].poll() is None and time.monotonic() < waiting[1]
+        return settling or opener.reason in ("busy", "not ready") or building
 
     def _make_lookout(self, store):
         """The window's eyes on its library (L3.2): the tree watch on the tier folders, the copy's watch, the bell,

@@ -6213,7 +6213,7 @@ heads(k, head) AS (
   SELECT k, CASE WHEN instr(substr(k, :n), '/') = 0 THEN NULL
                  ELSE substr(k, 1, :n + instr(substr(k, :n), '/') - 2) END FROM w WHERE k IS NOT NULL
 )
-SELECT h.k, h.head, i.size, i.mtime_ns FROM heads h JOIN items i ON i.rel_key = h.k
+SELECT h.k, h.head, i.size, i.mtime_ns FROM heads h JOIN items i ON i.rel_key = h.k AND i.availability = 'available'
 WHERE h.head IS NULL OR h.head NOT IN (SELECT value FROM json_each(:disk))
 """
 

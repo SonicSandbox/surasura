@@ -49,6 +49,8 @@ class ClosableAnki:
                  "fields": {"Expression": {"value": self.note_word[n], "order": 0}}} for n in ids]
 
     def invoke(self, action, url, **kwargs):
+        if action == "getActiveProfile":        # the reads before undo record their Anki profile (adversary B #1)
+            return "DevTest"
         raise AssertionError(f"undo must not reach Anki's {action} once Anki is closed")
 
 

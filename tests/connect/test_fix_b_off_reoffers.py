@@ -85,6 +85,7 @@ def test_signal_off_then_on_offers_the_new_card_again_and_marks_nothing(anki, kn
     assert result["offered"] == 1
     offer = known_signal.load("ja")["offer"]
     assert offer["state"] == "pending"
-    assert [c["word"] for c in offer["cards"]] == ["気配"]
+    # the new card joins the offer still pending from the first read; nothing is marked (adversary B #17)
+    assert [c["word"] for c in offer["cards"]][-1:] == ["気配"]
     with open(known_file, "rb") as f:
         assert f.read() == before

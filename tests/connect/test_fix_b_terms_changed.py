@@ -83,4 +83,5 @@ def test_changed_signal_offers_again_and_marks_nothing(anki, known_file):
     assert _bytes(known_file) == before                                     # KnownWord.json unchanged
     offer = known_signal.load("ja").get("offer") or {}
     assert offer.get("state") == "pending"
-    assert [c["word"] for c in offer.get("cards", [])] == ["一生懸命"]
+    # the new card joins the offer still pending from the first read; nothing is marked (adversary B #17)
+    assert [c["word"] for c in offer.get("cards", [])][-1:] == ["一生懸命"]

@@ -305,7 +305,9 @@ def _wait(ledger, job, wait, out, parked=None):
     resume = wait.resume
     if resume in BEFORE_MINING or resume == "mining":
         resume = "mining" if _started(ledger, job["id"]) else None
-    ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)
+    now = ledger.job_by_id(job["id"]) or {}
+    if (now.get("state"), now.get("reason"), now.get("resume")) != ("waiting", wait.reason, resume):
+        ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)   # the same wait: nothing written (S19)
     out["waiting"][job["item_id"]] = wait.reason
     if parked is not None and not wait.look:
         parked.add(job["id"])
@@ -334,6 +336,10 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["dropped"].append(item_id)
         return
     record = not foreign
+    if droppable:
+        full = _full(steps, lang)       # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2)
+        if full is not None:
+            raise full
     try:
         for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
             try:
@@ -573,6 +579,21 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     ledger.need(lang, "mine-failed", f"{steps.title(lang, job) or 'An episode'}: Anki Miner stopped twice while "
                 "making its cards. Look in Anki for the cards it made.", item_id=job["item_id"], job_id=job["id"])
     raise _Finished("failed")
+
+
+def _full(steps, lang):
+    """Before a job's pick: a Wait when Connect's waiting cards are at the cap and this run's shelf has had its try (it
+    can free nothing more until you study), else None — one request, so a job waiting at the cap is never picked
+    again at every look."""
+    if not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
+        return None
+    cap = steps.cap()
+    if not cap:
+        return None
+    count = steps.waiting_count(lang)
+    if count is None or count < cap:
+        return None
+    return Wait(f"Your {count} cards are waiting: Connect makes more as you study them.", resume="mining")
 
 
 def _at_cap(steps, ledger, lang, todo):
@@ -947,6 +968,10 @@ class Steps:
             raise Wait(ANKI_CLOSED, resume="mining") from None
         self._shelved = getattr(self, "_shelved", set()) | {lang}
         return shelved
+
+    def shelf_tried(self, lang):
+        """Has this run's shelf had its one try for `lang`?"""
+        return lang in getattr(self, "_shelved", set())
 
     def _shelve(self, lang, ledger, todo, count, cap):
         from app.connect import shelf

@@ -161,21 +161,29 @@ def read(language, url, decks, fields, settings):
     with _held(language, "Known from Anki"):
         state = load(language)
         ids = anki_connect.find_cards(url, q)
+        scope = {"query": q, "profile": anki_connect.invoke("getActiveProfile", url)}
         seen = set(state.get("seen") or ())
         new = [c for c in ids if c not in seen]
         found = _words_of(url, new, fields, language)
         now = _now()
         out = {"marked": [], "offered": 0, "skipped": None}
-        if not state.get("read") or state.get("terms") != terms:     # first, or a changed signal (#16)
+        if not state.get("read") or state.get("terms") != terms or state.get("scope") != scope:
+            # first, or another signal, decks or Anki profile (#16; adversary B #1): an offer, never marks; a pending
+            # offer keeps its cards (adversary B #17)
             if found:
+                old = state.get("offer") or {}
+                kept = [c for c in old.get("cards") or () if old.get("state") == "pending"]
+                have = {c["card"] for c in kept}
                 state["offer"] = {"state": "pending", "query": q,
-                                  "cards": [{"word": w, "card": c, "note": n} for w, c, n in found]}
+                                  "cards": kept + [{"word": w, "card": c, "note": n} for w, c, n in found
+                                                   if c not in have]}
             out["offered"] = len(found)
         elif found:
             out["marked"] = _mark(language, found, state, now, "signal")
-        seen_now = sorted(set(ids))
-        if found or not state.get("read") or state.get("terms") != terms or state.get("seen") != seen_now:
-            state.update(read=now, seen=seen_now, terms=terms)
+        seen_now = sorted(set(ids)) if ids or not seen else sorted(seen)    # an empty answer never empties `seen`
+                                                                            # (adversary B #1c: a bad reply reads as [])
+        if found or not state.get("read") or state.get("terms") != terms or state.get("seen") != seen_now                 or state.get("scope") != scope:
+            state.update(read=now, seen=seen_now, terms=terms, scope=scope)
             _save(language, state)      # nothing new, nothing written (charter S19)
         return out
 

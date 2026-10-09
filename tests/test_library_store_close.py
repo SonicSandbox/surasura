@@ -610,7 +610,7 @@ def test_a_trigger_called_off_its_own_timer_thread_does_nothing(language, monkey
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_exit_waits_for_a_trigger_its_timer_is_already_running(language, store_helper_spawns, monkeypatch):
-    """A timer that has already taken its trigger and is mid-run (here: held 0.6 s inside maintain_due) is waited for
+    """A timer that has already taken its trigger and is mid-run (here: held 1.0 s inside maintain_due) is waited for
     at exit: `_outside_idle_now` returns only after that run is done, so the helper spawn is there the moment it
     returns. Without the wait the interpreter would stop the daemon timer mid-way and the copy would stay behind."""
     monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
@@ -621,7 +621,7 @@ def test_exit_waits_for_a_trigger_its_timer_is_already_running(language, store_h
 
     def slow_maintain_due(store):
         started.set()
-        time.sleep(0.6)                     # the timer is mid-run for this long: exit must wait for it
+        time.sleep(1.0)                     # the timer is mid-run for this long: exit must wait for it
         return real_maintain_due(store)
 
     monkeypatch.setattr(ls, "maintain_due", slow_maintain_due)
@@ -640,7 +640,7 @@ def test_exit_waits_for_a_trigger_its_timer_is_already_running(language, store_h
         ls._outside_idle_now()
         waited = time.monotonic() - started_at
         assert store_helper_spawns == [(language,)], "exit returned before the running trigger finished its export"
-        assert waited >= 0.3, f"exit did not wait for the running trigger (returned after {waited:.2f} s)"
+        assert waited >= 0.5, f"exit did not wait for the running trigger (returned after {waited:.2f} s)"
     finally:
         ls._outside_idle_now()
         if connect is not None:

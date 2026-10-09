@@ -86,6 +86,12 @@ class StateBar(QLabel):
         self.setVisible(bool(text))
 
 
+def edge_room():
+    """The Goal strip's room at each edge of the window: an em of the body text at the text size (Sonic, G2.3 C2: "Not
+    miniscule but not large")."""
+    return round(theme.font("body", style.current()[1])[0])
+
+
 class GoalStrip(QWidget):
     """Goal, docked under Current's list (mock `.goalbar`): the box mark, *Goal*, up to nine small covers, *N titles ·
     N files*. Display only in W2.2 (the sheet it opens is W3.2's)."""
@@ -135,7 +141,8 @@ class GoalStrip(QWidget):
         f = rows.fz()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        box = QRectF(24.5, 8.5, self.width() - 49, theme.SIZES["goal-strip"] * f - 1)
+        edge = edge_room()                           # about one typed letter from each edge of the window (G2.3 C2)
+        box = QRectF(edge + 0.5, 8.5, self.width() - 2 * edge - 1, theme.SIZES["goal-strip"] * f - 1)
         p.setPen(QPen(rows.c("line"), 1))
         p.setBrush(rows.c("surface"))
         p.drawRoundedRect(box, 10, 10)
@@ -172,10 +179,14 @@ class Page(QWidget):
         self.name = name
         self.language = language
         self.view_model = None
-        box = QVBoxLayout(self)
+        outer = QVBoxLayout(self)                   # edge to edge: the Goal strip spans the window (G2.3 C2)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        box = QVBoxLayout()                         # the heading, the state bar and the list, inside the page's margins
         top, side, _bottom = theme.SPACING["current-body"]
         box.setContentsMargins(side, top, side, 0)
         box.setSpacing(8)
+        outer.addLayout(box, 1)
         head = QHBoxLayout()
         head.setSpacing(10)
         self.heading = QLabel(heading, self)

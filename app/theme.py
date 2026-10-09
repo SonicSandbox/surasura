@@ -14,7 +14,7 @@ import math
 from types import MappingProxyType
 
 THEMES = ("hb", "sky", "sapphire")          # `am` (Amethyst) is not shipped
-DEFAULT_THEME = "hb"
+DEFAULT_THEME = "sapphire"                  # Sonic, 2026-10-08 (G2.3): Sapphire first; Blue and Lighter blue stay
 THEME_NAMES = {"hb": "Blue", "sky": "Lighter blue", "sapphire": "Sapphire"}
 
 # --- Colours: each theme's own (theme.css) ------------------------------------------------------------------------- #
@@ -300,7 +300,7 @@ TYPE = {
 LETTER_SPACING_EM = {"eyebrow": 0.12, "group-label": 0.1}
 # --- W2.2: the type roles the mock draws that A4 didn't name (the anatomy digest, tracks/window/work/w22) ---------- #
 TYPE.update({
-    "subline": (11.5, 400), "position": (12, 400), "month": (11.5, 700), "goal-label": (13, 650),
+    "subline": (11.5, 400), "position": (12, 400), "tab-count": (12, 400), "month": (11.5, 700), "goal-label": (13, 650),
     "disk-mark": (11, 650), "episode-label": (13, 400), "date": (12, 400), "cover-title": (7, 700),
     "cover-title-large": (12, 700),
 })
@@ -333,14 +333,15 @@ def font(name, text_size=DEFAULT_TEXT_SIZE):
 SIZES = {
     "row": 56, "episode-row": 36, "row-cover-w": 31, "row-cover-h": 44, "hero-cover-w": 88, "hero-cover-h": 126,
     "col-diff": 118, "col-stat": 150, "col-acts": 118, "button": 32, "button-sm": 26, "icon-button": 28,
-    "status-pill": 24, "search-w": 230, "search-w-narrow": 172, "search-h": 32, "generate": 34, "footer": 34,
+    "status-pill": 24, "search-w": 230, "search-w-narrow": 172, "search-h": 32, "generate": 34, "footer": 39,
     "goal-strip": 46, "bucket": 58, "tray": 452, "search-results": 470, "side-panel": 360, "side-panel-narrow": 316,
     "side-rail": 330, "settings-nav": 228, "settings-card-max": 820, "settings-search-max": 520,
     "settings-search-h": 38, "menu-min": 264, "pop": 390, "dialog": 560, "tooltip-max": 300, "switch-w": 36,
     "switch-h": 20, "arrival-number": 56, "icon-square": 26, "title-to-number": 28, "channel-cap": 130,
     "wizard-steps": 244,
 }
-FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h"})
+# the footer: the Windows taskbar's height with the line above it (40 px at 100 %, Windows' scale only; G2.3 C3)
+FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer"})
 ICON_PX = (13, 20)                       # icons are fixed sizes in this range
 WINDOW_MIN = (1000, 620)
 NARROW_BELOW = 1150

@@ -227,6 +227,84 @@ class ElidingLabel(QLabel):
             self.setText(shown)
 
 
+class TabButton(QToolButton):
+    """A tab: its name, then its count drawn as a count — Finished's small and faint, Needs you's on a heads-up badge
+    (G2.3 R4, R5; mock `.tab .n`, `.badge.warn`) — so the number never reads as part of the word. The stylesheet draws
+    the ground and the underline; the name and the count are painted here. `text()` stays the whole line, for screen
+    readers."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.name, self.count, self.badge = "", 0, False
+
+    def set_name(self, name, count=0, badge=False):
+        self.name, self.count, self.badge = name, count, badge
+        self.setText(strings.TAB_COUNT.format(name=name, count=count) if count else name)
+        self.updateGeometry()
+        self.update()
+
+    def _pads(self):
+        f = theme.text_factor(style.current()[1])
+        return round(10 * f), round(14 * f), round(9 * f), f      # the stylesheet's padding (`QToolButton#tab`)
+
+    def _count_font(self):
+        font = self.font()
+        px, weight = theme.font("badge" if self.badge else "tab-count", style.current()[1])
+        font.setPointSizeF(px * style.PT_PER_PX)
+        font.setWeight(weight)
+        return font
+
+    def _count_w(self):
+        if not self.count:
+            return 0
+        _t, _side, _b, f = self._pads()
+        w = QFontMetrics(self._count_font()).horizontalAdvance(str(self.count))
+        return round(max(18 * f, w + 10)) if self.badge else w
+
+    def sizeHint(self):
+        top, side, bottom, f = self._pads()
+        fm = QFontMetrics(self.font())
+        w = side + fm.horizontalAdvance(self.name) + side + ((round(7 * f) + self._count_w()) if self.count else 0)
+        return QSize(w, top + fm.height() + bottom + 2)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, _event):
+        from PyQt6.QtWidgets import QStyle, QStyleOptionToolButton, QStylePainter
+        opt = QStyleOptionToolButton()
+        self.initStyleOption(opt)
+        opt.text = ""
+        p = QStylePainter(self)
+        p.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, opt)
+        top, side, bottom, f = self._pads()
+        c = style.colours()
+        lit = self.isChecked() or self.underMouse() or self.hasFocus()
+        fm = QFontMetrics(self.font())
+        mid = (top + self.height() - bottom - 2) / 2
+        p.setFont(self.font())
+        p.setPen(style.qcolor(c["ink" if lit else "ink-dim"]))
+        p.drawText(QPointF(side, mid + (fm.ascent() - fm.descent()) / 2), self.name)
+        if self.count:
+            x = side + fm.horizontalAdvance(self.name) + round(7 * f)
+            font = self._count_font()
+            cm = QFontMetrics(font)
+            text = str(self.count)
+            p.setFont(font)
+            if self.badge:
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                w, h = self._count_w(), round(18 * f)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(style.qcolor(c["warn"]))
+                p.drawRoundedRect(QRect(x, round(mid - h / 2), w, h), h / 2, h / 2)
+                p.setPen(style.qcolor(theme.FIXED["on-accent"]))
+                p.drawText(QRect(x, round(mid - h / 2), w, h), Qt.AlignmentFlag.AlignCenter, text)
+            else:
+                p.setPen(style.qcolor(c["ink-faint"]))
+                p.drawText(QPointF(x, mid + (cm.ascent() - cm.descent()) / 2), text)
+        p.end()
+
+
 def _repolish(widget):
     widget.style().unpolish(widget)
     widget.style().polish(widget)
@@ -397,9 +475,9 @@ class ShellWindow(QMainWindow):
         self.tab_buttons = {}
         for name in TABS:
             label, tip = strings.TABS[name]
-            b = QToolButton(bar)
+            b = TabButton(bar)
             b.setObjectName("tab")
-            b.setText(label)
+            b.set_name(label)
             b.setCheckable(True)
             b.setToolTip(tip)
             b.setAccessibleName(label)
@@ -430,8 +508,8 @@ class ShellWindow(QMainWindow):
         self.subline.setText(view.subline)
         fin = self.tab_buttons["finished"]
         label = strings.TABS["finished"][0]
-        fin.setText(strings.TAB_COUNT.format(name=label, count=view.counts.finished) if view.counts.finished
-                    else label)
+        if fin.count != view.counts.finished:      # repainted only when the count changed (S19)
+            fin.set_name(label, view.counts.finished)
         if self._library_needs != len(view.needs):
             self._library_needs = len(view.needs)
             self.show_status(self.services.status.snapshot())
@@ -475,11 +553,16 @@ class ShellWindow(QMainWindow):
         self.bar_dot.setObjectName("bardot")
         self.bar_dot.setProperty("busy", "false")
         self.bar_dot.setAccessibleName(strings.BAR_NAME)
-        row.addWidget(self.bar_dot)
+        # the line close to its dot (G2.3 N2): the dot's widget holds its glow's room on both sides (GLOW), so the two
+        # sit with no gap of their own — the line starts GLOW (10 px) past the dot, the mock's gap — not glow + gap
+        lead = QHBoxLayout()
+        lead.setSpacing(0)
+        lead.addWidget(self.bar_dot)
         self.bar_line = ElidingLabel(footer)
         self.bar_line.setObjectName("barline")
         self.bar_line.setAccessibleName(strings.BAR_NAME)
-        row.addWidget(self.bar_line, 1)
+        lead.addWidget(self.bar_line, 1)
+        row.addLayout(lead, 1)
         self.bar_failure = ElidingLabel(footer)
         self.bar_failure.setObjectName("barfailure")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
@@ -507,7 +590,7 @@ class ShellWindow(QMainWindow):
         return footer
 
     def _apply_sizes(self):
-        """The fixed heights that follow the text size (the stylesheet carries the rest)."""
+        """The fixed heights (the stylesheet carries the rest): the footer at the taskbar's height at every text size."""
         size = style.current()[1]
         self.footer.setFixedHeight(round(theme.size("footer", size)))
         self.wordmark.updateGeometry()
@@ -557,7 +640,8 @@ class ShellWindow(QMainWindow):
             needs_page.set_failures(snap.needs_you)
         needs = self.tab_buttons["needs"]
         name = strings.TABS["needs"][0]
-        needs.setText(strings.TAB_WITH_COUNT.format(name=name, count=unseen) if unseen else name)
+        if needs.count != unseen:
+            needs.set_name(name, unseen, badge=True)
         needs.setVisible(listed > 0)
         if listed == 0 and needs.isChecked():
             self.show_tab("current")

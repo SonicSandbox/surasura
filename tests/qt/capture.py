@@ -140,6 +140,9 @@ def run_scale(scale, out_dir):
 
 
 # --- W2.2: the first screens on the synthetic seed ---------------------------------------------------------------- #
+PLAY_FAILED_LINE = "Couldn't open Ep 1: no video beside it on disk"
+
+
 def run_screens(scale, out_dir):
     """One process: Current, Finished and Needs you for every theme at `scale` %, on the seed. -> result dicts."""
     _isolate()
@@ -182,27 +185,44 @@ def run_screens(scale, out_dir):
     lst = win.page_widgets["current"].list
     amber = next(i for i, e in enumerate(lst.model().entries)
                  if e[0] == rows.ROW and sum(ep.missing for ep in e[1].episodes) == 3)
+    soon = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "soon" for ln in e[2]))
+    from PyQt6.QtCore import QEvent
     for theme_name in theme.THEMES:
         win.set_look(theme_name, "M")
         c = theme.colours(theme_name)
         others = [theme.colours(t)["bg"] for t in theme.THEMES if t != theme_name]
-        for screen in ("current", "current-open", "finished", "needs"):
+        for screen in ("current", "current-open", "current-soon", "finished", "needs"):
             if lst.model().open_key is not None:
                 lst.model().open_key = None
                 lst.relayout()
+            win.bar_line.set_full(PLAY_FAILED_LINE if screen == "needs" else "")    # the bar's line by its dot (G2.3 N2)
             win.show_tab("current" if screen.startswith("current") else screen)
             settle(10)
             if screen == "current-open":
                 lst.toggle(lst.model().index(amber, 0))
                 settle(10)
                 lst.scrollTo(lst.model().index(amber, 0), lst.ScrollHint.PositionAtTop)
+            elif screen == "current-soon":
+                lst.scrollTo(lst.model().index(soon, 0), lst.ScrollHint.PositionAtCenter)
             elif screen == "current":
                 lst.scrollToTop()
             settle()
+            for lv in (lst, win.page_widgets[screen if screen in win.page_widgets else "current"].list):
+                QApplication.sendEvent(lv.viewport(), QEvent(QEvent.Type.Leave))   # wherever the real pointer is,
+            settle(5)                                                              # no row is hovered in a picture
             page = win.pages.currentWidget()
             pix = win.grab()
             name = f"w22-{screen}-{theme_name}-{scale}.png"
             pix.save(os.path.join(out_dir, name))
+            if screen == "current-open":             # an episode's No video tooltip: its action on its own line (T1)
+                ep = next(i for i, e in enumerate(lst.model().entries[amber][1].episodes) if e.missing)
+                parts = [pt for pt in lst.delegate.parts(lst.model().entries[amber], lst.visualRect(
+                    lst.model().index(amber, 0))) if pt[0] == "status"]
+                rect, tip = parts[1 + ep][1], parts[1 + ep][2]
+                win.tooltips.request(lst.viewport(), rect, tip)
+                settle(5)
+                win.tooltips.bubble.grab().save(os.path.join(out_dir, f"w22-tooltip-{theme_name}-{scale}.png"))
+                win.tooltips.hide()
             sub = rgb_array(page.grab())
             problems = []
             area = sub.shape[0] * sub.shape[1]

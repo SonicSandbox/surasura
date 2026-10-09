@@ -38,7 +38,8 @@ POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
-CACHE_VERSION = 3                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`
+CACHE_VERSION = 4                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
+#                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own)
 
 
 def cache_path(language):

@@ -72,7 +72,7 @@ def test_the_three_shipped_themes_equal_the_look_tests_theme_css():
     for name, tokens in css.items():
         got = {k: theme.colours(name)[k] for k in tokens}
         assert got == tokens, name
-    assert theme.DEFAULT_THEME == "hb"
+    assert theme.DEFAULT_THEME == "sapphire"                 # Sonic, G2.3 (2026-10-08): Sapphire first
 
 
 # research/09-visual-language.md's opaque table (Blue, computed in OKLab from the mock's CSS): the browser's answers.
@@ -181,10 +181,11 @@ def test_title_bar_and_palette_are_plain_hex_per_theme():
     assert theme.palette("hb")["Window"] == "#111419"
 
 
-def test_an_unknown_theme_falls_back_to_blue():
-    """A hand-edited or retired theme name (Amethyst) paints Blue, never fails the first paint."""
-    assert theme.colours("am") is theme.colours("hb")
-    assert theme.tokens("nonsense")["theme"] == "hb"
+def test_an_unknown_theme_falls_back_to_the_default_sapphire():
+    """A hand-edited or retired theme name (Amethyst) paints the default, Sapphire since G2.3 — never fails the first
+    paint."""
+    assert theme.colours("am") is theme.colours("sapphire")
+    assert theme.tokens("nonsense")["theme"] == "sapphire"
 
 
 def test_font_families_put_each_languages_own_family_after_segoe():

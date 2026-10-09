@@ -93,10 +93,11 @@ def test_the_keyboard_reaches_every_tab_and_space_opens_its_page(window):
 
 def test_the_focus_ring_is_the_accent(window):
     b = window.tab_buttons["finished"]
-    before = count(rgb_array(b.grab()), theme.colours("hb")["accent"], 3)
+    accent = style.colours()["accent"]                      # the window's own theme (Sapphire by default since G2.3)
+    before = count(rgb_array(b.grab()), accent, 3)
     b.setFocus(Qt.FocusReason.TabFocusReason)
     QApplication.processEvents()
-    after = count(rgb_array(b.grab()), theme.colours("hb")["accent"], 3)
+    after = count(rgb_array(b.grab()), accent, 3)
     assert before == 0 and after >= 2 * (b.width() + b.height())
 
 

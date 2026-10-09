@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QRect, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter
+from PyQt6.QtGui import QColor, QFocusEvent, QImage, QPainter
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -357,3 +357,142 @@ def test_the_soon_line_is_a_quiet_hairline_in_the_separator_colour_with_no_word(
     assert best >= 0.6 * width                       # one pixel row of the strip is the hairline
     assert count(strip, col["ink-faint"], tolerance=10) == 0   # no word in the faint ink ...
     assert count(strip, col["ink-dim"], tolerance=10) == 0     # ... nor in the dim ink
+
+
+# --- the builder's own rows (W2.3 round 2) ----------------------------------------------------------------------------
+def test_try_screens_shows_the_mark_beside_the_name(qapp, monkeypatch):
+    """G2.3 C1: the local build's header showed no logo — the test root is where bundled resources are read, and the
+    build's temp root had none. try_screens copies them, so the mark is there and shown."""
+    from app.qt import shell as shell_module
+    from tests.qt import try_screens
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")          # try_screens pops it: put back after the test
+    monkeypatch.setenv("SURASURA_TEST_ROOT", os.environ.get("SURASURA_TEST_ROOT", ""))
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)      # prepare_process sets its own: put back after
+    monkeypatch.setattr(shell_module, "prepare_process", lambda: None)
+    seen = {}
+    real_open = shell_module.open_window
+
+    def opened(app, services):
+        win = real_open(app, services)
+        seen["win"] = win
+        return win
+    monkeypatch.setattr(shell_module, "open_window", opened)
+
+    def exec_once(_app):
+        QApplication.processEvents()
+        win = seen["win"]
+        seen["icon"] = win.mark._icon is not None and not win.mark.isHidden()
+        win.close()
+        return 0
+    monkeypatch.setattr(QApplication, "exec", exec_once)
+    assert try_screens.main(["--files", "0"]) == 0
+    assert seen["icon"], "the header's mark must be found and shown in the local build"
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+def test_the_footer_is_the_taskbars_height_at_every_text_size(qapp, window, size):
+    """G2.3 C3: the footer is 39 px (+ its 1 px line = the taskbar's 40) whatever the text size, never grown with it."""
+    theme_name, _size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    try:
+        window._apply_sizes()
+        QApplication.processEvents()
+        assert window.footer.height() == 39
+    finally:
+        style.apply(qapp, theme_name, "M", language)
+
+
+def test_studying_first_is_an_arrow_and_words_with_no_pill_under_them(qapp, monkeypatch):
+    """G2.3 R3: "↑ Studying its cards first" read badly as words over a pill. The mark is drawn on the row's own
+    ground: the pill's colour is never asked for, and the rows just above and below the words stay the ground."""
+    asked = []
+    real_c = rows.c
+    monkeypatch.setattr(rows, "c", lambda name: (asked.append(name), real_c(name))[1])
+    image = QImage(400, 60, QImage.Format.Format_RGB32)
+    ground = QColor(style.colours()["bg"])
+    image.fill(ground)
+    p = QPainter(image)
+    delegate = rows.RowDelegate.__new__(rows.RowDelegate)      # only its painting helpers, no list behind it
+    width = delegate._paint_studying(p, 10, 30, 1.0)
+    p.end()
+    assert width > 0
+    assert "badge-new" not in asked, "the old pill's fill came back under the words"
+    reach = round(19 * rows.fz()) // 2 + 1                      # a pill reached ±(19 f + 4) / 2 from the midline
+    arr = rgb_array(image)
+    for y in (30 - reach - 1, 30 + reach):
+        band = arr[y:y + 1, 10:10 + width]
+        assert count(band, ground.name(), 2) == band.shape[1], f"something drawn {y - 30} px off the midline"
+
+
+def test_a_click_back_into_the_list_after_using_the_keyboard_repaints_nothing(seeded):
+    """S19 (review C-1): after a keyboard visit the ring goes with the focus; a later click back into the list shows no
+    ring, so the focus-in and the press repaint no row (only the click's own current-row change could)."""
+    seed, win = seeded()
+    lst = current(win)
+    win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(5):
+        QApplication.processEvents()
+    lst.setFocus(Qt.FocusReason.TabFocusReason)                 # by the keyboard: the ring shows
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst.focus_visible
+    win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)   # away again: the ring goes, one repaint
+    for _ in range(5):
+        QApplication.processEvents()
+    assert not lst.focus_visible
+    before = lst.delegate.paints
+    lst.setFocus(Qt.FocusReason.MouseFocusReason)               # back by a click: no ring, nothing to repaint
+    for _ in range(5):
+        QApplication.processEvents()
+    assert lst.hasFocus() and not lst.focus_visible
+    assert lst.delegate.paints == before, lst.delegate.paints - before
+
+
+def test_the_window_losing_focus_keeps_the_keyboards_ring_for_its_return(seeded):
+    """A learner using the keyboard who switches to another program and back finds his ring where it was: only
+    leaving for another widget forgets the keyboard (CSS's :focus-visible)."""
+    seed, win = seeded()
+    lst = current(win)
+    lst.setFocus(Qt.FocusReason.TabFocusReason)
+    QApplication.processEvents()
+    assert lst.focus_visible
+    QApplication.sendEvent(lst, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.ActiveWindowFocusReason))
+    assert lst.focus_visible
+    QApplication.sendEvent(lst, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.MouseFocusReason))
+    assert not lst.focus_visible
+
+
+def test_a_bullets_wrapped_words_hang_exactly_under_its_first_word(qapp, bubble):
+    """Review C-3: the hanging indent is the bullet and its space as the tip's font measures them, so a wrapped line
+    starts where the first word does (a fixed 11 px sat 2–4 px off at Medium)."""
+    from PyQt6.QtGui import QFontMetricsF
+    bubble.set_text("No video on disk\n• Link one for pictures and audio, or mine the text on its own")
+    bullet = list(_blocks(bubble._doc))[1]
+    expected = round(QFontMetricsF(bubble._doc.defaultFont()).horizontalAdvance("• "))
+    assert bullet.blockFormat().leftMargin() == expected
+    assert bullet.blockFormat().textIndent() == -expected
+
+
+def test_a_tip_that_starts_with_a_bullet_is_bulleted_too(qapp, bubble):
+    """Review C-4: a tip whose first line is a bullet hangs it like any other, rather than showing the raw text."""
+    bubble.set_text("• Link a video for pictures and audio")
+    first = list(_blocks(bubble._doc))[0]
+    assert first.text().startswith("•")
+    assert first.blockFormat().leftMargin() > 0 and first.blockFormat().textIndent() < 0
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+def test_the_header_and_tabs_stand_as_tall_as_the_mocks(qapp, window, size):
+    """Side-by-side V-4: the wordmark's line is the mock's (`line-height: 1.05`, not the font's ~1.33) and a tab's
+    padding is the mock's 10 / 9 px at every text size; the header was ~5 px and the tab bar ~3 px taller."""
+    import math
+    from PyQt6.QtGui import QFontMetrics
+    theme_name, _size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    try:
+        px, _weight = theme.font("wordmark", size)
+        assert window.wordmark.sizeHint().height() == math.ceil(px * 1.05)
+        tab = window.tab_buttons["current"]
+        assert tab.sizeHint().height() == 10 + QFontMetrics(tab.font()).height() + 9 + 2
+    finally:
+        style.apply(qapp, theme_name, "M", language)

@@ -18,6 +18,7 @@ the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
 import json
+import math
 import os
 import sys
 import traceback
@@ -150,8 +151,10 @@ class Wordmark(QWidget):
         return f
 
     def sizeHint(self):
+        """As wide as the name, as tall as the mock's line (`line-height: 1.05`, not the font's own ~1.33: V-4)."""
         fm = QFontMetrics(self._font())
-        return QSize(fm.horizontalAdvance("".join(strings.WORDMARK)) + 2, fm.height())
+        px, _weight = theme.font("wordmark", style.current()[1])
+        return QSize(fm.horizontalAdvance("".join(strings.WORDMARK)) + 2, math.ceil(px * 1.05))
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -245,7 +248,7 @@ class TabButton(QToolButton):
 
     def _pads(self):
         f = theme.text_factor(style.current()[1])
-        return round(10 * f), round(14 * f), round(9 * f), f      # the stylesheet's padding (`QToolButton#tab`)
+        return 10, 14, 9, f        # the stylesheet's padding (`QToolButton#tab`): the mock's, whatever the text size (V-4)
 
     def _count_font(self):
         font = self.font()

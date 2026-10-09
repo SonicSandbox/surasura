@@ -215,10 +215,10 @@ def run_screens(scale, out_dir):
             name = f"w22-{screen}-{theme_name}-{scale}.png"
             pix.save(os.path.join(out_dir, name))
             if screen == "current-open":             # an episode's No video tooltip: its action on its own line (T1)
-                ep = next(i for i, e in enumerate(lst.model().entries[amber][1].episodes) if e.missing)
+                ep = next(e for e in lst.model().entries[amber][1].episodes if e.missing)
                 parts = [pt for pt in lst.delegate.parts(lst.model().entries[amber], lst.visualRect(
-                    lst.model().index(amber, 0))) if pt[0] == "status"]
-                rect, tip = parts[1 + ep][1], parts[1 + ep][2]
+                    lst.model().index(amber, 0))) if pt[0] == "status" and pt[2] == ep.status.tip]
+                rect, tip = parts[-1][1], parts[-1][2]      # by its tip: not every episode has a status (H-1)
                 win.tooltips.request(lst.viewport(), rect, tip)
                 settle(5)
                 win.tooltips.bubble.grab().save(os.path.join(out_dir, f"w22-tooltip-{theme_name}-{scale}.png"))

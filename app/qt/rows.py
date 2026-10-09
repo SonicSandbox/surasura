@@ -695,7 +695,7 @@ class RowDelegate(QStyledItemDelegate):
             line = QRect(rect.left(), rect.top(), rect.width(), h)
             cols = self.columns(line, kind)
             st_rect, mk_rect = self._status_rects(payload, cols["stat"])
-            if kind == FINISHED:                       # Finished paints only Mining… / N in Anki, never the mark
+            if kind == FINISHED:                       # Finished: only Mining… / ✓ N (words in its tip), no mark
                 mk_rect = None
                 if payload.status is None or payload.status.kind not in ("in_anki", "mining"):
                     st_rect = None
@@ -776,8 +776,8 @@ class RowDelegate(QStyledItemDelegate):
         return out
 
     def _episode_cols(self, r):
-        """An episode's parts: the show row's own columns (`columns`, from the same right edge) at the episode's
-        height — % · new, the status and ▶ line up with the show's (G2.3 A1, A2)."""
+        """An episode's parts: a list row's columns (`columns`, from the same right edge) at the episode's height —
+        % · new, the status and ▶ line up with its show row's (G2.3 A1, A2); in the hero, with the rows under it."""
         cols = self.columns(r)
         acts, stat, diff = cols["acts"], cols["stat"], cols["diff"]
         play = self._play_rect(QRect(acts.left(), r.top(), acts.width(), r.height()))
@@ -1122,7 +1122,7 @@ class RowDelegate(QStyledItemDelegate):
                       c("ink-faint"), dpr=dpr)
         st_rect, mk_rect = self._status_rects(row, cols["stat"])
         if kind == FINISHED and row.status is not None and row.status.kind not in ("in_anki", "mining"):
-            st_rect = None                                  # Finished shows only Mining… / ✓ N in Anki
+            st_rect = None                                  # Finished shows only Mining… / ✓ N (words in its tip)
         if st_rect is not None:
             paint_pill(p, row.status, st_rect, dpr)
         if mk_rect is not None and kind == ROW:
@@ -1328,15 +1328,16 @@ class RowDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _watch_label(row):
-        """The hero's button's words: its verb (Watch / Listen / Read), *Online*, or *No video*."""
+        """The hero's button's words: its verb (Watch / Listen / Read), *Online*, or *No <its media word>* (No video)."""
         if row.episodes[row.next_index].can_play:
             return row.verb
-        return strings.ROWS_ONLINE_BUTTON if row.media == "youtube" else             strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
+        if row.media == "youtube":
+            return strings.ROWS_ONLINE_BUTTON
+        return strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
 
     def _paint_watch(self, p, r, row, nxt, dpr):
         f = fz()
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
-        word = row.media_word
         if nxt.can_play:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self._iris(rr))
@@ -1791,8 +1792,13 @@ class RowsView(QListView):
         event.accept()
 
     def focusOutEvent(self, event):
+        """The ring goes with the focus (that row alone repainted, and only if it showed one). Leaving for another
+        widget forgets the keyboard, as CSS's :focus-visible does; the window losing the focus keeps it, so the ring
+        comes back with the window."""
         if self.focus_visible:
             self._update_current()
+            if event.reason() != Qt.FocusReason.ActiveWindowFocusReason:
+                self.focus_visible = False
         event.accept()
 
     def _update_current(self):

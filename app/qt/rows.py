@@ -230,9 +230,22 @@ def icon(p, kind, rect, colour, width=1.6):
         p.drawRoundedRect(r.adjusted(w * 0.18, h * 0.08, -w * 0.18, -h * 0.08), 1.5, 1.5)
         p.drawLine(QPointF(x + w * 0.5, y + h * 0.32), QPointF(x + w * 0.5, y + h * 0.68))
         p.drawLine(QPointF(x + w * 0.32, y + h * 0.5), QPointF(x + w * 0.68, y + h * 0.5))
-    elif kind == "no_media":
-        p.drawEllipse(r.adjusted(w * 0.14, h * 0.14, -w * 0.14, -h * 0.14))
-        p.drawLine(QPointF(x + w * 0.2, y + h * 0.8), QPointF(x + w * 0.8, y + h * 0.2))
+    elif kind in ("no_media", "no_audio"):           # the mock's i-novid / i-noaud (16-unit box), struck through
+        u = w / 16
+        if kind == "no_media":
+            p.drawRoundedRect(QRectF(x + 1.8 * u, y + 4.3 * u, 8.8 * u, 7.4 * u), 1.5 * u, 1.5 * u)
+            shape = QPainterPath(QPointF(x + 10.6 * u, y + 7.2 * u))
+            for px_, py_ in ((14.2, 5.2), (14.2, 10.8), (10.6, 8.8)):
+                shape.lineTo(QPointF(x + px_ * u, y + py_ * u))
+        else:
+            shape = QPainterPath(QPointF(x + 2.5 * u, y + 6.2 * u))
+            for px_, py_ in ((4.9, 6.2), (8.2, 3.4), (8.2, 12.6), (4.9, 9.8), (2.5, 9.8)):
+                shape.lineTo(QPointF(x + px_ * u, y + py_ * u))
+            shape.closeSubpath()
+            shape.moveTo(QPointF(x + 11 * u, y + 6 * u))
+            shape.quadTo(QPointF(x + 12.2 * u, y + 7.6 * u), QPointF(x + 11.6 * u, y + 9.4 * u))
+        p.drawPath(shape)
+        p.drawLine(QPointF(x + 1.6 * u, y + 2.2 * u), QPointF(x + 14.4 * u, y + 13.8 * u))
     elif kind == "play":
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(colour)
@@ -269,8 +282,9 @@ def pill_size(status, dpr=1.0):
     return QSize(round(pad * 2 * f + 13 + 6 * f + w_text), round(theme.SIZES["status-pill"] * f))
 
 
-def paint_pill(p, status, rect, dpr=1.0):
-    """The one status pill (mock `stHTML`): its glyph, its label, its look by tone."""
+def paint_pill(p, status, rect, dpr=1.0, audio=False):
+    """The one status pill (mock `stHTML`): its glyph (No audio's a struck speaker, the others' a struck camera, as
+    the mock's `noIco`), its label, its look by tone."""
     f = fz()
     col = style.colours()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -308,13 +322,14 @@ def paint_pill(p, status, rect, dpr=1.0):
     pad = (8 if status.kind == "no_media" else 9) * f
     ic = QRectF(rect.x() + pad, rect.center().y() - 6.5, 13, 13)
     colour = style.qcolor(col[ink])
-    icon(p, STATUS_ICON.get(status.kind, "dot"), ic, colour)
+    kind = STATUS_ICON.get(status.kind, "dot")
+    icon(p, "no_audio" if audio and kind == "no_media" else kind, ic, colour)
     TEXT.draw(p, ic.right() + 6 * f, rect.center().y(), status.label, "status-pill", rect.right() - ic.right() - 6 * f,
               colour, dpr=dpr)
     p.restore()
 
 
-def paint_mark(p, mark, right, y_mid, dpr=1.0):
+def paint_mark(p, mark, right, y_mid, dpr=1.0, audio=False):
     """The on-disk mark (⌀ N) ending at `right`; -> its rect."""
     f = fz()
     col = style.colours()
@@ -324,7 +339,7 @@ def paint_mark(p, mark, right, y_mid, dpr=1.0):
     w = round(5 * f * 2 + 14 + (3 + w_text if label else 0))
     h = round(22 * f)
     rect = QRect(round(right - w), round(y_mid - h / 2), w, h)
-    icon(p, "no_media", QRectF(rect.x() + 5 * f, y_mid - 7, 14, 14), colour)
+    icon(p, "no_audio" if audio else "no_media", QRectF(rect.x() + 5 * f, y_mid - 7, 14, 14), colour)
     if label:
         TEXT.draw(p, rect.x() + 5 * f + 17, y_mid, label, "disk-mark", w_text + 2, colour, dpr=dpr)
     return rect
@@ -1013,6 +1028,7 @@ class RowDelegate(QStyledItemDelegate):
             head = round(theme.SIZES["row"] * fz())
         area = QRect(rect.left(), rect.top() + head + 1, rect.width(), 1 << 20)
         before = self.warmed
+        audio = row.media_word == "audio"
         if kind == ROW:
             # its open head first, as the click will show it — under the pointer, so hovered (an open row's hover
             # lights its head only), the body's whole height below it as `_paint_open_row` lays
@@ -1037,7 +1053,7 @@ class RowDelegate(QStyledItemDelegate):
                     break
                 w, h = r.width(), r.height()
                 self._sprite("ep", ep, r.size(), dpr, False,
-                             lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr),
+                             lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr, audio),
                              ident=(ep.id, kind == HERO), ground="surface" if kind == HERO else "bg")
                 if self.warmed != before:
                     return True
@@ -1124,9 +1140,9 @@ class RowDelegate(QStyledItemDelegate):
         if kind == FINISHED and row.status is not None and row.status.kind not in ("in_anki", "mining"):
             st_rect = None                                  # Finished shows only Mining… / ✓ N (words in its tip)
         if st_rect is not None:
-            paint_pill(p, row.status, st_rect, dpr)
+            paint_pill(p, row.status, st_rect, dpr, audio=row.media_word == "audio")
         if mk_rect is not None and kind == ROW:
-            paint_mark(p, row.mark, mk_rect.right() + 1, line.center().y(), dpr)
+            paint_mark(p, row.mark, mk_rect.right() + 1, line.center().y(), dpr, audio=row.media_word == "audio")
         if kind == ROW and (hovered or focused):
             self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
         if is_open and episodes:
@@ -1169,6 +1185,7 @@ class RowDelegate(QStyledItemDelegate):
 
     def _paint_episodes(self, p, row, area, dpr, hero=False, lines=()):
         f = fz()
+        audio = row.media_word == "audio"
         rows = self._episode_rows(row, area, hero)
         if not rows:
             return
@@ -1186,17 +1203,18 @@ class RowDelegate(QStyledItemDelegate):
             if clip is not None:                       # on screen: painted once into a pixmap, reused while unchanged
                 w, h = r.width(), r.height()
                 pix = self._sprite("ep", ep, r.size(), dpr, False,
-                                   lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr),
+                                   lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr,
+                                                                                  audio),
                                    ident=(ep.id, hero), ground="surface" if hero else "bg", to=(p, r.topLeft()))
                 if pix is not None:
                     p.drawPixmap(r.topLeft(), pix)
             else:
-                self._paint_episode(p, r, ep, dpr)
+                self._paint_episode(p, r, ep, dpr, audio)
         if split_at is not None:
             self._paint_line(p, lines_top(lines), split_at, dpr)
 
-    def _paint_episode(self, p, r, ep, dpr):
-        """One episode row (an open row's): its tick, label, numbers, status, mark and ▶."""
+    def _paint_episode(self, p, r, ep, dpr, audio=False):
+        """One episode row (an open row's): its tick, label, numbers, status, mark and ▶ (`audio`: its show's media)."""
         cols = self._episode_cols(r)
         tick = QRectF(cols["tick"])
         if ep.watched:
@@ -1216,10 +1234,10 @@ class RowDelegate(QStyledItemDelegate):
         if ep.status is not None:
             size = pill_size(ep.status, dpr)
             sr = QRect(right - size.width(), r.center().y() - size.height() // 2, size.width(), size.height())
-            paint_pill(p, ep.status, sr, dpr)
+            paint_pill(p, ep.status, sr, dpr, audio=audio)
             right = sr.left() - 4
         if ep.mark is not None:
-            paint_mark(p, ep.mark, right, r.center().y(), dpr)
+            paint_mark(p, ep.mark, right, r.center().y(), dpr, audio=audio)
         self._paint_play_button(p, cols["play"], ep.can_play)
 
     def _paint_open_hero(self, p, row, rect, lines, hovered, focused, dpr):
@@ -1296,7 +1314,7 @@ class RowDelegate(QStyledItemDelegate):
         # the side: ▶ Watch / No video, then the next episode's status
         self._paint_watch(p, g["play"], row, nxt, dpr)
         if nxt.status is not None:
-            paint_pill(p, nxt.status, g["status"], dpr)
+            paint_pill(p, nxt.status, g["status"], dpr, audio=row.media_word == "audio")
         if episodes and self.view.model().open_key == row.key:
             self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
 

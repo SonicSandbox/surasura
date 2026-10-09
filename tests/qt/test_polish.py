@@ -496,3 +496,32 @@ def test_the_header_and_tabs_stand_as_tall_as_the_mocks(qapp, window, size):
         assert tab.sizeHint().height() == 10 + QFontMetrics(tab.font()).height() + 9 + 2
     finally:
         style.apply(qapp, theme_name, "M", language)
+
+
+def test_no_video_is_a_struck_camera_and_no_audio_a_struck_speaker(qapp, monkeypatch):
+    """Side-by-side: the mock's No video glyph is a camera struck through (`i-novid`), an audio show's a speaker
+    (`i-noaud`, its `noIco`); the build drew ⌀ for both. The pill and the on-disk mark ask for the one their show's
+    media names."""
+    asked = []
+    real_icon = rows.icon
+    monkeypatch.setattr(rows, "icon", lambda p, kind, *a, **kw: (asked.append(kind), real_icon(p, kind, *a, **kw))[1])
+    status = view_rows.Status("no_media", "No audio", "No audio on disk", "warn")
+    mark = view_rows.Mark(2, "warn", "No audio on disk for Ep 1, Ep 2")
+    image = QImage(200, 40, QImage.Format.Format_RGB32)
+    image.fill(QColor(style.colours()["bg"]))
+    p = QPainter(image)
+    rows.paint_pill(p, status, QRect(4, 8, 120, 24), 1.0, audio=True)
+    rows.paint_mark(p, mark, 190, 20, 1.0, audio=True)
+    rows.paint_pill(p, status._replace(label="No video"), QRect(4, 8, 120, 24), 1.0)
+    rows.paint_mark(p, mark, 190, 20, 1.0)
+    p.end()
+    assert asked == ["no_audio", "no_audio", "no_media", "no_media"]
+    shapes = []
+    for kind in ("no_media", "no_audio"):
+        img = QImage(32, 32, QImage.Format.Format_RGB32)
+        img.fill(QColor("#000000"))
+        q = QPainter(img)
+        real_icon(q, kind, QRect(0, 0, 32, 32), QColor("#ffffff"))
+        q.end()
+        shapes.append(rgb_array(img))
+    assert (shapes[0] != shapes[1]).any(), "the two glyphs must differ"

@@ -209,7 +209,7 @@ def child(rounds):
             results["active"] = QApplication.activeWindow() is window
             if not results["active"] and motion._lifted():
                 motion._in_front = lambda top: True
-            results["in_front_forced"] = not results["active"]
+            results["in_front_forced"] = not results["active"] and motion._lifted()
             window.bar_dot.set_running(True)
             meter.discard_current()
             run()

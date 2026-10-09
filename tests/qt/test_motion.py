@@ -766,9 +766,9 @@ def test_each_lifted_frame_repaints_nothing_not_the_window_nor_what_is_under_it(
     calls = []
 
     def counted(name, real):
-        def wrapper(self):
+        def wrapper(self, *a):
             calls.append(name)
-            return real(self)
+            return real(self, *a)
         return wrapper
 
     monkeypatch.setattr(motion._Lift, "paint", counted("paint", motion._Lift.paint))
@@ -1066,7 +1066,7 @@ def test_a_lift_whose_opening_has_ended_paints_nothing_until_it_is_given_back(cl
     lift = opening.lift
     drawn = []
     draw = motion.OverlayOpening._draw
-    monkeypatch.setattr(motion.OverlayOpening, "_draw", lambda self, p: (drawn.append(self), draw(self, p))[1])
+    monkeypatch.setattr(motion.OverlayOpening, "_draw", lambda self, p, **k: (drawn.append(self), draw(self, p, **k))[1])
     clock.advance(120)                                           # mid-opening: a repaint draws its picture
     lift.paint()
     assert drawn == [opening]
@@ -1088,15 +1088,15 @@ def test_a_lift_is_painted_and_flushed_while_hidden_so_its_show_is_only_a_show(c
     for name in ("paint", "flush"):
         real = getattr(motion._Lift, name)
         monkeypatch.setattr(motion._Lift, name,
-                            lambda self, real=real, name=name: (calls.append((name, self.isVisible())), real(self))[1])
+                            lambda self, *a, real=real, name=name: (calls.append((name, self.isVisible())), real(self, *a))[1])
     card1 = Card(stage, "up")
     o1 = card1.open()
     assert wait_until(lambda: o1._pieces is None, 2)
     lift = o1.lift
     QTest.qWait(60)                                              # the show's expose, and anything it would ask for
-    assert lift.isVisible() and calls == [("paint", False), ("flush", False)]
+    assert lift.isVisible() and calls == [("paint", False), ("paint", False), ("flush", False)]   # under, over
     lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # exposed again, nothing changed
-    assert calls == [("paint", False), ("flush", False)]
+    assert calls == [("paint", False), ("paint", False), ("flush", False)]
     calls.clear()
     lift.resize(lift.width() + 8, lift.height())                 # a screen change gave it a new size
     lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))
@@ -1111,7 +1111,7 @@ def test_a_lift_is_painted_and_flushed_while_hidden_so_its_show_is_only_a_show(c
     assert wait_until(lambda: o2._pieces is None, 2)
     assert o2.lift is lift and lift.isVisible()
     QTest.qWait(60)
-    assert calls == [("paint", False), ("flush", False)]
+    assert calls == [("paint", False), ("paint", False), ("flush", False)]
     assert lift.store.size() == lift.size() == o2._size          # its store painted at the new size
 
 
@@ -1128,7 +1128,7 @@ def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypa
     for name in ("paint", "flush"):
         real = getattr(motion._Lift, name)
         monkeypatch.setattr(motion._Lift, name,
-                            lambda self, real=real, name=name: (calls.append((name, self.isVisible())), real(self))[1])
+                            lambda self, *a, real=real, name=name: (calls.append((name, self.isVisible())), real(self, *a))[1])
     lift.resize(lift.width() + 8, lift.height())
     lift.exposeEvent(QExposeEvent(QRegion(QRect(QPoint(), lift.size()))))   # shown, a new size: repaints
     assert calls == [("paint", True), ("flush", True)]
@@ -1138,27 +1138,6 @@ def test_a_hidden_lift_paints_and_flushes_nothing(clock, stage, lifted, monkeypa
     assert lift.opening is None and not lift.isExposed()
     lift.exposeEvent(QExposeEvent(QRegion()))                    # and one more while hidden
     assert [c for c in calls if not c[1]] == []                  # nothing painted or flushed while hidden
-
-
-@pytest.mark.parametrize("opaque", [True, False])
-def test_a_lift_clears_only_what_its_opaque_snapshot_will_not_cover(clock, stage, lifted, monkeypatch, opaque):
-    # why (S19, M2.1-3): clearing a scrim's whole see-through store was ~1 ms of the paint piece at 150 %; an overlay
-    # that paints its whole background covers its own rect (inside the corners) with opaque pixels, so only the rest —
-    # its shadow, its corners — is cleared. One that doesn't (a translucent toast) is cleared whole.
-    regions = []
-
-    class Recording(motion.QBackingStore):
-        def beginPaint(self, region):
-            regions.append(QRegion(region))
-            return super().beginPaint(region)
-    monkeypatch.setattr(motion, "QBackingStore", Recording)
-    card = Card(stage, "up")
-    card.setAutoFillBackground(opaque)
-    opening = card.open()
-    assert opening.lift is not None and len(regions) == 1
-    r = QRect(opening.target_in_picture, opening.widget_size)
-    assert regions[0].contains(QPoint(0, 0)) and regions[0].contains(r.topLeft())   # a corner: cleared
-    assert regions[0].contains(r.center()) is not opaque         # the middle: left to the snapshot when opaque
 
 
 def test_no_more_than_the_kept_number_of_lifts_stay(clock, stage, lifted):
@@ -1188,7 +1167,7 @@ def _passes(opening):
     """Run the loop until the opening is ready (moving or ended); -> the loop pass each piece ran in, by name."""
     from tests.qt.conftest import wait_until
     seen, n = {}, [0]
-    for name in ("_snapshot", "_picture", "_lift_place", "_lift_paint", "_lift_flush", "_go"):
+    for name in ("_snapshot", "_picture", "_lift_place", "_lift_paint", "_lift_paint_over", "_lift_flush", "_go"):
         fn = getattr(opening, name)
         setattr(opening, name, lambda fn=fn, name=name: (seen.__setitem__(name, n[0]), fn())[1])
     opening._pieces = type(opening._pieces)(getattr(opening, f.__name__) for f in opening._pieces)
@@ -1217,15 +1196,17 @@ def test_a_split_opening_is_prepared_in_three_passes_of_the_loop_then_moves(cloc
     assert card.isVisible() and motion.opening_of(card) is None and not _filters_left(opening)
 
 
-def test_a_split_lifted_opening_is_five_pieces_and_shows_its_window_only_in_the_last(clock, stage, split, lifted):
+def test_a_split_lifted_opening_is_six_pieces_and_shows_its_window_only_in_the_last(clock, stage, split, lifted):
     # why (M2.1-3): the lift's paint, its flush and its show each cost up to 3-4 ms at 150 % (a scrim: the whole window);
-    # in one pass they made 8 ms. Each in a pass of its own; nothing composed (the lift paints the two itself).
+    # in one pass they made 8 ms, and its paint alone 3.5-4.5. Each in a pass of its own — the paint as two: the store
+    # cleared with the shadow, then the snapshot over it; nothing composed (the lift paints the two itself).
     card = Card(stage, "slide")
     opening = card.open()
     assert opening.lift is None
     seen = _passes(opening)
-    assert list(seen) == ["_snapshot", "_lift_place", "_lift_paint", "_lift_flush", "_go"]
-    assert seen["_snapshot"] < seen["_lift_place"] < seen["_lift_paint"] < seen["_lift_flush"] < seen["_go"]
+    assert list(seen) == ["_snapshot", "_lift_place", "_lift_paint", "_lift_paint_over", "_lift_flush", "_go"]
+    assert (seen["_snapshot"] < seen["_lift_place"] < seen["_lift_paint"] < seen["_lift_paint_over"]
+            < seen["_lift_flush"] < seen["_go"])
     assert opening.picture is None
     assert opening.lift is not None and opening.lift.isVisible() and opening.lift.opacity() == 0.0
     clock.advance(400)
@@ -1240,7 +1221,7 @@ def test_split_pieces_wait_the_gap_between_their_passes(clock, stage, split, mon
     card = Card(stage, "up")
     opening = card.open()
     stamps = {}
-    for name in ("_snapshot", "_picture", "_lift_place", "_lift_paint", "_lift_flush", "_go"):
+    for name in ("_snapshot", "_picture", "_lift_place", "_lift_paint", "_lift_paint_over", "_lift_flush", "_go"):
         fn = getattr(opening, name)
         setattr(opening, name, lambda fn=fn, name=name: (stamps.__setitem__(name, time.perf_counter()), fn())[1])
     opening._pieces = type(opening._pieces)(getattr(opening, f.__name__) for f in opening._pieces)

@@ -439,12 +439,12 @@ def _in_front(top):
 
 
 # How an in-window overlay's opening is prepared (M2.1-1, Sonic 2026-10-08: "Split it as you said"): in pieces — the
-# overlay drawn (its snapshot); for the ghost, its shadow added (the picture); for a lift, its window placed, the shadow
-# and the snapshot painted into its backing store, that picture handed to Windows while it is hidden (M2.1-3); the
-# picture shown and the motion started — each in a pass of the GUI thread's loop of its own, the thread waiting
-# PIECE_GAP_MS between them (input and paints come in between), instead of one step of 4-10 ms on this desktop (perhaps
-# 10-25 ms on the laptop). The motion starts a few ms later. None = split on real time, one step on a test's time (a test
-# reads the opening at once); True / False = force.
+# overlay drawn (its snapshot); for the ghost, its shadow added (the picture); for a lift, its window placed, its
+# backing store cleared with the shadow drawn, the snapshot drawn over it, that picture handed to Windows while it is
+# hidden (M2.1-3); the picture shown and the motion started — each in a pass of the GUI thread's loop of its own, the
+# thread waiting PIECE_GAP_MS between them (input and paints come in between), instead of one step of 4-10 ms on this
+# desktop (perhaps 10-25 ms on the laptop). The motion starts a few ms later. None = split on real time, one step on a
+# test's time (a test reads the opening at once); True / False = force.
 SPLIT = None
 PIECE_GAP_MS = 1
 
@@ -480,31 +480,35 @@ class _Lift(QWindow):
         self._painted = None                       # what its store holds (`_state`), None: nothing yet
         self._flushed = False                      # and that picture handed to Windows
 
-    def paint(self):
-        """Its picture drawn into its backing store (nothing reaches the screen): the shadow and the snapshot — or
-        nothing, resting in the pool or once its opening has ended (its overlay is shown under it and may be gone:
-        review H4)."""
+    def prepare(self):
+        """Its native window made (once) and owned by its window: the first of its pieces, before any paint."""
         self.setTransientParent(self.owner.windowHandle())   # above its window, owned by it
         self.create()
+
+    def paint(self, part=None):
+        """Its picture drawn into its backing store (nothing reaches the screen): the shadow and the snapshot — or
+        nothing, resting in the pool or once its opening has ended (its overlay is shown under it and may be gone:
+        review H4). `part`: "under" — the store cleared and the shadow drawn; "over" — the snapshot drawn onto it,
+        nothing cleared: an opening's two paint pieces (a scrim's whole window cleared and drawn was one 3.5-4.5 ms
+        pass at 150 %); None — both at once (an expose)."""
+        self.prepare()
         size = self.size()
-        self.store.resize(size)
-        o = self.opening
-        live = o is not None and o.pixmap is not None and not o.ended
-        clear = QRegion(QRect(QPoint(), size))
-        inner = o._opaque(QRect(o.target_in_picture, o.widget_size)) if live else None
-        if inner is not None:                      # only what the opaque snapshot won't cover is cleared (S19: a
-            clear = clear.subtracted(QRegion(inner.toRect()))   # scrim's whole window was ~1 ms of clearing at 150 %)
-        self.store.beginPaint(clear)               # (a see-through store clears the region it is given)
+        if part != "over":
+            self.store.resize(size)
+        # (a see-through store clears the region it is given: the whole picture, or nothing when only drawing over it)
+        self.store.beginPaint(QRegion(QRect(QPoint(), size)) if part != "over" else QRegion())
         try:
-            if live:
+            o = self.opening
+            if o is not None and o.pixmap is not None and not o.ended:
                 p = QPainter(self.store.paintDevice())
                 try:
-                    o._draw(p)
+                    o._draw(p, shadow=part != "over", snapshot=part != "under")
                 finally:
                     p.end()
         finally:
             self.store.endPaint()                  # (a draw's error leaves no paint open on a kept lift)
-        self._painted, self._flushed = self._state(), False
+        if part != "under":
+            self._painted, self._flushed = self._state(), False
 
     def _state(self):
         """What its picture shows: its opening (None once ended or resting), its size and device-pixel ratio."""
@@ -665,7 +669,8 @@ class OverlayOpening:
         self._finisher = _InputFinisher(self)      # a key or a press while it is prepared shows it at once
         QApplication.instance().installEventFilter(self._finisher)
         self._lifts = _lifted()
-        self._pieces = deque((self._snapshot, self._lift_place, self._lift_paint, self._lift_flush, self._go)
+        self._pieces = deque((self._snapshot, self._lift_place, self._lift_paint, self._lift_paint_over,
+                              self._lift_flush, self._go)
                              if self._lifts else (self._snapshot, self._picture, self._go))
         if _split():
             self._next_piece()
@@ -743,13 +748,18 @@ class OverlayOpening:
         self.lift = _take_lift(self, self._top)
         self.lift.setGeometry(QRect(self._lift_at + self.delta, self._size))
         self.lift.setOpacity(0.0)
+        self.lift.prepare()                        # (a new lift's native window is made here, not in a paint piece)
 
     def _lift_paint(self):
-        """The third: the shadow and the snapshot drawn into the lift's backing store (nothing on screen yet)."""
-        self.lift.paint()
+        """The third: the lift's backing store cleared and the shadow drawn into it (nothing on screen yet)."""
+        self.lift.paint("under")
+
+    def _lift_paint_over(self):
+        """The fourth: the snapshot drawn over the shadow."""
+        self.lift.paint("over")
 
     def _lift_flush(self):
-        """The fourth: the picture handed to Windows while the lift is hidden, so its show is only a show."""
+        """The fifth: the picture handed to Windows while the lift is hidden, so its show is only a show."""
         self.lift.flush()
 
     def _go(self):
@@ -810,13 +820,14 @@ class OverlayOpening:
         p.end()
         return pic
 
-    def _draw(self, p):
+    def _draw(self, p, shadow=True, snapshot=True):
         """The shadow and the snapshot at their place in the picture (into the ghost's picture, or the lift's window)."""
         r = QRect(self.target_in_picture, self.widget_size)
-        if self.shadow_name:
-            from app.qt import shadow
-            shadow.paint(p, QRectF(r), self.shadow_name, covered=self._opaque(r))
-        p.drawPixmap(r.topLeft(), self.pixmap)
+        if shadow and self.shadow_name:
+            from app.qt import shadow as shadows
+            shadows.paint(p, QRectF(r), self.shadow_name, covered=self._opaque(r))
+        if snapshot:
+            p.drawPixmap(r.topLeft(), self.pixmap)
 
     def _opaque(self, r):
         """The part of the snapshot that is surely opaque (a slice of the shadow wholly under it is never seen): the

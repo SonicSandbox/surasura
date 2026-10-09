@@ -108,7 +108,7 @@ def test_a_read_that_finds_nothing_new_writes_neither_the_record_nor_known_word_
 
     result = _read()                         # same cards, nothing new
 
-    assert result == {"marked": [], "offered": 0, "skipped": None}
+    assert (result["marked"], result["offered"], result["skipped"]) == ([], 0, None)
     assert (_stamp(record), _stamp(known_file)) == before
 
 

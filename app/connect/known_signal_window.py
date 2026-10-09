@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk
 
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
-SHOWN_MAX = 30              # words listed; the rest are counted
+SHOWN_MAX = 30              # words listed a heading; the rest are counted, and listed the next time (adversary B #9)
 
 
 def _since(marked):
@@ -20,18 +20,39 @@ def _since(marked):
     return first.replace("T", " ")[:16] if first else "your last sync"
 
 
-def show(parent, language, url, tooltip, offer=None, marked=None):
-    """The window, or None when there is nothing to say. `tooltip(widget, text)`: the app's ToolTip."""
+def view(language, with_offer=True):
+    """What the window shows, read from the record — on a worker, never the screen's thread (intent keeper P2.4-B #4)
+    -> {"marked", "taken", "offer", "terms"}, or None when the record can't be read (left as it is, review B #17).
+    `with_offer`: False once this dashboard session has shown the pending offer (shown until answered, once a
+    session: intent keeper P2.4-B #5, #10)."""
     from app.connect import known_signal
     try:
-        marked = known_signal.unshown(language) if marked is None else marked
-        if offer is None:
-            offer = (known_signal.load(language).get("offer") or {})
-    except known_signal.Unreadable as e:     # left as it is (review B #17): nothing to show
+        state = known_signal.load(language)
+    except known_signal.Unreadable as e:
         print(e)
         return None
+    live = [m for m in state.get("marked") or () if not m.get("shown") and not m.get("undone")]
+    return {"marked": [m for m in live if m.get("why") != "offer"], "taken": [m for m in live if m.get("why") == "offer"],
+            "offer": (state.get("offer") or {}) if with_offer else {}, "terms": state.get("terms") or ["suspended"]}
+
+
+def show(parent, language, url, tooltip, offer=None, marked=None, taken=None, terms=None):
+    """The window, or None when there is nothing to say. `tooltip(widget, text)`: the app's ToolTip. `marked`: the
+    words your signal marked; `taken`: the offer's words you accepted (each with Undo too: adversary B #9); `offer`:
+    the record's pending offer. The app hands them in from `view` (read on its worker); one not handed in is read
+    here (tests)."""
+    from app.connect import known_signal
+    if marked is None or offer is None or taken is None:
+        seen = view(language)
+        if seen is None:
+            return None
+        marked = seen["marked"] if marked is None else marked
+        taken = seen["taken"] if taken is None else taken
+        offer = seen["offer"] if offer is None else offer
+        terms = terms or seen["terms"]
+    terms = terms or ["suspended"]
     pending = offer.get("state") == "pending" and offer.get("cards")
-    if not marked and not pending:
+    if not marked and not taken and not pending:
         return None
     win = tk.Toplevel(parent)
     win.title("Known from Anki")
@@ -55,11 +76,13 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
             win.after(0, lambda: then(out))
         threading.Thread(target=run, daemon=True).start()
 
-    if marked:
-        words = list(dict.fromkeys(m["word"] for m in marked))
-        ttk.Label(frame, text=f"You suspended {len(marked)} cards since {_since(marked)} — marked known",
-                  style="KS.Head.TLabel").pack(anchor=tk.W, pady=(0, 6))
+    listed = set()
+
+    def words_with_undo(entries, head):
+        words = list(dict.fromkeys(m["word"] for m in entries))
+        ttk.Label(frame, text=head, style="KS.Head.TLabel").pack(anchor=tk.W, pady=(0, 6))
         for word in words[:SHOWN_MAX]:
+            listed.add(word)
             row = ttk.Frame(frame, style="KS.TFrame")
             row.pack(fill=tk.X, pady=2)
             ttk.Label(row, text=word, style="KS.TLabel").pack(side=tk.LEFT)
@@ -76,13 +99,23 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
                         s.config(text="Couldn't undo: " + str(out))
                         b.config(state=tk.NORMAL)       # try again (review B #13)
                     else:
-                        s.config(text="Undone: back in your reviews")
+                        s.config(text="Undone: back in your reviews" if out.get("unsuspended") else "Undone")
                 worker(lambda: known_signal.undo(language, w, url), done)
             button.config(command=undo)
-            tooltip(button, f"Take {word} off your known words and un-suspend its card in Anki, so it comes back to "
-                            "your reviews.")
+            tooltip(button, f"Take {word} off your known words"
+                            + (" and un-suspend its card in Anki, so it comes back to your reviews."
+                               if "suspended" in terms else "."))
         if len(words) > SHOWN_MAX:
-            ttk.Label(frame, text=f"… and {len(words) - SHOWN_MAX} more", style="KS.TLabel").pack(anchor=tk.W)
+            ttk.Label(frame, text=f"… and {len(words) - SHOWN_MAX} more, listed here next time",
+                      style="KS.TLabel").pack(anchor=tk.W)
+
+    if marked:
+        head = (f"You suspended {len(marked)} cards" if "suspended" in terms
+                else f"{len(marked)} cards took your Known-from-Anki mark")
+        words_with_undo(marked, f"{head} since {_since(marked)} — marked known")
+    if taken:
+        words_with_undo(taken, f"{len(set(m['word'] for m in taken))} words from the cards already suspended — "
+                               "marked known as you asked")
 
     if pending:
         cards = offer["cards"]
@@ -102,7 +135,8 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
         yes.config(command=lambda: worker(lambda: known_signal.accept_offer(language, url),
                                           lambda out: answered(("Couldn't mark them: " + str(out))
                                                                if isinstance(out, Exception)
-                                                               else f"{len(out)} words marked known")))
+                                                               else f"{len(out)} words marked known: each "
+                                                               "with Undo here next time")))
         no.config(command=lambda: worker(lambda: known_signal.decline_offer(language),
                                          lambda out: answered(("Couldn't answer: " + str(out))
                                                               if isinstance(out, Exception) else "Left as they are")))
@@ -114,5 +148,6 @@ def show(parent, language, url, tooltip, offer=None, marked=None):
     close = ttk.Button(frame, text="Close", style="KS.TButton", command=win.destroy)
     close.pack(anchor=tk.E, pady=(10, 0))
     tooltip(close, "Close this window (Esc).")
-    known_signal.mark_shown(language)
+    if listed:      # on a worker: a save never runs on the screen's thread (intent keeper P2.4-B #4)
+        threading.Thread(target=known_signal.mark_shown, args=(language, set(listed)), daemon=True).start()
     return win

@@ -39,6 +39,13 @@ class FakeAnki:
     def remove_tag(self, note_ids, tag):
         self.tag_removals.append((list(note_ids), tag))
 
+    def find_cards(self, query):
+        """No other card of these notes is left on the shelf (the sibling rule's read; its own test is elsewhere)."""
+        return []
+
+    def cards_info(self, ids):
+        return []
+
 
 @pytest.fixture
 def ledger(tmp_path):

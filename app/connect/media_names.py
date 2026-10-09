@@ -12,8 +12,9 @@ the mining step** (every batch's notes; a job that ends skipped or failed too), 
   episodes with the same sentence text get two names. **The fingerprint**: the store's `line_fingerprint` where it has
   one (3.0), else a hash of the line's text.
 - **One file per line**: the first note of a line gives its file under the new name (`retrieveMediaFile` →
-  `storeMediaFile`); every note of the line is pointed at it (`updateNoteFields`), and each old name is deleted once no
-  note uses it. **A name already in Anki is reused**, never uploaded again — a card made again for the same line (the
+  `storeMediaFile`); every note of the line is pointed at it (`updateNoteFields`), and its old names are deleted right
+  after, once no note uses them — so a rename stopped half-way leaves no old file behind for the notes it pointed
+  (adversary B #15; only a kill between a note's pointing and its deletes can). **A name already in Anki is reused**, never uploaded again — a card made again for the same line (the
   shelf's swap back, a deleted card made again on request) costs no upload.
 - **Killed half-way**: run again, it finishes (the field mapping read back from the job's settings export) — a note already pointing at the new name is left; one still on its old
   name whose new file exists is pointed at it; no note ever points at a file that isn't there.
@@ -111,7 +112,6 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
     with media.writer("Connect's media names"):     # held from the first read (review B #25)
         by_id = {n.get("noteId"): n for n in media.notes([m[0] for m in made])}
         seen = set()                    # new names stored (or found) in this call
-        old_names = set()
         for note_id, start, end, text in made:
             note = by_id.get(note_id)
             if note is None:
@@ -119,7 +119,7 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
             if media.reviewing():       # asked before each note's writes (K88, review B #6): resumed next look
                 raise Reviewing()
             print_ = (fingerprints or {}).get((start, end)) or fingerprint(text)
-            fields = {}
+            fields, old_names = {}, set()
             for field, pattern in ((audio_field, _SOUND), (picture_field, _IMG)):
                 if not field:
                     continue
@@ -143,10 +143,8 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
             if fields:
                 media.point(note_id, fields)
                 out["renamed"] += 1
-        if old_names and media.reviewing():
-            raise Reviewing()
-        for old in sorted(old_names):
-            if not media.users(old):
-                media.delete(old)
-                out["deleted"] += 1
+            for old in sorted(old_names):       # this note's old names, now no note's (another may share one)
+                if not media.users(old):
+                    media.delete(old)
+                    out["deleted"] += 1
     return out

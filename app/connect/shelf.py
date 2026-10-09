@@ -18,8 +18,12 @@
   only that; from a finished or dropped show → also marked for 3.1's rewrite (Swap, P6.1), with the journey item that
   holds the word now (the ledger's `rewrites`). No media is removed here.
 - **A shelved card you un-suspended in Anki** → its shelf tag taken off; it counts as waiting again.
-- **The restore point**: every shelving is recorded in Connect's ledger (`shelf`, its run id); `restore(run)` puts
-  every card of a run back (un-suspended, tag off) — the cards still suspended by the shelf only.
+- **The restore point**: every shelving is recorded in Connect's ledger (`shelf`, its run id) before Anki is
+  written (adversary B #12); `restore(run)` puts every card of a run back (un-suspended, tag off) — the cards still
+  suspended by the shelf only. **No 2.x window offers `restore` or `shelve_item` yet**: 3.0's window (Mado) does
+  (adversary B #14); until then they are Connect's own and the tests'.
+- **The tag is the note's**: taking a card off the shelf (the swap-in, a restore, a card you un-suspended) leaves
+  the tag on a note whose other card is still shelved (review B #10, adversary B #13).
 
 Every write holds Anki's write lock (`anki-writer`, Junban's writer) and asks `guiReviewActive` first (K88). Pure apart
 from the `Anki` adapter it is handed (`AnkiConnectAnki` for the real one; tests hand a fake), the ledger and the
@@ -82,21 +86,28 @@ class Card:
         return f"Card({self.card_id}, {self.word}, rank {self.rank})"
 
 
-def plan(waiting, needed_ranks, cap, count, pinned_items=()):
+def plan(waiting, needed_ranks, cap, count, pinned_items=(), top_words=(), finished_items=()):
     """Which waiting cards go to the shelf -> [Card], lowest first; [] on a small gap.
 
     `waiting`: Connect's waiting cards (each with its rank); `needed_ranks`: the list places of the words the next
     batch makes; `count`: how many wait now. A card is *behind* when it ranks behind every needed word; a pinned
-    item's cards never are. The gap is big at `gap_needed(cap)` cards behind; then the lowest are shelved, as many as
-    make room for the batch (count + its words − cap), never more than rank behind."""
+    item's cards never are, nor a card whose word one of the top 20 holds (`top_words`: the swap-in would bring it
+    straight back — row 2.4.11's "the top 20's words", adversary B #5). A finished or gone show's cards
+    (`finished_items`) are candidates whatever their rank, and go first (✅ N7: "the shelf's first candidates";
+    intent keeper P2.4-B #6: in 3.0 Finished marks no word known, so rank alone would not put them first). The gap is
+    big at `gap_needed(cap)` candidates; then they are shelved, finished first and then the lowest, as many as make
+    room for the batch (count + its words − cap), never more than are candidates."""
     if not needed_ranks:
         return []
     worst = max(needed_ranks)
     pinned = set(pinned_items or ())
-    behind = [c for c in waiting if c.rank > worst and c.item_id not in pinned and c.word is not None]
+    top = set(top_words or ())
+    done = set(finished_items or ())
+    behind = [c for c in waiting if (c.rank > worst or c.item_id in done) and c.item_id not in pinned
+              and c.word is not None and c.word not in top]
     if len(behind) < gap_needed(cap):
         return []
-    behind.sort(key=lambda c: (-c.rank, -c.card_id))
+    behind.sort(key=lambda c: (c.item_id not in done, -c.rank, -c.card_id))
     room = max(0, int(count) + len(needed_ranks) - int(cap))
     return behind[:room]
 
@@ -186,24 +197,43 @@ def cards(anki, query, made):
 
 def shelve(anki, ledger, language, chosen, why, run=None):
     """Suspend `chosen` (cards) and tag their notes `surasura::shelf`, holding Anki's writer, asked first whether
-    you're reviewing; each recorded in the ledger under `run` (the restore point) -> the run id. The tag goes on
-    first: a suspend Anki doesn't take leaves a tagged waiting card (`tidy` takes the tag off), never a suspended card
-    without the tag, which would read as yours (review B #8). A write Anki doesn't take raises; nothing recorded."""
+    you're reviewing; each recorded in the ledger under `run` (the restore point) -> the run id. The rows go in first,
+    so a kill half-way still leaves a restore point (`restore` touches only cards the shelf holds suspended; adversary
+    B #12); a write Anki doesn't take raises and takes the rows out again. The tag goes on before the suspend: a
+    suspend Anki doesn't take leaves a tagged waiting card (`tidy` takes the tag off), never a suspended card without
+    the tag, which would read as yours (review B #8)."""
     if not chosen:
         return None
     run = run or datetime.datetime.now().strftime("shelf-%Y%m%d-%H%M%S-%f")
     with anki.writer("Connect's shelf"):
         if anki.reviewing():
             raise Reviewing()
-        anki.add_tag(sorted({c.note_id for c in chosen}), SHELF_TAG)
-        anki.suspend([c.card_id for c in chosen])
-    now = _now()
-    with ledger.transaction():
-        ensure(ledger)
-        ledger.conn.executemany("INSERT OR REPLACE INTO shelf (card_id, note_id, language, item_id, word, run, why, "
-                                "shelved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                [(c.card_id, c.note_id, language, c.item_id, c.word, run, why, now) for c in chosen])
+        now = _now()
+        with ledger.transaction():
+            ensure(ledger)
+            ledger.conn.executemany("INSERT OR REPLACE INTO shelf (card_id, note_id, language, item_id, word, run, "
+                                    "why, shelved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [(c.card_id, c.note_id, language, c.item_id, c.word, run, why, now)
+                                     for c in chosen])
+        try:
+            anki.add_tag(sorted({c.note_id for c in chosen}), SHELF_TAG)
+            anki.suspend([c.card_id for c in chosen])
+        except Exception:
+            with ledger.transaction():
+                ledger.conn.execute("DELETE FROM shelf WHERE run = ?", (run,))
+            raise
     return run
+
+
+def _untag(anki, cards_back):
+    """The shelf tag taken off the notes of `cards_back` (cards just un-suspended), but a note with another card still
+    suspended on the shelf keeps it (review B #10, adversary B #13)."""
+    back = {c for c, _n in cards_back}
+    still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended")) - back
+    kept = {info.get("note") for info in anki.cards_info(sorted(still))} if still else set()
+    notes = sorted({n for _c, n in cards_back} - kept)
+    if notes:
+        anki.remove_tag(notes, SHELF_TAG)
 
 
 def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=None):
@@ -216,7 +246,7 @@ def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=
         if anki.reviewing():
             raise Reviewing()
         anki.unsuspend([c.card_id for c in back])
-        anki.remove_tag(sorted({c.note_id for c in back}), SHELF_TAG)
+        _untag(anki, [(c.card_id, c.note_id) for c in back])
     now, finished, rewrite = _now(), set(finished_items or ()), []
     with ledger.transaction():
         ensure(ledger)
@@ -255,7 +285,8 @@ def tidy(anki, ledger):
 
 
 def restore(anki, ledger, run):
-    """The restore point: every card shelved in `run` still suspended by the shelf goes back -> how many."""
+    """The restore point: every card shelved in `run` still suspended by the shelf goes back -> how many. No 2.x
+    window calls it yet (3.0's does: adversary B #14)."""
     ensure(ledger)
     rows = ledger.conn.execute("SELECT card_id, note_id FROM shelf WHERE run = ? AND back_at IS NULL",
                                (run,)).fetchall()
@@ -268,7 +299,7 @@ def restore(anki, ledger, run):
             raise Reviewing()
         if cards_back:
             anki.unsuspend(cards_back)
-            anki.remove_tag(sorted({n for c, n in rows if c in still}), SHELF_TAG)
+            _untag(anki, [(c, n) for c, n in rows if c in still])
     now = _now()
     with ledger.transaction():
         ledger.conn.executemany("UPDATE shelf SET back_at = ? WHERE card_id = ? AND run = ?",
@@ -340,7 +371,7 @@ def gone_notes(anki, ids, chunk=GONE_CHUNK):
 
 def shelve_item(anki, ledger, store, language, item_id):
     """A finished show's "remove" (✅ N7): its never-seen Connect cards (new, not suspended) shelved now, undoable —
-    never deleted -> the run id, or None when it had none."""
+    never deleted -> the run id, or None when it had none. No 2.x window calls it yet (3.0's does: adversary B #14)."""
     made = {n: v for n, v in made_notes(store).items() if v[0] == item_id}
     chosen = cards(anki, WAITING_QUERY, made)
     return shelve(anki, ledger, language, chosen, f"removed: item {item_id}")

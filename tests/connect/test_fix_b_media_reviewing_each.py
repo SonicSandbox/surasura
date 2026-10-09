@@ -78,8 +78,9 @@ def word_note(note_id, word, start_stamp):
 
 def test_review_starting_between_two_notes_stops_before_the_second_is_pointed():
     """Review starts after the first note is pointed: `rename` raises Reviewing before it points the second note,
-    and it deletes no old name. Why it matters: a note pointed under review changes a card the learner is looking
-    at, and the deletions must wait until every note of the batch is named."""
+    and deletes only the first note's old names (each note's right after it is pointed: an interrupted rename leaves
+    no old file behind, adversary B #15). Why it matters: a note pointed under review changes a card the learner is
+    looking at."""
     note_a, files_a = word_note(1, "上層部", "83520")
     note_b, files_b = word_note(2, "溜め息", "120000")
     files = {**files_a, **files_b}
@@ -94,5 +95,5 @@ def test_review_starting_between_two_notes_stops_before_the_second_is_pointed():
     assert media.points == [1], "only the first note is pointed; review stops the rename before the second"
     assert media.note_map[2]["fields"]["SentenceAudio"]["value"] == second_before, \
         "the second note keeps its own audio name"
-    assert media.deleted == [], "no old name is deleted while the batch is unfinished"
+    assert sorted(media.deleted) == sorted(files_a), "the pointed note's old names go now, never the second's"
     assert all(name in media.files for name in files_b), "the second note's old files are still there"

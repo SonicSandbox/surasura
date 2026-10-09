@@ -52,6 +52,7 @@ WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasu
 ON_BATTERY = "On battery: cards are made once this computer is plugged in."
 ANKI_MINER_OPEN = "Anki Miner is open: close it to make cards."
 WRITER_BUSY = "Another program is writing to Anki."
+SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installed. Connect waits at the cap."
 REVIEWING = "Waiting while you review in Anki."
 ANKI_CLOSED = "Waiting for Anki: it isn't open."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
@@ -136,6 +137,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
                     continue
                 work = True
                 outside |= _language(steps, ledger, lang, prepared, parked, summary["languages"][lang])
+                _said(steps, lang, summary["languages"][lang])
                 stop = _stop(steps)                 # staged or switched off while its jobs ran: this step boundary
                 if stop:
                     summary["stopped"] = stop
@@ -155,6 +157,13 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
             steps.settle()                  # a pending sync is sent before Connect exits (P2.3)
         except Exception:
             log.exception("Connect's pending sync wasn't sent")
+
+
+def _said(steps, lang, out):
+    """What the shelf did this run, in the run's summary (intent keeper P2.4-B #1, S16: an automation is seen)."""
+    said = (getattr(steps, "said", None) or {}).get(lang)
+    if said:
+        out["shelf"] = list(said)
 
 
 def _stop(steps):
@@ -514,11 +523,13 @@ def _mine(steps, ledger, lang, job, record=True):
     if left:                                # Anki Miner never accounted for them, three times: named, not mined
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
-    _record_made(steps, ledger, lang, job, record)
     try:
         _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
+    # the store write after the rename: a rename that waits (you review) leaves nothing written to do again at every
+    # look (adversary B #6, S19)
+    _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
 
 
@@ -919,6 +930,8 @@ class Steps:
         try:
             self.notes_gone(lang)
             self.shelf_session(lang, ledger)
+        except ImportError:                 # Junban isn't installed: no shelf, named (S10)
+            self._say(lang, SHELF_NO_JUNBAN)
         except Exception:                   # never a reason not to mine: looked at again next run
             log.exception("Connect's shelf look or deleted-notes check didn't finish")
 
@@ -960,6 +973,10 @@ class Steps:
             return 0
         try:
             shelved = self._shelve(lang, ledger, todo, count, cap)
+        except ImportError:                 # Junban isn't installed: the shelf is skipped and named (S10)
+            self._shelved = getattr(self, "_shelved", set()) | {lang}
+            self._say(lang, SHELF_NO_JUNBAN)
+            return 0
         except shelf.Reviewing:
             raise Wait(REVIEWING, resume="mining") from None
         except locks.Busy:
@@ -980,38 +997,55 @@ class Steps:
         with self._open(lang) as store:
             made = shelf.made_notes(store)
             pinned = shelf.pinned_items(store)
+            finished = shelf.finished_items(store, made)
+            holder = self._top_words(lang, store)
         anki = self._anki()
         waiting = shelf.cards(anki, shelf.WAITING_QUERY, made)
         for card in waiting:
             card.rank = ranks.get(card.word, shelf.NOT_LISTED)
         needed = [ranks.get(w["word"], shelf.NOT_LISTED) for w in todo]
-        chosen = shelf.plan(waiting, needed, cap, count, pinned)
+        chosen = shelf.plan(waiting, needed, cap, count, pinned, holder, finished)
         if not chosen:
             return 0
-        shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
+        run = shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
+        self._say(lang, f"{len(chosen)} of Connect's waiting cards went to the shelf (suspended in Anki, tagged "
+                        f"{shelf.SHELF_TAG}; restore point {run}).")
         return len(chosen)
+
+    def _say(self, lang, line):
+        log.info("Connect's shelf (%s): %s", lang, line)
+        self.said = getattr(self, "said", {})
+        self.said.setdefault(lang, []).append(line)
 
     def shelf_session(self, lang, ledger):
         """Once a run: a shelved card you un-suspended loses its tag; a shelved word the top 20 needs comes back."""
-        from app.connect import library, shelf
+        from app.connect import shelf
         anki = self._anki()
         shelf.tidy(anki, ledger)
         with self._open(lang) as store:
             made = shelf.made_notes(store)
             finished = shelf.finished_items(store, made)
-            line = library.mine_line(store)
-            names = {i: os.path.basename((store.item(i) or {}).get("rel_path") or "") for i in line}
+            holder = self._top_words(lang, store)
+        shelved = shelf.cards(anki, f"{shelf.SHELVED_QUERY} is:suspended", made)
+        back = [c for c in shelved if c.word in holder]
+        if back:
+            done = shelf.bring_back(anki, ledger, lang, back, finished, holder.get)
+            self._say(lang, f"{done['back']} shelved cards came back: the top 20 needs their words again.")
+
+    def _top_words(self, lang, store):
+        """{word: the top-20 item that holds it} — the swap-in brings these back and the shelf never takes them
+        (adversary B #5): the list's words per file (`file_words.json`), by each line item's file name."""
         from app.cli import connect_verbs
+        from app.connect import library
+        line = library.mine_line(store)
+        names = {i: os.path.basename((store.item(i) or {}).get("rel_path") or "") for i in line}
         read = connect_verbs._read_list(lang)
         file_words = (read[2] if read else {}) or {}
         holder = {}
         for item in line:
             for word in file_words.get(names.get(item), ()) or ():
                 holder.setdefault(word, item)
-        shelved = shelf.cards(anki, f"{shelf.SHELVED_QUERY} is:suspended", made)
-        back = [c for c in shelved if c.word in holder]
-        if back:
-            shelf.bring_back(anki, ledger, lang, back, finished, holder.get)
+        return holder
 
     def notes_gone(self, lang):
         """Row 2.4.14: the store's note ids (yours and Connect's) checked against Anki once a run; the gone ones
@@ -1033,7 +1067,7 @@ class Steps:
         (review B #2)."""
         from app import anki_connect, locks
         from app.connect import media_names
-        fields = getattr(getattr(self, "_mapping", None), "fields", None) or self._export_fields(lang, job)
+        fields = getattr(self._job_mapping(job), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
         pairing = self.pairing(lang, job) or {}
@@ -1050,6 +1084,13 @@ class Steps:
             raise Wait(WRITER_BUSY, resume="mining") from None
         except anki_connect.AnkiError:
             raise Wait(ANKI_CLOSED, resume="mining") from None
+
+    def _job_mapping(self, job):
+        """The field mapping this run's `mine` set — only for the job it mined; another job (resumed with nothing left
+        to mine) reads its own settings export (adversary B #16)."""
+        if getattr(self, "_mapping_job", None) != job.get("id"):
+            return None
+        return getattr(self, "_mapping", None)
 
     def _export_fields(self, lang, job):
         """{role: field} from the settings export Anki Miner wrote in the job's run folder, or {}."""
@@ -1108,6 +1149,7 @@ class Steps:
         if setup is None:
             raise Skip("Anki Miner isn't installed")
         mapping = self._mapping = setup[2]
+        self._mapping_job = job.get("id")
         try:
             done = anki_miner.mine_batch(miner, lang, _tag(job), picked["video"], picked["subtitle"], words,
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
@@ -1130,8 +1172,7 @@ class Steps:
         """Which of `words` reached Anki, found by the job's tag (read-only) -> outcomes (made / uncertain)."""
         from app import anki_connect
         from app.connect import anki_miner, fields
-        mapping = getattr(self, "_mapping", None)
-        field = getattr(mapping, "word", None)
+        field = getattr(self._job_mapping(job), "word", None)
         if field is None:
             try:
                 with open(os.path.join(self.run_dir(job), "settings-export.json"), encoding="utf-8") as f:

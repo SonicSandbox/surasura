@@ -5,9 +5,10 @@ suites; by hand, with locks/anki.lock taken by hand (board lines) and Anki open 
 
 - `deletion`: `findNotes "nid:…"` over 300 and 3,000 note ids (synthetic ids above any real one, plus the test
   notes made here): requests and milliseconds — 2.4.14's cost per session.
-- `junban`: synthetic test notes (Basic, tag `surasura::connect::test-p24cards-<run>`, deck DevTest) to 300, then
-  1,000 waiting; `surasura-cli junban --auto` on a scratch root pointed at deck DevTest: wall time, AnkiConnect
-  requests (counted by a loopback counting proxy), writes on a second run (expected 0).
+- `junban`: synthetic test notes (Basic, tag `surasura::connect::test-p24cards-<run>`, deck DevTest; each note's
+  front one of the list's words) to 300, then 1,000 waiting; `surasura-cli junban --auto` on a scratch root pointed
+  at deck DevTest, its list the 298 words of `tests/Test Resources/ja/expected_output.csv` written as the scratch
+  root's `results/` lists: wall time, moves, and moves on a second run (expected 0).
 - `shelf` (2.4.11): 50 of the test notes shelved through `shelf.shelve` and brought back through
   `shelf.bring_back`; then `findCards` checks: suspended and tagged, then neither.
 - `idle`: `surasura-cli connect` with nothing to do: start to exit; and waiting on Anki "closed" (a dead address)
@@ -66,12 +67,14 @@ def main():
     out = {"root": root, "tag": tag}
     made = []
 
+    words = _write_lists(root)
+
     def add_notes(n):
         model = "Basic" if "Basic" in ask("modelNames") else ask("modelNames")[0]
         front, back = ask("modelFieldNames", modelName=model)[:2]
-        words = ["上層部", "一生懸命", "気配", "溜め息", "約束", "勇気", "走り出す", "眼鏡"]
         notes = [{"deckName": a.deck, "modelName": model, "tags": [tag], "options": {"allowDuplicate": True},
-                  "fields": {front: f"{words[i % len(words)]}{len(made) + i}", back: "drill"}} for i in range(n)]
+                  "fields": {front: words[(len(made) + i) % len(words)], back: f"drill {len(made) + i}"}}
+                 for i in range(n)]
         with anki_connect.writer("P2.4 cards drill", wait=60):
             ids = ask("addNotes", notes=notes)
         made.extend(i for i in ids if i)
@@ -113,6 +116,31 @@ def main():
             out["teardown_left"] = "NOT CHECKED: Anki left DevTest"
         print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 0 if out.get("teardown_left") == 0 else 1
+
+
+def _write_lists(root):
+    """The scratch root's two lists (Junban's content order and the priority order) from the test resources' real
+    analysis output -> the list's words, in order."""
+    import csv
+    with open(os.path.join(REPO, "tests", "Test Resources", "ja", "expected_output.csv"), encoding="utf-8-sig") as f:
+        rows = [r for r in csv.DictReader(f) if r.get("Word")]
+    results = os.path.join(root, "results")
+    os.makedirs(results, exist_ok=True)
+    with open(os.path.join(results, "priority_learning_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Word", "Orth", "Reading", "Tier", "Score", "Occurrences", "Count (High)", "Count (Low)",
+                    "Count (Goal)", "Modality"])
+        for r in rows:
+            w.writerow([r["Word"], r["Orth"], r["Reading"], r["Tier"], r["Score"], r["Occurrences"],
+                        r["Count (High)"], r["Count (Low)"], r["Count (Goal)"], ""])
+    with open(os.path.join(results, "progressive_learning_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Sequence", "Source File", "Word", "Orth", "Reading", "Tier", "Score", "Occurrences (Global)",
+                    "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Modality"])
+        for i, r in enumerate(rows, start=1):
+            w.writerow([i, "drill.srt", r["Word"], r["Orth"], r["Reading"], r["Tier"], r["Score"], r["Occurrences"],
+                        1, r["Count (High)"], r["Count (Low)"], r["Count (Goal)"], ""])
+    return [r["Orth"] or r["Word"] for r in rows]
 
 
 def _cli(root, *args, url):

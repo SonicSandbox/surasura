@@ -7,17 +7,23 @@ A card you suspend in Anki says "I know this": at Surasura's next known-words sy
 - **The signal is a setting** (`known_from_anki`, a list; every term must hold — "and"): `suspended` (the default) ·
   `marked` · `flag:1` … `flag:7`; `[]` is off. Read in the decks the known-words sync already reads. A setting with a
   term this doesn't know is off (said once a read), never a wider signal (review B #21).
-- **Never counted:** Surasura's own suspensions — Junban's "later" (`Surasura::later`) and Connect's shelf
-  (`surasura::shelf`) — and Anki's leeches (`leech`). A Connect-made card **you** suspend counts like any (Anki's tag
+- **Never counted:** Surasura's own suspensions — Junban's "later" (`Surasura::later`, and `<junban_tag>::later` when
+  you named Junban's tag otherwise: adversary B #4) and Connect's shelf (`surasura::shelf`) — and Anki's leeches
+  (`leech`). A Connect-made card **you** suspend counts like any (Anki's tag
   search ignores case).
 - **Newly signalled since the last read → known**: appended to KnownWord.json as the sync appends (append-only, under
   its `known-words-<lang>` lock), each entry marked `knownBy: "anki-signal"`; recorded here per language (the word, its
   card, when) for undo.
+- **The word only** (intent keeper P2.4-B, ⭐ lean, asked of Sonic): a signalled card marks its Word field's one
+  word (`anki_match.card_word`), never its "Also read" lines — a suspension says "I know this word", not every word
+  of its sentence. `SIGNAL_WORD_ONLY` switches it back to the sync's fields.
 - **The one-time offer**: the first read finds cards already signalled → none marked; they are kept as an offer
-  (*Mark their words known?*), answered once (`accept_offer` / `decline_offer`; accepted, only the cards that still
-  carry the signal). A changed signal (other terms, or off and on again) is a first read again: a new offer, never a
+  (*Mark their words known?*), shown until answered (`accept_offer` / `decline_offer`; accepted, only the cards that
+  still carry the signal); a card you declined is never offered again, even after a profile or deck change. A changed signal (other terms, or off and on again) is a first read again: a new offer, never a
   flood of marks (review B #16, #20).
-- **Undo per word** (`undo`): its cards un-suspended if still suspended (✅ P2.4-6), then the word taken out of
+- **Undo per word** (`undo`): never while you review (adversary B #7); its cards un-suspended if still suspended and
+  `suspended` is part of the signal it was marked by (a flagged card you also suspended stays as you left it:
+  adversary B #10; ✅ P2.4-6), then the word taken out of
   KnownWord.json **only if this signal added it** (a word also known another way stays known), after a dated backup
   (`path_utils.backup_to_trash`).
 - **The record** is read and written under the known-words lock (one writer across programs and threads); one that
@@ -37,6 +43,7 @@ KNOWN_BY = "anki-signal"
 NEVER = ("-tag:Surasura::later", "-tag:surasura::shelf", "-tag:leech")
 FLAGS = tuple(f"flag:{n}" for n in range(1, 8))
 TERMS = ("suspended", "marked") + FLAGS
+SIGNAL_WORD_ONLY = True     # the Word field only (the lean asked of Sonic); False: the known-words sync's fields
 
 
 def _now():
@@ -62,7 +69,20 @@ def signal(settings):
     return terms
 
 
-def query(terms, decks):
+def _never(settings):
+    """The tags that never count: NEVER, and Junban's later tag under the parent you named (`unlisted.later_tag`)."""
+    tag = (settings or {}).get("junban_tag", "")
+    tag = tag.strip() if isinstance(tag, str) else ""
+    try:
+        from modules.junban import unlisted
+        later = unlisted.later_tag(tag)
+    except Exception:                       # Junban absent: its rule, as written there
+        later = f"{tag or 'Surasura'}::later"
+    extra = f"-tag:{later}"
+    return NEVER if extra.lower() in (n.lower() for n in NEVER) else NEVER + (extra,)
+
+
+def query(terms, decks, settings=None):
     """The search for cards that carry the signal in `decks`, or None when there's none to search."""
     if not terms or not decks:
         return None
@@ -76,7 +96,7 @@ def query(terms, decks):
         else:
             parts.append(term)
     scope = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in dict.fromkeys(decks))
-    return f"({scope}) " + " ".join(parts) + " " + " ".join(NEVER)
+    return f"({scope}) " + " ".join(parts) + " " + " ".join(_never(settings))
 
 
 def record_path(language):
@@ -125,17 +145,27 @@ def _held(language, verb, wait=None):
             held.release()
 
 
+CHUNK = 150                 # cards or notes a request, as Junban asks: one huge request freezes Anki's window
+
+
+def _chunked(ask, url, ids):
+    out = []
+    for at in range(0, len(ids), CHUNK):
+        out.extend(ask(url, ids[at:at + CHUNK]) or [])
+    return out
+
+
 def _words_of(url, card_ids, fields, language):
     """[(word, card id, note id)] for the cards: their notes' words, read as the known-words sync reads them — note by
-    note, so a word on two notes keeps both its cards (review B #12)."""
+    note, so a word on two notes keeps both its cards (review B #12); asked 150 at a time (adversary B #18)."""
     from app import anki_connect, anki_sync
     if not card_ids:
         return []
-    info = anki_connect.cards_info(url, card_ids)
+    info = _chunked(anki_connect.cards_info, url, list(card_ids))
     by_note = {}
     for card in info:
         by_note.setdefault(card.get("note"), []).append(card.get("cardId"))
-    notes = anki_connect.notes_info(url, [n for n in by_note if n is not None])
+    notes = _chunked(anki_connect.notes_info, url, [n for n in by_note if n is not None])
     result = anki_sync.SyncResult()
     out = []
     for note in notes:
@@ -147,17 +177,21 @@ def _words_of(url, card_ids, fields, language):
 
 def read(language, url, decks, fields, settings):
     """One read, beside the known-words sync -> {"marked": [words newly known], "offered": n, "skipped": why or
-    None}. The first read, and the first after the signal changed, only records an offer."""
+    None, "news": whether the window has something to show}. The first read, and the first after the signal changed,
+    only records an offer. `news` is the record's, not this read's: a Connect run that read first, in a process with
+    no window, leaves the window its news (adversary B #3)."""
     terms = signal(settings)
-    q = query(terms, decks)
+    q = query(terms, decks, settings)
     if q is None:
         with _held(language, "Known from Anki"):
             state = load(language)
             if state.get("terms"):          # off now: on again later is a first read (review B #20)
                 state["terms"] = []
                 _save(language, state)
-        return {"marked": [], "offered": 0, "skipped": "off"}
+        return {"marked": [], "offered": 0, "skipped": "off", "news": news(state)}
     from app import anki_connect
+    if SIGNAL_WORD_ONLY:
+        fields = list(fields or [])[:1]     # Auto ([]) is the first field already
     with _held(language, "Known from Anki"):
         state = load(language)
         ids = anki_connect.find_cards(url, q)
@@ -166,29 +200,47 @@ def read(language, url, decks, fields, settings):
         new = [c for c in ids if c not in seen]
         found = _words_of(url, new, fields, language)
         now = _now()
-        out = {"marked": [], "offered": 0, "skipped": None}
+        out = {"marked": [], "offered": 0, "skipped": None, "news": False}
         if not state.get("read") or state.get("terms") != terms or state.get("scope") != scope:
             # first, or another signal, decks or Anki profile (#16; adversary B #1): an offer, never marks; a pending
             # offer keeps its cards (adversary B #17)
             if found:
                 old = state.get("offer") or {}
                 kept = [c for c in old.get("cards") or () if old.get("state") == "pending"]
-                have = {c["card"] for c in kept}
+                have = {c["card"] for c in kept} | set(state.get("declined") or ())   # declined: never again
                 state["offer"] = {"state": "pending", "query": q,
                                   "cards": kept + [{"word": w, "card": c, "note": n} for w, c, n in found
                                                    if c not in have]}
             out["offered"] = len(found)
         elif found:
-            out["marked"] = _mark(language, found, state, now, "signal")
+            out["marked"] = _mark(language, found, state, now, "signal", terms)
         seen_now = sorted(set(ids)) if ids or not seen else sorted(seen)    # an empty answer never empties `seen`
                                                                             # (adversary B #1c: a bad reply reads as [])
-        if found or not state.get("read") or state.get("terms") != terms or state.get("seen") != seen_now                 or state.get("scope") != scope:
+        if (found or not state.get("read") or state.get("terms") != terms or state.get("seen") != seen_now
+                or state.get("scope") != scope):
             state.update(read=now, seen=seen_now, terms=terms, scope=scope)
             _save(language, state)      # nothing new, nothing written (charter S19)
+        out["news"] = news(state)
+        out["unshown"], out["offer"] = _unshown_count(state), _offer_pending(state)
         return out
 
 
-def _mark(language, found, state, now, why):
+def _unshown_count(state):
+    return sum(1 for m in (state or {}).get("marked") or () if not m.get("shown") and not m.get("undone"))
+
+
+def _offer_pending(state):
+    offer = (state or {}).get("offer") or {}
+    return offer.get("state") == "pending" and bool(offer.get("cards"))
+
+
+def news(state):
+    """Has the window something to show: words marked and not yet shown, or an offer not yet answered (shown until
+    answered; the dashboard shows it once a session: intent keeper P2.4-B #5, #10)."""
+    return bool(_unshown_count(state)) or _offer_pending(state)
+
+
+def _mark(language, found, state, now, why, terms=None):
     """Append the words not yet known to KnownWord.json (append-only, the sync's lock) and record each -> words. A
     word already there by this signal's own entry (a record save that failed after it) is recorded as added, so undo
     still takes it out (review B #18)."""
@@ -209,7 +261,8 @@ def _mark(language, found, state, now, why):
                 known.add(key)
             state.setdefault("marked", []).append({"word": word, "card": card, "note": note, "at": now,
                                                    "added": fresh or key in ours, "why": why, "shown": False,
-                                                   "undone": None})
+                                                   "undone": None,
+                                                   "terms": list(terms) if terms is not None else None})
             if fresh:
                 added.append(word)
         if entries:
@@ -238,7 +291,7 @@ def accept_offer(language, url=None):
             still = set(anki_connect.find_cards(url, offer["query"]))
             cards = [c for c in cards if c["card"] in still]
         found = [(c["word"], c["card"], c["note"]) for c in cards]
-        added = _mark(language, found, state, _now(), "offer") if found else []
+        added = _mark(language, found, state, _now(), "offer", state.get("terms")) if found else []
         offer["state"] = "accepted"
         state["offer"] = offer
         _save(language, state)
@@ -252,22 +305,27 @@ def decline_offer(language):
         if offer.get("state") == "pending":
             offer["state"] = "declined"
             state["offer"] = offer
+            state["declined"] = sorted(set(state.get("declined") or ()) | {c["card"] for c in offer.get("cards") or ()})
             _save(language, state)
 
 
-def unshown(language):
-    """The words your suspensions marked known since the window last showed them (the summary's *You suspended N
-    cards since …*) — never the offer's, which you answered yourself (review B #15)."""
+def unshown(language, why="signal"):
+    """The words marked known since the window last showed them: `why="signal"`, your suspensions (the summary's *You
+    suspended N cards since …*) — never the offer's, which you answered yourself (review B #15); `why="offer"`, the
+    offer's words you accepted, listed under their own heading with Undo (adversary B #9)."""
     return [m for m in load(language).get("marked") or ()
-            if not m.get("shown") and not m.get("undone") and m.get("why") != "offer"]
+            if not m.get("shown") and not m.get("undone") and (m.get("why") == "offer") == (why == "offer")]
 
 
-def mark_shown(language):
-    """On the window's own thread: never waits for the lock (another program writing: shown again next time)."""
+def mark_shown(language, words=None):
+    """The entries of `words` (every one when None) marked shown — a word the window listed past its first 30 stays
+    unshown and is listed next time (adversary B #9). Called on the window's worker, never its screen thread (intent
+    keeper P2.4-B #4); never waits for the lock (another program writing: shown again next time)."""
     try:
         with _held(language, "Known from Anki", wait=0):
             state = load(language)
-            fresh = [m for m in state.get("marked") or () if not m.get("shown")]
+            fresh = [m for m in state.get("marked") or ()
+                     if not m.get("shown") and (words is None or m.get("word") in words)]
             for m in fresh:
                 m["shown"] = True
             if fresh:
@@ -277,10 +335,11 @@ def mark_shown(language):
 
 
 def undo(language, word, url):
-    """Undo one word: its cards un-suspended first if still suspended (read under Anki's writer), then out of
-    KnownWord.json only if this signal added it (a dated backup first) -> {"removed": bool, "unsuspended": [card ids]}.
-    Anki closed or busy: raises with nothing changed; tried again after a later failure, the cards are back already
-    (review B #13, #25)."""
+    """Undo one word: its cards un-suspended first if still suspended and `suspended` was part of the signal (read
+    under Anki's writer, never while you review: adversary B #7, #10), then out of KnownWord.json only if this signal
+    added it (a dated backup first) -> {"removed": bool, "unsuspended": [card ids]}. Anki closed or busy, or you're
+    reviewing: raises with nothing changed; tried again after a later failure, the cards are back already (review B
+    #13, #25)."""
     from app import anki_connect, anki_sync
     from app.path_utils import backup_to_trash
     with _held(language, "Known from Anki (undo)"):
@@ -288,10 +347,13 @@ def undo(language, word, url):
         mine = [m for m in state.get("marked") or () if m.get("word") == word and not m.get("undone")]
         if not mine:
             return {"removed": False, "unsuspended": []}
-        cards = [m["card"] for m in mine if m.get("card") is not None]
+        cards = [m["card"] for m in mine if m.get("card") is not None
+                 and "suspended" in (m["terms"] if m.get("terms") is not None else state.get("terms") or ())]
         back = []
         if cards:
             with anki_connect.writer("Known from Anki (undo)", wait=10.0):
+                if anki_connect.reviewing(url):
+                    raise RuntimeError(anki_connect.REVIEWING)
                 info = anki_connect.cards_info(url, cards)
                 back = [c.get("cardId") for c in info if c.get("queue") == -1]      # still suspended
                 if back:

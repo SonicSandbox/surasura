@@ -3621,10 +3621,16 @@ class MasterDashboardApp:
                     result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
                     # The same decks' new cards, for the report's backlog marks (read-only).
                     anki_sync.sync_backlog(lang, url, decks, fields)
-                    # Known from Anki (P2.4): only with Connect's preview on; its window when it has news
+                    # Known from Anki (P2.4): only with Connect's preview on; its window when the record has news
+                    # not yet shown (a Connect run may have read first, with no window: adversary B #3) — read here,
+                    # on this worker; a pending offer once a dashboard session until answered (intent keeper #4, #5)
                     signal = anki_sync.read_known_signal(lang, url, decks, fields, s)
-                    if signal and (signal.get("marked") or signal.get("offered")):
-                        self.gui_queue.put(lambda: self._known_signal_window(lang, url))
+                    if signal and signal.get("news"):
+                        from app.connect import known_signal_window
+                        seen = known_signal_window.view(lang, with_offer=lang not in self.__dict__.setdefault("_known_offer_seen", set()))
+                        if seen and (seen["marked"] or seen["taken"] or (seen["offer"].get("state") == "pending"
+                                                                         and seen["offer"].get("cards"))):
+                            self.gui_queue.put(lambda: self._known_signal_window(lang, url, seen))
             except Exception as e:
                 print(f"Anki sync skipped: {e}")
             finally:
@@ -3637,11 +3643,16 @@ class MasterDashboardApp:
         self._anki_spinner(True)
         threading.Thread(target=work, daemon=True).start()
 
-    def _known_signal_window(self, language, url):
-        """P2.4 row 2.4.15: *You suspended N cards since … — marked known*, with Undo per word (Connect's preview only)."""
+    def _known_signal_window(self, language, url, seen):
+        """P2.4 row 2.4.15: *You suspended N cards since … — marked known*, with Undo per word (Connect's preview only).
+        `seen`: `known_signal_window.view`, read on the sync's worker."""
         try:
             from app.connect import known_signal_window
-            known_signal_window.show(self.root, language, url, lambda widget, text: ToolTip(widget, text, wrap=320))
+            if seen["offer"].get("state") == "pending":
+                self.__dict__.setdefault("_known_offer_seen", set()).add(language)
+            known_signal_window.show(self.root, language, url, lambda widget, text: ToolTip(widget, text, wrap=320),
+                                     offer=seen["offer"], marked=seen["marked"], taken=seen["taken"],
+                                     terms=seen["terms"])
         except Exception as e:
             print(f"Known from Anki's window wasn't shown: {e}")
 

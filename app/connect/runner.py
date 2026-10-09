@@ -47,6 +47,7 @@ log = logging.getLogger("surasura-cli")
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
 WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasura writer, a Generate)
+ALL_GONE_MIN = 10               # the deleted-card check: this many notes or more, all gone at once -> nothing marked
 
 # The plain lines a waiting job shows (the status line's, never Needs you)
 ON_BATTERY = "On battery: cards are made once this computer is plugged in."
@@ -229,8 +230,9 @@ def _language(steps, ledger, lang, prepared, parked, out):
     try:
         wait = _blocked(steps, lang, None)
         if wait is None:
-            steps.mine_line(lang)           # the store answers first: never an empty top 20 for a busy one
-            store_now = steps.store_id(lang)
+            with _held():                   # two store reads, one open
+                steps.mine_line(lang)       # the store answers first: never an empty top 20 for a busy one
+                store_now = steps.store_id(lang)
             if lang not in prepared:
                 steps.prepare(lang, ledger)
                 prepared.add(lang)
@@ -323,9 +325,10 @@ def _wait(ledger, job, wait, out, parked=None):
 
 
 def _held():
-    """One store handle for a span of a job's store reads and its record (L3.3's `library_store.held()`, §6.12): each
-    `open_store` inside it returns the span's handle. Never around Anki Miner's call or tsubasa's check (minutes: a
-    store marked damaged meanwhile couldn't be set aside by Repair while the handle stays open)."""
+    """One store handle for store reads back to back (L3.3's `library_store.held()`, §6.12): each `open_store` inside
+    it returns the span's handle. Only around store reads: never around Anki or AnkiConnect, Anki Miner, a lock's
+    wait, the tokenizer or tsubasa (seconds to minutes: a store marked damaged meanwhile couldn't be set aside by
+    Repair while the handle stays open; adversary L3.3 wiring #1-#3)."""
     from app import library_store
     return library_store.held()
 
@@ -361,8 +364,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
             try:
                 if step in (None, "picking"):
-                    with _held():           # the pick's reads (pairing, subtitle, made words): one open
-                        got = _pick(steps, ledger, lang, job, record)
+                    got = _pick(steps, ledger, lang, job, record)
                     if got is None:
                         out["done"].append(item_id)
                         return
@@ -472,16 +474,15 @@ def _mine(steps, ledger, lang, job, record=True):
         doubt = any(_outcome(ledger, jid, w) == "uncertain" for w in todo)
         if doubt and _failures(ledger, jid) >= 2:
             _fail_mining(steps, ledger, lang, job, record)
-        with _held():                       # the batch's reads before Anki Miner's call: one open
-            if fit_check.version(steps.pairing(lang, job)) != picked.get("pairing"):
-                raise Repick()              # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
-            wait = _blocked(steps, lang, "mining")
+        if fit_check.version(steps.pairing(lang, job)) != picked.get("pairing"):
+            raise Repick()                  # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
+        wait = _blocked(steps, lang, "mining")
+        if wait is not None:
+            raise wait
+        if not _started(ledger, jid):       # P2.4 Part B: the cap before a job's first batch, never mid-episode
+            wait = _at_cap(steps, ledger, lang, todo)
             if wait is not None:
                 raise wait
-            if not _started(ledger, jid):   # P2.4 Part B: the cap before a job's first batch, never mid-episode
-                wait = _at_cap(steps, ledger, lang, todo)
-                if wait is not None:
-                    raise wait
         had = ledger.job_by_id(jid).get("attempt") or 0
         refused = bool(batches) and batches[-1]["state"] == "refused" and batches[-1]["attempt"] == had
         attempt = had if refused else had + 1      # a call Anki Miner refused never ran: its number reused (#20)
@@ -533,14 +534,13 @@ def _mine(steps, ledger, lang, job, record=True):
     if left:                                # Anki Miner never accounted for them, three times: named, not mined
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
-    with _held():                           # the names' reads and the record: one open
-        try:
-            _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
-        except Wait as w:
-            raise Wait(w.reason, w.look, "mining") from None
-        # the store write after the rename: a rename that waits (you review) leaves nothing written to do again at
-        # every look (adversary B #6, S19)
-        _record_made(steps, ledger, lang, job, record)
+    try:
+        _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
+    except Wait as w:
+        raise Wait(w.reason, w.look, "mining") from None
+    # the store write after the rename: a rename that waits (you review) leaves nothing written to do again at every
+    # look (adversary B #6, S19)
+    _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
 
 
@@ -848,11 +848,13 @@ class Steps:
     def video(self, lang, job):
         """The episode's video on this computer: hato's pairing names it; else a video beside the subtitle with its
         name. None when there's none, or it's a cloud placeholder (never opened, RD-S1)."""
-        pairing = self.pairing(lang, job) or {}
-        named = pairing.get("video_path")
-        if isinstance(named, str) and named:
+        with _held():                       # the store's two reads, one open; the disk is looked at after
+            pairing = self.pairing(lang, job) or {}
+            named = pairing.get("video_path")
+            paired = isinstance(named, str) and bool(named)
+            subtitle = None if paired else self.subtitle(lang, job)
+        if paired:
             return named if _on_disk(named) else None
-        subtitle = self.subtitle(lang, job)
         return beside(subtitle) if subtitle else None
 
     def record(self, lang, job, made, mined_at, batch):
@@ -1069,11 +1071,20 @@ class Steps:
 
     def notes_gone(self, lang):
         """Row 2.4.14: the store's note ids (yours and Connect's) checked against Anki once a run; the gone ones
-        told to the store (`Store.notes_gone`, L3.3). Nothing when Anki doesn't answer."""
-        from app.connect import library, shelf
+        told to the store (`Store.notes_gone`, L3.3). Nothing when Anki doesn't answer, when it is open on another
+        profile now (known-sync and Generate ran since the run's first look), or when every one of 10 or more notes
+        reads as gone (another collection answering, never a learner's day: logged, looked at again next run;
+        adversary L3.3 wiring #4)."""
+        from app.connect import anki_session, library, shelf
         with self._open(lang) as store:
             ids = library.note_ids(store)
         gone = shelf.gone_notes(self._anki(), ids)
+        if gone and anki_session.waiting(self.url, self.loaded) is not None:
+            return []
+        if gone and len(gone) == len(ids) >= ALL_GONE_MIN:
+            log.warning("Connect's deleted-card check: Anki has none of the %d notes the library holds; nothing "
+                        "marked gone", len(ids))
+            return []
         if gone:
             with self._open(lang) as store:
                 library.notes_gone(store, gone)
@@ -1127,11 +1138,12 @@ class Steps:
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import library
-        subtitle = self.subtitle(lang, job)
+        with _held():                       # the store's two reads, one open; never around `verbs.pick` (Anki Miner)
+            subtitle = self.subtitle(lang, job)
+            with self._open(lang) as store:      # every word Connect ever made, or no pick at all
+                made = library.made_words_all(store)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
-        with self._open(lang) as store:          # every word Connect ever made, or no pick at all
-            made = library.made_words_all(store)
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, words=None, job=str(job["id"]), wait=WAIT_S,
                              made=made)
         try:

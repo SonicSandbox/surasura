@@ -113,8 +113,8 @@ def record_batch(store, item_id, made, mined_at, batch=None):
     written again, and a level job's batch with nothing new takes no write at all (S19). The store rings its bell
     after the commit (L3.2, `_writing`): nothing to ring here."""
     from app import library_store
-    if not made and mined_at is None:
-        return
+    if mined_at is None and _recorded(store, item_id, made):
+        return                                  # a level job's batch with nothing new: no write lock taken (S19)
     at = mined_at or library_store._now()
     with store._command("receipt", by=READER) as cmd:
         for sql in library_store.ADDED_TABLES_SQL:
@@ -131,6 +131,22 @@ def record_batch(store, item_id, made, mined_at, batch=None):
             cmd.touch()
         if mined_at is not None:                # a level job's batch keeps the item's first receipt
             store.receipt(item_id, mined_at)
+
+
+def _recorded(store, item_id, made):
+    """Is every word of `made` recorded for the item with all its note ids already (nothing to write)? Read outside
+    the write lock (adversary L3.3 wiring #6)."""
+    if not made:
+        return True
+    if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'").fetchone():
+        return False
+    with store._reading():
+        for word, note_ids in made.items():
+            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                     (item_id, word)).fetchone()
+            if row is None or any(n not in json.loads(row[0]) for n in note_ids):
+                return False
+    return True
 
 
 # --------------------------------------------------------------------------- #

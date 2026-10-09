@@ -322,6 +322,14 @@ def _wait(ledger, job, wait, out, parked=None):
         parked.add(job["id"])
 
 
+def _held():
+    """One store handle for a span of a job's store reads and its record (L3.3's `library_store.held()`, §6.12): each
+    `open_store` inside it returns the span's handle. Never around Anki Miner's call or tsubasa's check (minutes: a
+    store marked damaged meanwhile couldn't be set aside by Repair while the handle stays open)."""
+    from app import library_store
+    return library_store.held()
+
+
 def _job(steps, ledger, lang, job, store_now, line, out):
     """One job from where it stands to `done` (or a finished state). Raises Wait / Needs."""
     jid, item_id = job["id"], job["item_id"]
@@ -353,7 +361,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
             try:
                 if step in (None, "picking"):
-                    got = _pick(steps, ledger, lang, job, record)
+                    with _held():           # the pick's reads (pairing, subtitle, made words): one open
+                        got = _pick(steps, ledger, lang, job, record)
                     if got is None:
                         out["done"].append(item_id)
                         return
@@ -463,15 +472,16 @@ def _mine(steps, ledger, lang, job, record=True):
         doubt = any(_outcome(ledger, jid, w) == "uncertain" for w in todo)
         if doubt and _failures(ledger, jid) >= 2:
             _fail_mining(steps, ledger, lang, job, record)
-        if fit_check.version(steps.pairing(lang, job)) != picked.get("pairing"):
-            raise Repick()                  # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
-        wait = _blocked(steps, lang, "mining")
-        if wait is not None:
-            raise wait
-        if not _started(ledger, jid):       # P2.4 Part B: the cap before a job's first batch, never mid-episode
-            wait = _at_cap(steps, ledger, lang, todo)
+        with _held():                       # the batch's reads before Anki Miner's call: one open
+            if fit_check.version(steps.pairing(lang, job)) != picked.get("pairing"):
+                raise Repick()              # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
+            wait = _blocked(steps, lang, "mining")
             if wait is not None:
                 raise wait
+            if not _started(ledger, jid):   # P2.4 Part B: the cap before a job's first batch, never mid-episode
+                wait = _at_cap(steps, ledger, lang, todo)
+                if wait is not None:
+                    raise wait
         had = ledger.job_by_id(jid).get("attempt") or 0
         refused = bool(batches) and batches[-1]["state"] == "refused" and batches[-1]["attempt"] == had
         attempt = had if refused else had + 1      # a call Anki Miner refused never ran: its number reused (#20)
@@ -523,13 +533,14 @@ def _mine(steps, ledger, lang, job, record=True):
     if left:                                # Anki Miner never accounted for them, three times: named, not mined
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
-    try:
-        _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
-    except Wait as w:
-        raise Wait(w.reason, w.look, "mining") from None
-    # the store write after the rename: a rename that waits (you review) leaves nothing written to do again at every
-    # look (adversary B #6, S19)
-    _record_made(steps, ledger, lang, job, record)
+    with _held():                           # the names' reads and the record: one open
+        try:
+            _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
+        except Wait as w:
+            raise Wait(w.reason, w.look, "mining") from None
+        # the store write after the rename: a rename that waits (you review) leaves nothing written to do again at
+        # every look (adversary B #6, S19)
+        _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
 
 
@@ -1058,11 +1069,9 @@ class Steps:
 
     def notes_gone(self, lang):
         """Row 2.4.14: the store's note ids (yours and Connect's) checked against Anki once a run; the gone ones
-        told to the store (a no-op until the store has `notes_gone`). Nothing when Anki doesn't answer."""
+        told to the store (`Store.notes_gone`, L3.3). Nothing when Anki doesn't answer."""
         from app.connect import library, shelf
         with self._open(lang) as store:
-            if getattr(store, "notes_gone", None) is None:
-                return []
             ids = library.note_ids(store)
         gone = shelf.gone_notes(self._anki(), ids)
         if gone:

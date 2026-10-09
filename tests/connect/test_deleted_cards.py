@@ -30,13 +30,14 @@ class FakeAnki:
 
 
 class StoreWithNotesGone:
-    """A stand-in for the store once its half exists: it records what it was told."""
+    """A stand-in for the store's `notes_gone` (L3.3): it records what it was told and by whom, and answers the ids."""
 
     def __init__(self):
         self.told = []
 
-    def notes_gone(self, ids):
-        self.told.append(ids)
+    def notes_gone(self, ids, by="connect"):
+        self.told.append((ids, by))
+        return list(ids)
 
 
 def _ids(count):
@@ -82,21 +83,16 @@ def test_an_offline_anki_raises_and_marks_nothing_gone():
     assert caught.value.kind == "offline"
 
 
-def test_a_store_without_notes_gone_is_a_no_op():
-    # Until the store has its half, nothing is recorded and the answer says so (False).
-    assert library.notes_gone(object(), [BASE_NOTE_ID]) is False
-
-
-def test_notes_gone_passes_the_sorted_ids_to_a_store_that_has_the_method():
+def test_notes_gone_passes_the_sorted_ids_to_the_store_as_connects_write():
     store = StoreWithNotesGone()
 
-    assert library.notes_gone(store, {BASE_NOTE_ID + 14, BASE_NOTE_ID}) is True
-    assert store.told == [[BASE_NOTE_ID, BASE_NOTE_ID + 14]]
+    assert library.notes_gone(store, {BASE_NOTE_ID + 14, BASE_NOTE_ID}) == [BASE_NOTE_ID, BASE_NOTE_ID + 14]
+    assert store.told == [([BASE_NOTE_ID, BASE_NOTE_ID + 14], "connect")]
 
 
 def test_notes_gone_with_nothing_gone_does_not_call_the_store():
     # Why: an empty answer is not a change, so the store is not asked to rewrite its links.
     store = StoreWithNotesGone()
 
-    assert library.notes_gone(store, []) is False
+    assert library.notes_gone(store, []) == []
     assert store.told == []

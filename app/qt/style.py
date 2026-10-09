@@ -85,8 +85,6 @@ QToolButton#tab:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; bor
   padding: {round(10 * f) - 2}px {round(14 * f) - 2}px {round(9 * f)}px {round(14 * f) - 2}px; }}
 QWidget#footer {{ background: {c['surface']}; }}
 QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
-QLabel#bardot {{ color: {c['accent']}; {font('footer')} }}
-QLabel#bardot[busy="false"] {{ color: {c['ink-faint']}; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#pagewaiting {{ color: {c['ink-faint']}; {font('body')} font-weight: 400; }}
@@ -180,6 +178,12 @@ QTabBar::tab {{ background: transparent; color: {c['ink-dim']}; border: 0; borde
 QTabBar::tab:selected {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
 QToolTip {{ background: {tip}; color: {c['ink']}; border: 1px solid {c['line-hi']}; border-radius: 8px;
   padding: 7px 10px; {font('tooltip')} }}
+"""
+    # --- M2.1: the toast's text and the small button (`.btn.sm`); the toast card paints itself (toast.py)
+    rules += f"""
+QLabel#toasttext {{ color: {c['ink']}; {font('body')} }}
+QPushButton[size="sm"] {{ min-height: {px(24)}; padding: 0 {px(10)}; border-radius: 7px; {font('button-sm')} }}
+QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 """
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules

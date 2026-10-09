@@ -51,6 +51,9 @@ DEFAULT_SETTINGS = {
     # Never in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
     "app_theme": "hb",
     "text_size": "M",
+    # The window's motion (Settings > App > Motion; M2.1, the window's spec 05 §5.10): "follow" Windows' own *Show
+    # animations* switch, "full" or "reduced" (no slides, short fades). No run or report reads it.
+    "app_motion": "follow",
     # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
     # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
     # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:

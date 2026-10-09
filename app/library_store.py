@@ -705,7 +705,7 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     span = _span()
     key = (os.path.normcase(os.path.abspath(db_path)), role)
     if span is not None and key in span:
-        if os.path.exists(db_path) and not os.path.exists(damaged_marker(db_path)):
+        if not os.path.exists(damaged_marker(db_path)):
             return span[key]
         return None
     mode, _reason = _probe(db_path, busy_wait)
@@ -736,7 +736,7 @@ def held():
     """One handle a store and role for a span on this thread (Connect's job, §6.12): `open_store` inside it returns
     the handle its first call opened, and that handle's `close()` waits for the span's end — so a job that asks for
     its store ten times opens it once. A span inside another joins the outer one. A store that isn't ready is asked
-    again at each `open_store`, as outside a span; one marked damaged or gone meanwhile is None, as outside. Never
+    again at each `open_store`, as outside a span; one marked damaged meanwhile is None, as outside. Never
     around a window's `StoreOpener.handle()` (it keeps its handle for the window's life)."""
     if _span() is not None:
         yield
@@ -786,7 +786,7 @@ class StoreOpener:
             if self._worker is not None and self._worker.is_alive():
                 return self.mode
         store = getattr(self._local, "store", None)
-        if store is not None and os.path.exists(store.db_path) and not os.path.exists(damaged_marker(store.db_path)):
+        if store is not None and not os.path.exists(damaged_marker(store.db_path)):
             try:
                 if _mode_on(store.conn)[0] == "store":
                     self.mode, self.reason = "store", None

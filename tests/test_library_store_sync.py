@@ -691,3 +691,119 @@ def test_the_windows_stall_during_a_100k_sync(language):
         r = json.loads(out.stdout.strip().splitlines()[-1])
         _record(f"14 {language} 100k sync ({'50 new files' if r['added'] else 'no change'}, switch interval "
                 f"{interval * 1000:.1f} ms): sync {r['sync'] * 1000:.0f} ms, longest window stall {r['stall'] * 1000:.1f} ms")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_sync_whose_library_changed_before_its_lock_works_out_its_delta_again(language, monkeypatch):
+    # Why: the sync works out its delta outside any transaction (§6.10), so another writer can land between that
+    # read and the sync's write lock. The delta must then be worked out again under the lock: here a rename
+    # candidate's item is removed in between, and applying the stale delta would point the rename at a row that
+    # no longer exists (or re-add the removed file as that item).
+    store = migrated(language, shows=3, episodes=4)
+    data_dir, user_files_dir = roots(language)
+    other = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        item = store.ids("soon")[2]
+        rel = store.item(item)["rel_path"]
+        renamed = rel.replace(".srt", "_renamed.srt")
+        _rename(data_dir, rel, renamed)
+        real_delta = ls._sync_delta
+        removed = []
+
+        def delta_then_another_writer_removes(s, walk, known):
+            out = real_delta(s, walk, known)
+            if not removed:                                      # the first delta only, outside the lock
+                removed.append(item)
+                other.remove([item])
+            return out
+
+        monkeypatch.setattr(ls, "_sync_delta", delta_then_another_writer_removes)
+        summary = store.sync_disk()
+        assert removed == [item]
+        assert item not in summary["renamed"], "a removed item is never the target of a rename"
+        assert store.item(item) is None
+        added = store.item_id(renamed)
+        assert added is not None and summary["added"] == [added], "the renamed file joins as a new item"
+    finally:
+        other.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_time_only_change_refreshes_the_stored_time(language):
+    """Why: a file re-saved or copied with its bytes unchanged gets a new modified time and no new size. The
+    sync must still store that time (bookkeeping, no structural change), or the next rename check compares a
+    stale time and takes a renamed file for a new one."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[3]
+        rel = store.item(item)["rel_path"]
+        full = os.path.join(data_dir, rel)
+        st = os.stat(full)
+        new_ns = st.st_mtime_ns + 5 * 10**9
+        os.utime(full, ns=(st.st_atime_ns, new_ns))
+        assert store.sync_disk() is None, "a time-only change is no structural change"
+        assert store.item(item)["mtime_ns"] == new_ns, "the refreshed time is stored"
+        _rename(data_dir, rel, rel.replace(".srt", "_t.srt"))
+        assert store.sync_disk()["renamed"] == [item], "the refreshed time keeps the rename's place"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rename_is_reported_renamed_only_never_missing(language):
+    # the file moved, it did not go: the rename takes its place, so the old path is never listed missing
+    store = migrated(language, shows=3, episodes=4)
+    try:
+        data_dir, _u = roots(language)
+        ids = store.ids("soon")
+        rel = store.item(ids[2])["rel_path"]
+        _rename(data_dir, rel, rel.replace(".srt", "_renamed.srt"))
+        summary = store.sync_disk()
+        assert summary["renamed"] == [ids[2]]
+        assert summary["missing"] == [] and store.item(ids[2])["availability"] == "available", "renamed, not missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reset_that_moves_rows_bumps_state_and_order_versions_once(language):
+    # Why: a Reset that moves rows is a recorded change; without it the versions stay put and no export is due.
+    data_dir, user_files_dir, doc = library(language, shows=3, episodes=4)
+    doc["schedule"]["PHASE_2_SOON"].reverse()
+    doc["schedule"]["PHASE_1_NOW"].insert(0, doc["schedule"]["PHASE_3_LATER"].pop(3))   # reversed Soon, so Reset moves rows
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        v = store.versions()
+        change = store.reset_order()
+        assert change is not None, "the Reset moved rows, so it is a change"
+        after = store.versions()
+        assert after["state_version"] == v["state_version"] + 1
+        assert after["order_version"] == v["order_version"] + 1
+        assert store.export_due(), "a changed library is due an export"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_file_in_a_folder_with_no_item_joins_it_after_the_folders_last_row(language):
+    # Why: a folder that holds no item yet still has a place in its tier. The new file joins it right after the
+    # folder's last row there, not at the top; a second level named like a tier is dropped from parent_folder, so
+    # only the folder's name decides, and its directory holds no item of its own.
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        soon = store.ids("soon")
+        show = store.item(soon[4])["parent_folder"]
+        last = soon[7]
+        assert store.item(last)["parent_folder"] == show
+        touch(data_dir, f"LowPriority/HighPriority/{show}/{names(language)[84]}.srt")
+        new = store.sync_disk()["added"][0]
+        after = store.ids("soon")
+        assert after.index(new) == after.index(last) + 1, \
+            "a new file in a folder with no item: right after its folder's last row in its tier, not the top"
+    finally:
+        store.close()

@@ -168,3 +168,79 @@ def test_a_second_run_after_it_finished_changes_nothing():
 
     assert out["renamed"] == 0 and out["stored"] == 0, "a finished line has nothing more to do"
     assert media.points == points_before and media.stored == stored_before and media.deleted == deleted_before
+
+
+def test_every_anki_write_of_a_rename_happens_while_the_media_writer_is_held():
+    """rename takes the media writer once, before its first read, and makes every store, point and delete inside it.
+    Why it matters: a write outside the writer can interleave with another Anki writer and corrupt a clip or a note."""
+    class LockedMedia(FakeMedia):
+        def __init__(self, notes, files):
+            super().__init__(notes, files)
+            self.held = False
+            self.verbs = []
+
+        @contextlib.contextmanager
+        def _hold(self, verb):
+            self.verbs.append(verb)
+            self.held = True
+            try:
+                yield
+            finally:
+                self.held = False
+
+        def writer(self, verb):
+            return self._hold(verb)
+
+        def store(self, name, data):
+            assert self.held, "a store ran outside the media writer"
+            super().store(name, data)
+
+        def point(self, note_id, fields):
+            assert self.held, "a point ran outside the media writer"
+            super().point(note_id, fields)
+
+        def delete(self, name):
+            assert self.held, "a delete ran outside the media writer"
+            super().delete(name)
+
+    media = LockedMedia(*word_cut_media())
+    media_names.rename(media, line_made(1, 2, 3), "ep-kimetsu-03", "SentenceAudio", "Picture")
+
+    assert media.verbs == ["Connect's media names"], "the writer is taken once, for the whole rename"
+    assert len(media.stored) == 2 and len(media.points) == 3 and len(media.deleted) == 6, \
+        "the guarded writes all ran, so the asserts above were tested"
+    assert media.held is False, "the writer is released when the rename returns"
+
+
+def test_the_anki_media_adapter_waits_ten_seconds_for_the_writer(monkeypatch):
+    """AnkiConnectMedia takes Anki's write lock with a 10 s wait, so a busy Anki is waited for, not raced.
+    Why it matters: with no wait a rename that meets a running Anki write fails at once and leaves half its names."""
+    from app import anki_connect
+
+    calls = []
+    monkeypatch.setattr(anki_connect, "writer",
+                        lambda verb, wait=0.0, **kw: (calls.append((verb, wait)), contextlib.nullcontext())[1])
+
+    with media_names.AnkiConnectMedia("http://127.0.0.1:8765").writer("Connect's media names"):
+        pass
+
+    assert calls == [("Connect's media names", 10.0)], "the adapter asks the writer for a 10 s wait"
+
+
+def test_an_old_file_that_reads_back_empty_leaves_the_note_as_it_is():
+    """When the old file reads back empty or False (AnkiConnect's answer for a missing file), the note is left alone:
+    nothing is stored, pointed or deleted. Why it matters: storing an empty file would give the card a silent clip,
+    and pointing the note at it would lose the clip the learner still has under its old name."""
+    for empty in (b"", False):
+        notes, files = word_cut_media()
+        notes = notes[:1]
+        files["上層_83520_4_1a2b.mp3"] = empty
+        files["上層_83520_4_1a2b.jpg"] = empty
+        media = FakeMedia(notes, files)
+        audio_before = media.note_map[1]["fields"]["SentenceAudio"]["value"]
+
+        out = media_names.rename(media, line_made(1), "ep-kimetsu-03", "SentenceAudio", "Picture")
+
+        assert out["stored"] == 0 and out["renamed"] == 0, f"an unreadable old file ({empty!r}) is not renamed"
+        assert media.stored == [] and media.points == [] and media.deleted == [], "nothing stored, pointed or deleted"
+        assert media.note_map[1]["fields"]["SentenceAudio"]["value"] == audio_before

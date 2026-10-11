@@ -1031,3 +1031,140 @@ def test_the_idle_trigger_checkpoint_gives_up_on_a_busy_lock_within_its_short_wa
         if connect is not None:
             connect.close()
         window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_idle_trigger_checkpoint_waits_for_a_brief_writer_then_checkpoints(language, monkeypatch, store_helper_spawns):
+    """The idle trigger's checkpoint waits up to OUTSIDE_IDLE_WAIT for a write lock another writer holds for a moment,
+    then checkpoints. Why: Connect writes in bursts; a checkpoint that gave up at once whenever a writer was briefly
+    active would leave the `-wal` growing until some later close."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)            # the trigger runs only when the test calls it
+    monkeypatch.setattr(ls, "_IDLE", {})
+    outcomes = []
+    holders = []
+    released_at = []
+    real_checkpoint = ls.Store.checkpoint
+
+    def a_writer_holds_the_lock_then_checkpoint(self, *args, **kwargs):
+        lock = ls._write_lock_for(self.db_path)
+        holding = threading.Event()
+
+        def hold():
+            lock.acquire()
+            holding.set()
+            time.sleep(0.3)                    # a brief writer: well inside OUTSIDE_IDLE_WAIT (1 s)
+            released_at.append(time.perf_counter())
+            lock.release()
+
+        holder = threading.Thread(target=hold)
+        holders.append(holder)
+        holder.start()
+        assert holding.wait(5.0), "the holder never took the write lock"
+        try:
+            result = real_checkpoint(self, *args, **kwargs)
+        except ls.StoreBusy:
+            outcomes.append(("busy", time.perf_counter()))
+            raise
+        outcomes.append(("checkpointed", time.perf_counter()))
+        return result
+
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    connect = None
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        assert not ls.maintain_due(window)[0], "precondition: the copy must be up to date (the trigger checkpoints)"
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        connect.bookkeeping({"analysed_order_version": connect.meta().get("analysed_order_version", 0) + 1})
+        assert len(ls._IDLE) == 1, "the connect write leaves one idle trigger waiting"
+        monkeypatch.setattr(ls.Store, "checkpoint", a_writer_holds_the_lock_then_checkpoint)
+        ls._outside_idle_now()
+        assert len(outcomes) == 1, outcomes
+        kind, returned_at = outcomes[0]
+        assert kind == "checkpointed", "the checkpoint gave up on a writer holding the lock for 0.3 s"
+        assert released_at and returned_at >= released_at[0], "the checkpoint ran while the writer still held the lock"
+    finally:
+        for holder in holders:
+            holder.join(5.0)
+        if connect is not None:
+            connect.close()
+        window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_shipped_idle_delay_arms_a_short_timer_after_a_connect_write(language, monkeypatch):
+    """With the shipped settings (only the suite's off switch removed, the idle delay NOT patched), a Connect write
+    arms the idle copy trigger with a short positive delay, and exit runs it at once. Why: a switched-off delay would
+    leave an outside writer's changes uncopied until the next window opens."""
+    monkeypatch.delenv("SURASURA_NO_IDLE_EXPORT", raising=False)
+    monkeypatch.setattr(ls, "_IDLE", {})
+    # The shipped delay stays. The trigger is replaced by a recorder (the timer resolves it from the module at call
+    # time), so a fire records its keywords: the timer's own fire records {} and exit's records {"at_exit": True}.
+    # The checks below take well under the shipped delay; a timer that fired early fails the last assert.
+    calls = []
+    monkeypatch.setattr(ls, "_outside_idle", lambda *a, **k: calls.append(k))
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    connect = None
+    try:
+        ls.maintain(language, data_dir, user_files_dir)
+        connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
+        assert connect is not None
+        connect.receipt(connect.ids("now")[0], "2026-10-08T10:00:00Z")
+        assert len(ls._IDLE) == 1, "a Connect write arms one idle trigger"
+        timer = next(iter(ls._IDLE.values()))[0]
+        assert timer.interval == ls.OUTSIDE_IDLE_S, "the timer carries the shipped idle delay"
+        assert 0 < timer.interval <= 10, "the shipped idle delay is a few seconds, not off and not long"
+        ls._outside_idle_now()
+        timer.join(5.0)
+        assert ls._IDLE == {}, "exit takes the pending trigger off the list"
+        assert calls == [{"at_exit": True}], "exit runs the pending trigger once, at exit, and the timer never fired"
+    finally:
+        if connect is not None:
+            connect.close()
+        window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_close_with_a_read_only_anchor_never_asks_for_the_write_lock(language, monkeypatch):
+    """The anchor opened, so the close only closes its own handle: the checkpointing close (under the write lock)
+    belongs to the helper and the close trigger, so a window's exit never queues for the lock."""
+    asked = []
+    real = ls._write_lock_for
+    monkeypatch.setattr(ls, "_write_lock_for", lambda path: asked.append(path) or real(path))
+    store = migrated(language)
+    try:
+        store.move([store.ids("now")[-1]], "now")
+        asked.clear()                           # the move's own lock use is not what this test is about
+        store.close()
+        assert asked == [], "a close with a read-only anchor must not ask for the write lock"
+    finally:
+        try:
+            store.close()
+        except Exception:
+            pass
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_close_without_anchor_closes_under_the_write_lock_it_asks_for(language, monkeypatch):
+    """No anchor: the close goes under the write lock (it asks for the store's own lock) and then closes the handle,
+    so the store is unusable afterwards. Without the ask, a last close could checkpoint outside the lock."""
+    asked = []
+    real = ls._write_lock_for
+    monkeypatch.setattr(ls, "_write_lock_for", lambda path: asked.append(path) or real(path))
+    store = migrated(language)
+    try:
+        store.move([store.ids("now")[-1]], "now")
+        asked.clear()
+        monkeypatch.setattr(ls, "_read_only", _no_anchor)
+        store.close()
+        assert asked == [store.db_path], "with no anchor the close must ask for the write lock once"
+        with pytest.raises(sqlite3.ProgrammingError):
+            store.conn.execute("SELECT 1")
+    finally:
+        try:
+            store.close()
+        except Exception:
+            pass

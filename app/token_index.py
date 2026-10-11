@@ -1173,6 +1173,40 @@ class Store:
         except Exception:
             return None
 
+    def phrase_tallies(self):
+        """{path: ({phrase index: [uses, [spellings]]}, {"lemma|reading": uses given to a phrase})} — each counted
+        file's `phrases.tally` as the last index kept it (`_update_phrases`), or None when one is missing or not
+        current (the phrase data, the name tables' words or a switch changed since): the phrases one by one, which the
+        summed table (by row) can't tell apart — E2.2's gate on the phrase rows (`arrivals.Gates`)."""
+        if self.language != "ja":
+            return None
+        try:
+            from app import phrase_data
+            kept = json.loads(self.get_meta("phrase_files") or "{}")
+            base, _reads, names = self._phrases_basis(phrase_data.REVISION)
+            if kept.get("state") != base or kept.get("names") != names:
+                return None
+            files, out = kept.get("files", {}), {}
+            for path, mtime, size in self.conn.execute("SELECT path, mtime, size FROM files WHERE counted = 1"):
+                entry = files.get(path)
+                if entry is None or entry[:2] != [mtime, size]:
+                    return None
+                out[path] = (entry[3], entry[4])
+            return out
+        except Exception:
+            return None
+
+    def names_records(self):
+        """The counted files' name records (`names.Record` data), in the table's order — what the name tables are
+        computed from (`_update_names_tables`)."""
+        return [_decode_counts(blob) for (blob,) in self.conn.execute(
+            "SELECT names FROM files WHERE names IS NOT NULL AND counted = 1 ORDER BY rowid")]
+
+    def names_record(self, path):
+        """One file's name record (counted or kept), or None: not held, or not a Japanese store."""
+        row = self.conn.execute("SELECT names FROM files WHERE path=?", (_norm(path),)).fetchone()
+        return _decode_counts(row[0]) if row and row[0] else None
+
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
     def word_counts(self):
         """({(lemma, reading): uses}, total tokens) — the aggregate as a run counts the library. Japanese: with the
@@ -1268,12 +1302,10 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
     rows = (phrases or {}).get("rows") or {}
     if rows:
         lemmas = {key[0] for key in counts}
-        for name, (n, spelled) in rows.items():
-            word, _sep, reading = name.partition("|")
-            if not n or word in lemmas or (word, reading) in known_tuples \
-                    or any(s in known_lemmas or s in ignore_set for s in (word, *spelled)):
-                continue
-            unknown.append((name, n))
+        for name, row in rows.items():
+            n = phrase_row_uses(name, row, lemmas, known_tuples, known_lemmas, ignore_set)
+            if n is not None:
+                unknown.append((name, n))
 
     # Most uses first, ties by key: two stable sorts in C, not a key tuple built per word.
     unknown.sort(key=itemgetter(0))
@@ -1304,6 +1336,18 @@ def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=N
             parts[key] = tuple(kept)
         freqs["compounds"] = (uses, parts, bases)
     return freqs
+
+
+def phrase_row_uses(name, row, lemmas, known_tuples, known_lemmas, ignore_set):
+    """A phrase row of the store's table (`name` "Word|Reading", `row` [uses, spellings]) as an unknown of the Rarity
+    slider's (`unknown_distribution`): its uses — or None when it has none, its lemmas joined are a word the library
+    holds (`lemmas`), or the learner knows or ignores it as a whole (its Word, its reading, a spelling)."""
+    n, spelled = row
+    word, _sep, reading = name.partition("|")
+    if not n or word in lemmas or (word, reading) in known_tuples \
+            or any(s in known_lemmas or s in ignore_set for s in (word, *spelled)):
+        return None
+    return n
 
 
 def phrase_rows_on(language):
@@ -1456,15 +1500,20 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
     words only when they're dictionary words" (`singles_rule`). None for an empty store."""
     if not store.has_tokens():
         return None
+    return store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script))
+
+
+def preview_lists(store, language, user_files_dir, script="asis"):
+    """The learner's lists as `preview_frequencies` counts by them: {known_tuples, known_lemmas, ignore_set,
+    skip_singles} — `unknown_frequencies`' (and `unknown_distribution`'s) keyword arguments."""
     cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
     if cached is not None:
         known_tuples, known_lemmas = cached
     else:
         known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
-    return store.unknown_frequencies(
-        known_tuples=known_tuples, known_lemmas=known_lemmas,
-        ignore_set=preview_ignore_set(user_files_dir, language, script),
-        skip_singles=(language == "ja" and singles_rule()))
+    return {"known_tuples": known_tuples, "known_lemmas": known_lemmas,
+            "ignore_set": preview_ignore_set(user_files_dir, language, script),
+            "skip_singles": language == "ja" and singles_rule()}
 
 
 def prepare_preview(language, user_files_dir):

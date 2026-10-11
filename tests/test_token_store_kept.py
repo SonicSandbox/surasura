@@ -541,3 +541,133 @@ def test_without_a_library_store_the_indexer_leaves_kept_rows(tmp_path):
     can't see the kept list."""
     files = _files("ja")[:2]
     assert indexer.token_store_lists("ja", roots("ja")[0], files) == (files, {})
+
+
+# --- mutant kills (E2.2 flag pass; Haiku-written K01–K08, K06 rewritten) ------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_of_kept_files_only_has_no_tokens(language, tmp_path):
+    """A library of Finished files alone is cached for sentences but counts for nothing: has_tokens() and total_tokens()
+    say the store is empty, so the Rarity slider does not think the library has content (real text, both languages)."""
+    finished = _files(language)[2]
+    store = ti.open_store(language, path=str(tmp_path / "kept_only.db"))
+    store.reconcile([], ti.make_tokenizer(language), kept=[finished])
+    assert store.kept_files() == [ti._norm(finished)]
+    assert store.file_tokens(finished), "not vacuous: the kept file holds tokens"
+    assert store.counted_files() == []
+    assert store.has_tokens() is False
+    assert store.total_tokens() == 0
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_forgotten_path_the_kept_list_still_names_stays_kept(language):
+    """A path in both `kept` and `forgotten` stays kept: its row and its kept text stay, because a list naming a file
+    always wins over *forget its sentences*. Why: forgetting drops only what no list names, so a file the library
+    still holds never loses its sentences to a stale forget."""
+    a, junk, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[junk])
+    assert set(_kept_text(store).held()) == {ti._norm(junk)}
+    store.reconcile([a], ti.make_tokenizer(language), kept=[junk], forgotten=[junk])
+    assert set(store.kept_files()) == {ti._norm(junk)}, "named by the kept list: never forgotten"
+    assert set(_kept_text(store).held()) == {ti._norm(junk)}
+    assert store.file_tokens(junk) != []
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_needs_reconcile_sees_a_file_move_between_the_lists_both_ways(language):
+    """A kept file put back (and a counted file finished) is a change the dashboard must start the indexer for, even
+    though the file itself is the same, unchanged on disk; with nothing moved the check is quiet again."""
+    a, b, c, _d, _e, _f = _files(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, kept=[c])
+
+    assert store.needs_reconcile([a, b, c], kept=[]) is True, "c put back: its counts must move in"
+    store.reconcile([a, b, c], tok, kept=[])
+    assert store.needs_reconcile([a, b, c], kept=[]) is False, "nothing moved: nothing to do"
+
+    assert store.needs_reconcile([a, b], kept=[c]) is True, "c finished: its counts must move out"
+    store.reconcile([a, b], tok, kept=[c])
+    assert store.needs_reconcile([a, b], kept=[c]) is False, "nothing moved: nothing to do"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_leaving_twins_and_one_new_path_are_read_again_never_rekeyed(language):
+    """9a's re-key needs exactly one leaving row alike: two copies of one episode (same name, size, modified time)
+    both leave, and one new path looks like both — it is read again, and neither row's tokens are handed to it."""
+    data_dir, _u = roots(language)
+    source = _files(language)[0]
+    stamp = os.stat(source).st_mtime
+    olds = [os.path.join(data_dir, "HighPriority", show, "第01話.txt") for show in ("甲", "乙")]
+    for path in olds:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copyfile(source, path)
+        os.utime(path, (stamp, stamp))
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile(olds, tok)
+    new = os.path.join(data_dir, "LowPriority", "丙", "第01話.txt")
+    os.makedirs(os.path.dirname(new), exist_ok=True)
+    os.replace(olds[0], new)
+    os.remove(olds[1])
+    tok.calls.clear()
+    store.reconcile([new], tok)
+    assert tok.calls == [("file", ti._norm(new))], "two leaving twins: the new path is tokenized again, never re-keyed"
+    assert set(store.counted_files()) == {ti._norm(new)}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_file_forgotten_leaves_the_counts_exactly_as_they_were(language):
+    """K07: a KEPT row that leaves (the user forgot its text, so it is in neither list) never reached the word counts,
+    the bound pieces or the token total, so dropping it moves none of them. Why: subtracting a kept row's counts would
+    take out words the counted list never summed."""
+    a, junk, *_rest = _files(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), kept=[])
+        base = (store.word_counts(), store.bound_counts(), store.total_tokens())
+        store.reconcile([a], ti.make_tokenizer(language), kept=[junk])
+        assert ti._norm(junk) in store.kept_files() and store.total_tokens() > 0
+        assert (store.word_counts(), store.bound_counts(), store.total_tokens()) == base, "keeping it moved no count"
+        store.reconcile([a], ti.make_tokenizer(language), kept=[], forgotten=[junk])
+        assert store.file_tokens(junk) == []
+        assert (store.word_counts(), store.bound_counts(), store.total_tokens()) == base, "forgetting it moved no count"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_second_reconcile_with_the_same_lists_and_signature_writes_no_row(language):
+    """S19: the build signature is written once, when it changes. A second reconcile with the same counted and kept
+    lists and the same signature changes no row of the store, the signature's meta row included, and reads no file."""
+    a, b, finished, _removed, _missing, _f = _files(language)
+    sig = ti.build_signature(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, sig, kept=[finished])
+    before = store.conn.total_changes
+    tok.calls.clear()
+    store.reconcile([a, b], tok, sig, kept=[finished])
+    assert store.conn.total_changes == before, "no row written, the signature's meta row included"
+    assert tok.calls == [], "nothing on disk moved: nothing read again"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_wipe_with_a_forget_drops_the_forgotten_kept_row(language):
+    """A wipe (a new tokenizer identity) clears every row, kept ones too: a kept file the user forgot in the same
+    reconcile doesn't live on as a stale row of its own, while the kept file still listed is read again and stays."""
+    a, junk, keep, *_rest = _files(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), "identity 1", kept=[junk, keep])
+        tok = _counting(language)
+        store.reconcile([a], tok, "identity 2", kept=[keep], forgotten=[junk])
+        assert set(store.kept_files()) == {ti._norm(keep)}, "the forgotten kept row went with the wipe"
+        assert store.file_tokens(junk) == [] and ("text", None) in tok.calls, "the listed kept file was read again"
+    finally:
+        store.close()

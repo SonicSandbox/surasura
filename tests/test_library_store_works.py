@@ -1248,3 +1248,178 @@ def test_a_drop_a_finishing_rule_places_keeps_its_cards_and_its_pin(language):
         assert store.item(item)["pinned"] == stamp, "the rule took its pin away"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_item_waiting_in_new_arrivals_keeps_its_text_and_is_never_counted(language):
+    """05 §5.10: an item waiting in New arrivals keeps its text (the kept list) and is never counted toward the
+    analysis. Why: the kept list reads the arrivals tier too; leaving it out drops the text of every waiting drop."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    try:
+        waits = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[98]}.srt"), _record("r5", producer="another"),
+                               rules={"another": "wait"})
+        assert store.ids("arrivals") == waits.added
+        rel = store.item(waits.added[0])["rel_path"]
+        counted, kept = store.text_lists()
+        assert rel in kept and rel not in counted
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_locked_cache_cover_gets_no_fetch_time(language):
+    """A cover the user locked is the user's choice, not a download to refresh: even when its path is a cache file, a
+    locked cover stores no fetch time (only an unlocked fetch stamps one)."""
+    store = migrated(language)
+    try:
+        work = _work(store, store.ids("now")[0])
+        store.set_cover(work, "anilist", ref="2", path="cache:2.jpg", locked=True)
+        row = store._work_row(work)
+        assert row["cover_locked"] == 1 and row["cover_fetched_at"] is None
+    finally:
+        store.close()
+
+
+def test_a_channels_wait_rule_wins_over_its_producers_own_rule():
+    """05 §5.12: a channel's `wait` line is read before its producer's own line, and `wait` stops the search: the
+    drop waits in New arrivals even though YouTube as a whole is set to goal. A channel with no line of its own still
+    takes the producer's goal (the control)."""
+    rules = {"youtube": "goal", "youtube:UCW": "wait"}
+    assert ls._rule_for({"producer": "youtube", "channel_id": "UCW"}, rules) is None
+    assert ls._rule_for({"producer": "youtube", "channel_id": "UCX"}, rules) == ("youtube", "goal")
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_channels_wait_rule_keeps_its_drop_in_new_arrivals_when_its_producer_is_goal(language):
+    """05 §5.12: the same rule through `register`: a channel's `wait` line is read before its producer's `goal` line,
+    so the drop is no rule's and stays in New arrivals, not Goal. A channel with no line of its own still takes goal
+    (the control)."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    rules = {"youtube": "goal", "youtube:UCW": "wait"}
+    waits = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[130]}.srt"),
+                           _record("w1", producer="youtube", channel_id="UCW"), rules=rules)
+    assert getattr(waits, "rule", None) is None and store.item(waits.added[0])["tier"] == "arrivals"
+    assert waits.added[0] not in store.ids("goal")
+    goes = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[131]}.srt"),
+                          _record("w2", producer="youtube", channel_id="UCX"), rules=rules)
+    assert goes.rule == "goal" and store.ids("goal")[0] == goes.added[0]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_seed_rebuild_merges_two_works_on_one_anilist_id_into_the_lower_one(language):
+    """A seed rebuild whose pairing names an AniList id that another work holds merges the two works: the lower id is
+    kept, the dropped work's row is deleted and its items move to the kept work, and the kept work takes the dropped
+    work's AniList id and YouTube channel (each a rule of its own, pinned together here)."""
+    store = migrated(language, shows=2, episodes=2)
+    now_ids = store.ids("now")
+    soon_ids = store.ids("soon")
+    a = b = None
+    for x in now_ids:
+        for y in soon_ids:
+            if _work(store, x) != _work(store, y):
+                a, b = x, y
+                break
+        if a is not None:
+            break
+    assert a is not None and b is not None
+    wa, wb = sorted((_work(store, a), _work(store, b)))
+    # the pairing's item must belong to the lower work wa (not just any item of the pair), whatever the data order
+    a = next(i for t in ("now", "soon") for i in store.ids(t) if _work(store, i) == wa and store.item(i)["parent_folder"])
+    assert _work(store, a) == wa
+    b_items = [i for t in ls.TIERS for i in store.ids(t) if _work(store, i) == wb]
+    with store._writing():
+        store.conn.execute("UPDATE works SET anilist_id = NULL, youtube_channel = NULL WHERE id = ?", (wa,))
+        store.conn.execute("UPDATE works SET anilist_id = 4242, youtube_channel = 'UCdrop' WHERE id = ?", (wb,))
+        store.conn.execute(
+            "INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES ('k-merge', ?, '{\"anilist_id\": 4242}', 't')",
+            (a,))
+    with store._writing():
+        ls._seed_schema2(store, int(store.meta()["state_version"]))
+    assert store.conn.execute("SELECT 1 FROM works WHERE id = ?", (wb,)).fetchone() is None
+    assert all(_work(store, i) == wa for i in b_items)
+    assert store.conn.execute("SELECT anilist_id, youtube_channel FROM works WHERE id = ?", (wa,)).fetchone() == (4242, "UCdrop")
+    assert ls._works_ok(store.conn) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_finished_import_copies_and_leaves_every_source_file_where_it_was(language, tmp_path):
+    """05 §5.8: the importer copies, never moves — a season folder and a single file picked from outside the library
+    stay where they were after the copy (a move would leave only the empty folder)."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        outside = tmp_path / "finished-sources"
+        season = outside / w[90]
+        season.mkdir(parents=True)
+        for n in (1, 2):
+            (season / f"{w[90]}_第{n:02d}話.srt").write_text(f"{w[91]} {n}\n", encoding="utf-8")
+        single = outside / f"{w[92]}.txt"
+        single.write_text(w[93] + "\n", encoding="utf-8")
+        copied = ls.copy_into_finished(data_dir, [str(season), str(single)])
+        assert len(copied) == 3
+        assert os.path.exists(os.path.join(data_dir, "Graduated", w[90], f"{w[90]}_第01話.srt")), \
+            "the season's first episode is copied under Graduated/ with its folder name"
+        assert os.path.exists(os.path.join(data_dir, "Graduated", w[90], f"{w[90]}_第02話.srt")), \
+            "the season's second episode is copied under Graduated/ with its folder name"
+        assert os.path.exists(os.path.join(data_dir, "Graduated", f"{w[92]}.txt")), \
+            "the single file is copied under Graduated/"
+        assert (season / f"{w[90]}_第01話.srt").exists(), "a copy: the user's season files stay where they were"
+        assert (season / f"{w[90]}_第02話.srt").exists(), "a copy: the user's season files stay where they were"
+        assert single.exists(), "a copy: the user's single file stays where it was"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_taken_finished_name_copies_as_name_1_and_the_first_copy_stays(language, tmp_path):
+    """05 §5.8: a name already taken in Graduated/ copies as `name_1.ext` (the next free number, one step at a time);
+    the first copy is left exactly as it was copied."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        single = tmp_path / f"{w[92]}.txt"
+        single.write_text(w[93] + "\n", encoding="utf-8")
+        first = ls.copy_into_finished(data_dir, [str(single)])
+        # Rewrite the source with different words before the second copy, so an overwrite of the first copy with
+        # the source's new bytes shows (identical bytes would hide it).
+        single.write_text(w[91] + "\n", encoding="utf-8")
+        second = ls.copy_into_finished(data_dir, [str(single)])
+        assert first == [f"Graduated/{w[92]}.txt"]
+        assert second == [f"Graduated/{w[92]}_1.txt"], "the next free number is _1, not _2"
+        first_copy = os.path.join(data_dir, "Graduated", f"{w[92]}.txt")
+        second_copy = os.path.join(data_dir, "Graduated", f"{w[92]}_1.txt")
+        assert os.path.exists(first_copy) and os.path.exists(second_copy)
+        with open(first_copy, encoding="utf-8") as handle:
+            assert handle.read() == w[93] + "\n"
+        with open(second_copy, encoding="utf-8") as handle:
+            assert handle.read() == w[91] + "\n"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_cancel_between_files_stops_the_finished_copy(language, tmp_path):
+    """05 §5.8 (cancel): `cancel()` returning True stops the copying between files; the file already copied stays
+    copied, and the next one is never started. Why: a user who presses Cancel on a season must not get the rest."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        season = tmp_path / "finished-before" / w[90]
+        season.mkdir(parents=True)
+        for n in (1, 2):
+            (season / f"{w[90]}_第{n:02d}話.srt").write_text(f"{w[91]} {n}\n", encoding="utf-8")
+        done = []
+        out = ls.copy_into_finished(data_dir, [str(season)], progress=lambda d, t: done.append(d),
+                                    cancel=lambda: len(done) >= 1)
+        assert len(out) == 1, "cancel after the first file: the second is never copied"
+        assert len(os.listdir(os.path.join(data_dir, "Graduated", w[90]))) == 1
+    finally:
+        store.close()

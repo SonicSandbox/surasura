@@ -951,3 +951,110 @@ def test_a_twins_question_another_writer_recorded_meanwhile_is_kept_once(languag
         assert [ask["rel"] for ask in store.rename_asks()] == [back], "one question for one file"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_relinking_a_missing_item_makes_it_available_and_bumps_the_version(language):
+    """A relink of a missing item sets it available and moves availability_version up by one: the bump is what tells
+    other readers the availability changed, so a relink that leaves the version put is a stale read."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[0]
+    os.remove(os.path.join(data_dir, store.item(item)["rel_path"]))
+    store.sync_disk()
+    assert store.item(item)["availability"] == "missing"
+    v = store.versions()["availability_version"]
+    w = names(language)
+    store.relink(item, touch(data_dir, f"GoalContent/{w[115]}/{w[116]}.srt"))
+    assert store.item(item)["availability"] == "available"
+    assert store.versions()["availability_version"] == v + 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_removed_file_added_again_is_counted_not_kept(language):
+    """9b (G2.2-3): a file removed earlier keeps its text in the kept list, but once the same file is added again it is
+    counted, and its old trash row must not also put it in the kept list — a file is counted or kept, never both."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    x = store.ids("goal")[0]
+    rel = store.item(x)["rel_path"]
+    store.remove([x])
+    assert rel in store.text_lists()[1], "precondition: a removed file's text is kept"
+    store.insert([os.path.join(data_dir, rel)], "now")
+    counted, kept = store.text_lists()
+    assert rel in counted and rel not in kept, "added again: counted, and not also kept from its trash row"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_same_name_and_size_but_another_modified_time_is_a_new_file_not_a_move(language):
+    """9a (Sonic: "same name, size, modified date"): a file in another folder with the same name and size as a missing
+    item, but a different modified time, is a new file. The item stays missing; the new file is added. Size alone is
+    not a match: two different episodes can be the same size."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    item = store.ids("soon")[1]
+    old = store.item(item)["rel_path"]
+    new = f"GoalContent/{names(language)[111]}/{old.rsplit('/', 1)[-1]}"
+    old_full = os.path.join(data_dir, *old.split("/"))
+    new_full = os.path.join(data_dir, *new.split("/"))
+    try:
+        os.makedirs(os.path.dirname(new_full), exist_ok=True)
+        shutil.copy(old_full, new_full)
+        m = os.stat(old_full).st_mtime_ns + 5_000_000_000
+        os.utime(new_full, ns=(m, m))
+        os.remove(old_full)
+        summary = store.sync_disk()
+        assert item in summary["missing"] and item not in summary["renamed"]
+        assert store.item_id(new) is not None, "the untracked file is added as new"
+        assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_corrupt_rename_asks_value_reads_as_no_questions_and_the_sync_carries_on(language):
+    """A damaged `meta.rename_asks` (not JSON) must not stop the library: it reads as no open questions and the
+    sync runs on, never raising."""
+    store = migrated(language)
+    try:
+        with store._writing():
+            store._set_meta({"rename_asks": "{not json"})
+        assert store.rename_asks() == []
+        store.sync_disk()
+        # the sync really ran past the corrupt value: a file put on disk afterwards is indexed, not just "no raise"
+        data_dir, _u = roots(language)
+        touch(data_dir, "HighPriority/after_corrupt.txt")
+        store.sync_disk()
+        assert store.item_id("HighPriority/after_corrupt.txt") is not None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_held_out_question_survives_later_syncs_until_its_file_is_gone(language):
+    """9a, 06 §6.7: a twins question is held out of the library and asked. While its file exists, every later sync
+    keeps the question (it is still open); once the file is gone, the next sync drops the question with it."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    try:
+        a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+        b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+        mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+        os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+        store.sync_disk()
+        os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+        back = f"GoalContent/{w[114]}/same.srt"
+        _move_file(data_dir, store.item(a)["rel_path"], back)
+        assert store.sync_disk()["asked"] == [back]
+        # the question is held out: a later sync with the file still there keeps it open
+        store.sync_disk()
+        assert len(store.rename_asks()) == 1 and store.rename_asks()[0]["rel"] == back
+        # the file goes: the next sync drops the question with it
+        os.remove(os.path.join(data_dir, back))
+        store.sync_disk()
+        assert store.rename_asks() == []
+    finally:
+        store.close()

@@ -962,3 +962,9 @@ def test_a_rebuild_from_the_copy_brings_them_back(language):
     from tests.test_library_store_support import pieces_ok
     assert pieces_ok(store) is None
     store.close()
+
+
+def test_a_2x_copy_never_brings_back_its_soon_line_but_a_3x_copy_does():
+    # Why: the Soon line is 3.0's (schema 2); a 2.x copy's line is not this store's to keep, so it is re-derived from the tiers.
+    assert "soon_line" not in ls._copy_meta_block({"store_schema": 1, "meta": {"soon_line": 30, "mine_line": 20}})
+    assert ls._copy_meta_block({"store_schema": 2, "meta": {"soon_line": 30}})["soon_line"] == 30

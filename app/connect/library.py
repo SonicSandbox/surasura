@@ -175,6 +175,52 @@ def notes_gone(store, gone):
     return store.notes_gone(sorted(gone), by=READER)
 
 
+def unmake(store, item_id, note_ids, words=()):
+    """*Undo this batch* (P2.5 row 2.5.5, ✅ P2.5-1): the undone notes out of the item's made words, in one short write
+    as role `connect`'s command — a word left with no note is free again (its row goes: Connect may make it again),
+    and so is one of `words` (the undone notes' words) whose row the deleted-card check already emptied; the item's
+    receipt cleared when none of its made words is left -> the words freed. Nothing to change → nothing written
+    (S19)."""
+    gone = {int(n) for n in note_ids or ()}
+    undone = set(words or ())
+    if not gone or not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'"
+                                          ).fetchone():
+        return []
+
+    def changes():
+        out = {}
+        for word, ids in store.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?", (item_id,)):
+            try:
+                had = [int(n) for n in json.loads(ids)]
+            except (ValueError, TypeError):
+                continue
+            left = [n for n in had if n not in gone]
+            if left != had or (not left and word in undone):
+                out[word] = left
+        return out
+
+    with store._reading():
+        if not changes():                   # nothing to change: no write lock taken (S19)
+            return []
+    with store._command("receipt", by=READER) as cmd:
+        changed = changes()                 # read again under the write lock: a write meanwhile is never undone
+        if not changed:
+            return []
+        for word, left in changed.items():
+            if left:
+                store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                   (json.dumps(left), item_id, word))
+            else:
+                store.conn.execute("DELETE FROM made_words WHERE item_id = ? AND word = ?", (item_id, word))
+        cmd.touch()
+        # the receipt goes once none of the item's cards is left in Anki (a word you deleted by hand keeps its
+        # empty row — never made again, G1.3-4 — and holds nothing of the item in Anki)
+        if not store.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? AND note_ids NOT IN ('[]', '') LIMIT 1",
+                                  (item_id,)).fetchone():
+            store.receipt(item_id, None)
+    return sorted(w for w, left in changed.items() if not left)
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op."""

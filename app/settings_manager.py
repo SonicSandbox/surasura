@@ -95,6 +95,10 @@ DEFAULT_SETTINGS = {
     # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own cards never count. Never in a
     # signature.
     "connect_backlog_cap": 300,
+    # Where Connect looks for an episode's video when it isn't where its pairing says (P2.5, G1.3-12): these folders and
+    # their subfolders, beside the folders your paired videos are in. A list for every language, or {lang: [...]}.
+    # Never in a signature.
+    "connect_video_folders": [],
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
     # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
     # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's

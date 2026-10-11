@@ -112,6 +112,8 @@ def _module_present(name):
 def status_args(parser):
     add_language(parser)
     parser.add_argument("--anki", action="store_true", help="also ask whether Anki is reachable (~1 s when it's closed)")
+    parser.add_argument("--words", action="store_true",
+                        help="Connect's preview: each episode's words it didn't make cards for, with why")
 
 
 def status(args):
@@ -135,7 +137,7 @@ def status(args):
     if args.anki:
         from app import anki_connect
         anki["reachable"] = bool(anki_connect.probe(anki_connect.address(loaded)).get("ok"))
-    return {
+    out = {
         "language": lang,
         "journey_current": analyzer.journey_check(argv, lang),
         "last_generate": last_generate,
@@ -148,6 +150,11 @@ def status(args):
         "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
+    if loaded.get("connect_enabled"):           # P2.5: Connect's record (read-only; no ledger → Up to date)
+        from app.connect import status as connect_status
+        record = connect_status.read([lang], words=getattr(args, "words", False))
+        out["connect"] = dict(record["languages"][lang], running=record["running"])
+    return out
 
 
 # --------------------------------------------------------------------------- #

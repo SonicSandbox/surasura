@@ -6,7 +6,7 @@ What each test holds still:
     and its file is left exactly as it was: the same bytes, its jobs never read or written. A wrong answer would
     let an old Surasura rewrite a newer ledger's jobs and lose work the newer one was tracking;
   * a ledger one step older (schema 2, P2.2's) opens, keeps its jobs untouched, gains P2.4's columns and tables and
-    records schema 3, so the next look does not refuse or re-mine anything;
+    records the current schema (4 since P2.5), so the next look does not refuse or re-mine anything;
   * `set_state` is saved at once: a second connection on the same file reads the new state straight away, so a
     crash after the call cannot leave a job that says less than what was done.
 
@@ -47,9 +47,9 @@ def _write_ledger(path, schema, jobs_sql, job_sql):
 
 
 def test_a_newer_ledger_is_refused_and_left_untouched(tmp_path):
-    """Schema 4 is one step above this Surasura's 3: refused before any write, so the file keeps its exact bytes."""
+    """Schema 5 is one step above this Surasura's 4: refused before any write, so the file keeps its exact bytes."""
     path = str(tmp_path / "ledger.sqlite")
-    _write_ledger(path, "4", _SCHEMA_2_JOBS,
+    _write_ledger(path, "5", _SCHEMA_2_JOBS,
                   "INSERT INTO jobs (language, item_id, state, source, created_at, updated_at) VALUES "
                   "('ja', 4, 'queued', 'user', 'x', 'x')")
     with open(path, "rb") as f:
@@ -57,16 +57,16 @@ def test_a_newer_ledger_is_refused_and_left_untouched(tmp_path):
     try:
         Ledger(path)
     except book.TooNew as err:
-        assert str(err.schema) == "4"
+        assert str(err.schema) == "5"
     else:
-        raise AssertionError("a schema 4 ledger was opened; it must be refused")
+        raise AssertionError("a schema 5 ledger was opened; it must be refused")
     with open(path, "rb") as f:
         after = f.read()
     assert after == before, "the refused ledger's file changed"
 
 
 def test_a_schema_2_ledger_is_upgraded_in_place_and_its_jobs_stay(tmp_path):
-    """Schema 2 gains P2.4's columns and tables and records schema 3; its job keeps its kind and its words."""
+    """Schema 2 gains P2.4's columns and tables and records schema 4; its job keeps its kind and its words."""
     path = str(tmp_path / "ledger.sqlite")
     words = '[["上層部", "じょうそうぶ"]]'
     _write_ledger(path, "2", _SCHEMA_2_JOBS,
@@ -79,7 +79,7 @@ def test_a_schema_2_ledger_is_upgraded_in_place_and_its_jobs_stay(tmp_path):
         assert {"store_id", "resume", "picked", "attempt", "failures", "skipped"} <= columns
         tables = {row[0] for row in ledger.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {"batches", "outcomes", "needs"} <= tables
-        assert ledger.conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == "3"
+        assert ledger.conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == "4"
 
 
 def test_set_state_is_saved_at_once_for_a_second_connection(tmp_path):

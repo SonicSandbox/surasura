@@ -571,7 +571,7 @@ def undo(args):
                     raise _bad("There's no shelf restore point with that name.", shelf=args.shelf)
                 if not args.confirm:
                     return dict(run, language=lang, confirm=False)
-                back = undoing.restore_shelf(anki, ledger, args.shelf)
+                back = undoing.restore_shelf(shelf.AnkiConnectAnki(anki.url), ledger, args.shelf)
                 _owe_sync(loaded)
                 return {"language": lang, "shelf": args.shelf, "back": back, "confirm": True}
             job = ledger.job_by_id(args.job)

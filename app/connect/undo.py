@@ -22,10 +22,12 @@ The window's only in 2.x (it warns first: this can't be undone, K33); `surasura-
 tests hand a fake).
 """
 import datetime
+import logging
 import re
 
 from app.connect import runfile
 
+log = logging.getLogger("surasura-cli")
 GRACE_S = 5                     # a note changed this long after Connect's own last write is still Connect's
 STILL_RUNNING = "Connect is still making this episode's cards. Undo it once they're made."
 NOTHING = "This batch has no cards to undo."
@@ -164,7 +166,9 @@ def _why_kept(info, cards, tag, done_at, shelf):
         if int(card.get("queue") or 0) == -1 and not shelf.get(int(card["cardId"]), (False, 0))[0]:
             return SUSPENDED
     mod = info.get("mod")
-    if mod is not None and touched and float(mod) > touched + GRACE_S:
+    if not touched:                         # when Connect last touched it is unknown: never deleted unread
+        return CHANGED
+    if mod is not None and float(mod) > touched + GRACE_S:
         return CHANGED
     return None
 
@@ -210,8 +214,10 @@ def run(anki, ledger, job_id, open_store=None):
 def finish(anki, ledger, pending, open_store=None):
     """An undo recorded before Anki was written, finished: which of its notes are gone now (Anki read), those words
     freed in the store (✅ P2.5-1), the shelf's rows of their cards closed, the job `undone` and its item's needs
-    fixed -> {"deleted", "keep", "freed", "placed_again"}. `open_store()`: the library store (or None), opened only
-    after Anki has answered — never held across an Anki call (L3.3). Raises AnkiConnect's errors (left pending)."""
+    fixed -> {"deleted", "keep", "freed", "placed_again", "pending"}. `open_store()`: the library store (or None),
+    opened only after Anki has answered — never held across an Anki call (L3.3); when it can't be opened or written
+    just now, the undo stays pending (`pending`: its words are freed by the next look, `finish_pending`). Raises
+    AnkiConnect's errors (left pending)."""
     job = ledger.job_by_id(pending["job_id"]) or {}
     planned = [int(n) for n in pending["deleted"]]
     still = {int(n["noteId"]) for n in (anki.notes(planned) if planned else [])
@@ -222,23 +228,31 @@ def finish(anki, ledger, pending, open_store=None):
         if o["outcome"] == "made" and o["note_id"] is not None:
             words[int(o["note_id"])] = o["word"]
     keep = [list(k) for k in pending["kept"]] + [[n, words.get(n), "Anki didn't delete it"] for n in sorted(still)]
-    freed, receipt_left = [], None
-    store = open_store() if open_store is not None and gone else None
-    if store is not None:
-        from app.connect import library
-        with store:
-            freed = library.unmake(store, job.get("item_id"), gone, {words[n] for n in gone if n in words})
-            receipt_left = library.mined_at(store, job.get("item_id")) is not None
+    freed, receipt_left, stored = [], None, True
+    if open_store is not None and gone:
+        stored = False              # the store busy or not ready: the undo stays pending, its words freed next time
+        try:
+            store = open_store()
+            if store is not None:
+                from app.connect import library
+                with store:
+                    freed = library.unmake(store, job.get("item_id"), gone, {words[n] for n in gone if n in words})
+                    receipt_left = library.mined_at(store, job.get("item_id")) is not None
+                stored = True
+        except Exception:
+            log.exception("Connect's undo: the library couldn't free the words just now; tried again next time")
     with ledger.transaction():
-        ledger.finish_undo(pending["id"], gone, keep)
+        if stored:
+            ledger.finish_undo(pending["id"], gone, keep)
         if gone:                    # nothing gone (a kill before Anki's delete, every card kept): the job stays as it
             if job.get("state") != "undone":        # was, so it can be undone later
                 ledger.set_state(pending["job_id"], "undone", reason="you undid this batch")
             ledger.fix(pending["language"], item_id=job.get("item_id"))
             _close_shelf(ledger, gone)
     # placing the episode again makes its cards again only when neither the store's receipt nor a done job holds it
-    placed_again = bool(gone) and not receipt_left and not ledger.mined(pending["language"], job.get("item_id"))
-    return {"deleted": gone, "keep": keep, "freed": freed, "placed_again": placed_again}
+    placed_again = bool(gone) and stored and not receipt_left and not ledger.mined(pending["language"],
+                                                                                   job.get("item_id"))
+    return {"deleted": gone, "keep": keep, "freed": freed, "placed_again": placed_again, "pending": not stored}
 
 
 def _close_shelf(ledger, note_ids):
@@ -276,7 +290,14 @@ def summary(done):
         out["deleted"] = len(done["deleted"])
         out["freed"] = done.get("freed") or []
         out["placed_again"] = bool(done.get("placed_again"))
-        out["say"] = (f"{len(done['deleted'])} cards deleted." + (
-            " Place the episode in your top 20 again to make its cards again." if done.get("placed_again") else
-            " Another batch of this episode is still in Anki, so placing it again makes no new cards."))
+        out["pending"] = bool(done.get("pending"))
+        if not done["deleted"]:
+            out["say"] = "No cards deleted: every card of this batch stays (see why)."
+        elif done.get("pending"):
+            out["say"] = (f"{len(done['deleted'])} cards deleted. Surasura's library was busy: Connect frees their "
+                          "words at its next start.")
+        else:
+            out["say"] = f"{len(done['deleted'])} cards deleted." + (
+                " Place the episode in your top 20 again to make its cards again." if done.get("placed_again") else
+                " Some of this episode's cards are still in Anki, so placing it again makes no new cards.")
     return out

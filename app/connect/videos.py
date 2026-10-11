@@ -17,11 +17,14 @@ A placeholder (a cloud file not downloaded) is indexed by name but never opened 
 this computer. Standard library only.
 """
 import json
+import logging
 import os
 
 from app.connect import runner
 
-INDEX_VERSION = 1
+log = logging.getLogger("surasura-cli")
+
+INDEX_VERSION = 2               # 2: each folder keeps its own spelling (`path`)
 DEPTH = 4                       # the folders you add: their subfolders this deep
 
 
@@ -88,29 +91,34 @@ class Index:
         modified time moved; folders no longer looked at are dropped from the file."""
         old, new = self.data["dirs"], {}
         self.listed = 0
-        todo = [(os.path.normcase(os.path.abspath(f)), 0, False) for f in shallow]
-        todo += [(os.path.normcase(os.path.abspath(f)), 0, True) for f in deep]
+        todo = [(os.path.abspath(f), 0, False) for f in shallow] + [(os.path.abspath(f), 0, True) for f in deep]
         while todo:
-            folder, depth, recurse = todo.pop()
+            where, depth, recurse = todo.pop()
+            folder = os.path.normcase(where)        # the key; `where` keeps the folder's own spelling for its paths
             if folder in new and (not recurse or new[folder].get("deep")):
                 continue
-            try:
-                mtime = os.stat(folder).st_mtime_ns
-            except OSError:
-                continue                    # gone or offline: looked at again next run
             had = old.get(folder)
-            if had and had.get("mtime_ns") == mtime:
-                entry = dict(had)
+            try:
+                mtime = os.stat(where).st_mtime_ns
+            except OSError:
+                mtime = None
+            if had and (mtime is None or had.get("mtime_ns") == mtime):
+                entry = dict(had)           # unchanged, or offline now: kept as listed (never listed again for it)
+            elif mtime is None:
+                continue                    # never listed and not there: looked at again next run
             else:
-                got = _list(folder)
+                got = _list(where)
                 if got is None:
-                    continue
-                self.listed += 1
-                entry = {"mtime_ns": mtime, "videos": got[0], "subs": got[1]}
+                    if not had:
+                        continue
+                    entry = dict(had)       # can't be read just now: kept as it was
+                else:
+                    self.listed += 1
+                    entry = {"mtime_ns": mtime, "path": where, "videos": got[0], "subs": got[1]}
             entry["deep"] = bool(recurse) or bool((new.get(folder) or {}).get("deep"))
             new[folder] = entry
             if recurse and depth < DEPTH:
-                todo += [(os.path.normcase(os.path.abspath(s)), depth + 1, True) for s in entry.get("subs") or ()]
+                todo += [(os.path.abspath(s), depth + 1, True) for s in entry.get("subs") or ()]
         changed = new != old
         self.data["dirs"] = new
         if changed:
@@ -118,11 +126,16 @@ class Index:
         return changed
 
     def _save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        """Written whole (a temp file, then replaced); a folder that can't be written keeps the old file: the index
+        is only a cache, so the lookup goes on with what this run listed."""
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False)
+            os.replace(tmp, self.path)
+        except OSError:
+            log.warning("Connect's video index couldn't be saved (%s); it's listed again next run", self.path)
 
     def find(self, names, size=None):
         """The one indexed video (on disk now) with one of `names` (and `size`, when given) -> its path; None when
@@ -130,14 +143,23 @@ class Index:
         wanted = [n.lower() for n in names if n]
         found = set()
         for folder in sorted(self.data["dirs"]):
-            videos = self.data["dirs"][folder].get("videos") or {}
+            entry = self.data["dirs"][folder]
+            videos = entry.get("videos") or {}
             for name in wanted:
                 hit = videos.get(name)
-                if hit and (size is None or hit[1] == size):
-                    path = os.path.join(folder, hit[0])
-                    if runner._on_disk(path):
+                if hit:
+                    path = os.path.join(entry.get("path") or folder, hit[0])
+                    # the size as it is now (a copy still growing or a file replaced in place moves no folder's time)
+                    if runner._on_disk(path) and (size is None or _size(path) == size):
                         found.add(path)
         return found.pop() if len(found) == 1 else None
+
+
+def _size(path):
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        return None
 
 
 def names_for(subtitle):

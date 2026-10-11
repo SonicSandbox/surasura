@@ -214,6 +214,8 @@ class Ledger:
         for name, decl in _NEEDS_COLUMNS:
             if name not in have:
                 self.conn.execute(f"ALTER TABLE needs ADD COLUMN {name} {decl}")
+                if name == "seen_at" and "seen" in have:        # SCHEMA 3's shown ones stay shown
+                    self.conn.execute("UPDATE needs SET seen_at = at WHERE seen = 1")
         if self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'one_open_need'").fetchone():
             return
         self.conn.execute("DROP INDEX IF EXISTS one_need")
@@ -531,16 +533,17 @@ class Ledger:
     def need(self, language, kind, say, item_id=None, job_id=None):
         """Something Connect needs you for (`kind` + item) -> True when it counts (again) in the badge. Open already:
         a standing state (`STANDING`) is left as it is, nothing written (S19); a failure you've seen happens again →
-        it counts again with its new words (03 §4); one not seen yet is left as it is. Fixed earlier → a new entry."""
+        it counts again with its new words (03 §4); one not seen yet, or dismissed (it stays dismissed until its fix),
+        is left as it is. Fixed earlier → a new entry."""
         cur = self.conn.execute("INSERT OR IGNORE INTO needs (language, item_id, job_id, kind, say, at) "
                                 "VALUES (?, ?, ?, ?, ?, ?)", (language, item_id, job_id, kind, say, _now()))
         if cur.rowcount > 0:
             return True
         if kind in STANDING:
             return False
-        cur = self.conn.execute("UPDATE needs SET seen_at = NULL, dismissed_at = NULL, say = ?, at = ?, job_id = ? "
+        cur = self.conn.execute("UPDATE needs SET seen_at = NULL, say = ?, at = ?, job_id = ? "
                                 "WHERE language = ? AND kind = ? AND COALESCE(item_id, -1) = COALESCE(?, -1) AND "
-                                "fixed_at IS NULL AND seen_at IS NOT NULL",
+                                "fixed_at IS NULL AND seen_at IS NOT NULL AND dismissed_at IS NULL",
                                 (say, _now(), job_id, language, kind, item_id))
         return cur.rowcount > 0
 

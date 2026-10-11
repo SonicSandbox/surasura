@@ -277,26 +277,43 @@ def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=
 
 
 def tidy(anki, ledger):
-    """A shelved card you un-suspended in Anki: its shelf tag taken off (it counts as waiting again) -> how many. The
-    tag is the note's: a note with another card still on the shelf keeps it (review B #10)."""
-    if not anki.find_cards(f"{SHELVED_QUERY} -is:suspended"):
+    """A shelved card you un-suspended in Anki: recorded as back by you (`back_by` you-in-anki: never shelved again,
+    ✅ P2.5-2) and its shelf tag taken off (it counts as waiting again) -> how many notes lost the tag. The tag is the
+    note's: a note with another card still on the shelf keeps it (review B #10), but its un-suspended card is recorded
+    all the same. A card already recorded as back is not looked at again (S19: no writer taken for nothing)."""
+    ensure(ledger)
+    if not _not_recorded_back(ledger, anki.find_cards(f"{SHELVED_QUERY} -is:suspended")):
         return 0
     with anki.writer("Connect's shelf"):        # what it writes is read again under the writer (review B #25)
-        ids = anki.find_cards(f"{SHELVED_QUERY} -is:suspended")
+        ids = _not_recorded_back(ledger, anki.find_cards(f"{SHELVED_QUERY} -is:suspended"))
+        if not ids:
+            return 0
         still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended"))
         kept = {info.get("note") for info in anki.cards_info(sorted(still))} if still else set()
         notes = sorted({info.get("note") for info in anki.cards_info(ids) if info.get("note") is not None} - kept)
-        if not notes:
-            return 0
-        if anki.reviewing():
-            raise Reviewing()
-        anki.remove_tag(notes, SHELF_TAG)
+        if notes:
+            if anki.reviewing():
+                raise Reviewing()
+            anki.remove_tag(notes, SHELF_TAG)
     now = _now()
     with ledger.transaction():
-        ensure(ledger)
         ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND back_at IS NULL",
                                 [(now, BACK_IN_ANKI, c) for c in ids])
     return len(notes)
+
+
+def _not_recorded_back(ledger, card_ids):
+    """Of `card_ids` (shelved cards not suspended now), those the ledger doesn't hold as back yet (on its shelf, or
+    a card it never recorded)."""
+    card_ids = list(card_ids or ())
+    if not card_ids:
+        return []
+    back = set()
+    for at in range(0, len(card_ids), 500):
+        part = card_ids[at:at + 500]
+        back |= {r[0] for r in ledger.conn.execute(
+            f"SELECT card_id FROM shelf WHERE back_at IS NOT NULL AND card_id IN ({','.join('?' * len(part))})", part)}
+    return [c for c in card_ids if c not in back]
 
 
 def restore(anki, ledger, run):

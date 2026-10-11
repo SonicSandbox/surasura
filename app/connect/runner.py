@@ -902,7 +902,8 @@ class Steps:
         if lang not in made:
             with self._open(lang) as store:
                 shallow = sorted({os.path.dirname(r["video_path"]) for records in library.pairings(store).values()
-                                  for r in records if isinstance(r.get("video_path"), str) and r["video_path"]})
+                                  for r in records if isinstance(r, dict) and isinstance(r.get("video_path"), str)
+                                  and r["video_path"]})
             index = videos.Index(lang)
             index.refresh(shallow, videos.configured(self.loaded, lang))
             made[lang] = index
@@ -994,6 +995,9 @@ class Steps:
         self._shelved = set()
         try:
             self.finish_undos(lang, ledger)
+        except Exception:                   # Anki gone mid-way: the undo stays pending, finished next run
+            log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
+        try:
             self.notes_gone(lang)
             self.shelf_session(lang, ledger)
         except ImportError:                 # Junban isn't installed: no shelf, named (S10)

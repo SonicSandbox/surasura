@@ -915,3 +915,39 @@ def test_forget_text_drops_it(language):
     store.restore(removed.trash_ids)
     assert junk_rel in store.text_lists()[0]
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_twins_question_another_writer_recorded_meanwhile_is_kept_once(language, monkeypatch):
+    """The sync works out its delta outside any lock; another window's sync can record the same twins question in
+    between. The question is then written once: a second copy would ask the user twice about one file."""
+    store = migrated(language, shows=2, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    a = store.insert([touch(data_dir, f"HighPriority/{w[112]}/same.srt", "twin\n")], "now").added[0]
+    b = store.insert([touch(data_dir, f"LowPriority/{w[113]}/same.srt", "twin\n")], "soon").added[0]
+    mtime = os.stat(os.path.join(data_dir, store.item(a)["rel_path"])).st_mtime_ns
+    os.utime(os.path.join(data_dir, store.item(b)["rel_path"]), ns=(mtime, mtime))
+    store.sync_disk()
+    os.remove(os.path.join(data_dir, store.item(b)["rel_path"]))
+    back = f"GoalContent/{w[114]}/same.srt"
+    _move_file(data_dir, store.item(a)["rel_path"], back)
+    real_delta = ls._sync_delta
+    recorded = []
+
+    def delta_then_another_window_asks(*args, **kwargs):
+        out = real_delta(*args, **kwargs)
+        if out["asks"] and not recorded:                        # the first delta only, outside the lock
+            recorded.append(out["asks"])
+            with store._writing():                               # what the other window's sync commits meanwhile
+                store._set_meta({"rename_asks": json.dumps(out["asks"])})
+        return out
+
+    monkeypatch.setattr(ls, "_sync_delta", delta_then_another_window_asks)
+    try:
+        summary = store.sync_disk()
+        assert recorded, "precondition: the twins were asked"
+        assert summary["asked"] == [back]
+        assert [ask["rel"] for ask in store.rename_asks()] == [back], "one question for one file"
+    finally:
+        store.close()

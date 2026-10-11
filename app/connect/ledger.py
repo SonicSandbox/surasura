@@ -597,11 +597,15 @@ class Ledger:
         cur = self.conn.execute(f"SELECT * FROM needs WHERE fixed_at IS NULL AND {where}", params)
         names = [d[0] for d in cur.description]
         rows = [dict(zip(names, r)) for r in cur.fetchall() if r[names.index("say")] not in set(keep or ())]
-        if rows:                        # exactly the rows read (one raised meanwhile is not fixed unread)
-            now = _now()
-            self.conn.executemany("UPDATE needs SET fixed_at = ? WHERE id = ? AND fixed_at IS NULL",
-                                  [(now, r["id"]) for r in rows])
-        return rows
+        if not rows:
+            return []
+        now = _now()
+        # exactly the rows read, with the words read: one raised again meanwhile (new words) is not fixed unread
+        update = "UPDATE needs SET fixed_at = ? WHERE id = ? AND fixed_at IS NULL AND say = ?"
+        if self.conn.in_transaction:
+            return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
+        with self.transaction():
+            return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
 
     # --- P2.5: the run's start, the undos ------------------------------------------------------------------- #
 

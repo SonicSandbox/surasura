@@ -131,3 +131,51 @@ def test_undo_shelf_confirm_puts_the_restore_point_back_through_the_shelfs_adapt
     assert anki.suspended == set()
     with book.Ledger() as ledger:
         assert 11 in shelf.kept(ledger), "put back by you: never shelved again"
+
+
+def test_an_added_folder_inside_another_is_walked_its_full_depth_from_its_own_top(tmp_path):
+    # Videos and Videos/Show both added: Show's four levels count from Show, not from Videos (its 1st level)
+    top = tmp_path / "Videos"
+    deep = top / "Show" / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    (deep / "Bocchi - 06.mkv").write_bytes(b"\x1aE\xdf\xa3")
+    index = videos.Index("ja", path=str(tmp_path / "videos-ja.json"))
+    index.refresh([], [str(top / "Show"), str(top)])     # Videos is walked first (the list is taken from its end)
+    assert index.find(["Bocchi - 06.mkv"]) == str(deep / "Bocchi - 06.mkv")
+
+
+def test_fix_never_fixes_a_need_raised_again_with_new_words_since_it_was_read(ledger, monkeypatch):
+    ledger.need("ja", "mine-failed", "気配の回: Anki Miner stopped", item_id=3)
+    read = ledger.needs("ja")
+    # between fix's read and its write the failure is raised again with new words (another writer)
+    ledger.conn.execute("UPDATE needs SET say = '気配の回: Anki Miner stopped twice'")
+    real = ledger.conn
+
+    class Conn:                                     # fix reads the old row, then writes against the new one
+        def __init__(self):
+            self.first = True
+
+        def execute(self, sql, params=()):
+            if self.first and sql.startswith("SELECT * FROM needs"):
+                self.first = False
+                return _Rows(read)
+            return real.execute(sql, params)
+
+        @property
+        def in_transaction(self):
+            return real.in_transaction
+
+    class _Rows:
+        def __init__(self, rows):
+            self.rows = rows
+            self.description = [(k,) for k in rows[0]]
+
+        def fetchall(self):
+            return [tuple(r.values()) for r in self.rows]
+
+    ledger.conn = Conn()
+    try:
+        assert ledger.fix("ja", item_id=3) == []
+    finally:
+        ledger.conn = real
+    assert len(ledger.needs("ja")) == 1, "the need with its new words stays open"

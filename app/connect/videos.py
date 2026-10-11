@@ -6,7 +6,8 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
 - **Else the index:** the folders the library's paired videos are in (that folder only) and the ones you add
   (`connect_video_folders`: a list, or `{lang: list}`; their subfolders too, 4 deep — both limits are defaults this
   step chose, not rulings), each video file by its name — and by its size when the pairing gives one (`video_size`),
-  so another file of the same name is never taken. Two that fit → *No video*: Connect never guesses.
+  so another file of the same name is never taken. Two on this computer that fit → *No video*: Connect never
+  guesses (a cloud placeholder of the same name doesn't count: it is never taken).
   Without a pairing (a subtitle you added), a video named like the subtitle (`beside`'s names) anywhere in them.
 - **Only what changed** (S19): the index is kept in `<local data>/connect/videos-<lang>.json`, each folder with its
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
@@ -92,11 +93,14 @@ class Index:
         old, new = self.data["dirs"], {}
         self.listed = 0
         todo = [(os.path.abspath(f), 0, False) for f in shallow] + [(os.path.abspath(f), 0, True) for f in deep]
+        reached = {}                # folder -> the shallowest depth it was walked at with its subfolders
         while todo:
             where, depth, recurse = todo.pop()
             folder = os.path.normcase(where)        # the key; `where` keeps the folder's own spelling for its paths
-            if folder in new and (not recurse or new[folder].get("deep")):
-                continue
+            if folder in new and (not recurse or reached.get(folder, DEPTH + 1) <= depth):
+                continue            # done already (an added folder inside another is walked from its own top too)
+            if recurse:
+                reached[folder] = depth
             had = old.get(folder)
             try:
                 mtime = os.stat(where).st_mtime_ns

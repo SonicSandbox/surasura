@@ -222,19 +222,22 @@ def finish(anki, ledger, pending, open_store=None):
         if o["outcome"] == "made" and o["note_id"] is not None:
             words[int(o["note_id"])] = o["word"]
     keep = [list(k) for k in pending["kept"]] + [[n, words.get(n), "Anki didn't delete it"] for n in sorted(still)]
-    freed = []
+    freed, receipt_left = [], None
     store = open_store() if open_store is not None and gone else None
     if store is not None:
         from app.connect import library
         with store:
             freed = library.unmake(store, job.get("item_id"), gone, {words[n] for n in gone if n in words})
+            receipt_left = library.mined_at(store, job.get("item_id")) is not None
     with ledger.transaction():
         ledger.finish_undo(pending["id"], gone, keep)
-        if job.get("state") != "undone":
-            ledger.set_state(pending["job_id"], "undone", reason="you undid this batch")
-        ledger.fix(pending["language"], item_id=job.get("item_id"))
-        _close_shelf(ledger, gone)
-    placed_again = not ledger.mined(pending["language"], job.get("item_id"))
+        if gone:                    # nothing gone (a kill before Anki's delete, every card kept): the job stays as it
+            if job.get("state") != "undone":        # was, so it can be undone later
+                ledger.set_state(pending["job_id"], "undone", reason="you undid this batch")
+            ledger.fix(pending["language"], item_id=job.get("item_id"))
+            _close_shelf(ledger, gone)
+    # placing the episode again makes its cards again only when neither the store's receipt nor a done job holds it
+    placed_again = bool(gone) and not receipt_left and not ledger.mined(pending["language"], job.get("item_id"))
     return {"deleted": gone, "keep": keep, "freed": freed, "placed_again": placed_again}
 
 

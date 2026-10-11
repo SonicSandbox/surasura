@@ -80,7 +80,7 @@ def _store_path(lang):
 
 def _empty(lang):
     return {"line": "Up to date", "state": "idle", "jobs": [], "needs": [], "unseen": 0, "undo": [],
-            "shelf": {"on_shelf": 0, "runs": []}, "made_today": 0}
+            "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0}
 
 
 def read(languages=None, words=False, path=None):
@@ -208,9 +208,10 @@ def _made_today(conn, lang):
 
 
 def _shelf(conn, lang):
-    """The shelf's restore points (newest first) with their words, and how many cards are on it now."""
+    """The shelf's restore points (newest first) with their words, how many cards are on it now and how many the
+    swap-in brought back today."""
     if not _has(conn, "shelf"):
-        return {"on_shelf": 0, "runs": []}
+        return {"on_shelf": 0, "runs": [], "swap_ins": 0}
     runs = []
     for run, cards, why, at, back in conn.execute(
             "SELECT run, COUNT(*), MIN(why), MIN(shelved_at), SUM(back_at IS NOT NULL) FROM shelf WHERE language = ? "
@@ -220,7 +221,12 @@ def _shelf(conn, lang):
         runs.append({"run": run, "cards": cards, "back": back or 0, "why": why, "at": at, "words": words})
     on = conn.execute("SELECT COUNT(DISTINCT card_id) FROM shelf WHERE language = ? AND back_at IS NULL",
                       (lang,)).fetchone()[0]
-    return {"on_shelf": on, "runs": runs}
+    swap_ins = 0                            # cards Surasura itself brought back today (the swap-in, ✅ P2.5-2)
+    if _has(conn, "shelf", "back_by"):
+        today = _today()
+        swap_ins = sum(1 for (at,) in conn.execute("SELECT back_at FROM shelf WHERE language = ? AND back_by = "
+                                                   "'surasura'", (lang,)) if _local_day(at) == today)
+    return {"on_shelf": on, "runs": runs, "swap_ins": swap_ins}
 
 
 def _line(conn, lang, rec, open_jobs, items, is_running):

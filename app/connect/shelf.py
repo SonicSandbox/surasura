@@ -300,8 +300,9 @@ def tidy(anki, ledger):
 
 
 def restore(anki, ledger, run):
-    """The restore point: every card shelved in `run` still suspended by the shelf goes back -> how many. No 2.x
-    window calls it yet (3.0's does: adversary B #14)."""
+    """The restore point put back by you: every card shelved in `run` still suspended by the shelf goes back -> how
+    many; each of its rows records you (`back_by`: never shelved again, ✅ P2.5-2). Called by `undo.restore_shelf`
+    (`surasura-cli undo --shelf RUN`; P3.1's window)."""
     ensure(ledger)
     rows = ledger.conn.execute("SELECT card_id, note_id FROM shelf WHERE run = ? AND back_at IS NULL",
                                (run,)).fetchall()

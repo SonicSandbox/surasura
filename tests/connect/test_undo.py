@@ -205,6 +205,7 @@ class FakeStore:
                           "batch TEXT, PRIMARY KEY (item_id, word))")
         self.conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, mined_at TEXT)")
         self.receipts = []
+        self.mined = {}             # item id -> its receipt (every item holds one until `receipt` clears it)
         self.touched = 0
 
     def __enter__(self):
@@ -230,6 +231,10 @@ class FakeStore:
 
     def receipt(self, item_id, mined_at):
         self.receipts.append((item_id, mined_at))
+        self.mined[item_id] = mined_at
+
+    def item(self, item_id):
+        return {"id": item_id, "mined_at": self.mined.get(item_id, "2026-10-08T10:00:00Z")}
 
 
 def test_the_store_frees_the_deleted_cards_words_and_keeps_the_kept_ones(ledger, tmp_path):

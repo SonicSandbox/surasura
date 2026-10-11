@@ -165,11 +165,13 @@ def test_after_its_show_anchors_only_in_current():
                                                                                    "goal"]])
     top, after, anchor = current.n_new([0, 1], f"{show}/第04話.srt")
     assert (top, anchor) == (2, f"{show}/第02話.srt") and after == 2
-    later = _order([["GoalContent/作品/第01話.srt", "goal"], ["GoalContent/作品/第02話.srt", "goal"]])
+    later = _order([["GoalContent/作品/第01話.srt", "goal"], ["GoalContent/作品/第02話.srt", "goal"]],
+                   per_file=[{"main": [0, 3], "ph": []}, {"main": [], "ph": []}])
     assert later.n_new([0, 1], f"{show}/第03話.srt") == (2, None, None)
-    placed = [("GoalContent/作品/第02話b.srt", [0], None, None, None)]
-    assert later.n_new([0, 1], f"{show}/第03話.srt", placed)[1:] == (1, "GoalContent/作品/第02話b.srt"), \
-        "a file placed after its show with no episode in Current leads NOW, and the next joins it there"
+    # A file placed "after its show" with no episode in Current leads NOW (before 6+ Months' 第01話, which holds key 0),
+    # and the next arrival joins it there: key 0 is new for it, key 1 the placed file met first.
+    placed = [("GoalContent/作品/第02話b.srt", [1], None, None, None)]
+    assert later.n_new([0, 1], f"{show}/第03話.srt", placed) == (2, 1, "GoalContent/作品/第02話b.srt")
 
 
 def test_an_estimate_on_a_plan_the_engine_stands_aside_from_is_never_exact():

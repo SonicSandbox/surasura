@@ -877,3 +877,42 @@ def test_a_counted_file_moved_keeps_its_phrase_tallies():
         assert after is not None and after[ti._norm(moved)] == before[ti._norm(phrased)]
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_text_file_that_cant_be_read_makes_a_missing_file_work_for_the_indexer(language):
+    """X3, the check's own failure: when the kept text can't be read (damaged), the cheap check can't tell whether a
+    missing file's sentences are safe — it says there is work, and the reconcile (which sets a damaged file aside)
+    looks; never "nothing to do" while the only copy may be lost."""
+    a, missing, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, missing], ti.make_tokenizer(language))
+    os.remove(missing)
+    path = _kept_text(store).path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\x00not a database" * 64)
+    assert store.needs_reconcile([a, missing], []) is True
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_that_came_back_changed_then_left_with_its_file_gone_keeps_its_new_text(language):
+    """X5 for a row leaving: a missing file's text was kept, the file came back with other content and was read
+    again, then it was deleted and a caller that lists only what it sees dropped its row — the text kept must be the
+    new content's (rebuilt from its cached words), never the first file's."""
+    a, x, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, x], tok)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    first = _kept_text(store).get(ti._norm(x))
+    shutil.copy2(os.path.join(REPO, *SOURCES[language][4].split("/")), x)
+    store.reconcile([a, x], tok, kept=[])
+    signature = ti.file_signature(x)
+    os.remove(x)
+    store.reconcile([a], tok)                                        # x in no list, its file gone
+    text, _facts, mtime, size = _kept_text(store).get(ti._norm(x))
+    assert (mtime, size) == signature and text != first[0]
+    store.close()

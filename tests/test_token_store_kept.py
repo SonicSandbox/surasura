@@ -133,7 +133,9 @@ def test_kept_and_counted_flips_move_counts_without_tokenizing(language, tmp_pat
     assert tok.calls == []
     reference.reconcile([a, b, c], ti.make_tokenizer(language))
     assert store.word_counts() == reference.word_counts() and store.bound_counts() == reference.bound_counts()
-    assert _kept_text(store).held() == {ti._norm(c): False}, "kept text goes only when the user forgets a file"
+    # Both files were kept once (c, then b): their text stays until the user forgets them (K1), never because a file
+    # came back to the counted list.
+    assert _kept_text(store).held() == {ti._norm(c): False, ti._norm(b): False}, "kept text goes only when forgotten"
     store.close()
     reference.close()
 
@@ -243,10 +245,10 @@ def _wipe(store, language, kind):
 
 @pytest.mark.parametrize("kind", ("identity", "schema", "damaged"))
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_kept_text_survives_a_wipe(language, kind):
+def test_kept_text_survives_a_wipe(language, kind, tmp_path):
     """A kept file gone from the disk, a removed file whose trash copy was purged and a missing counted file: each of
     the three wipes empties the store, and each file comes back from its kept text — the kept ones exactly as they read
-    before, the missing one as its cached sentences read — in the list it was in, with the counts it had."""
+    before, the missing one as its cached sentences read — in the list it was in, still counted."""
     a, finished, removed, missing, _e, _f = _files(language)
     data_dir, _u = roots(language)
     trashed = os.path.join(data_dir, ".trash", os.path.basename(removed))
@@ -256,7 +258,6 @@ def test_kept_text_survives_a_wipe(language, kind):
     lists = dict(kept=[finished, removed], elsewhere={removed: trashed})
     store.reconcile([a, missing], ti.make_tokenizer(language), "identity 1", **lists)
     before = {p: store.file_tokens(p) for p in (finished, removed, missing)}
-    counted = (store.word_counts(), store.bound_counts())
     os.remove(missing)
     store.reconcile([a, missing], ti.make_tokenizer(language), "identity 1", **lists)   # its text kept, rebuilt
     os.remove(finished)
@@ -269,11 +270,21 @@ def test_kept_text_survives_a_wipe(language, kind):
     store.reconcile([a, missing], tok, signature, **lists)
     assert sorted(tok.calls) == [("file", ti._norm(a))] + [("text", None)] * 3
     assert store.file_tokens(finished) == before[finished] and store.file_tokens(removed) == before[removed]
-    assert store.file_tokens(missing) == before[missing]
     assert set(store.kept_files()) == {ti._norm(finished), ti._norm(removed)}
     assert set(store.counted_files()) == {ti._norm(a), ti._norm(missing)}
-    assert (store.word_counts(), store.bound_counts()) == counted, "the missing file still counts, as it did"
+    # The missing file's text could only be rebuilt from its cached sentences, one a line: its sentences read as before,
+    # but the tagger no longer sees what the file put around them (a leading full-width space can change a reading),
+    # so its tokens and counts are those of that text — exactly what a file holding it gives — never the old ones.
+    assert [s for s, _t in store.file_tokens(missing)] == [s for s, _t in before[missing]]
+    rebuilt = os.path.join(data_dir, "rebuilt", "missing.txt")
+    os.makedirs(os.path.dirname(rebuilt))
+    with open(rebuilt, "w", encoding="utf-8") as f:
+        f.write(_kept_text(store).get(ti._norm(missing))[0])
+    reference = ti.open_store(language, path=str(tmp_path / "ref.db"))
+    reference.reconcile([a, rebuilt], ti.make_tokenizer(language))
+    assert (store.word_counts(), store.bound_counts()) == (reference.word_counts(), reference.bound_counts()),         "the missing file still counts"
     store.close()
+    reference.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -356,7 +367,6 @@ def test_forget_text_drops_it(language):
     store.close()
 
 
-@pytest.mark.parametrize("language", LANGUAGES)
 def _kept_state(language):
     """The kept rows, every column, and the kept text file's rows: what no caller with one list may touch."""
     import sqlite3
@@ -374,8 +384,10 @@ def _kept_state(language):
 def test_a_caller_with_one_list_leaves_the_kept_rows_alone(language):
     """Callers that know only the run's list — a Generate-style reconcile, the sentence dictionary's
     (`reconcile_language`), and the indexer with the library store busy or not ready — drop a counted file the list
-    left out, as ever, and leave every kept row and all kept text byte for byte."""
-    a, b, c, d, *_rest = _files(language)
+    left out, as ever, and leave every kept row and all kept text byte for byte. The kept files sit outside the tier
+    folders, as Finished ones do (a folder walk — JSON mode, a busy store with no schedule — never finds them)."""
+    a, b, c, d, *_rest = _files(language, folders=("HighPriority/作品", "HighPriority/作品", "Finished/番組",
+                                                   "Finished/番組", "GoalContent/物語", "GoalContent/物語"))
     with ti.open_store(language) as store:
         store.reconcile([a, b], ti.make_tokenizer(language), kept=[c, d])
     before = _kept_state(language)

@@ -2491,6 +2491,8 @@ def file_sentences(store, tokenizer, file_path, language):
     """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
     tokenized here."""
     if store is None:
+        if not os.path.exists(file_path):
+            return []                   # a missing item (9b) with no token store to read it from
         return tokenizer.tokenize_sentences(extract_text(file_path, language))
     sentences = store.file_tokens(file_path)
     # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
@@ -3839,13 +3841,15 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None):
         pass
 
 
-def resolve_found_files(language, verbose=True, schedule=None, read_store=True):
+def resolve_found_files(language, verbose=True, schedule=None, read_store=True, missing=False):
     """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
     from the library store's schedule (phase order) when one is ready, else master_manifest.json, else a
     recursive fallback scan. Shared by main() and the dashboard's no-change pre-flight, so both compute
     the run-signature over exactly the same list. `schedule`: one already read (Generate's, the journey
     check's). `read_store=False`: with no `schedule` given, take the file without opening the store (a caller that
-    has already read it read-only and found no ready store: `journey_check`).
+    has already read it read-only and found no ready store: `journey_check`). `missing`: with the list from the
+    library store, keep a scheduled file gone from the disk (a missing item keeps counting until the user decides,
+    9b: Generate reads it from its cached tokens) — Generate and the journey checks, so their signatures agree.
 
     No folder fallback when the list came from a store or from a copy the store wrote (it carries
     `surasura_library`): there an empty list is an empty run (K21) — the scan would analyse every file a
@@ -3862,6 +3866,7 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True):
     if schedule is None and read_store:
         schedule, _versions = read_library_schedule(language, data_dir, user_files_dir)
     no_fallback = schedule is not None
+    keep_missing = missing and no_fallback
 
     _marker_cache = {}
 
@@ -3900,7 +3905,7 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True):
                     if rel_path.startswith("./"):
                         rel_path = rel_path[2:]
                     abs_path = os.path.join(data_dir, rel_path)
-                    if not os.path.exists(abs_path):
+                    if not keep_missing and not os.path.exists(abs_path):
                         if verbose:
                             print(f"Warning: Manifest file not found: {abs_path}")
                         continue
@@ -4000,7 +4005,7 @@ def journey_is_current(args, language):
                                    epoch=versions["epoch"])
                 except Exception:
                     pass
-        found = resolve_found_files(language, verbose=False, schedule=library["schedule"])
+        found = resolve_found_files(language, verbose=False, schedule=library["schedule"], missing=True)
         if not found:
             return None
         sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
@@ -4041,7 +4046,7 @@ def journey_check(args, language):
                                                                    get_user_files_path(language))
             if mode == "unknown" or pending:
                 return None
-        found = resolve_found_files(language, verbose=False, schedule=schedule, read_store=False)
+        found = resolve_found_files(language, verbose=False, schedule=schedule, read_store=False, missing=True)
         if not found:
             return None
         sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
@@ -4422,6 +4427,11 @@ def _cancellable(tokenize_file):
     def tokenize(path):
         _cancel_point()
         return tokenize_file(path)
+    # A kept file, or a missing one read back from its kept text, is read through these (E2.2). Never `pool_spec`:
+    # a pool's workers would pass no cancel point.
+    for name in ("read_text", "tokenize_text"):
+        if hasattr(tokenize_file, name):
+            setattr(tokenize, name, getattr(tokenize_file, name))
     return tokenize
 
 
@@ -4670,7 +4680,7 @@ def main():
     
     # The library's list: the store's (built, checked and synced with the disk first), else the file.
     _library = prepare_library(language, data_dir, user_files_dir)
-    found_files = resolve_found_files(language, schedule=_library["schedule"])   # shared with the GUI
+    found_files = resolve_found_files(language, schedule=_library["schedule"], missing=True)   # shared with the GUI
     print(f"Final Count: Found {len(found_files)} files to process.")
 
     # --- #2 Run-signature: skip the ENTIRE run if nothing affecting the analysis changed ---

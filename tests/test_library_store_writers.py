@@ -755,7 +755,7 @@ def test_a_drag_asks_the_mode_through_the_windows_handle_not_a_new_connection(wi
     assert _order(app, "now") == order, "the drag on a damaged store was refused"
 
 
-# --- The mutant round's survivors (2026-10-10): the worker's lock, its token and its helper hand-over; Remove's rollback --- #
+# --- The worker's lock, its token and its helper hand-over; Remove's rollback ---------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_workers_sync_waits_for_a_command_holding_the_store_work_lock(window, language, monkeypatch):

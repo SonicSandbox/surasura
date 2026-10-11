@@ -43,6 +43,12 @@ SUBTITLE = {"rp2-ja": ("ja", "library_episode.ass"), "rp2-zh": ("zh", "night_mar
 LOG = "local/logs/app_debug_log.txt"        # app_entry.py's start line, written by every verb
 
 
+def _args(case):
+    """The worker's analyzer arguments: the test Generate's own (a worker left to read them from the settings takes
+    the dashboard's — `run_args`, its context lengths too — and would rightly find the plan's arguments not its own)."""
+    return cases.ALL_CASES[case][3] or ["--static"]
+
+
 def _language(case):
     return cases.ALL_CASES[case][0]
 
@@ -144,7 +150,7 @@ def library(tmp_path_factory):
         with open(os.path.join(RES, *SUBTITLE[case]), encoding="utf-8") as f:
             _write(root, language, rels["subtitle"], f.read())
         before = _hashes(root)
-        worker = _Worker(root, language, cases.ALL_CASES[case][3])
+        worker = _Worker(root, language, _args(case))
         paths = {name: _path(root, language, rel) for name, rel in rels.items()}
         answers = {"recap": worker.ask({"id": 1, "op": "estimate", "path": paths["recap"]})}
         answers["stats1"] = worker.ask({"id": 2, "op": "stats"})
@@ -155,6 +161,9 @@ def library(tmp_path_factory):
         answers["late2"] = worker.ask({"id": 7, "op": "estimate", "path": paths["late2"]})
         answers["late2_placed"] = worker.ask({"id": 8, "op": "estimate", "path": paths["late2"],
                                               "placed": [paths["late"]]})
+        # A file the plan already holds, named as placed (a Generate re-baselined since the window placed it).
+        answers["late2_placed_held"] = worker.ask({"id": 10, "op": "estimate", "path": paths["late2"],
+                                                   "placed": [_path(root, language, f"{folder}/{SHOWS[case][1][0]}")]})
         answers["quit"] = worker.ask({"id": 9, "op": "quit"})
         assert worker.p.wait(60) == 0
         out[case] = {"root": root, "rels": rels, "paths": paths, "answers": answers, "before": before,
@@ -385,7 +394,7 @@ def _client_env(monkeypatch, root):
 
 
 def test_the_client_starts_the_worker_on_first_use_and_again_after_it_idles(library, monkeypatch):
-    """A registry job (`arrivals`, automatic, cancelled on quit) started by the first request — never on the caller's
+    """A registry job (`arrivals-ja`, automatic, cancelled on quit) started by the first request — never on the caller's
     thread: the answer comes on the reader thread; idle, the worker and its job end; the next request starts it again;
     `stop` ends it."""
     from app.services import jobs
@@ -393,7 +402,7 @@ def test_the_client_starts_the_worker_on_first_use_and_again_after_it_idles(libr
     lib = library["rp2-ja"]
     _client_env(monkeypatch, lib["root"])
     registry = jobs.JobRegistry()
-    client = ArrivalsWorker(registry, "ja", args=["--idle-seconds", "3"])
+    client = ArrivalsWorker(registry, "ja", args=["--idle-seconds", "3"] + _args("rp2-ja"))
     got, threads = queue.Queue(), []
 
     def on(answer):
@@ -401,7 +410,7 @@ def test_the_client_starts_the_worker_on_first_use_and_again_after_it_idles(libr
         got.put(answer)
     assert registry.live() == ()
     client.estimate(lib["paths"]["recap"], callback=on)
-    first = registry.live("arrivals")
+    first = registry.live("arrivals-ja")
     assert len(first) == 1 and first[0].automatic and first[0].on_quit == "cancel"
     answer = got.get(timeout=300)
     want = lib["answers"]["recap"]
@@ -409,17 +418,17 @@ def test_the_client_starts_the_worker_on_first_use_and_again_after_it_idles(libr
         {k: v for k, v in want.items() if k not in ("id", "cached")}
     assert threads == ["arrivals-reader"]
     deadline = time.monotonic() + 60
-    while registry.live("arrivals") and time.monotonic() < deadline:
+    while registry.live("arrivals-ja") and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert registry.live("arrivals") == () and not client.running        # idle: ended by itself
+    assert registry.live("arrivals-ja") == () and not client.running        # idle: ended by itself
     client.stats(callback=on)
     again = got.get(timeout=300)
     assert again["op"] == "stats" and again["views"] == 1                 # a new worker
-    second = registry.live("arrivals")
+    second = registry.live("arrivals-ja")
     assert len(second) == 1 and second[0].id != first[0].id
     client.stop()
     registry.quit(timeout=30)
-    assert registry.live("arrivals") == () and not client.running
+    assert registry.live("arrivals-ja") == () and not client.running
     late = []
     client.stats(callback=late.append)
     assert late and "error" in late[0]                                    # stopped: no request starts it again
@@ -628,3 +637,110 @@ def test_a_list_that_cant_be_read_gives_an_empty_list_never_a_failure(monkeypatc
     monkeypatch.setattr(analyzer, "RESULTS_DIR", str(tmp_path))
     (tmp_path / "priority_learning_list.csv").write_bytes(b"Word,Reading\n\xff\xfe\x00\x81bad,\x82\n")
     assert arrivals_worker.Worker._listed(SimpleNamespace()) == {}
+
+
+# --- E2.2 final review (adversary X6 / X8 / X9 / X13 / X14, intent keeper #2) ------------------------------------- #
+
+@pytest.mark.parametrize("case", list(SHOWS))
+def test_a_placed_file_the_plan_already_holds_is_never_counted_twice(library, case):
+    """X9: the window's "placed since the plan" list can still name a file a background Generate has since put in the
+    plan: the worker counts it once (as the plan's), so the answer is the one asked with nothing placed — and every
+    answer names the plan it was read against."""
+    answers = library[case]["answers"]
+    held, alone = answers["late2_placed_held"], answers["late2"]
+    assert {k: v for k, v in held.items() if k not in ("id", "cached")} == \
+        {k: v for k, v in alone.items() if k not in ("id", "cached")}
+    signature = plan_engine.load(os.path.join(library[case]["root"], "results", analyzer.PLAN_FILE)) \
+        .header["run_signature"]
+    assert alone["plan"] == signature and answers["recap"]["plan"] == signature
+
+
+def test_a_view_whose_settings_or_lists_are_not_the_plans_is_never_exact(tmp_path):
+    """X6 / X14 / intent keeper #2: the worker reads the analyzer's settings again when settings.json changes what a
+    run reads, and an answer read with known words, word lists or settings other than the plan's is never "exact"
+    (the next Generate's list isn't the plan's). A saved key no run reads (the theme) builds nothing again; the
+    plan's own settings back make it exact again."""
+    from app import run_args, settings_manager
+    case, language = "rp2-ja", "ja"
+    root = str(tmp_path / "root")
+    _build(root, case)
+    dashboards = [a for a in run_args.analyzer_args(settings_manager.get_default_settings(), language)[1:]
+                  if a != "--static" and not a.startswith("--language")]
+    cases.generate(root, case, extra_args=dashboards)       # as the dashboard runs it: the worker's own arguments
+    folder = SHOWS[case][0]
+    path = _write(root, language, f"{folder}/recap.txt", _text(case, *RECAP[case]))
+    settings = os.path.join(root, "settings.json")
+    assert not os.path.exists(settings), "the Generate ran on the defaults"
+    worker = _Worker(root, language)
+    first = worker.ask({"id": 1, "op": "estimate", "path": path})
+    assert (first["exact"], first["moved"]) == (True, [])
+
+    def write(values):
+        with open(settings, "w", encoding="utf-8") as f:
+            json.dump(values, f)
+    write({"theme": "light"})
+    assert worker.ask({"id": 2, "op": "estimate", "path": path})["cached"] is True
+    assert worker.ask({"id": 3, "op": "stats"})["views"] == 1
+    write({"exclude_single": False})                    # the one-kanji rule off: --include-single-chars
+    off = worker.ask({"id": 4, "op": "estimate", "path": path})
+    assert (off["cached"], off["exact"], off["moved"]) == (False, False, ["stale"])
+    assert worker.ask({"id": 5, "op": "stats"})["views"] == 2
+    os.remove(settings)
+    back = worker.ask({"id": 6, "op": "estimate", "path": path})
+    assert (back["exact"], back["moved"]) == (True, []) and back["record"] == first["record"]
+    with open(os.path.join(root, "User Files", language, "IgnoreList.txt"), "a", encoding="utf-8") as f:
+        f.write("\n学校\n")
+    listed = worker.ask({"id": 7, "op": "estimate", "path": path})
+    assert (listed["exact"], listed["moved"]) == (False, ["stale"])
+    assert worker.close() == 0
+
+
+_ECHO = r"""
+import json, sys
+for line in sys.stdin.buffer:   # answers each request, ends when its input closes
+    request = json.loads(line)
+    sys.stdout.buffer.write((json.dumps({"id": request["id"], "op": request["op"]}) + "\n").encode())
+    sys.stdout.buffer.flush()
+"""
+_LOUD = r"""
+import sys
+sys.stdin.buffer.readline()
+sys.stderr.write("Traceback: 到着の読み込みに失敗しました\n")
+sys.exit(3)
+"""
+
+
+def test_a_japanese_and_a_chinese_worker_run_side_by_side():
+    """X8: one worker per language — a Chinese request is answered while the Japanese worker is alive (its job never
+    waits for the other's: a kind per language)."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    ja = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _ECHO])
+    zh = ArrivalsWorker(registry, "zh", command=[sys.executable, "-c", _ECHO])
+    got = queue.Queue()
+    try:
+        ja.stats(callback=got.put)
+        assert got.get(timeout=30)["id"] == 1 and ja.running
+        zh.stats(callback=got.put)
+        assert got.get(timeout=15)["op"] == "stats", "the Chinese worker never waits on the Japanese one"
+        assert sorted(job.kind for job in registry.live() if job.state == jobs.RUNNING) ==             ["arrivals-ja", "arrivals-zh"]
+    finally:
+        ja.stop()
+        zh.stop()
+        registry.quit(timeout=30)
+
+
+def test_what_a_crashed_worker_printed_is_in_its_log(tmp_path, monkeypatch):
+    """X13: the worker's stderr (a crash's traceback) goes to its log in the logs folder, never nowhere."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path))
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _LOUD])
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    assert "exit code 3" in got.get(timeout=30)["error"]
+    client.stop()
+    log = tmp_path / "local" / "logs" / "arrivals-worker-ja.log"
+    assert "到着の読み込みに失敗しました" in log.read_bytes().decode("utf-8", "replace")

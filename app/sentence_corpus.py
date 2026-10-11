@@ -674,7 +674,8 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    # The library as Generate reads it: a missing item still counts (its cached sentences), as `build` lists it.
+    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False, missing=True)]
     if not files:
         return {}
     store = token_index.open_store(language)

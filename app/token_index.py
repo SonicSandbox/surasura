@@ -314,13 +314,16 @@ def open_store(language, path=None):
 
 def open_reader(language, path=None):
     """The token store opened to read only (the warm arrivals worker, E2.2 D10: "writes nothing") — no schema ensured,
-    no rebuild of a damaged file, SQLite refusing any write — or None when there is none or it can't be read."""
+    no rebuild of a damaged file, SQLite refusing any write (`query_only`) — or None when there is none or it can't be
+    read. Opened `mode=rw` (never made), not `mode=ro`: a read-only connection to a WAL file makes its -wal / -shm
+    files and can't remove them when it closes, so they'd stay behind; this one, the last to close, tidies them as
+    every other connection does."""
     db_path = path or store_path_for(language)
     if not os.path.exists(db_path):
         return None
     try:
         from pathlib import Path
-        c = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=ro", uri=True, timeout=5.0)
+        c = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=5.0)
     except sqlite3.Error:
         return None
     try:
@@ -440,12 +443,27 @@ class _KeptText:
                 create = True
         return default
 
-    def held(self):
-        """{key: whether its text was rebuilt from cached sentences} — every file whose text is kept."""
+    def held(self, stamps=False):
+        """{key: whether its text was rebuilt from cached sentences} — every file whose text is kept; `stamps`:
+        {key: (rebuilt, mtime, size)}, the (mtime, size) of the file the text was kept for."""
         def work(conn):
-            return {self._key(rel): "rebuilt" in json.loads(facts or "{}")
-                    for rel, facts in conn.execute("SELECT rel, facts FROM kept")}
+            return {self._key(rel): ("rebuilt" in json.loads(facts or "{}"), mtime, size) if stamps else
+                    "rebuilt" in json.loads(facts or "{}")
+                    for rel, facts, mtime, size in conn.execute("SELECT rel, facts, mtime, size FROM kept")}
         return self._run(work, {})
+
+    def has(self, keys):
+        """The `keys` whose text is kept — read only (never made, never set aside: a cheap check's). Raises when the
+        file can't be read."""
+        if not os.path.exists(self.path):
+            return set()
+        import pathlib
+        c = sqlite3.connect(pathlib.Path(self.path).as_uri() + "?mode=ro", uri=True, timeout=0.5)
+        try:
+            rels = {self._rel(key): key for key in keys}
+            return {rels[rel] for (rel,) in c.execute("SELECT rel FROM kept") if rel in rels}
+        finally:
+            c.close()
 
     def get(self, key):
         """(text, facts, mtime, size) kept for the store's `key`, or None."""
@@ -829,16 +847,18 @@ class Store:
                 held.setdefault(key, key)
         return counted, held, gone
 
-    def needs_reconcile(self, files, kept=None, elsewhere=None, forgotten=None):
-        """Cheap disk-vs-store delta check (stat only, NO tokenizer) — for a GUI pre-gate. `kept`, `elsewhere` and
-        `forgotten` as `reconcile` takes them. A listed file gone from the disk keeps its row as it is, so it is a change
-        only when its flag moved, or when the store lacks it and its file is elsewhere (a removed item's, in the
-        trash)."""
+    def needs_reconcile(self, files, kept=None, elsewhere=None, forgotten=None, data_dir=None):
+        """Cheap disk-vs-store delta check (stat only, NO tokenizer) — for a GUI pre-gate. `kept`, `elsewhere`,
+        `forgotten` and `data_dir` as `reconcile` takes them. A listed file gone from the disk keeps its row as it is,
+        so it is a change only when its flag moved, when the store lacks it and its file is elsewhere (a removed
+        item's, in the trash), or when its text isn't kept yet (the reconcile keeps it at once: a missing item's only
+        sentences never wait for an unrelated change)."""
         rows = {r[0]: (r[1], r[2], r[3]) for r in self.conn.execute("SELECT path, mtime, size, counted FROM files")}
         counted, held, _gone = self._listed(files, kept, {key: row[2] for key, row in rows.items()}, forgotten)
         if any(key not in counted and key not in held for key in rows):
             return True
         others = {_norm(p): where for p, where in (elsewhere or {}).items()}
+        missing = []                        # rows whose file is gone, unchanged otherwise: is their text kept?
         for listed, flag in ((counted, 1), (held, 0)):
             for key, realpath in listed.items():
                 row = rows.get(key)
@@ -848,9 +868,16 @@ class Store:
                     if (row is None and key in others and os.path.exists(others[key])) or (
                             row is not None and row[2] != flag):
                         return True
+                    if row is not None:
+                        missing.append(key)
                     continue
                 if row is None or row[:2] != signature or row[2] != flag:
                     return True
+        if missing:
+            try:
+                return len(self._kept_text(data_dir).has(missing)) < len(missing)
+            except Exception:
+                return True                 # can't tell: the reconcile looks
         return False
 
     # -- reconcile (delta, one transaction) ---------------------------------- #
@@ -954,6 +981,8 @@ class Store:
                     old = olds[same][0]
                     cur.execute("UPDATE files SET path=? WHERE path=?", (key, old))
                     existing[key] = existing.pop(old)
+                    if existing[key]["counted"]:
+                        changed = True              # the phrase table and matches follow the new path
                     leaving.pop(old, None)
                     if old in held:
                         del held[old], listed[old], signatures[old]
@@ -966,7 +995,7 @@ class Store:
             # before its list was read, Generate without the library store) or a removed item met before the indexer
             # keeps it never takes its only sentences with it — a later list naming it reads it back from them.
             lost = [key for key in leaving if key not in gone and not os.path.exists(key)]
-            have = texts.held() if (held or lost or None in signatures.values()) else {}
+            have = texts.held(stamps=True) if (held or lost or None in signatures.values()) else {}
             keep_now = {}
             for key in listed:
                 signature, row = signatures[key], existing.get(key)
@@ -975,11 +1004,14 @@ class Store:
                 if signature is not None and (wipe or (row["mtime"], row["size"]) != signature):
                     continue                                # read from its file below, its text kept then
                 source = listed[key] if signature is not None else others.get(key)
-                if key in have and not (have[key] and read is not None and source and os.path.exists(source)):
+                # Kept already, for this row's file (its (mtime, size)): kept again only when it was rebuilt and its
+                # file can be read now. Kept for an older file (it came back changed, then went again): kept anew.
+                if key in have and have[key][1:] == (row["mtime"], row["size"]) and not (
+                        have[key][0] and read is not None and source and os.path.exists(source)):
                     continue
                 keep_now[key] = self._text_of(cur, key, row, source, read)
             for key in lost:
-                if key not in have:
+                if key not in have or have[key][1:] != (existing[key]["mtime"], existing[key]["size"]):
                     keep_now[key] = self._text_of(cur, key, existing[key], others.get(key), read)
             texts.put(keep_now)
 

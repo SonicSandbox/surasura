@@ -779,7 +779,9 @@ class Engine:
         spellings join the tied words' counts. `exact`: the gates found nothing else the arrival moves
         (`arrivals.Gates.check`) — then `result()` is the next full Generate's plan columns; False: the item is
         provisional (`Result.provisional`, with `moved` as its `reasons`) — still a valid order to re-plan and re-order
-        Anki by (E2.2 K10), corrected when the next Generate's plan replaces this engine. Returns (the words whose
+        Anki by (E2.2 K10), corrected when the next Generate's plan replaces this engine. "The plan columns" are 05 §1's:
+        a priority row's `Sources`, `Modality` and example sentences (`Context n` / `Src n`) stay the plan's — the next
+        Generate may give the arrival's words a new source kind or a better sentence. Returns (the words whose
         Score, tier counts or first item changed, as (Word, Reading); [item_id]). A record read against another plan,
         or one that doesn't fit this plan's words, is a PlanError."""
         if item_id is None or item_id in self._f_of:

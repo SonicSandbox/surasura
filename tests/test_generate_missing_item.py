@@ -53,6 +53,14 @@ def test_a_missing_item_keeps_counting_in_generate(language):
     now1, now2, *_rest = list(ids)
     store.close()
     present = _generate(root, language)
+    # 例文 (`sentence_corpus.best_for`) over every word of the file: its sentences are offered while it is there...
+    examples = (f"import hashlib, json; from app import sentence_corpus as sc, token_index as ti; "
+                f"s = ti.open_store('{language}'); keys = {{(t[0], t[1]) for _x, ts in s.file_tokens({now2!r}) "
+                f"for t in ts}}; s.close(); found = sc.best_for('{language}', keys); "
+                f"print(len(found), hashlib.sha256(json.dumps(sorted(map(str, found.items())), ensure_ascii=False)"
+                f".encode()).hexdigest())")
+    offered = _child(root, examples)
+    assert int(offered.split()[0]) > 0, offered
 
     os.remove(now2)                                                    # gone from the disk: a missing item
     from app import library_store as ls
@@ -62,6 +70,7 @@ def test_a_missing_item_keeps_counting_in_generate(language):
     missing = _generate(root, language)
 
     assert missing == present, "the missing file's words, sentences and places still count"
+    assert _child(root, examples) == offered, "...and still offered once it is missing, as the list counts it"
     held = _child(root, f"from app import token_index as ti; s = ti.open_store('{language}'); "
                         f"print(ti._norm({now2!r}) in s.counted_files())")
     assert held == "True", "Generate keeps the missing file's row: it listed it"

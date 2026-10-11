@@ -636,6 +636,12 @@ class Gates:
         # phrases
         if view.phrase_set is not None and self._phrases_move(tallies, phrases_add, counts_add, floor):
             moved.add("phrases")
+        if view.unsure and phrases_add:             # a format-1 plan's row more than one phrase can hold: can't tell
+            for p_index in phrases_add:
+                entry = view.phrase_set.entry(p_index)
+                if view.phrase_rows.get((entry.word, entry.reading)) in view.unsure:
+                    moved.add("phrases")
+                    break
 
         # spellings
         if self._spellings_move(spc_add):
@@ -654,7 +660,10 @@ class Gates:
             # No tables kept (none computed yet): the whole rule over the counted files' records, with and without the
             # arrivals — a name the library holds twice joins with an arrival's third use.
             base = list(self.records or ())
-            made, before = names.compute_tables(base + held, None, sanitize), names.compute_tables(base, None, sanitize)
+            before = getattr(self, "names_before", None)
+            if before is None:                          # the library alone: worked out once per view
+                before = self.names_before = names.compute_tables(base, None, sanitize)
+            made = names.compute_tables(base + held, None, sanitize)
             return any(made[t] != before[t] for t in ("k", "j", "w"))
         sums, terms, tables = self.table_sums, self.term_sums, self.tables
         katakana, kanji = set(), set()
@@ -805,8 +814,9 @@ class Order:
     file — read once from the plan's per-file lines."""
 
     def __init__(self, plan):
-        from app.library_store import folder_key_of
+        from app.library_store import CURRENT, folder_key_of
         self.folder_key_of = folder_key_of
+        self.current = CURRENT
         self.ids = [entry[0] for entry in plan.files]
         self.tiers = [entry[1] for entry in plan.files]
         self.folders = [folder_key_of(rel) for rel in self.ids]
@@ -819,11 +829,14 @@ class Order:
         self.first = first
 
     def n_new(self, keys, rel=None, placed=()):
-        """(N new placed at the top of NOW, N new placed after the last item of its folder or None when it has none,
-        that item's id) for an arrival holding `keys` (its record's k numbers, words and phrase rows), the files
-        `placed` since the plan ([(id, keys, tier, before_id, after_id)], in the order placed; a tier of None: after
-        its folder's last item, else the top of NOW) placed first — what `plan_engine.Engine.add` gives the item
-        (`Result.n_new`), counted without an engine: a key is new where no file before it in the order holds it."""
+        """(N new placed at the top of NOW, N new placed after the last item of its folder in Current (NOW and Soon) or
+        None when it has none there, that item's id) for an arrival holding `keys` (its record's k numbers, words and
+        phrase rows), the files `placed` since the plan ([(id, keys, tier, before_id, after_id)], in the order placed; a
+        tier of None: after its folder's last item in Current, else the top of NOW) placed first — what
+        `plan_engine.Engine.add` gives the item (`Result.n_new`) placed in the plan's order, counted without an engine:
+        a key is new where no file before it in the order holds it. A show whose items are all in 6+ Months has no
+        "after its show" (D28: its new episode leads Current, the top-of-NOW figure). The window's moves since the plan
+        aren't in the plan's order: after one, the engine's own figure (`Engine.add`) is the one to show."""
         keys = list(keys)
         top = len(keys)                     # at the top of NOW it comes before every file
         folder = self.folder_key_of(rel) if rel else None
@@ -832,7 +845,7 @@ class Order:
         if not placed:
             at = None
             for f in range(len(self.ids) - 1, -1, -1):
-                if self.folders[f] == folder and self.ids[f] != rel:
+                if self.folders[f] == folder and self.ids[f] != rel and self.tiers[f] in self.current:
                     at = f
                     break
             if at is None:
@@ -845,7 +858,7 @@ class Order:
             own = self.folder_key_of(item_id) if isinstance(item_id, str) else None
             at = None
             if tier is None:
-                last = self._last_of(items, own, item_id)
+                last = self._last_of(items, own, item_id, self.current)
                 at = None if last is None else last + 1
                 tier = "now" if last is None else items[last][1]
             elif before is not None or after is not None:
@@ -858,7 +871,7 @@ class Order:
                 at = next((i for i, item in enumerate(items) if rank.get(item[1], 0) >= rank.get(tier, 0)),
                           len(items))
             items.insert(at, (item_id, tier, own, frozenset(item_keys)))
-        last = self._last_of(items, folder, rel)
+        last = self._last_of(items, folder, rel, self.current)
         if last is None:
             return top, None, None
         before_it = sum(1 for item in items[:last + 1] if not isinstance(item[3], frozenset))
@@ -868,11 +881,11 @@ class Order:
                 items[last][0])
 
     @staticmethod
-    def _last_of(items, folder, rel):
+    def _last_of(items, folder, rel, tiers):
         if folder is None:
             return None
         for i in range(len(items) - 1, -1, -1):
-            if items[i][2] == folder and items[i][0] != rel:
+            if items[i][2] == folder and items[i][0] != rel and items[i][1] in tiers:
                 return i
         return None
 
@@ -881,16 +894,20 @@ def estimate(view, gates, order, rec, rel=None, placed=()):
     """What the window shows of an arrival (D10), from its record (`record`, read by `read`) and the warm view:
     {"words": [[Word, Reading], …] (its list words, none known, in the order met — words, then phrase rows),
     "n_new_top": N new placed at the top of NOW, "n_new_after_show": N new placed after the last item of its folder
-    (None when it has none; "after": that item's id), "known_pct": % known (QT-E8: known tokens ÷ counted tokens,
-    pieces by sums — the record's progressive total and baseline, as Baseline % rounds it), "known" / "counted"
-    (the two sums), "exact" / "moved" (`Gates.check` over the files `placed` since the plan and this one), "record"
-    (what `plan_engine.Engine.add` reads)}. `placed`: [{"id", "record", "tier", "before", "after"}] in the order
+    in Current (None when it has none there; "after": that item's id), "known_pct": % known (QT-E8, Sonic's E2.2-3:
+    known tokens ÷ counted tokens, pieces by sums — the record's progressive total and baseline, as Baseline % rounds
+    it), "known" / "counted" (the two sums), "exact" / "moved" (`Gates.check` over the files `placed` since the plan
+    and this one; "stand-aside" when the engine can't replay the plan at all, `plan_engine.stands_aside`: coverage,
+    i+1, shared phrases), "record" (what `plan_engine.Engine.add` reads)}. `placed`: [{"id", "record", "tier", "before", "after"}] in the order
     placed (tier None: after its folder's last item, else the top of NOW). Pure."""
     plan = view.plan
     keys = list(rec["main"][0::2]) + list(rec["ph"][0::2])
     words = [[view.keys[k][0], view.keys[k][1]] for k in keys if plan.rows[k] is not None]
+    from app import plan_engine
     if gates is None:
         exact, moved = False, ["stale"]
+    elif plan_engine.stands_aside(plan):
+        exact, moved = False, ["stand-aside"]   # Engine(plan) refuses it: no number it gives is the next Generate's
     else:
         exact, moved = gates.check([p["record"] for p in placed] + [rec])
     top, after, anchor = order.n_new(

@@ -807,3 +807,73 @@ def test_a_row_leaving_with_its_file_still_on_disk_keeps_nothing(language):
     assert ti._norm(b) not in store.counted_files()
     assert _kept_text(store).held() == {}
     store.close()
+
+
+# --- E2.2 final review (adversary X3 / X5 / X11) ------------------------------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_counted_file_gone_whose_text_isnt_kept_is_work_for_the_indexer(language):
+    """X3: a counted file deleted with nothing else changed must start the indexer at once (the dashboard's
+    `needs_reconcile`), so its only sentences are kept before a wipe can take its tokens; once kept, it is no work."""
+    a, missing, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, missing], ti.make_tokenizer(language))
+    os.remove(missing)
+    assert store.needs_reconcile([a, missing], []) is True, "its text isn't kept yet"
+    store.reconcile([a, missing], ti.make_tokenizer(language), kept=[])
+    assert _kept_text(store).held() == {ti._norm(missing): True}
+    assert store.needs_reconcile([a, missing], []) is False
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kept_text_follows_a_file_that_came_back_changed_and_went_again(language):
+    """X5: a missing file's text is kept; the file comes back with other content (a corrected subtitle) and is read
+    again; then it goes missing again — the kept text must be the new content's, never the first one's (a wipe would
+    read the old file back in). An unchanged second pass keeps it as it is."""
+    a, x, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, x], tok)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    first = _kept_text(store).get(ti._norm(x))
+    shutil.copy2(os.path.join(REPO, *SOURCES[language][4].split("/")), x)     # back, with other real text
+    store.reconcile([a, x], tok, kept=[])
+    words = _lemmas(store, x)
+    signature = ti.file_signature(x)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    text, _facts, mtime, size = _kept_text(store).get(ti._norm(x))
+    assert (mtime, size) == signature and text != first[0], "kept anew for the file that went missing last"
+    assert _lemmas(store, x) == words
+    with sqlite3.connect(_kept_text(store).path) as c:
+        before = c.execute("SELECT rel, text, facts, mtime, size FROM kept").fetchall()
+    store.reconcile([a, x], tok, kept=[])
+    with sqlite3.connect(_kept_text(store).path) as c:
+        assert c.execute("SELECT rel, text, facts, mtime, size FROM kept").fetchall() == before
+    store.close()
+
+
+def test_a_counted_file_moved_keeps_its_phrase_tallies():
+    """X11: a counted episode moved to another folder takes its row (9a, no re-tokenizing) — and the phrase tallies
+    follow it, so the arrivals' phrase gate isn't left reading "not current" (every arrival provisional) until some
+    other change."""
+    language = "ja"
+    a, *_mid, phrased = _files(language)
+    data_dir, _u = roots(language)
+    signature = ti.build_signature(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a, phrased], ti.make_tokenizer(language), build_signature=signature)
+        before = store.phrase_tallies()
+        assert before and any(uses for uses, _given in before.values()), "the sample holds set phrases"
+        moved = os.path.join(data_dir, "LowPriority", "別の作品", os.path.basename(phrased))
+        os.makedirs(os.path.dirname(moved), exist_ok=True)
+        os.replace(phrased, moved)
+        tok = _counting(language)
+        store.reconcile([a, moved], tok, build_signature=signature)
+        assert tok.calls == [], "re-keyed, never read again"
+        after = store.phrase_tallies()
+        assert after is not None and after[ti._norm(moved)] == before[ti._norm(phrased)]
+    finally:
+        store.close()

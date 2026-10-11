@@ -6,8 +6,10 @@ waiting on it.
     worker.estimate(path, placed=(), callback=lambda answer: …)     # returns the request's id at once
     worker.stop()                                                   # the window closing (the registry's quit does it too)
 
-The process starts on first use, as a job in the registry (kind `arrivals`, automatic, `on_quit="cancel"`: it shares
-nothing, so it never waits for another job, and the window's quit ends it). Requests are written and answers read on
+The process starts on first use, as a job in the registry (kind `arrivals-<language>`, automatic, `on_quit="cancel"`: it
+shares nothing, so it never waits for another job — a Japanese and a Chinese worker run side by side — and the window's
+quit ends it). What the worker prints (a crash's traceback) goes to `arrivals-worker-<language>.log` in the logs folder,
+started again when it passes `LOG_CAP`. Requests are written and answers read on
 the client's own threads; each answer goes to its request's callback (or `on_answer`) on the reader thread — a window
 posts it to its own queue. The worker ends by itself after its idle minutes: the next request starts it again, and a
 request the ending worker never answered is sent once more to the new one. A worker that crashed answers each request
@@ -24,10 +26,33 @@ import time
 
 from app.services import jobs as jobs_module
 
-KIND = "arrivals"
+KIND = "arrivals"               # the job's kind is this and the language: `kind_of`
 LABEL = "Counting new arrivals"
 GRACE = 2.0                     # s a worker asked to stop has to end before it is stopped
 STUCK = 120.0                   # s a request may wait for its answer before the worker is taken as stuck and ended
+LOG_CAP = 1 << 20               # bytes: a worker's log past this starts again (the last one kept as .old)
+
+
+def kind_of(language):
+    """The registry kind of `language`'s worker: one per language, never two of one (`jobs.RESOURCES`)."""
+    return f"{KIND}-{language}"
+
+
+def _log_file(language):
+    """The worker's stderr: its log in the logs folder, opened to append (DEVNULL when it can't be)."""
+    try:
+        from app.path_utils import get_local_data_path
+        folder = os.path.join(get_local_data_path(), "logs")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"arrivals-worker-{language}.log")
+        try:
+            if os.path.getsize(path) > LOG_CAP:
+                os.replace(path, path + ".old")
+        except OSError:
+            pass
+        return open(path, "ab")
+    except Exception:
+        return subprocess.DEVNULL
 
 
 def command_line(language, args=()):
@@ -109,7 +134,7 @@ class ArrivalsWorker:
             if self._job is not None or self._closed:
                 return
             self._job = True
-        job = self.registry.submit(KIND, LABEL, start=self._begin, cancel=self._cancel, automatic=True,
+        job = self.registry.submit(kind_of(self.language), LABEL, start=self._begin, cancel=self._cancel, automatic=True,
                                    on_quit="cancel")
         with self._lock:
             if self._job is True:
@@ -128,9 +153,14 @@ class ArrivalsWorker:
         try:
             from app.path_utils import build_subprocess_env, is_frozen
             command = self._command or command_line(self.language, self.args)
-            proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, env=build_subprocess_env(is_frozen()),
-                                    creationflags=0x08000000 if sys.platform == "win32" else 0)   # CREATE_NO_WINDOW
+            log = _log_file(self.language)
+            try:
+                proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                                        env=build_subprocess_env(is_frozen()),
+                                        creationflags=0x08000000 if sys.platform == "win32" else 0)  # CREATE_NO_WINDOW
+            finally:
+                if log is not subprocess.DEVNULL:
+                    log.close()                     # the child holds its own handle
         except Exception as e:                      # it can't start: each request waiting is answered, none re-sent
             self._ended(job, None, set(), f"The arrivals worker couldn't start: {e}")
             return

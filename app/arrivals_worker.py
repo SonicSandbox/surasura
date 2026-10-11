@@ -19,8 +19,13 @@ data-folder-relative ids, as the plan names its files). A request it can't answe
 
 It ends when its input closes (its parent died), on "quit", and after `IDLE_SECONDS` without a request (Sonic, E2.2-2;
 `--idle-seconds` for a test). It reloads the view by itself when the plan file's run signature or the known words
-change. An answer is kept by (path, mtime, size, the plan's run signature, the known words' signature, what was
-placed): asked again, nothing is worked out again (S19). **It writes nothing** — not the token store (the store is
+change, and when the settings or the word lists change what a run reads (the analyzer's arguments read again from the
+settings, unless the command line gave them; a new tokenizer then). A view whose known words, word lists, settings,
+arguments, frequency lists or engine aren't the plan's (`order_free_parts`) answers nothing as exact ("stale"): the next
+Generate's list isn't the plan's. A placed file the plan already holds is the plan's (a Generate re-baselined since):
+never counted in twice. Every estimate names the plan it was read against ("plan": its run signature). An answer is
+kept by (path, mtime, size, the plan's run signature, the known words' signature, what was placed): asked again,
+nothing is worked out again (S19). **It writes nothing** — not the token store (the store is
 opened only to build the view, and closed: the arrival is read here, `arrivals.read`), not results/, no known-words
 cache (`read_known_words(keep=False)`).
 """
@@ -34,6 +39,9 @@ from collections import OrderedDict
 
 IDLE_SECONDS = 120              # Sonic (E2.2-2): "could even be after 1-2 minutes"
 KEEP = 64                       # answers (and arrivals read) kept, newest last
+# The run signature's parts a view must share with its plan for an answer to be exact (`plan_rules.part_digests`; the
+# files are the arrivals' own business, the remembered band the band gate's).
+MATCHED = ("known", "lists", "freq", "settings", "args", "engine")
 # A line each language's warm-up reads through every step of an answer (`Worker._warm_up`).
 SAMPLE = {"ja": "今日は駅前の本屋で、友達と待ち合わせをしたんだけど、結局来なかった。", "zh": "今天我在车站前的书店等朋友，结果他没来。"}
 
@@ -72,24 +80,55 @@ class Worker:
     words change), and the answers kept."""
 
     def __init__(self, language, argv=()):
-        from app import analyzer, settings_manager
+        from app import analyzer
         self.language = language
-        settings = settings_manager.load_settings()
-        if not argv:                                # the Generate the dashboard and the window run
-            from app import run_args
-            argv = run_args.analyzer_args(settings, language)[1:]
-        self.args = analyzer.parse_analysis_args([f"--language={language}"] + list(argv))
-        self.send_grammar = bool(settings.get("connect_send_grammar", True))
+        self.argv = list(argv)                      # empty: the Generate the dashboard and the window run (settings)
+        self._read_settings()
         self.plan_path = os.path.join(analyzer.RESULTS_DIR, analyzer.PLAN_FILE)
-        self.warm = None                            # {"view", "gates", "order", "listed", "signature", ...}
-        self.plan_stat = self.known_sig = None
+        self.warm = None                            # {"view", "gates", "order", "ids", "listed", "signature", "parts"}
+        self.plan_stat = self.known_sig = self.inputs = None
         self.reads, self.answers = OrderedDict(), OrderedDict()
         self.counts = {"views": 0, "reads": 0, "estimates": 0}
 
     # --- the view ------------------------------------------------------------------------------------------------ #
+    def _read_settings(self):
+        """The settings as a run reads them: the logic block into the analyzer's, the arguments (unless given)."""
+        from app import analyzer, settings_manager
+        settings = settings_manager.load_settings()
+        analyzer.LOGIC.update(settings.get("logic", {}))
+        argv = self.argv
+        if not argv:
+            from app import run_args
+            argv = run_args.analyzer_args(settings, self.language)[1:]
+        self.args = analyzer.parse_analysis_args([f"--language={self.language}"] + list(argv))
+        self.send_grammar = bool(settings.get("connect_send_grammar", True))
+
     def _known_file(self):
         from app.path_utils import get_user_files_path
         return os.path.join(get_user_files_path(self.language), "KnownWord.json")
+
+    def _inputs(self):
+        """The stat of what else a view reads: settings.json, then the word lists (stat only)."""
+        from app.path_utils import get_user_file, get_user_files_path
+        folder = get_user_files_path(self.language)
+        out = []
+        for path in (get_user_file("settings.json"), *(os.path.join(folder, name) for name in (
+                "IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"))):
+            try:
+                st = os.stat(path)
+                out.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                out.append(None)
+        return tuple(out)
+
+    def _parts(self):
+        """{part: digest} of the run signature's `MATCHED` parts as they stand (None: they can't be read)."""
+        from app import analyzer, plan_rules
+        parts = analyzer.run_signature_parts(self.language, [], self.args)
+        if parts is None:
+            return None
+        digests = plan_rules.part_digests(parts)
+        return {name: digests.get(name) for name in MATCHED}
 
     def current(self, force=False):
         """The warm state for the plan and known words as they stand (built again only when either changed)."""
@@ -99,6 +138,16 @@ class Worker:
             plan_stat = (st.st_mtime_ns, st.st_size)
         except OSError:
             plan_stat = None
+        inputs, fresh = self._inputs(), False      # fresh: the settings moved what a run reads (a new tokenizer)
+        if self.warm is not None and inputs != self.inputs:
+            settings_moved = inputs[0] != self.inputs[0]
+            if settings_moved:
+                self._read_settings()
+            parts = self._parts()
+            if parts is not None and parts == self.warm["parts"]:
+                self.inputs = inputs                # saved, but nothing a run reads moved (a theme, a window's key)
+            else:
+                force, fresh = True, settings_moved
         known_sig = token_index.known_signature(self._known_file(),
                                                 zh_script.effective(self.language, self.args.zh_script))
         if not force and self.warm is not None and plan_stat == self.plan_stat and known_sig == self.known_sig:
@@ -116,22 +165,26 @@ class Worker:
                 and signature == self.warm["signature"]):
             self.plan_stat = plan_stat              # the same run's plan, written again: the view holds
             return self.warm
-        self.warm = self._build(plan)
-        self.plan_stat, self.known_sig = plan_stat, known_sig
+        self.warm = self._build(plan, fresh)
+        self.plan_stat, self.known_sig, self.inputs = plan_stat, known_sig, inputs
         return self.warm
 
-    def _build(self, plan):
-        """The view of `plan` (None: no plan for this language — a bare view, its known words alone)."""
-        from app import analyzer, arrivals, names, plan_engine, settings_manager, token_index
-        analyzer.LOGIC.update(settings_manager.load_settings().get("logic", {}))      # as the Generate read them
-        tokenizer = self.warm["view"].tokenizer if self.warm is not None else None
+    def _build(self, plan, fresh=False):
+        """The view of `plan` (None: no plan for this language — a bare view, its known words alone). `fresh`: the
+        settings moved what a run reads, so the tokenizer is made again."""
+        from app import arrivals, names, plan_engine, token_index
+        if self.warm is not None and not fresh:
+            self._read_settings()                   # as the Generate read them
+        tokenizer = self.warm["view"].tokenizer if self.warm is not None and not fresh else None
+        parts = self._parts()
         self.counts["views"] += 1
         self.reads.clear()
         self.answers.clear()
         if plan is None:
             bare = plan_engine.Plan({"floor": 0, "run_signature": None, "phrase_entries": []}, [], [], [], [], [])
             view = arrivals.View.build(self.language, bare, None, self.args, tokenizer=tokenizer)
-            return {"view": view, "gates": None, "order": None, "listed": {}, "signature": None}
+            return {"view": view, "gates": None, "order": None, "ids": frozenset(), "listed": {}, "signature": None,
+                    "parts": parts}
         store = token_index.open_reader(self.language)     # read only: no schema made, no damaged file rebuilt
         try:
             view = arrivals.View.build(self.language, plan, store, self.args, tokenizer=tokenizer)
@@ -142,11 +195,17 @@ class Worker:
             if store is not None:
                 store.close()                       # the arrivals are read here, never through the store
         view.store = None
+        if gates is not None and not gates.stale:
+            kept = plan.header.get("order_free_parts")
+            moved = [name for name in MATCHED if parts is None or not isinstance(kept, dict)
+                     or kept.get(name) != parts[name]]
+            if moved:                               # the next Generate's list isn't this plan's: nothing is exact
+                gates.stale = f"the plan's {', '.join(moved)} moved since"
         order = arrivals.Order(plan)
         # The plan's tables only from here on: its per-file lines (most of its memory) are read into `order`.
         view.plan = plan_engine.Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
-        warm = {"view": view, "gates": gates, "order": order, "listed": self._listed(),
-                "signature": plan.header.get("run_signature")}
+        warm = {"view": view, "gates": gates, "order": order, "ids": frozenset(order.ids), "listed": self._listed(),
+                "signature": plan.header.get("run_signature"), "parts": parts}
         try:
             self._warm_up(warm)
         except Exception as e:                      # only a head start: the first arrival loads what this didn't
@@ -228,6 +287,8 @@ class Worker:
         placed_in = []
         for entry in request.get("placed") or ():
             entry = {"path": entry} if isinstance(entry, str) else dict(entry)
+            if self._rel(entry["path"]) in warm["ids"]:
+                continue                            # the plan holds it already (a Generate re-baselined since)
             placed_in.append(entry)
         key, (rec, picked) = self._read(path, warm)
         placed, keys = [], []
@@ -249,6 +310,7 @@ class Worker:
         else:
             out = arrivals.estimate(warm["view"], warm["gates"], warm["order"], rec, self._rel(path), placed)
             out["pick"] = picked
+        out["plan"] = warm["signature"]
         self.counts["estimates"] += 1
         self.answers[answer_key] = out
         while len(self.answers) > KEEP:

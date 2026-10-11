@@ -5,8 +5,13 @@ battery and fan pay for every card), and a desktop reporting "unknown" (255) or 
 held back forever. So only "AC offline" (0) counts as battery; AC online (1), unknown (255), no status (None) and a
 status call that raises all go on. Off Windows there is no check at all. The status and OS calls are stand-ins passed
 in (the module's own `status=` / `platform=` / `set_class=` / `nice=` seams), so these tests never touch the real
-power API or the real process priority.
+power API or the real process priority, except one Windows-only smoke test that calls the real
+GetSystemPowerStatus (skipped off Windows).
 """
+import sys
+
+import pytest
+
 from app.connect import power
 
 
@@ -63,3 +68,12 @@ def test_lower_priority_elsewhere_uses_nice_five_and_a_failing_call_never_raises
         raise PermissionError("nice refused")
     assert power.lower_priority("linux", nice=refuse) is False
     assert power.lower_priority("win32", set_class=refuse) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' power status")
+def test_on_windows_the_real_status_call_returns_a_status_dict():
+    # A successful Windows call must come back as the three fields, with AC a byte (255 = unknown, still a valid byte).
+    got = power._status()
+    assert isinstance(got, dict)
+    assert set(got) == {"ac", "battery_flag", "percent"}
+    assert 0 <= got["ac"] <= 255

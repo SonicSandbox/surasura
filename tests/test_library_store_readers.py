@@ -14,6 +14,7 @@ Japanese and Chinese from tests/Test Resources/ and samples/, and every proof ru
 import json
 import os
 import shutil
+import sys
 import sqlite3
 from unittest.mock import patch
 
@@ -346,3 +347,130 @@ def test_read_only_mode_analyses_a_dropped_file_and_writes_nothing(env, language
     schedule = ls.read_only_schedule(language, data_dir, user_files_dir)
     soon = [e["physical_path"] for e in schedule["PHASE_2_SOON"]]
     assert soon[-1].endswith(os.path.basename(dropped)), "after the show's last row"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_generate_takes_in_a_file_dropped_since_the_last_run(env, language):
+    """The rule in plain words: a file dropped into the hato folder after the last run is in Generate's list
+    on the next run. Generate's own schedule (prepare_library) syncs the disk first; without that sync the
+    dropped file is missing from the schedule until some later step notices it."""
+    data_dir, user_files_dir, _doc = _library(language)
+    _run(env, language)
+    drop = os.path.join(data_dir, *ls.HATO_FOLDER.split("/"), f"{names(language)[5]}.txt")
+    os.makedirs(os.path.dirname(drop), exist_ok=True)
+    shutil.copy(TEXTS[language][0][1], drop)
+    out = analyzer.prepare_library(language, data_dir=data_dir, user_files_dir=user_files_dir)
+    top = out["schedule"]["PHASE_1_NOW"]
+    assert top and top[0]["physical_path"].endswith(os.path.basename(drop)), "the dropped file is the top of NOW"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_generate_starts_the_store_helper_exactly_when_an_export_is_due(env, store_helper_spawns, language):
+    """Generate starts the store's helper only when the copy is behind the store: after a fresh export nothing
+    spawns, and once a row moves the export is due and exactly one spawn is recorded."""
+    data_dir, user_files_dir, _doc = _library(language)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:
+        assert not store.export_due(), "precondition: the copy was just exported"
+    store_helper_spawns.clear()
+    analyzer.prepare_library(language, data_dir=data_dir, user_files_dir=user_files_dir)
+    assert store_helper_spawns == [], "no export due, no helper"
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:
+        store.move([store.ids("now")[0]], "soon")
+    analyzer.prepare_library(language, data_dir=data_dir, user_files_dir=user_files_dir)
+    assert store_helper_spawns == [(language,)], "an export is due, so the helper starts once"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_only_a_read_only_store_adds_untracked_files_and_json_mode_gets_no_schedule(env, capsys, language):
+    """In JSON mode (no store) Generate gets no schedule and prints no read-only note, even with an untracked
+    file in the library; only a read-only store (damaged, read-only until Repair) reads the copy with untracked
+    files added and says so."""
+    data_dir, user_files_dir, _doc = _library(language)
+    untracked = os.path.join(data_dir, "HighPriority", f"{names(language)[6]}.txt")
+    shutil.copy(TEXTS[language][0][1], untracked)
+    with patch.object(ls, "maintain", lambda *a, **k: ls.EXIT_NOTHING):
+        out = analyzer.prepare_library(language, data_dir=data_dir, user_files_dir=user_files_dir)
+    assert out["schedule"] is None, "JSON mode: the file, as 2.4"
+    assert "read-only" not in capsys.readouterr().out
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    ls.mark_damaged(ls.library_db_path(language, data_dir), "test")
+    # A second file dropped after the maintain above, so it is untracked when read-only mode starts.
+    late = os.path.join(data_dir, "HighPriority", f"{names(language)[6]}_late.txt")
+    shutil.copy(TEXTS[language][0][1], late)
+    out = analyzer.prepare_library(language, data_dir=data_dir, user_files_dir=user_files_dir)
+    assert out["schedule"] is not None, "read-only mode: the copy with untracked files added"
+    paths = [e["physical_path"] for phase in out["schedule"].values() for e in phase]
+    assert any(p.endswith(os.path.basename(late)) for p in paths), "the untracked file is in the schedule"
+    assert "read-only" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_journey_check_starts_the_build_helper_when_a_manifest_waits_with_no_store(env, language, store_helper_spawns, monkeypatch):
+    """A library with a manifest and no store yet: the journey check hands the build to the helper, so the next
+    run finds a store. The once-a-minute throttle is cleared first so an earlier test's spawn cannot hide it."""
+    _library(language)
+    monkeypatch.setattr(ls, "_build_spawned", {})
+    _journey(env, language)
+    assert store_helper_spawns == [(language,)], "one build helper for the language, nothing more"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_ready_store_is_used_even_when_its_copy_file_is_gone(env, language):
+    """A library the store has built stays on the store's list when master_manifest.json is removed: the
+    store, not the copy file, decides what is analysed once it is ready. Without the copy, a reader that
+    skipped the store would fall to a scan that finds nothing and analyse an empty run."""
+    data_dir, user_files_dir, _doc = _library(language)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    # Graduate one file in the store only: the folders still hold all four, so a folder scan would return 4
+    # and the store's list returns 3. The test then tells a store-driven read from a fallback scan.
+    before = [p for p, *_ in analyzer.resolve_found_files(language, verbose=False)]
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:
+        store.set_tier([[i for t in ls.ANALYSED for i in store.ids(t)][0]], "graduated")
+    os.remove(ls.manifest_path(user_files_dir))
+    listed = [p for p, *_ in analyzer.resolve_found_files(language, verbose=False)]
+    assert len(listed) == 3, "the store's list, no copy file, the graduated file left out"
+    assert set(before) - set(listed), "the graduated file is the one that left the list"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_store_in_read_only_mode_still_keeps_a_graduated_file_out_of_the_indexer(env, language):
+    """A damaged store is read-only until Repair. Read-only mode must still take the store's list: a file Graduate
+    left in its tier folder is no longer analysed, so the indexer must not fall back to the folder walk and index it."""
+    data_dir, user_files_dir, _doc = _library(language)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:
+        gone = store.ids("now")[0]
+        gone_path = store.item(gone)["rel_path"]
+        store.set_tier([gone], "graduated")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE  # the copy records the graduation
+    ls.mark_damaged(ls.library_db_path(language, data_dir), "test")
+    assert ls.check_mode(language, data_dir)[0] == "read-only"
+    files = indexer._content_files(data_dir, language)
+    gone_file = os.path.normpath(os.path.join(data_dir, *gone_path.split("/")))
+    # the indexer's list is the analyzer's list: non-empty, equal, and the graduated file is out of it
+    assert files, "the surviving files are still indexed (an empty list would pass the check below)"
+    assert files == [p for p, *_ in analyzer.resolve_found_files(language, verbose=False)]
+    assert gone_file not in [os.path.normpath(p) for p in files]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_indexer_asks_for_its_list_with_its_language_so_a_store_library_is_read(env, monkeypatch, language):
+    """The indexer passes its language to `_content_files`: with a library store that is the analyzer's list (K2).
+    Called with the data path alone, the store is never consulted and the folder walk runs instead."""
+    seen = []
+
+    def stop_after_the_call(*args, **kwargs):
+        seen.append((args, kwargs))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(indexer, "_content_files", stop_after_the_call)
+    monkeypatch.setattr(sys, "argv", ["indexer.py", "--language", language])
+    with pytest.raises(SystemExit):
+        indexer.main()
+    args, kwargs = seen[0]
+    assert len(seen) == 1 and language in args[1:] + tuple(kwargs.values())

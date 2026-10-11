@@ -261,3 +261,19 @@ def test_connect_looks_once_a_run_and_queues_the_level_jobs():
     code, line = h.call("connect", "--consume-only")
     assert code == 0 and line["languages"]["ja"]["level"]["queued"] == [a], line
     assert [j["words"] for j in _level_jobs()] == [[("眼鏡", "メガネ")]]
+
+
+def test_every_level_job_is_queued_with_the_stores_identity():
+    """A level job carries the store it was queued for, so a store set up again can't mine it (P2.1 adversary #12):
+    the job's store_id is the store's own id, never left empty."""
+    (a, fa), (b, fb), (d, fd) = _line()
+    _mine(a, d)
+    files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
+    assert _check(BEFORE, "run-1", files)["first"] is True
+    out = _check(RAISED, "run-2", files)
+    assert out["queued"] == [a, d]
+    with c.store() as s:
+        sid = library.store_id(s)
+    assert sid, "the store has an identity to carry"
+    jobs = _level_jobs()
+    assert len(jobs) == 2 and all(j["store_id"] == sid for j in jobs)

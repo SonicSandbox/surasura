@@ -923,3 +923,11 @@ def test_a_big_edit_found_by_a_rebuild_asks_first(language):
     assert ls.resolve_reimport(language, data_dir, user_files_dir, use_theirs=True)
     assert store.ids("goal") == order["goal"][::-1]
     store.close()
+
+
+def test_the_size_guard_trips_at_ten_items_and_over_five_percent():
+    # Q4-8: ten moved items is the floor (nine is not enough), and ten of two
+    # hundred analysed items is exactly 5 %, which is not more than 5 %.
+    assert ls._guard_trips(10, 100) is True
+    assert ls._guard_trips(9, 100) is False
+    assert ls._guard_trips(10, 200) is False

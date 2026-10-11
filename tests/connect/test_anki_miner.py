@@ -7,6 +7,7 @@ The words are a real pick: the library episode's (`ja/library_episode.ass`), rea
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -424,3 +425,73 @@ def test_after_a_crash_the_jobs_tag_says_which_words_reached_anki(monkeypatch, w
     assert asked["query"] == 'tag:"surasura::connect::job-1"'
     assert out[0]["outcome"] == "made" and out[0]["note_id"] == 11
     assert all(o["outcome"] == "uncertain" for o in out[1:])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows-only")
+def test_a_bound_process_dies_with_the_connect_process_that_started_it():
+    # Why: Connect starts Anki Miner and holds Anki's write lock while it adds cards. If Connect is killed mid-batch,
+    # Anki Miner must die with it (the job object's kill-on-close): left running, it would go on adding cards with no
+    # one holding the lock. Proven end to end: a Connect stand-in binds a long sleeper, then ends with no cleanup at
+    # all; the sleeper must be gone within a few seconds.
+    import ctypes
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    script = (
+        "import os, subprocess, sys\n"
+        f"sys.path.insert(0, {repo!r})\n"
+        "from app.connect import anki_miner\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "anki_miner._bind(p)\n"
+        "print(p.pid, flush=True)\n"
+        "sys.stdin.readline()\n"                  # the test holds the sleeper's handle before this process ends
+        "os._exit(0)\n")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    child = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    handle = None
+    gone = False
+    try:
+        pid = int(child.stdout.readline().strip())
+        # SYNCHRONIZE | PROCESS_TERMINATE, opened while the stand-in still lives: the sleeper can't have ended yet,
+        # so its PID can't have gone to another program, and the handle names this sleeper for good.
+        handle = kernel32.OpenProcess(0x00100000 | 0x0001, False, pid)
+        assert handle, "the sleeper's handle couldn't be opened"
+        child.communicate("\n", timeout=60)                     # the stand-in ends with no cleanup at all
+        # 0 = WAIT_OBJECT_0: the sleeper ended.
+        gone = kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 5000) == 0
+        assert gone, "the bound process outlived the process that started it"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(10)
+        if handle:
+            if not gone:
+                kernel32.TerminateProcess(ctypes.c_void_p(handle), 1)
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows-only")
+def test_every_bound_process_joins_the_one_job_this_process_keeps(monkeypatch):
+    # Why: the job is made once and kept for the process's life; every Anki Miner call joins that same job, so all of
+    # them end with Connect.
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    monkeypatch.setattr(anki_miner, "_job_handle", None)
+    sleepers = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) for _ in range(2)]
+    try:
+        anki_miner._bind(sleepers[0])
+        job = anki_miner._job_handle
+        assert job is not None, "no job was kept"
+        anki_miner._bind(sleepers[1])
+        assert anki_miner._job_handle == job, "a second call made another job"
+        for proc in sleepers:
+            inside = wintypes.BOOL()
+            assert kernel32.IsProcessInJob(wintypes.HANDLE(int(proc._handle)), wintypes.HANDLE(job),
+                                           ctypes.byref(inside))
+            assert inside.value, "a bound process is not in the job"
+    finally:
+        for proc in sleepers:
+            proc.kill()
+            proc.wait(10)
+        if anki_miner._job_handle is not None:
+            kernel32.CloseHandle(wintypes.HANDLE(anki_miner._job_handle))

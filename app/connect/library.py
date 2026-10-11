@@ -186,21 +186,26 @@ def unmake(store, item_id, note_ids, words=()):
     if not gone or not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'"
                                           ).fetchone():
         return []
+
+    def changes():
+        out = {}
+        for word, ids in store.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?", (item_id,)):
+            try:
+                had = [int(n) for n in json.loads(ids)]
+            except (ValueError, TypeError):
+                continue
+            left = [n for n in had if n not in gone]
+            if left != had or (not left and word in undone):
+                out[word] = left
+        return out
+
     with store._reading():
-        rows = store.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?", (item_id,)).fetchall()
-    changed = {}
-    for word, ids in rows:
-        try:
-            had = [int(n) for n in json.loads(ids)]
-        except (ValueError, TypeError):
-            continue
-        left = [n for n in had if n not in gone]
-        if left != had or (not left and word in undone):
-            changed[word] = left
-    if not changed:
-        return []
-    freed = sorted(w for w, left in changed.items() if not left)
+        if not changes():                   # nothing to change: no write lock taken (S19)
+            return []
     with store._command("receipt", by=READER) as cmd:
+        changed = changes()                 # read again under the write lock: a write meanwhile is never undone
+        if not changed:
+            return []
         for word, left in changed.items():
             if left:
                 store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
@@ -210,7 +215,7 @@ def unmake(store, item_id, note_ids, words=()):
         cmd.touch()
         if not store.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? LIMIT 1", (item_id,)).fetchone():
             store.receipt(item_id, None)
-    return freed
+    return sorted(w for w, left in changed.items() if not left)
 
 
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None):

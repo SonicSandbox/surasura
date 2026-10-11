@@ -65,7 +65,7 @@ def stamp(path=None, languages=None):
     out = [_file_stat(path), _file_stat(path + "-wal"), running(), _today().isoformat()]
     for lang in languages or LANGUAGES:
         db = _store_path(lang)
-        out.append(_file_stat(db) if db else None)
+        out += [_file_stat(db), _file_stat(db + "-wal")] if db else [None, None]
     return out
 
 
@@ -167,9 +167,13 @@ def _language(conn, lang, is_running, words):
     rec["undo"] = [{"job": u["id"], "item": u["item_id"], "title": items.get(u["item_id"], {}).get("title"),
                     "kind": u["kind"] or "mine", "made": u["made"], "at": u["updated_at"],
                     "not_made": _not_made(conn, u["id"])} for u in undoable]
+    if words:                               # N7: each finished batch's not-made words too (IK P2.5 #9)
+        for entry in rec["undo"]:
+            entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
+                                                  "outcome != 'made' ORDER BY rowid", (entry["job"],))
     rec["made_today"] = _made_today(conn, lang)
     rec["shelf"] = _shelf(conn, lang)
-    rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running)
+    rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running, {n["say"] for n in needs})
     return rec
 
 
@@ -202,7 +206,7 @@ def _made_today(conn, lang):
     """Cards Connect made today (local time): its made outcomes whose batch ended today."""
     rows = conn.execute("SELECT b.ended_at, COUNT(*) FROM outcomes o JOIN jobs j ON j.id = o.job_id JOIN batches b ON "
                         "b.job_id = o.job_id AND b.attempt = o.attempt WHERE j.language = ? AND o.outcome = 'made' "
-                        "AND b.ended_at IS NOT NULL GROUP BY b.ended_at", (lang,)).fetchall()
+                        "AND j.state != 'undone' AND b.ended_at IS NOT NULL GROUP BY b.ended_at", (lang,)).fetchall()
     today = _today()
     return sum(n for at, n in rows if _local_day(at) == today)
 
@@ -229,8 +233,12 @@ def _shelf(conn, lang):
     return {"on_shelf": on, "runs": runs, "swap_ins": swap_ins}
 
 
-def _line(conn, lang, rec, open_jobs, items, is_running):
-    """U1's line and its state (working · waiting · idle)."""
+NEEDS_YOU_LINE = "Waiting for you: see Needs you."
+
+
+def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
+    """U1's line and its state (working · waiting · idle). A job waiting on something *Needs you* lists says so in
+    its own words there; the line points at it instead of repeating them (the contract: never Needs you's words)."""
     working = [j for j in open_jobs if j["state"] in book.IN_FLIGHT]
     if working and is_running:
         job = working[0]
@@ -246,7 +254,7 @@ def _line(conn, lang, rec, open_jobs, items, is_running):
     if open_jobs:
         first = sorted(open_jobs, key=lambda j: (items.get(j["item_id"], {}).get("place", (9, 0.0)), j["id"]))[0]
         if first.get("reason"):
-            return first["reason"], "waiting"
+            return (NEEDS_YOU_LINE if first["reason"] in need_says else first["reason"]), "waiting"
         n = len(open_jobs)
         noun = "episode waits" if n == 1 else "episodes wait"
         return f"{n} {noun} for their cards: Connect makes them at its next start.", "waiting"
@@ -334,9 +342,16 @@ def save_logs(dest, now=None):
     names = []
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
         folder = logs_folder()
+        target = os.path.normcase(os.path.abspath(dest))
         for root, _dirs, files in os.walk(folder):
             for name in sorted(files):
                 full = os.path.join(root, name)
+                try:
+                    if os.path.normcase(os.path.abspath(full)) == target or \
+                            now - os.path.getmtime(full) > LOG_DAYS * 86400:
+                        continue        # the zip itself, or older than 7 days
+                except OSError:
+                    continue
                 arc = os.path.join("logs", os.path.relpath(full, folder))
                 z.write(full, arc)
                 names.append(arc)

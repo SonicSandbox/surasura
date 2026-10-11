@@ -218,9 +218,10 @@ def test_run_says_placing_again_makes_nothing_while_a_studied_card_stays(ledger,
     assert [k[0] for k in done["keep"]] == [102] and store.receipts == []
 
 
-def test_a_busy_library_leaves_the_undo_pending_and_the_next_look_frees_the_words(ledger, tmp_path):
+def test_a_busy_library_leaves_the_undo_pending_and_the_next_look_frees_the_words(ledger, tmp_path, monkeypatch):
     # the store can't be opened just after Anki's delete: the words aren't freed, so the undo must stay pending
     # (finished by the next look), never closed with its words still held
+    monkeypatch.setattr(undo, "_no_store", lambda language: False)     # a library exists; it's busy just now
     store = _store_with_both(tmp_path)
     job_id, tag = _batch(ledger)
     anki = _anki_for(tag)

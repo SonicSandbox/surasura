@@ -28,11 +28,13 @@ kept and why. `run:<lang>` in meta: when the run working on the language began (
 """
 import datetime
 import json
+import logging
 import os
 import sqlite3
 import time
 import uuid
 
+_log = logging.getLogger("surasura-cli")
 SCHEMA = 4
 # A job's states (02 §2). Open = not finished one way or the other; not started = still droppable.
 OPEN = ("queued", "waiting", "picking", "fit-check", "mining", "filling", "ordering")
@@ -415,6 +417,9 @@ class Ledger:
                                 f"WHERE language = ? AND item_id = ? AND (state = 'queued' OR (state = 'waiting' AND "
                                 f"(resume IS NULL OR resume IN ({marks}))))",
                                 (reason, _now(), language, item_id) + BEFORE_MINING[1:])
+        if cur.rowcount > 0:                # its troubles went with it (03 §4: fixed by itself, IK P2.5 #3)
+            for row in self.fix(language, item_id=item_id):
+                _log.info("Connect: fixed by itself (%s, %s): %s", language, row["kind"], row["say"])
         return cur.rowcount > 0
 
     # --- P2.4: the runner's job (02 §2, N5, N6, N9) ----------------------------------------------------------- #

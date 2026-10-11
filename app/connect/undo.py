@@ -38,7 +38,10 @@ _IMG = re.compile(r"""<img[^>]*\bsrc=["']([^"']+)["']""", re.IGNORECASE)
 STUDIED = "you've studied it"
 CHANGED = "it was changed after it was made"
 SUSPENDED = "you suspended it"
+BURIED = "you buried it"
+FLAGGED = "you flagged it"
 NOT_ITS_TAG = "it doesn't carry this batch's tag"
+DEFAULT = object()              # `open_store` not given: the job's language's library store
 
 
 class Reviewing(Exception):
@@ -97,21 +100,42 @@ def _epoch(utc_text):
 
 
 def _shelf_rows(ledger):
-    """{card id: (on the shelf now, the latest shelf write's epoch)} from the ledger's shelf table (none: {})."""
+    """{card id: (on the shelf now, [(epoch of a shelf write, the note's mod just before it), ...])} from the ledger's
+    shelf table (none: {}). A write whose mod wasn't read carries None: the note is kept (it may hide your edit)."""
     if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shelf'").fetchone():
         return {}
+    from app.connect import shelf
+    shelf.ensure(ledger)
     out = {}
-    for card, shelved, back in ledger.conn.execute("SELECT card_id, shelved_at, back_at FROM shelf"):
-        on = back is None
-        latest = max(t for t in (_epoch(shelved), _epoch(back), 0) if t is not None)
-        had = out.get(card, (False, 0))
-        out[card] = (had[0] or on, max(had[1], latest))
+    for card, shelved, back, mod_shelved, mod_back in ledger.conn.execute(
+            "SELECT card_id, shelved_at, back_at, mod_shelved, mod_back FROM shelf"):
+        on, events = out.get(card, (False, []))
+        events = events + [(_epoch(shelved), mod_shelved)]
+        if back is not None:
+            events.append((_epoch(back), mod_back))
+        out[card] = (on or back is None, events)
     return out
 
 
-def _job(ledger, job_id):
+def _changed(mod, done_at, events):
+    """Was the note changed by anyone but Connect since the batch ended? Walks Connect's own writes in time order: a
+    mod read just before a shelf write that is past the previous write (+ the grace) is your edit, which the shelf's
+    write then hid; the note's mod now past the last write (+ the grace) is too. Unknown → changed (kept)."""
+    if not done_at or not isinstance(mod, (int, float)) or isinstance(mod, bool):
+        return True                         # when, or whether, it changed can't be read: never deleted unread
+    last = done_at
+    for at, before in sorted((e for e in events if e[0] is not None), key=lambda e: e[0]):
+        if at < last:
+            continue                        # a write before the batch ended (another batch's note history)
+        if not isinstance(before, (int, float)) or isinstance(before, bool) or before > last + GRACE_S:
+            return True
+        last = at
+    return float(mod) > last + GRACE_S
+
+
+def _job(ledger, job_id, language=None):
     job = ledger.job_by_id(job_id)
-    if job is None:
+    if job is None or (language is not None and job["language"] != language):
         raise Refused(NOTHING)
     from app.connect.ledger import OPEN
     if job["state"] in OPEN:
@@ -119,10 +143,11 @@ def _job(ledger, job_id):
     return job
 
 
-def plan(anki, ledger, job_id):
+def plan(anki, ledger, job_id, language=None):
     """What *Undo this batch* would do now, read-only -> {"job", "item", "delete": [note ids], "keep": [[note id,
-    word, why], …], "gone": [note ids already gone from Anki], "words": {note id: word}}. Raises Refused."""
-    job = _job(ledger, job_id)
+    word, why], …], "gone": [note ids already gone from Anki: deleted by you, their words stay blocked], "words":
+    {note id: word}}. `language`: the window's (D31): a batch of another language is refused. Raises Refused."""
+    job = _job(ledger, job_id, language)
     words = {}
     for o in ledger.outcomes(job_id):
         if o["outcome"] == "made" and o["note_id"] is not None:
@@ -154,21 +179,22 @@ def _why_kept(info, cards, tag, done_at, shelf):
     """Why one note stays, or None when it can go."""
     if tag not in {str(t).lower() for t in info.get("tags") or ()}:
         return NOT_ITS_TAG
-    touched = done_at
+    events = []
     mine = [cards.get(int(c)) for c in info.get("cards") or ()]
     for card_id in info.get("cards") or ():
-        touched = max(touched, shelf.get(int(card_id), (False, 0))[1])
+        events += shelf.get(int(card_id), (False, []))[1]
     for card in mine:
         if card is None:
             return STUDIED                  # a card Anki didn't describe: never deleted unread
         if int(card.get("reps") or 0) > 0 or int(card.get("type") or 0) != 0:
             return STUDIED
-        if int(card.get("queue") or 0) == -1 and not shelf.get(int(card["cardId"]), (False, 0))[0]:
+        if int(card.get("queue") or 0) == -1 and not shelf.get(int(card["cardId"]), (False, []))[0]:
             return SUSPENDED
-    mod = info.get("mod")
-    if not touched:                         # when Connect last touched it is unknown: never deleted unread
-        return CHANGED
-    if mod is not None and float(mod) > touched + GRACE_S:
+        if int(card.get("queue") or 0) == -3:
+            return BURIED
+        if int(card.get("flags") or 0) != 0:
+            return FLAGGED                  # a flag is a card's mark, not the note's: its mod doesn't move (#3)
+    if _changed(info.get("mod"), done_at, events):
         return CHANGED
     return None
 
@@ -183,20 +209,31 @@ def _media(info):
     return names
 
 
-def run(anki, ledger, job_id, open_store=None):
+def run(anki, ledger, job_id, open_store=DEFAULT, language=None):
     """*Undo this batch*: plan again under Anki's write lock, record the undo **before** Anki is written (a kill after
     the delete is finished by the next look, `finish_pending`), delete what may go and its unused media, then finish
     -> the plan as done, with "deleted" (note ids gone now), "freed" (words free again) and "placed_again" (whether
-    placing the episode into the top 20 again makes its cards again). Raises Reviewing, Refused, the lock's Busy and
+    placing the episode into the top 20 again makes its cards again). `open_store()`: the library store (default:
+    the job's language's); `language`: the window's (D31). Raises Reviewing, Refused, the lock's Busy and
     AnkiConnect's errors (an undo recorded but not begun is finished as nothing deleted)."""
-    for pending in ledger.pending_undos(ledger.job_by_id(job_id)["language"] if ledger.job_by_id(job_id) else ""):
+    job = _job(ledger, job_id, language)
+    if open_store is DEFAULT:
+        open_store = _store_opener(job["language"])
+    earlier = None
+    for pending in ledger.pending_undos(job["language"]):
         if pending["job_id"] == job_id:     # a kill left this one half-way: finish it, then plan what's left
-            finish(anki, ledger, pending, open_store)
+            earlier = finish(anki, ledger, pending, open_store)
     with anki.writer("Connect's undo"):
-        done = plan(anki, ledger, job_id)
+        try:
+            done = plan(anki, ledger, job_id, language)
+        except Refused:
+            if earlier is None:
+                raise
+            return dict({"job": job_id, "item": job["item_id"], "language": job["language"], "delete": [],
+                         "gone": [], "words": {}}, **earlier)      # that finish was the undo (adversary P2.5 #8)
         if anki.reviewing():
             raise Reviewing()
-        undo_id = ledger.start_undo(job_id, done["language"], done["delete"] + done["gone"], done["keep"])
+        undo_id = ledger.start_undo(job_id, done["language"], done["delete"], done["keep"])
         media = set()
         if done["delete"]:
             for info in anki.notes(done["delete"]):
@@ -206,9 +243,27 @@ def run(anki, ledger, job_id, open_store=None):
             for name in sorted(media):
                 if not anki.users(name):
                     anki.delete_media(name)
-    pending = {"id": undo_id, "job_id": job_id, "language": done["language"],
-               "deleted": done["delete"] + done["gone"], "kept": done["keep"]}
+    pending = {"id": undo_id, "job_id": job_id, "language": done["language"], "deleted": done["delete"],
+               "kept": done["keep"]}
     return dict(done, **finish(anki, ledger, pending, open_store))
+
+
+def _store_opener(language):
+    def open_store():
+        from app.connect import library
+        return library.open_store(language)
+    return open_store
+
+
+def _no_store(language):
+    """No library store at all for the language (JSON mode): nothing holds the words, nothing to free."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path
+        import os
+        return not os.path.exists(library_store.library_db_path(language, get_data_path(language)))
+    except Exception:
+        return False
 
 
 def finish(anki, ledger, pending, open_store=None):
@@ -239,6 +294,8 @@ def finish(anki, ledger, pending, open_store=None):
                     freed = library.unmake(store, job.get("item_id"), gone, {words[n] for n in gone if n in words})
                     receipt_left = library.mined_at(store, job.get("item_id")) is not None
                 stored = True
+            elif _no_store(pending["language"]):
+                stored = True       # JSON mode: no made words anywhere (placing again is decided by the ledger)
         except Exception:
             log.exception("Connect's undo: the library couldn't free the words just now; tried again next time")
     with ledger.transaction():
@@ -275,10 +332,13 @@ def finish_pending(anki, ledger, language, open_store=None):
     return len(pending)
 
 
-def restore_shelf(anki, ledger, run_id):
-    """The shelf put back by you: `shelf.restore(run)` -> how many cards came back (recorded as yours: never shelved
-    again, ✅ P2.5-2)."""
+def restore_shelf(anki, ledger, run_id, language=None):
+    """The shelf put back by you: `shelf.restore(run)` with the shelf's Anki adapter (`shelf.AnkiConnectAnki`) -> how
+    many cards came back (recorded as yours: never shelved again, ✅ P2.5-2). `language`: the window's (D31): a
+    restore point of another language is refused."""
     from app.connect import shelf
+    if language is not None and not any(r["run"] == run_id for r in shelf.runs(ledger, language)):
+        raise Refused("There's no shelf restore point with that name.")
     return shelf.restore(anki, ledger, run_id)
 
 
@@ -291,13 +351,15 @@ def summary(done):
         out["freed"] = done.get("freed") or []
         out["placed_again"] = bool(done.get("placed_again"))
         out["pending"] = bool(done.get("pending"))
+        blocked = (f" {len(done['gone'])} you had deleted yourself stay deleted, and their words aren't made "
+                   "again." if done.get("gone") else "")
         if not done["deleted"]:
-            out["say"] = "No cards deleted: every card of this batch stays (see why)."
+            out["say"] = "No cards deleted: every card of this batch stays (see why)." + blocked
         elif done.get("pending"):
             out["say"] = (f"{len(done['deleted'])} cards deleted. Surasura's library was busy: Connect frees their "
-                          "words at its next start.")
+                          "words at its next start." + blocked)
         else:
             out["say"] = f"{len(done['deleted'])} cards deleted." + (
                 " Place the episode in your top 20 again to make its cards again." if done.get("placed_again") else
-                " Some of this episode's cards are still in Anki, so placing it again makes no new cards.")
+                " Some of this episode's cards are still in Anki, so placing it again makes no new cards.") + blocked
     return out

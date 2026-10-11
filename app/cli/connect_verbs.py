@@ -571,15 +571,20 @@ def undo(args):
                     raise _bad("There's no shelf restore point with that name.", shelf=args.shelf)
                 if not args.confirm:
                     return dict(run, language=lang, confirm=False)
-                back = undoing.restore_shelf(shelf.AnkiConnectAnki(anki.url), ledger, args.shelf)
+                try:
+                    back = undoing.restore_shelf(shelf.AnkiConnectAnki(anki.url), ledger, args.shelf, language=lang)
+                except ImportError:
+                    raise CliError("skipped", "Putting the shelf back needs Junban (順), which isn't installed.") \
+                        from None
                 _owe_sync(loaded)
                 return {"language": lang, "shelf": args.shelf, "back": back, "confirm": True}
             job = ledger.job_by_id(args.job)
             if job is None or job["language"] != lang:
                 raise _bad(f"There's no batch {args.job} in the {lang} library.", job=args.job)
             if not args.confirm:
-                return dict(undoing.summary(undoing.plan(anki, ledger, args.job)), language=lang, confirm=False)
-            done = undoing.run(anki, ledger, args.job, open_store=lambda: library.open_store(lang))
+                return dict(undoing.summary(undoing.plan(anki, ledger, args.job, lang)), language=lang,
+                            confirm=False)
+            done = undoing.run(anki, ledger, args.job, open_store=lambda: library.open_store(lang), language=lang)
             _owe_sync(loaded)
             return dict(undoing.summary(done), language=lang, confirm=True)
     except TooNew as e:

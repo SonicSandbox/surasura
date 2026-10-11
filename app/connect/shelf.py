@@ -78,11 +78,32 @@ BACK_BY_YOU, BACK_IN_ANKI, BACK_BY_SURASURA = "you", "you-in-anki", "surasura"
 YOURS = (BACK_BY_YOU, BACK_IN_ANKI)
 
 
+# P2.5: who took a card off the shelf (`back_by`), and each note's `mod` just before the shelf's own tag write
+# (shelving it: `mod_shelved`; bringing it back: `mod_back`): *Undo this batch* reads an edit you made before the
+# shelf touched the note, which the shelf's write would otherwise hide (adversary P2.5 #1)
+_ADDED = (("back_by", "TEXT"), ("mod_shelved", "REAL"), ("mod_back", "REAL"))
+
+
 def ensure(ledger):
     for sql in _SQL:
         ledger.conn.execute(sql)
-    if "back_by" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(shelf)")}:
-        ledger.conn.execute("ALTER TABLE shelf ADD COLUMN back_by TEXT")
+    have = {r[1] for r in ledger.conn.execute("PRAGMA table_info(shelf)")}
+    for name, decl in _ADDED:
+        if name not in have:
+            ledger.conn.execute(f"ALTER TABLE shelf ADD COLUMN {name} {decl}")
+
+
+def _mods(anki, note_ids):
+    """{note id: mod} read just before a shelf write (under its writer); {} when Anki can't say — then *Undo this
+    batch* keeps those notes: it never deletes a note whose edits it can't rule out."""
+    reader = getattr(anki, "note_mods", None)
+    if reader is None or not note_ids:
+        return {}
+    try:
+        got = reader(sorted(set(note_ids))) or {}
+    except Exception:
+        return {}
+    return {int(n): m for n, m in got.items() if isinstance(m, (int, float)) and not isinstance(m, bool)}
 
 
 class Card:
@@ -172,6 +193,12 @@ class AnkiConnectAnki:
         from modules.junban import ankiconnect
         _taken(ankiconnect.remove_tags(self.url, note_ids, tag), "removeTags")
 
+    def note_mods(self, note_ids):
+        """{note id: its `mod`} (Anki's last change to the note, epoch seconds)."""
+        from app import anki_connect
+        return {int(n["noteId"]): n.get("mod") for n in anki_connect.notes_info(self.url, list(note_ids))
+                if isinstance(n, dict) and n.get("noteId")}
+
 
 def _taken(result, action):
     """Junban's write answers (done, failures), never raising: a write Anki didn't take raises here, so nothing is
@@ -222,13 +249,14 @@ def shelve(anki, ledger, language, chosen, why, run=None):
     with anki.writer("Connect's shelf"):
         if anki.reviewing():
             raise Reviewing()
+        mods = _mods(anki, [c.note_id for c in chosen])
         now = _now()
         with ledger.transaction():
             ensure(ledger)
             ledger.conn.executemany("INSERT OR REPLACE INTO shelf (card_id, note_id, language, item_id, word, run, "
-                                    "why, shelved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                    [(c.card_id, c.note_id, language, c.item_id, c.word, run, why, now)
-                                     for c in chosen])
+                                    "why, shelved_at, mod_shelved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [(c.card_id, c.note_id, language, c.item_id, c.word, run, why, now,
+                                      mods.get(c.note_id)) for c in chosen])
         try:
             anki.add_tag(sorted({c.note_id for c in chosen}), SHELF_TAG)
             anki.suspend([c.card_id for c in chosen])
@@ -259,14 +287,15 @@ def bring_back(anki, ledger, language, back, finished_items=(), journey_item_of=
     with anki.writer("Connect's shelf"):
         if anki.reviewing():
             raise Reviewing()
+        mods = _mods(anki, [c.note_id for c in back])
         anki.unsuspend([c.card_id for c in back])
         _untag(anki, [(c.card_id, c.note_id) for c in back])
     now, finished, rewrite = _now(), set(finished_items or ()), []
     with ledger.transaction():
         ensure(ledger)
         for c in back:
-            ledger.conn.execute("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND back_at IS NULL",
-                                (now, BACK_BY_SURASURA, c.card_id))
+            ledger.conn.execute("UPDATE shelf SET back_at = ?, back_by = ?, mod_back = ? WHERE card_id = ? AND "
+                                "back_at IS NULL", (now, BACK_BY_SURASURA, mods.get(c.note_id), c.card_id))
             if c.item_id in finished:
                 to = journey_item_of(c.word) if journey_item_of else None
                 ledger.conn.execute("INSERT OR REPLACE INTO rewrites (note_id, language, word, from_item, to_item, "
@@ -290,29 +319,34 @@ def tidy(anki, ledger):
             return 0
         still = set(anki.find_cards(f"{SHELVED_QUERY} is:suspended"))
         kept = {info.get("note") for info in anki.cards_info(sorted(still))} if still else set()
-        notes = sorted({info.get("note") for info in anki.cards_info(ids) if info.get("note") is not None} - kept)
+        note_of = {info.get("cardId"): info.get("note") for info in anki.cards_info(ids)}
+        notes = sorted({n for n in note_of.values() if n is not None} - kept)
+        mods = {}
         if notes:
             if anki.reviewing():
                 raise Reviewing()
+            mods = _mods(anki, notes)
             anki.remove_tag(notes, SHELF_TAG)
     now = _now()
     with ledger.transaction():
-        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND back_at IS NULL",
-                                [(now, BACK_IN_ANKI, c) for c in ids])
+        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ?, mod_back = ? WHERE card_id = ? AND "
+                                "back_at IS NULL", [(now, BACK_IN_ANKI, mods.get(note_of.get(c)), c) for c in ids])
     return len(notes)
 
 
 def _not_recorded_back(ledger, card_ids):
-    """Of `card_ids` (shelved cards not suspended now), those the ledger doesn't hold as back yet (on its shelf, or
-    a card it never recorded)."""
+    """Of `card_ids` (shelved cards not suspended now), those the ledger doesn't hold as back yet: a row still on the
+    shelf (a card shelved again after an earlier comeback included, adversary P2.5 #4), or a card it never
+    recorded."""
     card_ids = list(card_ids or ())
     if not card_ids:
         return []
-    back = set()
+    back = set()                # cards whose every shelf row is closed (one shelved again has an open row)
     for at in range(0, len(card_ids), 500):
         part = card_ids[at:at + 500]
         back |= {r[0] for r in ledger.conn.execute(
-            f"SELECT card_id FROM shelf WHERE back_at IS NOT NULL AND card_id IN ({','.join('?' * len(part))})", part)}
+            f"SELECT card_id FROM shelf WHERE card_id IN ({','.join('?' * len(part))}) GROUP BY card_id "
+            "HAVING SUM(back_at IS NULL) = 0", part)}
     return [c for c in card_ids if c not in back]
 
 
@@ -330,13 +364,15 @@ def restore(anki, ledger, run):
         cards_back = [c for c, _n in rows if c in still]
         if anki.reviewing():                    # review B #9
             raise Reviewing()
+        mods = {}
         if cards_back:
+            mods = _mods(anki, [n for c, n in rows if c in still])
             anki.unsuspend(cards_back)
             _untag(anki, [(c, n) for c, n in rows if c in still])
     now = _now()
     with ledger.transaction():
-        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ? WHERE card_id = ? AND run = ?",
-                                [(now, BACK_BY_YOU, c, run) for c, _n in rows])
+        ledger.conn.executemany("UPDATE shelf SET back_at = ?, back_by = ?, mod_back = ? WHERE card_id = ? AND "
+                                "run = ?", [(now, BACK_BY_YOU, mods.get(n), c, run) for c, n in rows])
     return len(cards_back)
 
 

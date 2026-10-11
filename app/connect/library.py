@@ -213,7 +213,10 @@ def unmake(store, item_id, note_ids, words=()):
             else:
                 store.conn.execute("DELETE FROM made_words WHERE item_id = ? AND word = ?", (item_id, word))
         cmd.touch()
-        if not store.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? LIMIT 1", (item_id,)).fetchone():
+        # the receipt goes once none of the item's cards is left in Anki (a word you deleted by hand keeps its
+        # empty row — never made again, G1.3-4 — and holds nothing of the item in Anki)
+        if not store.conn.execute("SELECT 1 FROM made_words WHERE item_id = ? AND note_ids NOT IN ('[]', '') LIMIT 1",
+                                  (item_id,)).fetchone():
             store.receipt(item_id, None)
     return sorted(w for w, left in changed.items() if not left)
 

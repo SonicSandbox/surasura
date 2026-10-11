@@ -123,6 +123,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
     summary = {"languages": {lang: _empty() for lang in languages}, "looks": 0}
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
     begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
+    undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
     parked = set()              # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
     try:
         while True:
@@ -135,6 +136,9 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
                     return summary
                 if _consume(steps, ledger, lang):
                     outside = work = True       # the inbox couldn't be read: looked at again, never lost
+                if lang not in undos_looked:    # an undo a kill left half-way: finished whatever else runs (#5)
+                    undos_looked.add(lang)
+                    _finish_undos(steps, ledger, lang)
                 if not _open_jobs(ledger, lang, parked):
                     continue
                 work = True
@@ -311,6 +315,18 @@ def _skipped_says(job):
         return set((json.loads(job.get("skipped") or "{}") or {}).values())
     except (ValueError, AttributeError):
         return set()
+
+
+def _finish_undos(steps, ledger, lang):
+    """`steps.finish_undos` once a run per language, before anything else; Anki not answering leaves them for the
+    next run (logged, never a reason not to go on)."""
+    finish = getattr(steps, "finish_undos", None)
+    if finish is None or not ledger.pending_undos(lang):
+        return
+    try:
+        finish(lang, ledger)
+    except Exception:
+        log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
 
 
 def _blocked(steps, lang, resume):
@@ -993,10 +1009,6 @@ class Steps:
             raise Needs("generate", f"Generate didn't finish, so Connect waits for a current list. {e.message}") \
                 from None
         self._shelved = set()
-        try:
-            self.finish_undos(lang, ledger)
-        except Exception:                   # Anki gone mid-way: the undo stays pending, finished next run
-            log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
         try:
             self.notes_gone(lang)
             self.shelf_session(lang, ledger)

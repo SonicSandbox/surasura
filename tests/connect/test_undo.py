@@ -144,9 +144,10 @@ def test_a_card_the_shelf_suspended_is_no_reason_to_keep_it(ledger):
     anki = _anki_for(tag, _done_at(ledger, job_id))
     with ledger.transaction():
         shelf.ensure(ledger)
-        ledger.conn.execute("INSERT INTO shelf (card_id, note_id, language, item_id, word, run, why, shelved_at) "
-                            "VALUES (1040, 104, 'ja', 7, '気配', 'shelf-1', 'the cap', ?)",
-                            (ledger.job_by_id(job_id)["updated_at"],))
+        # the note's mod read just before the shelf's write: unchanged since the batch (the shelf recorded it)
+        ledger.conn.execute("INSERT INTO shelf (card_id, note_id, language, item_id, word, run, why, shelved_at, "
+                            "mod_shelved) VALUES (1040, 104, 'ja', 7, '気配', 'shelf-1', 'the cap', ?, ?)",
+                            (ledger.job_by_id(job_id)["updated_at"], _done_at(ledger, job_id) - 60))
     plan = undo.plan(anki, ledger, job_id)
     assert 104 in plan["delete"]
 

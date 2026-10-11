@@ -66,7 +66,7 @@ View = namedtuple("View", "language mode reason state busy loading cached rows l
 STRINGS = {
     "dash": "—",
     # a status's words (its glyph is painted beside them: check · spinner · hourglass · card-plus · no-video)
-    "in_anki": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
+    "in_anki": "{n}", "in_anki_words": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -77,16 +77,18 @@ STRINGS = {
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
     "tip_mine_rest": "{k}/{n} mined · the rest isn't in your top {line} yet",
     "tip_mine": "Not in your top {line}: it isn't mined yet",
-    "tip_no_media": "No {word} on disk{top}. Link one for pictures and audio, or mine the text on its own",
+    "tip_no_media": "No {word} on disk{top}\n• Link one for pictures and audio, or mine the text on its own",
     "tip_no_media_top": " — it's in your top {line}, so it's waiting for one",
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
-    "mark_missing": "No {word} on disk for {eps} — link one, or mine the text on its own",
-    "mark_removed": "{Word} deleted after mining ({eps}). The cards keep their pictures and audio — only ▶ can't play it",
-    "play": "{verb} {name} in your {player} (the {word} beside its subtitle file)",
+    # a tooltip's action on a line of its own, as a bullet (G2.3 T1); never a "( … )" a line break can cut
+    "mark_missing": "No {word} on disk for {eps}\n• Link one, or mine the text on its own",
+    "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
+    "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
-    "play_missing": "No {word} on disk — link one to {verb_l} it from here (Needs you, in a later build)",
+    "play_missing": "No {word} on disk\n• Link one to {verb_l} it from here: Needs you, in a later build",
     "play_missing_plain": "No {word} on disk, so it can't {verb_l} from here",
-    "play_removed": "Its {word} was removed — link it to {verb_l} it from here (Needs you, in a later build)",
+    "play_removed": "Its {word} was removed\n• Link it to {verb_l} it from here: Needs you, in a later build",
+    "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
     "ep": "Ep {n}", "part": "Part {n}", "num": "#{n}", "eps": "Ep {a}–{b}", "parts": "Parts {a}–{b}",
     "nums": "#{a}–{b}", "videos": "{n} videos", "video": "1 video", "watched": "{k} of {n} watched",
@@ -275,7 +277,14 @@ def pieces(rows):
 def _eps_list(eps):
     labels = [e.label for e in eps[:3]]
     more = len(eps) - 3
-    return ", ".join(labels) + (f" (+{more})" if more > 0 else "")
+    return ", ".join(labels) + (STRINGS["eps_more"].format(n=more) if more > 0 else "")
+
+
+def spoken(status):
+    """A status as a screen reader says it: the pill shows ✓ and the number only (G2.3 R2), the words go with it."""
+    if status is not None and status.kind == "in_anki":
+        return STRINGS["in_anki_words"].format(n=status.label)
+    return status.label if status is not None else ""
 
 
 def status_of(eps, word, line_n):
@@ -439,8 +448,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     stamp = max((it.get("graduated_at") or "" for it in piece), default="") or None
     acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
     acc_new = STRINGS["new"].format(n=n_new if n_new is not None else 0) if n_new is not None else STRINGS["dash"]
-    accessible = STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=st.label) if not finished \
-        else f"{title} · {st.label if st.kind in ('in_anki', 'mining') else line}"
+    accessible = STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st)) if not finished \
+        else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
                media=media, media_word=word, verb=VERB[word], title=title, title_ep=nxt.label if (n > 1 or media in EPISODIC) and media != "youtube"
@@ -526,7 +535,7 @@ def _as_hero(h):
     """The hero reads as it's painted: its next episode's numbers and status."""
     nxt = h.episodes[h.next_index]
     return h._replace(accessible=STRINGS["acc_hero"].format(
-        title=h.title, ep=h.title_ep, status=nxt.status.label,
+        title=h.title, ep=h.title_ep, status=spoken(nxt.status),
         pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
         new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
 

@@ -174,9 +174,11 @@ def test_mined_then_its_video_removed_is_in_anki_and_marked_and_its_play_names_t
     view = vr.build(items, WORKS, {}, cards={1: 5, 2: 7, 3: 4})
     row = view.rows[0]
     gone = row.episodes[1]
-    assert gone.removed and gone.status.kind == "in_anki" and gone.status.label == "7 in Anki"
+    # the pill shows ✓ and the number only; the words are in its tooltip and what a screen reader says (G2.3 R2)
+    assert gone.removed and gone.status.kind == "in_anki" and gone.status.label == "7"
+    assert vr.spoken(gone.status) == "7 in Anki" and "in Anki" in gone.status.tip
     assert gone.mark is None or gone.mark.tone == "faint"
-    assert row.status.kind == "in_anki" and row.status.label == "16 in Anki"
+    assert row.status.kind == "in_anki" and row.status.label == "16" and " in Anki" in row.accessible   # the hero says it
     assert row.mark is not None and row.mark.tone == "faint" and "deleted after mining" in row.mark.tip
     assert not gone.can_play and "removed" in gone.play_tip and "link" in gone.play_tip.lower()
 
@@ -185,7 +187,7 @@ def test_one_status_vocabulary_in_the_mocks_order():
     st = lambda **kw: vr.status_of([type("E", (), dict(dict(label="Ep 1", cards=0, mined=False, missing=False,
                                                             removed=False, in_top=False, mining=False), **kw))()],
                                    "video", 20)[0]
-    assert st(cards=3, mined=True).label == "3 in Anki"
+    assert st(cards=3, mined=True).label == "3" and vr.spoken(st(cards=3, mined=True)) == "3 in Anki"
     assert st(mining=True).kind == "mining"
     assert st(in_top=True).label == "Waiting"
     assert st().label == "Mine"
@@ -437,7 +439,7 @@ def test_a_file_whose_cards_were_deleted_is_not_waiting_and_never_in_needs_you()
     row = vr.build(items, WORKS, {}, cards={}).rows[0]
     assert row.status.kind == "deleted" and row.status.label == "No cards in Anki · 3"
     row = vr.build(items, WORKS, {}, cards={2: 4}).rows[0]     # one file's cards still there: in Anki, by its cards
-    assert row.status.kind == "in_anki" and row.status.label == "4 in Anki"
+    assert row.status.kind == "in_anki" and row.status.label == "4"
     # asked to mine again: it is being mined (mining outranks the deletion), and an ask after the receipt undoes it
     row = vr.build(items, WORKS, {}, cards={}, mining=[1]).rows[0]
     assert row.episodes[0].status.kind == "mining" and row.status.kind == "mining"

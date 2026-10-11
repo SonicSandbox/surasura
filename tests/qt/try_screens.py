@@ -1,7 +1,7 @@
 """G2.3's local build (W2.2 row 6): the 3.0 window on the stand-in store, for Sonic to try the first screens — never a
 release, and nothing of his read or written.
 
-    python tests/qt/try_screens.py [--files N] [--language ja|zh] [--theme hb|sky|sapphire] [--size S|M|L]
+    python tests/qt/try_screens.py [--files N] [--language ja|zh] [--theme sapphire|hb|sky] [--size S|M|L]
                                    [--mode store|json|read-only]
 
 It makes a temp folder, sets it as the window's whole world (`SURASURA_TEST_ROOT`: its settings, its window state, its
@@ -25,7 +25,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Try the 3.0 window's first screens on an invented library")
     ap.add_argument("--files", type=int, default=0, help="0: the small seed (about 40 rows); else 2000, 20000…")
     ap.add_argument("--language", default="ja", choices=("ja", "zh"))
-    ap.add_argument("--theme", default="hb", choices=("hb", "sky", "sapphire"))
+    ap.add_argument("--theme", default="sapphire", choices=("sapphire", "hb", "sky"),
+                    help="sapphire (the default since G2.3) · hb: Blue · sky: Lighter blue")
     ap.add_argument("--size", default="M", choices=("S", "M", "L"))
     ap.add_argument("--mode", default="store", choices=("store", "json", "read-only"))
     ap.add_argument("--keep", action="store_true", help="keep the temp folder afterwards")
@@ -33,6 +34,8 @@ def main(argv=None):
     work = tempfile.mkdtemp(prefix="surasura-try-screens-")
     os.environ["SURASURA_TEST_ROOT"] = work
     os.environ.pop("QT_QPA_PLATFORM", None)
+    # the test root is also where bundled resources are read: without the mark the header showed no logo (G2.3 C1)
+    shutil.copytree(os.path.join(ROOT, "app", "assets"), os.path.join(work, "app", "assets"))
     with open(os.path.join(work, "settings.json"), "w", encoding="utf-8") as f:
         json.dump({"target_language": a.language, "app_theme": a.theme, "text_size": a.size,
                    "zh_script": "s"}, f)

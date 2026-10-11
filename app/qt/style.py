@@ -78,11 +78,11 @@ QWidget#header {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c[
 QLabel#wordsub {{ color: {c['ink-faint']}; {font('status-pill')} font-weight: 400; }}
 QWidget#tabbar {{ background: {c['tab-bar']}; }}
 QToolButton#tab {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {c['ink-dim']};
-  padding: {px(10)} {px(14)} {px(9)} {px(14)}; {font('tab')} }}
+  padding: 10px 14px 9px 14px; {font('tab')} }}
 QToolButton#tab:hover {{ color: {c['ink']}; }}
 QToolButton#tab:checked {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
 QToolButton#tab:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; border-radius: 6px;
-  padding: {round(10 * f) - 2}px {round(14 * f) - 2}px {round(9 * f)}px {round(14 * f) - 2}px; }}
+  padding: 8px 12px 9px 12px; }}
 QWidget#footer {{ background: {c['surface']}; }}
 QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}

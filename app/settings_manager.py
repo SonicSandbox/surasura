@@ -47,9 +47,9 @@ DEFAULT_SETTINGS = {
     # signature (analyzer._NON_ANALYSIS_SETTINGS).
     "index_pool_workers": None,
     # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: "hb" Blue,
-    # "sky" Lighter blue, "sapphire" Sapphire) and text size ("S" / "M" / "L"). Set on the window before its first paint.
-    # Never in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
-    "app_theme": "hb",
+    # "sky" Lighter blue, "sapphire" Sapphire; Sapphire by default since G2.3) and text size ("S" / "M" / "L"). Set on the
+    # window before its first paint. Never in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
+    "app_theme": "sapphire",
     "text_size": "M",
     # The window's motion (Settings > App > Motion; M2.1, the window's spec 05 §5.10): "follow" Windows' own *Show
     # animations* switch, "full" or "reduced" (no slides, short fades). No run or report reads it.

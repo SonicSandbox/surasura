@@ -17,7 +17,6 @@ TABS = {
     "settings": ("Settings", "Every setting, on one page"),
 }
 TABS_NAME = "Sections"
-TAB_WITH_COUNT = "{name}  {count}"             # Needs you's unseen entries
 
 # Each page until its step builds it (W2.2 Current, W3.2 Finished and Needs you, W3.3 Settings).
 PAGE_WAITING = "This page arrives in a later build of 3.0."
@@ -67,8 +66,7 @@ ROWS_HERO_STATS_NONE = "not analysed yet"
 ROWS_VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 ROWS_NO_MEDIA_BUTTON = "No {word}"
 ROWS_ONLINE_BUTTON = "Online"
-ROWS_SOON_LABEL = "SOON"
-ROWS_STUDYING = "↑ Studying its cards first"
+ROWS_STUDYING = "Studying its cards first"         # after a painted up arrow (G2.3 R3)
 ROWS_STUDYING_TIP = "Its new cards go first in Anki until they're studied"
 ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"

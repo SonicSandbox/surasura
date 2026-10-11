@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time
+from collections import deque
 
 import pytest
 
@@ -945,3 +946,83 @@ def test_the_rounds_walk_reads_exactly_what_a_full_read_of_the_store_reads():
         assert _full_round(store) == []                      # a synced library: nothing differs
     finally:
         store.close()
+
+
+def test_a_queued_folder_deleted_before_its_turn_lists_empty_and_differs_when_it_holds_items():
+    # why: the round queues folders long before it reaches them; one deleted in between must list as empty rather
+    # than raise out of the batch, and the items the store holds there are a difference to hand back
+    store = migrated("ja")
+    try:
+        item = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+        folder = store.item(item)["rel_path"].rsplit("/", 1)[0]
+        shutil.rmtree(os.path.join(store.data_dir, *folder.split("/")))
+        rnd = ls.Round(store)
+        rnd.queue = deque([folder])
+        assert rnd.step() == [folder]
+        assert rnd.done
+        assert ls.Round(store)._listing(folder) == ({}, [])
+    finally:
+        store.close()
+
+
+@windows_only
+def test_a_watch_whose_stop_event_cant_be_made_falls_back_even_when_the_read_event_is_made(monkeypatch, tmp_path):
+    # the folder and its read event open, but the stop event can't be made: close() could never end the thread,
+    # so the watch must give up before any thread starts (a stop handle of 0 would hang the thread for good)
+    real_k32 = lw._k32
+    made = []
+
+    class _StopFails:
+        def __init__(self, k32):
+            self._k32 = k32
+
+        def __getattr__(self, name):
+            return getattr(self._k32, name)
+
+        def CreateEventW(self, *args):
+            made.append(args)
+            return self._k32.CreateEventW(*args) if len(made) == 1 else 0    # the read event is made, the stop is not
+
+    monkeypatch.setattr(lw, "_k32", lambda: _StopFails(real_k32()))
+    w = lw.TreeWatch(str(tmp_path))
+    try:
+        assert w.start() is False
+        assert w.state == "fallback"
+        assert w.alive is False
+        assert w._thread is None
+    finally:
+        w.close()
+
+
+def test_due_is_the_time_left_until_the_earliest_pending_folder_has_been_quiet_for_settle(tmp_path):
+    # the window sleeps until a pending folder has been quiet for `settle`: its due time is that quiet period counted
+    # from its last change, so a due time that forgets the quiet period reads 0 at once
+    w = lw.TreeWatch(str(tmp_path), settle=0.3)
+    w._pending["LowPriority/番組"] = 100.0
+    assert w.due(now=100.1) == pytest.approx(0.2)        # 0.3 s quiet from 100.0: 0.2 s still to go
+    assert w.due(now=100.5) == 0.0                       # settled already: nothing left to wait
+    w._pending.clear()
+    assert w.due(now=100.0) is None                      # nothing pending: no wait at all
+    # two pending folders: the earlier one settles first, so its quiet period is the wait
+    w._pending.update({"HighPriority/映画": 100.0, "LowPriority/番組": 100.2})
+    assert w.due(now=100.1) == pytest.approx(0.2)        # earliest 100.0 + 0.3 - 100.1
+
+
+def test_a_settled_folder_is_handed_out_once_and_an_unsettled_one_waits_for_its_own_quiet_period(tmp_path):
+    # each folder is handed out once: the next take must not report it again, and a folder that has not yet been
+    # quiet for `settle` stays pending until its own quiet period is over
+    w = lw.TreeWatch(str(tmp_path), settle=0.3)
+    w._pending.update({"HighPriority/映画": 100.0, "LowPriority/番組": 100.9})
+    assert w.take(now=101.0) == (["HighPriority/映画"], False)
+    assert w.take(now=101.05) == ([], False)             # the settled one is gone; the other is still quiet
+    assert w.take(now=101.3) == (["LowPriority/番組"], False)
+    assert w._pending == {}
+
+
+def test_wait_returns_by_the_settle_time_of_a_pending_folder_even_with_a_longer_timeout(tmp_path):
+    # a pending folder's settle time ends the wait: a 5 s caller timeout must not hold the worker for the full 5 s
+    w = lw.TreeWatch(str(tmp_path), settle=0.05)         # never started: no thread, only the wait is under test
+    w._pending["HighPriority"] = time.monotonic()
+    t0 = time.monotonic()
+    w.wait(5.0)
+    assert time.monotonic() - t0 < 1.0

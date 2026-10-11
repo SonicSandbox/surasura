@@ -1981,3 +1981,18 @@ def test_whole_tier_move_within_20_percent_of_12_1(language):
     assert store.ids(largest) == whole and pieces_ok(store) is None
     probe.close()
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_mine_line_zero_is_written_and_only_a_negative_mine_line_is_refused(language):
+    """The mine line is a count of Current's top rows: 0 is a real choice (Connect mines none) and is written;
+    only a line below 0 is refused."""
+    store = migrated(language, shows=3, episodes=4)
+    try:
+        change = store.set_library_options(mine_line=0)
+        assert change is not None and store.meta()["mine_line"] == 0
+        with pytest.raises(ValueError):
+            store.set_library_options(mine_line=-1)
+        assert store.meta()["mine_line"] == 0
+    finally:
+        store.close()

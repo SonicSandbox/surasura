@@ -1025,3 +1025,226 @@ def test_another_season_is_another_title(language):
                            _record("s3", show={"title": "Example Show", "season": None, "episode": 5})).added[0]
     assert _work(store, one) != _work(store, two) and _work(store, plain) == _work(store, one)
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_merge_keeps_the_kept_works_own_folder_key(language):
+    """A merge takes another work's folder key only where the kept work has none: the kept work's own key stays,
+    so a later scan still finds its folder under the same key."""
+    store = migrated(language, shows=2, episodes=4)
+    shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+    a = shows[0]
+    wa = _work(store, a)
+    b = next(i for i in shows if _work(store, i) != wa)
+    wb = _work(store, b)
+    fk_a = store._work_row(wa)["folder_key"]
+    fk_b = store._work_row(wb)["folder_key"]
+    assert fk_a is not None and fk_b is not None and fk_a != fk_b
+    store.merge_works(wa, [wb])
+    assert store._work_row(wa)["folder_key"] == fk_a
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_merged_title_never_lists_the_kept_name_among_its_other_titles(language):
+    """Joining two works that share a name keeps that name as the title; the kept name is never also listed among the
+    title's other names, so the window and search never show one name twice."""
+    store = migrated(language, shows=1, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    one = store.insert([touch(data_dir, f"HighPriority/{w[81]}/{w[82]}.srt")], "now").added[0]
+    two = store.insert([touch(data_dir, f"GoalContent/Extra/{w[81]}/{w[83]}.srt")], "goal").added[0]
+    store.rename_work(_work(store, two), w[81])
+    assert sorted([_work(store, one), _work(store, two)]) in store.same_titles()
+    k = _work(store, one)
+    store.merge_works(k, [_work(store, two)])
+    assert _work(store, two) == k and store.same_titles() == [], "the merge moved the item and cleared the pair"
+    row = store._work_row(k)
+    assert row["title"] not in json.loads(row["titles"]), "the kept name is not listed as one of its other titles"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_merge_with_nothing_to_merge_returns_none_and_writes_nothing(language):
+    """A merge that names only the kept work, or no other work at all, is no change: it returns None and the library's
+    state version does not move (nothing to undo, nothing to tell the other windows)."""
+    store = migrated(language, shows=2, episodes=2)
+    try:
+        shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+        wa = _work(store, shows[0])
+        v = store.meta()["state_version"]
+        assert store.merge_works(wa, [wa]) is None
+        assert store.merge_works(wa, []) is None
+        assert store.meta()["state_version"] == v
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_renaming_an_automatic_title_to_its_own_text_still_makes_it_the_users(language):
+    """03 §3.3 #2: the user's name counts even when the text is unchanged. The title must stop following records
+    (`title_by_user` 1); only a second rename to the same text is nothing to do, since the name is already the user's."""
+    store = migrated(language, shows=2, episodes=2)
+    shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+    wa = _work(store, shows[0])
+    row = store._work_row(wa)
+    assert row["title_by_user"] == 0
+    assert store.rename_work(wa, row["title"]) is not None
+    row = store._work_row(wa)
+    assert row["title_by_user"] == 1 and row["title"] not in json.loads(row["titles"])
+    assert store.rename_work(wa, row["title"]) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_merging_works_forgets_only_the_keep_apart_answers_that_name_the_merged_away_title(language):
+    """05 §5.3: *Same title as …* drops the *Keep apart* answers that named a title it merged away; the answers about
+    the titles that stay are kept, so those titles are still never joined by a name alone."""
+    store = migrated(language, shows=3, episodes=2)
+    try:
+        shows = store.ids("goal") + store.ids("soon")
+        ws = sorted({_work(store, i) for i in shows if store.item(i)["parent_folder"]})[:3]
+        assert len(ws) == 3
+        a, b, c = ws
+        assert store.keep_apart([a, b, c])
+        store.merge_works(a, [b])
+        assert json.loads(store.meta()["kept_apart"]) == [[a, c]]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undoing_a_rename_puts_the_search_key_back_and_leaves_a_newer_rename(language):
+    """Undoing a rename by the value check: the undone name stops finding the title (its search key is taken back),
+    and undoing an older rename leaves the newer rename's name in place (the title still holds what that undo wrote)."""
+    store = migrated(language, shows=2, episodes=4)
+    try:
+        w = names(language)
+        shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+        wa = _work(store, shows[0])
+        # the search key follows the rename, and the undo takes it back
+        r = store.rename_work(wa, w[84])
+        assert store.search(w[84])[0] == [wa]
+        store.undo(r)
+        assert store.search(w[84])[0] == []
+        # an older rename is undone after a newer one: the newer name stays, the undo does not write over it
+        r1 = store.rename_work(wa, w[84])
+        store.rename_work(wa, w[85])
+        store.undo(r1)
+        assert store._work_row(wa)["title"] == w[85]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_three_way_same_title_group_stays_asked_until_every_pair_is_kept_apart(language):
+    """05 §5.3: three works sharing one title stay *Same title?* while only one pair is kept apart (the other two
+    may still be the same work); the group leaves the list only once every pair has been kept apart."""
+    store = migrated(language, shows=1, episodes=2)
+    data_dir, _u = roots(language)
+    w = names(language)
+    ids = [store.insert([touch(data_dir, f"GoalContent/{w[k]}.srt")], "goal").added[0] for k in (81, 82, 83)]
+    works = [_work(store, i) for i in ids]
+    assert len(set(works)) == 3
+    for work in works:
+        store.rename_work(work, w[81])
+    assert sorted(works) in store.same_titles()
+    assert store.keep_apart(works[:2])
+    assert sorted(works) in store.same_titles(), "one kept-apart pair does not settle the whole group"
+    assert store.keep_apart([works[0], works[2]])
+    assert store.keep_apart([works[1], works[2]])
+    assert store.same_titles() == []
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_search_limited_to_some_tiers_returns_only_items_in_those_tiers(language):
+    """05 §5.3: a search limited to some tiers gives only the files in those tiers, whatever the query finds; the
+    whole-tier search still finds them. Why: the window's tier filter must not drop or leak items when a subset is
+    asked for (a subset takes its own filter path, a full set does not)."""
+    store = migrated(language, shows=2, episodes=2)
+    try:
+        x = store.ids("now")[0]
+        title = store.item(x)["title"]
+        assert x in store.search(title)[1], "precondition: the file is found by its title"
+        works, items = store.search(title, tiers=("goal",))
+        assert x not in items, "a Current file is not returned by a 6+ Months-only search"
+        assert x in store.search(title, tiers=("now",))[1]
+        goal_works = {_work(store, i) for i in store.ids("goal")}
+        assert _work(store, x) not in goal_works, "precondition: no 6+ Months file shares the file's work"
+        assert set(works) <= goal_works, "a 6+ Months-only search lists only works holding a 6+ Months file"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_after_show_reads_the_newest_pairing_and_goes_after_the_episode_before_it(language):
+    """`place --where after-show` reads an item's newest pairing (paired_at DESC) and goes right after the title's
+    episode before that one in Current. Reading the oldest pairing (episode 4) puts it after episode 3; a rule that
+    counts a same-numbered episode as earlier (episode 2) puts it after episode 2. Both are wrong: after episode 1."""
+    store = migrated(language, shows=2, episodes=4)
+    try:
+        store.set_soon_line(len(store.ids("now")))
+        s = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+        mates = [i for i in store.ids("soon") if _work(store, i) == _work(store, s)]
+        assert len(mates) == 4
+        assert not [i for i in store.ids("now") if _work(store, i) == _work(store, s)], "its title has no item in Current"
+        m0, m1, m2, m3 = mates
+        store.move([m3], "goal")
+        rec = lambda n: json.dumps({"show": {"episode": n}})
+        with store._writing():
+            store.conn.executemany("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                                   [("e1", m0, rec(1), "2026-01-01T00:00:00"),
+                                    ("e2", m1, rec(2), "2026-01-01T00:00:00"),
+                                    ("e3", m2, rec(3), "2026-01-01T00:00:00"),
+                                    ("old", m3, rec(4), "2026-01-01T00:00:00"),
+                                    ("new", m3, rec(2), "2026-06-01T00:00:00")])
+        store.place([m3], "after-show")
+        soon = store.ids("soon")
+        assert soon[soon.index(m0) + 1] == m3, "after episode 1, the episode before its newest pairing (2)"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_taking_cards_out_after_finish_bumps_pins_version_and_restamps_the_feed(language):
+    """The later click wins (G2.2-8): *Take its new cards out* after Finish ends the pin, bumps
+    `pins_version`, and stamps the item in the feed, so a window reading the feed by its last version sees the change."""
+    store = migrated(language)
+    try:
+        b = store.ids("now")[0]
+        store.pin([b])
+        store.finish([b])
+        pv = store.meta()["pins_version"]
+        first = store.read_feed()
+        later = store.finish([b], keep_cards=False)                 # the toast's button, after Finish
+        assert later is not None
+        assert store.meta()["pins_version"] == pv + 1
+        rows = {r["id"]: r for r in store.read_feed(first["version"], first["epoch"])["items"]}
+        assert b in rows and rows[b]["pinned"] is None and rows[b]["in_learning_order"] == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drop_a_finishing_rule_places_keeps_its_cards_and_its_pin(language):
+    """05 §5.12: a rule that sends a drop to Finished only moves it there: its cards stay in the learning order and a
+    pin it already has stays (taking the cards out is the user's later click, never a rule's)."""
+    store = migrated(language, shows=2, episodes=3)
+    data_dir, _u = roots(language)
+    w = names(language)
+    rules = {"my-tool": "finished", "another": "wait"}
+    try:
+        path = touch(data_dir, f"{ls.HATO_FOLDER}/{w[97]}.srt")
+        waiting = store.register(path, _record("r4", producer="another"), rules=rules)
+        item = waiting.added[0]
+        assert store.ids("arrivals") == [item], "precondition: it waits in New arrivals"
+        stamp = "20261010120000"
+        with store._writing():                                   # a pin given by hand while it waited
+            store.conn.execute("UPDATE items SET pinned = ? WHERE id = ?", (stamp, item))
+        store.register(path, _record("r4", producer="my-tool"), rules=rules)
+        assert store.item(item)["tier"] == "graduated"
+        assert store.item(item)["in_learning_order"] == 1, "the rule took its cards out of the learning order"
+        assert store.item(item)["pinned"] == stamp, "the rule took its pin away"
+    finally:
+        store.close()

@@ -375,8 +375,9 @@ def test_another_processes_register_reaches_a_polling_reader(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_feed_floor_never_falls_when_a_later_prune_finds_older_tombstones(language):
-    """04 §4.1 rule 3: `feed_floor` only rises. A clock that stepped back can leave an older tombstone behind a newer
-    one; the prune that takes the older one must not lower the floor the newer prune set."""
+    """`prune_gone`'s rule: `feed_floor` rises to the newest version the pruned tombstones held, and never falls. A
+    clock that stepped back can leave an older tombstone behind a newer one; the prune that takes the older one must
+    not lower the floor the newer prune set."""
     store = migrated(language)
     try:
         x, y = store.ids("soon")[:2]
@@ -466,19 +467,21 @@ def test_splitting_a_whole_piece_off_its_title_stamps_every_moved_item_for_the_f
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_maintain_prunes_tombstones_older_than_a_day_and_raises_feed_floor(language):
-    """04 §4.1 rule 3 through the helper's run: `ls.maintain` prunes a tombstone older than a day and raises
+    """`prune_gone`'s rule through the helper's run: `ls.maintain` prunes a tombstone older than a day and raises
     `feed_floor` to at least the newest version it held, so a window asleep past it re-reads in full."""
     store = migrated(language)
-    data_dir, user_files_dir = roots(language)
-    old, young = store.ids("soon")[0], store.ids("soon")[1]
-    store.remove([old])
-    held = store.conn.execute("SELECT feed_in FROM gone WHERE kind = 'item' AND id = ?", (old,)).fetchone()[0]
-    store.remove([young])                                        # a fresh tombstone: the rule keeps it
-    with store._writing():                                       # 25 hours on for the first only
-        store.conn.execute("UPDATE gone SET at = ? WHERE kind = 'item' AND id = ?", (time.strftime(
-            "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 25 * 3600)), old))
-    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    assert store.conn.execute("SELECT id FROM gone WHERE kind = 'item'").fetchall() == [(young,)], \
-        "the day-old tombstone is pruned and the fresh one kept"
-    assert store.meta()["feed_floor"] >= held
-    store.close()
+    try:
+        data_dir, user_files_dir = roots(language)
+        old, young = store.ids("soon")[0], store.ids("soon")[1]
+        store.remove([old])
+        held = store.conn.execute("SELECT feed_in FROM gone WHERE kind = 'item' AND id = ?", (old,)).fetchone()[0]
+        store.remove([young])                                    # a fresh tombstone: the rule keeps it
+        with store._writing():                                   # 25 hours on for the first only
+            store.conn.execute("UPDATE gone SET at = ? WHERE kind = 'item' AND id = ?", (time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 25 * 3600)), old))
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+        assert store.conn.execute("SELECT id FROM gone WHERE kind = 'item'").fetchall() == [(young,)], \
+            "the day-old tombstone is pruned and the fresh one kept"
+        assert store.meta()["feed_floor"] >= held
+    finally:
+        store.close()

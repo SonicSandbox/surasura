@@ -1055,24 +1055,31 @@ def test_store_soon_never_clears_the_builds_mark_the_drain_reads(window, languag
     assert app._store_waiting is mark
 
 
-# --- The mutant round's survivors (2026-10-10): the worker with no store, a lost store, a lost track ------------- #
+# --- The worker with no store, a lost store, a lost track -------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_with_no_store_to_watch_the_worker_sleeps_until_woken(window, language, monkeypatch):
     """JSON mode with nothing building: the worker checks once for a wake, then sleeps (RETRY_S) until the next one;
-    it never loops on a wake it has already taken (a loop would hold a core for as long as the window is open)."""
+    it never loops on a wake it has already taken (a loop would hold a core for as long as the window is open), nor
+    looks again every STORE_POLL_S while nothing is coming. Only the worker's own checks are counted."""
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
     app = window(language)
+    app._refresh_from_focus = lambda: None               # only the one wake below may start a check
     app._store_waiting = None
     opener = app._opener()
     _pump(app, lambda: False, timeout=0.5)                       # the open's own first check
     assert opener.check() != "store" and app._store_soon(None) is False, "precondition: JSON mode, nothing coming"
     checks = []
     real_check = opener.check
-    monkeypatch.setattr(opener, "check", lambda: checks.append(1) or real_check())
+
+    def counting_check():
+        if threading.current_thread() is app._worker:
+            checks.append(1)
+        return real_check()
+    monkeypatch.setattr(opener, "check", counting_check)
     app._worker_wake.set()
-    _pump(app, lambda: False, timeout=1.0)
-    assert 1 <= len(checks) <= 3, f"the worker checked {len(checks)} times in a second for one wake"
+    _pump(app, lambda: False, timeout=1.6)                       # three STORE_POLL_S: a poller would check 3-4 times
+    assert len(checks) == 1, f"the worker checked {len(checks)} times in 1.6 s for one wake"
 
 
 @windows_only

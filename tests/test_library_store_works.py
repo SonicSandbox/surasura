@@ -1290,60 +1290,56 @@ def test_a_channels_wait_rule_wins_over_its_producers_own_rule():
     assert ls._rule_for({"producer": "youtube", "channel_id": "UCW"}, rules) is None
     assert ls._rule_for({"producer": "youtube", "channel_id": "UCX"}, rules) == ("youtube", "goal")
 
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_channels_wait_rule_keeps_its_drop_in_new_arrivals_when_its_producer_is_goal(language):
     """05 §5.12: the same rule through `register`: a channel's `wait` line is read before its producer's `goal` line,
     so the drop is no rule's and stays in New arrivals, not Goal. A channel with no line of its own still takes goal
     (the control)."""
     store = migrated(language, shows=2, episodes=3)
-    data_dir, _u = roots(language)
-    w = names(language)
-    rules = {"youtube": "goal", "youtube:UCW": "wait"}
-    waits = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[130]}.srt"),
-                           _record("w1", producer="youtube", channel_id="UCW"), rules=rules)
-    assert getattr(waits, "rule", None) is None and store.item(waits.added[0])["tier"] == "arrivals"
-    assert waits.added[0] not in store.ids("goal")
-    goes = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[131]}.srt"),
-                          _record("w2", producer="youtube", channel_id="UCX"), rules=rules)
-    assert goes.rule == "goal" and store.ids("goal")[0] == goes.added[0]
-    store.close()
+    try:
+        data_dir, _u = roots(language)
+        w = names(language)
+        rules = {"youtube": "goal", "youtube:UCW": "wait"}
+        waits = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[130]}.srt"),
+                               _record("w1", producer="youtube", channel_id="UCW"), rules=rules)
+        assert getattr(waits, "rule", None) is None and store.item(waits.added[0])["tier"] == "arrivals"
+        assert waits.added[0] not in store.ids("goal")
+        goes = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[131]}.srt"),
+                              _record("w2", producer="youtube", channel_id="UCX"), rules=rules)
+        assert goes.rule == "goal" and store.ids("goal")[0] == goes.added[0]
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_seed_rebuild_merges_two_works_on_one_anilist_id_into_the_lower_one(language):
-    """A seed rebuild whose pairing names an AniList id that another work holds merges the two works: the lower id is
-    kept, the dropped work's row is deleted and its items move to the kept work, and the kept work takes the dropped
-    work's AniList id and YouTube channel (each a rule of its own, pinned together here)."""
+    """Unit-tests the seeding pass (`_seed_schema2`, which the upgrade and the rebuild from the copy run): a pairing
+    that names an AniList id another work holds merges the two works — the lower id is kept, the dropped work's row is
+    deleted and its items move to the kept work, and the kept work takes the dropped work's AniList id and YouTube
+    channel (each a rule of its own, pinned together here)."""
     store = migrated(language, shows=2, episodes=2)
-    now_ids = store.ids("now")
-    soon_ids = store.ids("soon")
-    a = b = None
-    for x in now_ids:
-        for y in soon_ids:
-            if _work(store, x) != _work(store, y):
-                a, b = x, y
-                break
-        if a is not None:
-            break
-    assert a is not None and b is not None
-    wa, wb = sorted((_work(store, a), _work(store, b)))
-    # the pairing's item must belong to the lower work wa (not just any item of the pair), whatever the data order
-    a = next(i for t in ("now", "soon") for i in store.ids(t) if _work(store, i) == wa and store.item(i)["parent_folder"])
-    assert _work(store, a) == wa
-    b_items = [i for t in ls.TIERS for i in store.ids(t) if _work(store, i) == wb]
-    with store._writing():
-        store.conn.execute("UPDATE works SET anilist_id = NULL, youtube_channel = NULL WHERE id = ?", (wa,))
-        store.conn.execute("UPDATE works SET anilist_id = 4242, youtube_channel = 'UCdrop' WHERE id = ?", (wb,))
-        store.conn.execute(
-            "INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES ('k-merge', ?, '{\"anilist_id\": 4242}', 't')",
-            (a,))
-    with store._writing():
-        ls._seed_schema2(store, int(store.meta()["state_version"]))
-    assert store.conn.execute("SELECT 1 FROM works WHERE id = ?", (wb,)).fetchone() is None
-    assert all(_work(store, i) == wa for i in b_items)
-    assert store.conn.execute("SELECT anilist_id, youtube_channel FROM works WHERE id = ?", (wa,)).fetchone() == (4242, "UCdrop")
-    assert ls._works_ok(store.conn) is None
-    store.close()
+    try:
+        items = [i for t in ls.TIERS for i in store.ids(t)]
+        wa = min(_work(store, i) for i in items if store.item(i)["parent_folder"])     # the lower work: a show
+        wb = min(_work(store, i) for i in items if _work(store, i) > wa)
+        a = next(i for i in items if _work(store, i) == wa and store.item(i)["parent_folder"])   # the pairing's item
+        b_items = [i for i in items if _work(store, i) == wb]
+        with store._writing():
+            store.conn.execute("UPDATE works SET anilist_id = NULL, youtube_channel = NULL WHERE id = ?", (wa,))
+            store.conn.execute("UPDATE works SET anilist_id = 4242, youtube_channel = 'UCdrop' WHERE id = ?", (wb,))
+            store.conn.execute(
+                "INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES ('k-merge', ?, '{\"anilist_id\": 4242}', 't')",
+                (a,))
+        with store._writing():
+            ls._seed_schema2(store, int(store.meta()["state_version"]))
+        assert store.conn.execute("SELECT 1 FROM works WHERE id = ?", (wb,)).fetchone() is None
+        assert all(_work(store, i) == wa for i in b_items)
+        assert store.conn.execute("SELECT anilist_id, youtube_channel FROM works WHERE id = ?", (wa,)).fetchone() == \
+            (4242, "UCdrop")
+        assert ls._works_ok(store.conn) is None
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

@@ -267,7 +267,8 @@ def test_upgrade_writes_every_search_key(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_records_ids_make_one_title_of_two_works(language):
     """G2.2-6 (one title per AniList / TMDB id): two shows in different folders whose pairings name the same AniList id
-    are one work after the upgrade, the lower id kept, its TMDB id filled; made words 2.6 recorded stay untouched."""
+    are one work after the upgrade, the lower id kept, its TMDB id filled and its own folder key kept; made words 2.6
+    recorded stay untouched."""
     w = names(language)
     data_dir, user_files_dir = roots(language)
     rels = [f"HighPriority/{w[10]}/{w[10]}_01.srt", f"HighPriority/{w[11]}/{w[11]}_02.srt", f"HighPriority/{w[12]}.txt"]
@@ -290,6 +291,8 @@ def test_a_records_ids_make_one_title_of_two_works(language):
     assert row[:2] == (154587, "tv:209867") and w[11] in json.loads(row[2])
     assert store.conn.execute("SELECT item_id, word, note_ids FROM made_words").fetchall() == \
         [(2, "冒険", "[1700000000001]")]
+    assert store.conn.execute("SELECT folder_key FROM works WHERE id = ?", (a,)).fetchone()[0] == \
+        ls.folder_key_of(rels[0])
     assert pieces_ok(store) is None
     store.close()
 
@@ -456,11 +459,7 @@ def test_two_shows_in_one_old_piece_are_split_one_piece_per_work(language):
         conn.execute("UPDATE items SET piece_id = ? WHERE piece_id = ?", (pa, pb))
     finally:
         conn.close()
-    data_dir, user_files_dir = roots(language)
-    code = ls.maintain(language, data_dir, user_files_dir)
-    log = os.path.join(os.path.dirname(ls.library_db_path(language, data_dir)), "library_maintain.log")
-    assert code == ls.EXIT_DONE, open(log, encoding="utf-8").read() if os.path.exists(log) else code
-    store = ls.open_store(language, data_dir, user_files_dir)
+    store = _upgrade(language)
     try:
         assert store.item(soon[4][0])["piece_id"] != store.item(soon[0][0])["piece_id"]
         assert store.item(soon[4][0])["piece_id"] == store.item(soon[7][0])["piece_id"]
@@ -484,38 +483,6 @@ def test_upgrade_deletes_a_piece_no_item_uses(language):
         assert pieces_ok(store) is None
     finally:
         store.close()
-
-
-@pytest.mark.parametrize("language", LANGUAGES)
-def test_merged_work_keeps_its_own_folder_key(language):
-    """G2.2-6: when two works merge (one AniList id, two folders), the kept work keeps its own folder key; it takes
-    the dropped work's key only when it has none."""
-    w = names(language)
-    data_dir, user_files_dir = roots(language)
-    rels = [f"HighPriority/{w[10]}/{w[10]}_01.srt", f"HighPriority/{w[11]}/{w[11]}_02.srt", f"HighPriority/{w[12]}.txt"]
-    doc = {"schedule": {"PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": []}}
-    for rel in rels:
-        touch(data_dir, rel)
-        doc["schedule"]["PHASE_1_NOW"].append(ls.make_entry(rel, "Manual Import", "subtitle"))
-    _d, _u, db = schema1_store(language, doc)
-    conn = _raw(db)
-    for n, (item, record) in enumerate([(1, {"anilist_id": 154587}), (2, {"anilist_id": 154587, "tmdb_id": "tv:209867"}),
-                                        (3, {"anilist_id": None})]):
-        conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
-                     (f"v1-{n}", item, json.dumps(dict(record, content_key=f"v1-{n}")), ls._now()))
-    conn.execute("INSERT INTO made_words VALUES (2, '冒険', '[1700000000001]', ?, 'b1')", (ls._now(),))
-    conn.close()
-    store = _upgrade(language)
-    a, b, c = (store.item(i)["work_id"] for i in (1, 2, 3))
-    assert a == b != c
-    row = store.conn.execute("SELECT anilist_id, tmdb_id, titles FROM works WHERE id = ?", (a,)).fetchone()
-    assert row[:2] == (154587, "tv:209867") and w[11] in json.loads(row[2])
-    assert store.conn.execute("SELECT item_id, word, note_ids FROM made_words").fetchall() == \
-        [(2, "冒険", "[1700000000001]")]
-    assert store.conn.execute("SELECT folder_key FROM works WHERE id = ?", (a,)).fetchone()[0] == \
-        ls.folder_key_of(rels[0])
-    assert pieces_ok(store) is None
-    store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

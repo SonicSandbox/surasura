@@ -56,8 +56,10 @@ class _NowThread:
 
 
 def _dashboard():
-    from app.main import MasterDashboardApp
-    app = MasterDashboardApp.__new__(MasterDashboardApp)   # no Tk construction
+    # The module the tests patch (`from app import main`): a harness elsewhere that reloads app.main and drops it from
+    # sys.modules leaves `app.main` naming its copy, and `from app.main import` would import a second, unpatched one.
+    from app import main
+    app = main.MasterDashboardApp.__new__(main.MasterDashboardApp)   # no Tk construction
     app.gui_queue = queue.Queue()
     app.status_var = _Var()
     app.skipped_version = ""

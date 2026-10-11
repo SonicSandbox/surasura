@@ -10,6 +10,7 @@ SURASURA_TEST_ROOT, with real words from tests/Test Resources/; the cross-proces
 run (SURASURA_STORE_BENCH=1).
 """
 
+import calendar
 import json
 import os
 import statistics
@@ -370,3 +371,117 @@ def test_another_processes_register_reaches_a_polling_reader(language):
             if os.path.exists(db + suffix):
                 os.remove(db + suffix)
         assert root
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_feed_floor_never_falls_when_a_later_prune_finds_older_tombstones(language):
+    """`prune_gone`'s rule: `feed_floor` rises to the newest version the pruned tombstones held, and never falls. A
+    clock that stepped back can leave an older tombstone behind a newer one; the prune that takes the older one must
+    not lower the floor the newer prune set."""
+    store = migrated(language)
+    try:
+        x, y = store.ids("soon")[:2]
+        store.remove([x])
+        store.remove([y])
+        vx, vy = (store.conn.execute("SELECT feed_in FROM gone WHERE kind = 'item' AND id = ?", (i,)).fetchone()[0]
+                  for i in (x, y))
+        assert vy > vx, "the later removal holds the newer version"
+        with store._writing():                              # the clock stepped back: y's tombstone is the older one
+            store.conn.execute("UPDATE gone SET at = ? WHERE kind = 'item' AND id = ?", ("2001-01-01T00:00:00", y))
+            store.conn.execute("UPDATE gone SET at = ? WHERE kind = 'item' AND id = ?", ("2001-01-03T00:00:00", x))
+        cutoff_now = calendar.timegm((2001, 1, 2, 0, 0, 0)) + ls.FEED_KEEP
+        assert store.prune_gone(now=cutoff_now) == 1, "only y is a day older than that"
+        assert store.meta()["feed_floor"] == vy
+        assert store.prune_gone() == 1, "x is a day older than now too"
+        assert store.meta()["feed_floor"] == vy, "a later prune never lowers the floor"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_merge_after_a_full_read_comes_back_in_the_next_read_with_its_moved_items(language):
+    """04 §4.2 / 06 §6.3: a merge made after a window's full read reaches its next incremental read — the kept work
+    (among `works`), each item the merge moved with its new `work_id` (among `items`), and the emptied work as gone.
+    Why: a merge that leaves the feed stale repaints the old shows until the next full re-read."""
+    store = migrated(language, shows=2, episodes=4)
+    try:
+        shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+        a = shows[0]
+        wa = store.item(a)["work_id"]
+        b = next(i for i in shows if store.item(i)["work_id"] != wa)
+        wb = store.item(b)["work_id"]
+        members_b = [i for i in store.ids("goal") if store.item(i)["work_id"] == wb]
+        assert members_b, "the second show has episodes to move"
+        first = store.read_feed()
+        store.merge_works(wa, [wb])
+        feed = store.read_feed(first["version"], first["epoch"])
+        assert not feed["full"]
+        assert wa in {r["id"] for r in feed["works"]}, "the kept work changed, so the window must hear of it"
+        rows = {r["id"]: r for r in feed["items"]}
+        assert all(i in rows and rows[i]["work_id"] == wa for i in members_b), "moved items come back under the kept work"
+        assert ("work", wb) in feed["gone"]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_tidy_works_skips_an_unreadable_trash_row_and_still_removes_the_empty_work(language):
+    """06 §6.5: a trash row whose stored state won't parse is skipped (it holds no work), so the empty work still
+    goes in the helper's run — one bad row never stops the tidy."""
+    store = migrated(language)
+    try:
+        loose = [i for i in store.ids("goal") if store.item(i)["parent_folder"] == ""]
+        show = [i for i in store.ids("soon") if store.item(i)["parent_folder"]]
+        work_loose, work_show = store.item(loose[0])["work_id"], store.item(show[0])["work_id"]
+        members = [i for i in show if store.item(i)["work_id"] == work_show]
+        store.remove(members)                                   # in the trash: its work stays
+        with store._writing():                                  # a work left empty by hand (as a merge leaves one)
+            store.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work_show, loose[0]))
+            store.conn.execute("UPDATE trash SET item_state = ? WHERE id = (SELECT MIN(id) FROM trash)",
+                               ("{not json",))                  # a row the tidy cannot read
+        assert work_loose in store.tidy_works(), "the unreadable row is skipped, the empty work goes"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_splitting_a_whole_piece_off_its_title_stamps_every_moved_item_for_the_feed(language):
+    """A whole piece keeps its id when its title changes, so the split itself must stamp every moved item: an
+    incremental feed read (a window that already holds the rows) carries each one's new work, with no full re-read."""
+    store = migrated(language, shows=2, episodes=4)
+    try:
+        a = store.ids("goal")[0]
+        p = store.item(a)["piece_id"]
+        members = [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord", (p,))]
+        first = store.read_feed()
+        store.split_work(members, names(language)[85])
+        new = store.item(members[0])["work_id"]
+        assert store.item(members[0])["piece_id"] == p, "precondition: the whole piece kept its id"
+        feed = store.read_feed(first["version"], first["epoch"])
+        assert not feed["full"], "an incremental read, not a full re-read"
+        rows = {r["id"]: r for r in feed["items"]}
+        assert all(i in rows and rows[i]["work_id"] == new for i in members), "every moved item reaches the window"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_maintain_prunes_tombstones_older_than_a_day_and_raises_feed_floor(language):
+    """`prune_gone`'s rule through the helper's run: `ls.maintain` prunes a tombstone older than a day and raises
+    `feed_floor` to at least the newest version it held, so a window asleep past it re-reads in full."""
+    store = migrated(language)
+    try:
+        data_dir, user_files_dir = roots(language)
+        old, young = store.ids("soon")[0], store.ids("soon")[1]
+        store.remove([old])
+        held = store.conn.execute("SELECT feed_in FROM gone WHERE kind = 'item' AND id = ?", (old,)).fetchone()[0]
+        store.remove([young])                                    # a fresh tombstone: the rule keeps it
+        with store._writing():                                   # 25 hours on for the first only
+            store.conn.execute("UPDATE gone SET at = ? WHERE kind = 'item' AND id = ?", (time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 25 * 3600)), old))
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+        assert store.conn.execute("SELECT id FROM gone WHERE kind = 'item'").fetchall() == [(young,)], \
+            "the day-old tombstone is pruned and the fresh one kept"
+        assert store.meta()["feed_floor"] >= held
+    finally:
+        store.close()

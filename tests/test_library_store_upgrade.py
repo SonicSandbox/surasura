@@ -267,7 +267,8 @@ def test_upgrade_writes_every_search_key(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_records_ids_make_one_title_of_two_works(language):
     """G2.2-6 (one title per AniList / TMDB id): two shows in different folders whose pairings name the same AniList id
-    are one work after the upgrade, the lower id kept, its TMDB id filled; made words 2.6 recorded stay untouched."""
+    are one work after the upgrade, the lower id kept, its TMDB id filled and its own folder key kept; made words 2.6
+    recorded stay untouched."""
     w = names(language)
     data_dir, user_files_dir = roots(language)
     rels = [f"HighPriority/{w[10]}/{w[10]}_01.srt", f"HighPriority/{w[11]}/{w[11]}_02.srt", f"HighPriority/{w[12]}.txt"]
@@ -290,6 +291,8 @@ def test_a_records_ids_make_one_title_of_two_works(language):
     assert row[:2] == (154587, "tv:209867") and w[11] in json.loads(row[2])
     assert store.conn.execute("SELECT item_id, word, note_ids FROM made_words").fetchall() == \
         [(2, "冒険", "[1700000000001]")]
+    assert store.conn.execute("SELECT folder_key FROM works WHERE id = ?", (a,)).fetchone()[0] == \
+        ls.folder_key_of(rels[0])
     assert pieces_ok(store) is None
     store.close()
 
@@ -401,3 +404,109 @@ def test_upgrade_200k_under_10_s(language):
     if BENCH:
         print(f"\nupgrade {language} {n}: {took:.2f} s")
         assert took <= 10.0, took
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_upgrade_check_refuses_items_with_no_work(language, monkeypatch):
+    """The check before commit: an item left with no work is refused, and nothing of the upgrade is kept. Every item
+    loses its work, so only the works check can see it: the pieces check still passes (None == None)."""
+    _d, _u, doc = library(language)
+    data_dir, user_files_dir, db = schema1_store(language, doc)
+    conn = _raw(db)
+    before = _snapshot(conn)
+    conn.close()
+    real = ls._seed_schema2
+
+    def loses_works(store, version):
+        real(store, version)
+        store.conn.execute("UPDATE items SET work_id = NULL")
+    monkeypatch.setattr(ls, "_seed_schema2", loses_works)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    conn = _raw(db)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1 and _snapshot(conn) == before
+    assert "has no work" in json.loads(dict(conn.execute("SELECT key, value FROM meta"))["upgrade_failed"])["error"]
+    conn.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_piece_run_never_crosses_a_tier_edge(language):
+    """A piece is one run in one tier: an episode moved to NOW's end, with its next episode still first in Soon, must
+    not carry its piece across the tier edge (the upgrade starts a fresh run at each tier)."""
+    _d, _u, doc = library(language, shows=3, episodes=4)
+    data_dir, user_files_dir, db = schema1_store(language, doc)
+    conn = _raw(db)
+    soon = conn.execute("SELECT id, piece_id FROM items WHERE tier = 'soon' ORDER BY ord").fetchall()
+    assert soon[0][1] is not None and soon[1][1] == soon[0][1], "the two Soon episodes must share a piece"
+    conn.execute("UPDATE items SET tier = 'now', ord = 99999 WHERE id = ?", (soon[0][0],))
+    conn.close()
+    store = _upgrade(language)
+    assert store.item(soon[0][0])["piece_id"] != store.item(soon[1][0])["piece_id"]
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_in_one_old_piece_are_split_one_piece_per_work(language):
+    """02 §2.6 step 3: one 2.5 piece that holds two shows (two works) next to each other is split into one piece per
+    work; the second show's first item never continues the first show's piece, whatever the piece id says."""
+    _d, _u, doc = library(language, shows=3, episodes=4)
+    _data_dir, _user_files_dir, db = schema1_store(language, doc)
+    conn = _raw(db)
+    try:
+        soon = conn.execute("SELECT id, piece_id FROM items WHERE tier = 'soon' ORDER BY ord").fetchall()
+        pa, pb = soon[0][1], soon[4][1]
+        assert pa is not None and pb is not None and pa != pb
+        conn.execute("UPDATE items SET piece_id = ? WHERE piece_id = ?", (pa, pb))
+    finally:
+        conn.close()
+    store = _upgrade(language)
+    try:
+        assert store.item(soon[4][0])["piece_id"] != store.item(soon[0][0])["piece_id"]
+        assert store.item(soon[4][0])["piece_id"] == store.item(soon[7][0])["piece_id"]
+        assert pieces_ok(store) is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_upgrade_deletes_a_piece_no_item_uses(language):
+    """A piece left behind by 2.x that no item holds any more is deleted by the upgrade, so the upgraded store holds
+    only pieces that items use. Why: `_pieces_ok` would otherwise report an empty piece and the upgrade would fail."""
+    _d, _u, doc = library(language, shows=2, episodes=2)
+    data_dir, user_files_dir, db = schema1_store(language, doc)
+    conn = _raw(db)
+    conn.execute("INSERT INTO pieces VALUES (999, ?, 'run', ?)", (names(language)[5], ls._now()))
+    conn.close()
+    store = _upgrade(language)
+    try:
+        assert store.conn.execute("SELECT 1 FROM pieces WHERE id = 999").fetchone() is None
+        assert pieces_ok(store) is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_merged_work_with_no_folder_key_takes_the_dropped_one(language):
+    """G2.2-6, the second clause: the kept work takes the dropped work's folder key only when it has none. Here the
+    lower-id work is a loose file (no folder key), so it is kept and must take the folder key of the folder file it
+    merges with, never be left with none."""
+    w = names(language)
+    data_dir, user_files_dir = roots(language)
+    rels = [f"HighPriority/{w[12]}.txt", f"HighPriority/{w[11]}/{w[11]}_02.srt"]
+    doc = {"schedule": {"PHASE_1_NOW": [], "PHASE_2_SOON": [], "PHASE_3_LATER": []}}
+    for rel in rels:
+        touch(data_dir, rel)
+        doc["schedule"]["PHASE_1_NOW"].append(ls.make_entry(rel, "Manual Import", "subtitle"))
+    _d, _u, db = schema1_store(language, doc)
+    conn = _raw(db)
+    for n, (item, record) in enumerate([(1, {"anilist_id": 154587}), (2, {"anilist_id": 154587, "tmdb_id": "tv:209867"})]):
+        conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                     (f"v1-{n}", item, json.dumps(dict(record, content_key=f"v1-{n}")), ls._now()))
+    conn.close()
+    store = _upgrade(language)
+    a, b = (store.item(i)["work_id"] for i in (1, 2))
+    assert a == b
+    assert store.conn.execute("SELECT folder_key FROM works WHERE id = ?", (a,)).fetchone()[0] == \
+        ls.folder_key_of(rels[1])
+    assert pieces_ok(store) is None
+    store.close()

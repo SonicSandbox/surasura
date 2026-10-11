@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from app import anki_connect
+from app import anki_connect, anki_sync, locks
 from app.connect import known_signal
 from app.path_utils import get_user_files_path
 
@@ -128,3 +128,27 @@ def test_a_read_whose_cards_changed_rewrites_the_record(anki, known_file):
 
     assert os.stat(record).st_mtime_ns != PAST_NS
     assert known_signal.load("ja")["seen"] == [UPPER[0]]
+
+
+def test_the_known_words_lock_is_held_while_the_read_asks_anki_and_saves(anki, known_file, monkeypatch):
+    """The read is a read-modify-write of the record and KnownWord.json, so the known-words lock must be held both while
+    it asks Anki for the cards and while it saves the record. Another program saving between either step would otherwise
+    be lost. Both halves are checked: the ask, and the save that follows it."""
+    asked, saved = [], []
+    ask = anki_connect.find_cards
+    save = known_signal._save
+    lock_name = anki_sync.known_lock_name("ja")
+
+    def find_and_note_the_lock(url, query):
+        asked.append(locks.held_here(lock_name))   # why: the lock is taken before the ask
+        return ask(url, query)
+
+    def save_and_note_the_lock(language, data):
+        saved.append(locks.held_here(lock_name))   # why: the record is saved while the lock is still held
+        return save(language, data)
+
+    monkeypatch.setattr(anki_connect, "find_cards", find_and_note_the_lock)
+    monkeypatch.setattr(known_signal, "_save", save_and_note_the_lock)
+    _read()
+    assert asked == [True]
+    assert saved and all(saved)

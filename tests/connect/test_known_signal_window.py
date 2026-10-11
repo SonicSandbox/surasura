@@ -10,7 +10,7 @@ from tkinter import ttk
 
 import pytest
 
-from app.connect import known_signal_window
+from app.connect import known_signal, known_signal_window
 
 URL = "http://127.0.0.1:8765"
 
@@ -107,7 +107,6 @@ def test_the_listed_words_are_saved_as_shown_off_the_screens_thread(root, monkey
     # Why: once the window has listed the marked words, they are saved as shown, so the same words don't come back
     # at every sync. The save runs on a worker, never on the screen's thread.
     import threading
-    from app.connect import known_signal
     done = threading.Event()
     calls = []
 
@@ -120,3 +119,38 @@ def test_the_listed_words_are_saved_as_shown_off_the_screens_thread(root, monkey
     assert isinstance(win, tk.Toplevel)
     assert done.wait(5.0), "the listed words were never saved as shown"
     assert calls == [("ja", {"上層部", "一生懸命"}, False)]
+
+
+def _record_with_shown_and_undone_marks():
+    """A record holding one live mark, one shown signal mark, one undone signal mark and one undone offer mark, plus a pending offer.
+    Real words, as known_signal.read records them."""
+    return {
+        "marked": [
+            {"word": "上層部", "card": 11, "note": 21, "at": "2026-10-08T15:00:00", "why": "signal",
+             "shown": False, "undone": None},
+            {"word": "一生懸命", "card": 12, "note": 22, "at": "2026-10-08T15:00:00", "why": "signal",
+             "shown": False, "undone": "2026-10-09T10:00:00"},
+            {"word": "気配", "card": 13, "note": 23, "at": "2026-10-08T15:00:00", "why": "offer",
+             "shown": False, "undone": "2026-10-09T10:00:00"},
+            # shown already: the user saw this row in an earlier window (known_signal.py sets shown to True then)
+            {"word": "見切り発車", "card": 14, "note": 24, "at": "2026-10-08T15:00:00", "why": "signal",
+             "shown": True, "undone": None},
+        ],
+        "offer": {"state": "pending", "cards": [{"word": "溜め息", "card": 31, "note": 41}]},
+        "terms": ["suspended"],
+    }
+
+
+def test_view_leaves_out_marks_already_shown_or_undone():
+    # Why: a word the user already saw in the window, or undid, must not come back as a row or as a taken word.
+    known_signal._save("ja", _record_with_shown_and_undone_marks())
+    v = known_signal_window.view("ja")
+    assert [m["word"] for m in v["marked"]] == ["上層部"]  # the undone 一生懸命 and the shown 見切り発車 are not listed
+    assert v["taken"] == []  # the undone offer word 気配 is not listed as taken
+
+
+def test_pending_offer_shows_on_first_look_only_and_not_on_later_looks():
+    # Why: the offer is shown once per dashboard session; the first look gets it, a later look gets nothing.
+    known_signal._save("ja", _record_with_shown_and_undone_marks())
+    assert known_signal_window.view("ja")["offer"]["state"] == "pending"
+    assert known_signal_window.view("ja", with_offer=False)["offer"] == {}

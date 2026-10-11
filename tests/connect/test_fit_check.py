@@ -7,6 +7,7 @@ must each stop the episode with a plain reason. The program is a stand-in (`run=
 would print, so no real tsubasa runs and nothing touches a file.
 """
 import json
+import subprocess
 from types import SimpleNamespace
 
 from app.connect import fit_check
@@ -106,3 +107,29 @@ def test_an_absent_tsubasa_program_is_not_timed_without_running_anything():
 
     got = fit_check.check(None, VIDEO, SUBTITLE, tsubasa="", run=must_not_run)
     assert got == (fit_check.NOT_TIMED, None, "Not timed to its video, so no cards.")
+
+
+def test_a_tsubasa_run_that_fails_to_start_or_times_out_is_retried_not_refused():
+    # A file read whole over a slow share, or a program that won't start, is no answer about the timing: the runner
+    # must ask again (RETRY), never mark the episode as not timed.
+    for err in (OSError("not a program"), subprocess.TimeoutExpired(["tsubasa"], 120)):
+        def run(command, **kw):
+            raise err
+
+        got = fit_check.check(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=run)
+        assert got[0] == fit_check.RETRY
+        assert got[1] == "tsubasa"
+
+
+def test_tsubasa_is_always_run_dry_and_json_so_it_never_retimes_the_file():
+    # --dry-run keeps tsubasa from re-timing (writing) the file; --json is what the answer parser reads.
+    seen = []
+
+    def run(command, **kw):
+        seen.append(command)
+        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [ONE_SEGMENT]}) + "\n").encode())
+
+    fit_check.check(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=run)
+    assert "--dry-run" in seen[0]
+    assert "--json" in seen[0]
+    assert seen[0][:4] == ["tsubasa", "--pair", VIDEO, SUBTITLE]

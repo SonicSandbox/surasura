@@ -49,21 +49,26 @@ def token_store_lists(language, data_dir, files):
     (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
     removed items whose text wasn't forgotten); elsewhere = {a removed item's path: where its file is in the trash};
     forgotten = the removed items whose sentences the user forgot. Absolute paths under `data_dir`. Without one (JSON
-    mode, read-only, busy, an error): (`files`, {}) — the kept rows and their text left as they are."""
+    mode, no library store): (`files`, {}) — the kept rows and their text left as they are. (None, None) when a
+    library store is there but its lists can't be read now (busy, read-only, an error): don't reconcile — `files`
+    lacks its missing items, which would leave the token store with their text unkept."""
     try:
         from app import library_store
         from app.path_utils import get_user_files_path
-        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+        mode, reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
+        if mode == "json":
             return files, {}
+        if mode != "store":
+            return None, None
         store = library_store.open_store(language, data_dir, get_user_files_path(language), role="reader",
                                          busy_wait=0.0)
         if store is None:
-            return files, {}
+            return None, None
         with store:
             counted_rel, kept_rel = store.text_lists()
             trashed, forgotten = store.text_elsewhere(), store.text_forgotten()
     except Exception:
-        return files, {}
+        return None, None
 
     def full(rel):
         return os.path.join(data_dir, *(rel[2:] if rel.startswith("./") else rel).split("/"))
@@ -120,6 +125,9 @@ def main():
 
         data_dir = get_data_path(language)
         files, more = token_store_lists(language, data_dir, _content_files(data_dir, language))
+        if files is None:
+            print(f"Indexer: the library can't be read now; '{language}' is indexed next time.")
+            return
 
         # Must match the tokenizer identity a Generate run uses, or the two would fight over the
         # store (each rebuilding the other's tokens). The GUI passes --reinforce and --zh-script to

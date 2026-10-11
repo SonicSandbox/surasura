@@ -104,14 +104,25 @@ def test_a_missing_file_is_kept_only_from_the_library_store_schedule(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_cancellable_tokenizer_keeps_read_text_and_tokenize_text(language, monkeypatch):
-    """With --progress-json on, the cancel point wrapper keeps the real tokenizer's `read_text` and `tokenize_text`:
-    a kept file, or a missing one read back from its kept text, is read through them. It never passes `pool_spec`,
-    because a pool's workers would run with no cancel point."""
+def test_cancellable_tokenizer_keeps_read_text_and_tokenize_text(language, monkeypatch, tmp_path):
+    """With --progress-json on, the cancel point wrapper keeps the real tokenizer's `read_text` and `tokenize_text` —
+    a kept file, or a missing one read back from its kept text, is read through them, with the same results — and
+    each has a cancel point (E2.2 review, store #4): a cancel asked stops a kept file's read too. It never passes
+    `pool_spec`, because a pool's workers would run with no cancel point."""
     from app import analyzer, token_index as ti
+    from tests.test_token_store_kept import _files
     monkeypatch.setitem(analyzer._PROGRESS, "on", True)    # the flag --progress-json sets
+    monkeypatch.setitem(analyzer._PROGRESS, "writing", False)
+    cancel = tmp_path / "cancel"
+    monkeypatch.setitem(analyzer._PROGRESS, "cancel_file", str(cancel))
     base = ti.make_tokenizer(language)
     wrapped = analyzer._cancellable(base)
-    assert wrapped.read_text is base.read_text, "a kept file is read through the same reader"
-    assert wrapped.tokenize_text is base.tokenize_text, "a kept file's text is tokenized the same way"
+    source = _files(language)[0]
+    text, facts = wrapped.read_text(source)
+    assert (text, facts) == base.read_text(source), "a kept file is read through the same reader"
+    assert wrapped.tokenize_text(text, facts) == base.tokenize_text(text, facts), "and tokenized the same way"
     assert not hasattr(wrapped, "pool_spec"), "a pool would pass no cancel point"
+    cancel.write_text("1", encoding="utf-8")
+    for step in (lambda: wrapped.read_text(source), lambda: wrapped.tokenize_text(text, facts)):
+        with pytest.raises(analyzer._GenerateCancelled):
+            step()

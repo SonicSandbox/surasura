@@ -379,14 +379,27 @@ class _KeptText:
         return c
 
     def _set_aside(self, error):
-        aside = f"{self.path}.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
-        for suffix in ("", "-wal", "-shm"):
+        """Rename the damaged file aside (a new name each time: an earlier copy is never overwritten). False when it
+        can't be moved (held open elsewhere): it is left as it is and nothing is started anew."""
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        aside, n = f"{self.path}.damaged-{stamp}", 1
+        while any(os.path.exists(aside + suffix) for suffix in ("", "-wal", "-shm")):
+            n += 1
+            aside = f"{self.path}.damaged-{stamp}-{n}"
+        try:
+            os.replace(self.path, aside)
+        except OSError as e:
+            print(f"Some kept sentences couldn't be read ({error}), and {os.path.basename(self.path)} couldn't be set "
+                  f"aside ({e}): it is left as it is.")
+            return False
+        for suffix in ("-wal", "-shm"):
             try:
                 os.replace(self.path + suffix, aside + suffix)
             except OSError:
                 pass
         print(f"Some kept sentences couldn't be read ({error}): {os.path.basename(self.path)} was set aside as "
               f"{os.path.basename(aside)} and a new one started.")
+        return True
 
     def _run(self, work, default, create=False):
         """`work(conn)` on the file — `default` when it doesn't exist and isn't to be made (`create`)."""
@@ -401,7 +414,8 @@ class _KeptText:
                 if isinstance(e, sqlite3.OperationalError) or attempt:
                     raise                           # locked, the disk full, an I/O error: nothing is set aside
                 self.close()
-                self._set_aside(e)                  # not a database (damaged): once
+                if not self._set_aside(e):          # not a database (damaged): once
+                    raise                           # it can't be moved: never written over, the caller's work undone
                 create = True
         return default
 

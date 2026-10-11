@@ -1093,6 +1093,8 @@ class MasterDashboardApp:
             from app.indexer import _content_files, token_store_lists
             data_dir = get_data_path(lang)
             files, more = token_store_lists(lang, data_dir, _content_files(data_dir, lang))
+            if files is None:
+                return False                # the library's lists can't be read now: the next check tells
             store = token_index.open_store(lang)
             try:
                 known_file = os.path.join(get_user_files_path(lang), "KnownWord.json")

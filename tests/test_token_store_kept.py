@@ -10,6 +10,7 @@ text (testing.md): the samples and the test resources, in a data folder under th
 
 import os
 import shutil
+import sqlite3
 import sys
 from unittest.mock import patch
 
@@ -305,6 +306,56 @@ def test_a_damaged_kept_text_file_is_set_aside_once_never_fatal(language, capsys
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_two_damaged_kept_text_files_in_one_second_are_both_set_aside(language, capsys):
+    """E2.2 review (store #3): the set-aside name holds the second only — a second damaged file in the same second gets
+    a name of its own, and the first copy (text that may still be saved by hand) is never written over."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    kept_db = _kept_text(store).path
+    with patch.object(ti.time, "strftime", return_value="20261011-120000"):
+        for garbage in (b"\x00first" * 512, b"\x00second" * 512):
+            with open(kept_db, "wb") as f:
+                f.write(garbage)
+            store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+    folder = os.path.dirname(kept_db)
+    asides = sorted(n for n in os.listdir(folder) if ".damaged-" in n and not n.endswith(("-wal", "-shm")))
+    assert len(asides) == 2, asides
+    held = {open(os.path.join(folder, n), "rb").read() for n in asides}
+    assert held == {b"\x00first" * 512, b"\x00second" * 512}
+    assert capsys.readouterr().out.count("was set aside") == 2
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_kept_text_file_that_cant_be_moved_is_never_said_set_aside(language, capsys):
+    """E2.2 review (store #2): a damaged kept-text file that can't be renamed (held open elsewhere) is left as it is:
+    the line says so, never "set aside", and the reconcile is undone — the token store as it was, nothing written over
+    the damaged file."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a], ti.make_tokenizer(language))
+    before = (store.counted_files(), store.kept_files(), store.word_counts())
+    kept_db = _kept_text(store).path
+    with open(kept_db, "wb") as f:
+        f.write(b"\x00garbage" * 512)
+    real = os.replace
+
+    def held_open(src, dst):
+        if src == kept_db:
+            raise PermissionError(32, "The process cannot access the file", src)
+        return real(src, dst)
+
+    with patch.object(ti.os, "replace", side_effect=held_open):
+        with pytest.raises(sqlite3.DatabaseError):
+            store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+    out = capsys.readouterr().out
+    assert "couldn't be set aside" in out and "was set aside" not in out
+    assert open(kept_db, "rb").read() == b"\x00garbage" * 512
+    assert (store.counted_files(), store.kept_files(), store.word_counts()) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_token_store_follows_the_move(language):
     """9a: a counted file moved to another show's folder, and a kept one moved too — same name, size and modified
     time — keep their rows (re-keyed, nothing re-tokenized); the kept one's text follows it."""
@@ -541,6 +592,38 @@ def test_without_a_library_store_the_indexer_leaves_kept_rows(tmp_path):
     can't see the kept list."""
     files = _files("ja")[:2]
     assert indexer.token_store_lists("ja", roots("ja")[0], files) == (files, {})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("why", ["busy", "lists-raise"])
+def test_a_library_store_that_cant_be_read_now_leaves_a_missing_item_counted(language, why):
+    """E2.2 review (store #1): a library store that is there but can't be read now (busy, or its lists raise) must not
+    fall back to the run's list alone — that list lacks a missing item, and the reconcile would drop its counted row
+    and its counts without keeping its text. The lists are (None, None) and the indexer leaves the token store as it
+    is; the next good run keeps the item counted and its text kept (real files, both languages)."""
+    store, data_dir, ids = _library(language)
+    now1, now2, soon1, soon2, goal1, goal2 = list(ids)
+    _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        before = (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(now2))
+    os.remove(now2)                                                    # gone from the disk: a missing item
+    store.sync_disk()
+    store.close()
+    if why == "busy":
+        cut = patch.object(ls, "check_mode", return_value=("read-only", "busy"))
+    else:
+        cut = patch.object(ls.Store, "text_lists", side_effect=sqlite3.OperationalError("database is locked"))
+    with cut:
+        assert indexer.token_store_lists(language, data_dir, [now1, soon1, soon2, goal1, goal2]) == (None, None)
+        _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        assert ti._norm(now2) in tokens.counted_files(), "the missing item's row stays counted"
+        assert (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(now2)) == before
+    _run_indexer(language)                                             # the library readable again
+    with ti.open_store(language) as tokens:
+        assert ti._norm(now2) in tokens.counted_files()
+        assert tokens.word_counts() == before[0] and tokens.total_tokens() == before[1]
+        assert _kept_text(tokens).held().get(ti._norm(now2)) is True, "its text kept once it was found gone"
 
 
 # --- mutant kills (E2.2 flag pass; Haiku-written K01–K08, K06 rewritten) ------------------------------ #

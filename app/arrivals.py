@@ -52,10 +52,11 @@ class View:
         if tokenizer is None:
             tokenizer = (analyzer.ChineseTokenizer(reinforce_segmentation=args.reinforce, script=script)
                          if language == "zh" else analyzer.JapaneseTokenizer())
+        tables = None
         if language == "ja":
             # Every word read from here on — the known words included — is read with the tables the Generate read.
-            names.use_library_tables(store.names_tables() if store is not None
-                                     else token_index.read_names_tables(language))
+            tables = store.names_tables() if store is not None else token_index.read_names_tables(language)
+            names.use_library_tables(tables)
         user_files_dir = get_user_files_path(language)
         known_file = os.path.join(user_files_dir, "KnownWord.json")
         known_tuples, known_lemmas = analyzer.read_known_words(
@@ -116,7 +117,7 @@ class View:
                    unsure=unsure, lemmas={key[0] for k, key in enumerate(keys) if not plan.keys[k][2]},
                    listed={k for k, row in enumerate(plan.rows) if row is not None},
                    halved={k for k, key in enumerate(plan.keys) if key[3]},
-                   ties=ties, spellings=spellings, states={}, phrase_bound={})
+                   ties=ties, spellings=spellings, states={}, phrase_bound={}, names_tables=tables)
 
     def never(self, lr):
         """A one-character word the list can never offer (main()'s `_never`)."""
@@ -429,12 +430,13 @@ class Gates:
                         held.extend(x for x in spelled if x not in held)
                 gates.phrase_uses, gates.phrase_spellings = uses, spellings
         # The name tables' sums over the counted files' records, and the tables as they stand.
-        gates.tables = gates.table_sums = gates.term_sums = None
+        gates.tables = gates.table_sums = gates.term_sums = gates.records = None
         gates.names_words = set()
         if language == "ja":
             tables = store.names_tables()
+            records = store.names_records()
+            gates.records = records                     # the whole rule's input when the store holds no tables
             if tables:
-                records = store.names_records()
                 gates.tables = tables
                 gates.table_sums = names.TableSums(records)
                 gates.term_sums = names.TermSums(records, tables)
@@ -649,9 +651,11 @@ class Gates:
             return True
         sanitize = analyzer._sanitize_term
         if self.tables is None:
-            # No tables yet: these arrivals make some only if one of their names could join.
-            made = names.compute_tables(held, None, sanitize)
-            return bool(made["k"] or made["j"] or made["w"])
+            # No tables kept (none computed yet): the whole rule over the counted files' records, with and without the
+            # arrivals — a name the library holds twice joins with an arrival's third use.
+            base = list(self.records or ())
+            made, before = names.compute_tables(base + held, None, sanitize), names.compute_tables(base, None, sanitize)
+            return any(made[t] != before[t] for t in ("k", "j", "w"))
         sums, terms, tables = self.table_sums, self.term_sums, self.tables
         katakana, kanji = set(), set()
         for record in held:
@@ -755,3 +759,168 @@ def _added(counts, more):
     for key, n in more.items():
         out[key] = out.get(key, 0) + n
     return out
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# The estimate (E2.2 D10) and the pick (D11): what the window shows of an arrival, worked out in the warm worker
+# (`app/arrivals_worker.py`).
+# --------------------------------------------------------------------------------------------------------------- #
+
+RECORD_FIELDS = ("main", "ph", "sp", "prog", "spc", "plan", "keys", "name")     # what `Engine.add` reads
+
+
+def read(view, path):
+    """(sentences, name record) of the file at `path`, read here as the token store would read and serve it — the
+    store's tokenizer reading the file alone, its name candidates recorded (Japanese), then the library's name tables
+    the view was built with applied (`Store.file_tokens`) — so `record` gives what it gives over the store's tokens,
+    and the gates get the record the store would keep. Writes nothing."""
+    facts = {}
+    return read_text(view, analyzer.extract_text(path, view.language, facts), facts)
+
+
+def read_text(view, text, facts=None):
+    """`read` for a file's text (`analyzer.extract_text`'s) and what the file said of itself (`facts`)."""
+    language = view.language
+    facts = facts or {}
+    if language != "ja":
+        return list(view.tokenizer.tokenize_sentences(text)), None
+    import copy
+    from app import names, token_index
+    record_ = names.Record()
+    record_.auto = bool(facts.get("auto")) or facts.get("captions") in analyzer.AUTO_CAPTIONS
+    alone = copy.copy(view.tokenizer)               # the same tagger, reading as the token store reads (no tables)
+    alone.library = False
+    sentences = [(s_text, list(s_tokens)) for s_text, s_tokens in alone.tokenize_sentences(text, names=record_)]
+    data = json.loads(json.dumps(record_.data(), ensure_ascii=False))      # as the store keeps it (JSON)
+    switches = token_index._library_switches(language)
+    spans = data.get("s")
+    if spans and view.names_tables and any(switches):
+        names.apply_spans(sentences, spans, view.names_tables, *switches)
+    return sentences, data
+
+
+class Order:
+    """The last Generate's order, as an arrival is placed in it (D10's *N new*): each plan file's id, tier and folder
+    (`library_store.folder_key_of`: a work's folder below its tier folder; None for a loose file) and each key's first
+    file — read once from the plan's per-file lines."""
+
+    def __init__(self, plan):
+        from app.library_store import folder_key_of
+        self.folder_key_of = folder_key_of
+        self.ids = [entry[0] for entry in plan.files]
+        self.tiers = [entry[1] for entry in plan.files]
+        self.folders = [folder_key_of(rel) for rel in self.ids]
+        first = [None] * len(plan.keys)
+        for f, line in enumerate(plan.per_file):
+            for table in (line["main"], line["ph"]):
+                for k in table[0::2]:
+                    if first[k] is None:
+                        first[k] = f
+        self.first = first
+
+    def n_new(self, keys, rel=None, placed=()):
+        """(N new placed at the top of NOW, N new placed after the last item of its folder or None when it has none,
+        that item's id) for an arrival holding `keys` (its record's k numbers, words and phrase rows), the files
+        `placed` since the plan ([(id, keys, tier, before_id, after_id)], in the order placed; a tier of None: after
+        its folder's last item, else the top of NOW) placed first — what `plan_engine.Engine.add` gives the item
+        (`Result.n_new`), counted without an engine: a key is new where no file before it in the order holds it."""
+        keys = list(keys)
+        top = len(keys)                     # at the top of NOW it comes before every file
+        folder = self.folder_key_of(rel) if rel else None
+        if folder is None:
+            return top, None, None
+        if not placed:
+            at = None
+            for f in range(len(self.ids) - 1, -1, -1):
+                if self.folders[f] == folder and self.ids[f] != rel:
+                    at = f
+                    break
+            if at is None:
+                return top, None, None
+            first = self.first
+            return top, sum(1 for k in keys if first[k] is None or first[k] > at), self.ids[at]
+        # Files placed since the plan: the order with them in it (plan files by index, placed ones by their keys).
+        items = [(self.ids[f], self.tiers[f], self.folders[f], f) for f in range(len(self.ids))]
+        for item_id, item_keys, tier, before, after in placed:
+            own = self.folder_key_of(item_id) if isinstance(item_id, str) else None
+            at = None
+            if tier is None:
+                last = self._last_of(items, own, item_id)
+                at = None if last is None else last + 1
+                tier = "now" if last is None else items[last][1]
+            elif before is not None or after is not None:
+                anchor = before if before is not None else after
+                found = next((i for i, item in enumerate(items) if item[0] == anchor), None)
+                if found is not None:
+                    at = found + (0 if before is not None else 1)
+            if at is None:                  # the top of its tier
+                rank = {"now": 0, "soon": 1, "goal": 2}
+                at = next((i for i, item in enumerate(items) if rank.get(item[1], 0) >= rank.get(tier, 0)),
+                          len(items))
+            items.insert(at, (item_id, tier, own, frozenset(item_keys)))
+        last = self._last_of(items, folder, rel)
+        if last is None:
+            return top, None, None
+        before_it = sum(1 for item in items[:last + 1] if not isinstance(item[3], frozenset))
+        held = set().union(*(item[3] for item in items[:last + 1] if isinstance(item[3], frozenset)))
+        first = self.first
+        return (top, sum(1 for k in keys if (first[k] is None or first[k] >= before_it) and k not in held),
+                items[last][0])
+
+    @staticmethod
+    def _last_of(items, folder, rel):
+        if folder is None:
+            return None
+        for i in range(len(items) - 1, -1, -1):
+            if items[i][2] == folder and items[i][0] != rel:
+                return i
+        return None
+
+
+def estimate(view, gates, order, rec, rel=None, placed=()):
+    """What the window shows of an arrival (D10), from its record (`record`, read by `read`) and the warm view:
+    {"words": [[Word, Reading], …] (its list words, none known, in the order met — words, then phrase rows),
+    "n_new_top": N new placed at the top of NOW, "n_new_after_show": N new placed after the last item of its folder
+    (None when it has none; "after": that item's id), "known_pct": % known (QT-E8: known tokens ÷ counted tokens,
+    pieces by sums — the record's progressive total and baseline, as Baseline % rounds it), "known" / "counted"
+    (the two sums), "exact" / "moved" (`Gates.check` over the files `placed` since the plan and this one), "record"
+    (what `plan_engine.Engine.add` reads)}. `placed`: [{"id", "record", "tier", "before", "after"}] in the order
+    placed (tier None: after its folder's last item, else the top of NOW). Pure."""
+    plan = view.plan
+    keys = list(rec["main"][0::2]) + list(rec["ph"][0::2])
+    words = [[view.keys[k][0], view.keys[k][1]] for k in keys if plan.rows[k] is not None]
+    if gates is None:
+        exact, moved = False, ["stale"]
+    else:
+        exact, moved = gates.check([p["record"] for p in placed] + [rec])
+    top, after, anchor = order.n_new(
+        keys, rel, [(p["id"], list(p["record"]["main"][0::2]) + list(p["record"]["ph"][0::2]), p.get("tier"),
+                     p.get("before"), p.get("after")) for p in placed])
+    total, baseline = rec["prog"][0], rec["prog"][1]
+    return {"words": words, "n_new_top": top, "n_new_after_show": after, "after": anchor,
+            "known_pct": round(baseline / total * 100, 2) if total else None, "known": baseline, "counted": total,
+            "exact": exact, "moved": moved, "record": {name: rec[name] for name in RECORD_FIELDS}}
+
+
+def pick_words(view, path, listed, send_grammar=True):
+    """D11, the pick prepared at arrival: for a subtitle (.srt, .ass, .ssa), `app.connect.pick.pick` in "list" mode
+    over its cues (`cues.read` / `cues.tokens`, read with the view's tokenizer) with the view's known words, the last
+    Generate's list (`listed`: {(Word, Reading): its place}) and no cards (`carded=None`: the live "no card yet" check
+    is mining's) — {"words", "not_offered"}; None for any other file. The rest as Connect's pick passes it."""
+    from app import cues
+    if not str(path).lower().endswith(cues.SUBTITLES):
+        return None
+    return pick_cues(view, cues.read(path, view.language), listed, send_grammar)
+
+
+def pick_cues(view, read_, listed, send_grammar=True):
+    """`pick_words` for a subtitle's cues (`cues.read`'s)."""
+    from app import cues
+    from app.connect import pick
+    language = view.language
+    tokens = cues.tokens(read_, language, view.script, view.tokenizer)
+    readable = analyzer.LearningView(known=view.known).readable if language == "ja" else None
+    return pick.pick(read_, tokens, language, view.known, mode="list", listed=listed, carded=None,
+                     readable=readable, ignore_names=bool(analyzer.LOGIC.get("ignore_names", False)),
+                     send_grammar=send_grammar, skip_single=not view.args.include_single_chars,
+                     phrase_set=view.phrase_set)

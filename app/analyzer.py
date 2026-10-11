@@ -4427,11 +4427,15 @@ def _cancellable(tokenize_file):
     def tokenize(path):
         _cancel_point()
         return tokenize_file(path)
-    # A kept file, or a missing one read back from its kept text, is read through these (E2.2). Never `pool_spec`:
-    # a pool's workers would pass no cancel point.
+    # A kept file, or a missing one read back from its kept text, is read through these (E2.2), each with its cancel
+    # point. Never `pool_spec`: a pool's workers would pass no cancel point.
     for name in ("read_text", "tokenize_text"):
-        if hasattr(tokenize_file, name):
-            setattr(tokenize, name, getattr(tokenize_file, name))
+        inner = getattr(tokenize_file, name, None)
+        if inner is not None:
+            def step(*args, _inner=inner, **kwargs):
+                _cancel_point()
+                return _inner(*args, **kwargs)
+            setattr(tokenize, name, step)
     return tokenize
 
 

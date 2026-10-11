@@ -41,6 +41,7 @@ RESOURCES = {
     "backfill": {"anki-writer"},
     "mine": {"anki-writer"},
     "replan": {"anki-writer"},
+    "arrivals": set(),          # the warm arrivals worker (E2.2 K9): reads only, beside anything; never two
 }
 
 Progress = namedtuple("Progress", "step done total")

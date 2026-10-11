@@ -163,6 +163,13 @@ def main():
                 indexer.main()
                 return
 
+            elif command == 'arrivals-worker':
+                # The warm arrivals worker (E2.2 D10, K9): `arrivals-worker --headless --language <l> …` — JSON lines
+                # on stdin / stdout; it ends when its input closes, on "quit", or idle. Started by the window's
+                # services (app/services/arrivals.py), never by a user.
+                from app import arrivals_worker
+                sys.exit(arrivals_worker.main(sys.argv[2:]) or 0)
+
             elif command == 'sentence_corpus':
                 from app import sentence_corpus
                 sys.argv = [sys.argv[0]] + sys.argv[2:]

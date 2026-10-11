@@ -21,6 +21,7 @@ PLACED = {
 "source_display": "report", "word_search_enabled": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",
     "app_theme": "neither", "text_size": "neither", "app_motion": "neither",
+    "journey_settle_s": "neither", "journey_settle_battery_s": "neither",
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",

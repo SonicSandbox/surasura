@@ -54,6 +54,10 @@ DEFAULT_SETTINGS = {
     # The window's motion (Settings > App > Motion; M2.1, the window's spec 05 §5.10): "follow" Windows' own *Show
     # animations* switch, "full" or "reduced" (no slides, short fades). No run or report reads it.
     "app_motion": "follow",
+    # The journey's background Generate (E3.2, app/services/journey.py): seconds after the last move, and while on the
+    # battery (Sonic, E3.2-1: 3 s, 30 s on a laptop's battery; advanced settings). No run or report reads them.
+    "journey_settle_s": 3,
+    "journey_settle_battery_s": 30,
     # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
     # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
     # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:

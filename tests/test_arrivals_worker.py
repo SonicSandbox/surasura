@@ -460,3 +460,171 @@ def test_a_request_the_ending_worker_never_answered(tmp_path, mode):
         assert answer["id"] == 1 and "exit code 3" in answer["error"]
         assert [job.state for job in registry.snapshot()] == [jobs.FAILED]
     client.stop()
+
+
+# --- the worker review's fixes (E2.2 row 2.2.8): a client that never spins, waits forever or leaves a worker -------- #
+
+_DEAF = r"""
+import sys, time
+sys.stdin.buffer.readline()
+time.sleep(120)                 # takes a request, answers nothing, ignores its input closing
+"""
+_MUTE = r"""
+import sys
+for _line in sys.stdin.buffer:  # reads every request, answers none, ends when its input closes
+    pass
+"""
+
+
+def _until(predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return predicate()
+
+
+def test_a_worker_that_cant_start_answers_each_request_and_never_starts_again_by_itself(tmp_path):
+    """A worker whose program can't be started: the request waiting is answered with the reason, and the client tries
+    no new start on its own (one job for one request — never a loop of starts); the next request tries once more."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[str(tmp_path / "no-such-program.exe")])
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    answer = got.get(timeout=30)
+    assert answer["id"] == 1 and "couldn't start" in answer["error"]
+    time.sleep(1.0)
+    assert len(registry.snapshot()) == 1 and not client.running
+    client.stats(callback=got.put)
+    assert "couldn't start" in got.get(timeout=30)["error"]
+    assert len(registry.snapshot()) == 2
+    client.stop()
+
+
+def test_a_failure_before_the_worker_starts_is_answered_and_leaves_the_client_usable(monkeypatch):
+    """Anything that fails before the process starts (its command line, its environment) is answered like a failed
+    start — the client is never left holding a job that will never finish."""
+    from app.services import arrivals as client_module, jobs
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no app folder")
+    monkeypatch.setattr(client_module, "command_line", broken)
+    registry = jobs.JobRegistry()
+    client = client_module.ArrivalsWorker(registry, "ja")
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    assert "no app folder" in got.get(timeout=30)["error"]
+    client.stats(callback=got.put)
+    assert "no app folder" in got.get(timeout=30)["error"], "the client still answers: not wedged on a lost job"
+    client.stop()
+
+
+def test_a_worker_that_stops_answering_is_ended_and_its_requests_answered(monkeypatch):
+    """A worker alive but answering nothing (stuck) for STUCK seconds is ended: the request it held is answered with an
+    error, so the window never waits on it for ever."""
+    from app.services import arrivals as client_module, jobs
+    monkeypatch.setattr(client_module, "STUCK", 1.0)
+    registry = jobs.JobRegistry()
+    client = client_module.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _MUTE])
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    answer = got.get(timeout=30)
+    assert answer["id"] == 1 and "stopped answering" in answer["error"]
+    assert _until(lambda: not client.running, 10)
+    client.stop()
+
+
+def test_stop_ends_a_worker_that_ignores_its_input_closing_and_answers_what_it_held():
+    """`stop` (the window closing) closes the worker's input; one that doesn't end is stopped after GRACE seconds, and
+    the request it held is answered with an error."""
+    from app.services import arrivals as client_module, jobs
+    registry = jobs.JobRegistry()
+    client = client_module.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _DEAF])
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    assert _until(lambda: client.running, 30)
+    time.sleep(0.5)                                         # the request written
+    client.stop()
+    assert "stopped" in got.get(timeout=30)["error"]
+    assert _until(lambda: not client.running, client_module.GRACE + 10)
+
+
+def test_stop_while_the_worker_is_being_made_leaves_no_worker_running():
+    """`stop` called while the first request's job is being made: the job is cancelled as soon as it exists, and the
+    worker it started is ended (input closed, stopped after GRACE) — nothing stays running after the window closed."""
+    from app.services import arrivals as client_module, jobs
+    registry = jobs.JobRegistry()
+    client = client_module.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _DEAF])
+    submit = registry.submit
+
+    def stopped_first(*args, **kwargs):
+        client.stop()                                       # the window closes between the request and its job
+        return submit(*args, **kwargs)
+    registry.submit = stopped_first
+    got = queue.Queue()
+    client.stats(callback=got.put)
+    assert "stopped" in got.get(timeout=30)["error"]
+    time.sleep(1.0)
+    assert _until(lambda: not client.running, client_module.GRACE + 10)
+
+
+def test_stop_before_any_request_starts_nothing():
+    """A client stopped before its first request answers every request with an error and never starts a worker."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _DEAF])
+    client.stop()
+    got = []
+    client.stats(callback=got.append)
+    assert got and got[0]["id"] == 1 and "stopped" in got[0]["error"]
+    assert list(registry.snapshot()) == [] and not client.running
+
+
+def test_the_worker_reads_the_token_store_without_ever_writing_it(tmp_path):
+    """The worker opens the token store read only (`token_index.open_reader`): no file is made where there is none, a
+    damaged file is left byte for byte as it is (never rebuilt), and a write through the reader is refused."""
+    from app import token_index as ti
+    assert ti.open_reader("ja", path=str(tmp_path / "none.db")) is None
+    assert not (tmp_path / "none.db").exists()
+    damaged = tmp_path / "damaged.db"
+    damaged.write_bytes(b"\x00not a database" * 64)
+    assert ti.open_reader("ja", path=str(damaged)) is None
+    assert damaged.read_bytes() == b"\x00not a database" * 64
+    real = str(tmp_path / "real.db")
+    ti.open_store("ja", path=real).close()
+    reader = ti.open_reader("ja", path=real)
+    try:
+        assert reader.get_meta("build_sig") is None
+        with pytest.raises(Exception):
+            reader.set_meta("build_sig", "x")
+    finally:
+        reader.close()
+
+
+def test_an_arrival_outside_the_data_folder_has_no_id(monkeypatch):
+    """An arrival's id is its path in the data folder; one elsewhere — another folder, or another drive (where a
+    relative path can't be made) — has none, and a folder whose name starts with two dots is still inside."""
+    from types import SimpleNamespace
+    from app import arrivals_worker, path_utils
+    data = os.path.join(os.path.abspath(os.sep), "Surasura", "data", "ja")
+    monkeypatch.setattr(path_utils, "get_data_path", lambda language: data)
+    me = SimpleNamespace(language="ja")
+    rel = arrivals_worker.Worker._rel
+    assert rel(me, os.path.join(data, "HighPriority", "作品", "第01話.srt")) == "HighPriority/作品/第01話.srt"
+    assert rel(me, os.path.join(data, "..Old", "第01話.srt")) == "..Old/第01話.srt"
+    assert rel(me, os.path.join(os.path.dirname(data), "zh", "a.srt")) is None
+    if sys.platform == "win32":
+        other = "E:" if data.upper().startswith("D:") else "D:"
+        assert rel(me, os.path.join(other + os.sep, "Anime", "第01話.srt")) is None
+
+
+def test_a_list_that_cant_be_read_gives_an_empty_list_never_a_failure(monkeypatch, tmp_path):
+    """The last Generate's priority list damaged (not UTF-8): the worker's pick ranks by an empty list, and no request
+    fails until the file changes."""
+    from types import SimpleNamespace
+    from app import arrivals_worker
+    monkeypatch.setattr(analyzer, "RESULTS_DIR", str(tmp_path))
+    (tmp_path / "priority_learning_list.csv").write_bytes(b"Word,Reading\n\xff\xfe\x00\x81bad,\x82\n")
+    assert arrivals_worker.Worker._listed(SimpleNamespace()) == {}

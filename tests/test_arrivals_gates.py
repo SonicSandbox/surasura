@@ -1,7 +1,7 @@
 """The exactness gates (E2.2 D7, row 2.2.6) one rule at a time, on gates built by hand: `arrivals.Gates.check` over a
 small synthetic plan and library (real words), so each gate's edge — a word reaching or falling under the cut-off, a
 compound's rarity, a name, an idiom row, a spelling — is pinned without a Generate. `test_arrivals_parity.py` proves
-the gates on real libraries (RP-2); these pin the branches its one line per gate can't reach (the E2.2 mutant pass).
+the gates on real libraries (RP-2); these pin the branches its one line per gate can't reach.
 
 `_gates(...)` builds a `Gates` the way `Gates.build` would leave it, from plain arguments; `_rec(...)` an arrival's
 record as `arrivals.record` returns it (only the fields `check` reads)."""
@@ -110,7 +110,7 @@ def _name_record(spelling, pieces, n=1):
 
 
 def test_with_no_tables_kept_the_names_gate_counts_the_librarys_records_too():
-    """E2.2 review A2 / mutant names_no_tables_never_moves: a store holding no name tables yet (none computed) still
+    """a store holding no name tables yet (none computed) still
     has its files' name records. A katakana run the library met twice (under the 3 uses a run needs) joins with an
     arrival's third use — the gate must see it, never judge the arrival's record alone."""
     library = [_name_record("ミカサ", ("ミ", "カサ")), _name_record("ミカサ", ("ミ", "カサ"))]

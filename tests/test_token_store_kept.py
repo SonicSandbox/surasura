@@ -754,3 +754,56 @@ def test_a_wipe_with_a_forget_drops_the_forgotten_kept_row(language):
         assert store.file_tokens(junk) == [] and ("text", None) in tok.calls, "the listed kept file was read again"
     finally:
         store.close()
+
+
+# --- E2.2 final review (adversary X1 / X2, intent keeper #1): a row leaving with its file gone keeps its text ------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_leaving_with_its_file_gone_keeps_its_sentences_for_a_later_list(language):
+    """A caller that lists only the files it can see (the sentence dictionary, a Generate without the library store,
+    or one that meets a removed item before the indexer keeps it) drops a counted row whose file is gone from the
+    disk — but never its only sentences: they are kept (rebuilt from the cached tokens) first, and the next list that
+    names the file (a missing item still counting) reads it back from them, never from a file that isn't there."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    words = _lemmas(store, b)
+    os.remove(b)
+    store.reconcile([a], ti.make_tokenizer(language))                # b in no list, its file gone
+    assert ti._norm(b) not in store.counted_files()
+    assert _kept_text(store).held() == {ti._norm(b): True}, "its sentences kept, rebuilt from the cached tokens"
+    tok = _counting(language)
+    store.reconcile([a, b], tok)                                     # listed again: a missing item, still counting
+    assert ti._norm(b) in store.counted_files()
+    assert tok.calls == [("text", None)], "read back from its kept sentences, the file never asked for"
+    again = _lemmas(store, b)
+    # Rebuilt text has lost the file's spaces and line breaks, so a few Japanese words can split otherwise (the limit
+    # As built names); the words are the file's all the same.
+    assert len(again & words) >= 0.9 * max(len(again), len(words)), (len(again), len(words), len(again & words))
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_forgotten_file_gone_from_the_disk_keeps_no_sentences(language):
+    """The one way sentences go: the user forgot the file (*This file is junk*). Its row leaves, its file is gone,
+    and nothing of it is kept."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    os.remove(b)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[], forgotten=[b])
+    assert ti._norm(b) not in store.counted_files() and store.file_tokens(b) == []
+    assert ti._norm(b) not in _kept_text(store).held()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_leaving_with_its_file_still_on_disk_keeps_nothing(language):
+    """A file the user took out of the counted tiers whose file is still there leaves nothing behind: its text can be
+    read again from the disk, so none is kept for it (no copy of the library grows for files that aren't lost)."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    store.reconcile([a], ti.make_tokenizer(language))
+    assert ti._norm(b) not in store.counted_files()
+    assert _kept_text(store).held() == {}
+    store.close()

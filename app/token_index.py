@@ -312,6 +312,27 @@ def open_store(language, path=None):
         return Store(_connect(), language, db_path)
 
 
+def open_reader(language, path=None):
+    """The token store opened to read only (the warm arrivals worker, E2.2 D10: "writes nothing") — no schema ensured,
+    no rebuild of a damaged file, SQLite refusing any write — or None when there is none or it can't be read."""
+    db_path = path or store_path_for(language)
+    if not os.path.exists(db_path):
+        return None
+    try:
+        from pathlib import Path
+        c = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return None
+    try:
+        c.execute("PRAGMA busy_timeout=5000")
+        c.execute("PRAGMA query_only=ON")
+        c.execute("SELECT 1 FROM meta LIMIT 1")
+    except sqlite3.Error:
+        c.close()
+        return None
+    return Store(c, language, db_path)
+
+
 def _locked(error):
     """SQLite's "database is locked" / "busy": another connection holds the file (an OperationalError, which is a
     DatabaseError too — never a sign of a damaged file)."""
@@ -940,8 +961,12 @@ class Store:
 
             # Kept text first — before anything below is deleted or wiped: each kept file, and each counted file gone
             # from the disk, whose row the store holds and whose text isn't kept yet (one rebuilt from cached sentences
-            # is read again once its file can be read).
-            have = texts.held() if (held or None in signatures.values()) else {}
+            # is read again once its file can be read). And each row about to leave whose file is gone from the disk,
+            # unless the user forgot it: a caller that can't see the library's missing items (the sentence dictionary
+            # before its list was read, Generate without the library store) or a removed item met before the indexer
+            # keeps it never takes its only sentences with it — a later list naming it reads it back from them.
+            lost = [key for key in leaving if key not in gone and not os.path.exists(key)]
+            have = texts.held() if (held or lost or None in signatures.values()) else {}
             keep_now = {}
             for key in listed:
                 signature, row = signatures[key], existing.get(key)
@@ -953,6 +978,9 @@ class Store:
                 if key in have and not (have[key] and read is not None and source and os.path.exists(source)):
                     continue
                 keep_now[key] = self._text_of(cur, key, row, source, read)
+            for key in lost:
+                if key not in have:
+                    keep_now[key] = self._text_of(cur, key, existing[key], others.get(key), read)
             texts.put(keep_now)
 
             if wipe:

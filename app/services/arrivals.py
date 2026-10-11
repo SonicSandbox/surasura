@@ -20,12 +20,14 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 from app.services import jobs as jobs_module
 
 KIND = "arrivals"
 LABEL = "Counting new arrivals"
 GRACE = 2.0                     # s a worker asked to stop has to end before it is stopped
+STUCK = 120.0                   # s a request may wait for its answer before the worker is taken as stuck and ended
 
 
 def command_line(language, args=()):
@@ -112,6 +114,9 @@ class ArrivalsWorker:
         with self._lock:
             if self._job is True:
                 self._job = job
+            closed = self._closed
+        if closed:                                  # `stop` came while it was being made: no worker after it
+            job.cancel()
 
     def _begin(self, job):
         with self._lock:
@@ -120,39 +125,46 @@ class ArrivalsWorker:
 
     def _run(self, job):
         """Start the child, write the requests as they come, and once it has ended settle what it left."""
-        from app.path_utils import build_subprocess_env, is_frozen
-        command = self._command or command_line(self.language, self.args)
         try:
+            from app.path_utils import build_subprocess_env, is_frozen
+            command = self._command or command_line(self.language, self.args)
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, env=build_subprocess_env(is_frozen()),
                                     creationflags=0x08000000 if sys.platform == "win32" else 0)   # CREATE_NO_WINDOW
-        except OSError as e:
+        except Exception as e:                      # it can't start: each request waiting is answered, none re-sent
             self._ended(job, None, set(), f"The arrivals worker couldn't start: {e}")
             return
         with self._lock:
             self._proc = proc
             stop = self._closed or job.cancelled
         if stop:
-            _close(proc.stdin)
-        sent, done = set(), threading.Event()
+            _end_soon(proc)
+        sent, sent_at, done, stuck = set(), {}, threading.Event(), False
         threading.Thread(target=self._read, args=(proc, done), name="arrivals-reader", daemon=True).start()
         while not done.is_set():
             try:
                 rid = self._outbox.get(timeout=0.2)
             except queue.Empty:
-                continue
+                rid = None
+            now = time.monotonic()
             with self._lock:
-                entry = self._pending.get(rid)
+                entry = self._pending.get(rid) if rid is not None else None
+                waiting = [t for r, t in sent_at.items() if r in self._pending]
+            if waiting and now - min(waiting) > STUCK:
+                stuck = True                        # alive but answering nothing: ended, its requests answered
+                proc.kill()
+                break
             if entry is None:
                 continue
             sent.add(rid)                           # before writing: a worker that ends now is asked again after
+            sent_at[rid] = now
             try:
                 proc.stdin.write((json.dumps(entry[0], ensure_ascii=False) + "\n").encode("utf-8"))
                 proc.stdin.flush()
             except (OSError, ValueError):
                 break                               # it is ending: what it held is settled below
         done.wait()
-        self._ended(job, proc.returncode, sent)
+        self._ended(job, proc.returncode, sent, "The arrivals worker stopped answering." if stuck else None)
 
     def _read(self, proc, done):
         try:
@@ -194,6 +206,9 @@ class ArrivalsWorker:
         if stopping:
             self._fail_all("the arrivals worker was stopped")
             return
+        if returncode is None:                      # it never started: every request waiting gets the reason; the
+            self._fail_all(message)                 # next request tries again (never a loop of starts)
+            return
         for rid in lost:
             if rid not in retry:
                 self._fail(rid, message or "the arrivals worker ended before answering")
@@ -215,15 +230,8 @@ class ArrivalsWorker:
                 with self._lock:
                     self._job = None
                 self._fail_all("the arrivals worker was stopped")
-            return                                      # starting: `_run` sees it and closes the input
-        _close(proc.stdin)
-
-        def later():
-            try:
-                proc.wait(timeout=GRACE)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        threading.Thread(target=later, name="arrivals-stop", daemon=True).start()
+            return                                      # starting: `_run` sees it and ends it as below
+        _end_soon(proc)
 
     def _fail(self, rid, message):
         with self._lock:
@@ -245,6 +253,18 @@ class ArrivalsWorker:
             callback(answer)
         except Exception as e:                          # a listener's fault never stops the reader
             print(f"Arrivals: a listener failed: {e}")
+
+
+def _end_soon(proc):
+    """Close the worker's input (it ends), and stop it if it hasn't after GRACE seconds. Returns at once."""
+    _close(proc.stdin)
+
+    def later():
+        try:
+            proc.wait(timeout=GRACE)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    threading.Thread(target=later, name="arrivals-stop", daemon=True).start()
 
 
 def _close(stream):

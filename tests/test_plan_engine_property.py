@@ -395,7 +395,9 @@ def test_an_arrival_read_against_another_plan_or_damaged_is_refused():
     for damaged in (dict(rec, plan="another run"), dict(rec, keys=len(plan.keys) + 1),
                     dict(rec, main=rec["main"] + [len(plan.keys), 1]), dict(rec, main=rec["main"] + [phrase, 1]),
                     dict(rec, main=rec["main"][:2] + rec["main"][:2]), dict(rec, sp=[[untied, ["x"], []]]),
-                    dict(rec, prog=[1, 2, [], [], [], [], []]), dict(rec, spc={"x": [{}, {}]}), None):
+                    dict(rec, prog=[1, 2, [], [], [], [], []]), dict(rec, spc={"x": [{}, {}]}),
+                    dict(rec, main=[rec["main"][0], 0] + rec["main"][2:]),            # a use of none
+                    dict(rec, spc={str(len(plan.keys)): [{}, {}]}), None):           # a word out of range
         with pytest.raises(plan_engine.PlanError):
             eng.add("goal/new.srt", damaged, "goal")
     first = plan.files[0][0]
@@ -406,3 +408,35 @@ def test_an_arrival_read_against_another_plan_or_damaged_is_refused():
     with pytest.raises(plan_engine.PlanError, match="anchor"):
         eng.add("goal/new.srt", rec, "goal", after_id=first)
     assert _live(eng) == before and eng.result().added == []
+
+
+def test_an_arrival_keeps_its_own_file_name_whatever_its_item_id():
+    """The progressive list's Source File for an added file is its record's file name (`arrivals.record`'s "name"),
+    never a piece of its item id: the library store's item ids aren't paths."""
+    plan = synthetic_plan(17)
+    eng = plan_engine.Engine(plan)
+    rec = _arrival(random.Random(9), plan, 7)
+    eng.add("item:42", rec, "now")
+    result = eng.result()
+    seq = result.sequence["item:42"]
+    rows = [row for row in result.progressive if row["Sequence"] == seq]
+    assert rows, "the arrival's words reach the progressive list"
+    assert {row["Source File"] for row in rows} == {"new007.srt"}
+
+
+def test_files_added_only_when_every_plan_file_is_still_there_unchanged():
+    """`check(..., added=)`'s rule (`_only_added`): the library is the plan's files, each unchanged, plus files the
+    engine added — never when a plan file left or changed as well, and never for a plan whose files don't all carry
+    their digest (it can't tell which are its own)."""
+    from types import SimpleNamespace
+    from app import plan_rules
+    entries = [[f"HighPriority/作品/第{n:02d}話.srt", [1700000000 + n, 4000 + n], "HighPriority", 10, "subtitle"]
+               for n in range(1, 4)]
+    one, two, new = (plan_rules.file_digest(entry) for entry in entries)
+    plan = SimpleNamespace(files=[[entries[0][0], "now", one], [entries[1][0], "now", two]])
+    parts = {"files": entries}
+    assert plan_engine._only_added(plan, parts, [new]) is True
+    assert plan_engine._only_added(plan, {"files": [entries[0], entries[2]]}, [new]) is False, "a plan file left"
+    assert plan_engine._only_added(plan, parts, []) is False, "nothing the engine added"
+    no_digest = SimpleNamespace(files=[[entries[0][0], "now"], [entries[1][0], "now", two]])
+    assert plan_engine._only_added(no_digest, {"files": [entries[1], entries[2]]}, [new]) is False

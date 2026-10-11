@@ -132,14 +132,15 @@ class Worker:
             bare = plan_engine.Plan({"floor": 0, "run_signature": None, "phrase_entries": []}, [], [], [], [], [])
             view = arrivals.View.build(self.language, bare, None, self.args, tokenizer=tokenizer)
             return {"view": view, "gates": None, "order": None, "listed": {}, "signature": None}
-        store = token_index.open_store(self.language)
+        store = token_index.open_reader(self.language)     # read only: no schema made, no damaged file rebuilt
         try:
             view = arrivals.View.build(self.language, plan, store, self.args, tokenizer=tokenizer)
             if self.language == "ja":
                 names.use_library_tables(view.names_tables, pin=True)     # never re-read while warm
-            gates = arrivals.Gates.build(view, store)
+            gates = arrivals.Gates.build(view, store) if store is not None else None     # None: never "exact"
         finally:
-            store.close()                           # the arrivals are read here, never through the store
+            if store is not None:
+                store.close()                       # the arrivals are read here, never through the store
         view.store = None
         order = arrivals.Order(plan)
         # The plan's tables only from here on: its per-file lines (most of its memory) are read into `order`.
@@ -160,7 +161,8 @@ class Worker:
         view, text = warm["view"], SAMPLE[self.language]
         sentences, names_record = arrivals.read_text(view, text)
         rec = arrivals.record(sentences, view, names=names_record)
-        warm["gates"].check([rec])
+        if warm["gates"] is not None:
+            warm["gates"].check([rec])
         arrivals.estimate(view, warm["gates"], warm["order"], rec)
         arrivals.pick_cues(view, cues.Cues([cues.Cue(0, 0, 3000, text, 0, False, True)]), warm["listed"],
                            self.send_grammar)
@@ -175,8 +177,9 @@ class Worker:
                       newline="") as f:
                 for row in csv.DictReader(f):
                     out.setdefault((row.get("Word", ""), row.get("Reading", "")), len(out))
-        except OSError:
-            pass
+        except (OSError, ValueError, csv.Error) as e:   # unreadable or damaged: the pick ranks by nothing listed
+            print(f"arrivals worker: the list couldn't be read: {e}", file=sys.stderr)
+            out = {}
         return out
 
     # --- the answers --------------------------------------------------------------------------------------------- #
@@ -196,7 +199,12 @@ class Worker:
         view = warm["view"]
         sentences, names_record = arrivals.read(view, path)
         rec = arrivals.record(sentences, view, path, names=names_record)
-        picked = arrivals.pick_words(view, path, warm["listed"], self.send_grammar) if warm["order"] else None
+        picked = None
+        if warm["order"]:
+            try:
+                picked = arrivals.pick_words(view, path, warm["listed"], self.send_grammar)
+            except Exception as e:                  # a subtitle the pick can't read: the estimate still answers
+                print(f"arrivals worker: no pick for {os.path.basename(path)}: {e}", file=sys.stderr)
         self.counts["reads"] += 1
         self.reads[key] = (rec, picked)
         while len(self.reads) > KEEP:
@@ -205,8 +213,13 @@ class Worker:
 
     def _rel(self, path):
         from app.path_utils import get_data_path
-        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(get_data_path(self.language)))
-        return None if rel.startswith("..") or os.path.isabs(rel) else rel.replace("\\", "/")
+        try:
+            rel = os.path.relpath(os.path.abspath(path), os.path.abspath(get_data_path(self.language)))
+        except ValueError:                          # another drive: not in the library's data folder
+            return None
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+            return None
+        return rel.replace("\\", "/")
 
     def estimate(self, request):
         from app import arrivals

@@ -552,6 +552,8 @@ def test_the_dashboards_save_drops_nothing_from_the_file(library):
     ("app_theme", "hb"),                     # the 3.0 window's look (W2.1; Sapphire the default since G2.3): no run
     ("text_size", "L"),
     ("app_motion", "reduced"),               # the 3.0 window's motion (M2.1): no run, no report
+    ("journey_settle_s", 10),                # when the background Generate starts (E3.2): no run, no report
+    ("journey_settle_battery_s", 60),
 ])
 def test_app_and_importer_settings_never_change_the_run_signature(library, path, value):
     """The app's own (telemetry, automatic updates, the welcome guide), the importers' (the EPUB part size and its split,

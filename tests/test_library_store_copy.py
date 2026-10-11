@@ -851,3 +851,261 @@ def test_no_store_means_no_remembered_band_and_nothing_written(language):
     assert ls.read_auto_band(language, data_dir) is None
     assert ls.record_auto_band(language, data_dir, user_files_dir, "rare", 900) is False
     assert not os.path.exists(ls.library_db_path(language, data_dir))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_record_naming_a_missing_piece_rebuilds_with_no_piece(language):
+    # Why: a copy is the user's file and an older version or a hand edit can leave an item record naming a piece the
+    # copy's pieces table lacks. A rebuild (a moved folder, a new PC) must still bring the library back, the item
+    # in no piece: the store enforces its foreign keys, so a dangling piece id would fail the whole rebuild.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    item = store.ids("soon")[0]
+    others = {i: store.item(i)["piece_id"] for i in store.ids("soon")[1:]}
+    rel = store.item(item)["rel_path"]
+    db = store.db_path
+    store.close()
+    doc = read_doc(user_files_dir)
+    lib = doc["surasura_library"]
+    fields = lib["items"]["fields"]
+    piece_ids = {row[0] for row in lib["tables"]["pieces"]["rows"]}
+    assert 99999 not in piece_ids
+    row = next(r for r in lib["items"]["rows"] if r[fields.index("rel_path")] == rel)
+    row[fields.index("piece_id")] = 99999                       # a piece the copy doesn't carry
+    write_manifest(user_files_dir, doc)
+    _db_aside(db)                                               # a new PC
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.item(item)["rel_path"] == rel
+        assert store.item(item)["piece_id"] is None
+        assert {i: store.item(i)["piece_id"] for i in others} == others, "the other items keep their pieces"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_temp_copy_is_fsynced_before_it_is_handed_back(language, monkeypatch):
+    # Why: the rename that follows is only safe once the copy's bytes are on disk, so the write must sync them.
+    store = migrated(language)
+    try:
+        target = _target(language)
+        calls = []
+        real = os.fsync
+        # Record the size the synced fd holds: the bytes are written and flushed by the time fsync runs.
+        monkeypatch.setattr(os, "fsync", lambda fd: calls.append(os.fstat(fd).st_size) or real(fd))
+        temp, _st = ls._write_temp(target, {"schedule": {}})
+        try:
+            assert calls, "the temp copy must be fsynced before the rename"
+            assert calls[0] > 0 and calls[0] == os.path.getsize(temp), "the synced fd is the temp copy, with its bytes"
+        finally:
+            os.remove(temp)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_reimport_question_stops_the_copy_export(language):
+    """A re-import question waiting on the user (meta `reimport_pending`) holds the copy as the user last saw it:
+    the export writes nothing and returns False, even when the store is ahead of the copy."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    helper = None
+    try:
+        assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+        ids = store.ids("now")
+        store.move([ids[0]], "now", after_id=ids[2])           # an export is now due
+        store.bookkeeping({"reimport_pending": json.dumps({"stat": store.copy_stat()})})
+        mtime = _mtime(language)
+        before = _bytes(user_files_dir)
+        # Why: the copy's stat still equals last_export_stat, so only this guard keeps the export from replacing it.
+        helper = ls.Store(store.db_path, language, data_dir, user_files_dir, "helper")
+        assert ls.export_copy(helper) is False
+        assert _mtime(language) == mtime
+        assert _bytes(user_files_dir) == before
+        # Control: the same export is due and writes once the question is answered, so the False above is the guard's doing.
+        store.bookkeeping({"reimport_pending": ""})           # an empty value is no question: the guard falls away
+        assert ls.export_copy(helper) is True
+        assert _bytes(user_files_dir) != before
+    finally:
+        if helper is not None:
+            helper.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_bookkeeping_write_during_an_export_keeps_the_copy_dirty(language, monkeypatch):
+    # Why: a write the copy carries lands after the export read its snapshot (copy_dirty 0); the export
+    # must not clear the flag it did not see, or the next export would skip that write.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    store.register_reader("connect")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert store.meta()["copy_dirty"] == 0
+    store.move([store.ids("now")[0]], "now", after_id=store.ids("now")[2])
+    helper = ls.Store(store.db_path, language, data_dir, user_files_dir, "helper")
+    real = ls._write_temp
+
+    def write_then_edit(target, doc):
+        out = real(target, doc)
+        store.bookkeeping({"soon_line": 3}, copy_carries=True)
+        return out
+
+    monkeypatch.setattr(ls, "_write_temp", write_then_edit)
+    try:
+        assert ls.export_copy(helper) is True
+        monkeypatch.setattr(ls, "_write_temp", real)
+        assert store.meta()["copy_dirty"] != 0
+        assert store.export_due()
+        # The rule's consequence: the next export carries the bookkeeping write into the copy.
+        assert ls.export_copy(store) is True
+        assert read_doc(user_files_dir)["surasura_library"]["meta"]["soon_line"] == 3
+    finally:
+        monkeypatch.setattr(ls, "_write_temp", real)
+        helper.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_store_stops_maintain_before_the_copy_is_rewritten(language):
+    # Why: a store marked damaged must not export over the user's copy: the copy stays as it is until the
+    # user answers the question (Repair), so a damaged store never writes the manifest.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    store.move([store.ids("now")[-1]], "now")            # a change of ours, so an export is due
+    before = _bytes(user_files_dir)
+    db = store.db_path
+    store.close()
+    ls.mark_damaged(db, "a test")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    assert _bytes(user_files_dir) == before, "the copy is not rewritten while the store is damaged"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_carried_bookkeeping_change_alone_makes_an_export_due(language):
+    # Why: a bookkeeping write the copy carries (no version moves) must still reach the copy, so the store and
+    # a window's trigger both see it as due, even though nothing in the library changed.
+    store = migrated(language)
+    try:  # the handle closes even when an assert fails, so a red run leaves no open database behind
+        data_dir, user_files_dir = roots(language)
+        assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+        assert not store.export_due()
+        v = store.versions()
+        store.bookkeeping({"soon_line": 3}, copy_carries=True)
+        assert store.versions() == v, "a bookkeeping write moves no version"
+        assert store.export_due(), "the copy lacks the carried change, so an export is due"
+        assert ls.maintain_due(store)[0], "a window's trigger fires for it"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_damage_found_while_checking_an_outside_edit_needs_the_user(language, monkeypatch):
+    # Why: an outside edit of the copy makes the helper check the store before re-importing it. When that check
+    # finds damage (its marker written), maintain must answer "needs the user" (4), as Repair waits on them, and
+    # write nothing more: a checkpoint after the marker refused and turned the answer into a plain failure (1),
+    # which hato's or Connect's register would read as worth retrying.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    db = store.db_path
+    store.close()
+    doc = read_doc(user_files_dir)
+    doc["schedule"]["PHASE_1_NOW"].reverse()                    # another program's edit of the order
+    write_manifest(user_files_dir, doc)
+    edited = _bytes(user_files_dir)
+
+    def finds_damage(conn, db_path):
+        ls.mark_damaged(db_path, "a test: quick_check found damage")
+        return "damaged"
+
+    monkeypatch.setattr(ls, "quick_check", finds_damage)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_NEEDS_YOU
+    assert os.path.exists(ls.damaged_marker(db))
+    assert _bytes(user_files_dir) == edited, "the edited copy is left as it is for Repair"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_rebuilt_from_its_own_newer_copy_drops_meta_keys_the_copy_lacks(language):
+    # Why: the rebuild from a newer copy empties every table first, meta included. A meta key the copy doesn't
+    # carry must not survive into the restored database, or a stale flag would follow the library back.
+    import shutil
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    db = store.db_path                                         # migrated() has built the library already
+    with store._writing():                                     # a stale flag the copy lacks
+        store._set_meta({"migration_failed": '{"app_version": "stale"}'})
+    store.checkpoint()
+    store.close()
+    shutil.copyfile(db, db + ".backup")                        # the older backup, stale key included
+    store = ls.open_store(language, data_dir, user_files_dir)
+    ids = store.ids("now")
+    store.move([ids[-1]], "now")                               # the copy moves on past the backup
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    order = store.ids("now")
+    store.close()
+    for suffix in ("-wal", "-shm"):
+        if os.path.exists(db + suffix):
+            os.remove(db + suffix)
+    shutil.copyfile(db + ".backup", db)                        # restored
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.ids("now") == order, "rebuilt from the newer copy"
+    assert store.conn.execute("SELECT 1 FROM meta WHERE key = 'migration_failed'").fetchone() is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rebuild_from_the_copy_keeps_the_made_words_of_a_removed_item(language):
+    # Why: a made word outlives Remove. The item sits in the trash, and Connect must still never make its cards
+    # again; a rebuild that kept only the live items would drop the row of the trashed one.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item, word = store.ids("now")[0], names(language)[7]
+    _made_word(store, item, word)
+    store.remove([item])
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    assert [r[0] for r in read_doc(user_files_dir)["surasura_library"]["tables"]["made_words"]["rows"]] == [item]
+    db = store.db_path
+    store.close()
+    _db_aside(db)                                              # a new PC: the copy is all there is
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.conn.execute("SELECT item_id, word FROM made_words").fetchall() == [(item, word)]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rebuilt_log_ids_resume_above_the_copys_log_seq(language):
+    # Why: after a rebuild from the copy, placement-log ids resume above the copy's log_seq, so a reader
+    # switched on later (its watermark at log_seq) still sees the events it is meant to read.
+    store = migrated(language)
+    reopened = None
+    try:
+        data_dir, user_files_dir = roots(language)
+        with store._writing():
+            store._set_meta({"log_seq": 500, "copy_dirty": store._meta().get("copy_dirty", 0) + 1})   # the copy's log_seq
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+        assert read_doc(user_files_dir)["surasura_library"]["meta"]["log_seq"] == 500   # the copy carries it
+        db = store.db_path
+        store.close()
+        store = None          # closed here; the finally closes only a store still open
+        _db_aside(db)
+        assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE   # rebuilt from the copy
+        reopened = ls.open_store(language, data_dir, user_files_dir)
+        seq = reopened.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'placement_log'").fetchone()[0]
+        assert seq >= 500, "log ids would restart below the copy's log_seq"
+        reopened.register_reader("connect")                        # switched on after the rebuild
+        ids = reopened.ids("now")
+        reopened.move([ids[0]], "now", after_id=ids[3])
+        events, gap = reopened.read_events("connect")
+        assert len(events) >= 1 and not gap, "a reader switched on after the rebuild missed its events"
+    finally:
+        if store is not None:
+            store.close()
+        if reopened is not None:
+            reopened.close()

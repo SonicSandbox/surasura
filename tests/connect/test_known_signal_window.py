@@ -101,3 +101,22 @@ def test_pending_offer_adds_mark_them_known_and_leave_them(root):
     offer_tips = {text for _, text in tips}
     assert any(text.startswith("Every word of those suspended cards") for text in offer_tips)
     assert any(text.startswith("Leave them:") for text in offer_tips)
+
+
+def test_the_listed_words_are_saved_as_shown_off_the_screens_thread(root, monkeypatch):
+    # Why: once the window has listed the marked words, they are saved as shown, so the same words don't come back
+    # at every sync. The save runs on a worker, never on the screen's thread.
+    import threading
+    from app.connect import known_signal
+    done = threading.Event()
+    calls = []
+
+    def mark_shown(language, words=None):
+        calls.append((language, set(words), threading.current_thread() is threading.main_thread()))
+        done.set()
+
+    monkeypatch.setattr(known_signal, "mark_shown", mark_shown)
+    win = known_signal_window.show(root, "ja", URL, Tips(), offer={}, marked=MARKED, taken=[])
+    assert isinstance(win, tk.Toplevel)
+    assert done.wait(5.0), "the listed words were never saved as shown"
+    assert calls == [("ja", {"上層部", "一生懸命"}, False)]

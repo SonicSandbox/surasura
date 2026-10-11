@@ -233,3 +233,27 @@ def test_dialog_still_shows_when_the_report_cannot_be_saved(install_root, monkey
     assert "timed out" in shown[0]
     assert "report was saved" not in shown[0]
     assert app.status_var.get() == "Ready"
+
+
+def test_failed_start_releases_the_library_locks_it_held(install_root, monkeypatch):
+    """When the updater can't start, the library maintenance locks taken for the swap go back at once,
+    so the library isn't left locked while the app keeps running."""
+    from app import main
+
+    def _blocked(marker_path_=None):
+        raise OSError("[WinError 5] アクセスが拒否されました。")
+
+    lock = MagicMock()
+    monkeypatch.setattr(updater, "launch_helper", _blocked)
+    monkeypatch.setattr(updater, "hold_library_locks", lambda *a, **k: [lock])
+    monkeypatch.setattr(main.messagebox, "showerror", lambda title, msg: None)
+
+    app = _dashboard()
+    app.root = MagicMock()
+    job = {"info": app._update_info, "lock": None, "staged": {"target_version": "2.3", "targets": []},
+           "window": None}
+    app._update_job = job
+    assert app._apply_and_restart(job) is True
+
+    assert lock.close.call_count == 1, "the held lock is released once the start fails"
+    assert "_update_library_locks" not in app.__dict__, "the attribute is popped, not left holding the locks"

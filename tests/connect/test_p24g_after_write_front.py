@@ -17,6 +17,7 @@ def test_new_cards_made_mark_tomorrows_cards_changed_for_the_sync_clock(monkeypa
 
     s = runner.Steps({"connect_enabled": True})
     s.after_write("ja")
+    s.after_write("zh")
 
     # The front flag is True for any batch that wrote new cards, whatever the language.
-    assert calls == [(s.loaded, True)]
+    assert calls == [(s.loaded, True), (s.loaded, True)]

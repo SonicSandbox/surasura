@@ -5,8 +5,8 @@ can't be read must stop the run (the switch reads off); only a file that says th
 What a wrong answer would cost: a broken or half-written settings.json would switch Connect on, so cards would be
 made into Anki unattended by a user who had turned the preview off.
 
-Real settings values; the settings reader is monkeypatched on `verbs` (as the neighbour tests do); Anki is never
-reached.
+The settings reader is monkeypatched on `verbs` (as the neighbour tests do): one that fails, one that says on; Anki is
+never reached.
 """
 from app.cli import verbs
 from app.connect import runner

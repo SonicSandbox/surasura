@@ -17,7 +17,8 @@ URL = "http://127.0.0.1:8765"
 class TestKnownFromAnkiWindowAfterAnAutoSync(_DashboardHarness):
     def _sync_with(self, seen):
         """One automatic sync whose signal has news and whose window view is `seen`; then every call the worker
-        queued for the window's thread is run."""
+        queued for the window's thread is run -> the view's mock (it shows the worker reached the window's
+        decision)."""
         from app import anki_connect, anki_sync
         from app.connect import known_signal_window
         target = self._call_sync(self._settings()).call_args.kwargs["target"]
@@ -26,10 +27,11 @@ class TestKnownFromAnkiWindowAfterAnAutoSync(_DashboardHarness):
              patch.object(anki_sync, "sync", return_value=None), \
              patch.object(anki_sync, "sync_backlog", return_value=None), \
              patch.object(anki_sync, "read_known_signal", return_value={"news": True}), \
-             patch.object(known_signal_window, "view", return_value=seen):
+             patch.object(known_signal_window, "view", return_value=seen) as view:
             target()
         for call in self.app.gui_queue.put.call_args_list:
             call.args[0]()
+        return view
 
     def test_words_taken_from_an_offer_alone_open_the_window(self):
         seen = {"marked": [], "taken": [{"word": "上層部", "card": 1700000000011, "note": 1700000000021,
@@ -45,5 +47,6 @@ class TestKnownFromAnkiWindowAfterAnAutoSync(_DashboardHarness):
         self.app._known_signal_window.assert_called_once_with("ja", URL, seen)
 
     def test_nothing_to_show_opens_no_window(self):
-        self._sync_with({"marked": [], "taken": [], "offer": {}, "terms": ["suspended"]})
+        view = self._sync_with({"marked": [], "taken": [], "offer": {}, "terms": ["suspended"]})
+        view.assert_called_once()           # the worker reached the window's decision: there was just nothing to show
         self.app._known_signal_window.assert_not_called()

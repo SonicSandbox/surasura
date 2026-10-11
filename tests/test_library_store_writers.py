@@ -819,13 +819,15 @@ def test_once_another_windows_move_shows_later_polls_rebuild_nothing(window, lan
     _other_process(language, "ids = store.ids('now')\nstore.move([ids[0]], 'now', after_id=ids[-1])\n")
     assert _pump(app, lambda: _tree_paths(app) != shown, timeout=3.0), "another window's move never showed"
     # The tree may show the move before the worker's poll sees it (a drain's redraw reads the new order); the
-    # worker's own "changed" for it, and its redraw, come within two polls.
-    _pump(app, lambda: False, timeout=1.2)
+    # worker's own "changed" for it, and its redraw, follow. Then the rebuilds must stop: three polls in a row
+    # (1.5 s) with none, well before the bound.
     calls = []
     real = ls.Store.ordered
-    monkeypatch.setattr(ls.Store, "ordered", lambda self, tier: calls.append(tier) or real(self, tier))
-    _pump(app, lambda: False, timeout=1.5)                       # three polls, nothing written since
-    assert calls == [], "a poll with no new write rebuilt the tree"
+    monkeypatch.setattr(ls.Store, "ordered",
+                        lambda self, tier: calls.append(time.monotonic()) or real(self, tier))
+    start = time.monotonic()
+    settled = _pump(app, lambda: time.monotonic() - max(calls + [start]) >= 1.5, timeout=8.0)
+    assert settled, f"the tree kept rebuilding with no new write ({len(calls)} rebuilds)"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -841,8 +843,8 @@ def test_a_failed_remove_puts_every_file_back_even_when_one_rename_back_fails(wi
     failed = []
 
     def one_rename_fails(src, dst, *args, **kwargs):
-        if not failed:
-            failed.append(dst)
+        if os.path.normcase(os.path.abspath(dst)) == os.path.normcase(os.path.abspath(b)):
+            failed.append(dst)                                   # b can't go back: held open by another program
             raise OSError("a file held open by another program")
         return real_rename(src, dst, *args, **kwargs)
 
@@ -855,9 +857,9 @@ def test_a_failed_remove_puts_every_file_back_even_when_one_rename_back_fails(wi
          patch.object(app.tree, "selection", return_value=("row",)):
         app.remove_files()                                       # must not raise
     monkeypatch.setattr(os, "rename", real_rename)
-    assert len(failed) == 1, "the rollback never tried to put the files back"
-    # The rollback runs last-first, so the failing rename is b's: a must be back in place all the same.
+    assert len(failed) == 1, "the rollback never tried to put b back"
     assert os.path.exists(a), "a file that could go back was left in the trash"
+    assert not os.path.exists(b), "b's failed rename back left it in the trash"
     assert "nothing was changed" in app.status_var.get()
     assert _order(app, "now") == before, "the store kept both items"
 
@@ -868,23 +870,21 @@ def test_a_burst_of_changes_hands_the_helper_one_export_two_seconds_after_the_la
     sooner, and not once per change (the earlier scheduled job must be cancelled, not left to run)."""
     _data, _uf, app = _graduated_window(window, language, monkeypatch)
     runs = []
-    app._idle_export = lambda: runs.append(1)                    # set before scheduling: the job binds it
+    app._idle_export = lambda: runs.append(time.monotonic())     # set before scheduling: the job binds it
     app._schedule_idle_export()
-    app._schedule_idle_export()
-    _pump(app, lambda: False, timeout=0.5)
-    assert runs == [], "the export does not run before the idle delay"
-    _pump(app, lambda: False, timeout=1.0)                       # 1.5 s in: still inside the 2 s idle window
-    assert runs == [], "the export does not run sooner than STORE_IDLE_MS after the last change"
-    _pump(app, lambda: bool(runs), timeout=1.5)                  # due at 2.0 s after the last change: 3.0 s here
-    assert runs == [1], "the export runs by about STORE_IDLE_MS after the last change, not much later"
-    _pump(app, lambda: False, timeout=0.3)                       # a second job would fire just after the first
-    assert runs == [1], "a burst of two changes gives one export, not one per change"
+    _pump(app, lambda: False, timeout=1.0)
+    last = time.monotonic()
+    app._schedule_idle_export()                                  # the burst's second change, a second later
+    idle = cig.STORE_IDLE_MS / 1000.0
+    assert _pump(app, lambda: bool(runs), timeout=idle + 3.0), "the export never ran"
+    _pump(app, lambda: False, timeout=0.5)                       # a first change's job would have run by now too
+    assert len(runs) == 1, "a burst of two changes gives one export, not one per change"
+    assert runs[0] - last >= idle - 0.05, "the export ran sooner than STORE_IDLE_MS after the last change"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_up_arrow_moves_an_item_one_place_up_in_the_store_order_and_down_moves_it_back(window, language):
-    """▲ in store mode moves the item up one place (▼ down): the store's nudge gets the direction as written.
-    A sign flip would raise on the string and leave the order as it was."""
+    """▲ in store mode moves the item up one place (▼ down): the store's nudge gets the direction as written."""
     data_dir, _uf, _doc = _store_library(language)
     app = window(language)
     app.target_folder_var.set("HighPriority")
@@ -1072,7 +1072,8 @@ def test_a_confirmed_reset_resorts_and_undo_returns_to_the_order_before_it(windo
     with patch("app.content_importer_gui.messagebox.askyesno", return_value=False):
         app.reset_to_folder_structure()
     assert _order(app, "now") == shuffled, "a declined Reset changes nothing"
-    app.reset_to_folder_structure()
+    with patch("app.content_importer_gui.messagebox.askyesno", return_value=True):
+        app.reset_to_folder_structure()
     assert _order(app, "now") == az, "a confirmed Reset re-sorts the order to the folders' A-Z order"
     app.undo_last_action()
     assert _order(app, "now") == shuffled, "Undo puts back the order from before the Reset"

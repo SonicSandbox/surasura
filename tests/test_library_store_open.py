@@ -851,9 +851,15 @@ def test_the_os_write_lock_gets_only_what_is_left_of_the_callers_timeout(tmp_pat
     def scripted_clock():
         return values.pop(0) if len(values) > 1 else values[0]
 
+    class _ScriptedTime:
+        perf_counter = staticmethod(scripted_clock)
+        monotonic = staticmethod(scripted_clock)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
     with monkeypatch.context() as m:
-        m.setattr(ls.time, "perf_counter", scripted_clock)
-        m.setattr(ls.time, "monotonic", scripted_clock)
+        m.setattr(ls, "time", _ScriptedTime())                   # the store module's clock only
         wl.acquire(1.0)
     wl.release()
     assert len(seen) == 1 and abs(seen[0] - 0.6) < 1e-9

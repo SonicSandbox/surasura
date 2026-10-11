@@ -1050,6 +1050,13 @@ def test_a_store_rebuilt_from_its_own_newer_copy_drops_meta_keys_the_copy_lacks(
         if os.path.exists(db + suffix):
             os.remove(db + suffix)
     shutil.copyfile(db + ".backup", db)                        # restored
+    import sqlite3
+    held = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert held.execute("SELECT 1 FROM meta WHERE key = 'migration_failed'").fetchone(), \
+            "precondition: the restored backup holds the stale key"
+    finally:
+        held.close()
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)
     assert store.ids("now") == order, "rebuilt from the newer copy"

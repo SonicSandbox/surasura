@@ -3939,7 +3939,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
                 return EXIT_NEEDS_YOU
         found = _check_copy(store)
         if found == "damaged":
-            return EXIT_NEEDS_YOU                # the damage marker is written: no write follows, a checkpoint neither
+            return EXIT_NEEDS_YOU                # no explicit checkpoint: the damage marker just written refuses it
         if found == "pending":
             store.checkpoint()                   # closes keep the `-wal` (§6.12): it never grows while a question waits
             return EXIT_NEEDS_YOU

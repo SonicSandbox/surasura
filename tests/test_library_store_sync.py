@@ -735,18 +735,20 @@ def test_a_time_only_change_refreshes_the_stored_time(language):
     sync must still store that time (bookkeeping, no structural change), or the next rename check compares a
     stale time and takes a renamed file for a new one."""
     store = migrated(language)
-    data_dir, _u = roots(language)
-    item = store.ids("soon")[3]
-    rel = store.item(item)["rel_path"]
-    full = os.path.join(data_dir, rel)
-    st = os.stat(full)
-    new_ns = st.st_mtime_ns + 5 * 10**9
-    os.utime(full, ns=(st.st_atime_ns, new_ns))
-    assert store.sync_disk() is None, "a time-only change is no structural change"
-    assert store.item(item)["mtime_ns"] == new_ns, "the refreshed time is stored"
-    _rename(data_dir, rel, rel.replace(".srt", "_t.srt"))
-    assert store.sync_disk()["renamed"] == [item], "the refreshed time keeps the rename's place"
-    store.close()
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[3]
+        rel = store.item(item)["rel_path"]
+        full = os.path.join(data_dir, rel)
+        st = os.stat(full)
+        new_ns = st.st_mtime_ns + 5 * 10**9
+        os.utime(full, ns=(st.st_atime_ns, new_ns))
+        assert store.sync_disk() is None, "a time-only change is no structural change"
+        assert store.item(item)["mtime_ns"] == new_ns, "the refreshed time is stored"
+        _rename(data_dir, rel, rel.replace(".srt", "_t.srt"))
+        assert store.sync_disk()["renamed"] == [item], "the refreshed time keeps the rename's place"
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

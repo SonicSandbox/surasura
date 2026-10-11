@@ -442,24 +442,31 @@ def test_a_bound_process_dies_with_the_connect_process_that_started_it():
         "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
         "anki_miner._bind(p)\n"
         "print(p.pid, flush=True)\n"
+        "sys.stdin.readline()\n"                  # the test holds the sleeper's handle before this process ends
         "os._exit(0)\n")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = ctypes.c_void_p
-    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
-    pid = None
+    child = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     handle = None
+    gone = False
     try:
-        out, _err = child.communicate(timeout=60)
-        pid = int(out.strip().splitlines()[-1])
-        handle = kernel32.OpenProcess(0x00100000, False, pid)        # SYNCHRONIZE
-        # 0 = WAIT_OBJECT_0: the sleeper ended. No handle: it is gone already.
-        gone = not handle or kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 5000) == 0
+        pid = int(child.stdout.readline().strip())
+        # SYNCHRONIZE | PROCESS_TERMINATE, opened while the stand-in still lives: the sleeper can't have ended yet,
+        # so its PID can't have gone to another program, and the handle names this sleeper for good.
+        handle = kernel32.OpenProcess(0x00100000 | 0x0001, False, pid)
+        assert handle, "the sleeper's handle couldn't be opened"
+        child.communicate("\n", timeout=60)                     # the stand-in ends with no cleanup at all
+        # 0 = WAIT_OBJECT_0: the sleeper ended.
+        gone = kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 5000) == 0
         assert gone, "the bound process outlived the process that started it"
     finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(10)
         if handle:
+            if not gone:
+                kernel32.TerminateProcess(ctypes.c_void_p(handle), 1)
             kernel32.CloseHandle(ctypes.c_void_p(handle))
-        if pid is not None:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows-only")

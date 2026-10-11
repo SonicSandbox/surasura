@@ -1043,6 +1043,7 @@ def test_idle_trigger_checkpoint_waits_for_a_brief_writer_then_checkpoints(langu
     monkeypatch.setattr(ls, "_IDLE", {})
     outcomes = []
     holders = []
+    released_at = []
     real_checkpoint = ls.Store.checkpoint
 
     def a_writer_holds_the_lock_then_checkpoint(self, *args, **kwargs):
@@ -1053,19 +1054,19 @@ def test_idle_trigger_checkpoint_waits_for_a_brief_writer_then_checkpoints(langu
             lock.acquire()
             holding.set()
             time.sleep(0.3)                    # a brief writer: well inside OUTSIDE_IDLE_WAIT (1 s)
+            released_at.append(time.perf_counter())
             lock.release()
 
         holder = threading.Thread(target=hold)
         holders.append(holder)
         holder.start()
         assert holding.wait(5.0), "the holder never took the write lock"
-        start = time.perf_counter()
         try:
             result = real_checkpoint(self, *args, **kwargs)
         except ls.StoreBusy:
-            outcomes.append(("busy", time.perf_counter() - start))
+            outcomes.append(("busy", time.perf_counter()))
             raise
-        outcomes.append(("checkpointed", time.perf_counter() - start))
+        outcomes.append(("checkpointed", time.perf_counter()))
         return result
 
     data_dir, user_files_dir = roots(language)
@@ -1081,9 +1082,9 @@ def test_idle_trigger_checkpoint_waits_for_a_brief_writer_then_checkpoints(langu
         monkeypatch.setattr(ls.Store, "checkpoint", a_writer_holds_the_lock_then_checkpoint)
         ls._outside_idle_now()
         assert len(outcomes) == 1, outcomes
-        kind, waited = outcomes[0]
+        kind, returned_at = outcomes[0]
         assert kind == "checkpointed", "the checkpoint gave up on a writer holding the lock for 0.3 s"
-        assert waited >= 0.2, "the checkpoint ran while the writer still held the lock"
+        assert released_at and returned_at >= released_at[0], "the checkpoint ran while the writer still held the lock"
     finally:
         for holder in holders:
             holder.join(5.0)

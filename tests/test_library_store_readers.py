@@ -13,8 +13,8 @@ Japanese and Chinese from tests/Test Resources/ and samples/, and every proof ru
 
 import json
 import os
-import sys
 import shutil
+import sys
 import sqlite3
 from unittest.mock import patch
 
@@ -367,8 +367,7 @@ def test_generate_takes_in_a_file_dropped_since_the_last_run(env, language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_generate_starts_the_store_helper_exactly_when_an_export_is_due(env, store_helper_spawns, language):
     """Generate starts the store's helper only when the copy is behind the store: after a fresh export nothing
-    spawns, and once a row moves the export is due and exactly one spawn is recorded. The condition is inverted
-    in the mutant, so it would spawn on the first Generate and not on the second."""
+    spawns, and once a row moves the export is due and exactly one spawn is recorded."""
     data_dir, user_files_dir, _doc = _library(language)
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     store = ls.open_store(language, data_dir, user_files_dir)

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -1801,7 +1802,7 @@ def test_rename_no_overwrite_hard_link_moves_and_a_taken_name_raises_untouched(l
     dst = os.path.join(os.path.dirname(src), "b.srt")
     src2 = touch(data_dir, f"LowPriority/{w[106]}/c.srt", "別\n")
     with monkeypatch.context() as m:
-        m.setattr(ls.sys, "platform", "linux")
+        m.setattr(ls, "sys", types.SimpleNamespace(platform="linux"))   # the store module's view only
         ls._rename_no_overwrite(src, dst)
         with pytest.raises(FileExistsError):
             ls._rename_no_overwrite(src2, dst)
@@ -1910,8 +1911,9 @@ def test_undo_of_join_with_all_items_changed_since_still_restores_the_piece(lang
 def test_keys_before_an_upper_bound_sit_a_full_step_apart_and_a_top_placement_moves_only_its_item():
     # why: keys placed before an upper bound sit a full STEP apart, the last one a STEP below it (never on it),
     # so a placement at a tier's top needs no renumbering of the other items
-    assert ls._keys_between(None, 1024.0, 2) == [-1024.0, 0.0]
-    assert ls._plan_ords(["x", "a", "b"], {"a": 1024.0, "b": 2048.0}, {"x"}) == {"x": 0.0}
+    step = ls.STEP
+    assert ls._keys_between(None, step, 2) == [-step, 0.0]
+    assert ls._plan_ords(["x", "a", "b"], {"a": step, "b": 2 * step}, {"x"}) == {"x": 0.0}
 
 
 def test_a_respace_window_giving_exactly_one_per_slot_is_usable():

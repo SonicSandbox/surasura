@@ -744,3 +744,313 @@ def test_what_a_crashed_worker_printed_is_in_its_log(tmp_path, monkeypatch):
     client.stop()
     log = tmp_path / "local" / "logs" / "arrivals-worker-ja.log"
     assert "到着の読み込みに失敗しました" in log.read_bytes().decode("utf-8", "replace")
+
+
+def test_a_settings_change_that_moves_the_arguments_is_read_again_by_the_next_view(tmp_path, monkeypatch):
+    """When settings.json changes what a run reads through its arguments (the one-kanji rule off, which is
+    --include-single-chars), the worker's next view is built with the new arguments, never the old ones."""
+    from app import arrivals_worker, path_utils
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path / "root"))
+    results = tmp_path / "results"                      # no plan: the view is a bare one, its arguments alone
+    results.mkdir()
+    monkeypatch.setattr(analyzer, "RESULTS_DIR", str(results))
+    worker = arrivals_worker.Worker("ja")
+    worker.current()
+    assert worker.args.include_single_chars is False    # the default: exclude_single on
+    settings = path_utils.get_user_file("settings.json")
+    os.makedirs(os.path.dirname(settings), exist_ok=True)
+    with open(settings, "w", encoding="utf-8") as f:
+        json.dump({"exclude_single": False}, f)
+    later = time.time() + 10                            # a new mtime: the settings file has moved
+    os.utime(settings, (later, later))
+    worker.current()
+    assert worker.args.include_single_chars is True
+
+
+def test_a_request_line_that_is_not_an_object_is_answered_and_the_worker_goes_on(library):
+    """A line that is JSON but not an object (`[1, 2]`) and a line that is not JSON at all are each answered
+    `{"id": null, "error": "bad request: ..."}`, and the worker goes on: a `stats` after them is answered. A worker that
+    died on the first line (or ended on the second) answers nothing, so the read times out and the test fails."""
+    root = library["rp2-ja"]["root"]
+    worker = _Worker(root, "zh")
+    try:
+        for raw in (b"[1, 2]\n", "これはJSONではない\n".encode("utf-8")):
+            worker.p.stdin.write(raw)
+            worker.p.stdin.flush()
+            try:
+                answer = json.loads(worker.lines.get(timeout=180).decode("utf-8"))
+            except queue.Empty:
+                raise AssertionError("no answer:\n" + b"".join(worker.err).decode("utf-8", "replace")[-4000:]) from None
+            assert answer["id"] is None and answer["error"].startswith("bad request: "), answer
+        after = worker.ask({"id": 3, "op": "stats"})
+        assert after["id"] == 3
+        assert worker.close() == 0
+    finally:
+        if worker.p.poll() is None:
+            worker.p.kill()
+            worker.p.wait()
+
+
+def test_an_estimate_of_a_missing_file_is_an_error_and_the_worker_lives_on(library):
+    """One arrival the worker can't read (a file that is not there) is answered with its error under the same id
+    (an error that is no KeyError); the worker is not ended by it, so the next request is answered too."""
+    root = library["rp2-ja"]["root"]
+    missing = _path(root, "zh", "HighPriority/Hato/no_such_arrival.srt")
+    worker = _Worker(root, "zh")
+    try:
+        worker.p.stdin.write((json.dumps({"id": 7, "op": "estimate", "path": missing}) + "\n").encode("utf-8"))
+        worker.p.stdin.write((json.dumps({"id": 8, "op": "stats"}) + "\n").encode("utf-8"))
+        worker.p.stdin.flush()
+        first = json.loads(worker.lines.get(timeout=60).decode("utf-8"))
+        second = json.loads(worker.lines.get(timeout=60).decode("utf-8"))
+        assert first["id"] == 7 and "FileNotFoundError" in first["error"], first
+        assert second["id"] == 8 and "error" not in second, second
+        assert worker.close() == 0
+    finally:
+        if worker.p.poll() is None:
+            worker.p.kill()
+
+
+def test_a_rewritten_arrival_of_the_same_size_is_read_again_never_answered_from_the_old_answer(library):
+    """An arrival rewritten with other text of the same byte size and a new mtime is read again (cached False, a
+    second read, its own numbers); asking the same text twice is answered from the kept answer (cached True)."""
+    root = library["rp2-ja"]["root"]
+    rel = "HighPriority/Hato/f4_rewrite.srt"
+    text_a = "1\n00:00:01,000 --> 00:00:02,000\n他昨天在书店买了书。\n\n"
+    text_b = "1\n00:00:01,000 --> 00:00:02,000\n我们今天去市场买菜。\n\n"
+    assert len(text_a.encode("utf-8")) == len(text_b.encode("utf-8"))
+    path = _write(root, "zh", rel, text_a)
+    worker = _Worker(root, "zh")
+    try:
+        first = worker.ask({"id": 1, "op": "estimate", "path": path})
+        again = worker.ask({"id": 2, "op": "estimate", "path": path})
+        assert first["cached"] is False and again["cached"] is True
+        _write(root, "zh", rel, text_b)
+        os.utime(path, (cases.MTIME + 10, cases.MTIME + 10))   # a rewrite the same size, a moment later
+        second = worker.ask({"id": 3, "op": "estimate", "path": path})
+        stats = worker.ask({"id": 4, "op": "stats"})
+    finally:
+        worker.close()
+    assert second["cached"] is False
+    assert stats["reads"] == 2
+    assert (second["counted"], second["known"]) != (first["counted"], first["known"])
+
+
+def test_an_answer_asked_without_a_callback_goes_to_on_answer():
+    """A request asked with no callback is answered to the client's `on_answer` listener — the window's
+    fallback for every answer nobody asked for by name; without it the answer would be dropped."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    got = queue.Queue()
+    client = ArrivalsWorker(registry, "ja", on_answer=got.put, command=[sys.executable, "-c", _ECHO])
+    try:
+        client.stats()
+        answer = got.get(timeout=30)
+        # The echo child writes exactly {"id", "op"}; an error answer (a dead child) carries "error" and must fail here.
+        assert answer == {"id": 1, "op": "stats"}
+    finally:
+        client.stop()
+        registry.quit(timeout=30)
+
+
+def test_a_warm_up_that_fails_is_only_a_lost_head_start(library, tmp_path):
+    """A warm-up that raises costs only the head start — the view still builds and an estimate is answered with no
+    error, the failure is printed to stderr (a warm-up is an optimisation, never a reason to end the worker)."""
+    root = library["rp2-ja"]["root"]
+    child = ("import sys; from app import arrivals_worker as w\n"
+             "def boom(self, warm): raise RuntimeError('warm-up broken')\n"
+             "w.Worker._warm_up = boom\n"
+             "w.main(sys.argv[1:])")
+    err_path = tmp_path / "stderr.txt"
+    with open(err_path, "wb") as err:      # a file, not a pipe: a child that prints never blocks on a full pipe
+        p = subprocess.Popen([sys.executable, "-c", child, "--language", "ja", *_args("rp2-ja")], cwd=cases.REPO,
+                             env=cases.child_env(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err)
+    try:
+        lines = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(line) for line in p.stdout], daemon=True).start()
+        request = {"id": 1, "op": "estimate", "path": library["rp2-ja"]["paths"]["recap"]}
+        p.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        deadline = time.monotonic() + 180
+        while True:
+            try:
+                answer = json.loads(lines.get(timeout=0.5).decode("utf-8"))
+                break
+            except queue.Empty:
+                if p.poll() is not None or time.monotonic() > deadline:
+                    raise AssertionError("no answer: " + err_path.read_bytes().decode("utf-8", "replace")[-2000:]) \
+                        from None
+        assert answer["id"] == 1 and "error" not in answer, answer
+        p.stdin.close()
+        assert p.wait(60) == 0
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert "warm-up failed" in err_path.read_bytes().decode("utf-8", "replace")
+
+
+def test_a_view_whose_build_fails_is_built_again_on_the_next_request(tmp_path, monkeypatch):
+    """When the known words changed and building the view raises, the next current() builds again instead of
+    returning the old view as if the new known words were read (the signatures are recorded only once a build returns)."""
+    from app import analyzer
+    from app.arrivals_worker import Worker
+    root = tmp_path / "root"
+    results = tmp_path / "results"                 # an empty folder: no plan, so the view is a bare one
+    results.mkdir(parents=True)
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
+    monkeypatch.setattr(analyzer, "RESULTS_DIR", str(results))
+    worker = Worker("zh")
+    before = worker.current()
+    assert worker.counts["views"] == 1
+    known = root / "User Files" / "zh" / "KnownWord.json"
+    known.parent.mkdir(parents=True)
+    shutil.copyfile(os.path.join(RES, "zh", "KnownWords.json"), known)
+    real, calls = Worker._build, []
+
+    def fail_once(self, plan, fresh=False):
+        calls.append(plan)
+        if len(calls) == 1:
+            raise RuntimeError("the view could not be built")
+        return real(self, plan, fresh)
+
+    monkeypatch.setattr(Worker, "_build", fail_once)
+    with pytest.raises(RuntimeError):
+        worker.current()
+    after = worker.current()
+    assert len(calls) == 2
+    assert worker.counts["views"] == 2
+    # the retry hands back the new build, never the old view that was returned before the failure
+    assert after is not before
+
+
+def test_a_worker_whose_answers_nobody_reads_ends_with_code_zero(library):
+    """A worker whose stdout reader is gone (the pipe closed) ends with exit 0 at its next answer, though its
+    input is still open and it is far from idle; a worker that kept going would wait out the timeout instead."""
+    cmd = [sys.executable, os.path.join(cases.REPO, "app_entry.py"), "arrivals-worker", "--headless",
+           "--language", "zh", "--idle-seconds", "600"]
+    p = subprocess.Popen(cmd, cwd=cases.REPO, env=cases.child_env(library["rp2-ja"]["root"]),
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        # Prove the worker is up first (its startup and warm-up can be slow on a loaded machine), then stop reading.
+        p.stdin.write((json.dumps({"id": 1, "op": "stats"}) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        # Read the first answer on a thread so a worker that hangs in startup fails the test instead of hanging it.
+        first_line = queue.Queue()
+        threading.Thread(target=lambda: first_line.put(p.stdout.readline()), daemon=True).start()
+        first = json.loads(first_line.get(timeout=180))
+        assert first["id"] == 1 and "views" in first
+        p.stdout.close()                            # nobody reads the answers from now on
+        for request_id in (2, 3):
+            try:
+                p.stdin.write((json.dumps({"id": request_id, "op": "stats"}) + "\n").encode("utf-8"))
+                p.stdin.flush()
+            except OSError:                         # the worker has ended already: its answer's write failed first
+                break
+        assert p.wait(timeout=180) == 0
+    finally:
+        p.kill()
+        p.wait(timeout=60)
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+
+
+def test_a_worker_that_cannot_run_its_loop_exits_non_zero(tmp_path):
+    """A worker that can't run its loop (here an unknown --language) exits non-zero, so the client takes it for a
+    crash and never sends its request again — an exit 0 would read as a worker that finished its work."""
+    cmd = [sys.executable, "-c", "import sys; from app import arrivals_worker as w; w.main(sys.argv[1:])",
+           "--language", "xx"]
+    p = subprocess.Popen(cmd, cwd=cases.REPO, env=cases.child_env(str(tmp_path)), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out, err = p.communicate(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    # the failure must come from the loop refusing the language (argparse's "invalid choice"), not from some other crash
+    assert p.returncode != 0, err.decode("utf-8", "replace")[-2000:]
+    assert b"invalid choice" in err, err.decode("utf-8", "replace")[-2000:]
+
+
+_ODD_LINES = r"""
+import json, sys
+request = json.loads(sys.stdin.buffer.readline())
+for odd in ("[1]", "7"):                 # JSON, but not an object: the client skips these lines
+    sys.stdout.buffer.write((odd + "\n").encode())
+sys.stdout.buffer.write((json.dumps({"id": request["id"], "op": request["op"]}) + "\n").encode())
+sys.stdout.buffer.flush()
+for _line in sys.stdin.buffer:           # ends when its input closes
+    pass
+"""
+
+
+def test_a_json_line_that_is_not_an_object_is_skipped_and_the_real_answer_still_comes():
+    """A worker printing a JSON list and a bare number before its real answer: the client's reader skips those lines
+    and still answers the request (a reader that dies on them leaves the window waiting for ever)."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _ODD_LINES])
+    got = queue.Queue()
+    try:
+        client.stats(callback=got.put)
+        answer = got.get(timeout=30)
+        assert answer == {"id": 1, "op": "stats"}, "the odd lines are skipped, the real answer (no error) is delivered"
+    finally:
+        client.stop()
+        registry.quit(timeout=30)
+
+
+# A stand-in worker that takes one request, answers nothing and ends as an idle worker does (exit 0).
+_QUIET_END = r"""
+import sys
+sys.stdin.buffer.readline()
+sys.exit(0)
+"""
+
+
+def test_a_request_every_ending_worker_leaves_unanswered_is_sent_once_more_then_failed():
+    """Taken by a worker that ends without answering: sent once to a new worker; that one ends without answering too,
+    so the request is answered with an error. Exactly two workers start: a request is never sent again for ever."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _QUIET_END])
+    got = queue.Queue()
+    try:
+        client.stats(callback=got.put)
+        answer = got.get(timeout=60)
+        assert answer["id"] == 1 and "ended before answering" in answer["error"]
+        assert len(registry.snapshot()) == 2, "one resend to one new worker, then the error, never a third worker"
+    finally:
+        client.stop()
+        registry.quit(timeout=30)
+
+
+def test_a_listener_that_raises_a_runtime_error_never_stops_the_reader():
+    """A listener whose callback raises a RuntimeError (not only a ValueError) for one answer still gets every
+    later answer — the reader thread survives it, so the second request's answer is delivered."""
+    from app.services import jobs
+    from app.services.arrivals import ArrivalsWorker
+    registry = jobs.JobRegistry()
+    client = ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _ECHO])
+    received = queue.Queue()
+    broke = []
+
+    def listener(answer):
+        received.put(answer)
+        if not broke:
+            broke.append(answer)
+            raise RuntimeError("the listener broke on its first answer")
+    try:
+        client.stats(callback=listener)
+        client.stats(callback=listener)
+        first = received.get(timeout=30)
+        second = received.get(timeout=30)
+        assert second["id"] != first["id"], "the reader still delivers the answer after a listener's RuntimeError"
+    finally:
+        client.stop()
+        registry.quit(timeout=30)

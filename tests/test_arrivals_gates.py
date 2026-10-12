@@ -186,3 +186,89 @@ def test_an_estimate_on_a_plan_the_engine_stands_aside_from_is_never_exact():
     assert (answer["exact"], answer["moved"]) == (False, ["stand-aside"])
     plan.header = {"weights": {"now": 1}}
     assert arrivals.estimate(view, gates, order, rec)["exact"] is True
+
+
+def test_an_estimate_shows_list_words_only_in_the_order_met():
+    """`words` holds the arrival's keys the plan lists (a row that isn't None), in the order met; a key the plan
+    holds with no row (known, or off the list: 教室 here) is never shown, though the arrival meets it."""
+    plan = SimpleNamespace(header={"weights": {"now": 1}}, rows=[_row("学校"), None])
+    view = SimpleNamespace(plan=plan, keys=[GAKKOU, KYOUSHITSU])
+    order = SimpleNamespace(n_new=lambda keys, rel, placed: (0, None, None))
+    gates = SimpleNamespace(check=lambda records: (True, []))
+    rec = {"main": [0, 2, 1, 1], "ph": [], "sp": [], "prog": [10, 8], "spc": {}, "plan": "sig", "keys": 2, "name": "a.txt"}
+    assert arrivals.estimate(view, gates, order, rec)["words"] == [["学校", "ガッコウ"]]
+    # Order: the arrival meets 教室 (key 1) before 学校 (key 0), and both are on the list, so the words follow the
+    # order met, not the key order (a sorted-keys walk would put 学校 first).
+    plan2 = SimpleNamespace(header={"weights": {"now": 1}}, rows=[_row("学校"), _row("教室")])
+    view2 = SimpleNamespace(plan=plan2, keys=[GAKKOU, KYOUSHITSU])
+    rec2 = {"main": [1, 1, 0, 2], "ph": [], "sp": [], "prog": [10, 8], "spc": {}, "plan": "sig", "keys": 2, "name": "a.txt"}
+    assert arrivals.estimate(view2, gates, order, rec2)["words"] == [["教室", "キョウシツ"], ["学校", "ガッコウ"]]
+
+
+def test_after_its_show_a_key_first_met_in_the_show_last_file_is_not_new_with_a_file_placed_elsewhere():
+    """The show's last plan file counts as before its "after its show" slot. A key first met in that last file
+    is not new after the show, and a file placed in another folder (6+ Months, holding no key) changes nothing."""
+    show = "HighPriority/作品"
+    # The plan's third file (another folder, 6+ Months) first meets key 2 just after the show's last file, so a
+    # miscounted before_it (one file too many or too few) flips the "after its show" figure.
+    order = _order([[f"{show}/第01話.srt", "now"], [f"{show}/第02話.srt", "now"], ["GoalContent/別作品/x.srt", "goal"]],
+                   keys=3, per_file=[{"main": [0, 1], "ph": []}, {"main": [1, 1], "ph": []},
+                                     {"main": [2, 1], "ph": []}])
+    alone = order.n_new([0, 1, 2], f"{show}/第03話.srt")
+    # A file placed in another folder at 6+ Months (holding no key) lands after the show's files in the order, so it
+    # must not count as a plan file before the show's last file: the figure stays the same as with nothing placed.
+    placed = [("GoalContent/別作品/a.txt", [], "goal", None, None)]
+    assert order.n_new([0, 1, 2], f"{show}/第03話.srt", placed) == alone
+    top, after, anchor = alone
+    assert (top, after, anchor) == (3, 1, f"{show}/第02話.srt")
+
+
+def test_the_gates_judge_the_placed_files_records_first_and_then_the_arrival():
+    """An arrival exact alone can be not exact once a placed file's uses join its own (together they lift a word
+    over the cut-off), so the gates get the placed files' records, in the order placed, and the arrival's last."""
+    plan = SimpleNamespace(header={"weights": {"now": 1}}, rows=[_row("学校")])
+    view = SimpleNamespace(plan=plan, keys=[GAKKOU])
+    order = SimpleNamespace(n_new=lambda keys, rel, placed: (1, None, None))
+    seen = []
+
+    def check(records):
+        seen.append(list(records))
+        return True, []
+
+    gates = SimpleNamespace(check=check)
+    rec = {"main": [0, 2], "ph": [], "sp": [], "prog": [10, 8], "spc": {}, "plan": "sig", "keys": 1, "name": "a.txt"}
+    placed_rec = {"main": [0, 1], "ph": [], "sp": [], "prog": [10, 8], "spc": {}, "plan": "sig", "keys": 1,
+                  "name": "b.txt"}
+    placed_rec2 = {"main": [0, 3], "ph": [], "sp": [], "prog": [10, 8], "spc": {}, "plan": "sig", "keys": 1,
+                   "name": "c.txt"}
+    placed = [
+        {"id": "GoalContent/作品/第02話b.srt", "record": placed_rec, "tier": None, "before": None, "after": None},
+        {"id": "GoalContent/作品/第03話c.srt", "record": placed_rec2, "tier": None, "before": None, "after": None},
+    ]
+    answer = arrivals.estimate(view, gates, order, rec, placed=placed)
+    # Two placed files, so a reversed list or one that drops a placed file fails by identity.
+    assert len(seen) == 1 and len(seen[0]) == 3
+    assert all(got is want for got, want in zip(seen[0], [placed_rec, placed_rec2, rec]))
+    assert answer["exact"] is True
+
+
+class _LibraryTokenizer:
+    """A stand-in for the view's tokenizer: it records the `library` switch each read is made with."""
+    def __init__(self):
+        self.library = True
+        self.reads = []
+
+    def tokenize_sentences(self, text, names=None):
+        self.reads.append(self.library)
+        return [("今日は晴れ。", [])]
+
+
+def test_an_arrival_is_read_without_the_library_tables_and_the_view_keeps_its_own():
+    """An arrival is read as the token store reads it (no library tables, so the tables are applied once, from the
+    record's spans, not twice); the view's own tokenizer keeps `library` on for the rest of the window's work."""
+    tokenizer = _LibraryTokenizer()
+    view = SimpleNamespace(language="ja", tokenizer=tokenizer, names_tables=None)
+    sentences, _ = arrivals.read_text(view, "今日は晴れ。")
+    assert tokenizer.reads == [False]
+    assert tokenizer.library is True
+    assert sentences == [("今日は晴れ。", [])]

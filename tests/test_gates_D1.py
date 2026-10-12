@@ -52,3 +52,34 @@ def test_a_part_arrival_counts_its_compound_and_other_parts_in_every_band_as_a_w
     expected = {band: p["word_count"] for band, p in word_selection.band_previews(whole, ppm, 3).items()}
 
     assert got == expected
+
+
+def test_a_compound_arrival_the_library_never_held_counts_its_parts_again_as_a_whole_recount_does(
+        monkeypatch, tmp_path):
+    """An arrival of 上層部 itself, a compound the library has never met (so no part leads to it): its parts 上層 and 部,
+    held under the cut-off, are reached only through the compound table — each band counts them again, exactly as a
+    whole recount of the library with the arrival added does."""
+    total = 1000
+    part = _part()
+    ppm = {band: 1000 * (1 + index % 5) for index, band in enumerate(word_selection.BANDS_ORDER)}
+    counts = {GAKKOU: 5, SENSEI: 3, TOMODACHI: 2, part: 2, JOUSOU: 2}
+    arrival = {JOUSOUBU: 1}
+    gates = _gates([[*GAKKOU, 0, 0, 5], [*SENSEI, 0, 0, 3], [*TOMODACHI, 0, 0, 2]], counts=counts, total=total,
+                   min_count=3, ppm=ppm, language="ja", auto=True)
+    gates.view.script = None
+    monkeypatch.setattr(token_index, "preview_lists", lambda *a, **k: {
+        "known_tuples": set(), "known_lemmas": set(), "ignore_set": set(), "skip_singles": False})
+    gates._warm_band(_Store(), str(tmp_path))
+    assert JOUSOUBU not in gates.holders.get(part, ()), "the library holds no 上層部: only the table leads to its parts"
+
+    total_after = total + sum(arrival.values())
+    got = gates._band_words(arrival, {}, [({}, {})], total_after)
+
+    full = dict(counts)
+    for key, n in arrival.items():
+        full[key] = full.get(key, 0) + n
+    whole = token_index.unknown_distribution(full, total_after, set(), set(), set(), False, "ja",
+                                             _Store().phrase_table(), None)
+    expected = {band: p["word_count"] for band, p in word_selection.band_previews(whole, ppm, 3).items()}
+
+    assert got == expected

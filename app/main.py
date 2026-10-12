@@ -399,6 +399,10 @@ class MasterDashboardApp:
         self._connect_looked = float("-inf")
         self._connect_looking = False
         self._connect_opened = False        # the window's first look (the only one that may open Anki) has run
+        # Connect's preview in this window (P3.1): its line and badge above the bottom bar, its window, its settings
+        self._connect_row = None
+        self._connect_window = None
+        self._connect_panel = None
         # Junban's automatic reorder (a test option in settings.json) — the same shape as the sync.
         self._junban_auto_lock = threading.Lock()
         self._last_junban_auto = float("-inf")
@@ -598,6 +602,9 @@ class MasterDashboardApp:
 
             # Connect's preview on: name what another program (hato) added while Surasura was closed (P2.1 row 2.1.7)
             self.root.after(2500, self._arrivals_notice)
+
+            # Connect's preview on: its line and badge above the bottom bar (P3.1 row 3.1.4)
+            self.root.after(2000, self._connect_row_start)
 
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
@@ -1761,6 +1768,7 @@ class MasterDashboardApp:
         # Footer
         footer_frame = ttk.Frame(self.root, padding=(10, 0)) # Zero vertical padding for footer
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.footer_frame = footer_frame    # Connect's row (P3.1, preview on) packs right above it
         
         # Status Bar
         status_bar = ttk.Label(footer_frame, textvariable=self.status_var, style="Footer.TLabel")
@@ -1818,7 +1826,7 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("850x680")
+        self.settings_window.geometry("1260x740")      # three columns: Connect (preview) is the third (G1.3)
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -1840,19 +1848,24 @@ class MasterDashboardApp:
         # Settings Grid
         grid_frame = ttk.Frame(main_container)
         grid_frame.pack(fill=tk.BOTH, expand=True)
-        grid_frame.columnconfigure(0, weight=2, uniform="settings_col") # Strictly 2:1
-        grid_frame.columnconfigure(1, weight=1, uniform="settings_col")
+        grid_frame.columnconfigure(0, weight=4, uniform="settings_col") # Strictly 4:3:3
+        grid_frame.columnconfigure(1, weight=3, uniform="settings_col")
+        grid_frame.columnconfigure(2, weight=3, uniform="settings_col")
         grid_frame.rowconfigure(0, weight=1)
 
-        # Two INDEPENDENT columns, each a simple stack. With shared grid rows, the tallest group in
+        # Three INDEPENDENT columns, each a simple stack. With shared grid rows, the tallest group in
         # a row set that row's height for both sides (Data & System stretched Language & Parsing to
         # match), and with the optional-module toggles present the third row fell off the bottom of
         # a 720px screen. Stacked, each column is only as tall as its own groups; the log takes
-        # whatever is left.
+        # whatever is left. The third (Connect's) scrolls: with the preview on its controls and the
+        # Anki Miner card are taller than the window.
         left_col = ttk.Frame(grid_frame)
         left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         right_col = ttk.Frame(grid_frame)
-        right_col.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(5, 5))
+        connect_outer, connect_col = self._scrolled_column(grid_frame)
+        connect_outer.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+        self._connect_settings_group(connect_col)
 
         # --- LEFT COLUMN (Col 0) ---
         
@@ -2034,7 +2047,7 @@ class MasterDashboardApp:
                                 "Also controls whether it is bundled when you build the app.")
 
         # 2. 📊 Experience & UI
-        group_ui = ttk.LabelFrame(left_col, text=" 📊 Experience & UI", padding="10")
+        group_ui = ttk.LabelFrame(right_col, text=" 📊 Experience & UI", padding="10")   # the middle column (P3.1)
         group_ui.pack(fill=tk.X, pady=5)
 
         chk_inline = ttk.Checkbutton(group_ui, text="Show 'Target Met' inline", variable=self.var_inline_completed)
@@ -2134,7 +2147,7 @@ class MasterDashboardApp:
         ToolTip(self.wpd_frame, "Your daily target for completion estimates.")
 
         # 3. 🧠 Sentences & Logic
-        group_logic = ttk.LabelFrame(right_col, text=" 🧠 Sentences & Logic", padding="10")
+        group_logic = ttk.LabelFrame(left_col, text=" 🧠 Sentences & Logic", padding="10")   # under Language (P3.1)
         group_logic.pack(fill=tk.X, pady=5)
 
         # Ideal Sentence Range
@@ -2197,7 +2210,7 @@ class MasterDashboardApp:
 
         # 4. 🧮 Data & System
         group_data = ttk.LabelFrame(right_col, text=" 🧮 Data & System", padding="10")
-        group_data.pack(fill=tk.X, pady=5, before=group_logic)   # Data first, then Sentences
+        group_data.pack(fill=tk.X, pady=5, before=group_ui)   # Data first, then Experience & UI
 
         chk_telemetry = ttk.Checkbutton(group_data, text="Enable Anonymous Telemetry", variable=self.var_telemetry_enabled)
         chk_telemetry.pack(anchor=tk.W, pady=(0, 10))
@@ -2272,6 +2285,196 @@ class MasterDashboardApp:
             self.settings_window.lift()
         else:
             self.settings_window.withdraw()
+
+    @staticmethod
+    def _scrolled_column(parent):
+        """-> (outer, inner): a column whose groups scroll when they are taller than the window (Connect's third
+        column). The bar shows only while it's needed; the wheel scrolls it while the pointer is over it."""
+        outer = ttk.Frame(parent)
+        canvas = tk.Canvas(outer, bg=BG_COLOR, highlightthickness=0, borderwidth=0)
+        bar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def fit(_e=None):
+            canvas.configure(scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
+            if inner.winfo_reqheight() > canvas.winfo_height() > 1:
+                if not bar.winfo_ismapped():
+                    bar.pack(side=tk.RIGHT, fill=tk.Y, before=canvas)
+            elif bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0)
+        inner.bind("<Configure>", fit)
+        canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(item, width=e.width), fit()))
+        wheel = lambda e: canvas.yview_scroll(int(-e.delta / 120), "units") if bar.winfo_ismapped() else None  # noqa
+        outer.bind("<Enter>", lambda _e: outer.bind_all("<MouseWheel>", wheel))
+        outer.bind("<Leave>", lambda _e: outer.unbind_all("<MouseWheel>"))
+        return outer, inner
+
+    # --- Connect (preview) in this window (P3.1; P1.5 05-surface U1–U6) ------------------------------------------- #
+    CONNECT_SWITCH_LINE = ("Episodes you place in your top 20 get Anki cards made by Anki Miner, by themselves. Nothing "
+                           "placed before you turn it on.")
+
+    def _connect_settings_group(self, parent):
+        """Settings → Connect (preview), the third column (U4's head, row 3.1.1): the switch and one line, always —
+        the switch must show to be turned on. Its other controls and the Anki Miner card are
+        `app/connect/settings_panel.py`'s, imported only with the switch on (off: nothing of Connect's is imported)."""
+        group = ttk.LabelFrame(parent, text=" 🔗 Connect (preview)", padding="10")
+        group.pack(fill=tk.X, pady=5)
+        on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
+        self.var_connect_enabled = tk.BooleanVar(value=on)
+        self.chk_connect = ttk.Checkbutton(group, text="Make cards automatically (preview)",
+                                           variable=self.var_connect_enabled, command=self._connect_switch_toggled)
+        self.chk_connect.pack(anchor=tk.W)
+        ToolTip(self.chk_connect, "Surasura Connect: when you place an episode in your top 20, Anki Miner makes its "
+                                  "cards and Surasura orders them. Needs Anki and Anki Miner.")
+        ttk.Label(group, text=self.CONNECT_SWITCH_LINE, foreground="#aaaaaa",
+                  wraplength=320).pack(anchor=tk.W, pady=(2, 0))
+        self._connect_panel_host = ttk.Frame(group)
+        self._connect_panel_host.pack(fill=tk.X)
+        self._connect_card_host = ttk.Frame(parent)
+        self._connect_card_host.pack(fill=tk.X)
+        self._connect_panel = None
+        if on:
+            self._connect_panel_build()
+        if not self.__dict__.get("_connect_language_traced"):
+            # The cap and the video folders are each language's: another language shows its own (a panel shown)
+            self._connect_language_traced = True
+            self.var_language.trace_add("write", lambda *_a: self._connect_panel_rebuild())
+
+    def _connect_panel_rebuild(self):
+        if self._connect_panel is not None:
+            self._connect_panel_drop()
+            self._connect_panel_build()
+
+    def _connect_panel_build(self):
+        if self._connect_panel is not None or self.__dict__.get("_connect_panel_host") is None:
+            return
+        try:
+            if not self._connect_panel_host.winfo_exists():
+                return
+            from app.connect import settings_panel
+            self._connect_panel = settings_panel.build(
+                self._connect_panel_host, lambda: self.var_language.get() or "ja",
+                lambda widget, text: ToolTip(widget, text, wrap=320), settings_manager.load_settings() or {},
+                post=self.gui_queue.put, card_parent=self._connect_card_host)
+        except Exception as e:
+            print(f"Connect's settings weren't shown: {e}")
+
+    def _connect_panel_drop(self):
+        panel, self._connect_panel = self._connect_panel, None
+        if panel is not None:
+            panel.destroy()
+
+    def _connect_switch_toggled(self):
+        """The switch touched: `connect_enabled` saved, alone (`save_keys`: a file the switch never touched never gains
+        it). On: Connect's watermark on a worker, then its controls and the line appear; off: they go at once."""
+        on = bool(self.var_connect_enabled.get())
+        try:
+            settings_manager.save_keys({"connect_enabled": on})
+        except Exception as e:
+            print(f"Error: Could not save settings: {e}")
+        self._current_settings = dict(getattr(self, "_current_settings", None) or {}, connect_enabled=on)
+        if not on:
+            self._connect_panel_drop()
+            self._connect_row_stop()
+        threading.Thread(target=self._connect_switched, args=(on,), daemon=True).start()
+
+    def _connect_switched(self, on):
+        """On a worker. On: every library's Connect watermark at its log's end (✅ G1.1-2: nothing placed while it was
+        off is ever mined), then the controls, the line and a session look. Off: Connect's readers dropped where the
+        store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing) — a running Connect stops at its next
+        step boundary by itself (it reads the switch again)."""
+        try:
+            from app import library_store
+            from app.connect import library
+            # Off on 2.x: the store has no `unregister_reader`, so no library is even opened
+            for lang in ("ja", "zh") if on or hasattr(library_store.Store, "unregister_reader") else ():
+                store = library.open_store(lang, role="window")
+                if store is None:
+                    continue
+                with store:
+                    if on:
+                        library.switch_on(store)
+                    elif library.has_reader(store):
+                        store.unregister_reader(library.READER)
+        except Exception as e:
+            print(f"Connect's switch: {e}")
+        if on:
+            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards. "
+                                 "The back-fill is skipped: hato's pairings come later.")
+            self.gui_queue.put(self._connect_switched_on)
+        else:
+            self.log_to_terminal("Connect is off.")
+
+    def _connect_switched_on(self):
+        if not self.var_connect_enabled.get():
+            return                      # switched off again meanwhile
+        self._connect_panel_build()
+        self._connect_row_start()
+        self._connect_session()
+
+    def _connect_row_start(self):
+        """U1 + U2 (row 3.1.4): Connect's line and badge, their own row above the bottom bar — only with the preview
+        on (off: no frame, the dashboard 2.5's)."""
+        if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+        if self._connect_row is not None or self.__dict__.get("footer_frame") is None:
+            return
+        try:
+            from app.connect import status_row
+            self._connect_row = status_row.StatusRow(
+                self.root, lambda: self.var_language.get() or "ja",
+                lambda widget, text: ToolTip(widget, text, wrap=320), self._open_connect_window,
+                settings=lambda: getattr(self, "_current_settings", None) or {}, below=self.footer_frame,
+                post=self.gui_queue.put)
+            self._connect_row.start()
+        except Exception as e:
+            self._connect_row = None
+            print(f"Connect's line wasn't shown: {e}")
+
+    def _connect_row_stop(self):
+        row, self._connect_row = self._connect_row, None
+        if row is not None:
+            row.stop()
+        win, self._connect_window = self._connect_window, None
+        if win is not None:
+            try:
+                win.win.destroy()
+            except Exception:
+                pass
+
+    def _open_connect_window(self):
+        """U3 (row 3.1.6): the record read on a worker, then the window (one at a time: a second click shows it
+        fresh)."""
+        lang = self.var_language.get() or "ja"
+
+        def work():
+            try:
+                from app.connect import connect_window
+                record = connect_window.view(lang)
+            except Exception as e:
+                print(f"Connect's window: {e}")
+                return
+            self.gui_queue.put(lambda: self._show_connect_window(lang, record))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_connect_window(self, lang, record):
+        if self._connect_row is None:
+            return                      # switched off meanwhile
+        try:
+            from app.connect import connect_window
+            old, self._connect_window = self._connect_window, None
+            if old is not None and old.win.winfo_exists():
+                old.win.destroy()
+            row = self._connect_row
+            self._connect_window = connect_window.show(
+                self.root, lang, lambda widget, text: ToolTip(widget, text, wrap=320), record,
+                on_change=row.refresh, post=self.gui_queue.put)
+        except Exception as e:
+            print(f"Connect's window wasn't shown: {e}")
 
     @staticmethod
     def _write_install_note():
@@ -2572,8 +2775,8 @@ class MasterDashboardApp:
             pass
 
     def _show_update_wait(self, job, children):
-        """The waiting window: non-modal, one row per running item with *Stop it*, *Stop all and update now*, and
-        *Cancel* (Esc, or closing it, cancels too)."""
+        """The waiting window: non-modal, one row per running item with *Stop it* (none on Connect's row: it stops
+        after its batch), *Stop all and update now*, and *Cancel* (Esc, or closing it, cancels too)."""
         win = job["window"]
         if win is None or not win.winfo_exists():
             win = tk.Toplevel(self.root)
@@ -2597,7 +2800,8 @@ class MasterDashboardApp:
             stop_all = ttk.Button(btn_row, text="Stop all and update now", style="Action.TButton",
                                   command=lambda: self._stop_update_children(job, None))
             stop_all.pack(side=tk.LEFT)
-            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura.")
+            ToolTip(stop_all, "Stop everything listed here, then install the update and reopen Surasura. Surasura "
+                              "Connect isn't stopped: it finishes its batch of cards first, then the update goes on.")
             cancel = ttk.Button(btn_row, text="Cancel", command=lambda: self._cancel_update(job))
             cancel.pack(side=tk.RIGHT)
             ToolTip(cancel, "Don't update now. Everything keeps running; the update is offered again later.")
@@ -2614,7 +2818,7 @@ class MasterDashboardApp:
                 row = ttk.Frame(job["list_frame"])
                 row.pack(fill=tk.X, pady=2)
                 ttk.Label(row, text=child["name"], background=BG_COLOR, foreground=TEXT_COLOR).pack(side=tk.LEFT)
-                if child["stop"] is None:              # this window's own work: it finishes by itself
+                if child["stop"] is None:              # this window's own work, or Connect: it finishes by itself
                     ttk.Label(row, text="finishing…", background=BG_COLOR, foreground="#888").pack(side=tk.RIGHT)
                     continue
                 stop = ttk.Button(row, text="Stop it", command=lambda c=child: self._stop_update_children(job, [c]))
@@ -2624,7 +2828,8 @@ class MasterDashboardApp:
         job["status"].config(text="Downloading the update…" if not job["done"] else "The update is downloaded.")
 
     def _stop_update_children(self, job, children):
-        """*Stop it* (one item) or *Stop all* (None: everything listed)."""
+        """*Stop it* (one item) or *Stop all* (None: everything listed but what has no stop — this window's own work
+        and Connect, which stops after its batch of cards: P3.1 row 3.1.8, never ended)."""
         for child in (job["children"] or []) if children is None else children:
             if child.get("stop") is None:
                 continue

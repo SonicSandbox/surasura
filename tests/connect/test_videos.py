@@ -76,3 +76,70 @@ def test_same_name_in_two_indexed_folders_is_no_video_unless_size_picks_one(tmp_
 
     assert index.find(["Bocchi - 03.mkv"]) is None
     assert _same(index.find(["Bocchi - 03.mkv"], size=100), first)
+
+
+# --- a share whose folder times don't move (P3.1 row 3.1.7): the capped re-list, once a run -------------------------
+
+def _hold(folder, stamp):
+    """Put `folder`'s times back as `stamp` had them: a NAS or FAT share whose folder time doesn't move on a new file."""
+    os.utime(folder, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert os.stat(folder).st_mtime_ns == stamp.st_mtime_ns
+
+
+def test_a_video_moved_into_a_folder_whose_time_did_not_move_is_found_by_the_relist(tmp_path):
+    """The index skips a folder whose time hasn't moved (one stat); on such a share a moved video would be *No video*
+    for ever. The first miss of the run lists the folders again, and the moved video is found."""
+    added = str(tmp_path / "NAS" / "ぼっち・ざ・ろっく")
+    _video(os.path.join(added, "Bocchi - 01.mkv"))
+    index = _index(tmp_path, shallow=[], deep=[added])
+    held = os.stat(added)
+    moved = _video(os.path.join(added, "Bocchi - 04.mkv"))
+    _hold(added, held)
+
+    assert _same(index.find(["Bocchi - 04.mkv"]), moved)
+    assert index.relisted
+
+
+def test_the_relist_reads_at_most_its_cap_and_a_folder_past_it_keeps_what_it_had(tmp_path, monkeypatch):
+    """Two folders of three entries each (two old, one moved in, times held) and a cap of four entries: one folder is
+    listed again, the other keeps what it had — so exactly one moved video is found, and the old ones still are."""
+    monkeypatch.setattr(videos, "RELIST_MAX", 4)
+    first, second = str(tmp_path / "NAS" / "一期"), str(tmp_path / "NAS" / "二期")
+    for folder, n in ((first, 1), (second, 13)):
+        _video(os.path.join(folder, f"Bocchi - {n:02d}.mkv"))
+        _video(os.path.join(folder, f"Bocchi - {n + 1:02d}.mkv"))
+    index = _index(tmp_path, shallow=[first, second], deep=[])
+    held = {f: os.stat(f) for f in (first, second)}
+    _video(os.path.join(first, "Bocchi - 03.mkv"))
+    _video(os.path.join(second, "Bocchi - 15.mkv"))
+    for folder, stamp in held.items():
+        _hold(folder, stamp)
+    read = []
+    real_list = videos._list
+
+    def counted(folder, limit=None):
+        got = real_list(folder, limit)
+        read.append(got[2] if got else 0)
+        return got
+    monkeypatch.setattr(videos, "_list", counted)
+
+    found = [index.find(["Bocchi - 03.mkv"]), index.find(["Bocchi - 15.mkv"])]
+    assert len([f for f in found if f]) == 1, "the cap let only one folder be listed again"
+    assert sum(read) <= videos.RELIST_MAX
+    assert index.find(["Bocchi - 01.mkv"]) and index.find(["Bocchi - 13.mkv"]), "a folder past the cap kept its videos"
+
+
+def test_a_second_miss_in_the_same_run_lists_nothing_again(tmp_path, monkeypatch):
+    """The re-list is once a run: a second missing video in the run is a stat-free lookup, never another listing."""
+    added = str(tmp_path / "NAS" / "結束バンド")
+    _video(os.path.join(added, "Bocchi - 01.mkv"))
+    index = _index(tmp_path, shallow=[], deep=[added])
+    assert index.find(["Bocchi - 99.mkv"]) is None             # the first miss: listed again, still not there
+    held = os.stat(added)
+    _video(os.path.join(added, "Bocchi - 06.mkv"))
+    _hold(added, held)
+    listed = []
+    monkeypatch.setattr(videos, "_list", lambda *a, **k: listed.append(a) or None)
+
+    assert index.find(["Bocchi - 06.mkv"]) is None
+    assert listed == [], "nothing is listed again in the same run"

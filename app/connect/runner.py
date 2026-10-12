@@ -26,7 +26,9 @@ day's words first:
   store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12).
 - **A missing tool** (🧭 Q4-2, RD-S10): Anki Miner absent → the job `skipped`, named; Backfill or Junban absent → that
   step skipped and named on the job (`skipped`), the loop goes on.
-- **An update staged** (E26): the run stops at the next step boundary (the command line refuses to start one).
+- **An update staged** (E26): the run stops at the next step boundary (the command line refuses to start one) —
+  between two Anki Miner batches of a job too, and within UPDATE_LOOK_S of its 2-minute pause (P3.1 row 3.1.8, K99:
+  the update waits for Connect, never kills it; the ledger resumes the job where it stopped).
 - **The store:** one short write a batch (`library.record_batch`: the receipt + the made words, role `connect`); a
   write the window holds past the store's 5 s waits for the next look.
 
@@ -46,6 +48,7 @@ from app.connect.ledger import BEFORE_MINING, IN_FLIGHT, PREPARE_KINDS, Ledger
 log = logging.getLogger("surasura-cli")
 
 LOOK_EVERY_S = 120              # 02 §2a: while every job waits on something outside Connect
+UPDATE_LOOK_S = 5               # K99: inside that pause, an update staged is looked for this often
 WAIT_S = 10.0                   # a verb's --wait inside the run (another Surasura writer, a Generate)
 ALL_GONE_MIN = 10               # the deleted-card check: this many notes or more, all gone at once -> nothing marked
 
@@ -112,10 +115,12 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=None, looks=None):
+def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, looks=None):
     """The loop, until no job is left (or every job left waits for the next start) -> a summary per language:
     {"done", "dropped", "skipped", "failed": [item ids], "waiting": {item id: reason}, "needs": [say, …]}, plus
-    "looks" and, when it stopped early, "stopped". `looks`: at most this many looks (tests); `cancel`: an Event."""
+    "looks" and, when it stopped early, "stopped". `looks`: at most this many looks (tests); `cancel`: an Event;
+    `sleep`: a test's own pause, called once with the whole of it (default: `time.sleep` in UPDATE_LOOK_S steps,
+    ended early by an update staged)."""
     steps = steps or Steps(loaded)
     steps.lower_priority()
     own = ledger is None
@@ -155,7 +160,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=time.sleep, cancel=Non
                 break
             if looks is not None and summary["looks"] >= looks:
                 break
-            if not _pause(LOOK_EVERY_S, sleep, cancel):
+            if not _pause(LOOK_EVERY_S, sleep, cancel, steps.update_staged):
                 summary["stopped"] = "cancelled"
                 break
         return summary
@@ -209,10 +214,22 @@ def _empty():
     return {"done": [], "dropped": [], "skipped": [], "failed": [], "waiting": {}, "needs": []}
 
 
-def _pause(seconds, sleep, cancel):
-    if cancel is not None:
-        return not cancel.wait(seconds)
-    sleep(seconds)
+def _pause(seconds, sleep, cancel, staged):
+    """The pause between looks -> False when cancelled. Looks for an update staged every UPDATE_LOOK_S and ends at
+    once when one is (the loop's next `_stop` names it): the update waits seconds for a sleeping Connect, never 2
+    minutes (K99). A test's own `sleep` (no `cancel`) is called once, with the whole pause."""
+    if cancel is None and sleep is not None:
+        sleep(seconds)
+        return True
+    wait = cancel.wait if cancel is not None else time.sleep
+    waited = 0
+    while waited < seconds:
+        step = min(UPDATE_LOOK_S, seconds - waited)
+        if wait(step):
+            return False                # the Event set (time.sleep answers None)
+        waited += step
+        if staged():
+            break
     return True
 
 
@@ -503,6 +520,7 @@ def _mine(steps, ledger, lang, job, record=True):
     picked = ledger.picked(jid) or {}
     words = picked.get("words") or []
     by_key = {(w["word"], w["reading"]): w for w in words}
+    ran = False                     # a batch ran in this call: the next one waits for an update staged meanwhile
     for _ in range(3):              # a batch in doubt is tried once more; a second failure ends it
         batches = ledger.batches(jid)
         last = batches[-1] if batches else None
@@ -527,12 +545,17 @@ def _mine(steps, ledger, lang, job, record=True):
             wait = _at_cap(steps, ledger, lang, todo)
             if wait is not None:
                 raise wait
+        if ran and steps.update_staged():
+            # between two Anki Miner batches (K99): stopped here, every outcome saved; the next run resumes at mining
+            # and sends only the words still unsettled
+            raise Wait(STOPPED_FOR_UPDATE, look=False, resume="mining")
         had = ledger.job_by_id(jid).get("attempt") or 0
         refused = bool(batches) and batches[-1]["state"] == "refused" and batches[-1]["attempt"] == had
         attempt = had if refused else had + 1      # a call Anki Miner refused never ran: its number reused (#20)
         in_doubt = any(b["state"] == "uncertain" for b in batches)
         ledger.set_state(jid, "mining")
         ledger.start_batch(jid, attempt, steps.run_dir(job))
+        ran = True
         try:
             got = steps.mine(lang, job, picked, todo, attempt)
         except Wait as w:

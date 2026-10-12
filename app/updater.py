@@ -380,11 +380,28 @@ def _close_windows(pid):
     return len(windows)
 
 
+CONNECT_ROW = "Surasura Connect — stops after this batch of cards"
+
+
+def connect_pid():
+    """The running Connect's process id (`surasura-cli connect`, from its lock's holder record), or None. Never
+    raises."""
+    try:
+        from app import locks
+        return int((locks.read_holder("connect") or {}).get("pid")) or None
+    except Exception:
+        return None
+
+
 def stop_pid(pid, grace=None):
     """*Stop it*: a program with a window is asked to close it, as its user would — a Content Manager mid-Graduate
     finishes the move and saves before it closes; one with no window (Generate, the パターン build), or still running
-    `STOP_GRACE` seconds later, is ended. Returns at once (the grace runs on a thread). Never raises."""
+    `STOP_GRACE` seconds later, is ended. Connect is never ended (P3.1 row 3.1.8, K99: a kill mid-batch orphans Anki
+    Miner): it stops by itself after its batch, the update staged. Returns at once (the grace runs on a thread).
+    Never raises."""
     try:
+        if int(pid) == connect_pid():
+            return
         if sys.platform != "win32":
             import signal
             os.kill(int(pid), signal.SIGTERM)
@@ -434,7 +451,9 @@ def running_children(active_processes=(), images=None):
     waits for: the dashboard's own children (`active_processes`, named by their `surasura_desc`), Backfill's
     パターン build, and any process running this install's Surasura.exe or surasura-cli.exe other than this one (the
     splicer and the importers' children, a command line hato started). `images` overrides which programs count
-    (a test, a source checkout). The auto-Generate guard does NOT ask this (Backfill's build goes behind a Generate)."""
+    (a test, a source checkout). Connect (its lock's holder) is waited for and has no stop: it stops by itself after
+    its batch of cards once the update is staged (P3.1 row 3.1.8). The auto-Generate guard does NOT ask this
+    (Backfill's build goes behind a Generate)."""
     found, seen = [], {os.getpid()}
     for process in list(active_processes or ()):
         try:
@@ -454,8 +473,12 @@ def running_children(active_processes=(), images=None):
     except Exception as e:
         print(f"Update: could not list running programs ({e})")
         others = {}
+    connect = connect_pid() if others else None
     for pid, image in sorted(others.items()):
         if pid in seen:
+            continue
+        if pid == connect:
+            found.append({"pid": pid, "name": CONNECT_ROW, "stop": None})
             continue
         cli = os.path.basename(image).lower() == CLI_EXE_NAME.lower()
         found.append({"pid": pid, "name": "Surasura's command line" if cli else "Another Surasura window",

@@ -12,6 +12,9 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
 - **Only what changed** (S19): the index is kept in `<local data>/connect/videos-<lang>.json`, each folder with its
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
   time a video is missing — never while every video is where its pairing says.
+- **A share whose folder times don't move** (a NAS, a FAT drive; P3.1 row 3.1.7): a video still not found is looked
+  for once more, once a run — the folders whose time didn't move listed again, at most RELIST_MAX entries in all (past
+  it a folder keeps what it had); a second miss in the run lists nothing again.
 - **Keyed by language** (D31): one index file per language, under local data (where a profile folder can sit above).
 
 A placeholder (a cloud file not downloaded) is indexed by name but never opened or taken: *No video* until it's on
@@ -27,6 +30,7 @@ log = logging.getLogger("surasura-cli")
 
 INDEX_VERSION = 2               # 2: each folder keeps its own spelling (`path`)
 DEPTH = 4                       # the folders you add: their subfolders this deep
+RELIST_MAX = 2000               # a missing video's re-list (once a run): at most this many folder entries read
 
 
 def configured(loaded, lang):
@@ -55,13 +59,20 @@ def _load(path):
     return {"version": INDEX_VERSION, "dirs": {}}
 
 
-def _list(folder):
-    """(videos {name lower: [name, size]}, subfolders [path]) of one folder (names and sizes: nothing is opened);
-    None when it can't be read (gone, offline)."""
-    videos, subs = {}, []
+class _Full(Exception):
+    """The re-list's cap reached inside a folder: that folder keeps what it had."""
+
+
+def _list(folder, limit=None):
+    """(videos {name lower: [name, size]}, subfolders [path], entries read) of one folder (names and sizes: nothing
+    is opened); None when it can't be read (gone, offline). Raises _Full past `limit` entries."""
+    videos, subs, seen = {}, [], 0
     try:
         with os.scandir(folder) as found:
             for entry in found:
+                seen += 1
+                if limit is not None and seen > limit:
+                    raise _Full()
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         subs.append(entry.path)
@@ -76,7 +87,7 @@ def _list(folder):
                 videos[entry.name.lower()] = [entry.name, st.st_size]
     except OSError:
         return None
-    return videos, sorted(subs)
+    return videos, sorted(subs), seen
 
 
 class Index:
@@ -86,12 +97,17 @@ class Index:
         self.path = path or index_path(lang)
         self.data = _load(self.path)
         self.listed = 0             # folders listed again this refresh (the rest: one stat each)
+        self.roots = None           # the last refresh's folders (shallow, deep): what a missing video's re-list walks
+        self.relisted = False       # the re-list ran (once a run: this index lives one run)
 
-    def refresh(self, shallow, deep):
+    def refresh(self, shallow, deep, budget=None):
         """Every folder of `shallow` (alone) and `deep` (with subfolders, DEPTH deep), listed again only when its
-        modified time moved; folders no longer looked at are dropped from the file."""
+        modified time moved; folders no longer looked at are dropped from the file. `budget` (a missing video's
+        re-list): the folders whose time didn't move are listed again too, at most `budget` entries in all."""
+        self.roots = (list(shallow), list(deep))
         old, new = self.data["dirs"], {}
         self.listed = 0
+        left = budget
         todo = [(os.path.abspath(f), 0, False) for f in shallow] + [(os.path.abspath(f), 0, True) for f in deep]
         reached = {}                # folder -> the shallowest depth it was walked at with its subfolders
         while todo:
@@ -106,12 +122,18 @@ class Index:
                 mtime = os.stat(where).st_mtime_ns
             except OSError:
                 mtime = None
-            if had and (mtime is None or had.get("mtime_ns") == mtime):
+            again = bool(left) and mtime is not None    # the re-list, under its cap: listed whatever its time says
+            if had and (mtime is None or had.get("mtime_ns") == mtime) and not again:
                 entry = dict(had)           # unchanged, or offline now: kept as listed (never listed again for it)
             elif mtime is None:
                 continue                    # never listed and not there: looked at again next run
             else:
-                got = _list(where)
+                try:
+                    got = _list(where, left)
+                except _Full:
+                    got, left = None, 0     # the cap: this folder and every one after keep what they had
+                if got is not None and left is not None:
+                    left -= got[2]
                 if got is None:
                     if not had:
                         continue
@@ -143,7 +165,17 @@ class Index:
 
     def find(self, names, size=None):
         """The one indexed video (on disk now) with one of `names` (and `size`, when given) -> its path; None when
-        there's none, or more than one — Connect never guesses (E5's rule; intent keeper P2.5 #6)."""
+        there's none, or more than one — Connect never guesses (E5's rule; intent keeper P2.5 #6). None the first
+        time this run: the folders are listed again (`refresh`'s re-list, RELIST_MAX entries) and looked in once
+        more."""
+        found = self._find(names, size)
+        if found is None and not self.relisted and self.roots is not None:
+            self.relisted = True
+            self.refresh(*self.roots, budget=RELIST_MAX)
+            found = self._find(names, size)
+        return found
+
+    def _find(self, names, size):
         wanted = [n.lower() for n in names if n]
         found = set()
         for folder in sorted(self.data["dirs"]):

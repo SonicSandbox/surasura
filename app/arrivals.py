@@ -417,29 +417,27 @@ class Gates:
         gates.occ = [key[4] for key in plan.keys]
         gates.occ_min = min(gates.occ, default=0)
         gates.row_of_phrase = dict(view.entry_of)
-        # The phrases one by one (the store's per-file tallies): uses, and the spellings met.
+        # The phrases one by one (the store's per-file tallies, summed as it reads them): uses, and the spellings met.
         gates.phrase_uses = gates.phrase_spellings = None
         if view.phrase_set is not None:
-            tallies = store.phrase_tallies()
-            if tallies is not None:
-                uses, spellings = Counter(), {}
-                for file_uses, _given in tallies.values():
-                    for index, (n, spelled) in file_uses.items():
-                        uses[int(index)] += n
-                        held = spellings.setdefault(int(index), [])
-                        held.extend(x for x in spelled if x not in held)
-                gates.phrase_uses, gates.phrase_spellings = uses, spellings
+            sums = store.phrase_sums()
+            if sums is not None:
+                gates.phrase_uses, gates.phrase_spellings = sums
         # The name tables' sums over the counted files' records, and the tables as they stand.
         gates.tables = gates.table_sums = gates.term_sums = gates.records = None
         gates.names_words = set()
         if language == "ja":
             tables = store.names_tables()
-            records = store.names_records()
-            gates.records = records                     # the whole rule's input when the store holds no tables
             if tables:
+                # Summed one record at a time: the gate keeps the sums, never every file's record (most of a warm
+                # worker's memory at 20,000 files when it did).
                 gates.tables = tables
-                gates.table_sums = names.TableSums(records)
-                gates.term_sums = names.TermSums(records, tables)
+                gates.table_sums, gates.term_sums = names.TableSums(), names.TermSums(tables=tables)
+                for record in store.iter_names_records():
+                    gates.table_sums.add(record)
+                    gates.term_sums.add(record)
+            else:
+                gates.records = store.names_records()   # the whole rule's input when the store holds no tables
             try:
                 gates.names_words = set(json.loads(store.get_meta("names_words") or "[]"))
             except ValueError:

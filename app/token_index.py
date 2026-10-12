@@ -1270,11 +1270,61 @@ class Store:
         except Exception:
             return None
 
+    def phrase_sums(self):
+        """`phrase_tallies` summed by phrase, as the arrivals gate reads it: ({phrase index: uses}, {phrase index:
+        [spellings, as met]}) over the counted files, or None when `phrase_tallies` would be. Each file's tally is read
+        on its own (SQLite's `json_each` over the kept table), so the whole table — hundreds of MB of Python objects at
+        20,000 files, most of it left on the heap after — is never held at once (E2.3). Its reads are one read
+        transaction (one snapshot, as `phrase_tallies`' one value was): an index committed between them never mixes a
+        new table with the old check."""
+        if self.language != "ja":
+            return None
+        own = not self.conn.in_transaction
+        try:
+            if own:
+                self.conn.execute("BEGIN")
+            from app import phrase_data
+            base, _reads, names = self._phrases_basis(phrase_data.REVISION)
+            head = self.conn.execute("SELECT json_extract(value, '$.state'), json_extract(value, '$.names') FROM meta "
+                                     "WHERE key = 'phrase_files' AND json_valid(value)").fetchone()
+            if head is None or head[0] != base or head[1] != names:
+                return None
+            counted = {path: [mtime, size] for path, mtime, size in self.conn.execute(
+                "SELECT path, mtime, size FROM files WHERE counted = 1")}
+            uses, spellings, seen = Counter(), {}, 0
+            for path, text in self.conn.execute("SELECT j.key, j.value FROM meta, json_each(meta.value, '$.files') "
+                                                "AS j WHERE meta.key = 'phrase_files'"):
+                stamp = counted.get(path)
+                if stamp is None:
+                    continue                            # a file no longer counted: not the gate's
+                entry = json.loads(text)
+                if not isinstance(entry, list) or len(entry) < 5 or entry[:2] != stamp:
+                    return None                         # stale, or a shape `phrase_tallies` couldn't read either
+                seen += 1
+                for index, (n, spelled) in entry[3].items():
+                    uses[int(index)] += n
+                    held = spellings.setdefault(int(index), [])
+                    held.extend(x for x in spelled if x not in held)
+            return (uses, spellings) if seen == len(counted) else None
+        except Exception:
+            return None
+        finally:
+            if own and self.conn.in_transaction:
+                try:
+                    self.conn.execute("COMMIT")
+                except sqlite3.Error:
+                    pass
+
     def names_records(self):
         """The counted files' name records (`names.Record` data), in the table's order — what the name tables are
         computed from (`_update_names_tables`)."""
-        return [_decode_counts(blob) for (blob,) in self.conn.execute(
-            "SELECT names FROM files WHERE names IS NOT NULL AND counted = 1 ORDER BY rowid")]
+        return list(self.iter_names_records())
+
+    def iter_names_records(self):
+        """`names_records` one at a time: a reader that only sums them never holds every file's record at once."""
+        for (blob,) in self.conn.execute(
+                "SELECT names FROM files WHERE names IS NOT NULL AND counted = 1 ORDER BY rowid"):
+            yield _decode_counts(blob)
 
     def names_record(self, path):
         """One file's name record (counted or kept), or None: not held, or not a Japanese store."""

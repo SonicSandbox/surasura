@@ -14,6 +14,9 @@ class _Store:
     def phrase_tallies(self):
         return None
 
+    def phrase_sums(self):
+        return None
+
     def names_tables(self):
         return None
 

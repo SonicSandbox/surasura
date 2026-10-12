@@ -41,10 +41,17 @@ RESOURCES = {
     "backfill": {"anki-writer"},
     "mine": {"anki-writer"},
     "replan": {"anki-writer"},
+    # The in-app update (W3.5 row 1; `services.updates`): never two, beside everything — it downloads while the rest
+    # runs and waits for them itself (its wait list: the Tk `_update_poll`), so it holds no resource back.
+    "update": set(),
     # The warm arrivals worker (E2.2 K9; `services.arrivals.kind_of`), one kind per language: reads only, beside
     # anything — a Japanese and a Chinese one together — never two of one language.
     "arrivals-ja": set(),
     "arrivals-zh": set(),
+    # W3.5 rows 3 and 6: Generate's read of Anki's new cards (read-only on Anki, beside a sync as the Tk dashboard ran
+    # it) and the library store's helper (detached: it outlives the window).
+    "anki-backlog": set(),
+    "library-maintain": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")
@@ -114,6 +121,7 @@ class JobRegistry:
         self._keep_ended = keep_ended
         self._version = 0                   # each change's number: a listener never hears an older one after a newer
         self._deliver = threading.RLock()
+        self._gates = []                    # check(kind) -> why a gated job of that kind may not start now, or None
 
     # --- asking ------------------------------------------------------------------------------------------------- #
     def submit(self, kind, label, start, cancel=None, automatic=False, on_quit="cancel"):
@@ -163,6 +171,25 @@ class JobRegistry:
         with self._lock:
             self._subscribers.append(callback)
 
+    # --- holding ------------------------------------------------------------------------------------------------ #
+    def gate(self, check):
+        """Hold gated jobs back while `check(kind)` names a reason (plain words; None lets it start) — the update's
+        "no new work while it waits" (W3.5 row 1). Asked under the registry's lock: a flag read, nothing slower. A job
+        already running is not stopped. After a gate opens, its owner calls `reschedule()`."""
+        with self._lock:
+            self._gates.append(check)
+        self._schedule()
+
+    def reschedule(self):
+        """A gate opened: start what it held (in the order asked for)."""
+        self._schedule()
+
+    def cancel(self, job_id):
+        """Cancel the live job `job_id` (a window's *Stop it*). True when there was something to cancel."""
+        with self._lock:
+            job = next((j for j in self._jobs if j.id == job_id and j.state in LIVE), None)
+        return job.cancel() if job is not None else False
+
     # --- quitting ----------------------------------------------------------------------------------------------- #
     def quit(self, timeout=10.0):
         """What closing the window does to each live job: `cancel` ones are cancelled, `wait` ones waited for (up to
@@ -195,13 +222,26 @@ class JobRegistry:
                     return other                  # the order asked for — but a user's job never waits on an automatic one
         return None
 
+    def _held(self, kind):
+        for check in self._gates:
+            try:
+                reason = check(kind)
+            except Exception:
+                reason = None
+            if reason:
+                return reason
+        return None
+
     def _schedule(self):
         to_start = []
         with self._lock:
             earlier = []
             for job in [j for j in self._jobs if j.gated and j.state in (QUEUED, WAITING)]:
-                blocker = self._blocker(job, earlier)
-                if blocker is None:
+                held = self._held(job.kind)
+                blocker = None if held else self._blocker(job, earlier)
+                if held:
+                    job.state, job.reason = WAITING, held
+                elif blocker is None:
                     job.state, job.reason, job.started_at = RUNNING, None, time.time()
                     to_start.append(job)
                 else:

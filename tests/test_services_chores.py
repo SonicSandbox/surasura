@@ -1,0 +1,437 @@
+"""The window's chores (`app/services/chores.py`) — W3.5 row 6.
+
+What a wrong answer would cost:
+  * two indexers writing one token store, or an indexer beside Generate — a focus storm must start one;
+  * a port held after the window closed — Koe's helper left serving, the next start falls to another port;
+  * a window that dies with an optional module — Koe absent, the chores still run;
+  * a chore run twice per trigger, or under the test switches the Tk dashboard honours;
+  * settings.json written behind the user's back.
+
+The indexer's child is a fake `Popen` (the claim is about when and how often it starts); its check is the real
+stat-only `index_needed` over the suite's Japanese files where the claim is about the library.
+"""
+import os
+import sys
+import threading
+import types
+
+import pytest
+
+from app.services import chores as C
+from app.services import jobs as J
+from app.services.jobs import JobRegistry
+from tests import services_helpers as h
+
+
+class _Settings:
+    def __init__(self, **values):
+        self.values = dict(values)
+        self.writes = []
+        self.flushes = 0
+
+    def get(self):
+        return dict(self.values)
+
+    def set(self, changes):
+        self.writes.append(dict(changes))
+        self.values.update(changes)
+
+    def flush(self, timeout=None):
+        self.flushes += 1
+
+
+class _Clock:
+    def __init__(self, now=0.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+class _Timer:
+    def __init__(self, delay, call):
+        self.delay, self.call, self.cancelled = delay, call, False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class _Timers(list):
+    def __call__(self, delay, call):
+        timer = _Timer(delay, call)
+        self.append(timer)
+        return timer
+
+
+class _Proc:
+    """A child that runs until the test (or a terminate) ends it."""
+
+    def __init__(self, args, **kw):
+        self.args, self.kw = args, kw
+        self.returncode = None
+        self.done = threading.Event()
+        self.terminated = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.done.wait(timeout if timeout is not None else 30)
+        return self.returncode
+
+    def end(self, code=0):
+        self.returncode = code
+        self.done.set()
+
+    def terminate(self):
+        self.terminated = True
+        self.end(-15)
+
+
+class _Popen(list):
+    def __call__(self, args, **kw):
+        proc = _Proc(args, **kw)
+        self.append(proc)
+        return proc
+
+
+@pytest.fixture
+def timers_on(monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS", raising=False)
+
+
+@pytest.fixture
+def indexing_on(monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_AUTOINDEX", raising=False)
+
+
+def _make(settings=None, needed=lambda language, script: True, staged=lambda: False, clock=None, timers=None,
+          popen=None, lang="ja"):
+    registry = JobRegistry()
+    popen = popen if popen is not None else _Popen()
+    chores = C.Chores(registry, settings or _Settings(target_language=lang), lang, update_staged=staged,
+                      clock=clock or _Clock(), timer=timers if timers is not None else _Timers(), popen=popen,
+                      needed=needed, log_folder=os.path.join(h.root(), "logs"))
+    return chores, registry, popen
+
+
+def _koe(monkeypatch, revealed=True):
+    calls = []
+    fake = types.ModuleType("modules.koe")
+    fake.is_revealed = lambda: revealed
+    fake.start_server = lambda app=None: calls.append("start") or 8787
+    fake.stop_server = lambda: calls.append("stop")
+    monkeypatch.setitem(sys.modules, "modules.koe", fake)
+    return calls
+
+
+# --- the indexer ------------------------------------------------------------------------------------------------- #
+def test_a_focus_storm_starts_one_indexer(indexing_on):
+    """`_maybe_launch_indexer`'s `_indexer_busy`: twenty activations while it runs are one child, one job; its end
+    lets the next one start."""
+    clock = _Clock(0.0)
+    chores, registry, popen = _make(clock=clock)
+    indexed = []
+    chores.on_indexed(indexed.append)
+    for _ in range(20):
+        chores.activated()
+        clock.now += 5.0
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    assert chores.worker.idle(5)
+    assert len(popen) == 1 and len(registry.live("indexer")) == 1
+    assert popen[0].args[-2:] == ["--language", "ja"]
+    popen[0].end(0)
+    assert h.until(lambda: indexed == ["ja"], seconds=5)
+    assert h.until(lambda: not registry.live("indexer"), seconds=5)
+    chores.index()
+    assert h.until(lambda: len(popen) == 2, seconds=5)
+    popen[1].end(0)
+    chores.close()
+
+
+def test_the_indexer_check_is_throttled_two_seconds_unless_forced(indexing_on):
+    """`if not force and (now - self._last_index_check) < 2.0: return` — counted from never."""
+    clock = _Clock(0.0)
+    asked = []
+    chores, registry, popen = _make(clock=clock, needed=lambda language, script: asked.append(language) or False)
+    assert chores.index() is None, "0.0 is not 'just now'"
+    assert chores.worker.idle(5)
+    clock.now = 1.9
+    assert chores.index() == "throttled"
+    assert chores.index(force=True) is None
+    assert chores.worker.idle(5)
+    clock.now = 4.0
+    assert chores.index() is None
+    assert chores.worker.idle(5)
+    assert asked == ["ja", "ja", "ja"] and popen == []
+    chores.close()
+
+
+def test_the_indexer_never_runs_beside_generate(indexing_on):
+    """Generate and the indexer both write the token store (`RESOURCES`): the indexer job waits for the Generate."""
+    chores, registry, popen = _make()
+    generate = registry.submit("generate", "Generating", start=lambda job: None)
+    chores.index(force=True)
+    assert h.until(lambda: registry.live("indexer") and registry.live("indexer")[0].state == J.WAITING, seconds=5)
+    assert popen == []
+    generate.finish(ok=True)
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    popen[0].end(0)
+    chores.close()
+
+
+@pytest.mark.parametrize("why", ["switch", "nothing-to-do", "update-staged"])
+def test_no_indexer_when_held(indexing_on, monkeypatch, why):
+    """`SURASURA_NO_AUTOINDEX`, the stat-only check finding nothing, an update waiting: no child; nothing left busy."""
+    if why == "switch":
+        monkeypatch.setenv("SURASURA_NO_AUTOINDEX", "1")
+    chores, registry, popen = _make(needed=lambda language, script: why != "nothing-to-do",
+                                    staged=lambda: why == "update-staged")
+    chores.index(force=True)
+    assert chores.worker.idle(5)
+    assert popen == [] and not registry.snapshot()
+    assert chores._indexing is False
+    chores.close()
+
+
+def test_quitting_stops_the_indexer(indexing_on):
+    """The Tk `on_closing` terminates its children: the `indexer` job is `on_quit="cancel"`, its child stopped."""
+    chores, registry, popen = _make()
+    chores.index(force=True)
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    assert h.until(lambda: chores._proc is not None, seconds=5)
+    left = registry.quit(timeout=5)
+    assert popen[0].terminated and not left
+    view = registry.snapshot()[-1]
+    assert view.kind == "indexer" and view.cancelled
+    chores.close()
+
+
+def test_a_cancel_before_it_starts_leaves_nothing_busy(indexing_on):
+    """Cancelled while it waits for a Generate: no child, and the next trigger may index."""
+    chores, registry, popen = _make()
+    generate = registry.submit("generate", "Generating", start=lambda job: None)
+    chores.index(force=True)
+    assert h.until(lambda: registry.live("indexer"), seconds=5)
+    job = [j for j in registry._jobs if j.kind == "indexer"][0]
+    job.cancel()
+    assert chores._indexing is False
+    generate.finish(ok=True)
+    assert chores.worker.idle(5) and popen == []
+    chores.close()
+
+
+def test_index_needed_reads_the_real_library(indexing_on, monkeypatch):
+    """The ported `_index_needed` over the suite's Japanese files: a library never indexed needs the indexer; a check
+    that fails answers False (the next trigger asks again)."""
+    h.seed_library("ja")
+    assert C.index_needed("ja", "asis") is True
+    from app import token_index
+
+    def unreadable(language):
+        raise OSError("the store is held")
+    monkeypatch.setattr(token_index, "open_store", unreadable)
+    assert C.index_needed("ja", "asis") is False
+
+
+def test_the_indexer_command_is_the_scripts_from_source():
+    command = C.indexer_command("zh")
+    assert command[1].endswith(os.path.join("app", "indexer.py")) and command[-2:] == ["--language", "zh"]
+
+
+# --- Koe --------------------------------------------------------------------------------------------------------- #
+def test_koe_starts_when_revealed_and_on_and_stops_at_close(monkeypatch):
+    """`apply_koe_state` at the window's start; `on_closing`'s `koe.stop_server()` at close. A server this service
+    owns, never a job (it never ends); nothing written to settings.json."""
+    calls = _koe(monkeypatch)
+    settings = _Settings(enable_koe=True, source_display="off")
+    chores, registry, _p = _make(settings)
+    chores.started()
+    assert chores.worker.idle(5)
+    assert calls == ["start"] and chores.state().koe_port == 8787
+    assert settings.writes == [], "nothing automatic writes settings.json"
+    assert not [v for v in registry.snapshot() if v.kind == "koe"]
+    chores.close()
+    assert calls == ["start", "stop"] and chores.state().koe_port is None
+
+
+def test_koe_follows_its_switch(monkeypatch):
+    calls = _koe(monkeypatch)
+    settings = _Settings(enable_koe=False)
+    chores, _r, _p = _make(settings)
+    chores.koe_changed()
+    assert chores.worker.idle(5) and "start" not in calls
+    settings.values["enable_koe"] = True
+    chores.koe_changed()
+    assert chores.worker.idle(5) and calls[-1] == "start" and settings.flushes == 1
+    settings.values["enable_koe"] = False
+    chores.koe_changed()
+    assert chores.worker.idle(5) and calls[-1] == "stop" and chores.state().koe_port is None
+    chores.close()
+
+
+def test_koe_hidden_never_starts(monkeypatch):
+    """The reveal gate (`is_revealed`): `enable_koe` true but the line not the user's — nothing starts."""
+    calls = _koe(monkeypatch, revealed=False)
+    chores, _r, _p = _make(_Settings(enable_koe=True))
+    chores.started()
+    assert chores.worker.idle(5)
+    assert "start" not in calls
+    chores.close()
+
+
+def test_koe_absent_the_chores_still_run(monkeypatch, timers_on):
+    """RD-S10: the module removed — started, focus, close all run."""
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, registry, _p = _make(_Settings(enable_koe=True), timers=timers)
+    chores.started()
+    chores.activated()
+    chores.koe_changed()
+    assert chores.worker.idle(5)
+    assert len(timers) == 4, "the indexer, the store's helper, Connect's notice, the helper's debounce"
+    chores.close()
+
+
+# --- the start-up chores ----------------------------------------------------------------------------------------- #
+def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
+    """`__init__`'s `_prepare_preview` thread, `_write_install_note`, and the timers at 1.5 s / 1.5 s / 2.5 s."""
+    from app import path_utils, token_index
+    notes, warm = [], []
+    monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: notes.append(1))
+    monkeypatch.setattr(token_index, "prepare_preview", lambda language, folder: warm.append(language))
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(timers=timers)
+    chores.started()
+    assert chores.worker.idle(5)
+    assert notes == [1] and warm == ["ja"]
+    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT]
+    chores.close()
+    assert all(t.cancelled for t in timers)
+
+
+def test_under_test_no_timer_and_no_warm_up(monkeypatch):
+    """`SURASURA_NO_UI_TIMERS` (the suite's): no start timers, no warm-up, no store helper; the install note still
+    (the Tk window writes it always: frozen builds only)."""
+    from app import path_utils, token_index
+    notes, warm = [], []
+    monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: notes.append(1))
+    monkeypatch.setattr(token_index, "prepare_preview", lambda language, folder: warm.append(language))
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(timers=timers)
+    chores.started()
+    chores.activated()
+    assert chores.worker.idle(5)
+    assert notes == [1] and warm == [] and timers == []
+    chores.close()
+
+
+class _Store:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _library_store(monkeypatch, mode="store", due=True):
+    from app import library_store
+    spawned, handed = [], []
+    monkeypatch.setattr(library_store, "check_mode", lambda language, data_dir, busy_wait=None: (mode, ""))
+    monkeypatch.setattr(library_store, "open_store", lambda *a, **k: _Store())
+
+    def maintain_due(store, seen=""):
+        handed.append(seen)
+        return due, "stat-1"
+    monkeypatch.setattr(library_store, "maintain_due", maintain_due)
+
+    def spawn(language, *extra):
+        proc = _Proc(["maintain", language])
+        spawned.append(proc)
+        return proc
+    monkeypatch.setattr(library_store, "spawn_maintain", spawn)
+    monkeypatch.setattr(library_store, "spawn_build_if_waiting", lambda language, d, u: spawn(language))
+    return spawned, handed
+
+
+def test_the_store_helper_once_per_burst_and_detached(monkeypatch, timers_on):
+    """`_schedule_maintain` (2 s after the last focus) → `_maybe_maintain`: one check for a burst; the helper a
+    `library-maintain` job left running at quit (Library_Store_Spec §6.7); the copy's stat handed on."""
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    spawned, handed = _library_store(monkeypatch)
+    timers = _Timers()
+    chores, registry, _p = _make(timers=timers)
+    for _ in range(10):
+        chores.activated()
+    live = [t for t in timers if not t.cancelled and t.delay == C.MAINTAIN_SETTLE]
+    assert len(live) == 1
+    live[0].call()
+    assert chores.worker.idle(5)
+    assert len(spawned) == 1 and handed == [""]
+    job = registry.live("library-maintain")[0]
+    assert job.on_quit == "detach"
+    registry.quit(timeout=0.5)
+    assert spawned[0].returncode is None, "quitting leaves the helper running"
+    spawned[0].end(0)
+    assert h.until(lambda: not registry.live("library-maintain"), seconds=5)
+    chores.activated()
+    [t for t in timers if not t.cancelled and t.delay == C.MAINTAIN_SETTLE][-1].call()
+    assert chores.worker.idle(5) and handed == ["", "stat-1"]
+    chores.close()
+
+
+@pytest.mark.parametrize("mode, expected", [("json", 1), ("read-only", 0)])
+def test_the_store_helper_by_mode(monkeypatch, mode, expected):
+    """No store yet: the build is asked for (`spawn_build_if_waiting`); read-only: nothing."""
+    spawned, _handed = _library_store(monkeypatch, mode=mode)
+    chores, _r, _p = _make()
+    chores.worker.put(chores._maintain)
+    assert chores.worker.idle(5)
+    assert len(spawned) == expected
+    for proc in spawned:
+        proc.end(0)
+    chores.close()
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_connects_notices_only_with_it_on(monkeypatch, timers_on, on):
+    """`_arrivals_notice` 2.5 s on and `notice.at_close` at close, while `connect_enabled`; off, nothing of
+    Connect's is imported."""
+    from app.connect import notice
+    calls = []
+    monkeypatch.setattr(notice, "at_open", lambda language: calls.append(("open", language)) or "3 arrived")
+    monkeypatch.setattr(notice, "at_close", lambda language: calls.append(("close", language)))
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(_Settings(connect_enabled=on), timers=timers)
+    chores.started()
+    [t for t in timers if t.delay == C.ARRIVALS_AT][0].call()
+    assert chores.worker.idle(5)
+    chores.close()
+    if on:
+        assert calls == [("open", "ja"), ("close", "ja")] and chores.state().notice == "3 arrived"
+    else:
+        assert calls == [] and chores.state().notice is None
+
+
+def test_close_runs_the_stores_close_trigger_for_each_language(monkeypatch):
+    from app import library_store
+    closed = []
+    monkeypatch.setattr(library_store, "maintain_at_close", lambda language, *a: closed.append(language))
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    chores, _r, _p = _make()
+    chores.close()
+    assert closed == ["ja", "zh"]
+    assert chores.index(force=True) in ("off", "busy")
+
+
+def test_a_language_switch_reindexes_that_language(indexing_on, monkeypatch):
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    chores, registry, popen = _make()
+    chores.language_changed("zh")
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    assert popen[0].args[-1] == "zh"
+    popen[0].end(0)
+    chores.close()

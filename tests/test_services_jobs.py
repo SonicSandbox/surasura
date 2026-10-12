@@ -188,3 +188,20 @@ def test_ended_jobs_are_kept_only_to_a_limit():
 def test_an_unknown_quit_choice_is_refused():
     with pytest.raises(ValueError):
         JobRegistry().submit("generate", "Generating", lambda j: None, on_quit="never")
+
+
+def test_a_gate_holds_gated_jobs_until_it_opens_and_cancel_by_id():
+    """W3.5 row 1: the update's gate — a job its check names a reason for waits with that reason (a recorded child is
+    never held: its owner started it); `reschedule()` after the gate opens starts it; `cancel(job_id)` is *Stop it*."""
+    registry, started, closed = JobRegistry(), [], [True]
+    registry.gate(lambda kind: "waits for the update" if closed[0] and kind == "generate" else None)
+    gen = registry.submit("generate", "Generating", _starter(started))
+    idx = registry.submit("junban", "Re-ordering Anki", _starter(started))
+    child = registry.record("child", "Content Manager")
+    assert (gen.state, gen.reason) == (J.WAITING, "waits for the update")
+    assert idx.state == J.RUNNING and child.state == J.RUNNING and started == ["Re-ordering Anki"]
+    closed[0] = False
+    registry.reschedule()
+    assert gen.state == J.RUNNING and started == ["Re-ordering Anki", "Generating"]
+    assert registry.cancel(gen.id) is True and gen.state == J.CANCELLING
+    assert registry.cancel(10_000) is False

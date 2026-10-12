@@ -285,6 +285,41 @@ def check_token_stores():
                            language=language, store_schema=version, schema=token_index.SCHEMA_VERSION)
 
 
+def check_build(store=True):
+    """Refuse (`version-skew`, S3.1 D18) a frozen program whose `_internal` is another build's (its build stamp), and,
+    with `store`, a library store a newer Surasura wrote (`user_version` above `library_store.STORE_SCHEMA`; opened
+    read-only, so the check can never change one; none yet is fine). From source there is no stamp to compare."""
+    from app import build_info
+    skew = build_info.stamp_skew()
+    if skew:
+        raise CliError("version-skew", build_info.skew_text(skew), program=skew["program"], folder=skew["folder"])
+    if not store:
+        return
+    from app import library_store
+    from app.path_utils import get_data_path
+    for language in ("ja", "zh"):
+        try:
+            path = library_store.library_db_path(language, get_data_path(language))
+        except Exception as e:                  # no library store here (switched off, or no data folder)
+            log.warning("library store for %s not checked: %s", language, e)
+            return
+        if not os.path.isfile(path):
+            continue
+        try:
+            conn = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            log.warning("library store %s not checked: %s", path, e)
+            continue
+        if version > library_store.STORE_SCHEMA:
+            raise CliError("version-skew",
+                           "Your library was last used by a newer Surasura. Update Surasura to use it here.",
+                           language=language, store_schema=version, schema=library_store.STORE_SCHEMA)
+
+
 # --------------------------------------------------------------------------- #
 # The wrapper
 # --------------------------------------------------------------------------- #

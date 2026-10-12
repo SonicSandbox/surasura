@@ -39,7 +39,7 @@ def test_windows_folder_is_local_appdata_keyed_per_install(tmp_path, monkeypatch
     monkeypatch.setattr(path_utils, "get_user_data_path", lambda: str(install))
     path = path_utils.get_local_data_path()
     parent, key = os.path.split(path)
-    assert parent == os.path.join(str(tmp_path / "Local"), "SonicSandbox", "Surasura")
+    assert parent == os.path.join(str(tmp_path / "Local"), "Houseki", "Surasura")
     assert len(key) == 16 and all(c in "0123456789abcdef" for c in key)
     assert os.path.isdir(path)
 
@@ -75,13 +75,13 @@ def test_macos_and_linux_folders(tmp_path, monkeypatch):
     monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path / "home")))
     monkeypatch.setattr(sys, "platform", "darwin")
     assert path_utils._local_data_root() == os.path.join(
-        str(tmp_path / "home"), "Library", "Application Support", "SonicSandbox", "Surasura")
+        str(tmp_path / "home"), "Library", "Application Support", "Houseki", "Surasura")
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
-    assert path_utils._local_data_root() == os.path.join(str(tmp_path / "share"), "SonicSandbox", "Surasura")
+    assert path_utils._local_data_root() == os.path.join(str(tmp_path / "share"), "Houseki", "Surasura")
     monkeypatch.delenv("XDG_DATA_HOME")
     assert path_utils._local_data_root() == os.path.join(
-        str(tmp_path / "home"), ".local", "share", "SonicSandbox", "Surasura")
+        str(tmp_path / "home"), ".local", "share", "Houseki", "Surasura")
 
 
 def test_the_guard_watches_the_folder_the_app_would_write(monkeypatch):

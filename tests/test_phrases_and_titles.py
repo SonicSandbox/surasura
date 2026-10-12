@@ -32,7 +32,7 @@ TOOLTIP = ("On: 予想通り, こと自体, 元首相 and もののけ姫 each c
 def settings(tmp_path, monkeypatch):
     """A settings.json of the test's own, read fresh by every signature (as the dashboard and the indexer read it)."""
     path = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(path))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(path))
     return path
 
 

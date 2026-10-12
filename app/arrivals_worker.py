@@ -109,10 +109,10 @@ class Worker:
 
     def _inputs(self):
         """The stat of what else a view reads: settings.json, then the word lists (stat only)."""
-        from app.path_utils import get_user_file, get_user_files_path
+        from app.path_utils import get_settings_path, get_user_files_path
         folder = get_user_files_path(self.language)
         out = []
-        for path in (get_user_file("settings.json"), *(os.path.join(folder, name) for name in (
+        for path in (get_settings_path(), *(os.path.join(folder, name) for name in (
                 "IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"))):
             try:
                 st = os.stat(path)

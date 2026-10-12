@@ -118,6 +118,13 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             if backup:
                 print(f"Backed up your previous known words to: {backup}")
 
+            # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13).
+            from app.anki_sync import kept_graduated
+            kept = kept_graduated(output_json, lock_language, words)
+            words = words + kept
+            stats['totalWords'] += len(kept)
+            stats['knownWords'] += len(kept)
+
             print(f"\nWriting JSON to: {output_json}")
             json_data = {
                 'exportDate': datetime.now().isoformat(),

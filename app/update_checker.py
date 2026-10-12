@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from app import build_info
+from app import ed25519
 
 # Simple logger setup
 logger = logging.getLogger(__name__)
@@ -20,6 +21,17 @@ _RELEASES_PAGE = "https://github.com/{repo}/releases/latest"
 # A test release's rehearsal points the check at a LOCAL folder holding update.json and the release's assets, read
 # only by a build that is not a release build (`build_info.RELEASE_BUILD`): no test release is ever published.
 UPDATE_SOURCE_ENV = "SURASURA_UPDATE_SOURCE"
+
+# The 3.x format (S3.1 D4-D6): update.json's `format: 2` block, `package`, is read only with update.json.sig, Ed25519
+# over the manifest's exact bytes by one of PUBLIC_KEYS (a tuple: a key can be rotated; the private half lives outside
+# every repository, in Sonic's keystore). A rehearsal through UPDATE_SOURCE_ENV (a build that is not a release build)
+# also trusts the hex public keys in TEST_PUBKEY_ENV (comma-separated).
+PUBLIC_KEYS = (
+    bytes.fromhex("c3a26bfe345033b3ccf0f25009826f694a9319d7fcb80bdbbc716928e4664bdb"),   # 2026-10-12
+)
+TEST_PUBKEY_ENV = "SURASURA_UPDATE_TEST_PUBKEY"
+SIGNATURE_ASSET = "update.json.sig"
+_SIGNATURE_LIMIT = 1024
 
 
 def parse_version(version_str: str) -> Tuple[int, ...]:
@@ -65,6 +77,10 @@ class UpdateInfo:
     app_package_url: Optional[str] = None
     full_url: Optional[str] = None
     notes_url: str = ""
+    format: int = 1                    # 2: a 3.x release (S3.1 D5); its `package` is read only when `signed`
+    package: Optional[dict] = None     # {parts[{name, asset, sha256, size}], files[{path, sha256, size, part}], ...}
+    signed: bool = False               # update.json.sig verified against a trusted key
+    assets: Optional[dict] = None      # every asset of the release: lower-cased name -> download URL (3.x's parts)
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +102,14 @@ def _http_text(url: str, timeout: int = 10):
         if response.getcode() == 200:
             return response.read().decode("utf-8")
     return None
+
+
+def _read_bytes(url: str, timeout: int = 10, limit: int = _SIGNATURE_LIMIT):
+    """A small asset's bytes (https, or a rehearsal's file://), or None when it is larger than `limit`."""
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        data = response.read(limit + 1)
+    return data if len(data) <= limit else None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +220,13 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
                         info.files = files
                     else:
                         info.update_type = "full"     # a list we can't read: manual (fail closed)
+                if manifest.get("format") == 2 and not isinstance(manifest.get("format"), bool):
+                    # 3.x (S3.1 D5): the signature over the bytes as published (decoding UTF-8 and encoding it back
+                    # gives the same bytes), then the package, read only when signed.
+                    info.format = 2
+                    info.assets = urls
+                    info.signed = _signature_ok(raw.encode("utf-8"), urls.get(SIGNATURE_ASSET), local, timeout)
+                    info.package = _read_package(manifest.get("package"), urls) if info.signed else None
         except Exception as e:
             # Fail closed: unreadable manifest => manual full update only.
             logger.error(f"Could not parse update manifest: {e}")
@@ -225,6 +256,71 @@ def _local_release(folder):
 def _read_local(url):
     with urllib.request.urlopen(url) as response:
         return response.read().decode("utf-8")
+
+
+def _trusted_keys(local):
+    """PUBLIC_KEYS, and in a rehearsal (a local folder, which a release build never reads) TEST_PUBKEY_ENV's keys."""
+    keys = [bytes(k) for k in PUBLIC_KEYS]
+    if local:
+        for item in (os.environ.get(TEST_PUBKEY_ENV) or "").replace(";", ",").split(","):
+            try:
+                key = bytes.fromhex(item.strip())
+            except ValueError:
+                continue
+            if len(key) == 32:
+                keys.append(key)
+    return keys
+
+
+def _signature_ok(data, sig_url, local, timeout=10):
+    """Is update.json.sig a valid signature of `data` (the manifest's bytes) by a trusted key? Never raises: a
+    missing, oversized or unreadable signature, or no trusted key at all, is False."""
+    if not sig_url:
+        return False
+    try:
+        signature = _read_bytes(sig_url, timeout=timeout)
+    except Exception as e:
+        logger.error(f"Could not read the update signature: {e}")
+        return False
+    if not signature or len(signature) != 64:
+        return False
+    return any(ed25519.verify(key, data, signature) for key in _trusted_keys(local))
+
+
+def _is_sha256(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _is_size(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _read_package(package, urls):
+    """update.json's `package` when its shape is whole -> the dict, else None: parts each {name, asset, sha256, size}
+    with its asset among the release's; files each {path, sha256, size, part} naming one of those parts;
+    needs_installer a bool; min_from a version. (Each path's safety is the assembler's check, S3.1 3.1.3.)"""
+    if not isinstance(package, dict):
+        return None
+    parts, files = package.get("parts"), package.get("files")
+    if not isinstance(parts, list) or not parts or not isinstance(files, list) or not files:
+        return None
+    names = set()
+    for part in parts:
+        if not isinstance(part, dict) or not isinstance(part.get("name"), str) or part["name"] in names \
+                or not _is_sha256(part.get("sha256")) or not _is_size(part.get("size")) \
+                or str(part.get("asset") or "").lower() not in urls:
+            return None
+        names.add(part["name"])
+    for entry in files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"] \
+                or not _is_sha256(entry.get("sha256")) or not _is_size(entry.get("size")) \
+                or entry.get("part") not in names:
+            return None
+    if not isinstance(package.get("needs_installer", False), bool):
+        return None
+    if package.get("min_from") is not None and not version_string(str(package.get("min_from"))):
+        return None
+    return package
 
 
 INSTALLER_FROM_VERSION = (3, 0)
@@ -267,6 +363,9 @@ def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:
     if parse_version(info.version) <= parse_version(current_version):
         return "NONE"
 
+    if getattr(info, "format", 1) == 2:
+        return _classify_3x(current_version, info)
+
     if info.update_type == "installer":
         # The 2.x -> 3.0 hand-off (S1.3-6), shipped in 2.5 switched off: only a release of 3.0 or later that names
         # its installer completely, for a version it accepts updating from. Anything else: a manual download.
@@ -280,4 +379,24 @@ def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:
     ):
         return "APP"
 
+    return "FULL"
+
+
+def _classify_3x(current_version: str, info: UpdateInfo) -> str:
+    """A 3.x release (format 2), for a 3.x install. Unsigned, or a bad signature -> FULL (told only, nothing
+    installed). APP: its package read, this version at or past `min_from`, and nothing only the installer may change
+    (`needs_installer`). INSTALLER: the installer must run (`needs_installer`, or this version below `min_from`) and
+    the release names a complete one. Anything else: FULL."""
+    if not info.signed:
+        return "FULL"
+    package = info.package if isinstance(info.package, dict) else None
+    if package is None:
+        return "FULL"
+    min_from = package.get("min_from")
+    too_old = bool(min_from) and parse_version(current_version) < parse_version(str(min_from))
+    needs_installer = package.get("needs_installer") is True
+    if not too_old and not needs_installer:
+        return "APP"
+    if installer_ready(current_version, info):
+        return "INSTALLER"
     return "FULL"

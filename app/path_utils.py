@@ -27,56 +27,180 @@ def get_base_path():
         # Assumes this file is in app/path_utils.py, so root is ../
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# --- Where the program keeps its files (S3.1 D3, D14, D20) ------------------------------------------------------- #
+# The 3.0 line keeps everything under Houseki\ (G1.3-18): %LOCALAPPDATA%\Houseki\<data name> (the store, the install
+# note, library.json, the per-install folders, the update's state) and %APPDATA%\Houseki\<data name> (token stores,
+# パターン, Koe, the telemetry id, settings.json when installed). The data name is the build's (`data_name()`:
+# "Surasura", "Surasura-test" for a test installer), so a test install never shares a real one's files. 2.x's
+# SonicSandbox roots are read only — by the 2.x import — and hold the shared `anki-writer` lock 2.x and 3.0 both
+# take (app/locks.py).
+#
+# Two layouts, decided by one file: a frozen program whose `<Houseki local root>\library.json`
+# ({"version": 1, "install": <program folder>, "library": <library folder>}, written by the installer) names THIS
+# program's folder and a library folder is INSTALLED — the library (User Files\, data\, results\) in that folder,
+# settings.json in the Houseki roaming root, the per-install folder keyed on the program folder (moving the library
+# never moves window state, logs or locks). Anything else frozen is PORTABLE: 2.x's layout, everything beside the exe
+# (dist\Surasura and test builds never touch a real library). Source runs and SURASURA_TEST_ROOT never read the file.
+VENDOR = "Houseki"
+LEGACY_VENDOR = "SonicSandbox"
+LIBRARY_NOTE = "library.json"
+DATA_NAME = "Surasura"
+BUILD_STAMP = "build_stamp.json"
+
+_LIBRARY = {}   # (library.json's path, the program folder) -> the library folder, or None: read once per process (the
+                # installer writes it only while no Surasura runs: its AppMutex)
+_DATA_NAME = {}     # the build stamp's path -> its data name
+_DATA_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")     # one plain folder name, never a path
+
+
+def data_name():
+    """The folder name under Houseki\\ — the build stamp's "data_name" (`<get_base_path()>/build_stamp.json`: the
+    frozen program's `_internal`), else "Surasura": from source, with no stamp, or with a value that isn't one plain
+    folder name."""
+    if not is_frozen():
+        return DATA_NAME
+    path = os.path.join(get_base_path(), BUILD_STAMP)
+    if path not in _DATA_NAME:
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                name = json.load(f).get("data_name")
+        except (OSError, ValueError, AttributeError):
+            name = None
+        ok = isinstance(name, str) and bool(_DATA_NAME_RE.match(name)) and name.rstrip(" .") == name
+        _DATA_NAME[path] = name if ok else DATA_NAME
+    return _DATA_NAME[path]
+
+
+def _local_base():
+    """The per-user LOCAL base folder (never roams, never redirected to a network share), one for every system:
+    Windows %LOCALAPPDATA%, macOS ~/Library/Application Support, Linux $XDG_DATA_HOME (else ~/.local/share)."""
+    if sys.platform == "win32":
+        return os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def _roaming_base():
+    """The per-user base folder that survives updates and reinstalls (and roams on Windows): %APPDATA%, else
+    $XDG_DATA_HOME (else ~/.local/share) — 2.x's rule, macOS included."""
+    if sys.platform == "win32":
+        return os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def _same_folder(a, b):
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _absolute(value):
+    """`value` as a normalised absolute path, or None (not a string, empty, relative)."""
+    if not isinstance(value, str) or not value.strip() or not os.path.isabs(value.strip()):
+        return None
+    return os.path.normpath(value.strip())
+
+
+def _read_library_note(path, program):
+    """The library folder `library.json` names when its "install" is `program` — or None (no file, not readable,
+    another shape, another program's folder, a relative path)."""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:      # the installer may write a BOM
+            note = json.load(f)
+        install, library = _absolute(note.get("install")), _absolute(note.get("library"))
+    except (OSError, ValueError, AttributeError):
+        return None
+    if install is None or library is None or not _same_folder(install, program):
+        return None
+    return library
+
+
+def installed_library():
+    """The library folder of an INSTALLED program (frozen, and the Houseki local root's library.json names this
+    program's folder and a library), else None: a portable program, a source run, a test root."""
+    if os.environ.get("SURASURA_TEST_ROOT") or not is_frozen():
+        return None
+    key = (os.path.join(_local_data_root(), LIBRARY_NOTE), os.path.dirname(sys.executable))
+    if key not in _LIBRARY:
+        _LIBRARY[key] = _read_library_note(*key)
+    return _LIBRARY[key]
+
+
+def library_available():
+    """False only for an installed program whose library folder isn't there (a NAS or OneDrive folder offline, a
+    drive unplugged — or a new install's first start, before the window makes it after its write check, D12): then
+    nothing may create it, or an empty library in its place. The one check: `ensure_data_setup` does nothing then, and
+    a window or the command line asks this before starting work on the library."""
+    library = installed_library()
+    return library is None or os.path.isdir(library)
+
+
 def get_user_data_path():
     """
-    Get the directory for USER DATA (inputs, outputs, settings).
+    Get the directory for USER DATA (inputs, outputs): the library — User Files\\, data\\, results\\.
     If SURASURA_TEST_ROOT env var is set, use it (for E2E tests).
-    If frozen: return the directory containing the executable.
+    If frozen and installed: the library folder library.json names (`installed_library`).
+    If frozen and portable: the directory containing the executable.
     If source: return the root of the project.
     """
     if os.environ.get("SURASURA_TEST_ROOT"):
         return os.environ.get("SURASURA_TEST_ROOT")
     if is_frozen():
-        return os.path.dirname(sys.executable)
+        return installed_library() or os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_settings_path():
+    """settings.json: in the Houseki roaming root when installed (`get_persistent_user_data_path`: it never moves with
+    the library); else beside the user data, as 2.x kept it — <test root>/settings.json, the project root's, the
+    portable program's folder."""
+    if installed_library():
+        return os.path.join(get_persistent_user_data_path(), "settings.json")
+    return get_user_file("settings.json")
+
 
 def get_persistent_user_data_path():
     """
     Get the directory for PERSISTENT USER DATA (e.g. telemetry ID).
     This path should survive application updates/reinstalls.
-    Windows: %APPDATA%/SonicSandbox/Surasura/
-    Linux/Mac: ~/.local/share/SonicSandbox/Surasura/
+    Windows: %APPDATA%/Houseki/<data name>/
+    Linux/Mac: ~/.local/share/Houseki/<data name>/
     """
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA")
-        if not base:
-            base = os.path.expanduser("~")
-        path = os.path.join(base, "SonicSandbox", "Surasura")
-    else:
-        # XDG Base Directory Specification fallback
-        base = os.environ.get("XDG_DATA_HOME")
-        if not base:
-             base = os.path.join(os.path.expanduser("~"), ".local", "share")
-        path = os.path.join(base, "SonicSandbox", "Surasura")
-        
+    path = os.path.join(_roaming_base(), VENDOR, data_name())
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
-        
     return path
 
 def _local_data_root():
-    """The per-user LOCAL data folder (never roams, never redirected to a network share), one root for every system
-    (S1.1 K100; the library store and the command line build on it):
-    Windows %LOCALAPPDATA%, macOS ~/Library/Application Support, Linux $XDG_DATA_HOME (else ~/.local/share),
-    each + SonicSandbox/Surasura."""
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    elif sys.platform == "darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return os.path.join(base, "SonicSandbox", "Surasura")
+    """The per-user LOCAL data folder, one root for every system (S1.1 K100; the library store and the command line
+    build on it): `_local_base()` + Houseki/<data name>."""
+    return os.path.join(_local_base(), VENDOR, data_name())
+
+def _test_redirect(name):
+    """<test root>/<name> under SURASURA_TEST_ROOT; None outside a test; a test without a root raises."""
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        return os.path.join(root, name)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError(f"a test reached a real {name.replace('_', ' ')}: set SURASURA_TEST_ROOT")
+    return None
+
+def legacy_local_root():
+    """2.x's local root, `_local_base()` + SonicSandbox/Surasura — its installs.json, its library store, its shared
+    `anki-writer` lock. Read only (the 2.x import), never written but for that lock. Under SURASURA_TEST_ROOT:
+    <test root>/legacy_local_root."""
+    return _test_redirect("legacy_local_root") or os.path.join(_local_base(), LEGACY_VENDOR, "Surasura")
+
+def legacy_persistent_root():
+    """2.x's persistent root, `_roaming_base()` + SonicSandbox/Surasura — its パターン databases, Koe's files, the
+    telemetry id. Read only (the 2.x import); never created. Under SURASURA_TEST_ROOT:
+    <test root>/legacy_persistent_root."""
+    return _test_redirect("legacy_persistent_root") or os.path.join(_roaming_base(), LEGACY_VENDOR, "Surasura")
+
+def tools_root():
+    """%LOCALAPPDATA%\\Houseki\\tools (the system's local base elsewhere): reserved for Torii (3.1, D20). Named only:
+    nothing is installed there in 3.0 and it is never created."""
+    return os.path.join(_local_base(), VENDOR, "tools")
 
 def local_data_root():
     """The local data root (`_local_data_root`): where `installs.json`, the note naming every install's data folder,
@@ -103,9 +227,11 @@ def get_local_data_path():
     """
     Get the per-install LOCAL data folder: the command line's logs, locks and events (P0.3 02-contract §6), and the
     update's lock and state (S1.1).
-    Windows: %LOCALAPPDATA%/SonicSandbox/Surasura/<install key>/
-    macOS: ~/Library/Application Support/SonicSandbox/Surasura/<install key>/
-    Linux: $XDG_DATA_HOME (else ~/.local/share)/SonicSandbox/Surasura/<install key>/
+    Windows: %LOCALAPPDATA%/Houseki/Surasura/<install key>/
+    macOS: ~/Library/Application Support/Houseki/Surasura/<install key>/
+    Linux: $XDG_DATA_HOME (else ~/.local/share)/Houseki/Surasura/<install key>/
+    The key names the user-data folder — an installed program's, the PROGRAM folder (S3.1 D3: moving the library
+    never moves window state, logs or locks).
     SURASURA_TEST_ROOT moves it to <test root>/local; a test that reaches the real one raises.
     """
     root = os.environ.get("SURASURA_TEST_ROOT")
@@ -114,7 +240,8 @@ def get_local_data_path():
     elif "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("a test reached the real local data folder: set SURASURA_TEST_ROOT")
     else:
-        path = os.path.join(_local_data_root(), _install_key(get_user_data_path()))
+        install = os.path.dirname(sys.executable) if installed_library() else get_user_data_path()
+        path = os.path.join(_local_data_root(), _install_key(install))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -192,8 +319,9 @@ def _install_languages(data_root):
             or os.path.isdir(os.path.join(data_root, "data", lang))]
 
 def write_install_note(frozen=None):
-    """K100: leave a note in the local data root naming this install's data folder, so 3.0's first start finds the
-    library. One entry per install, {data_root, exe, version, languages, last_run}; an install writes only its own.
+    """K100: leave a note in the local data root naming this install's data folder, so a later version's first start
+    finds the library (on the 3.0 line, the Houseki root's note; 2.x's SonicSandbox note is the import's). One entry
+    per install, {data_root, exe, version, languages, last_run}; an install writes only its own.
     Written by the frozen app only, at the dashboard's start and just before an update hands over. A unique temp file
     swapped in, then read back: when this install's entry is missing (another install wrote at the same moment), it
     is written again, up to three times; a short lock on `installs.lock` keeps two writers from crossing at all when
@@ -393,11 +521,18 @@ def ensure_data_setup(language=None):
     Ensures the data folders exist. If language is provided, sets up data/<language>/ and
     User Files/<language>/.
 
+    Does nothing (-> False) when the installed library's folder isn't there (`library_available`): never an empty
+    library in place of one that is offline. -> True otherwise.
+
     NOTE: this NO LONGER copies sample content. Samples are seeded ONLY on explicit user request
     (the "Test with samples" action → `seed_samples`), so a new user starts with a genuinely empty
     library and the empty-state onboarding can appear. (Previously this auto-copied samples into any
     empty tier — and re-seeded a tier the user later emptied.)
     """
+    if not library_available():
+        print("The library folder is not available; nothing was set up.")
+        return False
+
     # 1. Determine Paths
     data_path = get_data_path(language)
     user_files_dir = get_user_files_path(language)
@@ -417,25 +552,53 @@ def ensure_data_setup(language=None):
     # 4. Ensure User Files folder exists
     if not os.path.exists(user_files_dir):
         os.makedirs(user_files_dir, exist_ok=True)
-        
-    # 5. Create Blacklist/IgnoreList/GraduatedList if they don't exist
-    for list_name in ["Blacklist.txt", "IgnoreList.txt", "GraduatedList.txt"]:
+
+    # 5. The bundled default lists (the frequency lists, S3.1 D15) a new library starts with: each one missing
+    #    from User Files/<lang>/ is copied from the program's defaults/<lang>/ — never over one that is there.
+    if language:
+        copy_default_lists(language)
+
+    # 6. Create Blacklist/IgnoreList if they don't exist. GraduatedList.txt is no longer made: 3.0 merges it into the
+    #    known words once (app/graduated_merge.py, S3.1 D13).
+    for list_name in ["Blacklist.txt", "IgnoreList.txt"]:
         list_path = os.path.join(user_files_dir, list_name)
         if not os.path.exists(list_path):
             try:
                 with open(list_path, "w", encoding="utf-8") as f:
                     if list_name == "Blacklist.txt":
                         f.write("# Global Blacklist\n" if not language else f"# {language} Blacklist\n")
-                    elif list_name == "GraduatedList.txt":
-                         f.write("# Words from graduated content (automatically added)\n")
                     else:
                         f.write("# Add words to ignore here (one per line)\n")
             except Exception as e:
                 print(f"Warning: Could not create {list_name}: {e}")
                 
-    # 6. Async Trash Cleanup
+    # 7. Async Trash Cleanup
     trash_dir = os.path.join(data_path, ".trash")
     cleanup_trash_async(trash_dir)
+    return True
+
+
+def copy_default_lists(language):
+    """Copy each file in the program's `defaults/<language>/` that `User Files/<language>/` lacks (copy2: its date
+    kept) -> the names copied. No such folder (a source run, a 2.x-shaped build) copies nothing; a file already
+    there is never touched; a copy that fails is reported and the rest go on."""
+    source = os.path.join(get_base_path(), "defaults", language)
+    if not os.path.isdir(source) or not library_available():
+        return []
+    target = get_user_files_path(language)
+    copied = []
+    for name in sorted(os.listdir(source)):
+        src, dst = os.path.join(source, name), os.path.join(target, name)
+        if not os.path.isfile(src) or os.path.exists(dst):
+            continue
+        try:
+            os.makedirs(target, exist_ok=True)
+            shutil.copy2(src, dst + ".tmp")             # swapped in whole: a copy cut off is never taken for the list
+            os.replace(dst + ".tmp", dst)
+            copied.append(name)
+        except OSError as e:
+            print(f"Warning: Could not copy the default list {name}: {e}")
+    return copied
 
 
 def seed_samples(language=None):

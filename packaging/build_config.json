@@ -1,0 +1,30 @@
+{
+  "_about": "The build's one configuration (S3.1 D15): packaging/Surasura.spec and package_app.py read it, never a settings.json. modules: which optional modules ship (2.5.0 shipped junban, koe, youtube_downloader); koe also needs its folder. parts: update.json's parts (D4), first match wins: a path ending in / is a folder, \"\" every file left.",
+  "modules": {
+    "junban": true,
+    "koe": true,
+    "youtube_downloader": true,
+    "reels": false,
+    "immersion_architect": false
+  },
+  "data_name": "Surasura",
+  "python_min": "3.11.4",
+  "sqlite_min": "3.51.3",
+  "sqlite_dll": "packaging/sqlite/sqlite3.dll",
+  "sqlite_dll_sha256": "ab57d0437795ecc757cb693f32ea224173fa9856594d95cfa6b5033e645cd1ec",
+  "upx": false,
+  "qt_modules": ["QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg"],
+  "release": {
+    "min_from": "3.0.0",
+    "installer_min_from": "2.5"
+  },
+  "parts": [
+    {"name": "app", "paths": ["Surasura.exe", "surasura-cli.exe", "updater.exe", "README.md", "RELEASE_NOTES.md",
+                              "UPDATE_INSTRUCTIONS.md", "_internal/base_library.zip", "_internal/build_stamp.json",
+                              "_internal/.env", "_internal/templates/", "_internal/app/", "_internal/scripts/",
+                              "_internal/samples/"]},
+    {"name": "qt", "paths": ["_internal/PyQt6/", "_internal/licenses/"]},
+    {"name": "dict", "paths": ["_internal/unidic_lite/", "_internal/jieba/", "_internal/defaults/"]},
+    {"name": "runtime", "paths": [""]}
+  ]
+}

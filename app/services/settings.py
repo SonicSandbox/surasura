@@ -71,8 +71,8 @@ def file_as_is():
     """settings.json as the file holds it — never the defaults: no file yet is `{}` (a first save writes only the keys
     it is given, never every default and every module's), and a file that can't be read as an object is kept beside
     it (`settings.json.unreadable`) before the save starts it again from `{}`, as the 2.x dashboard's save did."""
-    from app.path_utils import get_user_file, read_text
-    path = get_user_file("settings.json")
+    from app.path_utils import get_settings_path, read_text
+    path = get_settings_path()
     if not os.path.exists(path):
         return {}
     try:

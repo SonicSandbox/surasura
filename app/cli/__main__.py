@@ -115,6 +115,7 @@ def main(argv=None, out=None):
                 raise usage
             if verb not in ANSWER_WHILE_UPDATING:
                 contract.check_update()
+            contract.check_build(store=not args.version)    # a mixed program folder is refused, --version too
             if args.version:
                 return _version(args)
             contract.check_token_stores()
@@ -127,4 +128,6 @@ def main(argv=None, out=None):
 
 
 if __name__ == "__main__":
+    from app import build_info
+    build_info.hold_running_mutex()     # frozen: <data name>.Running while it runs (the installer waits for it)
     sys.exit(main())

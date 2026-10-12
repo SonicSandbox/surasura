@@ -47,7 +47,7 @@ class TestJunbanSettingsDefaults(unittest.TestCase):
         """
         missing = os.path.join(tempfile.gettempdir(), "surasura-no-such-settings.json")
         with patch.dict(sys.modules), \
-             patch("app.settings_manager.get_user_file", return_value=missing):
+             patch("app.settings_manager.get_settings_path", return_value=missing):
             sys.modules['modules.junban'] = None    # forces ImportError on import
             loaded = settings_manager.load_settings()
         leaked = [k for k in loaded if "junban" in k.lower()]
@@ -62,7 +62,7 @@ class TestJunbanSettingsDefaults(unittest.TestCase):
         parent = MagicMock()
         parent.junban = stand_in
         with patch.dict(sys.modules, {'modules': parent, 'modules.junban': stand_in}), \
-             patch("app.settings_manager.get_user_file", return_value=missing):
+             patch("app.settings_manager.get_settings_path", return_value=missing):
             loaded = settings_manager.load_settings()
         self.assertIn("enable_junban", loaded)
         self.assertFalse(loaded["enable_junban"])

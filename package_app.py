@@ -6,6 +6,67 @@ import argparse
 import json
 
 CLI_EXE_NAME = "surasura-cli.exe"   # the headless command line, built beside Surasura.exe (packaging/Surasura.spec)
+PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, "updater.exe")   # exactly these at the program folder's top (S3.1 D17)
+
+# The build's one configuration (S3.1 D15): the bundled modules, the Python and SQLite floors, UPX, the window's Qt
+# modules and update.json's parts. packaging/Surasura.spec reads the same file; neither reads a settings.json.
+BUILD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "build_config.json")
+OPTIONAL_MODULES = ("junban", "koe", "youtube_downloader", "reels", "immersion_architect")
+
+
+def load_build_config(path=BUILD_CONFIG):
+    """packaging/build_config.json, checked -> the dict. Raises ValueError naming what is wrong: a build never guesses."""
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    problems = []
+    modules = config.get("modules")
+    if not isinstance(modules, dict) or set(modules) != set(OPTIONAL_MODULES) or \
+            not all(isinstance(v, bool) for v in modules.values()):
+        problems.append(f"modules must give true/false for exactly {', '.join(OPTIONAL_MODULES)}")
+    for key in ("python_min", "sqlite_min"):
+        if not isinstance(config.get(key), str) or not _version_tuple(config.get(key)):
+            problems.append(f"{key} must be a dotted version")
+    if not valid_data_name(config.get("data_name")):
+        problems.append("data_name must be a plain folder name (letters, digits, - and _)")
+    if config.get("upx") is not False:
+        problems.append("upx must be false: UPX stays off (S3.1 D15)")
+    qt = config.get("qt_modules")
+    if not isinstance(qt, list) or not qt or not all(isinstance(m, str) and m.startswith("Qt") for m in qt):
+        problems.append("qt_modules must list the window's Qt modules")
+    release = config.get("release")
+    if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
+                                                                                         "installer_min_from")):
+        problems.append("release must give min_from and installer_min_from")
+    parts = config.get("parts")
+    names = [p.get("name") for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
+    if not isinstance(parts, list) or not parts or len(names) != len(parts) or len(set(names)) != len(names) or \
+            not all(isinstance(n, str) and n.isalnum() and n.islower() for n in names) or \
+            not all(isinstance(p.get("paths"), list) and all(isinstance(x, str) for x in p["paths"]) for p in parts) or \
+            parts[-1]["paths"] != [""]:
+        problems.append('parts must be named lower-case parts with path lists, the last one [""] (every file left)')
+    if problems:
+        raise ValueError("packaging/build_config.json: " + "; ".join(problems))
+    return config
+
+
+def _version_tuple(text):
+    """'3.11.4' -> (3, 11, 4); anything else -> ()."""
+    try:
+        return tuple(int(p) for p in str(text).split(".")) if text else ()
+    except ValueError:
+        return ()
+
+
+def valid_data_name(name):
+    """The name of the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>): "Surasura", or a test
+    build's own ("Surasura-test"), so a test build never shares a real install's folders. Letters, digits, - and _."""
+    return isinstance(name, str) and 0 < len(name) <= 64 and \
+        all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
+
+
+def _python_version():
+    return tuple(sys.version_info[:3])
+
 
 def get_version():
     """Reads the version from app/__init__.py without importing the package."""
@@ -17,47 +78,41 @@ def get_version():
                 return line.split(delim)[1]
     return "0.0"
 
-# Optional modules and the settings that cause them to be bundled (mirrors packaging/Surasura.spec).
-# When a module will be included in the build, its own test suite must pass first.
-def _included_module_test_dirs(settings):
+# Optional modules and the build config's flags that bundle them (mirrors packaging/Surasura.spec, which reads the
+# same `modules` block). When a module will be included in the build, its own test suite must pass first.
+def _included_module_test_dirs(modules):
     dirs = []
     # (The Immersion Architect is never bundled since 2.5 — sunset, RD-D9 — so its suite is no gate.)
-    # YouTube Downloader: bundled when either feature is enabled.
-    if settings.get("enable_youtube_transcripts", False) or settings.get("enable_youtube_preview", False):
+    # YouTube Downloader: bundled when the build config names it.
+    if modules.get("youtube_downloader") is True:
         d = os.path.join("modules", "youtube_downloader", "tests")
         if os.path.isdir(d):
             dirs.append(d)
-    # Speech (Koe): always bundled when present (it is hidden at runtime, not at build time), so
-    # its suite runs whenever the folder is there.
-    d = os.path.join("modules", "koe", "tests")
-    if os.path.isdir(d):
-        dirs.append(d)
-    # Reels: bundled when enabled, so its suite runs before a build that ships it.
-    if settings.get("enable_reels", False):
+    # Speech (Koe): bundled when named and present (it is hidden at runtime, not at build time), so its suite runs
+    # whenever it ships.
+    if modules.get("koe") is True:
+        d = os.path.join("modules", "koe", "tests")
+        if os.path.isdir(d):
+            dirs.append(d)
+    # Reels: bundled when named, so its suite runs before a build that ships it.
+    if modules.get("reels") is True:
         d = os.path.join("modules", "reels", "tests")
         if os.path.isdir(d):
             dirs.append(d)
-    # Junban: bundled when enabled, so its suite runs before a build that ships it.
-    if settings.get("enable_junban", False):
+    # Junban: bundled when named, so its suite runs before a build that ships it.
+    if modules.get("junban") is True:
         d = os.path.join("modules", "junban", "tests")
         if os.path.isdir(d):
             dirs.append(d)
     return dirs
 
 
-def run_pre_build_tests():
+def run_pre_build_tests(modules):
     """Run the core suite plus the suite of every module that will be bundled.
 
     Everything shipped must be testable before it builds. Returns True only if all pass.
     """
-    settings = {}
-    try:
-        with open("settings.json", "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception as e:
-        print(f"Warning: could not read settings.json for test selection: {e}")
-
-    suites = ["tests"] + _included_module_test_dirs(settings)
+    suites = ["tests"] + _included_module_test_dirs(modules)
     print(f"Running pre-build tests for: {', '.join(suites)}")
 
     failed = []
@@ -146,7 +201,8 @@ def _warn_if_runtime_changed(full_update):
 
 
 def _build_app_package(final_dist, version, full_update):
-    """Emit the release update artifacts: the app-only package zip and update.json.
+    """2.x's release artifacts (the 2.x line's packager, kept for its tests; a 3.x release is `_build_release`):
+    the app-only package zip and update.json.
 
     The app package carries the code-bearing executable (Surasura.exe — its embedded archive
     holds ALL app code) plus the loose report templates. That is the correct minimal unit: in
@@ -236,23 +292,224 @@ def _package_file_list(final_dist):
     return files
 
 
+# --- The 3.x update format (S3.1 D4, D5, D6) --------------------------------------------------------------------------
+# A 3.x release lists every file of the program folder with its sha256 and size, each in one part (build_config's
+# `parts`), and publishes each part as one zip; the client downloads only the parts holding a changed or missing file.
+# update.json keeps 2.x's keys, written for 2.x readers (2.5 hands over to the installer when one is attached, older
+# versions see a download), and adds `format: 2` + `package`, which only 3.x reads. update.json.sig is Ed25519 over the
+# manifest's exact bytes, by the key in the file SURASURA_SIGNING_KEY_FILE names (never logged, never on a command line).
+
+SIGNING_KEY_ENV = "SURASURA_SIGNING_KEY_FILE"
+MANIFEST_NAME = "update.json"
+SIGNATURE_NAME = "update.json.sig"
+
+
+def part_of(path, parts):
+    """The part a program file belongs to: the first part one of whose paths names it (a path ending in / is a
+    folder, "" every file). -> the part's name, or None."""
+    for part in parts:
+        for prefix in part["paths"]:
+            if prefix == "" or path == prefix or (prefix.endswith("/") and path.startswith(prefix)):
+                return part["name"]
+    return None
+
+
+def program_files(final_dist, parts):
+    """Every file of the built program folder: [{path, sha256, size, part}], sorted by path ('/'-separated)."""
+    found = []
+    for root, dirs, names in os.walk(final_dist):
+        dirs.sort()
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            path = os.path.relpath(full, final_dist).replace(os.sep, "/")
+            part = part_of(path, parts)
+            if part is None:
+                raise ValueError(f"{path} is in no part of packaging/build_config.json")
+            found.append({"path": path, "sha256": _sha256(full), "size": os.path.getsize(full), "part": part})
+    return sorted(found, key=lambda f: f["path"])
+
+
+def canonical_json(manifest):
+    """The manifest's bytes as they are signed and published: sorted keys, indent 2, UTF-8, a final newline."""
+    return (json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def read_signing_key(path):
+    """The 32-byte Ed25519 private key in `path`: 32 raw bytes, or 64 hex characters. Raises ValueError, never
+    quoting the file."""
+    with open(path, "rb") as f:
+        raw = f.read(4096)
+    if len(raw) == 32:
+        return raw
+    try:
+        seed = bytes.fromhex(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        seed = b""
+    if len(seed) != 32:
+        raise ValueError("the signing key file holds neither 32 bytes nor 64 hex characters")
+    return seed
+
+
+def _build_release(final_dist, version, config, out_dir="dist", installer=None, needs_installer=False):
+    """Write a 3.x release's update artifacts into `out_dir`: one zip per part (surasura_part_<name>_v<ver>.zip),
+    update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
+    (its 2.x hand-off block is written only then). `needs_installer`: this release changes what only the installer
+    owns (3.1.5 sets it from the .iss). -> the manifest dict."""
+    import zipfile
+    from app import ed25519
+
+    parts_rule = config["parts"]
+    files = program_files(final_dist, parts_rule)
+    parts = []
+    for part in parts_rule:
+        members = [f for f in files if f["part"] == part["name"]]
+        if not members:
+            continue
+        asset = f"surasura_part_{part['name']}_v{version}.zip"
+        path = os.path.join(out_dir, asset)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in members:
+                z.write(os.path.join(final_dist, *f["path"].split("/")), f["path"])
+        parts.append({"name": part["name"], "asset": asset, "sha256": _sha256(path), "size": os.path.getsize(path)})
+        print(f"Part {part['name']}: {asset} ({len(members)} files, {os.path.getsize(path) / (1024 * 1024):.1f} MB)")
+
+    manifest = {
+        "version": version,
+        "update_type": "full",
+        "runtime_baseline": version,
+        "critical": False,
+        "sha256": "",
+        "notes_url": f"https://github.com/SonicSandbox/surasura/releases/tag/v{version}",
+        "format": 2,
+        "package": {"parts": parts, "files": files, "needs_installer": bool(needs_installer),
+                    "min_from": config["release"]["min_from"]},
+    }
+    if installer:
+        # 2.x's hand-off (S1.3-6): 2.5 runs this installer, its wizard showing (args empty); 2.4.0 and older see a
+        # download. A 3.x release without an installer is "full" to every 2.x.
+        manifest["update_type"] = "installer"
+        manifest["installer"] = {"asset": os.path.basename(installer), "sha256": _sha256(installer), "args": [],
+                                 "min_from": config["release"]["installer_min_from"]}
+
+    data = canonical_json(manifest)
+    with open(os.path.join(out_dir, MANIFEST_NAME), "wb") as f:
+        f.write(data)
+    print(f"update.json written (format 2, {len(files)} files in {len(parts)} parts, "
+          f"update_type={manifest['update_type']} for 2.x).")
+
+    sig_path = os.path.join(out_dir, SIGNATURE_NAME)
+    if os.path.exists(sig_path):
+        os.remove(sig_path)                                  # never a stale signature beside a new manifest
+    key_file = os.environ.get(SIGNING_KEY_ENV)
+    seed = None
+    if key_file:
+        try:
+            seed = read_signing_key(key_file)
+        except (OSError, ValueError) as e:
+            print(f"\n*** ERROR: the signing key {SIGNING_KEY_ENV} names can't be used ({type(e).__name__}). ***")
+    if seed is None:
+        print(f"\n*** WARNING: update.json is NOT signed (no usable {SIGNING_KEY_ENV}). A 3.x install will only be "
+              "told this release is out; it installs nothing unsigned. ***\n")
+    else:
+        with open(sig_path, "wb") as f:
+            f.write(ed25519.sign(seed, data))
+        import hashlib
+        print(f"update.json.sig written (public key fingerprint "
+              f"{hashlib.sha256(ed25519.public_key(seed)).hexdigest()[:16]}).")
+    return manifest
+
+
+# --- The installer (S3.1 D1, D2, D8) ----------------------------------------------------------------------------------
+# packaging/surasura.iss, compiled by Inno Setup 6's ISCC into dist\Surasura-<ver>-setup.exe. A test build (any
+# data_name but build_config's) gets its own AppId, name, program folder and mutex, so a test install never meets a
+# real one (S3.1-3).
+INSTALLER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packaging", "surasura.iss")
+APP_GUID = "0EF53F4A-4995-48AA-A8EA-91649B265D82"   # the real program's AppId (made once, 2026-10-12): never change it
+ISCC_PLACES = (r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe",       # installed for this user (S3.1-2)
+               r"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe")            # installed for everyone (GitHub's runner)
+
+
+def installer_name(version):
+    return f"Surasura-{version}-setup.exe"
+
+
+def installer_defines(version, data_name, program_dir, real_name):
+    """The .iss's defines. The real program: APP_GUID, "Surasura", %LOCALAPPDATA%\\Programs\\Surasura. A test build:
+    an AppId of its own (derived from its data_name, so each test name has one), "Surasura (test)", and its data_name
+    as the program folder, the data folder and the mutexes' name."""
+    test = data_name != real_name
+    import uuid
+    return {
+        "AppVersion": version,
+        "AppGuid": str(uuid.uuid5(uuid.UUID(APP_GUID), data_name)).upper() if test else APP_GUID,
+        "AppName": "Surasura (test)" if test else "Surasura",
+        "AppFolder": data_name,
+        "DataName": data_name,
+        "ProgramDir": os.path.abspath(program_dir),
+    }
+
+
+def find_iscc():
+    """Inno Setup 6's command-line compiler, or None."""
+    for place in ISCC_PLACES:
+        path = os.path.expandvars(place)
+        if "%" not in path and os.path.isfile(path):
+            return path
+    return shutil.which("ISCC")
+
+
+ISCC_MISSING = ("Inno Setup 6's ISCC.exe was not found (looked in %LOCALAPPDATA%\\Programs\\Inno Setup 6, "
+                "%ProgramFiles(x86)%\\Inno Setup 6 and on PATH). Install Inno Setup 6.7.3, or build without "
+                "--installer.")
+
+
+def build_installer(final_dist, version, data_name, real_name, out_dir="dist"):
+    """Compile packaging/surasura.iss over the built program folder -> the installer's path, or None (said why)."""
+    iscc = find_iscc()
+    if not iscc:
+        print(f"Installer not built: {ISCC_MISSING}")
+        return None
+    out = os.path.join(out_dir, installer_name(version))
+    if os.path.exists(out):
+        os.remove(out)
+    defines = installer_defines(version, data_name, final_dist, real_name)
+    cmd = [iscc, "/Qp", f"/O{os.path.abspath(out_dir)}", f"/F{os.path.splitext(installer_name(version))[0]}"] + \
+        [f"/D{name}={value}" for name, value in defines.items()] + [INSTALLER_SCRIPT]
+    print(f"Compiling the installer ({defines['AppName']}, AppId {{{defines['AppGuid']}}}) ...")
+    os.makedirs("debug", exist_ok=True)
+    with open(os.path.join("debug", "installer_log.txt"), "w", encoding="utf-8") as log_file:
+        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+    if result.returncode != 0 or not os.path.isfile(out):
+        print(f"Installer build failed (ISCC exit {result.returncode}). Check debug/installer_log.txt.")
+        return None
+    print(f"Installer: {out} ({os.path.getsize(out) / (1024 * 1024):.1f} MB)")
+    return out
+
+
 BUILD_INFO = os.path.join("app", "build_info.py")
 
 
 class _release_flag:
     """For a release's freeze: app/build_info.py says RELEASE_BUILD = True (so the exe ignores the update check's
-    local-folder override), and is put back exactly as it was afterwards, whatever happens."""
-    def __init__(self, on):
+    local-folder override), and is put back exactly as it was afterwards, whatever happens. With `build_id` (every
+    build, S3.1 D18) it also carries BUILD_ID = "<id>" for the freeze, the id _internal/build_stamp.json records, so a
+    program can tell its own build from the folder's."""
+    def __init__(self, on, build_id=None):
         self.on = on
+        self.build_id = build_id
         self.saved = None
 
     def __enter__(self):
-        if self.on:
+        if self.on or self.build_id:
             with open(BUILD_INFO, "rb") as f:
                 self.saved = f.read()
-            text = self.saved.decode("utf-8").replace("RELEASE_BUILD = False", "RELEASE_BUILD = True")
-            if "RELEASE_BUILD = True" not in text:
-                raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
+            text = self.saved.decode("utf-8")
+            if self.on:
+                text = text.replace("RELEASE_BUILD = False", "RELEASE_BUILD = True")
+                if "RELEASE_BUILD = True" not in text:
+                    raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
+            if self.build_id:
+                text = text.rstrip("\r\n") + f'\nBUILD_ID = "{self.build_id}"\n'
             with open(BUILD_INFO, "wb") as f:
                 f.write(text.encode("utf-8"))
         return self
@@ -264,25 +521,165 @@ class _release_flag:
         return False
 
 
-def build(zip_output=False, skip_tests=False, release=False, full_update=False):
+DEFAULT_LISTS = {   # a new library's starting lists, from this tree's User Files/<lang>/ (2.x shipped the same files)
+    "ja": ["frequency_list_ja_global50k.csv", "IgnoreList.txt", "Blacklist.txt"],
+    "zh": ["IgnoreList.txt", "Blacklist.txt"],
+}
+LEGACY_JITEN_ZIPS = [   # Yomitan frequency lists from User Files/, bundled when present (Japanese)
+    "jiten_freq_Anime.zip", "jiten_freq_Drama.zip", "jiten_freq_global.zip", "jiten_freq_Manga.zip",
+    "jiten_freq_Movie.zip", "jiten_freq_NonFiction.zip", "jiten_freq_Novel.zip", "jiten_freq_VideoGame.zip",
+    "jiten_freq_VisualNovel.zip", "jiten_freq_WebNovel.zip",
+]
+LIBRARY_NAMES = ("settings.json", "User Files", "data", "results")   # the library's, never the program folder's
+
+
+def copy_default_lists(final_dist):
+    """The bundled lists into _internal/defaults/<lang>/ (S3.1 D15): the program copies each one a library lacks into
+    its User Files/<lang>/ at its first start (path_utils.copy_default_lists). -> the paths written."""
+    written = []
+    for lang, names in DEFAULT_LISTS.items():
+        sources = [os.path.join("User Files", lang, n) for n in names]
+        if lang == "ja":
+            sources += [os.path.join("User Files", n) for n in LEGACY_JITEN_ZIPS]
+        for src in sources:
+            if os.path.isfile(src):
+                folder = os.path.join(final_dist, "_internal", "defaults", lang)
+                os.makedirs(folder, exist_ok=True)
+                shutil.copy2(src, os.path.join(folder, os.path.basename(src)))
+                written.append(f"_internal/defaults/{lang}/{os.path.basename(src)}")
+    return written
+
+
+def write_build_stamp(final_dist, version, build_id, data_name):
+    """_internal/build_stamp.json {version, build_id, data_name} (S3.1 D18): each program compares its own with it at
+    start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>)."""
+    path = os.path.join(final_dist, "_internal", "build_stamp.json")
+    with open(path, "wb") as f:
+        f.write(canonical_json({"version": version, "build_id": build_id, "data_name": data_name}))
+    return path
+
+
+def sqlite_version_of(dll):
+    """The version a sqlite3.dll reports (sqlite3_libversion), read in a fresh Python so no sqlite already loaded
+    answers instead. -> '3.53.4', or None when it can't be loaded."""
+    code = ("import ctypes, sys; d = ctypes.CDLL(sys.argv[1]); d.sqlite3_libversion.restype = ctypes.c_char_p; "
+            "print(d.sqlite3_libversion().decode('ascii'))")
+    try:
+        out = subprocess.run([sys.executable, "-I", "-c", code, os.path.abspath(dll)], capture_output=True,
+                             text=True, timeout=60)
+    except Exception:
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def swap_sqlite(final_dist, config):
+    """Replace the frozen program's _internal/sqlite3.dll with the vendored sqlite.org build (S3.1 D16), after checking
+    the vendored file's sha256. -> None, or the reason it failed."""
+    vendored = os.path.join(os.path.dirname(BUILD_CONFIG), "..", *config["sqlite_dll"].split("/"))
+    target = os.path.join(final_dist, "_internal", "sqlite3.dll")
+    if not os.path.isfile(vendored) or _sha256(vendored) != config["sqlite_dll_sha256"]:
+        return f"the vendored {config['sqlite_dll']} is missing or not the one build_config.json records"
+    if not os.path.isfile(target):
+        return "the build has no _internal/sqlite3.dll to replace"
+    shutil.copy2(vendored, target)
+    return None
+
+
+def check_program(final_dist, config, release):
+    """The post-build checks (S3.1 D15–D17), also runnable on a built folder: `python package_app.py --check
+    dist\\Surasura`. -> (failures, facts): failures a list of reasons (empty = all passed)."""
+    failures, facts = [], {}
+    internal = os.path.join(final_dist, "_internal")
+    # Exactly the three programs at the top (updater.exe only once a release built it).
+    expected = set(PROGRAM_EXES) if release else {"Surasura.exe", CLI_EXE_NAME}
+    found = {n for n in os.listdir(final_dist) if n.lower().endswith(".exe")} if os.path.isdir(final_dist) else set()
+    facts["exes"] = sorted(found)
+    if found != expected:
+        failures.append(f"the programs at the top are {sorted(found)}, not exactly {sorted(expected)}")
+    # The library's folders and settings.json are never in the program folder.
+    stray = [n for n in LIBRARY_NAMES if os.path.exists(os.path.join(final_dist, n))]
+    if stray:
+        failures.append(f"the program folder holds the library's {stray}")
+    # SQLite at or above the floor, read from the frozen program's own DLL.
+    version = sqlite_version_of(os.path.join(internal, "sqlite3.dll"))
+    facts["sqlite"] = version
+    if not version or _version_tuple(version) < _version_tuple(config["sqlite_min"]):
+        failures.append(f"_internal/sqlite3.dll reports {version}, below the floor {config['sqlite_min']}")
+    # The stamp.
+    try:
+        with open(os.path.join(internal, "build_stamp.json"), encoding="utf-8") as f:
+            stamp = json.load(f)
+        facts["stamp"] = stamp
+        if set(stamp) != {"version", "build_id", "data_name"} or not stamp["build_id"] or \
+                not valid_data_name(stamp["data_name"]):
+            failures.append(f"_internal/build_stamp.json is not {{version, build_id, data_name}}: {stamp}")
+    except (OSError, ValueError) as e:
+        failures.append(f"_internal/build_stamp.json can't be read ({e})")
+    # PyQt6: only the window's modules, with PyQt6's and Qt's licence notices.
+    qt_folder = os.path.join(internal, "PyQt6")
+    if os.path.isdir(qt_folder):
+        pyds = sorted(n.split(".")[0] for n in os.listdir(qt_folder) if n.lower().endswith(".pyd"))
+        facts["qt_modules"] = pyds
+        extra = [m for m in pyds if m not in config["qt_modules"] and m != "sip"]
+        if extra:
+            failures.append(f"PyQt6 modules the window doesn't use were bundled: {extra}")
+        for dist in ("PyQt6", "PyQt6-Qt6"):
+            folder = os.path.join(internal, "licenses", dist)
+            if not (os.path.isdir(folder) and os.listdir(folder)):
+                failures.append(f"_internal/licenses/{dist} holds no licence notice")
+    return failures, facts
+
+
+def check_zip_licences(zip_path):
+    """The download zip carries PyQt6's and Qt's licence notices whenever it carries PyQt6. -> the failures."""
+    import zipfile
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+    if not any("/_internal/PyQt6/" in n for n in names):
+        return []
+    return [f"{os.path.basename(zip_path)} holds no _internal/licenses/{dist}/ notice" for dist in ("PyQt6", "PyQt6-Qt6")
+            if not any(f"/_internal/licenses/{dist}/" in n for n in names)]
+
+
+def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False):
     version = get_version()
     build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
     zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
     print(f"Building Readability Analyzer {zip_name}...")
-    if sys.version_info < (3, 11, 4):
-        # P0.3 02-contract §8: on 3.11.2 a frozen console program with no stderr crashes on a usage error.
-        print(f"WARNING: building on Python {sys.version.split()[0]}; surasura-cli wants 3.11.4 or later.")
+    try:
+        config = load_build_config()
+    except (OSError, ValueError) as e:
+        print(f"Build aborted: {e}")
+        return
+    data_name = data_name or config["data_name"]
+    if not valid_data_name(data_name):
+        print(f"Build aborted: --data-name {data_name!r} is not a plain folder name.")
+        return
 
-    # A release always produces the full zip too; --full-update implies --release.
+    # A release always produces the full zip too; --full-update (2.x's runtime release) implies --release.
     if full_update:
         release = True
     if release:
         zip_output = True
 
+    if _python_version() < _version_tuple(config["python_min"]):
+        # P0.3 02-contract §8: on 3.11.2 a frozen console program with no stderr crashes on a usage error. A real
+        # release stops; a test build (its own data_name), release or not, only warns.
+        if release and data_name == config["data_name"]:
+            print(f"Build aborted: a release needs Python {config['python_min']} or later "
+                  f"(this is {sys.version.split()[0]}).")
+            return
+        print(f"WARNING: building on Python {sys.version.split()[0]}; surasura-cli wants {config['python_min']} "
+              "or later. A test build only: a real --release refuses it.")
+
+    if installer and not find_iscc():
+        print(f"Build aborted: --installer: {ISCC_MISSING}")
+        return
+
     # Gate: everything being bundled must be testable first.
     if skip_tests:
         print("WARNING: --skip-tests set; skipping the pre-build test gate.")
-    elif not run_pre_build_tests():
+    elif not run_pre_build_tests(config["modules"]):
         print("Build aborted: fix failing tests first (or pass --skip-tests to override).")
         return
 
@@ -309,32 +706,27 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
         "--workpath", "build",
         os.path.join("packaging", "Surasura.spec")
     ]
-    
+
     print(f"Running: {' '.join(cmd)}")
-    
+
     # Ensure debug folder exists for logs
     if not os.path.exists("debug"):
         os.makedirs("debug", exist_ok=True)
-        
-    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release):
+
+    import datetime
+    import secrets
+    build_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release, build_id):
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-    
+
     if result.returncode != 0:
         print("Build failed. Check debug/build_log.txt for details.")
         return
 
-    # Post-Build: Create Distribution Folder
+    # Post-Build: the program folder. It holds the program only (S3.1 D15): no settings.json, User Files\, data\ or
+    # results\ — those are the library's, made at the program's first start.
     print("Creating Distribution Package...")
     final_dist = os.path.join("dist", build_name)
-    
-    # Clean previous distribution logic removed because we already cleaned dist at the start
-    # and PyInstaller works directly in this folder now.
-
-
-    # 1. Handle Built Files
-    # The spec file is configured to output directly to dist/{build_name}
-    # So we just need to verify it exists.
-    
     if not os.path.exists(final_dist):
         print(f"Error: Build output not found at {final_dist}")
         return
@@ -347,119 +739,47 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
             return
         print(f"  {exe_name}: {os.path.getsize(exe_path) / (1024 * 1024):.1f} MB")
 
-    # 2. Copy User Files (SANITIZED)
-    print("Copying User Files (Sanitized)...")
-    dst_user_files_base = os.path.join(final_dist, "User Files")
-    os.makedirs(dst_user_files_base, exist_ok=True)
-    
-    supported_languages = ["ja", "zh"]
-    
-    # A. Global Files (None Currently)
+    # 1. SQLite: the vendored sqlite.org build replaces the one Python 3.11 bundles (S3.1 D16).
+    reason = swap_sqlite(final_dist, config)
+    if reason:
+        print(f"Build failed: {reason}.")
+        return
 
-    # B. Language Specific User Files
-    for lang in supported_languages:
-        dst_user_files_lang = os.path.join(dst_user_files_base, lang)
-        os.makedirs(dst_user_files_lang, exist_ok=True)
-        
-        # NOTE: KnownWord.json is explicitly EXCLUDED from build.
-        # Users start with a clean slate.
+    # 2. The bundled lists, for a new library's first start.
+    for path in copy_default_lists(final_dist):
+        print(f"Bundled default list: {path}")
 
-        # Create/Copy Ignore List
-        src_ignore = os.path.join("User Files", lang, "IgnoreList.txt")
-        if os.path.exists(src_ignore):
-             shutil.copy2(src_ignore, os.path.join(dst_user_files_lang, "IgnoreList.txt"))
-        else:
-            with open(os.path.join(dst_user_files_lang, "IgnoreList.txt"), "w", encoding="utf-8") as f:
-                f.write("# Add words to ignore here (one per line)\n")
-
-        # Copy Blacklist
-        src_blacklist = os.path.join("User Files", lang, "Blacklist.txt")
-        if os.path.exists(src_blacklist):
-            print(f"Bundling Blacklist for {lang}...")
-            shutil.copy2(src_blacklist, os.path.join(dst_user_files_lang, "Blacklist.txt"))
-        
-        # Copy Specific Frequency List (Only for JA)
-        if lang == "ja":
-            specific_freq_list = "frequency_list_ja_global50k.csv"
-            src_freq = os.path.join("User Files", "ja", specific_freq_list)
-            if os.path.exists(src_freq):
-                print(f"Bundling specific frequency list: {specific_freq_list}")
-                shutil.copy2(src_freq, os.path.join(dst_user_files_lang, specific_freq_list))
-        
-    # C. Copy Global Frequency Lists (CSV)
-    # Removed: We only bundle the specific 'frequency_list_ja_global50k.csv' now.
-
-
-    # D. Copy Legacy Yomitan Frequency Lists (Zips) - Optional/Legacy
-    freq_lists_legacy = [
-        "jiten_freq_Anime.zip",
-        "jiten_freq_Drama.zip",
-        "jiten_freq_global.zip",
-        "jiten_freq_Manga.zip",
-        "jiten_freq_Movie.zip",
-        "jiten_freq_NonFiction.zip",
-        "jiten_freq_Novel.zip",
-        "jiten_freq_VideoGame.zip",
-        "jiten_freq_VisualNovel.zip",
-        "jiten_freq_WebNovel.zip",
-    ]
-    for freq_file in freq_lists_legacy:
-        src_freq = os.path.join("User Files", freq_file)
-        if os.path.exists(src_freq):
-            shutil.copy2(src_freq, os.path.join(dst_user_files_base, freq_file))
-
-    # 3. Create EMPTY Data Directories.
-    # A fresh install ships with EMPTY tiers so the Content Manager's empty-state onboarding appears.
-    # Sample content is bundled as a resource (see Surasura.spec datas) and seeded ONLY on demand via
-    # the "Test with samples" action -> path_utils.seed_samples. Do NOT copy samples into data/ here.
-    print("Creating empty data directories...")
-    data_dir_base = os.path.join(final_dist, "data")
-    for lang in supported_languages:
-        for category in ["HighPriority", "LowPriority", "GoalContent", "Processed"]:
-            os.makedirs(os.path.join(data_dir_base, lang, category), exist_ok=True)
-
-    # 4. Create Results Directory
-    os.makedirs(os.path.join(final_dist, "results"), exist_ok=True)
-    
-    # 5. Copy Documentation
-    # 5. Copy Documentation
-    # We copy these from the docs/ folder to the root of the distribution
-    # so the user sees them immediately upon opening the folder.
-    
+    # 3. Documentation, at the top of the program folder.
     docs_to_copy = [
         ("README.md", "README.md"),
         (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
-        # Packaged under a STABLE name so it isn't version-stamped (and so an app update can refresh
-        # it in place — see _build_app_package + updater.build_marker). Content keeps its version header.
+        # Packaged under a STABLE name so it isn't version-stamped (and so an update refreshes it in place).
+        # Content keeps its version header.
         (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md")
     ]
-
     for src, dst_name in docs_to_copy:
         if os.path.exists(src):
-             shutil.copy2(src, os.path.join(final_dist, dst_name))
+            shutil.copy2(src, os.path.join(final_dist, dst_name))
         else:
             print(f"Warning: Documentation file not found: {src}")
 
-    # 6. Generate Clean Settings for Distribution
-    print("Generating Clean Settings for Distribution...")
-    try:
-        from app import settings_manager
-        # Get defaults
-        clean_settings = settings_manager.get_default_settings()
-        # Ensure 'hide_satoru' is GONE
-        if "hide_satoru" in clean_settings:
-            del clean_settings["hide_satoru"]
-            
-        settings_dst = os.path.join(final_dist, "settings.json")
-        with open(settings_dst, 'w', encoding='utf-8') as f:
-            json.dump(clean_settings, f, indent=4)
-        print(f"Clean settings.json created at {settings_dst}")
-    except Exception as e:
-        print(f"Warning: Could not generate clean settings: {e}")
+    # 4. The build stamp (S3.1 D18).
+    write_build_stamp(final_dist, version, build_id, data_name)
+    print(f"Build stamp: version {version}, build {build_id}, data folder name {data_name}")
 
-    # 6.5 Bundle updater.exe BEFORE zipping so the full package ships the helper (release only).
-    if release:
-        _build_updater_exe(final_dist)
+    # 5. Bundle updater.exe BEFORE zipping so the full package ships the helper (release only).
+    if release and not _build_updater_exe(final_dist):
+        print("Build failed: a release needs updater.exe.")
+        return
+
+    # 6. The post-build checks: exactly the three programs, no library, SQLite's floor, the stamp, PyQt6's modules and
+    #    licences. Any failure stops here (nothing is zipped).
+    failures, facts = check_program(final_dist, config, release)
+    print(f"Checks: programs {facts.get('exes')}, SQLite {facts.get('sqlite')}, "
+          f"PyQt6 {facts.get('qt_modules', 'not bundled')}")
+    if failures:
+        print("Build failed:\n  " + "\n  ".join(failures))
+        return
 
     # 7. Create Zip Archive
     if zip_output:
@@ -472,12 +792,28 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False):
             print(f"Zip archive created: {archive_base}.zip")
         except Exception as e:
             print(f"Warning: Could not create zip archive: {e}")
+        zip_failures = check_zip_licences(archive_base + ".zip") if os.path.isfile(archive_base + ".zip") else []
+        if zip_failures:
+            print("Build failed:\n  " + "\n  ".join(zip_failures))
+            return
     else:
         print("Skipping Zip Archive creation (use --zip to enable).")
 
-    # 8. Emit the auto-update artifacts (app package + update.json) — release only.
+    # 8. The installer (--installer): dist\Surasura as built, into dist\Surasura-<ver>-setup.exe.
+    built_installer = None
+    if installer:
+        built_installer = build_installer(final_dist, version, data_name, config["data_name"])
+        if built_installer is None:
+            print("Build failed: --installer asked for the installer.")
+            return
+
+    # 9. The 3.x update artifacts (parts, update.json, update.json.sig) — release only. The installer built just now
+    #    rides as 2.x's hand-off (update_type "installer"); without one, update.json says "full".
     if release:
-        _build_app_package(final_dist, version, full_update)
+        _build_release(final_dist, version, config, out_dir="dist", installer=built_installer)
+        print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
+              + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
+              + (", the installer" if built_installer else ""))
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")
@@ -496,8 +832,31 @@ if __name__ == "__main__":
     parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the pre-build test gate (not recommended).")
     parser.add_argument("--release", action="store_true",
-                        help="Also build updater.exe and emit the auto-update artifacts (app package zip + update.json). Implies --zip.")
+                        help="Also build updater.exe and emit the 3.x update artifacts (parts, update.json, "
+                             "update.json.sig). Implies --zip. Refuses a Python below build_config's floor.")
     parser.add_argument("--full-update", action="store_true",
-                        help="Mark this release as a full/manual update (runtime or major change). Sets update_type=full and advances runtime_baseline. Implies --release.")
+                        help="2.x's runtime release; on the 3.0 line the same as --release (every release lists "
+                             "every file).")
+    parser.add_argument("--data-name", default=None,
+                        help="The program's data folder name in the build stamp (default: build_config's "
+                             "data_name, 'Surasura'); a test build uses its own, e.g. Surasura-test.")
+    parser.add_argument("--installer", action="store_true",
+                        help="Also compile packaging/surasura.iss with Inno Setup 6 (ISCC) into "
+                             "dist\\Surasura-<ver>-setup.exe; with --release, update.json carries it for 2.x.")
+    parser.add_argument("--check", metavar="FOLDER", default=None,
+                        help="Only run the post-build checks on a built program folder (e.g. dist\\Surasura); "
+                             "prints CHECKS OK or the failures.")
     args = parser.parse_known_args()[0]
-    build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release, full_update=args.full_update)
+    if args.check:
+        checked, found = check_program(args.check, load_build_config(),
+                                       release=os.path.isfile(os.path.join(args.check, "updater.exe")))
+        zips = [os.path.join(os.path.dirname(os.path.abspath(args.check)), n)
+                for n in os.listdir(os.path.dirname(os.path.abspath(args.check)))
+                if n.startswith("Surasura_v") and n.endswith(".zip")]
+        for z in zips:
+            checked += check_zip_licences(z)
+        print(json.dumps(found, ensure_ascii=False))
+        print("CHECKS OK" if not checked else "CHECKS FAILED:\n  " + "\n  ".join(checked))
+        sys.exit(1 if checked else 0)
+    build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release, full_update=args.full_update,
+          data_name=args.data_name, installer=args.installer)

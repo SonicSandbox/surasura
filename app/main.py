@@ -237,8 +237,8 @@ def carry_as_written(out, keys):
     user set is never dropped, and a default is never written into a file that lacks it. No file, or one that can't be
     read, holds none of them."""
     try:
-        from app.path_utils import get_user_file, read_text
-        as_is = json.loads(read_text(get_user_file("settings.json")))
+        from app.path_utils import get_settings_path, read_text
+        as_is = json.loads(read_text(get_settings_path()))
     except Exception:
         as_is = {}
     if isinstance(as_is, dict):

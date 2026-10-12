@@ -23,7 +23,9 @@ tests hand a fake).
 """
 import datetime
 import logging
+import os
 import re
+import sqlite3
 
 from app.connect import runfile
 
@@ -342,6 +344,94 @@ def restore_shelf(anki, ledger, run_id, language=None):
     return shelf.restore(anki, ledger, run_id)
 
 
+PREVIEW_OFF = "connect preview off"
+NO_ANKI = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"
+NO_LEDGER = "Connect hasn't made any cards here yet."
+NO_SHELF_RUN = "There's no shelf restore point with that name."
+NEEDS_JUNBAN = "Putting the shelf back needs Junban (順), which isn't installed."
+REVIEWING = "You're reviewing in Anki. Undo once you've finished."
+WRITER_BUSY = "Another program is writing to Anki. Try again in a moment."
+RECORDS = "Connect's records couldn't be written just now: "
+
+
+def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
+    """*Undo this batch* (`job`) or a shelf restore point put back (`shelf_run`), as the command line's `undo` and the
+    window both do it (P3.1 row 3.1.5: one sequence, so the two never drift) -> the answer, the command line's own:
+    {"skipped": why} (the preview off; Anki switched off for this run); without `confirm` the plan, nothing written
+    (`summary(plan)` + {"language", "confirm": False}, or the shelf run's row + the same); with it what was done
+    (`summary(done)` + {"language", "confirm": True}, or {"language", "shelf", "back", "confirm": True}), Anki's sync
+    owed after (`sync(settings)`; default `owe_sync`). The ledger is never made here: none yet is
+    *nothing made*. Raises `app.cli.contract.CliError` in plain words (`message`; `code` the command line's exit:
+    not-set-up, bad-data, needs-you, skipped, anki-busy, busy, anki-closed, failed — the ledger or the library locked or
+    unwritable, `RECORDS`). Waits up to 10 s for Anki's write lock:
+    the window calls it on a worker, never the Tk thread."""
+    from app.cli.contract import CliError
+    if not (settings or {}).get("connect_enabled"):
+        return {"skipped": PREVIEW_OFF}
+    from app.cli.verbs import require_set_up
+    require_set_up(language)
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
+        return {"skipped": NO_ANKI}
+    from app import anki_connect, locks
+    from app.cli import contract
+    from app.connect import library, shelf
+    from app.connect.ledger import Ledger, TooNew, path
+    if not os.path.exists(path()):                      # Ledger() would make one
+        raise CliError("bad-data", NO_LEDGER)
+    anki = AnkiConnectUndo(anki_connect.address(settings))
+    sync = sync or owe_sync
+    try:
+        with Ledger() as ledger:
+            if shelf_run is not None:
+                point = next((r for r in shelf.runs(ledger, language) if r["run"] == shelf_run), None)
+                if point is None:
+                    raise CliError("bad-data", NO_SHELF_RUN, shelf=shelf_run)
+                if not confirm:
+                    return dict(point, language=language, confirm=False)
+                try:
+                    back = restore_shelf(shelf.AnkiConnectAnki(anki.url), ledger, shelf_run, language=language)
+                except ImportError:
+                    raise CliError("skipped", NEEDS_JUNBAN) from None
+                sync(settings)
+                return {"language": language, "shelf": shelf_run, "back": back, "confirm": True}
+            row = ledger.job_by_id(job)
+            if row is None or row["language"] != language:
+                raise CliError("bad-data", f"There's no batch {job} in the {language} library.", job=job)
+            if not confirm:
+                return dict(summary(plan(anki, ledger, job, language)), language=language, confirm=False)
+            done = run(anki, ledger, job, open_store=lambda: library.open_store(language), language=language)
+            sync(settings)
+            return dict(summary(done), language=language, confirm=True)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    except Refused as e:
+        raise CliError("bad-data", e.say, job=job) from None
+    except (Reviewing, shelf.Reviewing):
+        raise CliError("anki-busy", REVIEWING) from None
+    except locks.Busy as e:
+        raise contract.busy_error("anki-writer", e.holder, WRITER_BUSY) from None
+    except anki_connect.AnkiError as e:
+        raise CliError("anki-closed", f"Anki isn't open (or stopped answering): {e}") from None
+    except (sqlite3.Error, OSError) as e:               # the ledger or the library locked, a disk refusing a write
+        raise CliError("failed", RECORDS + (str(e).splitlines() or [type(e).__name__])[0][:160]) from None
+
+
+def owe_sync(settings):
+    """Cards deleted or back from the shelf change tomorrow's cards: the session's sync (P2.3), sent by Connect (a
+    kick). Never fails the undo."""
+    try:
+        from app.cli.verbs import _sync_pending
+        from app.connect import anki_session
+        _sync_pending(settings, anki_session.after_write(settings, True))
+    except Exception:
+        log.exception("the sync after an undo wasn't arranged")
+
+
+def cards(n):
+    """"1 card", "2 cards"."""
+    return f"{n} card" if n == 1 else f"{n} cards"
+
+
 def summary(done):
     """A plan or an undo, as the window and the command line say it."""
     out = {"job": done["job"], "item": done["item"], "delete": len(done["delete"]), "gone": len(done["gone"]),
@@ -356,10 +446,10 @@ def summary(done):
         if not done["deleted"]:
             out["say"] = "No cards deleted: every card of this batch stays (see why)." + blocked
         elif done.get("pending"):
-            out["say"] = (f"{len(done['deleted'])} cards deleted. Surasura's library was busy: Connect frees their "
+            out["say"] = (f"{cards(len(done['deleted']))} deleted. Surasura's library was busy: Connect frees their "
                           "words at its next start." + blocked)
         else:
-            out["say"] = f"{len(done['deleted'])} cards deleted." + (
+            out["say"] = f"{cards(len(done['deleted']))} deleted." + (
                 " Place the episode in your top 20 again to make its cards again." if done.get("placed_again") else
                 " Some of this episode's cards are still in Anki, so placing it again makes no new cards.") + blocked
     return out

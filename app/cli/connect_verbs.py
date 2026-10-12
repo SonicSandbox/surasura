@@ -553,61 +553,16 @@ def undo(args):
     loaded = settings()
     if not loaded.get("connect_enabled"):
         return {"skipped": PREVIEW_OFF}
-    lang = language(args, loaded)
-    require_set_up(lang)
-    if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
-        return {"skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
-    from app import anki_connect, locks
-    from app.connect import library, shelf, undo as undoing
-    from app.connect.ledger import Ledger, TooNew, path
-    if not os.path.exists(path()):
-        raise _bad("Connect hasn't made any cards here yet.")
-    anki = undoing.AnkiConnectUndo(anki_connect.address(loaded))
-    try:
-        with Ledger() as ledger:
-            if args.shelf is not None:
-                run = next((r for r in shelf.runs(ledger, lang) if r["run"] == args.shelf), None)
-                if run is None:
-                    raise _bad("There's no shelf restore point with that name.", shelf=args.shelf)
-                if not args.confirm:
-                    return dict(run, language=lang, confirm=False)
-                try:
-                    back = undoing.restore_shelf(shelf.AnkiConnectAnki(anki.url), ledger, args.shelf, language=lang)
-                except ImportError:
-                    raise CliError("skipped", "Putting the shelf back needs Junban (順), which isn't installed.") \
-                        from None
-                _owe_sync(loaded)
-                return {"language": lang, "shelf": args.shelf, "back": back, "confirm": True}
-            job = ledger.job_by_id(args.job)
-            if job is None or job["language"] != lang:
-                raise _bad(f"There's no batch {args.job} in the {lang} library.", job=args.job)
-            if not args.confirm:
-                return dict(undoing.summary(undoing.plan(anki, ledger, args.job, lang)), language=lang,
-                            confirm=False)
-            done = undoing.run(anki, ledger, args.job, open_store=lambda: library.open_store(lang), language=lang)
-            _owe_sync(loaded)
-            return dict(undoing.summary(done), language=lang, confirm=True)
-    except TooNew as e:
-        raise CliError("needs-you", str(e), ask="Update Surasura") from None
-    except undoing.Refused as e:
-        raise _bad(e.say, job=args.job) from None
-    except (undoing.Reviewing, shelf.Reviewing):
-        raise CliError("anki-busy", "You're reviewing in Anki. Undo once you've finished.") from None
-    except locks.Busy as e:
-        raise contract.busy_error("anki-writer", e.holder,
-                                  "Another program is writing to Anki. Try again in a moment.") from None
-    except anki_connect.AnkiError as e:
-        raise CliError("anki-closed", f"Anki isn't open (or stopped answering): {e}") from None
+    from app.connect import undo as undoing
+    # the window's sequence too (P3.1 row 3.1.5): the checks, the plain words and the owed sync live in one place
+    return undoing.act(loaded, language(args, loaded), job=args.job, shelf_run=args.shelf, confirm=args.confirm,
+                       sync=_owe_sync)
 
 
 def _owe_sync(loaded):
     """Cards deleted or back from the shelf change tomorrow's cards: the session's sync (P2.3), sent by Connect."""
-    from app.cli.verbs import _sync_pending
-    from app.connect import anki_session
-    try:
-        _sync_pending(loaded, anki_session.after_write(loaded, True))
-    except Exception:
-        contract.log.exception("the sync after an undo wasn't arranged")
+    from app.connect import undo as undoing
+    undoing.owe_sync(loaded)
 
 
 def logs_args(parser):

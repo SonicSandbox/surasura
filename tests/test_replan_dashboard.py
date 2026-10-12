@@ -19,7 +19,7 @@ from app import replan_preview
 Dash = main_module.MasterDashboardApp
 METHODS = ("_replan_start", "replan_preview_changed", "_replan_runs", "_child_running", "_replan_focus",
            "_replan_after_child", "_replan_said", "_want_replan_generate", "_maybe_replan_generate",
-           "_replan_finishing", "_maybe_junban_auto", "_replan_restart")
+           "_replan_finishing", "_maybe_junban_auto", "_replan_restart", "_connect_kick_after_update")
 
 
 class Host:

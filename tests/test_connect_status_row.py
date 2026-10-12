@@ -166,7 +166,8 @@ def test_the_badge_filled_while_unseen_outlined_once_seen_gone_when_empty(root):
     connect.record = _record()
     connect.stamp_value[0] += 1
     _look(row, pump, root)
-    assert row.badge_shown is None and row.badge.winfo_manager() == "", "nothing open: no badge"
+    assert row.badge_shown is None and row.badge.cget("text") == "" and row.badge.cget("bg") == status_row.BG, \
+        "nothing open: no badge (blank, still packed: no re-layout)"
 
 
 def test_switched_off_the_row_goes_and_the_poll_stops(root, monkeypatch):

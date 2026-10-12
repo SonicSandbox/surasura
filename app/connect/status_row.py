@@ -105,7 +105,11 @@ class StatusRow:
         self.line = ttk.Label(self.frame, text="Connect: looking…", style="CS.TLabel", cursor="hand2")
         self.line.pack(side=tk.LEFT)
         self.line.bind("<Button-1>", lambda _e: self.on_open())
-        self.badge = tk.Label(self.frame, text="", cursor="hand2", font=("Segoe UI", 9, "bold"), padx=8, pady=0)
+        # Always packed, its state only colours and text: a pack / unpack or a border-width change re-lays the
+        # dashboard out (2–3 ms a draw, measured), a colour change doesn't (0.8 ms) — the 4 ms GUI-step budget.
+        self.badge = tk.Label(self.frame, text="", cursor="hand2", font=("Segoe UI", 9, "bold"), padx=8, pady=0,
+                              bg=BG, fg=BG, highlightthickness=1, highlightbackground=BG, highlightcolor=BG)
+        self.badge.pack(side=tk.RIGHT)
         self.badge.bind("<Button-1>", lambda _e: self.on_open())
         tooltip(self.line, lambda: detail(self.record) + "\nClick: open Connect's window.")
         tooltip(self.badge, "Things only you can fix. Click to see them.")
@@ -213,14 +217,12 @@ class StatusRow:
         self.line.config(text="Connect: " + (rec.get("line") or "Up to date"))
         state, unseen = badge_state(rec)
         if state is None:
-            self.badge.pack_forget()
+            self.badge.config(text="", bg=BG, fg=BG, highlightbackground=BG, highlightcolor=BG)
         elif state == "filled":
-            self.badge.config(text=f"Needs you ({unseen})", bg=ACCENT, fg=BG, highlightthickness=0)
-            self.badge.pack(side=tk.RIGHT)
-        else:
-            self.badge.config(text="Needs you", bg=BG, fg=ACCENT, highlightthickness=1, highlightbackground=ACCENT,
+            self.badge.config(text=f"Needs you ({unseen})", bg=ACCENT, fg=BG, highlightbackground=ACCENT,
                               highlightcolor=ACCENT)
-            self.badge.pack(side=tk.RIGHT)
+        else:
+            self.badge.config(text="Needs you", bg=BG, fg=ACCENT, highlightbackground=ACCENT, highlightcolor=ACCENT)
         self.badge_shown = state
 
     def refresh(self):

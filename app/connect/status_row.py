@@ -86,7 +86,7 @@ class StatusRow:
         self._stamp, self._read, self._kick, self._unread = stamp, read, kick, unread
         self._post_to = post
         self._last = None               # (language, stamp) last drawn
-        self._kicked = None             # the newest event a kick started Connect for
+        self._kicked = None             # (language, the newest event) a kick started Connect for
         self._kick_due = False          # the stamp moved and no kick has started yet
         self._shown = None              # what the last draw put on the row (`drawn`)
         self._looking = False
@@ -183,7 +183,7 @@ class StatusRow:
                 self._kick_due = False
                 return                  # running: it reads the log again before it exits
             newest = (self._unread or unread)(language)
-            if newest is None or newest == self._kicked:
+            if newest is None or (language, newest) == self._kicked:
                 self._kick_due = False
                 return
             if self._kick is not None:
@@ -192,7 +192,7 @@ class StatusRow:
                 from app.connect import kick
                 started = kick.kick(self.settings())
             if started:
-                self._kicked, self._kick_due = newest, False
+                self._kicked, self._kick_due = (language, newest), False
         except Exception as e:
             self._kick_due = False
             print(f"Connect wasn't started: {e}")

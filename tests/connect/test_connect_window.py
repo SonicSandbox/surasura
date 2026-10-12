@@ -67,7 +67,7 @@ def _window(root, act=None, confirm=True, junban=True, **kw):
     pump, tips, asked, seen, dismissed = Pump(), Tips(), [], [], []
     win = connect_window.show(
         root, "ja", tips, RECORD, act=act or Act(), settings=lambda: {"connect_enabled": True},
-        writer_busy=kw.pop("writer_busy", lambda: False),
+        writer_busy=kw.pop("writer_busy", lambda: False), update_waits=kw.pop("update_waits", lambda: False),
         confirm=lambda title, text: (asked.append(text), confirm)[1], junban=junban, post=pump.put,
         mark_seen=lambda ids: seen.append((ids, on_main())), dismiss=lambda i: (dismissed.append((i, on_main())),
                                                                                   True)[1], **kw)
@@ -224,3 +224,178 @@ def test_the_wheel_scrolls_over_the_rows_and_leaves_other_wheel_bindings_alone(r
     assert canvas.yview()[0] > 0.0, "the wheel over a row scrolls the list"
     assert root.bind_all("<MouseWheel>"), "the app's other wheel binding is still there"
     root.unbind_all("<MouseWheel>")
+
+
+# --- the final adversary's rows (P3.1 W5) -----------------------------------------------------------------------------
+
+class Clock:
+    """`time` stood in for in the window's module: each look moves a millisecond, a sleep moves its length."""
+
+    def __init__(self):
+        self.now, self.sleeps = 0.0, []
+
+    def monotonic(self):
+        self.now += 0.001
+        return self.now
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.now += s
+
+
+def _bare(act, busy=True, update=False):
+    """A window without Tk (the probe's way): `_write` alone, its posts counted."""
+    w = connect_window.ConnectWindow.__new__(connect_window.ConnectWindow)
+    w.language, w._act, w._settings = "ja", act, lambda: {"connect_enabled": True}
+    w._writer_busy, w._update_waits = (lambda: busy), (lambda: update)
+    w.posts = []
+    w.post = w.posts.append
+    return w
+
+
+BUSY = CliError("busy", "Another program is writing to Anki. Try again in a moment.", lock="anki-writer", held_by=None)
+
+
+def _refused(calls):
+    def act(settings, language, **kw):
+        calls.append(kw)
+        raise BUSY
+    return act
+
+
+def test_a_writer_refused_at_once_is_tried_a_second_apart_a_handful_of_times_and_the_wait_said_once(monkeypatch):
+    """Adversary #1: with Anki's write lock held by a live program and every try refused at once, the undo tries again
+    at least a second apart until its wait runs out — a handful of calls, never thousands, and the waiting line
+    posted once (never a flood on the dashboard's queue)."""
+    clock = Clock()
+    monkeypatch.setattr(connect_window, "time", clock)
+    monkeypatch.setattr(connect_window, "WAIT_FOR_WRITER_S", 5)
+    calls = []
+    w = _bare(_refused(calls))
+    with pytest.raises(CliError) as e:
+        w._write(None, job=7, confirm=True)
+    assert e.value is BUSY, "the wait ran out: the act's own words"
+    assert 2 <= len(calls) <= 7, f"{len(calls)} tries in a 5 s wait"
+    assert clock.sleeps and all(s >= 1.0 for s in clock.sleeps)
+    assert len(w.posts) == 1, "the waiting line posted once"
+
+
+def test_an_update_waiting_stops_the_undo_at_once_with_its_words(monkeypatch):
+    """Adversary #1: the writer refused because an update waits to install — no program will let go, so the undo
+    stops at its first refusal and says so."""
+    clock = Clock()
+    monkeypatch.setattr(connect_window, "time", clock)
+    calls = []
+    with pytest.raises(CliError) as e:
+        _bare(_refused(calls), busy=False, update=True)._write(None, shelf_run="r-20261010", confirm=True)
+    assert e.value.message == "Surasura is waiting to install an update; try again after it."
+    assert len(calls) == 1 and clock.sleeps == []
+
+
+def test_a_refusal_no_live_program_explains_stops_at_once(monkeypatch):
+    """Adversary #1: refused with nobody holding the lock (a lock file that can't be opened): said at once, no wait."""
+    clock = Clock()
+    monkeypatch.setattr(connect_window, "time", clock)
+    calls = []
+    w = _bare(_refused(calls), busy=False)
+    with pytest.raises(CliError) as e:
+        w._write(None, job=7, confirm=True)
+    assert e.value is BUSY and len(calls) == 1 and clock.sleeps == [] and w.posts == []
+
+
+def test_writer_busy_is_no_live_program_when_the_lock_file_cant_be_opened(monkeypatch):
+    """Adversary #1: `locks.in_use` reads a lock file it can't open as held (failing closed); the wait doesn't."""
+    from app import locks
+    monkeypatch.setattr(locks, "in_use", lambda name, **k: True)
+    monkeypatch.setattr(locks, "unopenable", lambda name: "C:/locks/anki-writer.lock")
+    assert connect_window.writer_busy() is False
+    monkeypatch.setattr(locks, "unopenable", lambda name: None)
+    assert connect_window.writer_busy() is True
+
+
+TWO = dict(RECORD, undo=[
+    {"job": 9, "item": 4, "title": "Example Show - 05", "kind": "mine", "made": 1, "at": "2026-10-11T08:00:00Z",
+     "not_made": {}},
+    {"job": 7, "item": 4, "title": "Example Show - 05", "kind": "mine", "made": 3, "at": "2026-10-09T08:00:00Z",
+     "not_made": {}},
+    {"job": 5, "item": 6, "title": "Example Show - 07", "kind": "mine", "made": 2, "at": "2026-10-08T08:00:00Z",
+     "not_made": {}}])
+
+
+def test_two_batches_of_one_episode_the_question_names_this_batch_and_says_the_other_stays(root):
+    """Adversary #8: Sonic's words stay; with the episode's other batch in the list, the question names this batch's
+    date and that the other stays (one batch goes, never both)."""
+    act = Act(PLAN, DONE)
+    pump, asked = Pump(), []
+    win = connect_window.show(root, "ja", Tips(), TWO, act=act, settings=lambda: {"connect_enabled": True},
+                              writer_busy=lambda: False, update_waits=lambda: False,
+                              confirm=lambda t, x: (asked.append(x), True)[1], junban=True, post=pump.put)
+    _press(win, "batch", 7, "Undo this batch")
+    assert pump.run(root, lambda: asked)
+    lines = asked[0].splitlines()
+    assert lines[0] == "Remove all of this episode's Anki cards that aren't studied?"
+    assert lines[1] == (f"This batch was made {connect_window.when('2026-10-09T08:00:00Z')}. Its other batch "
+                        f"({connect_window.when('2026-10-11T08:00:00Z')}) stays.")
+    assert connect_window.when("2026-10-08T08:00:00Z") not in asked[0], "another episode's batch isn't named"
+    alone = connect_window.question(PLAN)
+    assert alone.splitlines()[:3] == ["Remove all of this episode's Anki cards that aren't studied?", "", "2 cards go."]
+
+
+def test_dismiss_takes_the_entry_off_and_the_tabs_count_follows_the_list(root):
+    """D1 (the DevTest drill): after *Dismiss* the row goes and the tab no longer says "Needs you (1)"; the list
+    emptied says so."""
+    win, pump, _tips, _asked, _seen, dismissed = _window(root)
+    assert win.tabs.tab(0, "text") == "Needs you (1)"
+    _press(win, "needs", 11, "Dismiss")
+    assert pump.run(root, lambda: win.tabs.tab(0, "text") == "Needs you")
+    texts = [w.cget("text") for w in widgets(win.tab_needs, (ttk.Label,))]
+    assert RECORD["needs"][0]["say"] not in texts and RECORD["needs"][1]["say"] in texts
+    _press(win, "needs", 12, "Dismiss")
+    assert pump.run(root, lambda: "Nothing needs you." in [w.cget("text")
+                                                           for w in widgets(win.tab_needs, (ttk.Label,))])
+    assert win.tabs.tab(0, "text") == "Needs you" and [i for i, _m in dismissed] == [11, 12]
+
+
+def test_one_card_is_said_in_the_singular(root):
+    """D2 (the DevTest drill): "1 card", never "1 cards" — the batch, the shelf, its run, the questions and the
+    undo's answer."""
+    one = dict(RECORD, undo=[dict(RECORD["undo"][0], made=1)],
+               shelf={"on_shelf": 1, "swap_ins": 0, "runs": [dict(RECORD["shelf"]["runs"][0], cards=1)]})
+    pump, asked = Pump(), []
+    act = Act({"language": "ja", "shelf": "r-20261010", "back": 1, "confirm": True})
+    win = connect_window.show(root, "ja", Tips(), one, act=act, settings=lambda: {"connect_enabled": True},
+                              writer_busy=lambda: False, update_waits=lambda: False,
+                              confirm=lambda t, x: (asked.append(x), True)[1], junban=True, post=pump.put)
+    texts = " | ".join(w.cget("text") for w in widgets(win.win, (ttk.Label,)))
+    assert "1 cards" not in texts
+    assert "1 card made" in texts and "1 card on the shelf" in texts and "1 card · the cap" in texts
+    _press(win, "shelf", "r-20261010", "Put back")
+    note = win.notes[("shelf", "r-20261010")]
+    assert pump.run(root, lambda: note.cget("text") == "1 card back in your new cards.")
+    assert asked[0].startswith("Put 1 card back")
+    assert "1 card goes." in connect_window.question(dict(PLAN, delete=1))
+    from app.connect import undo
+    assert undo.summary({"job": 7, "item": 4, "delete": [1], "gone": [], "keep": [], "deleted": [1],
+                         "placed_again": True})["say"].startswith("1 card deleted.")
+
+
+def test_a_done_undo_and_put_back_take_their_button_away_and_a_refused_one_keeps_it(root):
+    """D3 (the DevTest drill): a button whose work is done goes — never left greyed; the result stays said. A refused
+    one keeps its button, usable again."""
+    act = Act(PLAN, DONE, {"language": "ja", "shelf": "r-20261010", "back": 2, "confirm": True})
+    win, pump, _tips, _asked, _seen, _d = _window(root, act)
+    undo_button = win.buttons[("batch", 7, "Undo this batch")]
+    _press(win, "batch", 7, "Undo this batch")
+    assert pump.run(root, lambda: win.notes[("batch", 7)].cget("text").startswith("2 cards deleted"))
+    assert not undo_button.winfo_exists() and ("batch", 7, "Undo this batch") not in win.buttons
+    put = win.buttons[("shelf", "r-20261010", "Put back")]
+    _press(win, "shelf", "r-20261010", "Put back")
+    assert pump.run(root, lambda: not put.winfo_exists())
+    assert win.notes[("shelf", "r-20261010")].cget("text") == "2 cards back in your new cards."
+    win.win.destroy()
+
+    act = Act(PLAN, CliError("anki-busy", "You're reviewing in Anki. Undo once you've finished."))
+    win, pump, _tips, _asked, _seen, _d = _window(root, act)
+    _press(win, "batch", 7, "Undo this batch")
+    assert pump.run(root, lambda: win.notes[("batch", 7)].cget("text").startswith("You're reviewing"))
+    assert str(win.buttons[("batch", 7, "Undo this batch")].cget("state")) == "normal"

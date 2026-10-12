@@ -28,8 +28,10 @@ BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "
 DIM = "#aaaaaa"
 WRAP = 520
 WAIT_FOR_WRITER_S = 120         # how long an undo keeps waiting for another program's Anki write (a few batches)
+RETRY_GAP_S = 1.0               # at least this long between two tries while another program writes to Anki
 QUESTION = "Remove all of this episode's Anki cards that aren't studied?"
 WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your undo goes on once it's done…"
+UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
 
 # Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; text is shown under the entry
 HOW = {
@@ -66,13 +68,24 @@ def when(utc_text):
     return at.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def cards(n):
+    """"1 card", "2 cards"."""
+    return f"{n} card" if n == 1 else f"{n} cards"
+
+
 def not_made_words(not_made):
     return ", ".join(f"{n} {OUTCOMES.get(o, o.replace('_', ' '))}" for o, n in sorted((not_made or {}).items()) if n)
 
 
-def question(plan):
-    """The confirm's words for an undo plan (`undo.summary` + {"language", "confirm": False})."""
-    lines = [QUESTION, "", f"{plan.get('delete', 0)} cards go."]
+def question(plan, at=None, others=()):
+    """The confirm's words for an undo plan (`undo.summary` + {"language", "confirm": False}). `others`: the times of
+    the episode's other batches in the list — then this batch's time (`at`) is named, and that the others stay."""
+    lines = [QUESTION]
+    if others:
+        many = len(others) > 1
+        lines.append(f"This batch was made {when(at)}. Its other batch{'es' if many else ''} "
+                     f"({', '.join(when(o) for o in others)}) stay{'' if many else 's'}.")
+    lines += ["", f"{cards(plan.get('delete', 0))} go{'es' if plan.get('delete', 0) == 1 else ''}."]
     keep = plan.get("keep") or []
     if keep:
         lines.append(f"{len(keep)} stay:")
@@ -127,17 +140,66 @@ def _busy_writer(out):
         (getattr(out, "context", None) or {}).get("lock") == "anki-writer"
 
 
+def writer_busy():
+    """Does a live program hold Anki's write lock? A lock file this process can't open is no program: its refusal is
+    said at once. Never raises."""
+    try:
+        from app import locks
+        return locks.in_use("anki-writer") and locks.unopenable("anki-writer") is None
+    except Exception:
+        return False
+
+
+def update_waits():
+    """Is an update waiting to install (this dashboard's "Update now": no Anki write may begin)? Never raises."""
+    try:
+        from app import updater
+        return updater.children_held()
+    except Exception:
+        return False
+
+
+def wait_for_writer(call, on_wait, busy=None, update=None):
+    """On a worker: `call()` (an `undo.act` that writes), tried again while a live program holds Anki's write lock —
+    at least RETRY_GAP_S apart, for up to WAIT_FOR_WRITER_S, `on_wait()` called once, as the wait starts. A refusal no
+    live program explains stops at once: an update waiting to install (UPDATE_WAITING), a lock file that can't be
+    opened (the act's own words). The window's undo and put-back and the switch-off's put-back all wait here."""
+    busy, update = busy or writer_busy, update or update_waits
+    deadline = time.monotonic() + WAIT_FOR_WRITER_S
+    said = False
+    while True:
+        if not said and busy():
+            said = True
+            on_wait()
+        try:
+            return call()
+        except Exception as e:
+            if not _busy_writer(e):
+                raise
+            if update():
+                from app.cli.contract import CliError
+                raise CliError("busy", UPDATE_WAITING, lock="anki-writer", held_by=None) from None
+            if not busy() or time.monotonic() >= deadline:
+                raise
+        if not said:
+            said = True
+            on_wait()
+        time.sleep(RETRY_GAP_S)
+
+
 class ConnectWindow:
     """`record`: `view(language)`, read on the caller's worker. `act(settings, language, job=, shelf_run=,
     confirm=)`: `undo.act`; `settings()`: settings.json as it is now (read on the worker); `writer_busy()`: is Anki's
-    write lock held; `confirm(title, text)`: the question; `on_change()`: the dashboard's line reads again; `post(job)`:
-    runs `job` on the Tk thread (the dashboard's queue). Tests hand fakes for all of them."""
+    write lock held by a live program; `update_waits()`: is an update waiting to install; `confirm(title, text)`: the
+    question; `on_change()`: the dashboard's line reads again; `post(job)`: runs `job` on the Tk thread (the
+    dashboard's queue). Tests hand fakes for all of them."""
 
     def __init__(self, parent, language, tooltip, record, act=None, settings=None, writer_busy=None, confirm=None,
                  junban=None, on_change=None, logs_folder=None, save_logs=None, ask_save=None, mark_seen=None,
-                 dismiss=None, post=None):
+                 dismiss=None, post=None, update_waits=None):
         self.language, self.tooltip, self.record = language, tooltip, record or {}
         self._act, self._settings, self._writer_busy = act, settings, writer_busy
+        self._update_waits = update_waits
         self.confirm = confirm or (lambda title, text: messagebox.askyesno(title, text, parent=self.win))
         self.junban = junban_present() if junban is None else junban
         self.on_change = on_change or (lambda: None)
@@ -162,8 +224,10 @@ class ConnectWindow:
         self._logs(frame)
         self.tabs = ttk.Notebook(frame, style="CW.TNotebook")
         self.tabs.pack(fill=tk.BOTH, expand=True)
-        self.tab_needs = self._tab("Needs you" + (f" ({self.record.get('unseen')})" if self.record.get("unseen")
-                                                  else ""))
+        needs = self.record.get("needs") or []
+        self._listed = {n["id"] for n in needs}                         # the tab's label follows the list
+        self._unseen = {n["id"] for n in needs if not n.get("seen_at")}
+        self.tab_needs = self._tab(self._needs_title())
         self.tab_batches = self._tab("Batches")
         self.tab_shelf = self._tab("Shelf")
         self._needs()
@@ -235,6 +299,12 @@ class ConnectWindow:
         self.buttons[key + (text,)] = button
         return button
 
+    def _done(self, key):
+        """A button whose work is done goes (never left greyed on the screen)."""
+        button = self.buttons.pop(key, None)
+        if button is not None:
+            button.destroy()
+
     def _row(self, tab):
         row = ttk.Frame(tab, style="CW.Row.TFrame", padding=8)
         row.pack(fill=tk.X, pady=(0, 6))
@@ -252,6 +322,10 @@ class ConnectWindow:
         return act(settings, self.language, **kw)
 
     # -- Needs you --------------------------------------------------------------------------------------------- #
+    def _needs_title(self):
+        """"Needs you (n)": n the entries still listed that were new when the window opened."""
+        return f"Needs you ({len(self._unseen)})" if self._unseen else "Needs you"
+
     def _needs(self):
         needs = self.record.get("needs") or []
         if not needs:
@@ -319,6 +393,11 @@ class ConnectWindow:
                 self.buttons[key].config(state=tk.NORMAL)
                 return
             row.destroy()
+            self._listed.discard(need["id"])
+            self._unseen.discard(need["id"])
+            self.tabs.tab(0, text=self._needs_title())
+            if not self._listed:
+                self._empty(self.tab_needs, "Nothing needs you.")
             self.on_change()
         self.worker(job, done)
 
@@ -333,7 +412,7 @@ class ConnectWindow:
             ttk.Label(row, text=batch.get("title") or "An episode", style="CW.Row.TLabel",
                       font=("Segoe UI", 10, "bold"), wraplength=WRAP - 160).pack(anchor=tk.W)
             missing = not_made_words(batch.get("not_made"))
-            ttk.Label(row, text=f"{batch.get('made', 0)} cards made" + (f" · not made: {missing}" if missing else "")
+            ttk.Label(row, text=f"{cards(batch.get('made', 0))} made" + (f" · not made: {missing}" if missing else "")
                       + f" · {when(batch.get('at'))}", style="CW.Meta.TLabel", wraplength=WRAP - 40).pack(anchor=tk.W)
             note = ttk.Label(row, text="", style="CW.Note.TLabel", wraplength=WRAP - 40)
             note.pack(anchor=tk.W)
@@ -346,6 +425,10 @@ class ConnectWindow:
         button, note = self.buttons[key], self.notes[("batch", job)]
         button.config(state=tk.DISABLED)
         note.config(text="Checking which cards can go…")
+        batches = self.record.get("undo") or []
+        batch = next((b for b in batches if b.get("job") == job), {})
+        others = [b.get("at") for b in batches if b.get("job") != job and batch.get("item") is not None
+                  and b.get("item") == batch.get("item")]           # the episode's other batches: they stay
 
         def planned(plan):
             said = _say(plan)
@@ -359,7 +442,7 @@ class ConnectWindow:
                     + ".")
                 button.config(state=tk.NORMAL)
                 return
-            if not self.confirm("Undo this batch", question(plan)):
+            if not self.confirm("Undo this batch", question(plan, batch.get("at"), others)):
                 note.config(text="")
                 button.config(state=tk.NORMAL)
                 return
@@ -373,28 +456,25 @@ class ConnectWindow:
                 button.config(state=tk.NORMAL)
                 return
             note.config(text=out.get("say") or "Done.")
+            self._done(key)                 # the batch is undone: its button goes, the result stays said
             self.on_change()
         self.worker(lambda: self._act_call(job=job, confirm=False), planned)
 
     def _write(self, note, **kw):
-        """On the worker: the write, waiting (and saying so) while another program holds Anki's write lock."""
-        deadline = time.monotonic() + WAIT_FOR_WRITER_S
-        while True:
-            if self._is_writer_busy():
-                self.post(lambda: note.config(text=WAITING))
-            try:
-                return self._act_call(**kw)
-            except Exception as e:
-                if not _busy_writer(e) or time.monotonic() >= deadline:
-                    raise
-                self.post(lambda: note.config(text=WAITING))
+        """On the worker: the write, waiting (and saying so, once) while another program holds Anki's write lock
+        (`wait_for_writer`)."""
+        return wait_for_writer(lambda: self._act_call(**kw), lambda: self.post(lambda: note.config(text=WAITING)),
+                               busy=self._is_writer_busy, update=self._is_update_waiting)
 
     def _is_writer_busy(self):
         try:
-            if self._writer_busy is not None:
-                return self._writer_busy()
-            from app import locks
-            return locks.in_use("anki-writer")
+            return self._writer_busy() if self._writer_busy is not None else writer_busy()
+        except Exception:
+            return False
+
+    def _is_update_waiting(self):
+        try:
+            return self._update_waits() if self._update_waits is not None else update_waits()
         except Exception:
             return False
 
@@ -402,7 +482,7 @@ class ConnectWindow:
     def _shelf(self):
         shelf = self.record.get("shelf") or {}
         runs = shelf.get("runs") or []
-        top = f"{shelf.get('on_shelf', 0)} cards on the shelf (suspended until you need them)."
+        top = f"{cards(shelf.get('on_shelf', 0))} on the shelf (suspended until you need them)."
         if shelf.get("swap_ins"):
             top += f" {shelf['swap_ins']} came back today because you need their words again."
         ttk.Label(self.tab_shelf, text=top, style="CW.TLabel", wraplength=WRAP).pack(anchor=tk.W, pady=(0, 6))
@@ -411,7 +491,7 @@ class ConnectWindow:
                       style="CW.TLabel", wraplength=WRAP).pack(anchor=tk.W, pady=(0, 6))
         for run in runs:
             row = self._row(self.tab_shelf)
-            ttk.Label(row, text=f"{run.get('cards', 0)} cards · {run.get('why') or ''}", style="CW.Row.TLabel",
+            ttk.Label(row, text=f"{cards(run.get('cards', 0))} · {run.get('why') or ''}", style="CW.Row.TLabel",
                       wraplength=WRAP - 40).pack(anchor=tk.W)
             words = "、".join(run.get("words") or ())
             ttk.Label(row, text=f"{when(run.get('at'))} · {run.get('back', 0)} back" + (f" · {words}" if words
@@ -429,7 +509,7 @@ class ConnectWindow:
         key = ("shelf", run["run"], "Put back")
         button, note = self.buttons[key], self.notes[("shelf", run["run"])]
         left = run.get("cards", 0) - run.get("back", 0)
-        if not self.confirm("Put back", f"Put {left} cards back into your new cards in Anki? Surasura never shelves "
+        if not self.confirm("Put back", f"Put {cards(left)} back into your new cards in Anki? Surasura never shelves "
                                         "them again."):
             return
         button.config(state=tk.DISABLED)
@@ -441,7 +521,8 @@ class ConnectWindow:
                 note.config(text=said)
                 button.config(state=tk.NORMAL)
                 return
-            note.config(text=f"{out.get('back', 0)} cards back in your new cards.")
+            note.config(text=f"{cards(out.get('back', 0))} back in your new cards.")
+            self._done(key)                 # back in your new cards: nothing left to put back
             self.on_change()
         self.worker(lambda: self._write(note, shelf_run=run["run"], confirm=True), done)
 

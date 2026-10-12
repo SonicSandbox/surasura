@@ -418,3 +418,187 @@ def test_the_wheel_scrolls_connects_column_over_its_groups_and_leaves_other_bind
     assert canvas.yview()[0] > 0.0, "the wheel over a group scrolls the column"
     assert app.root.bind_all("<MouseWheel>"), "the app's other wheel binding is still there"
     app.root.unbind_all("<MouseWheel>")
+
+
+# --- the final adversary's rows (P3.1 W5) -----------------------------------------------------------------------------
+
+def _answers(monkeypatch, *answers):
+    """messagebox.askyesno stood in for: each question kept with its thread, answered in order."""
+    from tkinter import messagebox
+    asked, left = [], list(answers)
+    monkeypatch.setattr(messagebox, "askyesno",
+                        lambda title, text, **k: (asked.append((text, on_main())), left.pop(0))[1])
+    return asked
+
+
+def _act_refusing(monkeypatch):
+    from app.cli.contract import CliError
+    from app.connect import undo
+    acts = []
+
+    def act(settings, language, job=None, shelf_run=None, confirm=False):
+        acts.append((language, shelf_run, on_main()))
+        raise CliError("anki-closed", "Anki isn't open (or stopped answering): connection refused")
+    monkeypatch.setattr(undo, "act", act)
+    return acts
+
+
+OFF_ANYWAY = "Turn Connect off anyway? The cards on the shelf stay suspended until you put them back."
+
+
+@pytest.mark.parametrize("anyway", [True, False])
+def test_a_put_back_that_fails_keeps_connect_on_and_asks_whether_to_turn_it_off_anyway(dashboard, monkeypatch, anyway):
+    """Adversary #2 (P3.1-3): "Yes" to putting the shelf back, and Anki refuses — the switch isn't saved off with the
+    cards still shelved and nothing left to show them. Asked why and whether to turn it off anyway: Yes → off (the
+    cards stay suspended, as said); No → Connect, its controls and its line stay on."""
+    app, lines = _settings_open(dashboard, monkeypatch, connect_enabled=True)
+    _shelf(monkeypatch, SHELF)
+    acts = _act_refusing(monkeypatch)
+    asked = _answers(monkeypatch, True, anyway)
+    _switch(app, False)
+    if anyway:          # the second question's Yes starts another worker: wait for it
+        assert _pump(app.root, lambda: app._connect_panel is None)
+    assert [t for t, _m in asked][0] == "Put the 3 shelved cards back into your new cards?"
+    second, on_tk = asked[1]
+    assert on_tk and "Anki isn't open (or stopped answering): connection refused" in second
+    assert second.endswith(OFF_ANYWAY)
+    assert acts == [("ja", "shelf-2026-10-11-a", False)], "tried once, on a worker: Anki refused, no wait"
+    if anyway:
+        assert read_settings()["connect_enabled"] is False and app._connect_panel is None
+        assert app.var_connect_enabled.get() is False and lines[-1] == "Connect is off."
+    else:
+        assert read_settings()["connect_enabled"] is True and app._current_settings["connect_enabled"] is True
+        assert app.var_connect_enabled.get() is True and app._connect_panel is not None
+        assert "disabled" not in app.chk_connect.state()
+
+
+def test_the_switch_offs_put_back_waits_for_anki_miner_as_the_window_does(dashboard, monkeypatch):
+    """Adversary #2: Anki Miner holding Anki's write lock (18–24 s a batch) makes the put-back wait and try again — the
+    window's own wait (`connect_window.wait_for_writer`), said once — then it's put back and the switch saved off."""
+    from app.cli.contract import CliError
+    from app.connect import connect_window, undo
+    app, lines = _settings_open(dashboard, monkeypatch, connect_enabled=True)
+    _shelf(monkeypatch, SHELF)
+    answers = [CliError("busy", "Another program is writing to Anki. Try again in a moment.", lock="anki-writer",
+                        held_by=None), {"language": "ja", "shelf": "shelf-2026-10-11-a", "back": 3, "confirm": True}]
+    acts = []
+
+    def act(settings, language, job=None, shelf_run=None, confirm=False):
+        acts.append(shelf_run)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(undo, "act", act)
+    monkeypatch.setattr(connect_window, "writer_busy", lambda: True)
+    monkeypatch.setattr(connect_window, "update_waits", lambda: False)
+    monkeypatch.setattr(connect_window, "RETRY_GAP_S", 0.05)
+    asked = _answers(monkeypatch, True)
+    _switch(app, False)
+    assert len(asked) == 1 and acts == ["shelf-2026-10-11-a", "shelf-2026-10-11-a"], "it waited and tried again"
+    assert lines.count(app.PUT_BACK_WAITING) == 1 and "3 shelved cards back in your new cards." in lines
+    assert read_settings()["connect_enabled"] is False and app._connect_panel is None
+
+
+def test_a_library_there_but_not_opening_is_named_busy_and_the_switch_stays_off(dashboard, monkeypatch):
+    """Adversary #3 (G1.1-2): Japanese's library file exists but won't open (busy, damaged, read-only) — its watermark
+    can't be set, so the switch isn't saved on with the old one. Chinese, with no library yet, is fine as before."""
+    from app.connect import library
+    c.library()
+    app, lines = _settings_open(dashboard, monkeypatch)
+    monkeypatch.setattr(library, "open_store", lambda lang, role="connect": None)
+    before = settings_bytes()
+    _switch(app, True)
+    assert settings_bytes() == before and app.var_connect_enabled.get() is False
+    assert app._connect_panel is None and app._connect_row is None
+    failed = [line for line in lines if line.startswith("Connect wasn't switched on")]
+    assert failed == ["Connect wasn't switched on: Japanese: the library is busy; try again in a moment. Nothing "
+                      "changed; try again."], "named for Japanese only: Chinese has no library file"
+
+
+def test_settings_shown_again_reads_the_file_on_a_worker_and_the_panel_follows_another_windows_write(
+        dashboard, monkeypatch):
+    """Adversary #5: 順's window writes the sync minute while Settings is hidden. Shown again, settings.json is read on
+    a worker and the panel rebuilt from it — so picking the value the panel once showed is a change, and written.
+    Shown again with nothing changed: nothing rebuilt."""
+    from app import settings_manager
+    app, _lines = _settings_open(dashboard, monkeypatch, connect_enabled=True, anki_sync_delay_min=1)
+    panel = app._connect_panel
+    app.toggle_settings_window()                                    # hidden
+    settings_manager.save_keys({"anki_sync_delay_min": 5})          # 順's "5 minutes after"
+    reads = []
+    real = settings_manager.load_settings
+
+    def load_settings(*a, **k):
+        if sys._getframe(1).f_code.co_name == "read":
+            reads.append(on_main())
+        return real(*a, **k)
+    monkeypatch.setattr(settings_manager, "load_settings", load_settings)
+    app.toggle_settings_window()                                    # shown again
+    assert _pump(app.root, lambda: app._connect_panel is not None and app._connect_panel is not panel)
+    assert reads and True not in reads, "read on a worker"
+    fresh = app._connect_panel
+    assert fresh.combo_sync.get() == "5 minutes after"
+    assert fresh._set("anki_sync_delay_min", 1, 1) and read_settings()["anki_sync_delay_min"] == 1, \
+        "'About a minute after' picked again is a change now: written"
+    app.toggle_settings_window()
+    app.toggle_settings_window()
+    _pump(app.root, lambda: False, timeout=0.5)
+    assert app._connect_panel is fresh, "nothing changed: nothing rebuilt"
+
+
+def test_settings_shown_again_with_the_switch_off_imports_nothing_of_connect(dashboard, monkeypatch):
+    app, _lines = _settings_open(dashboard, monkeypatch)
+    for name in [m for m in sys.modules if m.startswith("app.connect")]:
+        monkeypatch.delitem(sys.modules, name)
+    before = settings_bytes()
+    app.toggle_settings_window()
+    app.toggle_settings_window()
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert not [m for m in sys.modules if m.startswith("app.connect")] and settings_bytes() == before
+
+
+def _kicks(monkeypatch):
+    from app.connect import kick
+    kicks = []
+    monkeypatch.setattr(kick, "kick", lambda settings: kicks.append((settings.get("connect_enabled"), on_main())))
+    return kicks
+
+
+def _quiet_update(app, monkeypatch):
+    from app import updater
+    for name in ("drop_update_lock", "release_children", "discard_staged"):
+        monkeypatch.setattr(updater, name, lambda *a, **k: None)
+    monkeypatch.setattr(app, "_maybe_auto_generate", lambda: None)
+    monkeypatch.setattr(app, "_replan_restart", lambda: None)
+
+
+def test_a_cancelled_update_kicks_connect_so_its_line_stops_saying_installing(dashboard, monkeypatch):
+    """Adversary #7: Connect stopped between batches for the update ("Surasura is installing an update."); the update
+    cancelled, its lock gone, Connect is kicked (on a worker) to go on — after a cancel once downloaded and after one
+    during the download; never while the dashboard is closing."""
+    app = dashboard()
+    app._current_settings = {"connect_enabled": True}
+    _quiet_update(app, monkeypatch)
+    kicks = _kicks(monkeypatch)
+    app._update_job = job = {"done": True, "lock": None, "after": None, "window": None}
+    app._cancel_update(job)
+    assert _pump(app.root, lambda: kicks) and kicks == [(True, False)]
+    app._update_downloaded({"ended": True, "start_held": True, "lock": None})
+    assert _pump(app.root, lambda: len(kicks) == 2)
+    app._update_job = job = {"done": True, "lock": None, "after": None, "window": None}
+    app._cancel_update(job, start_held=False)                       # the dashboard closing
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert len(kicks) == 2
+
+
+def test_a_cancelled_update_with_connect_off_imports_nothing_of_connect(dashboard, monkeypatch):
+    app = dashboard()
+    app._current_settings = {"connect_enabled": False}
+    _quiet_update(app, monkeypatch)
+    for name in [m for m in sys.modules if m.startswith("app.connect")]:
+        monkeypatch.delitem(sys.modules, name)
+    app._update_job = job = {"done": True, "lock": None, "after": None, "window": None}
+    app._cancel_update(job)
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert not [m for m in sys.modules if m.startswith("app.connect")]

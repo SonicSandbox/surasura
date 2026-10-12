@@ -45,9 +45,14 @@ def procs():
             pass
 
 
+_CONNECT_HELD = []          # the `connect` lock, held by a test standing in for a running Connect
+
+
 @pytest.fixture(autouse=True)
 def _free_hold():
     yield
+    while _CONNECT_HELD:
+        _CONNECT_HELD.pop().release()
     with updater._DEFERRED_LOCK:
         updater._DEFERRED.clear()
     updater._HOLD.clear()
@@ -574,10 +579,13 @@ def test_a_program_without_a_window_is_ended_at_once(procs):
 # *Stop it*, and *Stop all* waits for it. Its process is found by its lock's holder record, as the real `connect` writes
 # it (a copy of Python under the CLI's name stands in for surasura-cli.exe).
 
-def _connect_holder(pid):
-    """The `connect` lock's holder record naming `pid`, as `locks.take("connect", "Connect")` writes it."""
+def _connect_holder(pid, held=True):
+    """The `connect` lock's holder record naming `pid`, as `locks.take("connect", "Connect")` writes it — and the lock
+    held (by this test: a running Connect holds it), or with `held=False` a record a finished Connect left behind."""
     import json
     from app import locks
+    if held and not _CONNECT_HELD:
+        _CONNECT_HELD.append(locks.take("connect", "Connect", owner=object()))
     record = locks._paths("connect")[1]
     os.makedirs(os.path.dirname(record), exist_ok=True)
     with open(record, "w", encoding="utf-8") as f:
@@ -615,7 +623,7 @@ def test_stop_pid_never_ends_connect(procs):
     connect = _sleeper(60)
     procs.append(connect)
     _connect_holder(connect.pid)
-    updater.stop_pid(connect.pid)
+    updater.stop_pid(connect.pid, connect=updater.connect_pid())     # as the listing passes it
     time.sleep(1.0)
     assert connect.poll() is None, "Connect is never ended: it stops after its batch by itself"
     other = _sleeper(60)
@@ -646,3 +654,36 @@ def test_stop_all_stops_the_others_and_the_update_waits_for_connect(dash, procs,
     p.wait(timeout=10)
     assert _pump(dash, lambda: dash.calls["armed"])
     assert dash.calls["destroyed"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' process listing and handles")
+def test_a_stale_connect_record_names_an_ordinary_program_and_stop_reads_nothing_again(procs, tmp_path, monkeypatch):
+    """Adversary #4: a record a finished Connect left (its lock free) may name a process id Windows has given another
+    program since — that program is listed as itself, with its *Stop it*, and stopped like any other. With Connect
+    running, the listing's worker reads its id once and hands it to each stop: a click reads nothing again."""
+    import shutil
+    from app import locks
+    install = tmp_path / "スラスラ 本番"
+    install.mkdir()
+    cli = install / "surasura-cli.exe"
+    shutil.copy(sys.executable, cli)
+    reused = subprocess.Popen([str(cli), "-c", "import time; time.sleep(60)"])      # hato's command line, say
+    procs.append(reused)
+    _connect_holder(reused.pid, held=False)                                         # the stale record names it
+    assert updater.connect_pid() is None, "the lock is free: the record names nobody"
+    [row] = [c for c in updater.running_children([], images=[str(cli)]) if c["pid"] == reused.pid]
+    assert row["name"] == "Surasura's command line" and row["stop"] is not None
+    row["stop"]()
+    assert reused.wait(timeout=10) == 1, "an ordinary program without a window: ended at once"
+
+    p, cli, _go = _connect_process(tmp_path, procs)                                 # Connect running, its lock held
+    other = subprocess.Popen([str(cli), "-c", "import time; time.sleep(60)"])
+    procs.append(other)
+    children = {c["pid"]: c for c in updater.running_children([], images=[str(cli)])}
+    assert children[p.pid]["stop"] is None
+    looks = []
+    monkeypatch.setattr(locks, "read_holder", lambda name: looks.append(name))
+    monkeypatch.setattr(locks, "in_use", lambda name, **k: looks.append(name))
+    children[other.pid]["stop"]()
+    assert other.wait(timeout=10) == 1 and looks == [], "the stop used the listing's id: nothing read on the click"
+    assert p.poll() is None

@@ -2286,6 +2286,7 @@ class MasterDashboardApp:
         if self.settings_window.state() == "withdrawn":
             self.settings_window.deiconify()
             self.settings_window.lift()
+            self._connect_panel_fresh()
         else:
             self.settings_window.withdraw()
 
@@ -2410,6 +2411,28 @@ class MasterDashboardApp:
         except Exception as e:
             print(f"Connect's settings weren't shown: {e}")
 
+    def _connect_panel_fresh(self):
+        """Settings shown again: another window (順's) may have written a key the panel shows meanwhile — settings.json
+        read on a worker, and the panel built again from it only when one of its values changed, so what it shows and
+        its "nothing changed" check are the file's. The switch off (no panel): nothing, nothing of Connect's imported."""
+        panel = self.__dict__.get("_connect_panel")
+        if panel is None or not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+            return
+
+        def read():
+            try:
+                loaded = settings_manager.load_settings() or {}
+            except Exception as e:
+                print(f"Connect's settings weren't read: {e}")
+                return
+
+            def apply():
+                if self._connect_panel is panel and panel.stale(loaded):
+                    self._connect_panel_drop()
+                    self._connect_panel_build(loaded)
+            self.gui_queue.put(apply)
+        threading.Thread(target=read, daemon=True).start()
+
     def _connect_panel_drop(self):
         panel, self._connect_panel = self._connect_panel, None
         if panel is not None:
@@ -2424,8 +2447,9 @@ class MasterDashboardApp:
         alone (`save_keys`: a file the switch never touched never gains it), then its controls, the line and a session
         look; no session look or kick before. A failure: the switch goes back off, nothing saved, the reason in the
         Processing Log. **Off:** with cards on the shelf, asked once whether to put them back (before the save: the
-        put-back needs the preview on), then saved off (a running Connect stops at its next boundary), then the
-        controls and the line go and the readers are dropped where the store can. A failed save: back on."""
+        put-back needs the preview on; one not put back: still on, and asked whether to turn it off anyway), then
+        saved off (a running Connect stops at its next boundary), then the controls and the line go and the readers
+        are dropped where the store can. A failed save: back on."""
         on = bool(self.var_connect_enabled.get())
         was_on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
         self._connect_switch_enabled(False)
@@ -2466,8 +2490,10 @@ class MasterDashboardApp:
         None, or the failures named by language."""
         failed = []
         try:
+            from app import library_store
             from app.connect import level, library
             from app.connect.ledger import path as ledger_path
+            from app.path_utils import get_data_path
         except Exception as e:
             return str(e)
         for lang in self.CONNECT_LANGUAGES:
@@ -2476,6 +2502,11 @@ class MasterDashboardApp:
                 if store is not None:
                     with store:
                         library.switch_on(store)
+                elif os.path.exists(library_store.library_db_path(lang, get_data_path(lang))):
+                    # a library that's there but won't open (busy, damaged, read-only): its watermark isn't set
+                    failed.append(f"{self.LANGUAGE_NAMES.get(lang, lang)}: the library is busy; try again in a "
+                                  "moment")
+                    continue
                 if os.path.exists(ledger_path()):   # no ledger: no list looked at yet (and none made here)
                     level.forget(lang)
             except Exception as e:
@@ -2513,21 +2544,60 @@ class MasterDashboardApp:
             yes = False
         threading.Thread(target=self._connect_switch_off, args=(shelved if yes else None,), daemon=True).start()
 
-    def _connect_switch_off(self, put_back=None):
-        """On a worker: the shelf put back first when asked (as you: never shelved again), then the switch saved off,
-        then the readers dropped where the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing)."""
-        if put_back:
-            from app.connect import undo
+    PUT_BACK_WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your shelved cards go back " \
+                       "once it's done…"
+
+    def _connect_put_back(self, put_back):
+        """On a worker: each restore point put back (`undo.act`), waiting for Anki's write lock as the Connect window
+        does (`connect_window.wait_for_writer`) -> the reasons of those not put back ([] when every one was)."""
+        failed = []
+        try:
+            from app.connect import connect_window, undo
             settings = settings_manager.load_settings() or {}
-            for lang, (_cards, runs) in put_back.items():
-                for run in runs:
-                    try:
-                        out = undo.act(settings, lang, shelf_run=run, confirm=True)
-                        said = (f"Not done: {out['skipped']}." if out.get("skipped") else
-                                f"{out.get('back', 0)} shelved cards back in your new cards.")
-                    except Exception as e:
-                        said = f"Shelved cards weren't put back: {getattr(e, 'message', None) or e}"
-                    self.log_to_terminal(said)
+        except Exception as e:
+            return [str(e)]
+        for lang, (_cards, runs) in put_back.items():
+            for run in runs:
+                try:
+                    out = connect_window.wait_for_writer(
+                        lambda: undo.act(settings, lang, shelf_run=run, confirm=True),
+                        lambda: self.log_to_terminal(self.PUT_BACK_WAITING))
+                    said = (f"Not done: {out['skipped']}." if out.get("skipped") else
+                            f"{out.get('back', 0)} shelved cards back in your new cards.")
+                    if out.get("skipped"):
+                        failed.append(said)
+                except Exception as e:
+                    said = f"Shelved cards weren't put back: {getattr(e, 'message', None) or e}"
+                    failed.append(said)
+                self.log_to_terminal(said)
+        return failed
+
+    def _connect_ask_off_anyway(self, failed):
+        """On the Tk thread: shelved cards weren't put back — Connect stays on unless you turn it off anyway."""
+        parent = self.settings_window if self.__dict__.get("settings_window") is not None else self.root
+        try:
+            yes = messagebox.askyesno(
+                "Connect", "Some shelved cards weren't put back:\n" + "\n".join(failed) +
+                "\n\nTurn Connect off anyway? The cards on the shelf stay suspended until you put them back.",
+                parent=parent)
+        except tk.TclError:
+            yes = False
+        if yes:
+            threading.Thread(target=self._connect_switch_off, daemon=True).start()
+            return
+        self.log_to_terminal("Connect stays on: put the shelved cards back from its window, or turn it off again.")
+        self._connect_switch_done(True, fresh=False)
+
+    def _connect_switch_off(self, put_back=None):
+        """On a worker: the shelf put back first when asked (as you: never shelved again; each restore point waiting
+        for Anki's write lock as the Connect window does), then the switch saved off, then the readers dropped where
+        the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing). A restore point not put back: the
+        switch stays on and you're asked whether to turn it off anyway (`_connect_ask_off_anyway`)."""
+        if put_back:
+            failed = self._connect_put_back(put_back)
+            if failed:
+                self.gui_queue.put(lambda: self._connect_ask_off_anyway(failed))
+                return
         try:
             settings_manager.save_keys({"connect_enabled": False}, strict=True)
         except Exception as e:
@@ -2858,6 +2928,7 @@ class MasterDashboardApp:
             updater.drop_update_lock(job.get("lock"))
             if job.get("start_held"):
                 self._replan_restart()                 # a cancel during the download (pass 5 #1)
+                self._connect_kick_after_update()
             return
         if job is not getattr(self, "_update_job", None):
             return
@@ -3031,6 +3102,7 @@ class MasterDashboardApp:
                 pass
             if job.get("done"):
                 self._replan_restart()                 # else once the download worker drops the lock (pass 5 #1)
+                self._connect_kick_after_update()
 
     def _replan_restart(self):
         """The preview's helper, stopped at "Update now", started again once the update's lock is gone — a helper
@@ -3039,6 +3111,22 @@ class MasterDashboardApp:
             self._replan_start()
         except Exception:
             pass
+
+    def _connect_kick_after_update(self):
+        """A cancelled update, its lock gone: Connect started again on a worker (`kick.kick` refuses by itself when it
+        is off, running or an update is staged), so a Connect that stopped for the update goes on and its line no
+        longer says it is installing one. Off: nothing, and nothing of Connect's imported."""
+        s = getattr(self, "_current_settings", None) or {}
+        if not s.get("connect_enabled"):
+            return
+
+        def work():
+            try:
+                from app.connect import kick
+                kick.kick(dict(s))
+            except Exception as e:
+                print(f"Connect wasn't started: {e}")
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_and_restart(self, job):
         """The final callback, all on the window's thread: the last check (`can_update_now`), the note (K100), the

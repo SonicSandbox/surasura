@@ -247,7 +247,7 @@ def test_a_plan_writes_nothing_and_owes_no_sync(anki, monkeypatch):
 def test_a_done_undo_owes_the_sync_once(anki):
     job_id = _batch(anki)
     answer = undo.act(ON, "ja", job=job_id, confirm=True)
-    assert answer["confirm"] is True and answer["deleted"] == 1 and answer["say"].startswith("1 cards deleted.")
+    assert answer["confirm"] is True and answer["deleted"] == 1 and answer["say"].startswith("1 card deleted.")
     assert anki.deleted == [101]
     assert anki.synced == [ON], "tomorrow's cards changed: Anki's sync is owed, once"
 

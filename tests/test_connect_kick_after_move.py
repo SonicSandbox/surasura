@@ -133,3 +133,30 @@ def test_unread_reads_connects_watermark_in_the_real_store():
         inbox.consume(s, "ja", ledger)
     assert status_row.unread("ja") is None, "read by Connect: nothing new"
     assert status_row.unread("zh") is None, "no Chinese library"
+
+
+def test_the_same_event_number_in_another_language_is_its_own_event(root):
+    """Adversary #6: each language's library numbers its own log, so Japanese's event 7 and Chinese's event 7 are two
+    placements — the dashboard switched to Chinese still kicks Connect for its own."""
+    stage = Stage()
+    language = ["ja"]
+    pump = Pump()
+    footer = ttk.Frame(root)
+    footer.pack(side="bottom")
+    row = status_row.StatusRow(root, lambda: language[0], Tips(), lambda: None, below=footer,
+                               settings=lambda: {"connect_enabled": True}, stamp=stage.stamp, read=stage.read,
+                               kick=stage.kick, unread=lambda lang: stage.newest, post=pump.put)
+
+    def look():
+        row.tick()
+        assert pump.run(root, lambda: not row._looking and not pump.jobs)
+    look()
+    stage.moved(newest=7)
+    look()
+    assert stage.kicks == [True]
+    language[0] = "zh"
+    stage.moved(newest=7)
+    look()
+    assert stage.kicks == [True, True], "Chinese's event 7 is not Japanese's"
+    look()
+    assert stage.kicks == [True, True], "and it is kicked for once"

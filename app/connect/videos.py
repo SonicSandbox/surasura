@@ -13,8 +13,9 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
   time a video is missing — never while every video is where its pairing says.
 - **A share whose folder times don't move** (a NAS, a FAT drive; P3.1 row 3.1.7): a video still not found is looked
-  for once more, once a run — the folders whose time didn't move listed again, at most RELIST_MAX entries in all (past
-  it a folder keeps what it had); a second miss in the run lists nothing again.
+  for once more, once a run — the folders whose time didn't move listed again, at most RELIST_MAX entries in all (a
+  folder with more than are left keeps what it had, and the rest goes on to the next); a second miss in the run lists
+  nothing again.
 - **Keyed by language** (D31): one index file per language, under local data (where a profile folder can sit above).
 
 A placeholder (a cloud file not downloaded) is indexed by name but never opened or taken: *No video* until it's on
@@ -103,7 +104,8 @@ class Index:
     def refresh(self, shallow, deep, budget=None):
         """Every folder of `shallow` (alone) and `deep` (with subfolders, DEPTH deep), listed again only when its
         modified time moved; folders no longer looked at are dropped from the file. `budget` (a missing video's
-        re-list): the folders whose time didn't move are listed again too, at most `budget` entries in all."""
+        re-list): the folders whose time didn't move are listed again too, at most `budget` entries kept in all — a
+        folder with more entries than are left keeps what it had, and what's left goes on to the folders after it."""
         self.roots = (list(shallow), list(deep))
         old, new = self.data["dirs"], {}
         self.listed = 0
@@ -131,7 +133,7 @@ class Index:
                 try:
                     got = _list(where, left)
                 except _Full:
-                    got, left = None, 0     # the cap: this folder and every one after keep what they had
+                    got = None              # over what's left of the cap: it keeps what it had, the rest goes on
                 if got is not None and left is not None:
                     left -= got[2]
                 if got is None:

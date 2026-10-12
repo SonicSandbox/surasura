@@ -143,3 +143,21 @@ def test_a_second_miss_in_the_same_run_lists_nothing_again(tmp_path, monkeypatch
 
     assert index.find(["Bocchi - 06.mkv"]) is None
     assert listed == [], "nothing is listed again in the same run"
+
+
+def test_a_folder_over_the_cap_keeps_what_it_had_and_the_rest_goes_on_to_later_folders(tmp_path, monkeypatch):
+    """Adversary #9: one huge folder on the share (more entries than the whole re-list may read) must not use the re-list
+    up: it keeps its old listing, and the allowance goes on to the folders after it — the moved video is found."""
+    monkeypatch.setattr(videos, "RELIST_MAX", 4)
+    big, small = str(tmp_path / "NAS" / "全話"), str(tmp_path / "NAS" / "二期")
+    for n in range(1, 6):
+        _video(os.path.join(big, f"Bocchi - {n:02d}.mkv"))
+    _video(os.path.join(small, "Bocchi - 13.mkv"))
+    index = _index(tmp_path, shallow=[small, big], deep=[])       # the big folder is walked first
+    held = {f: os.stat(f) for f in (big, small)}
+    moved = _video(os.path.join(small, "Bocchi - 14.mkv"))
+    for folder, stamp in held.items():
+        _hold(folder, stamp)
+
+    assert _same(index.find(["Bocchi - 14.mkv"]), moved), "the later folder was listed again"
+    assert _same(index.find(["Bocchi - 05.mkv"]), os.path.join(big, "Bocchi - 05.mkv")), "the big one kept its videos"

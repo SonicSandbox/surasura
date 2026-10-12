@@ -427,6 +427,11 @@ def owe_sync(settings):
         log.exception("the sync after an undo wasn't arranged")
 
 
+def cards(n):
+    """"1 card", "2 cards"."""
+    return f"{n} card" if n == 1 else f"{n} cards"
+
+
 def summary(done):
     """A plan or an undo, as the window and the command line say it."""
     out = {"job": done["job"], "item": done["item"], "delete": len(done["delete"]), "gone": len(done["gone"]),
@@ -441,10 +446,10 @@ def summary(done):
         if not done["deleted"]:
             out["say"] = "No cards deleted: every card of this batch stays (see why)." + blocked
         elif done.get("pending"):
-            out["say"] = (f"{len(done['deleted'])} cards deleted. Surasura's library was busy: Connect frees their "
+            out["say"] = (f"{cards(len(done['deleted']))} deleted. Surasura's library was busy: Connect frees their "
                           "words at its next start." + blocked)
         else:
-            out["say"] = f"{len(done['deleted'])} cards deleted." + (
+            out["say"] = f"{cards(len(done['deleted']))} deleted." + (
                 " Place the episode in your top 20 again to make its cards again." if done.get("placed_again") else
                 " Some of this episode's cards are still in Anki, so placing it again makes no new cards.") + blocked
     return out

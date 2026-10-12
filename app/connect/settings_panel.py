@@ -40,6 +40,10 @@ SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start 
 FLAG_COLOURS = ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple")
 KNOWN = (("suspended", "Suspended"), ("marked", "Marked")) + tuple(
     (f"flag:{n}", f"Flag {n} ({colour})") for n, colour in enumerate(FLAG_COLOURS, 1))
+# The keys the panel shows: another window writing one (順's sync minute, its two switches) makes the panel stale
+SHOWN = ("connect_mine_words", "connect_send_grammar", "anki_sync_delay_min", "connect_open_anki",
+         "connect_backlog_cap", "known_from_anki", "connect_video_folders", "junban_auto_reorder",
+         "junban_auto_backfill", "connect_anki_miner_path")
 
 
 def save(key, value=None, merge=None):
@@ -281,7 +285,7 @@ class Panel:
         return True
 
     def _check(self, parent, text, key, default, tip):
-        var = tk.BooleanVar(value=bool(self.settings.get(key, default)))
+        var = tk.BooleanVar(parent, value=bool(self.settings.get(key, default)))
         chk = ttk.Checkbutton(parent, text=text, variable=var, style="CP.TCheckbutton",
                               command=lambda: self._set(key, bool(var.get()), default,
                                                         revert=lambda old: var.set(bool(old))))
@@ -304,7 +308,7 @@ class Panel:
 
         self.controls_first = ttk.Label(f, text="Words to make cards from:", style="CP.TLabel")
         self.controls_first.pack(anchor=tk.W, pady=(6, 0))
-        self.var_words = tk.StringVar(value=self.settings.get("connect_mine_words", "list"))
+        self.var_words = tk.StringVar(f, value=self.settings.get("connect_mine_words", "list"))
         self.word_buttons = {}
         for value, label, line in WORDS:
             radio = ttk.Radiobutton(f, text=label, value=value, variable=self.var_words, style="CP.TRadiobutton",
@@ -340,7 +344,7 @@ class Panel:
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(row, text="Keep up to", style="CP.TLabel").pack(side=tk.LEFT)
-        self.var_cap = tk.StringVar(value=str(cap_of(self.settings.get("connect_backlog_cap", 300),
+        self.var_cap = tk.StringVar(row, value=str(cap_of(self.settings.get("connect_backlog_cap", 300),
                                                      self.language())))
         self.spin_cap = ttk.Spinbox(row, from_=0, to=5000, increment=10, width=6, textvariable=self.var_cap,
                                     command=self._save_cap)
@@ -356,7 +360,7 @@ class Panel:
         ttk.Label(row, text="Known from Anki:", style="CP.TLabel").pack(side=tk.LEFT)
         current = self.settings.get("known_from_anki", ["suspended"])
         current = [current] if isinstance(current, str) else list(current or [])
-        self.known_vars = {term: tk.BooleanVar(value=term in current) for term, _l in KNOWN}
+        self.known_vars = {term: tk.BooleanVar(row, value=term in current) for term, _l in KNOWN}
         self.menu_known = ttk.Menubutton(row, style="CP.TMenubutton", width=24)
         menu = tk.Menu(self.menu_known, tearoff=False, bg=SURFACE, fg=TEXT, activebackground=ACCENT,
                        activeforeground=BG, selectcolor=ACCENT)
@@ -650,6 +654,11 @@ class Panel:
             self.star_box.destroy()
             self.star_box = None
         threading.Thread(target=answer_star, args=(answer,), daemon=True).start()
+
+    def stale(self, loaded):
+        """Does settings.json as `loaded` now hold another value for a key the panel shows than it was built with (or
+        last saved)? Then its values and its "nothing changed" check are out of date."""
+        return any((loaded or {}).get(key) != self.settings.get(key) for key in SHOWN)
 
     def destroy(self):
         for frame in (self.card_frame, self.frame):

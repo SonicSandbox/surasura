@@ -276,3 +276,26 @@ def test_a_folder_opens_on_macos_and_linux_too(monkeypatch, platform, command):
     monkeypatch.setattr(subprocess, "Popen", lambda args: opened.append(args))
     settings_panel.open_path("/home/learner/logs")
     assert opened == [[command, "/home/learner/logs"]]
+
+
+def test_each_value_lives_on_the_panels_own_window_when_another_tk_root_is_the_default(root, monkeypatch):
+    """W5 (found by the final run: tests/test_update_skip.py makes a Tk root as it is imported): a control's value made
+    without a master lived on whichever root was the default — another one — so a click changed nothing the panel read
+    and nothing was written. Each value lives on the panel's own window."""
+    import tkinter as tk
+    other = tk.Tk()
+    other.withdraw()
+    monkeypatch.setattr(tk, "_default_root", other)
+    try:
+        panel, _tips, _pump, before = _panel(root)
+        panel.word_buttons["unknown"].invoke()
+        assert _written(before) == ({"connect_mine_words": "unknown"}, set())
+        before = read_settings()
+        panel.chk_grammar.invoke()
+        assert _written(before) == ({"connect_send_grammar": False}, set())
+        before = read_settings()
+        panel.known_menu.invoke(1)                      # Marked
+        assert _written(before) == ({"known_from_anki": ["suspended", "marked"]}, set())
+        assert panel.var_cap.get() == "300", "the cap shown is the panel's own"
+    finally:
+        other.destroy()

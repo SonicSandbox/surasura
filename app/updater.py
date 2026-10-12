@@ -384,23 +384,28 @@ CONNECT_ROW = "Surasura Connect — stops after this batch of cards"
 
 
 def connect_pid():
-    """The running Connect's process id (`surasura-cli connect`, from its lock's holder record), or None. Never
+    """The running Connect's process id (`surasura-cli connect`, from its lock's holder record), or None. The record is
+    trusted only while the `connect` lock is held: one a finished Connect left may name a process id Windows has since
+    given another program. A look of up to ~0.1 s (`locks.in_use`): the listing worker's, never the Tk thread's. Never
     raises."""
     try:
         from app import locks
+        if not locks.in_use("connect"):
+            return None
         return int((locks.read_holder("connect") or {}).get("pid")) or None
     except Exception:
         return None
 
 
-def stop_pid(pid, grace=None):
+def stop_pid(pid, grace=None, connect=None):
     """*Stop it*: a program with a window is asked to close it, as its user would — a Content Manager mid-Graduate
     finishes the move and saves before it closes; one with no window (Generate, the パターン build), or still running
     `STOP_GRACE` seconds later, is ended. Connect is never ended (P3.1 row 3.1.8, K99: a kill mid-batch orphans Anki
-    Miner): it stops by itself after its batch, the update staged. Returns at once (the grace runs on a thread).
-    Never raises."""
+    Miner): it stops by itself after its batch, the update staged — `connect`, its process id as the listing found it
+    (`connect_pid`, on the listing's worker: nothing is read again here, on the Tk thread). Returns at once (the grace
+    runs on a thread). Never raises."""
     try:
-        if int(pid) == connect_pid():
+        if connect is not None and int(pid) == int(connect):
             return
         if sys.platform != "win32":
             import signal
@@ -482,7 +487,7 @@ def running_children(active_processes=(), images=None):
             continue
         cli = os.path.basename(image).lower() == CLI_EXE_NAME.lower()
         found.append({"pid": pid, "name": "Surasura's command line" if cli else "Another Surasura window",
-                      "stop": (lambda p=pid: stop_pid(p))})
+                      "stop": (lambda p=pid: stop_pid(p, connect=connect))})
     return found
 
 

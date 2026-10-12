@@ -285,3 +285,158 @@ def test_any_collection_of_ids_is_a_block():
         _keys, items = eng.move(ids(order), "goal")
         assert sorted(items) == sorted([order[3][0], order[4][0]])
         assert [item for item, t in _order(eng)[0] if t == "goal"][:2] == [order[3][0], order[4][0]]
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# Arrivals (E2.2 D9): `add` among the moves
+# --------------------------------------------------------------------------------------------------------------- #
+
+def _arrival(rnd, plan, number):
+    """A synthetic arrival record (`arrivals.record`'s shape) for `plan`: words, phrase rows, tied spellings with their
+    counts, a progressive line."""
+    keys = plan.keys
+    words = [k for k, key in enumerate(keys) if not key[2]]
+    phrases = [k for k, key in enumerate(keys) if key[2]]
+    ties = {tie[0]: tie for tie in plan.ties}
+    met = list(dict.fromkeys(rnd.sample(words, rnd.randint(1, 30))))
+    main, sp, spc, tokens = [], [], {}, []
+    for k in met:
+        u = rnd.randint(1, 12)
+        main += (k, u)
+        tokens += (k, rnd.randint(1, 20))
+        if k in ties:
+            spelled = rnd.sample(list(ties[k][1]), rnd.randint(1, 2))
+            sp.append([k, spelled, spelled[:1]])
+            spc[k] = [{s: rnd.randint(1, 3) for s in spelled}, {spelled[0]: 1}]
+    ph = []
+    for k in rnd.sample(phrases, rnd.randint(0, 2)):
+        ph += (k, rnd.randint(1, 3))
+    total = sum(tokens[1::2]) + rnd.randint(50, 500)
+    return {"main": main, "ph": ph, "sp": sp, "spc": spc, "plan": plan.header["run_signature"], "keys": len(keys),
+            "name": f"new{number:03d}.srt",
+            "prog": [total, rnd.randint(10, total // 2), tokens, [], [], list(ph), []]}
+
+
+def _with_arrivals(plan, added):
+    """`plan` as a Generate of its files and the arrivals (`added`: [(item, record, tier)]) would write it, for E1.2's
+    replay: their lines appended, Occurrences and the tied counts grown."""
+    keys = [list(key) for key in plan.keys]
+    ties = {tie[0]: [tie[0], dict(tie[1]), dict(tie[2]), tie[3]] for tie in plan.ties}
+    files, per_file = list(plan.files), list(plan.per_file)
+    for item, rec, tier in added:
+        for table in ("main", "ph"):
+            for k, u in zip(rec[table][0::2], rec[table][1::2]):
+                keys[k][4] += u
+        for k, (orths, surfaces) in rec["spc"].items():
+            for into, more in ((ties[k][1], orths), (ties[k][2], surfaces)):
+                for s, n in more.items():
+                    into[s] = into.get(s, 0) + n
+        files.append([item, tier, item])
+        per_file.append({"f": len(per_file), "main": rec["main"], "ph": rec["ph"], "sp": rec["sp"],
+                         "prog": rec["prog"]})
+    header = dict(plan.header, files=len(files))
+    return plan_engine.Plan(header, files, keys, plan.rows, list(ties.values()), per_file)
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_arrivals_among_moves_keep_the_incremental_numbers_equal_to_a_replan(seed):
+    """400 operations per seed, one in eight an arrival (`add` at a tier's top or beside an anchor), the rest drags:
+    after each, the live numbers equal a from-scratch `replan` of the same order by an engine holding the same
+    arrivals (`replan` accepts added items); every 40th, every column equals it and E1.2's replay of a plan holding
+    the arrivals' lines."""
+    plan = synthetic_plan(seed)
+    eng, referee = plan_engine.Engine(plan), plan_engine.Engine(plan)
+    rnd = random.Random(2000 + seed)
+    added = []
+    for i in range(1, 401):
+        if rnd.random() < 0.125:
+            order, _seq = _order(eng)
+            tier = rnd.choice(TIERS)
+            in_tier = [item for item, t in order if t == tier]
+            rec = _arrival(rnd, plan, len(added))
+            item = f"{tier}/new{len(added):03d}.srt"
+            where, before, after = rnd.random(), None, None
+            if in_tier and where >= 0.3:
+                before, after = (rnd.choice(in_tier), None) if where < 0.6 else (None, rnd.choice(in_tier))
+            keys, items = eng.add(item, rec, tier, before_id=before, after_id=after,
+                                  exact=i % 2 == 0, moved=() if i % 2 == 0 else ("floor",))
+            assert items == [item] and len(keys) == len(rec["main"]) // 2 + len(rec["ph"]) // 2
+            referee.add(item, rec, "goal")
+            added.append((item, rec, tier))
+            assert _order(eng)[0] == _store_add(order, item, tier, before, after), (seed, i, "placement")
+        else:
+            _random_move(rnd, eng)
+        order, _seq = _order(eng)
+        assert _live(eng) == _live_of(referee, order), (seed, i)
+        if i % 40 == 0:
+            got, want = eng.result(), referee.replan(order)
+            for name in ("priority", "progressive", "first", "n_new", "score", "counts", "sequence"):
+                assert getattr(got, name) == getattr(want, name), (seed, i, name)
+            assert got.added == [item for item, _r, _t in added]
+            assert got.provisional == [item for n, (item, _r, _t) in enumerate(added) if item in got.reasons]
+            _against_replay(_with_arrivals(plan, added), eng, order, (seed, i))
+
+
+def _store_add(order, item, tier, before=None, after=None):
+    """Where `Store.move` places a new item (`_store_move`'s rule for a block of one)."""
+    return _store_move(order + [(item, tier)], [item], tier, before, after)
+
+
+def test_an_arrival_read_against_another_plan_or_damaged_is_refused():
+    """`add` checks the record as the loader checks a plan's lines: another plan's (its run, its words' count), a word
+    out of range, a phrase row in the words' table, a tied spelling for an untied word — a PlanError, the engine
+    unchanged; an item the plan holds already, an unknown tier or an anchor in another tier too."""
+    plan = synthetic_plan(13)
+    eng = plan_engine.Engine(plan)
+    before = _live(eng)
+    rec = _arrival(random.Random(5), plan, 0)
+    untied = next(k for k in range(len(plan.keys)) if k not in {tie[0] for tie in plan.ties} and not plan.keys[k][2])
+    phrase = next(k for k, key in enumerate(plan.keys) if key[2])
+    for damaged in (dict(rec, plan="another run"), dict(rec, keys=len(plan.keys) + 1),
+                    dict(rec, main=rec["main"] + [len(plan.keys), 1]), dict(rec, main=rec["main"] + [phrase, 1]),
+                    dict(rec, main=rec["main"][:2] + rec["main"][:2]), dict(rec, sp=[[untied, ["x"], []]]),
+                    dict(rec, prog=[1, 2, [], [], [], [], []]), dict(rec, spc={"x": [{}, {}]}),
+                    dict(rec, main=[rec["main"][0], 0] + rec["main"][2:]),            # a use of none
+                    dict(rec, spc={str(len(plan.keys)): [{}, {}]}), None):           # a word out of range
+        with pytest.raises(plan_engine.PlanError):
+            eng.add("goal/new.srt", damaged, "goal")
+    first = plan.files[0][0]
+    with pytest.raises(plan_engine.PlanError, match="already"):
+        eng.add(first, rec, "goal")
+    with pytest.raises(plan_engine.PlanError, match="tier"):
+        eng.add("goal/new.srt", rec, "later")
+    with pytest.raises(plan_engine.PlanError, match="anchor"):
+        eng.add("goal/new.srt", rec, "goal", after_id=first)
+    assert _live(eng) == before and eng.result().added == []
+
+
+def test_an_arrival_keeps_its_own_file_name_whatever_its_item_id():
+    """The progressive list's Source File for an added file is its record's file name (`arrivals.record`'s "name"),
+    never a piece of its item id: the library store's item ids aren't paths."""
+    plan = synthetic_plan(17)
+    eng = plan_engine.Engine(plan)
+    rec = _arrival(random.Random(9), plan, 7)
+    eng.add("item:42", rec, "now")
+    result = eng.result()
+    seq = result.sequence["item:42"]
+    rows = [row for row in result.progressive if row["Sequence"] == seq]
+    assert rows, "the arrival's words reach the progressive list"
+    assert {row["Source File"] for row in rows} == {"new007.srt"}
+
+
+def test_files_added_only_when_every_plan_file_is_still_there_unchanged():
+    """`check(..., added=)`'s rule (`_only_added`): the library is the plan's files, each unchanged, plus files the
+    engine added — never when a plan file left or changed as well, and never for a plan whose files don't all carry
+    their digest (it can't tell which are its own)."""
+    from types import SimpleNamespace
+    from app import plan_rules
+    entries = [[f"HighPriority/作品/第{n:02d}話.srt", [1700000000 + n, 4000 + n], "HighPriority", 10, "subtitle"]
+               for n in range(1, 4)]
+    one, two, new = (plan_rules.file_digest(entry) for entry in entries)
+    plan = SimpleNamespace(files=[[entries[0][0], "now", one], [entries[1][0], "now", two]])
+    parts = {"files": entries}
+    assert plan_engine._only_added(plan, parts, [new]) is True
+    assert plan_engine._only_added(plan, {"files": [entries[0], entries[2]]}, [new]) is False, "a plan file left"
+    assert plan_engine._only_added(plan, parts, []) is False, "nothing the engine added"
+    no_digest = SimpleNamespace(files=[[entries[0][0], "now"], [entries[1][0], "now", two]])
+    assert plan_engine._only_added(no_digest, {"files": [entries[1], entries[2]]}, [new]) is False

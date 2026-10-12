@@ -179,14 +179,15 @@ def child_env(root):
     return env
 
 
-def generate(root, case, extra_env=None):
+def generate(root, case, extra_env=None, extra_args=()):
     """A full Generate of the case's library, as the dashboard runs it; the store's helper finished after. Returns
-    the analyzer's output (stdout + stderr)."""
+    the analyzer's output (stdout + stderr). `extra_args`: more analyzer arguments (a setting the dashboard passes on
+    the command line: --zh-script)."""
     language, _library, _shipped_lists, args = ALL_CASES[case]
     env = child_env(root)
     env.update(extra_env or {})
     cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
-           "--no-open"] + args
+           "--no-open"] + args + list(extra_args)
     p = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     out = p.stdout + "\n--- stderr ---\n" + p.stderr
     if p.returncode != 0:

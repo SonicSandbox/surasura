@@ -674,7 +674,8 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    # The library as Generate reads it: a missing item still counts (its cached sentences), as `build` lists it.
+    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False, missing=True)]
     if not files:
         return {}
     store = token_index.open_store(language)
@@ -708,7 +709,8 @@ def build(language, save_path, progress=print, show_source=False):
     # The same normalization a run uses, before anything is tokenized or any list is read.
     analyzer.SANITIZE_JA = (language == "ja")
 
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False)]
+    # missing=True: a missing item keeps counting (9b), as Generate lists it — its row and sentences stay.
+    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False, missing=True)]
     if not files:
         progress("Your library is empty — add content first.")
         return 0

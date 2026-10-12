@@ -11,6 +11,7 @@ under the list's floor) stays as the last Generate left it until the next one (D
     eng = plan_engine.Engine(plan, ids)                # ids: the store's item id of each plan file (Store.item_id)
     eng.replan(order, pins)                            # from scratch: order = [(item_id, tier)], NOW, Soon, 6+ Months
     eng.move(item_ids, tier, before_id=None, after_id=None)   # incremental, as Store.move places a block
+    eng.add(item_id, record, tier, before_id=None, after_id=None, exact=True, moved=())   # an arrival (E2.2 D9)
     eng.set_pins(pins)
     result = eng.result()
 
@@ -20,7 +21,9 @@ store, no Anki; the only I/O is reading the plan file it is given. The caller ru
 **Exact** (05 §1): `result()` equals a full Generate of the same order on the plan columns. The analyzer and this
 module share `plan_rules` — the spelling a row shows and the progressive pass are one implementation. `move` keeps the
 live numbers (Score, counts, first places, *N new*, the priority order) up to date in place and equals `replan`
-(05 §2); the progressive list and spelling ties are worked out again by `result()`.
+(05 §2); the progressive list and spelling ties are worked out again by `result()`. `add` counts in a file the plan
+doesn't hold from its arrival record (`arrivals.record`) the same way; when the gates found nothing else it moves
+(`arrivals.Gates`), the result is the next Generate's.
 """
 import bisect
 import gzip
@@ -30,7 +33,8 @@ from array import array
 
 from app import plan_rules
 
-FORMAT = 1
+FORMAT = 2                                 # the newest plan file this engine reads; FORMATS: every one it reads
+FORMATS = (1, 2)                           # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
@@ -51,14 +55,16 @@ class PlanError(Exception):
 class Plan:
     """A plan file read: `header` (dict), `files` [[rel_path, tier, digest], …], `keys` [[Word, Reading, is_phrase,
     half, Occurrences], …], `rows` (parallel to keys: [Tier, phrase Tier, Modality, Sources, Orth, Forms, [Context 1,
-    Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …] and `per_file` (one dict per
-    file, in the run's order: "main", "ph", "sp", "prog")."""
+    Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …], `per_file` (one dict per
+    file, in the run's order: "main", "ph", "sp", "prog") and `spell` ({k: ({orth: n}, {surface: n})} for every
+    other listed word, each in the order first met — format 2; empty for format 1)."""
 
-    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file")
+    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file", "spell")
 
-    def __init__(self, header, files, keys, rows, ties, per_file):
+    def __init__(self, header, files, keys, rows, ties, per_file, spell=None):
         self.header, self.files, self.keys, self.rows, self.ties, self.per_file = \
             header, files, keys, rows, ties, per_file
+        self.spell = {} if spell is None else spell
 
 
 def load(path):
@@ -84,9 +90,11 @@ def load(path):
     if not decoded or not isinstance(decoded[0], dict):
         raise PlanError("the plan file has no header")
     header = decoded[0]
-    if header.get("format") != FORMAT:
-        raise PlanError(f"the plan file's format is {header.get('format')!r}, not {FORMAT}")
+    if header.get("format") not in FORMATS:
+        raise PlanError(f"the plan file's format is {header.get('format')!r}, not one of {FORMATS}")
     tables = {"files": [], "keys": [], "rows": [], "ties": []}
+    if header["format"] >= 2:
+        tables["spell"] = []
     per_file = []
     for line in decoded[1:]:
         if not isinstance(line, dict):
@@ -104,15 +112,30 @@ def load(path):
         if per_file:
             raise PlanError("the plan file's tables come after its files")
         tables[name].extend(chunk)
-    plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file)
+    plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file,
+                _spell_table(tables.get("spell", ())))
     _validate(plan)
     return plan
+
+
+def _spell_table(rows):
+    """{k: (orths, surfaces)} from the `spell` table's rows; a row that isn't [k, …, …] is a PlanError (`_validate`
+    checks the rest)."""
+    spell = {}
+    for row in rows:
+        if not (isinstance(row, list) and len(row) == 3 and type(row[0]) is int):
+            raise PlanError("the plan file's spell table is damaged")
+        if row[0] in spell:
+            raise PlanError("the plan file's spell table lists a word twice")
+        spell[row[0]] = (row[1], row[2])
+    return spell
 
 
 def _validate(plan):
     """Every value the engine reads, checked by type and range, every table against the header: a damaged or
     hand-edited plan is refused whole with a PlanError, never half-used and never a crash later (a TypeError in
-    `result()` on a worker). `format` 1 as `analyzer.plan_lines` writes it (01 §7)."""
+    `result()` on a worker). `format` 1 or 2 as `analyzer.plan_lines` writes it (01 §7; 2 adds `spell` and the
+    header's `phrase_entries`, E2.2 D8)."""
     h = plan.header
     for name, kinds in (("language", str), ("engine", str), ("run_signature", str), ("order_free_signature", str),
                         ("weights", dict), ("files", int), ("keys", int), ("shared_phrases", list)):
@@ -156,6 +179,19 @@ def _validate(plan):
                                         and set(tie[3]) <= set(tie[1])))):
             raise PlanError("the plan file's ties table is damaged")
     ties = {tie[0]: tie for tie in plan.ties}
+    # Format 2: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
+    # whose entry holds it. A format-1 plan holds neither.
+    if h.get("format") == 2:
+        listed_untied = {k for k, row in enumerate(plan.rows) if row is not None and k not in ties}
+        if set(plan.spell) != listed_untied or not all(_counts(o) and _counts(s) for o, s in plan.spell.values()):
+            raise PlanError("the plan file's spell table is damaged")
+        entries = h.get("phrase_entries")
+        if not (isinstance(entries, list) and all(
+                isinstance(e, list) and len(e) == 2 and _index(e[0], n_keys) and type(e[1]) is int and e[1] >= 0
+                for e in entries) and [e[0] for e in entries] == [k for k, key in enumerate(plan.keys) if key[2]]):
+            raise PlanError("the plan file's header 'phrase_entries' is damaged")
+    elif plan.spell:
+        raise PlanError("a format-1 plan file holds a spell table")
     uses = [0] * n_keys
     phrases = {k for k, key in enumerate(plan.keys) if key[2]}
     for line in plan.per_file:
@@ -229,15 +265,17 @@ def _counts(value):
 # Is the plan still the library's?
 # --------------------------------------------------------------------------------------------------------------- #
 
-def check(plan, language, engine, run_stamp, signature_parts, epoch=None):
+def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=()):
     """Whether `plan` describes the library as it stands (01 §1, 04 §4). `engine`: the running app's
     `"<version>|schema<SCHEMA_VERSION>|rev<ENGINE_REVISION>"`; `run_stamp`: `analyzer.read_run_stamp(results)`;
     `signature_parts`: `analyzer.run_signature_parts(...)` for the library now (the caller computes it on its worker);
-    `epoch`: the store's (None: not checked). Returns
+    `epoch`: the store's (None: not checked); `added`: the digests (`plan_rules.file_digest`) of the files the engine
+    added since the plan (`Engine.add`, E2.2 D9). Returns
 
       None                        the plan is the library's: re-plan any order of it;
-      ("replan-now", parts)       only the known words ("known"), the word lists ("lists") or files that left the
-                                  counted tiers ("files-removed") moved: re-plan now from the plan, then Generate;
+      ("replan-now", parts)       only the known words ("known"), the word lists ("lists"), files that left the
+                                  counted tiers ("files-removed") or files the engine added, none changed or removed
+                                  ("files-added") moved: re-plan now from the plan, then Generate;
       ("generate-first", reason)  anything else — another language, another app version, a run that didn't finish,
                                   files added or changed, a setting: a Generate first;
       ("stand-aside", reason)     the plan is current but the engine can't replay it exactly: coverage mode
@@ -260,7 +298,7 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None):
     if now is None:
         return ("generate-first", "signature")                    # the parts can't be read: never "current"
     if now != h["order_free_signature"]:
-        verdict = _what_moved(plan, signature_parts)
+        verdict = _what_moved(plan, signature_parts, added)
         if verdict[0] == "generate-first":
             return verdict
     aside = stands_aside(plan)
@@ -281,7 +319,7 @@ def stands_aside(plan):
     return None
 
 
-def _what_moved(plan, parts):
+def _what_moved(plan, parts, added=()):
     kept = plan.header.get("order_free_parts")
     if not isinstance(kept, dict):
         return ("generate-first", "signature")
@@ -296,6 +334,8 @@ def _what_moved(plan, parts):
             replan.append(name)
         elif name == "files" and _only_removed(plan, parts):
             replan.append("files-removed")
+        elif name == "files" and _only_added(plan, parts, added):
+            replan.append("files-added")
         else:
             return ("generate-first", name)
     if not replan:
@@ -315,6 +355,19 @@ def _only_removed(plan, parts):
     return now < held
 
 
+def _only_added(plan, parts, added):
+    """True when the library counts every plan file, unchanged, and more: each of them a file the engine added
+    (`added`, their digests)."""
+    held = {entry[2] for entry in plan.files if len(entry) > 2}
+    if len(held) != len(plan.files) or not added:
+        return False
+    try:
+        now = {plan_rules.file_digest(entry) for entry in parts["files"]}
+    except Exception:
+        return False
+    return held < now and now - held <= set(added)
+
+
 # --------------------------------------------------------------------------------------------------------------- #
 # The engine
 # --------------------------------------------------------------------------------------------------------------- #
@@ -326,9 +379,12 @@ class Result:
     computes, and the order-free ones as the plan keeps them); `first`: key -> the item where the word is first met;
     `n_new`: item -> how many words are first met there; `score`, `counts` (High, Low, Goal): key -> numbers;
     `sequence`: item -> its place (1 = the first item of NOW); `pinned`: the pinned items, in groups, oldest pin
-    first (02 §7); `dropped`: plan items not in the order (02 §6)."""
+    first (02 §7); `dropped`: plan items not in the order (02 §6); `added`: the items the engine added since the
+    plan (`Engine.add`, E2.2 D9); `provisional`: those of them added while a gate moved (`exact=False`: the next
+    Generate may move numbers beyond the item's own words) and `reasons`: {item: [the gates that moved]} (E2.2 K10)."""
 
-    __slots__ = ("priority", "progressive", "first", "n_new", "score", "counts", "sequence", "pinned", "dropped")
+    __slots__ = ("priority", "progressive", "first", "n_new", "score", "counts", "sequence", "pinned", "dropped",
+                 "added", "provisional", "reasons")
 
     def __init__(self, **values):
         for name in self.__slots__:
@@ -370,7 +426,7 @@ class Engine:
             raise PlanError(f"the engine stands aside: {aside}")
         # The engine keeps what it reads, not the plan's per-file lines (most of a loaded plan's memory): once the
         # caller lets its plan go, only the tables below stay.
-        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None)
+        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
         files, keys = plan.files, plan.keys
         ids = [entry[0] for entry in files] if ids is None else list(ids)
         if len(ids) != len(files):
@@ -391,7 +447,8 @@ class Engine:
         self._phrase = [1 if key[2] else 0 for key in keys]
         self._listed = [row is not None for row in plan.rows]
         self._lemma = [key[0] for key in keys]
-        self._occ = [key[4] for key in keys]
+        self._occ = [key[4] for key in keys]           # Occurrences, grown by the files the engine adds
+        self._source = [entry[0].rsplit("/", 1)[-1] for entry in files]      # each file's Source File
         # Per file: its keys and uses (words, then the phrase rows' own entries) — a Generate's insertion order: files
         # in the order, each file's words as first counted, phrases after words. A key's place in `ks` is its place
         # in that order within the file (words before phrases, as the rank needs).
@@ -420,6 +477,7 @@ class Engine:
             if line.get("sp"):
                 self._sp[f] = {sp[0]: (sp[1], sp[2]) for sp in line["sp"]}
         self._pins = []
+        self._added, self._reasons = [], {}     # the items `add` placed, in order; {item: [gates]}: those not exact
         self.renumbered = 0                  # how many times a move found no room and spaced every item afresh
         self._numbers([(ids[f], entry[1]) for f, entry in enumerate(files) if ids[f] is not None])
 
@@ -710,6 +768,139 @@ class Engine:
         self._ranked = ranked
 
     # ----------------------------------------------------------------------------------------------------------- #
+    # Arrivals (E2.2 D9)
+    # ----------------------------------------------------------------------------------------------------------- #
+
+    def add(self, item_id, record, tier, before_id=None, after_id=None, exact=True, moved=()):
+        """A new file joins the order, counted from its arrival record (`arrivals.record`: its plan line — `main`,
+        `ph`, `sp`, `prog` — and its spelling counts `spc`, with the plan it was read against): placed as `Store.move`
+        places an item (before or after the anchor; neither: the top of `tier`). Its uses join Score, the tier
+        counts and Occurrences; only its words can change first place, *N new* and the rank, as in `move`; its
+        spellings join the tied words' counts. `exact`: the gates found nothing else the arrival moves
+        (`arrivals.Gates.check`) — then `result()` is the next full Generate's plan columns; False: the item is
+        provisional (`Result.provisional`, with `moved` as its `reasons`) — still a valid order to re-plan and re-order
+        Anki by (E2.2 K10), corrected when the next Generate's plan replaces this engine. "The plan columns" are 05 §1's:
+        a priority row's `Sources`, `Modality` and example sentences (`Context n` / `Src n`) stay the plan's — the next
+        Generate may give the arrival's words a new source kind or a better sentence. Returns (the words whose
+        Score, tier counts or first item changed, as (Word, Reading); [item_id]). A record read against another plan,
+        or one that doesn't fit this plan's words, is a PlanError."""
+        if item_id is None or item_id in self._f_of:
+            raise PlanError(f"item {item_id!r} is in the plan already")
+        slot = _SLOT.get(tier)
+        if slot is None:
+            raise PlanError(f"unknown tier {tier!r}")
+        pos = self._pos
+        anchor = before_id if before_id is not None else after_id
+        if anchor is not None:
+            a = self._f_of.get(anchor)
+            if a is None or pos[a] is None or self._tier[a] != slot:
+                raise PlanError("the anchor is not in that tier")
+        ks, us, prog, sp, spc = self._arrival(record)
+
+        # The file, as the engine holds every plan file (`__init__`).
+        f = len(self._uses)
+        self._ids.append(item_id)
+        self._f_of[item_id] = f
+        self._uses.append((ks, us))
+        self._source.append(str(record.get("name") or str(item_id).replace("\\", "/").rsplit("/", 1)[-1]))
+        self._prog.append(prog)
+        if sp:
+            self._sp[f] = sp
+        for i, k in enumerate(ks):
+            self._files_of[k].append(f)
+            if self._idx_in[k] is not None:
+                self._idx_in[k].append(i)
+                self._rare_held += 1
+        for k, (orths, surfaces) in spc.items():
+            tie = self._ties.get(k)
+            if tie is not None:                         # the tied words' counts, which `result()` works Orth out from
+                self._ties[k] = [k, _summed(tie[1], orths), _summed(tie[2], surfaces), tie[3]]
+        self._n_new.append(0)
+        self._tier.append(None)
+        self._pos.append(None)
+
+        # Its place: the top of the tier, or beside the anchor, between its neighbours' places (`move`'s).
+        order = self._order
+        at = sum(self._tier_count[:slot]) if anchor is None else order.index(a) + (1 if before_id is None else 0)
+        order.insert(at, f)
+        self._tier[f] = slot
+        self._tier_count[slot] += 1
+        if not self._place(at, 1):
+            self._respace()
+
+        weight = self._w[slot]
+        changed = []
+        for i, (k, u) in enumerate(zip(ks, us)):
+            self._raw[k] += weight * u
+            self._counts[k][slot] += u
+            self._occ[k] += u
+            was = self._first[k]
+            if was is None or pos[f] < pos[was]:
+                if was is not None:
+                    self._n_new[was] -= 1
+                self._n_new[f] += 1
+                self._first[k] = f
+                self._first_idx[k] = i
+            if self._listed[k]:
+                r = self._rank(k)
+                ranked = self._ranked
+                if self._rank_of[k] is not None:
+                    del ranked[bisect.bisect_left(ranked, self._rank_of[k])]
+                bisect.insort(ranked, r)
+                self._rank_of[k] = r
+            changed.append(k)
+        self._added.append(item_id)
+        if not exact:
+            self._reasons[item_id] = list(moved)
+        keys = self.plan.keys
+        return [(keys[k][0], keys[k][1]) for k in changed], [item_id]
+
+    def _arrival(self, record):
+        """An arrival record checked against this plan, as `_validate` checks a plan file's lines: (keys, uses — words
+        then phrase rows, as a file's line —, the progressive pass's line, its tied spellings {k: (orths, surfaces)},
+        its spelling counts {k: (orths, surfaces)})."""
+        h = self.plan.header
+        if not isinstance(record, dict) or record.get("plan") != h["run_signature"] or record.get("keys") != self._n:
+            raise PlanError("the arrival was read against another plan: read it again")
+        n, phrases = self._n, self._phrase
+        ks, us = array("i"), array("i")
+        for table, is_phrase in (("main", 0), ("ph", 1)):
+            tks, tus = _pairs(record.get(table), n, "the arrival's uses are damaged")
+            if (tus and min(tus) < 1) or len(set(tks)) != len(tks) or any(phrases[k] != is_phrase for k in tks):
+                raise PlanError("the arrival's uses are damaged")
+            ks.extend(tks)
+            us.extend(tus)
+        if len(set(ks)) != len(ks):
+            raise PlanError("the arrival's uses are damaged")
+        line = {"prog": record.get("prog")}
+        prog = line["prog"]
+        if not (isinstance(prog, list) and len(prog) == 7 and type(prog[0]) is int and type(prog[1]) is int
+                and 0 <= prog[1] <= prog[0] < _LIMIT):
+            raise PlanError("the arrival's progressive record is damaged")
+        for table in (prog[2], prog[3], prog[4], prog[5]):
+            _pairs(table, n, "the arrival's progressive record is damaged")
+        if not isinstance(prog[6], list) or not all(
+                isinstance(sib, list) and len(sib) == 2 and isinstance(sib[0], str) and _count(sib[1])
+                for sib in prog[6]):
+            raise PlanError("the arrival's progressive record is damaged")
+        ties = self._ties
+        sps = record.get("sp", [])
+        if not isinstance(sps, list) or not all(
+                isinstance(x, list) and len(x) == 3 and x[0] in ties and _strings(x[1]) and _strings(x[2]) for x in sps):
+            raise PlanError("the arrival's spellings are damaged")
+        spc = {}
+        for k, counts in (record.get("spc") or {}).items():
+            try:
+                k = int(k)                              # a JSON round trip writes the keys as text
+            except (TypeError, ValueError):
+                raise PlanError("the arrival's spelling counts are damaged") from None
+            if not (0 <= k < n and isinstance(counts, (list, tuple)) and len(counts) == 2
+                    and _counts(counts[0]) and _counts(counts[1])):
+                raise PlanError("the arrival's spelling counts are damaged")
+            spc[k] = (counts[0], counts[1])
+        return ks, us, self._prog_file(line), {x[0]: (x[1], x[2]) for x in sps}, spc
+
+    # ----------------------------------------------------------------------------------------------------------- #
     # Pins (02 §7)
     # ----------------------------------------------------------------------------------------------------------- #
 
@@ -752,7 +943,7 @@ class Engine:
             orth, forms, tier = spelling(k, spelled)
             row = rows[k]
             out = {"Word": keys[k][0], "Reading": keys[k][1], "Orth": orth, "Forms": forms, "Tier": tier,
-                   "Score": score[k], "Occurrences": keys[k][4], "Count (High)": counts[k][0],
+                   "Score": score[k], "Occurrences": self._occ[k], "Count (High)": counts[k][0],
                    "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Sources": row[3], "Modality": row[2]}
             _contexts(out, row[6], n_contexts)
             priority.append(out)
@@ -763,13 +954,14 @@ class Engine:
                                              self._lemma.__getitem__, self._listed.__getitem__, rank)
         for (f, (file_rows, baseline_pct, total)) in zip(order, passes):
             seq = seq_of[f]
-            source = plan.files[f][0].rsplit("/", 1)[-1]
+            source = self._source[f]
             for k, count, known_count, start_pct, end_pct in file_rows:
                 orth, forms, _tier = spelling(k, spelled)
                 row = rows[k]
                 out = {"Sequence": seq, "Source File": source, "Word": keys[k][0], "Orth": orth, "Forms": forms,
                        "Reading": keys[k][1], "Tier": row[1] or row[0], "Score": score[k],
-                       "Occurrences (Global)": keys[k][4], "Occurrences (File)": count, "Count (High)": counts[k][0],
+                       "Occurrences (Global)": self._occ[k], "Occurrences (File)": count,
+                       "Count (High)": counts[k][0],
                        "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Modality": row[2]}
                 _contexts(out, row[6], n_contexts)
                 out.update({"Baseline %": baseline_pct, "Current %": start_pct, "New %": end_pct,
@@ -786,7 +978,9 @@ class Engine:
             counts={key_of[k]: tuple(counts[k]) for k in range(self._n)},
             sequence={ids[f]: seq_of[f] for f in order},
             pinned=self._pinned(),
-            dropped=[ids[f] for f in range(len(ids)) if ids[f] is not None and self._pos[f] is None])
+            dropped=[ids[f] for f in range(len(ids)) if ids[f] is not None and self._pos[f] is None],
+            added=list(self._added), provisional=[item for item in self._added if item in self._reasons],
+            reasons={item: list(gates) for item, gates in self._reasons.items()})
 
     @staticmethod
     def _prog_file(line):
@@ -837,3 +1031,11 @@ def _contexts(out, kept, n):
     for i in range(n):
         out[f"Context {i + 1}"] = kept[2 * i] if 2 * i < len(kept) else ""
         out[f"Src {i + 1}"] = kept[2 * i + 1] if 2 * i + 1 < len(kept) else ""
+
+
+def _summed(counts, more):
+    """`counts` with `more` added: a new dict, its keys in the order first met (the plan's first, then the new ones)."""
+    out = dict(counts)
+    for key, n in more.items():
+        out[key] = out.get(key, 0) + n
+    return out

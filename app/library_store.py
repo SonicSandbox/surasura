@@ -3673,6 +3673,22 @@ class Store:
                 out.append(rel)
         return counted, out
 
+    def text_elsewhere(self):
+        """{rel_path: trashed_path} for the removed items in `text_lists`' kept list: where each one's file went
+        (relative to data/<lang>), so the token store (E2.2) reads a removed file's text from the trash — one it never
+        indexed, or one whose text it hasn't kept yet — before the trash's 30 days end. One read transaction."""
+        with self._reading():
+            return {r[0]: r[1] for r in self.conn.execute(
+                "SELECT rel_path, trashed_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 "
+                "AND trashed_path IS NOT NULL ORDER BY id")}
+
+    def text_forgotten(self):
+        """The paths (relative to data/<lang>) of removed items whose sentences the user forgot (`forget_text`): the
+        token store drops their rows and kept text (E2.2) — the only way kept text ever goes. One read transaction."""
+        with self._reading():
+            return [r[0] for r in self.conn.execute(
+                "SELECT rel_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 1 ORDER BY id")]
+
     def forget_text(self, item_ids):
         """*This file is junk — forget its sentences too* (G2.2-3, at Remove, off by default): the removed items'
         trash rows say so, and the token store (E2.2) drops their kept text. No undo (the dialog says so). Returns how

@@ -31,8 +31,22 @@ def _services_modules():
 
 def test_the_list_holds_every_service():
     assert set(_services_modules()) >= {"app.services.settings", "app.services.jobs", "app.services.generate",
-                                        "app.services.progress", "app.services.status", "app.theme",
-                                        "app.settings_placement"}
+                                        "app.services.progress", "app.services.status", "app.services.arrivals",
+                                        "app.theme", "app.settings_placement"}
+
+
+def test_the_arrivals_worker_brings_in_no_qt_or_tk(tmp_path):
+    """The warm arrivals worker (E2.2 K9) is a headless process the window starts: what it imports to answer — the
+    worker, the arrival record and gates, the cue reader, Connect's pick — brings in neither Qt nor Tk (the analyzer
+    loads pandas only to write a Generate's CSVs, never here)."""
+    modules = ["app.arrivals_worker", "app.arrivals", "app.cues", "app.connect.pick", "app.plan_engine"]
+    probe = "; ".join(["import sys, json", f"[__import__(m) for m in {modules!r}]",
+                       f"print(json.dumps([m for m in {list(FORBIDDEN)!r} if m in sys.modules]))"])
+    env = dict(os.environ, PYTHONPATH=ROOT, SURASURA_TEST_ROOT=str(tmp_path))     # the analyzer reads its settings
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
 
 
 @pytest.mark.parametrize("module", _services_modules())

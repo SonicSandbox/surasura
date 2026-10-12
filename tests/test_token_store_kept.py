@@ -1,0 +1,918 @@
+"""The token store's counted / kept flag and the kept text (E2.2 rows 2.2.1–2.2.2; L2.2 05 §5.10, 9a / 9b).
+
+Why these matter: 3.0 keeps the sentences of Finished, removed and newly arrived files — for 例文, the journey and the
+sentence library — but the list, the cut-off, the name tables and the Rarity slider count only what Generate analyses.
+A kept file must never reach a count; a kept file's text must outlive the token store, which is a cache (a new
+tokenizer identity empties it, a damaged file deletes itself); a moved file keeps its tokens; a file the user forgot,
+or that left both lists, goes with its text; and an unchanged library costs nothing (S19). Real Japanese and Chinese
+text (testing.md): the samples and the test resources, in a data folder under the test root.
+"""
+
+import os
+import shutil
+import sqlite3
+import sys
+from unittest.mock import patch
+
+import pytest
+
+from app import indexer, library_store as ls, token_index as ti, word_selection as ws
+from tests.test_library_store_support import LANGUAGES, entry, roots, write_manifest
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCES = {
+    "ja": ["samples/ja/HighPriority/H_priority_sample_1.txt", "samples/ja/HighPriority/H_priority_sample_2.srt",
+           "samples/ja/LowPriority/L_priority_sample_1.txt", "samples/ja/LowPriority/L_priority_sample_2.txt",
+           "tests/Test Resources/ja/library_episode.ass", "tests/Test Resources/ja/phrases_sample.srt"],
+    "zh": ["samples/zh/HighPriority/H_priority_sample_1.txt", "samples/zh/HighPriority/H_priority_sample_2.txt",
+           "samples/zh/LowPriority/L_priority_sample_1.txt", "samples/zh/LowPriority/L_priority_sample_2.txt",
+           "tests/Test Resources/zh/chinese_text_1.txt", "tests/Test Resources/zh/night_market.srt"],
+}
+
+
+def _files(language, folders=("HighPriority/作品", "HighPriority/作品", "LowPriority/番組", "LowPriority/番組",
+                              "GoalContent/物語", "GoalContent/物語")):
+    """The language's six real files, copied into the test root's data folder (nested show folders): their paths."""
+    data_dir, _u = roots(language)
+    out = []
+    for source, folder in zip(SOURCES[language], folders):
+        path = os.path.join(data_dir, *folder.split("/"), os.path.basename(source))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copy2(os.path.join(REPO, *source.split("/")), path)
+        out.append(path)
+    return out
+
+
+def _counting(language):
+    """The real tokenizer, every read counted: ("file", key) for a whole file, ("text", None) for text read in by hand
+    (a kept file, or one read back from its kept text)."""
+    inner = ti.make_tokenizer(language)
+    calls = []
+
+    def tokenize(path):
+        calls.append(("file", ti._norm(path)))
+        return inner(path)
+
+    def tokenize_text(text, facts=None):
+        calls.append(("text", None))
+        return inner.tokenize_text(text, facts)
+
+    tokenize.read_text, tokenize.tokenize_text, tokenize.calls = inner.read_text, tokenize_text, calls
+    return tokenize
+
+
+def _cut_off(store, language):
+    """The Rarity slider's numbers and the cut-off automatic rarity takes from them: (freqs, band, floor)."""
+    freqs = ti.preview_frequencies(store, language, roots(language)[1])
+    band = ws.auto_band(ws.band_previews(freqs)) or ws.BANDS_ORDER[0]
+    return freqs, band, ws.band_floor_count(band, freqs["total_tokens"])
+
+
+def _everything_counted(store, language):
+    return {"words": store.word_counts(), "bound": store.bound_counts(), "total": store.total_tokens(),
+            "files": store.file_count(), "names": store.names_tables(), "phrases": store.phrase_table(),
+            "has": store.has_tokens(), "cut_off": _cut_off(store, language)}
+
+
+def _kept_text(store):
+    return store._kept_text()
+
+
+def _lemmas(store, path):
+    return {token[0] for _s, tokens in store.file_tokens(path) for token in tokens}
+
+
+# --------------------------------------------------------------------------- #
+# 2.2.1: the flag, counted-only sums
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_finished_and_removed_text_never_reaches_the_counts(language, tmp_path):
+    """A Finished file (kept, on the disk) and a removed one (kept, its file in the trash) are tokenized and cached, but
+    the word counts, the bound table, the totals, the name tables, the phrase table, the Rarity slider's numbers and the
+    cut-off are exactly those of a store that holds the counted files alone."""
+    a, b, finished, removed, _e, _f = _files(language)
+    data_dir, _u = roots(language)
+    trashed = os.path.join(data_dir, ".trash", "removed_20261008120000" + os.path.splitext(removed)[1])
+    os.makedirs(os.path.dirname(trashed))
+    os.replace(removed, trashed)                                       # the Content Manager's Remove (§6.6)
+
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language), kept=[finished, removed], elsewhere={removed: trashed})
+    alone = ti.open_store(language, path=str(tmp_path / "counted_alone.db"))
+    alone.reconcile([a, b], ti.make_tokenizer(language))
+
+    assert _everything_counted(store, language) == _everything_counted(alone, language)
+    assert set(store.kept_files()) == {ti._norm(finished), ti._norm(removed)}
+    assert set(store.counted_files()) == {ti._norm(a), ti._norm(b)}
+    # Not vacuous: the kept files hold words the counted ones don't, and those words are cached, never counted.
+    only_kept = (_lemmas(store, finished) | _lemmas(store, removed)) - _lemmas(store, a) - _lemmas(store, b)
+    assert only_kept and not only_kept & {lemma for lemma, _r in store.word_counts()[0]}
+    # Their text is kept: the finished file's from the disk, the removed one's from the trash.
+    held = _kept_text(store).held()
+    assert held == {ti._norm(finished): False, ti._norm(removed): False}
+    store.close()
+    alone.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kept_and_counted_flips_move_counts_without_tokenizing(language, tmp_path):
+    """Finish, Put back, a removed file restored: a file moving between the lists moves its counts in or out of the
+    aggregate and `bound`, and is never tokenized again."""
+    a, b, c, _d, _e, _f = _files(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, kept=[c])
+    tok.calls.clear()
+
+    store.reconcile([a, c], tok, kept=[b])                             # c put back, b finished
+    assert tok.calls == [], "a flip re-tokenizes nothing"
+    reference = ti.open_store(language, path=str(tmp_path / "ref.db"))
+    reference.reconcile([a, c], ti.make_tokenizer(language))
+    assert _everything_counted(store, language) == _everything_counted(reference, language)
+
+    store.reconcile([a, b, c], tok, kept=[])                           # everything counted again
+    assert tok.calls == []
+    reference.reconcile([a, b, c], ti.make_tokenizer(language))
+    assert store.word_counts() == reference.word_counts() and store.bound_counts() == reference.bound_counts()
+    # Both files were kept once (c, then b): their text stays until the user forgets them (K1), never because a file
+    # came back to the counted list.
+    assert _kept_text(store).held() == {ti._norm(c): False, ti._norm(b): False}, "kept text goes only when forgotten"
+    store.close()
+    reference.close()
+
+
+def _old_schema(db):
+    """The store as a 3.0 build before E2.2 wrote it: the same SCHEMA_VERSION, no `counted` column."""
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
+        "tokens BLOB, names BLOB, bound BLOB);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound FROM files ORDER BY rowid;"
+        "DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
+    conn.commit()
+    assert "counted" not in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
+    conn.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_old_store_opens_with_every_row_counted_and_no_rebuild(language, tmp_path):
+    """D2: a store without the flag gets it by ALTER TABLE — every row counted, nothing wiped, nothing re-tokenized,
+    every number as it was (no SCHEMA_VERSION bump)."""
+    files = _files(language)[:4]
+    db = str(tmp_path / "old.db")
+    store = ti.open_store(language, path=db)
+    store.reconcile(files, ti.make_tokenizer(language), build_signature=ti.build_signature(language))
+    before = _everything_counted(store, language)
+    store.close()
+    _old_schema(db)
+
+    tok = _counting(language)
+    store = ti.open_store(language, path=db)
+    assert set(store.counted_files()) == {ti._norm(p) for p in files} and store.kept_files() == []
+    assert _everything_counted(store, language) == before
+    store.reconcile(files, tok, build_signature=ti.build_signature(language))
+    assert tok.calls == [], "no rebuild"
+    assert _everything_counted(store, language) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reconcile_with_nothing_changed_tokenizes_and_writes_nothing(language):
+    """S19: counted, kept, a removed file in the trash and a missing counted one — a second reconcile with nothing
+    changed tokenizes nothing and writes nothing, to the store or to the kept text."""
+    a, b, finished, removed, missing, _f = _files(language)
+    data_dir, _u = roots(language)
+    trashed = os.path.join(data_dir, ".trash", os.path.basename(removed))
+    os.makedirs(os.path.dirname(trashed))
+    os.replace(removed, trashed)
+    sig = ti.build_signature(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b, missing], tok, sig, kept=[finished, removed], elsewhere={removed: trashed})
+    os.remove(missing)
+    store.reconcile([a, b, missing], tok, sig, kept=[finished, removed], elsewhere={removed: trashed})
+    tok.calls.clear()
+    kept_db = _kept_text(store).path
+    on_disk = [(os.stat(kept_db + s).st_mtime_ns, os.stat(kept_db + s).st_size) for s in ("", "-wal")
+               if os.path.exists(kept_db + s)]
+    changes = store.conn.total_changes
+
+    store.reconcile([a, b, missing], tok, sig, kept=[finished, removed], elsewhere={removed: trashed})
+    assert tok.calls == []
+    assert store.conn.total_changes == changes, "no row of the store written"
+    assert [(os.stat(kept_db + s).st_mtime_ns, os.stat(kept_db + s).st_size) for s in ("", "-wal")
+            if os.path.exists(kept_db + s)] == on_disk, "the kept text untouched"
+    assert store.needs_reconcile([a, b, missing], [finished, removed], {removed: trashed}) is False
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 2.2.2: the kept text, the re-key, the indexer's two lists
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_tokenize_text_equals_tokenize_file(language):
+    """A kept file read back in from its kept text gives exactly what its file gave — every real file, both
+    languages (an .ass caption file and subtitles included)."""
+    tokenize = ti.make_tokenizer(language)
+    for path in _files(language):
+        assert tokenize.tokenize_text(*tokenize.read_text(path)) == tokenize(path), path
+
+
+def _wipe(store, language, kind):
+    """One of the three ways the token store loses every row: a new tokenizer identity (reconcile's own wipe), a
+    SCHEMA_VERSION it doesn't match (_ensure_schema drops its tables) or a damaged file (open_store deletes it). The
+    store to reconcile next, and the build signature to reconcile with."""
+    if kind == "identity":
+        return store, "identity 2"
+    path = store.path
+    store.close()
+    if kind == "schema":
+        import sqlite3
+        conn = sqlite3.connect(path)
+        conn.execute(f"PRAGMA user_version = {ti.SCHEMA_VERSION - 1}")
+        conn.commit()
+        conn.close()
+    else:
+        for suffix in ("-wal", "-shm"):
+            if os.path.exists(path + suffix):
+                os.remove(path + suffix)
+        with open(path, "wb") as f:
+            f.write(b"not a database" * 100)
+    store = ti.open_store(language)
+    assert store.file_count() == 0 and store.kept_files() == [], "the store is empty"
+    return store, "identity 1"
+
+
+@pytest.mark.parametrize("kind", ("identity", "schema", "damaged"))
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kept_text_survives_a_wipe(language, kind, tmp_path):
+    """A kept file gone from the disk, a removed file whose trash copy was purged and a missing counted file: each of
+    the three wipes empties the store, and each file comes back from its kept text — the kept ones exactly as they read
+    before, the missing one as its cached sentences read — in the list it was in, still counted."""
+    a, finished, removed, missing, _e, _f = _files(language)
+    data_dir, _u = roots(language)
+    trashed = os.path.join(data_dir, ".trash", os.path.basename(removed))
+    os.makedirs(os.path.dirname(trashed))
+    os.replace(removed, trashed)
+    store = ti.open_store(language)
+    lists = dict(kept=[finished, removed], elsewhere={removed: trashed})
+    store.reconcile([a, missing], ti.make_tokenizer(language), "identity 1", **lists)
+    before = {p: store.file_tokens(p) for p in (finished, removed, missing)}
+    os.remove(missing)
+    store.reconcile([a, missing], ti.make_tokenizer(language), "identity 1", **lists)   # its text kept, rebuilt
+    os.remove(finished)
+    os.remove(trashed)                                                 # the trash's 30 days are over
+    kept_db = _kept_text(store).path
+
+    store, signature = _wipe(store, language, kind)
+    assert os.path.exists(kept_db), "the kept text is not the cache's to delete"
+    tok = _counting(language)
+    store.reconcile([a, missing], tok, signature, **lists)
+    assert sorted(tok.calls) == [("file", ti._norm(a))] + [("text", None)] * 3
+    assert store.file_tokens(finished) == before[finished] and store.file_tokens(removed) == before[removed]
+    assert set(store.kept_files()) == {ti._norm(finished), ti._norm(removed)}
+    assert set(store.counted_files()) == {ti._norm(a), ti._norm(missing)}
+    # The missing file's text could only be rebuilt from its cached sentences, one a line: its sentences read as before,
+    # but the tagger no longer sees what the file put around them (a leading full-width space can change a reading),
+    # so its tokens and counts are those of that text — exactly what a file holding it gives — never the old ones.
+    assert [s for s, _t in store.file_tokens(missing)] == [s for s, _t in before[missing]]
+    rebuilt = os.path.join(data_dir, "rebuilt", "missing.txt")
+    os.makedirs(os.path.dirname(rebuilt))
+    with open(rebuilt, "w", encoding="utf-8") as f:
+        f.write(_kept_text(store).get(ti._norm(missing))[0])
+    reference = ti.open_store(language, path=str(tmp_path / "ref.db"))
+    reference.reconcile([a, rebuilt], ti.make_tokenizer(language))
+    assert (store.word_counts(), store.bound_counts()) == (reference.word_counts(), reference.bound_counts()),         "the missing file still counts"
+    store.close()
+    reference.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_kept_text_file_is_set_aside_once_never_fatal(language, capsys):
+    """A kept-text file that is no database any more is renamed aside with a printed line and a new one started; the
+    reconcile goes on and keeps the text anew."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    kept_db = _kept_text(store).path
+    with open(kept_db, "wb") as f:
+        f.write(b"\x00garbage" * 512)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+    out = capsys.readouterr().out
+    assert "Some kept sentences couldn't be read" in out and out.count("set aside") == 1
+    assert [n for n in os.listdir(os.path.dirname(kept_db)) if ".damaged-" in n and not n.endswith(("-wal", "-shm"))]
+    assert _kept_text(store).held() == {ti._norm(finished): False}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_damaged_kept_text_files_in_one_second_are_both_set_aside(language, capsys):
+    """E2.2 review (store #3): the set-aside name holds the second only — a second damaged file in the same second gets
+    a name of its own, and the first copy (text that may still be saved by hand) is never written over."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    kept_db = _kept_text(store).path
+    with patch.object(ti.time, "strftime", return_value="20261011-120000"):
+        for garbage in (b"\x00first" * 512, b"\x00second" * 512):
+            with open(kept_db, "wb") as f:
+                f.write(garbage)
+            store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+    folder = os.path.dirname(kept_db)
+    asides = sorted(n for n in os.listdir(folder) if ".damaged-" in n and not n.endswith(("-wal", "-shm")))
+    assert len(asides) == 2, asides
+    held = {open(os.path.join(folder, n), "rb").read() for n in asides}
+    assert held == {b"\x00first" * 512, b"\x00second" * 512}
+    assert capsys.readouterr().out.count("was set aside") == 2
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_kept_text_file_that_cant_be_moved_is_never_said_set_aside(language, capsys):
+    """E2.2 review (store #2): a damaged kept-text file that can't be renamed (held open elsewhere) is left as it is:
+    the line says so, never "set aside", and the reconcile is undone — the token store as it was, nothing written over
+    the damaged file."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a], ti.make_tokenizer(language))
+    before = (store.counted_files(), store.kept_files(), store.word_counts())
+    kept_db = _kept_text(store).path
+    with open(kept_db, "wb") as f:
+        f.write(b"\x00garbage" * 512)
+    real = os.replace
+
+    def held_open(src, dst):
+        if src == kept_db:
+            raise PermissionError(32, "The process cannot access the file", src)
+        return real(src, dst)
+
+    with patch.object(ti.os, "replace", side_effect=held_open):
+        with pytest.raises(sqlite3.DatabaseError):
+            store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+    out = capsys.readouterr().out
+    assert "couldn't be set aside" in out and "was set aside" not in out
+    assert open(kept_db, "rb").read() == b"\x00garbage" * 512
+    assert (store.counted_files(), store.kept_files(), store.word_counts()) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_token_store_follows_the_move(language):
+    """9a: a counted file moved to another show's folder, and a kept one moved too — same name, size and modified
+    time — keep their rows (re-keyed, nothing re-tokenized); the kept one's text follows it."""
+    a, b, c, *_rest = _files(language)
+    data_dir, _u = roots(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, kept=[c])
+    before = (store.word_counts(), store.file_tokens(a), store.file_tokens(c))
+    moved_a = os.path.join(data_dir, "LowPriority", "別の作品", os.path.basename(a))
+    moved_c = os.path.join(data_dir, "GoalContent", "別の物語", os.path.basename(c))
+    for old, new in ((a, moved_a), (c, moved_c)):
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        os.replace(old, new)                                           # a move keeps the modified time
+    tok.calls.clear()
+
+    store.reconcile([moved_a, b], tok, kept=[moved_c])
+    assert tok.calls == [], "the moved files take their rows"
+    assert (store.word_counts(), store.file_tokens(moved_a), store.file_tokens(moved_c)) == before
+    assert store.file_tokens(a) == [] and set(store.kept_files()) == {ti._norm(moved_c)}
+    assert set(_kept_text(store).held()) == {ti._norm(moved_c)}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_missing_items_text_is_kept_and_counted(language, tmp_path):
+    """9b (✅ G2.2-3): a counted file gone from the disk stays — counted, its cached sentences served — and its text
+    is kept (rebuilt from those sentences), so it outlives a wipe."""
+    a, missing, *_rest = _files(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, missing], tok)
+    before = (store.word_counts(), store.file_tokens(missing))
+    os.remove(missing)
+    tok.calls.clear()
+
+    store.reconcile([a, missing], tok, kept=[])
+    assert tok.calls == []
+    assert (store.word_counts(), store.file_tokens(missing)) == before
+    assert set(store.counted_files()) == {ti._norm(a), ti._norm(missing)}
+    assert _kept_text(store).held() == {ti._norm(missing): True}
+    assert store.needs_reconcile([a, missing], []) is False, "a missing file is no work for the indexer"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_forget_text_drops_it(language):
+    """G2.2-3 (*This file is junk — forget its sentences too*): a forgotten file loses its row and its kept text; a
+    kept file the list leaves out but nobody forgot keeps both; a forgotten path a list names again (a new file there)
+    is that file's."""
+    a, junk, kept, unnamed, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[junk, kept, unnamed])
+    assert set(_kept_text(store).held()) == {ti._norm(junk), ti._norm(kept), ti._norm(unnamed)}
+    store.reconcile([a], ti.make_tokenizer(language), kept=[kept], forgotten=[junk])
+    assert store.file_tokens(junk) == [] and set(store.kept_files()) == {ti._norm(kept), ti._norm(unnamed)}
+    assert set(_kept_text(store).held()) == {ti._norm(kept), ti._norm(unnamed)}
+    store.reconcile([a, kept], ti.make_tokenizer(language), kept=[], forgotten=[kept])
+    assert set(store.counted_files()) == {ti._norm(a), ti._norm(kept)}, "listed: never forgotten"
+    store.close()
+
+
+def _kept_state(language):
+    """The kept rows, every column, and the kept text file's rows: what no caller with one list may touch."""
+    import sqlite3
+    with ti.open_store(language) as store:
+        rows = store.conn.execute("SELECT * FROM files WHERE counted = 0 ORDER BY path").fetchall()
+        path = _kept_text(store).path
+    conn = sqlite3.connect(path)
+    try:
+        return rows, conn.execute("SELECT * FROM kept ORDER BY rel").fetchall()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_caller_with_one_list_leaves_the_kept_rows_alone(language):
+    """Callers that know only the run's list — a Generate-style reconcile, the sentence dictionary's
+    (`reconcile_language`), and the indexer with the library store busy or not ready — drop a counted file the list
+    left out, as ever, and leave every kept row and all kept text byte for byte. The kept files sit outside the tier
+    folders, as Finished ones do (a folder walk — JSON mode, a busy store with no schedule — never finds them)."""
+    a, b, c, d, *_rest = _files(language, folders=("HighPriority/作品", "HighPriority/作品", "Finished/番組",
+                                                   "Finished/番組", "GoalContent/物語", "GoalContent/物語"))
+    with ti.open_store(language) as store:
+        store.reconcile([a, b], ti.make_tokenizer(language), kept=[c, d])
+    before = _kept_state(language)
+    assert len(before[0]) == 2 and len(before[1]) == 2
+
+    with ti.open_store(language) as store:                            # Generate: its found files
+        store.reconcile([a, b], ti.make_tokenizer(language), build_signature=ti.build_signature(language))
+    assert _kept_state(language) == before
+    ti.reconcile_language(language, [a])                              # the sentence dictionary's call
+    assert _kept_state(language) == before
+    with ti.open_store(language) as store:
+        assert store.counted_files() == [ti._norm(a)], "a counted file no list names goes, as ever"
+    with patch("app.library_store.check_mode", return_value=("read-only", "busy")):
+        _run_indexer(language)                                        # the library store can't be read now
+    assert _kept_state(language) == before
+    _run_indexer(language)                                            # no library store at all (JSON mode)
+    assert _kept_state(language) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_first_opens_of_an_old_store_both_succeed(language, tmp_path):
+    """D2 under a race: two processes open a store without the flag at once (the indexer and a Generate) — both add
+    or find the column, neither takes the other's "duplicate column" for damage, and every row survives."""
+    import threading
+    files = _files(language)[:2]
+    db = str(tmp_path / "old.db")
+    with ti.open_store(language, path=db) as store:
+        store.reconcile(files, ti.make_tokenizer(language))
+        total = store.total_tokens()
+    for _round in range(5):
+        _old_schema(db)
+        results, start = [], threading.Barrier(2)
+
+        def first_open():
+            start.wait()
+            try:
+                with ti.open_store(language, path=db) as store:
+                    results.append((store.total_tokens(), len(store.counted_files())))
+            except Exception as e:                                    # the failure being tested
+                results.append(e)
+        threads = [threading.Thread(target=first_open) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results == [(total, 2), (total, 2)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_twins_are_read_again_never_guessed(language):
+    """9a's re-key is one to one: two leaving rows and two new paths with the same name, size and modified time are
+    each read again — a row is never handed to a file it may not be."""
+    data_dir, _u = roots(language)
+    source = _files(language)[0]
+    stamp = os.stat(source).st_mtime
+    olds = [os.path.join(data_dir, "HighPriority", show, "第01話.txt") for show in ("甲", "乙")]
+    for path in olds:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copyfile(source, path)
+        os.utime(path, (stamp, stamp))
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile(olds, tok)
+    news = [os.path.join(data_dir, "LowPriority", show, "第01話.txt") for show in ("丙", "丁")]
+    for old, new in zip(olds, news):
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        os.replace(old, new)
+    tok.calls.clear()
+    store.reconcile(news, tok)
+    assert sorted(tok.calls) == sorted(("file", ti._norm(p)) for p in news)
+    assert set(store.counted_files()) == {ti._norm(p) for p in news}
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# D5: the indexer's two lists, end to end through a real library store
+# --------------------------------------------------------------------------- #
+def _library(language):
+    """A library store over the six real files, two per tier (show folders): (store, data_dir, {path: item id})."""
+    data_dir, user_files_dir = roots(language)
+    files = _files(language)
+    doc = {"schedule": {p: [] for p in ls.PHASES}}
+    for path in files:
+        rel = os.path.relpath(path, data_dir).replace("\\", "/")
+        doc["schedule"][ls.TIERS[ls.TIER_OF_FOLDER[rel.split("/")[0]]][0]].append(entry(rel))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    ids = {path: store.item_id(os.path.relpath(path, data_dir).replace("\\", "/")) for path in files}
+    return store, data_dir, ids
+
+
+def _remove(store, data_dir, item_id, path):
+    """The Content Manager's Remove in store mode: the file to data/<lang>/.trash, then the store's remove."""
+    trashed = os.path.join(data_dir, ".trash", "removed_" + os.path.basename(path))
+    os.makedirs(os.path.dirname(trashed), exist_ok=True)
+    os.replace(path, trashed)
+    return store.remove([item_id], {item_id: os.path.relpath(trashed, data_dir).replace("\\", "/")})
+
+
+def _run_indexer(language):
+    with patch.object(sys, "argv", ["indexer.py", "--language", language]):
+        indexer.main()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_indexer_takes_both_lists_from_the_library_store(language, tmp_path):
+    """D5: the indexer hands the token store the library store's two lists — Finished and a removed file kept (its
+    text read from the trash), a forgotten one dropped, a missing one still counted — and the counts are exactly those
+    of the counted files alone."""
+    store, data_dir, ids = _library(language)
+    now1, now2, soon1, soon2, goal1, goal2 = list(ids)
+    # The reference: the same history with no kept list — every file counted, then the three that stay counted (the
+    # name tables keep a name through a flip guard: they remember the last tables, so both must have the same past).
+    reference = ti.open_store(language, path=str(tmp_path / "ref.db"))
+    reference.reconcile(list(ids), ti.make_tokenizer(language))
+    reference.reconcile([now1, now2, soon2], ti.make_tokenizer(language))
+    _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        assert len(tokens.counted_files()) == 6 and tokens.kept_files() == []
+
+    assert store.finish([ids[soon1]]) is not None
+    removed = _remove(store, data_dir, ids[goal1], goal1)
+    junk = _remove(store, data_dir, ids[goal2], goal2)
+    assert store.forget_text([ids[goal2]]) == 1
+    os.remove(now2)                                                    # gone from the disk: a missing item
+    store.sync_disk()
+    counted, more = indexer.token_store_lists(language, data_dir, [now1, soon2])
+    assert {ti._norm(p) for p in counted} == {ti._norm(p) for p in (now1, now2, soon2)}
+    assert {ti._norm(p) for p in more["kept"]} == {ti._norm(soon1), ti._norm(goal1)}
+    assert {ti._norm(p) for p in more["elsewhere"]} == {ti._norm(goal1)}
+    assert {ti._norm(p) for p in more["forgotten"]} == {ti._norm(goal2)}
+    store.close()
+    assert removed is not None and junk is not None
+
+    _run_indexer(language)
+    tokens = ti.open_store(language)
+    assert set(tokens.counted_files()) == {ti._norm(p) for p in (now1, now2, soon2)}
+    assert set(tokens.kept_files()) == {ti._norm(soon1), ti._norm(goal1)}
+    assert tokens.file_tokens(goal2) == [], "forgotten: its row goes"
+    assert tokens.word_counts() == reference.word_counts() and tokens.total_tokens() == reference.total_tokens()
+    assert tokens.names_tables() == reference.names_tables()
+    assert _kept_text(tokens).held() == {ti._norm(soon1): False, ti._norm(goal1): False, ti._norm(now2): True}
+    assert tokens.needs_reconcile(counted, **more) is False, "the dashboard's check: nothing left to do"
+    tokens.close()
+    reference.close()
+
+
+def test_without_a_library_store_the_indexer_leaves_kept_rows(tmp_path):
+    """JSON mode (no library store): the run's list only, `kept` None — nothing kept is ever dropped by a caller that
+    can't see the kept list."""
+    files = _files("ja")[:2]
+    assert indexer.token_store_lists("ja", roots("ja")[0], files) == (files, {})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("why", ["busy", "lists-raise"])
+def test_a_library_store_that_cant_be_read_now_leaves_a_missing_item_counted(language, why):
+    """E2.2 review (store #1): a library store that is there but can't be read now (busy, or its lists raise) must not
+    fall back to the run's list alone — that list lacks a missing item, and the reconcile would drop its counted row
+    and its counts without keeping its text. The lists are (None, None) and the indexer leaves the token store as it
+    is; the next good run keeps the item counted and its text kept (real files, both languages)."""
+    store, data_dir, ids = _library(language)
+    now1, now2, soon1, soon2, goal1, goal2 = list(ids)
+    _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        before = (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(now2))
+    os.remove(now2)                                                    # gone from the disk: a missing item
+    store.sync_disk()
+    store.close()
+    if why == "busy":
+        cut = patch.object(ls, "check_mode", return_value=("read-only", "busy"))
+    else:
+        cut = patch.object(ls.Store, "text_lists", side_effect=sqlite3.OperationalError("database is locked"))
+    with cut:
+        assert indexer.token_store_lists(language, data_dir, [now1, soon1, soon2, goal1, goal2]) == (None, None)
+        _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        assert ti._norm(now2) in tokens.counted_files(), "the missing item's row stays counted"
+        assert (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(now2)) == before
+    _run_indexer(language)                                             # the library readable again
+    with ti.open_store(language) as tokens:
+        assert ti._norm(now2) in tokens.counted_files()
+        assert tokens.word_counts() == before[0] and tokens.total_tokens() == before[1]
+        assert _kept_text(tokens).held().get(ti._norm(now2)) is True, "its text kept once it was found gone"
+
+
+# --- mutant kills (E2.2 flag pass; Haiku-written K01–K08, K06 rewritten) ------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_of_kept_files_only_has_no_tokens(language, tmp_path):
+    """A library of Finished files alone is cached for sentences but counts for nothing: has_tokens() and total_tokens()
+    say the store is empty, so the Rarity slider does not think the library has content (real text, both languages)."""
+    finished = _files(language)[2]
+    store = ti.open_store(language, path=str(tmp_path / "kept_only.db"))
+    store.reconcile([], ti.make_tokenizer(language), kept=[finished])
+    assert store.kept_files() == [ti._norm(finished)]
+    assert store.file_tokens(finished), "not vacuous: the kept file holds tokens"
+    assert store.counted_files() == []
+    assert store.has_tokens() is False
+    assert store.total_tokens() == 0
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_forgotten_path_the_kept_list_still_names_stays_kept(language):
+    """A path in both `kept` and `forgotten` stays kept: its row and its kept text stay, because a list naming a file
+    always wins over *forget its sentences*. Why: forgetting drops only what no list names, so a file the library
+    still holds never loses its sentences to a stale forget."""
+    a, junk, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[junk])
+    assert set(_kept_text(store).held()) == {ti._norm(junk)}
+    store.reconcile([a], ti.make_tokenizer(language), kept=[junk], forgotten=[junk])
+    assert set(store.kept_files()) == {ti._norm(junk)}, "named by the kept list: never forgotten"
+    assert set(_kept_text(store).held()) == {ti._norm(junk)}
+    assert store.file_tokens(junk) != []
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_needs_reconcile_sees_a_file_move_between_the_lists_both_ways(language):
+    """A kept file put back (and a counted file finished) is a change the dashboard must start the indexer for, even
+    though the file itself is the same, unchanged on disk; with nothing moved the check is quiet again."""
+    a, b, c, _d, _e, _f = _files(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, kept=[c])
+
+    assert store.needs_reconcile([a, b, c], kept=[]) is True, "c put back: its counts must move in"
+    store.reconcile([a, b, c], tok, kept=[])
+    assert store.needs_reconcile([a, b, c], kept=[]) is False, "nothing moved: nothing to do"
+
+    assert store.needs_reconcile([a, b], kept=[c]) is True, "c finished: its counts must move out"
+    store.reconcile([a, b], tok, kept=[c])
+    assert store.needs_reconcile([a, b], kept=[c]) is False, "nothing moved: nothing to do"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_leaving_twins_and_one_new_path_are_read_again_never_rekeyed(language):
+    """9a's re-key needs exactly one leaving row alike: two copies of one episode (same name, size, modified time)
+    both leave, and one new path looks like both — it is read again, and neither row's tokens are handed to it."""
+    data_dir, _u = roots(language)
+    source = _files(language)[0]
+    stamp = os.stat(source).st_mtime
+    olds = [os.path.join(data_dir, "HighPriority", show, "第01話.txt") for show in ("甲", "乙")]
+    for path in olds:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copyfile(source, path)
+        os.utime(path, (stamp, stamp))
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile(olds, tok)
+    new = os.path.join(data_dir, "LowPriority", "丙", "第01話.txt")
+    os.makedirs(os.path.dirname(new), exist_ok=True)
+    os.replace(olds[0], new)
+    os.remove(olds[1])
+    tok.calls.clear()
+    store.reconcile([new], tok)
+    assert tok.calls == [("file", ti._norm(new))], "two leaving twins: the new path is tokenized again, never re-keyed"
+    assert set(store.counted_files()) == {ti._norm(new)}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_file_forgotten_leaves_the_counts_exactly_as_they_were(language):
+    """K07: a KEPT row that leaves (the user forgot its text, so it is in neither list) never reached the word counts,
+    the bound pieces or the token total, so dropping it moves none of them. Why: subtracting a kept row's counts would
+    take out words the counted list never summed."""
+    a, junk, *_rest = _files(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), kept=[])
+        base = (store.word_counts(), store.bound_counts(), store.total_tokens())
+        store.reconcile([a], ti.make_tokenizer(language), kept=[junk])
+        assert ti._norm(junk) in store.kept_files() and store.total_tokens() > 0
+        assert (store.word_counts(), store.bound_counts(), store.total_tokens()) == base, "keeping it moved no count"
+        store.reconcile([a], ti.make_tokenizer(language), kept=[], forgotten=[junk])
+        assert store.file_tokens(junk) == []
+        assert (store.word_counts(), store.bound_counts(), store.total_tokens()) == base, "forgetting it moved no count"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_second_reconcile_with_the_same_lists_and_signature_writes_no_row(language):
+    """S19: the build signature is written once, when it changes. A second reconcile with the same counted and kept
+    lists and the same signature changes no row of the store, the signature's meta row included, and reads no file."""
+    a, b, finished, _removed, _missing, _f = _files(language)
+    sig = ti.build_signature(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, sig, kept=[finished])
+    before = store.conn.total_changes
+    tok.calls.clear()
+    store.reconcile([a, b], tok, sig, kept=[finished])
+    assert store.conn.total_changes == before, "no row written, the signature's meta row included"
+    assert tok.calls == [], "nothing on disk moved: nothing read again"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_wipe_with_a_forget_drops_the_forgotten_kept_row(language):
+    """A wipe (a new tokenizer identity) clears every row, kept ones too: a kept file the user forgot in the same
+    reconcile doesn't live on as a stale row of its own, while the kept file still listed is read again and stays."""
+    a, junk, keep, *_rest = _files(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), "identity 1", kept=[junk, keep])
+        tok = _counting(language)
+        store.reconcile([a], tok, "identity 2", kept=[keep], forgotten=[junk])
+        assert set(store.kept_files()) == {ti._norm(keep)}, "the forgotten kept row went with the wipe"
+        assert store.file_tokens(junk) == [] and ("text", None) in tok.calls, "the listed kept file was read again"
+    finally:
+        store.close()
+
+
+# --- E2.2 final review (adversary X1 / X2, intent keeper #1): a row leaving with its file gone keeps its text ------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_leaving_with_its_file_gone_keeps_its_sentences_for_a_later_list(language):
+    """A caller that lists only the files it can see (the sentence dictionary, a Generate without the library store,
+    or one that meets a removed item before the indexer keeps it) drops a counted row whose file is gone from the
+    disk — but never its only sentences: they are kept (rebuilt from the cached tokens) first, and the next list that
+    names the file (a missing item still counting) reads it back from them, never from a file that isn't there."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    words = _lemmas(store, b)
+    os.remove(b)
+    store.reconcile([a], ti.make_tokenizer(language))                # b in no list, its file gone
+    assert ti._norm(b) not in store.counted_files()
+    assert _kept_text(store).held() == {ti._norm(b): True}, "its sentences kept, rebuilt from the cached tokens"
+    tok = _counting(language)
+    store.reconcile([a, b], tok)                                     # listed again: a missing item, still counting
+    assert ti._norm(b) in store.counted_files()
+    assert tok.calls == [("text", None)], "read back from its kept sentences, the file never asked for"
+    again = _lemmas(store, b)
+    # Rebuilt text has lost the file's spaces and line breaks, so a few Japanese words can split otherwise (the limit
+    # As built names); the words are the file's all the same.
+    assert len(again & words) >= 0.9 * max(len(again), len(words)), (len(again), len(words), len(again & words))
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_forgotten_file_gone_from_the_disk_keeps_no_sentences(language):
+    """The one way sentences go: the user forgot the file (*This file is junk*). Its row leaves, its file is gone,
+    and nothing of it is kept."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    os.remove(b)
+    store.reconcile([a], ti.make_tokenizer(language), kept=[], forgotten=[b])
+    assert ti._norm(b) not in store.counted_files() and store.file_tokens(b) == []
+    assert ti._norm(b) not in _kept_text(store).held()
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_leaving_with_its_file_still_on_disk_keeps_nothing(language):
+    """A file the user took out of the counted tiers whose file is still there leaves nothing behind: its text can be
+    read again from the disk, so none is kept for it (no copy of the library grows for files that aren't lost)."""
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], ti.make_tokenizer(language))
+    store.reconcile([a], ti.make_tokenizer(language))
+    assert ti._norm(b) not in store.counted_files()
+    assert _kept_text(store).held() == {}
+    store.close()
+
+
+# --- E2.2 final review (adversary X3 / X5 / X11) ------------------------------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_counted_file_gone_whose_text_isnt_kept_is_work_for_the_indexer(language):
+    """X3: a counted file deleted with nothing else changed must start the indexer at once (the dashboard's
+    `needs_reconcile`), so its only sentences are kept before a wipe can take its tokens; once kept, it is no work."""
+    a, missing, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, missing], ti.make_tokenizer(language))
+    os.remove(missing)
+    assert store.needs_reconcile([a, missing], []) is True, "its text isn't kept yet"
+    store.reconcile([a, missing], ti.make_tokenizer(language), kept=[])
+    assert _kept_text(store).held() == {ti._norm(missing): True}
+    assert store.needs_reconcile([a, missing], []) is False
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kept_text_follows_a_file_that_came_back_changed_and_went_again(language):
+    """X5: a missing file's text is kept; the file comes back with other content (a corrected subtitle) and is read
+    again; then it goes missing again — the kept text must be the new content's, never the first one's (a wipe would
+    read the old file back in). An unchanged second pass keeps it as it is."""
+    a, x, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, x], tok)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    first = _kept_text(store).get(ti._norm(x))
+    shutil.copy2(os.path.join(REPO, *SOURCES[language][4].split("/")), x)     # back, with other real text
+    store.reconcile([a, x], tok, kept=[])
+    words = _lemmas(store, x)
+    signature = ti.file_signature(x)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    text, _facts, mtime, size = _kept_text(store).get(ti._norm(x))
+    assert (mtime, size) == signature and text != first[0], "kept anew for the file that went missing last"
+    assert _lemmas(store, x) == words
+    with sqlite3.connect(_kept_text(store).path) as c:
+        before = c.execute("SELECT rel, text, facts, mtime, size FROM kept").fetchall()
+    store.reconcile([a, x], tok, kept=[])
+    with sqlite3.connect(_kept_text(store).path) as c:
+        assert c.execute("SELECT rel, text, facts, mtime, size FROM kept").fetchall() == before
+    store.close()
+
+
+def test_a_counted_file_moved_keeps_its_phrase_tallies():
+    """X11: a counted episode moved to another folder takes its row (9a, no re-tokenizing) — and the phrase tallies
+    follow it, so the arrivals' phrase gate isn't left reading "not current" (every arrival provisional) until some
+    other change."""
+    language = "ja"
+    a, *_mid, phrased = _files(language)
+    data_dir, _u = roots(language)
+    signature = ti.build_signature(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a, phrased], ti.make_tokenizer(language), build_signature=signature)
+        before = store.phrase_tallies()
+        assert before and any(uses for uses, _given in before.values()), "the sample holds set phrases"
+        moved = os.path.join(data_dir, "LowPriority", "別の作品", os.path.basename(phrased))
+        os.makedirs(os.path.dirname(moved), exist_ok=True)
+        os.replace(phrased, moved)
+        tok = _counting(language)
+        store.reconcile([a, moved], tok, build_signature=signature)
+        assert tok.calls == [], "re-keyed, never read again"
+        after = store.phrase_tallies()
+        assert after is not None and after[ti._norm(moved)] == before[ti._norm(phrased)]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_kept_text_file_that_cant_be_read_makes_a_missing_file_work_for_the_indexer(language):
+    """X3, the check's own failure: when the kept text can't be read (damaged), the cheap check can't tell whether a
+    missing file's sentences are safe — it says there is work, and the reconcile (which sets a damaged file aside)
+    looks; never "nothing to do" while the only copy may be lost."""
+    a, missing, *_rest = _files(language)
+    store = ti.open_store(language)
+    store.reconcile([a, missing], ti.make_tokenizer(language))
+    os.remove(missing)
+    path = _kept_text(store).path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\x00not a database" * 64)
+    assert store.needs_reconcile([a, missing], []) is True
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_that_came_back_changed_then_left_with_its_file_gone_keeps_its_new_text(language):
+    """X5 for a row leaving: a missing file's text was kept, the file came back with other content and was read
+    again, then it was deleted and a caller that lists only what it sees dropped its row — the text kept must be the
+    new content's (rebuilt from its cached words), never the first file's."""
+    a, x, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, x], tok)
+    os.remove(x)
+    store.reconcile([a, x], tok, kept=[])
+    first = _kept_text(store).get(ti._norm(x))
+    shutil.copy2(os.path.join(REPO, *SOURCES[language][4].split("/")), x)
+    store.reconcile([a, x], tok, kept=[])
+    signature = ti.file_signature(x)
+    os.remove(x)
+    store.reconcile([a], tok)                                        # x in no list, its file gone
+    text, _facts, mtime, size = _kept_text(store).get(ti._norm(x))
+    assert (mtime, size) == signature and text != first[0]
+    store.close()

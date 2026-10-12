@@ -808,34 +808,26 @@ def compute_tables(records, previous=None, sanitize=None):
     [stickiness, lemma, reading, orth]}, "j": {spelling: [bits, lemma, reading, orth]}, "w": {spelling: [stickiness,
     lemma, reading, orth]}, "stamp": …} — a katakana run joins at STICKY with FLOOR uses, and a run in `previous` (the
     last tables) stays while its stickiness is KEEP or more; a kanji name joins with FLOOR uses; a work's term as a
-    katakana run does (`_work_terms`)."""
+    katakana run does (`_terms_table`). The sums (`TableSums`, `TermSums`) and the choices (`tables_from`,
+    `_terms_table`) are apart so E2.2's gate on the tables (`arrivals.Gates`) can add one file's record to sums it keeps
+    and decide again only the spellings that record touches — the same rule, one implementation."""
     records = list(records)
-    uses, segs, pieces, kanji_uses, kanji_bits = Counter(), {}, Counter(), Counter(), {}
-    for data in records:
-        pieces.update(data.get("p", {}))
-        uses.update(data.get("k1", {}))
-        kanji_uses.update(data.get("jc", {}))
-        kanji_bits.update(data.get("jb", {}))
-        for spelling, by_pieces in data.get("ks", {}).items():
-            for joined_pieces, n in by_pieces.items():
-                uses[spelling] += n
-                segs.setdefault(spelling, set()).add(joined_pieces)
-    before = (previous or {}).get("k", {})
-    katakana = {}
-    for spelling, ways in segs.items():
-        stick = 0.0
-        for way in ways:
-            least = min(pieces[p] for p in way.split("|"))
-            if least > 0:
-                stick = max(stick, min(1.0, uses[spelling] / least))
-        if (stick >= STICKY and uses[spelling] >= FLOOR) or (spelling in before and stick >= KEEP):
-            katakana[spelling] = [round(stick, 3), *key_of(spelling, sanitize)]
-    kanji = {spelling: [kanji_bits.get(spelling, 0), *key_of(spelling, sanitize)]
-             for spelling, n in kanji_uses.items() if n >= FLOOR}
-    tables = {"k": katakana, "j": kanji}
-    tables["w"] = _work_terms(records, tables, (previous or {}).get("w", {}), sanitize)
-    tables["stamp"] = hashlib.sha1(json.dumps(tables, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    tables = tables_from(TableSums(records), previous, sanitize)
+    tables["w"] = _terms_table(TermSums(records, tables), tables, (previous or {}).get("w", {}), sanitize)
+    tables["stamp"] = stamp_of(tables)
     return tables
+
+
+def tables_from(sums, previous=None, sanitize=None, only=None):
+    """{"k": …, "j": …}: the katakana runs and kanji names `sums` join (`compute_tables`); `only` (katakana spellings,
+    kanji spellings): decide those alone."""
+    return {"k": _katakana_joins(sums, (previous or {}).get("k", {}), sanitize, only and only[0]),
+            "j": _kanji_joins(sums, sanitize, only and only[1])}
+
+
+def stamp_of(tables):
+    """The tables' stamp: a digest of everything they hold."""
+    return hashlib.sha1(json.dumps(tables, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
 
 def name_words(records, tables=None, sanitize=None):
@@ -866,42 +858,185 @@ def _cut(spans, runs=True):
     return by_sentence
 
 
-def _work_terms(records, tables, before, sanitize):
-    """The terms table ({spelling: [stickiness, lemma, reading, orth]}) from every record's runs of one-kanji tokens.
-    Each run is cut by what layers 2-3 take there (`tables`' katakana runs and kanji names, both applied); every stretch
-    of 2+ pieces left is a use of that spelling. Its stickiness is its uses over the lone uses ("q") of its least-used
-    kanji, less that kanji's uses inside the kanji names taken in runs. A spelling joins at STICKY with FLOOR uses, or
-    stays while KEEP when `before` (the last terms table) holds it — when its shape, as the tagger reads it in most of
-    its uses, may be a term (`_term_shape`) and no dictionary spells it (a kanji name, the compound and affix joins,
-    JMdict). A record of auto-generated captions ("a") counts toward nothing. Empty when JMdict's spellings can't be
-    read."""
-    uses, kinds, lone, gone = Counter(), {}, Counter(), Counter()
-    taken_tables = {"k": tables["k"], "j": tables["j"]}
-    for data in records:
-        if data.get("a"):
-            continue
-        lone.update(data.get("q", {}))
+class TableSums:
+    """What `compute_tables` sums over the files' records for the katakana runs and the kanji names: each katakana
+    spelling's uses as one, its ways of being cut ("ks"), each piece's uses as a word ("p"), each kanji name's uses and
+    bits. `add(data, sign)` adds (or, -1, takes back) one record; `touched(data)` names the spellings whose choice it can
+    change (a spelling's own counts, or a piece of one of its ways)."""
+
+    def __init__(self, records=()):
+        self.uses, self.ways, self.pieces = Counter(), {}, Counter()
+        self.kanji_uses, self.kanji_bits = Counter(), {}      # bits: the last record's (each record names the same)
+        self.by_piece = {}                          # piece -> the katakana spellings one of whose ways holds it
+        for data in records:
+            self.add(data)
+
+    def add(self, data, sign=1):
+        for name, counts in (("p", self.pieces), ("k1", self.uses), ("jc", self.kanji_uses)):
+            for spelling, n in data.get(name, {}).items():
+                counts[spelling] += sign * n
+        if sign > 0:
+            self.kanji_bits.update(data.get("jb", {}))
+        for spelling, by_pieces in data.get("ks", {}).items():
+            ways = self.ways.get(spelling)
+            if ways is None:
+                ways = self.ways[spelling] = Counter()
+            for joined_pieces, n in by_pieces.items():
+                self.uses[spelling] += sign * n
+                ways[joined_pieces] += sign
+                if sign > 0:
+                    for piece in joined_pieces.split("|"):
+                        self.by_piece.setdefault(piece, set()).add(spelling)
+        if sign < 0:
+            # What only this record held goes again, so the sums are as they were (a gate adds and takes back).
+            for name, counts in (("p", self.pieces), ("k1", self.uses), ("jc", self.kanji_uses)):
+                for spelling in data.get(name, {}):
+                    if spelling in counts and not counts[spelling]:
+                        del counts[spelling]
+            for spelling in data.get("jb", {}):
+                if spelling not in self.kanji_uses:
+                    self.kanji_bits.pop(spelling, None)
+            for spelling, by_pieces in data.get("ks", {}).items():
+                ways = self.ways[spelling]
+                for joined_pieces in by_pieces:
+                    if not ways[joined_pieces]:
+                        del ways[joined_pieces]
+                if not ways:
+                    del self.ways[spelling]
+                if spelling in self.uses and not self.uses[spelling]:
+                    del self.uses[spelling]
+
+    def touched(self, data):
+        """(katakana spellings, kanji spellings) whose choice adding `data` can change."""
+        katakana = set(data.get("ks", ())) | set(data.get("k1", ()))
+        pieces = set(data.get("p", ()))
+        for joined in data.get("ks", {}).values():
+            for way in joined:
+                pieces.update(way.split("|"))
+        for piece in pieces:
+            katakana.update(self.by_piece.get(piece, ()))
+        return katakana, set(data.get("jc", ())) | set(data.get("jb", ()))
+
+
+def _katakana_joins(sums, before, sanitize, only=None):
+    """The katakana runs that join: at STICKY with FLOOR uses, or held in `before` while KEEP."""
+    katakana = {}
+    for spelling in (sums.ways if only is None else [s for s in only if s in sums.ways]):
+        stick = 0.0
+        for way, n in sums.ways[spelling].items():
+            if n <= 0:
+                continue
+            least = min(sums.pieces[p] for p in way.split("|"))
+            if least > 0:
+                stick = max(stick, min(1.0, sums.uses[spelling] / least))
+        if (stick >= STICKY and sums.uses[spelling] >= FLOOR) or (spelling in before and stick >= KEEP):
+            katakana[spelling] = [round(stick, 3), *key_of(spelling, sanitize)]
+    return katakana
+
+
+def _kanji_joins(sums, sanitize, only=None):
+    """The kanji names that join: FLOOR uses."""
+    items = sums.kanji_uses.items() if only is None else [(s, sums.kanji_uses[s]) for s in only
+                                                          if s in sums.kanji_uses]
+    return {spelling: [sums.kanji_bits.get(spelling, 0), *key_of(spelling, sanitize)]
+            for spelling, n in items if n >= FLOOR}
+
+
+class TermSums:
+    """What the terms table sums over the records, cut by `tables`' katakana runs and kanji names: each stretch's uses
+    and readings, each kanji's lone uses ("q") and its uses inside a kanji name taken in a run. `add(data, sign)` and
+    `touched(data)` as `TableSums`'."""
+
+    def __init__(self, records=(), tables=None):
+        self.uses, self.kinds, self.lone, self.gone = Counter(), {}, Counter(), Counter()
+        self.taken_tables = {"k": (tables or {}).get("k", {}), "j": (tables or {}).get("j", {})}
+        self.by_char = {}                           # kanji -> the stretch spellings holding it
+        for data in records:
+            self.add(data)
+
+    def _stretches(self, data):
+        """(the stretches of 2+ pieces this record's runs hold, with their readings; the kanji taken in a name)."""
+        stretches, gone = [], []
         spans = data.get("s", ())
         if not any(span[5] == "w" for span in spans):
-            continue
+            return stretches, gone
         for cands in _cut(spans).values():
             runs = [c for c in cands if c.kind == "w"]
             if not runs:
                 continue
-            taken = [(c.i, c.j) for c in choose(cands, taken_tables, True, True, False)]
+            taken = [(c.i, c.j) for c in choose(cands, self.taken_tables, True, True, False)]
             for c in runs:
                 run_kinds = c.pieces[3]
                 for start, end in _stretches(c.i, c.j, taken):
                     if end - start >= 2:
-                        spelling = c.spelling[start:end]
-                        uses[spelling] += 1
-                        kinds.setdefault(spelling, Counter())[run_kinds[start:end]] += 1
+                        stretches.append((c.spelling[start:end], run_kinds[start:end]))
                 for k in range(c.i, c.j):
                     if any(a <= k < b for a, b in taken):
-                        gone[c.spelling[k - c.i]] += 1
+                        gone.append(c.spelling[k - c.i])
+        return stretches, gone
+
+    def add(self, data, sign=1):
+        if data.get("a"):
+            return                                  # auto-generated captions count toward nothing
+        for c, n in data.get("q", {}).items():
+            self.lone[c] += sign * n
+        stretches, gone = self._stretches(data)
+        for spelling, kinds in stretches:
+            self.uses[spelling] += sign
+            found = self.kinds.get(spelling)
+            if found is None:
+                found = self.kinds[spelling] = Counter()
+            found[kinds] += sign
+            if sign > 0:
+                for c in spelling:
+                    self.by_char.setdefault(c, set()).add(spelling)
+        for c in gone:
+            self.gone[c] += sign
+        if sign < 0:
+            for c in data.get("q", {}):
+                if c in self.lone and not self.lone[c]:
+                    del self.lone[c]
+            for spelling, kinds in stretches:
+                if spelling in self.kinds:
+                    if kinds in self.kinds[spelling] and not self.kinds[spelling][kinds]:
+                        del self.kinds[spelling][kinds]
+                    if not self.kinds[spelling]:
+                        del self.kinds[spelling]
+                if spelling in self.uses and not self.uses[spelling]:
+                    del self.uses[spelling]
+            for c in gone:
+                if c in self.gone and not self.gone[c]:
+                    del self.gone[c]
+
+    def touched(self, data):
+        """The stretch spellings whose choice adding `data` can change: its own, and every one holding a kanji whose
+        lone or taken uses it moves."""
+        if data.get("a"):
+            return set()
+        stretches, gone = self._stretches(data)
+        spellings = {spelling for spelling, _kinds in stretches}
+        for c in set(data.get("q", ())) | set(gone):
+            spellings.update(self.by_char.get(c, ()))
+        return spellings
+
+
+def _terms_table(sums, tables, before, sanitize, only=None):
+    """The terms table ({spelling: [stickiness, lemma, reading, orth]}) from `sums` (`TermSums`, cut by `tables`): each
+    run of one-kanji tokens is cut by what layers 2-3 take there (`tables`' katakana runs and kanji names, both
+    applied); every stretch of 2+ pieces left is a use of that spelling. Its stickiness is its uses over the lone uses
+    ("q") of its least-used kanji, less that kanji's uses inside the kanji names taken in runs. A spelling joins at
+    STICKY with FLOOR uses, or stays while KEEP when `before` (the last terms table) holds it — when its shape, as the
+    tagger reads it in most of its uses, may be a term (`_term_shape`) and no dictionary spells it (a kanji name, the
+    compound and affix joins, JMdict). A record of auto-generated captions ("a") counts toward nothing. Empty when
+    JMdict's spellings can't be read. `only`: decide those spellings alone."""
+    uses, kinds, lone, gone = sums.uses, sums.kinds, sums.lone, sums.gone
     passed = {}
-    for spelling, n in uses.items():
-        read = max(kinds[spelling].items(), key=lambda way: (way[1], way[0]))[0]     # its most common reading
+    for spelling in (uses if only is None else [s for s in only if s in uses]):
+        n = uses[spelling]
+        ways = [way for way in kinds.get(spelling, {}).items() if way[1] > 0]
+        if n <= 0 or not ways:
+            continue
+        read = max(ways, key=lambda way: (way[1], way[0]))[0]     # its most common reading
         if spelling in tables["j"] or not _term_shape(spelling, read):
             continue
         least = min(lone[c] - gone[c] for c in spelling)

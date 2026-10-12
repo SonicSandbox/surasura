@@ -41,6 +41,10 @@ RESOURCES = {
     "backfill": {"anki-writer"},
     "mine": {"anki-writer"},
     "replan": {"anki-writer"},
+    # The warm arrivals worker (E2.2 K9; `services.arrivals.kind_of`), one kind per language: reads only, beside
+    # anything — a Japanese and a Chinese one together — never two of one language.
+    "arrivals-ja": set(),
+    "arrivals-zh": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")

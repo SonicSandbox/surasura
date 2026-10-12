@@ -21,6 +21,7 @@ import json
 import math
 import os
 import sys
+import threading
 import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
@@ -47,17 +48,146 @@ LIVE_LOOK = True
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
 class Services:
-    """The window's services, made once per window (the settings file is read here, before the first paint)."""
+    """The window's services, made once per window (the settings file is read here, before the first paint).
 
-    def __init__(self, settings=None, registry=None, status=None, library=None):
+    W3.5: the dashboard's duties — the Generate controller, the update service, automatic sync / Generate / 順
+    (`automation`) and the start-up chores — are given (a test's stand-ins) or made by `make_duties()` on a worker
+    after the first paint (`ShellWindow.start_duties`, which `main` connects; their imports stay off the first paint),
+    then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
+
+    def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
+                 automation=None, chores=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
+        # --- W3.5: the duties
+        self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
+        self.language = self.settings.get().get("target_language") or "ja"
+        self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
+        self.quit_hook = None             # the window's: the update hands over (called on a worker)
+        self.started = False
+        if self.has_duties():
+            self._provide()
+
+    # --- W3.5: the dashboard's duties --------------------------------------------------------------------------- #
+    def has_duties(self):
+        return None not in (self.controller, self.updates, self.automation, self.chores)
+
+    def make_duties(self):
+        """(A worker.) The duties not given, made as the Tk dashboard runs them (A.md's recipe). -> self."""
+        from app.services import automation as automation_module
+        from app.services import chores as chores_module
+        from app.services import generate as generate_module
+        from app.services import updates as updates_module
+        if self.controller is None:
+            self.controller = generate_module.GenerateController(self.registry, closing=self.closing, settle=0)
+        if self.updates is None:
+            self.updates = updates_module.UpdateService(self.settings, self.registry, on_quit=self._ask_quit)
+        if self.chores is None:
+            self.chores = chores_module.Chores(self.registry, self.settings, self.language)
+        if self.automation is None:
+            chores = self.chores
+            self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
+                                                           self.language, index=lambda: chores.index(force=True))
+            chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+        self._provide()
+        return self
+
+    def _provide(self):
+        """The duties' failures to the bar and Needs you (E10, IK-7): `StatusService` providers."""
+        providers = getattr(self.status, "providers", None)
+        if providers is None:
+            return
+        controller, updates = self.controller, self.updates
+
+        def generate_failure():
+            from app.services import generate as generate_module
+            state = controller.state()
+            return state.message if state.state == generate_module.FAILED else None
+        providers.update(update=updates.failure, generate=generate_failure)
+
+    def _ask_quit(self):
+        hook = self.quit_hook
+        if hook is not None:
+            hook()
+
+    def start(self):
+        """(A worker, once.) The duties started: the journey asked (the Generate button's mark), the update's outcome
+        and check, the sync 2 s on, the chores. Each obeys its test switch."""
+        if self.started or not self.has_duties():
+            return False
+        self.started = True
+        try:
+            self.controller.check(settings_service.thaw(self.settings.get()), self.language)
+        except Exception as e:
+            applog.log("shell", f"the journey check at start: {e}")
+        self.updates.begin()
+        self.automation.started()
+        self.chores.started()
+        return True
+
+    def activated(self):
+        """(A worker.) The window came back into focus: the journey, the sync, 順, a waiting Generate, the indexer."""
+        if self.started:
+            self.automation.activated()
+            self.chores.activated()
+
+    def language_changed(self, language):
+        """(A worker.) Another language is open (D31: nothing assumes one)."""
+        self.language = language or "ja"
+        if self.started:
+            self.automation.language_changed(self.language)
+            self.chores.language_changed(self.language)
+
+    def generate(self):
+        """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
+        Anki backlog read beside it, then the controller's run — the user's, which an automatic one makes way for."""
+        try:
+            self.settings.flush(10.0)
+        except Exception as e:
+            applog.log("shell", f"settings before Generate: {e}")
+        self.automation.before_generate()
+        return self.controller.request(self.language, settings=settings_service.thaw(self.settings.get()))
+
+    def journey_exists(self):
+        """(A worker.) Whether a journey (the report) is on disk to open."""
+        from app import static_html_generator
+        return os.path.exists(static_html_generator.OUTPUT_FILE)
+
+    def open_journey(self):
+        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`). -> False with none."""
+        from app import static_html_generator
+        return static_html_generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")))
+
+    def level(self):
+        """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
+        from app.services import automation as automation_module
+        return automation_module.level(settings_service.thaw(self.settings.get()), self.language)
+
+    def _close_duties(self):
+        for name in ("automation", "chores"):
+            duty = getattr(self, name)
+            if duty is None or (name == "chores" and not self.started):
+                continue                  # (the chores' close runs the store's close trigger: only once started)
+            try:
+                duty.close()
+            except Exception as e:
+                applog.log("shell", f"{name} at quit: {e}")
+    # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
     def shutdown(self, timeout=2.0):
-        """At quit, after the window is gone: pending settings written, jobs told (their `on_quit`), the library's
-        reader stopped."""
+        """At quit, after the window is gone: an update under way cancelled first (nothing it held starts), the
+        duties closed on a thread of their own (Koe's stop may wait), pending settings written, jobs told (their
+        `on_quit`), the library's reader stopped."""
+        self.closing.set()
+        if self.updates is not None:
+            try:
+                self.updates.quit()       # before the registry's quit (U.md): the jobs it held are dropped, not started
+            except Exception as e:
+                applog.log("shell", f"update at quit: {e}")
+        closer = threading.Thread(target=self._close_duties, name="duties-close", daemon=True)
+        closer.start()
         if self.library is not None:
             try:
                 self.library.stop(timeout)
@@ -67,6 +197,7 @@ class Services:
             self.registry.quit(timeout)
         except Exception as e:
             applog.log("shell", f"jobs at quit: {e}")
+        closer.join(timeout)
         try:
             if not self.settings.flush(timeout):           # a held settings lock: the change is lost, so say so
                 applog.log("shell", f"settings at quit: not written within {timeout} s (pending: "
@@ -376,6 +507,18 @@ class EscapeRouter(QObject):
         return True
 
 
+class _Duties:
+    """W3.5: the duties' controls, and the newest state each showed (the window's view of them)."""
+
+    def __init__(self):
+        self.module = None
+        self.generate = self.journey = self.known = self.anki = self.level = self.update_mark = None
+        self.sheet = self.cards = None
+        self.update_state = self.generate_state = self.auto_state = None
+        self.notice = None
+        self.paints = {}                    # control -> how many times it was repainted (S19)
+
+
 # --- the window ------------------------------------------------------------------------------------------------------ #
 class ShellWindow(QMainWindow):
     first_frame = pyqtSignal()
@@ -422,6 +565,8 @@ class ShellWindow(QMainWindow):
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
         self._library_needs = 0
+        self._status_snap = None
+        self.duties = None                                # W3.5: the duties' controls, once the duties are attached
         self.show_status(services.status.snapshot())
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
         if services.library is not None:
@@ -453,9 +598,17 @@ class ShellWindow(QMainWindow):
 
         self._restore_state(read_state(self.state_file))
 
+        # --- W3.5: the dashboard's duties: their controls arrive with them (given: now; else `start_duties`) ------- #
+        self._duties_asked = False
+        self.bridge.quit_asked.connect(self._quit_for_update)
+        services.quit_hook = self.bridge.ask_quit
+        if services.has_duties():
+            self._attach_duties()
+
     # --- building ------------------------------------------------------------------------------------------- #
     def _build_header(self):
         header = style.styled(QWidget(), "header")
+        self.header = header
         row = QHBoxLayout(header)
         top, side, bottom = theme.SPACING["header"]
         row.setContentsMargins(side, top, side, bottom)
@@ -471,8 +624,8 @@ class ShellWindow(QMainWindow):
         self.subline.setObjectName("wordsub")
         names.addWidget(self.subline)
         row.addLayout(names)
-        row.addStretch(1)                                  # the header's controls arrive with their features (G-2)
-        return header
+        row.addStretch(1)                                  # the header's controls arrive with their features (G-2):
+        return header                                      # W3.5's with the duties (`_attach_duties`)
 
     def _build_tabs(self):
         bar = style.styled(QWidget(), "tabbar")
@@ -615,6 +768,8 @@ class ShellWindow(QMainWindow):
         self.pages.setCurrentWidget(self.page_widgets[name])
         if self.services.library is not None:                 # W2.2: the other tabs' first screens, ahead
             self._warm_hidden_pages()
+        if name == "needs" and self.duties is not None:       # W3.5: looked at, the update's failures stop counting
+            bridge.run_in_worker(self.services.updates.mark_seen)
 
     def current_tab(self):
         for name, b in self.tab_buttons.items():
@@ -638,16 +793,29 @@ class ShellWindow(QMainWindow):
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
         self.bar_failure.setVisible(bool(failure))
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
-        self._logs_folder = snap.logs
+        logs_before, self._logs_folder = self._logs_folder, snap.logs
+        self._status_snap = snap
         self.logs_button.setVisible(bool(failure) and bool(snap.logs))
         for label, value in ((self.bar_ankiweb, snap.ankiweb), (self.bar_connect, snap.connect)):
             label.setText(value or "")
             label.setVisible(bool(value))
-        listed = len(snap.needs_you) + self._library_needs          # W2.2: the library's entries count too
-        unseen = sum(1 for e in snap.needs_you if not e.seen) + self._library_needs
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
+        if self.duties is not None and bool(logs_before) != bool(snap.logs):
+            self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
+        self._paint_needs()
+
+    def _paint_needs(self):
+        """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the
+        library's, the update's cards)."""
+        snap = self._status_snap
+        entries = snap.needs_you if snap is not None else ()
+        listed = len(entries) + self._library_needs          # W2.2: the library's entries count too
+        unseen = sum(1 for e in entries if not e.seen) + self._library_needs
+        if self.duties is not None:                           # W3.5: the update's cards
+            more, more_unseen = self.duties.cards.counts()
+            listed, unseen = listed + more, unseen + more_unseen
         needs = self.tab_buttons["needs"]
         name = strings.TABS["needs"][0]
         if needs.count != unseen:
@@ -659,6 +827,8 @@ class ShellWindow(QMainWindow):
     def _settings_written(self, keys):
         if "app_motion" in keys:
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
+        if self.duties is not None:
+            self._duty_settings(keys)
 
     def open_logs(self):
         folder = self._logs_folder
@@ -668,6 +838,295 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(os.startfile, folder)    # the shell's open can take a moment: off the GUI thread
         else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    # --- W3.5: the dashboard's duties (rows 2, 4, 5) ----------------------------------------------------------- #
+    def start_duties(self):
+        """After the first paint (`main` connects it to `first_frame`): the duties made on a worker unless given, their
+        controls attached, then started on a worker. Once."""
+        if self._duties_asked:
+            return
+        self._duties_asked = True
+
+        def ready(_services=None):
+            self._attach_duties()
+            bridge.run_in_worker(self.services.start, then=lambda _started: self._duties_started(),
+                                 failed=lambda info: applog.log("shell", f"duties at start: {info[1]}"))
+        if self.services.has_duties():
+            ready()
+        else:
+            bridge.run_in_worker(self.services.make_duties, then=ready,
+                                 failed=lambda info: applog.log("shell", f"duties not made: {info[1]}"))
+
+    def _attach_duties(self):
+        """The duties' controls (the header's Generate and journey, the bar's marks, the update sheet, Needs you's
+        update cards) and their signals. Imported here: none of it is on the first paint's path."""
+        if self.duties is not None:
+            return
+        from app.qt import duties as duties_module
+        s = self.services
+        d = self.duties = _Duties()
+        d.module = duties_module
+        # the header: Generate, Your journey ↗ (no ▾ yet, no ?: the RUNBOOK's *Waits for Sonic's pages*, IK-15)
+        d.generate = duties_module.GenerateControl(self.header)
+        d.generate.pressed.connect(self._generate_pressed)
+        d.generate.log_asked.connect(self._open_generate_log)
+        d.journey = QPushButton(strings.JOURNEY, self.header)
+        d.journey.setToolTip(strings.JOURNEY_NONE_TIP)
+        d.journey.setAccessibleName(strings.JOURNEY)
+        d.journey.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
+        d.journey.setEnabled(False)                     # until a journey is found on disk
+        d.journey.clicked.connect(self._open_journey)
+        self.header.layout().addWidget(d.generate)
+        d.generate.add_beside(d.journey)
+        # the bar: N known, the Anki mark, the level chip (statuses: W3.3 makes them open Settings), the update mark
+        row = self.footer.layout()
+        for name in ("known", "anki", "level"):
+            label = QLabel(self.footer)
+            label.setObjectName("barmark")
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setVisible(False)
+            row.addWidget(label)
+            setattr(d, name, label)
+        d.update_mark = QPushButton(strings.UPDATE_READY, self.footer)
+        d.update_mark.setToolTip(strings.UPDATE_MARK_IDLE_TIP)
+        d.update_mark.setAccessibleName(strings.UPDATE_READY)
+        d.update_mark.setProperty("kind", "chip")
+        d.update_mark.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        d.update_mark.clicked.connect(self.open_update_sheet)
+        d.update_mark.setVisible(False)
+        row.addWidget(d.update_mark)
+        # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
+        d.sheet = duties_module.UpdateSheet(self.centralWidget())
+        d.sheet.action.connect(self._update_action)
+        d.sheet.dismissed.connect(self._sheet_dismissed)
+        self.register_overlay(d.sheet)
+        # Needs you: the update's cards, above the page's list
+        page = self.page_widgets["needs"]
+        d.cards = duties_module.UpdateCards(page)
+        d.cards.action.connect(self._update_action)
+        lst = getattr(page, "list", None)
+        if lst is not None:
+            box = page.layout().itemAt(0).layout()
+            box.insertWidget(box.indexOf(lst), d.cards)
+        else:
+            page.layout().insertWidget(0, d.cards)
+        # the services, through the bridge
+        self.bridge.update_changed.connect(self._show_update)
+        self.bridge.generate_changed.connect(self._show_generate)
+        self.bridge.automation_changed.connect(self._show_automation)
+        self.bridge.chores_changed.connect(self._show_chores)
+        self.bridge.indexed.connect(lambda _language: self._read_level())
+        self.bridge.attach(updates=s.updates, controller=s.controller, automation=s.automation, chores=s.chores)
+        self._show_update(s.updates.state())
+        self._show_generate(s.controller.state())
+        self._show_automation(s.automation.state())
+
+    def _duties_started(self):
+        """Started: what the bar and the header read from disk, read on workers."""
+        self._check_journey()
+        self._read_level()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self.duties is not None
+                and self.services.started):
+            bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
+
+    def _duty_settings(self, keys):
+        """A write landed: Koe's switch, a language switch, a change that makes the journey stale, the level."""
+        s = self.services
+        settings = s.settings.get()
+        if any(k == "enable_koe" or k.startswith("koe") for k in keys):
+            bridge.run_in_worker(s.chores.koe_changed)
+        language = settings.get("target_language") or "ja"
+        if "target_language" in keys and language != s.language:
+            bridge.run_in_worker(s.language_changed, language, then=lambda _r: self._read_level())
+        elif any(k == "logic" or k.startswith("logic.") for k in keys):
+            self._read_level()
+        if "anki_sync_auto" in keys:
+            self._show_automation(s.automation.state())
+        try:
+            stale = s.settings.stales(keys, language)
+        except Exception:
+            stale = False
+        if stale:
+            bridge.run_in_worker(s.automation.recheck)      # the Generate button's mark asked again
+
+    # Generate
+    def _show_generate(self, state):
+        d = self.duties
+        before, d.generate_state = d.generate_state, state
+        d.generate.show_state(state)
+        busy = ("queued", "running", "cancelling")
+        if state.state == "failed" and (before is None or before.state != "failed"):
+            self.services.status.refresh_soon()            # its failure: the bar's line and Needs you (E10)
+        if before is not None and before.state in busy and state.state not in busy:
+            self._check_journey()                          # a run ended: a journey on disk now, the level again
+            self._read_level()
+
+    def _generate_pressed(self):
+        """A click runs Generate — or, while one is asked for or running, cancels it (before *Writing your list*)."""
+        d = self.duties
+        state = d.generate_state
+        s = self.services
+        if state is not None and state.state in ("queued", "running", "cancelling"):
+            if d.module.gen.can_cancel(state):
+                bridge.run_in_worker(s.controller.cancel)
+            return
+        bridge.run_in_worker(s.generate, failed=lambda info: self.bar_line.set_full(str(info[0])))
+
+    def _open_generate_log(self):
+        path = getattr(self.duties.generate_state, "log_path", None)
+        if path:
+            self._open_path(path)
+
+    def _open_path(self, path):
+        if sys.platform == "win32":
+            bridge.run_in_worker(os.startfile, path)      # the shell's open can take a moment: off the GUI thread
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    # Your journey
+    def _check_journey(self):
+        bridge.run_in_worker(self.services.journey_exists, then=self._show_journey,
+                             failed=lambda info: self._show_journey(False))
+
+    def _show_journey(self, exists):
+        b = self.duties.journey
+        exists = bool(exists)
+        if b.isEnabled() != exists:
+            b.setEnabled(exists)
+            b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
+
+    def _open_journey(self):
+        bridge.run_in_worker(self.services.open_journey, then=lambda opened: opened or self._show_journey(False),
+                             failed=lambda info: self.bar_line.set_full(strings.JOURNEY_FAILED.format(why=info[0])))
+
+    # the bar's marks
+    def _mark(self, label, text, tip=""):
+        """A status mark set — repainted only when its words changed (S19). -> True when it changed."""
+        if label.text() == text and label.toolTip() == tip and label.isHidden() != bool(text):
+            return False
+        if label.text() != text:
+            label.setText(text)
+            label.setAccessibleName(text)
+        label.setToolTip(tip)
+        label.setVisible(bool(text))
+        self.duties.paints[label] = self.duties.paints.get(label, 0) + 1
+        return True
+
+    def _show_automation(self, state):
+        d = self.duties
+        d.auto_state = state
+        known = getattr(state, "known", None)
+        self._mark(d.known, strings.BAR_KNOWN.format(n=known) if known is not None else "",
+                   strings.BAR_KNOWN_TIP if known is not None else "")
+        if not self.services.settings.get().get("anki_sync_auto"):
+            key = "off"
+        else:
+            key = state.sync if state.sync in strings.BAR_ANKI else None
+        if key is None:
+            self._mark(d.anki, "")
+            return
+        tip = strings.BAR_ANKI_TIP[key]
+        if key == "synced" and state.added:
+            tip = strings.BAR_ANKI_TIP["synced-added"].format(n=state.added)
+        elif key == "failed":
+            tip = tip.format(message=state.message or "")
+        self._mark(d.anki, strings.BAR_ANKI[key], tip)
+
+    def _read_level(self):
+        if self.duties is not None:
+            bridge.run_in_worker(self.services.level, then=self._show_level)
+
+    def _show_level(self, level):
+        from app import word_selection
+        band, automatic = level
+        name = word_selection.band_label(band) if band else ""
+        if automatic:
+            text = strings.BAR_LEVEL_AUTO.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE
+            tip = strings.BAR_LEVEL_AUTO_TIP.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE_TIP
+        else:
+            text, tip = name, strings.BAR_LEVEL_TIP.format(band=name)
+        self._mark(self.duties.level, text, tip if text else "")
+
+    def _show_chores(self, state):
+        notice = getattr(state, "notice", None)
+        if notice and notice != self.duties.notice:        # Connect's line, once: a toast
+            self.duties.notice = notice
+            self.toasts.show(notice)
+
+    # the update
+    def _show_update(self, state, force_cards=False):
+        d = self.duties
+        d.update_state = state
+        look = d.module.update_mark_look(state)
+        m = d.update_mark
+        if look is None:
+            if not m.isHidden():                           # nothing to say: hidden, its last words kept
+                m.setVisible(False)
+                d.paints[m] = d.paints.get(m, 0) + 1
+        elif m.text() != look[0] or m.toolTip() != look[1] or m.isHidden():
+            m.setText(look[0])
+            m.setToolTip(look[1])
+            m.setAccessibleName(look[0])
+            m.setVisible(True)
+            d.paints[m] = d.paints.get(m, 0) + 1
+        d.sheet.show_state(state)
+        if state.state in ("none", "failed") and d.sheet.isVisible():
+            d.sheet.hide()                                 # nothing on offer: the sheet goes (hidden: no cancel)
+        if state.open_now:
+            self.open_update_sheet()                       # a critical release, once (the service says when)
+        if state.state == "failed":
+            self.services.status.refresh_soon()            # its failure: the bar's line
+        if d.cards.show_state(state, logs=bool(self._logs_folder)) or force_cards:
+            self._paint_needs()
+
+    def open_update_sheet(self):
+        d = self.duties
+        if d is None or d.update_state is None or d.update_state.state in ("none", "failed"):
+            return
+        d.sheet.show_state(d.update_state)
+        d.sheet.open()
+        d.sheet.raise_()
+
+    def _update_action(self, name, key):
+        """A click on the sheet or a Needs you card, sent to the update service on a worker."""
+        u = self.services.updates
+        if name == "start":
+            bridge.run_in_worker(u.start)
+        elif name in ("download", "notes"):
+            bridge.run_in_worker(u.open_download)
+        elif name == "skip":
+            self.duties.sheet.hide()
+            bridge.run_in_worker(u.skip, key)              # `skipped_version` written, nothing else
+        elif name == "stop":
+            bridge.run_in_worker(u.stop, key)
+        elif name == "stop-all":
+            bridge.run_in_worker(u.stop)
+        elif name == "cancel":
+            self.duties.sheet.hide()
+            self._cancel_update()
+        elif name == "logs":
+            self.open_logs()
+
+    def _sheet_dismissed(self):
+        """Esc, Back or *Later* closed the sheet: an update downloading or waiting is cancelled (IK-2, as Tk)."""
+        state = self.duties.update_state
+        if state is not None and state.state in ("downloading", "waiting"):
+            self._cancel_update()
+
+    def _cancel_update(self):
+        s = self.services
+        bridge.run_in_worker(s.updates.cancel,
+                             then=lambda cancelled: cancelled and bridge.run_in_worker(s.automation.update_cancelled))
+
+    def _quit_for_update(self, _value=None):
+        """The update hands over (its `on_quit`): the window closes, and the app with it."""
+        self.close()
+        QApplication.quit()
+    # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
     # --- the look ------------------------------------------------------------------------------------------- #
     def set_look(self, theme_name=None, text_size=None):
@@ -833,6 +1292,7 @@ def main(argv=None):
     if probe_file:                                    # tests/qt/measure_shell.py: shown without taking the keyboard
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         hud.Probe(window, probe_file, hud=meter)
+    window.first_frame.connect(window.start_duties)  # W3.5: the duties after the first paint
     window.show_first()
     hud.mark("shown")
     try:

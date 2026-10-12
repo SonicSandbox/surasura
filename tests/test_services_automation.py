@@ -717,3 +717,101 @@ def test_junbans_own_guards_hold(live, monkeypatch, guard):
         assert auto.state().junban == "順 (automatic): 3 cards moved"
         assert [v.on_quit for v in registry.snapshot() if v.kind == "junban"] == ["wait"]
     auto.close()
+
+
+# --- W3.5 worker K: the Haiku mutant list's survivors ------------------------------------------------------------ #
+def test_started_after_close_arms_no_start_timer(live):
+    """`started()` once closed (a late call from a closing window): no start timer — `close()` leaves nothing behind
+    to sync."""
+    timers = _Timers()
+    auto, registry, _c, _l = _make(_settings(), timers=timers)
+    auto.close()
+    auto.started()
+    assert timers == []
+
+
+def test_after_close_focus_arms_no_journey_check(live):
+    """`close()` marks the service closed: a focus or a recheck after it arms no timer (nothing acts on a gone
+    window)."""
+    timers = _Timers()
+    auto, registry, _c, _l = _make(_settings(anki_sync_auto=False), timers=timers)
+    auto.close()
+    auto.activated()
+    auto.recheck()
+    assert timers == []
+
+
+def test_a_generate_check_queued_before_close_sets_no_alarm_after_it(live):
+    """`_arm`'s closed check: the worker still runs what was queued before `close()`; a Generate check inside the
+    10-minute limit then arms no alarm that would outlive the window."""
+    clock = _Clock(1000.0)
+    timers = _Timers()
+    auto, registry, controller, launches = _make(_settings(), clock=clock, timers=timers)
+    auto.generate._last = 900.0                     # inside the limit: only an alarm could follow
+    hold = threading.Event()
+    auto.worker.put(hold.wait, 10)
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    auto.close()
+    hold.set()
+    assert auto.worker.idle(5)
+    assert timers.live() == [] and launches.count() == 0
+
+
+def test_a_stale_state_is_never_delivered_after_a_newer_one(live):
+    """`publish`'s "only while it is the newest": a state made on another thread while a listener runs, then overtaken,
+    is never delivered after the newer one — the bar never ends on a stale line."""
+    auto, registry, _c, _l = _make(_settings(anki_sync_auto=False))
+    heard, threads = [], []
+
+    def listener(snap):
+        heard.append(snap.junban)
+        if snap.junban == "first":
+            other = threading.Thread(target=auto.publish, kwargs={"junban": "stale"})
+            other.start()
+            threads.append(other)
+            assert h.until(lambda: auto.state().junban == "stale", seconds=5)
+            auto.publish(junban="newest")       # delivered now (this thread holds the delivery)
+    auto.subscribe(listener)
+    auto.publish(junban="first")
+    threads[0].join(5)
+    assert not threads[0].is_alive()
+    assert heard == ["first", "newest"] and auto.state().junban == "newest"
+    auto.close()
+
+
+def test_the_backlog_read_is_waited_for_at_quit_never_cancelled(live, monkeypatch):
+    """`_maybe_backlog_sync`'s job is `on_quit="wait"`: closing the window lets the read of Anki's new cards finish its
+    write of anki_backlog.json — never marked cancelled half-way."""
+    entered, gate = threading.Event(), threading.Event()
+    monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": True})
+    monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: (entered.set(), gate.wait(10)))
+    auto, registry, _c, _l = _make(_settings())
+    auto.before_generate()
+    assert entered.wait(5)
+    still = [v for v in registry.quit(timeout=0) if v.kind == "anki-backlog"]
+    assert [(v.state, v.cancelled, v.on_quit) for v in still] == [(J.RUNNING, False, "wait")]
+    gate.set()
+    _settle(auto, registry)
+    view = [v for v in registry.snapshot() if v.kind == "anki-backlog"][0]
+    assert view.state == J.DONE and not view.cancelled
+    auto.close()
+
+
+def test_words_a_sync_brought_count_for_its_own_language_after_a_switch(live, monkeypatch):
+    """`_on_anki_sync_result(result, language)`: a Japanese sync that ends after the user switched to Chinese leaves
+    its words waiting for Japanese — no quiet Chinese Generate for words Chinese never got."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=3)
+    anki.gate = threading.Event()
+    indexes = []
+    auto, registry, controller, launches = _make(_settings(), indexes=indexes)
+    auto.language_changed("ja")
+    assert h.until(lambda: len(anki.syncs) == 1, seconds=5)
+    auto.language_changed("zh")
+    assert auto.worker.idle(5)
+    anki.gate.set()
+    _settle(auto, registry)
+    assert auto.generate.pending == "ja"
+    assert launches.count() == 0 and not registry.live("generate") and indexes == [1]
+    auto.close()

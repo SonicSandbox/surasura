@@ -78,6 +78,13 @@ def body(cls, info, failed_version=""):
             "than the app code). Your personal data stays where it is.")
 
 
+def percent(state):
+    """The download's share, 0–100, or None while its size isn't known (the update mark and sheet, W3.5 row 2)."""
+    if not state.total:
+        return None
+    return min(100, int((state.done or 0) * 100 / state.total))
+
+
 def report_note(report):
     """The lines naming a saved update report ('' when none could be written): the Tk `_update_report_note`."""
     if not report:

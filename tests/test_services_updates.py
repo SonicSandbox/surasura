@@ -778,3 +778,129 @@ def test_failures_are_a_status_provider_line_until_seen(world):
     assert svc.failure().startswith("Couldn't download the update: release has no app package")
     svc.mark_seen()
     assert svc.failure() is None and [f.seen for f in svc.failures()] == [True]
+
+
+# --- W3.5 worker K: the Haiku mutant list's survivors ------------------------------------------------------------ #
+def _lock_take_held(monkeypatch):
+    """`take_update_lock` held until the test opens `gate` (`entered` once it is asked), and a child asked for in the
+    instant the update holds the children (between `hold_children` and the release: `started` hears it if it starts)."""
+    entered, gate, started = threading.Event(), threading.Event(), []
+    real_take, real_hold = updater.take_update_lock, updater.hold_children
+
+    def take(*a, **k):
+        entered.set()
+        gate.wait(20)
+        return real_take(*a, **k)
+
+    def hold():
+        real_hold()
+        updater.defer_child(lambda: started.append("Content Manager"))
+    monkeypatch.setattr(updater, "take_update_lock", take)
+    monkeypatch.setattr(updater, "hold_children", hold)
+    return entered, gate, started
+
+
+def test_a_cancel_while_the_lock_is_taken_frees_the_lock_and_starts_what_was_held(world, monkeypatch):
+    """_start_update's worker, `if job["ended"]` once the lock is taken (cancelled meanwhile): the update lock dropped
+    (else no *Update now* ever works again), the children released as the cancel said (`start=True`: one asked for
+    meanwhile starts), nothing downloaded, the job cancelled."""
+    entered, gate, started = _lock_take_held(monkeypatch)
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+    assert svc.start()
+    assert entered.wait(10)
+    assert svc.cancel() is True
+    gate.set()
+    assert h.until(lambda: svc._update is None, seconds=10)
+    assert _lock_is_free(), "the update lock taken after the cancel is dropped"
+    assert not updater.children_held() and started == ["Content Manager"]
+    assert world.stage.calls == [] and registry.snapshot()[-1].cancelled
+
+
+def test_closing_while_the_lock_is_taken_drops_what_was_held(world, monkeypatch):
+    """on_closing → _cancel_update(start_held=False) while the lock is being taken: once it is, the children are
+    released with the close's `start=False` — a child asked for meanwhile is dropped (it would outlive the window)."""
+    entered, gate, started = _lock_take_held(monkeypatch)
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert entered.wait(10)
+    svc.quit()
+    gate.set()
+    assert h.until(lambda: svc._update is None, seconds=10)
+    assert started == [] and not updater.children_held() and _lock_is_free()
+
+
+def test_a_cancel_ends_the_wait_list_while_programs_still_run(world, monkeypatch):
+    """_update_poll's `if job["ended"]: return`: after Cancel the wait list stops being read — no poller left listing
+    the machine's programs (and the window's `active()`) for the rest of the session."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
+    pollers = set()
+    real = updater.running_children
+    monkeypatch.setattr(updater, "running_children", lambda active=(), images=None: (
+        pollers.add(threading.current_thread()), real(active))[1])
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING, seconds=10)
+    assert svc.cancel() is True
+    (poller,) = pollers
+    poller.join(10)
+    assert not poller.is_alive(), "the wait loop ended with the update"
+
+
+def test_stop_it_reads_the_list_again_at_once(world):
+    """_stop_update_children then `_update_poll()` at once: after *Stop it* the list is read again without waiting out
+    the poll's period — a minute here, so only that wake can hand over in time."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: world.children.clear()}]
+    svc = U.UpdateService(FakeSettings(), JobRegistry(), on_quit=lambda: world.quits.append(1),
+                          open_url=world.opened.append, poll=60)
+    world.services.append(svc)
+    world.offered(svc)
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING and svc.state().programs, seconds=10)
+    assert svc.stop(4242) is True
+    assert h.until(lambda: world.quits, seconds=10), "handed over at once, not a poll period later"
+
+
+def test_closing_after_a_cancel_holds_back_nothing(world):
+    """quit() after Cancel, the cancelled download still ending: the update is over, so the close holds no job back
+    (the hold is for an update still waiting) — an Anki write queued behind another (`wait` at quit) still runs."""
+    world.stage = Stage(gate=False)
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.DOWNLOADING and updater.children_held(), seconds=10)
+    assert svc.cancel() is True and svc._update is not None          # its download still ending
+    started = []
+    junban = registry.submit("junban", "Re-ordering Anki", lambda job: started.append("junban"), on_quit="wait")
+    backfill = registry.submit("backfill", "Filling cards", lambda job: started.append("backfill"), on_quit="wait")
+    assert started == ["junban"] and backfill.state == J.WAITING
+    svc.quit()
+    junban.finish()
+    assert started == ["junban", "backfill"] and backfill.state == J.RUNNING
+
+
+def test_needs_you_keeps_the_newest_twenty_update_failures(world, monkeypatch):
+    """`NEEDS_YOU_KEPT`: *Needs you* lists the update's newest 20 failures, newest first; an older one goes."""
+    svc = world.service()
+    for n in range(U.NEEDS_YOU_KEPT + 1):
+        monkeypatch.setattr(updater, "consume_result", lambda n=n: {
+            "status": "failed", "from": __version__, "to": f"99.{n}", "reason": "update did not complete"})
+        assert svc.reconcile() == "failed"
+    kept = svc.failures()
+    assert len(kept) == U.NEEDS_YOU_KEPT == 20 and len(svc.state().needs_you) == 20
+    assert kept[0].version == "99.20" and kept[-1].version == "99.1"
+
+
+def test_a_late_turn_of_the_wait_never_overwrites_the_cancel(world):
+    """_update_poll after `_cancel_update`: a turn of the wait already past its ended check when Cancel lands (called
+    here after the cancel, as that race would) says nothing — the bar keeps *Update cancelled.*, never a stale
+    *Waiting for Content Manager*."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING, seconds=10)
+    update = svc._update
+    assert svc.cancel() is True
+    seen = _states(svc)
+    svc._say(update)
+    assert (svc.state().state, svc.state().message) == (U.AVAILABLE, "Update cancelled.") and seen == []

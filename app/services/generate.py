@@ -50,6 +50,26 @@ LOG_NAME = "generate-window.log"
 PROGRESS_FLAG = "--progress-json"
 
 State = namedtuple("State", "state step done total message log_path job_id seq")
+WRITING = STEPS.index("Writing your list")
+
+
+def percent(state):
+    """How far a run is, 0–99 (the header's *Generating… N %*, W3.5 row 4): the steps in their order, the reported count
+    inside a step. None before a known step."""
+    if state.step not in STEPS:
+        return None
+    part = min(1.0, (state.done or 0) / state.total) if state.total else 0.0
+    return min(99, int((STEPS.index(state.step) + part) * 100 / len(STEPS)))
+
+
+def can_cancel(state):
+    """Whether a click cancels now: asked for or waiting, or running before *Writing your list* (from there the run
+    finishes — the CSV writes aren't atomic)."""
+    if state.state == QUEUED:
+        return True
+    if state.state != RUNNING:
+        return False
+    return state.step not in STEPS or STEPS.index(state.step) < WRITING
 
 
 class _Either:

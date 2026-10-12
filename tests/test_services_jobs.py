@@ -205,3 +205,45 @@ def test_a_gate_holds_gated_jobs_until_it_opens_and_cancel_by_id():
     assert gen.state == J.RUNNING and started == ["Re-ordering Anki", "Generating"]
     assert registry.cancel(gen.id) is True and gen.state == J.CANCELLING
     assert registry.cancel(10_000) is False
+
+
+# --- W3.5 worker K: the Haiku mutant list's survivors ------------------------------------------------------------ #
+def test_cancelling_a_waiting_users_job_lets_the_automatic_one_behind_it_start():
+    """`_cancel_job` schedules again: a user's Generate held back (here by a gate) is cancelled before it started, and
+    the automatic indexer that yielded to it starts at once — never a stuck *waits for Generating* behind a job that no
+    longer exists."""
+    registry, started = JobRegistry(), []
+    registry.gate(lambda kind: "waits for the update" if kind == "generate" else None)
+    users = registry.submit("generate", "Generating", _starter(started))
+    auto = registry.submit("indexer", "Indexing", _starter(started), automatic=True)
+    assert users.state == J.WAITING and (auto.state, auto.reason) == (J.WAITING, "waits for Generating")
+    assert users.cancel() and users.state == J.DONE and users.cancelled
+    assert auto.state == J.RUNNING and auto.reason is None and started == ["Indexing"]
+
+
+def test_a_gate_that_raises_holds_nothing_back():
+    """`_held`: a gate whose check fails lets the job start (a failed start is a failed job, never a stuck one — and a
+    broken check never holds every job back for good)."""
+    registry, started = JobRegistry(), []
+
+    def broken(kind):
+        raise RuntimeError("the update's flag couldn't be read")
+    registry.gate(broken)
+    job = registry.submit("generate", "Generating", _starter(started))
+    assert job.state == J.RUNNING and job.reason is None and started == ["Generating"]
+
+
+def test_a_users_job_held_by_a_gate_keeps_its_turn_before_a_later_conflicting_one():
+    """The order asked for (`_blocker`'s `earlier`): the user's Generate, held by the update's gate, still holds back the
+    indexer the user asked for after it (both write the token store); when the gate opens the Generate runs first."""
+    registry, started, hold = JobRegistry(), [], [True]
+    registry.gate(lambda kind: "waits for the update" if hold[0] and kind == "generate" else None)
+    gen = registry.submit("generate", "Generating", _starter(started))
+    idx = registry.submit("indexer", "Indexing", _starter(started))
+    assert (gen.state, gen.reason) == (J.WAITING, "waits for the update")
+    assert (idx.state, idx.reason) == (J.WAITING, "waits for Generating") and started == []
+    hold[0] = False
+    registry.reschedule()
+    assert gen.state == J.RUNNING and idx.state == J.WAITING and started == ["Generating"]
+    gen.finish()
+    assert idx.state == J.RUNNING and started == ["Generating", "Indexing"]

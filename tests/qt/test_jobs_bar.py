@@ -1,0 +1,531 @@
+"""The dashboard's duties in the window (W3.5 rows 2, 4, 5 and the wiring; the window's spec 05 §5.2, 03, 06 E10).
+
+What a wrong answer would cost:
+  * a Generate that can't be stopped, or one stopped half-way through writing the list (the CSVs aren't atomic: a
+    click after *Writing your list* must do nothing);
+  * a failed Generate or update shown nowhere — or as a box (E10, ✅ G0.3-1: the bar and Needs you);
+  * an update installed after the user pressed Esc or Cancel (IK-2), or *Skip this version* rewriting his settings;
+  * a critical release's sheet opening again and again;
+  * the bar repainting every mark on every state (S19), or a status change holding the window over 4 ms;
+  * the window's close cutting the duties in the wrong order (the update's held jobs started as it quits).
+
+Behaviour only (the looks are Sonic's to re-skin): what a click asks the services, what each state shows, what repaints.
+The services are stand-ins that record what the window asks; their own rules are their suites' (tests/test_services_*).
+"""
+import os
+import threading
+import time
+
+import pytest
+
+pytest.importorskip("PyQt6")
+from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QAbstractButton, QApplication, QPushButton
+
+from app.qt import shell, strings
+from app.services import automation as A
+from app.services import chores as C
+from app.services import generate as G
+from app.services import updates as U
+from app.services.jobs import JobRegistry
+from app.services.status import StatusService
+from tests import services_helpers as h
+from tests.qt.conftest import wait_until
+
+
+# --- stand-ins ------------------------------------------------------------------------------------------------------- #
+class _Duty:
+    """Records every call; `push(state)` tells the subscribers from another thread, as a service does."""
+
+    def __init__(self, state, log):
+        self._state = state
+        self.subscribers = []
+        self.calls = []
+        self.log = log
+        self.threads = {}
+
+    def state(self):
+        return self._state
+
+    def subscribe(self, cb):
+        self.subscribers.append(cb)
+
+    def push(self, **changes):
+        self._state = self._state._replace(seq=self._state.seq + 1, **changes)
+        t = threading.Thread(target=lambda: [cb(self._state) for cb in list(self.subscribers)])
+        t.start()
+        t.join()
+        return self._state
+
+    def _record(self, name, *args):
+        self.calls.append((name,) + args)
+        self.log.append(name)
+        self.threads[name] = threading.current_thread()
+
+    def called(self, name):
+        return [c for c in self.calls if c[0] == name]
+
+
+class FakeUpdates(_Duty):
+    def __init__(self, log):
+        super().__init__(U.State(U.NONE, "", "NONE", "", "", False, False, None, None, (), None, None, (), None, 0),
+                         log)
+
+    def failure(self):
+        return next((f.text for f in self._state.needs_you if not f.seen), None)
+
+    def begin(self): self._record("updates.begin")
+    def start(self): self._record("updates.start"); return True
+    def skip(self, version=None): self._record("updates.skip", version); return True
+    def stop(self, key=None): self._record("updates.stop", key); return True
+    def cancel(self, start_held=True): self._record("updates.cancel"); return True
+    def open_download(self): self._record("updates.open_download")
+    def mark_seen(self): self._record("updates.mark_seen")
+    def quit(self): self._record("updates.quit")
+
+
+class FakeController(_Duty):
+    def __init__(self, log):
+        super().__init__(G.State(G.IDLE, None, None, None, None, None, None, 0), log)
+
+    def check(self, settings, language, then=None): self._record("controller.check", language)
+    def request(self, language, **kw): self._record("controller.request", language, kw.get("quiet", False))
+    def cancel(self): self._record("controller.cancel")
+    def on_end(self, cb): pass
+    def unsubscribe(self, cb): pass
+
+
+class FakeAutomation(_Duty):
+    def __init__(self, log):
+        super().__init__(A.State(A.IDLE, "ja", 0, None, None, None, 0), log)
+
+    def started(self): self._record("automation.started")
+    def activated(self): self._record("automation.activated")
+    def language_changed(self, language): self._record("automation.language_changed", language)
+    def recheck(self): self._record("automation.recheck")
+    def before_generate(self): self._record("automation.before_generate")
+    def update_cancelled(self): self._record("automation.update_cancelled")
+    def close(self): self._record("automation.close")
+
+
+class FakeChores(_Duty):
+    def __init__(self, log):
+        super().__init__(C.State(None, None, 0), log)
+
+    def on_indexed(self, cb): self.indexed = cb
+    def started(self): self._record("chores.started")
+    def activated(self): self._record("chores.activated")
+    def language_changed(self, language): self._record("chores.language_changed", language)
+    def koe_changed(self): self._record("chores.koe_changed")
+    def close(self): self._record("chores.close")
+
+
+class QuietReader:
+    """No command-line events file: only the duties' failures reach the bar."""
+
+    def changed(self):
+        return False
+
+    def newest_to_show(self):
+        return None
+
+
+class World:
+    def __init__(self, qapp, logs_folder=None, automation=None):
+        self.log = []
+        self.updates = FakeUpdates(self.log)
+        self.controller = FakeController(self.log)
+        self.automation = automation or FakeAutomation(self.log)
+        self.chores = FakeChores(self.log)
+        self.registry = JobRegistry()
+        self.status = StatusService(self.registry, reader=QuietReader(), logs_folder=logs_folder)
+        self.services = shell.Services(registry=self.registry, status=self.status, controller=self.controller,
+                                       updates=self.updates, automation=self.automation, chores=self.chores)
+        self.win = shell.open_window(qapp, self.services)
+        self.win.show()
+        QApplication.processEvents()
+        self.d = self.win.duties
+
+    def start(self):
+        self.win.start_duties()
+        assert wait_until(lambda: self.services.started and "chores.started" in self.log)
+
+    def close(self):
+        self.win.close()
+        self.services.shutdown(0.5)
+
+
+@pytest.fixture
+def world(qapp, tmp_path):
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    yield w
+    w.close()
+
+
+# --- the header: Generate --------------------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("changes, text, look, enabled, bar, log", [
+    (dict(state=G.IDLE), strings.GENERATE, "idle", True, False, False),
+    (dict(state=G.CURRENT), strings.GENERATE_CURRENT, "current", True, False, False),
+    (dict(state=G.STALE), strings.GENERATE, "stale", True, False, False),
+    (dict(state=G.QUEUED, message="Waiting for another Generate to finish"), strings.GENERATE_QUEUED, "busy", True,
+     False, False),
+    (dict(state=G.RUNNING, step="Counting words", done=1, total=2), "Generating… 30 %", "busy", True, True, False),
+    (dict(state=G.RUNNING, step="Writing your list"), "Generating… 60 %", "busy", False, True, False),
+    (dict(state=G.CANCELLING, message="Stopping before your list is written"), strings.GENERATE_STOPPING, "busy",
+     False, False, False),
+    (dict(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log"), strings.GENERATE_FAILED,
+     "failed", True, False, True),
+])
+def test_header_generate_shows_each_state(world, changes, text, look, enabled, bar, log):
+    world.controller.push(**changes)
+    g = world.d.generate
+    assert wait_until(lambda: g.button.text() == text)
+    assert g.button.property("look") == look
+    assert g.button.isEnabled() == enabled
+    assert g.bar.isVisibleTo(world.win) == bar
+    assert g.log_button.isVisibleTo(world.win) == log
+    assert g.button.toolTip()
+
+
+def test_header_holds_generate_and_the_journey_and_no_level_menu_or_question_mark(world):
+    # Sonic's W3.5-1: the Level menu (Generate's ▾) is not built; ? is drawn only with a guide URL the app holds — it
+    # holds none as a constant, so no ? (no control that does nothing: IK-15).
+    header = world.win.header
+    texts = [b.text() for b in header.findChildren(QAbstractButton)]
+    assert strings.GENERATE in texts and strings.JOURNEY in texts
+    assert not any("▾" in t or t.strip() == "?" for t in texts)
+
+
+def test_header_generate_click_runs_through_the_controller(world):
+    world.controller.push(state=G.STALE)
+    assert wait_until(lambda: world.d.generate.button.property("look") == "stale")
+    world.d.generate.button.click()
+    assert wait_until(lambda: world.controller.called("controller.request"))
+    assert world.controller.called("controller.request")[0][1:] == ("ja", False)      # the user's: not quiet
+    assert world.log.index("automation.before_generate") < world.log.index("controller.request")   # the backlog read
+    assert world.controller.threads["controller.request"] is not threading.main_thread()
+
+
+def test_header_click_while_running_cancels_but_never_once_writing(world):
+    world.controller.push(state=G.RUNNING, step="Picking sentences", done=3, total=10)
+    button = world.d.generate.button
+    assert wait_until(lambda: button.text().startswith("Generating…"))
+    button.click()
+    assert wait_until(lambda: world.controller.called("controller.cancel"))
+    assert not world.controller.called("controller.request")
+    world.controller.push(state=G.RUNNING, step="Writing your list", done=None, total=None)
+    assert wait_until(lambda: not button.isEnabled())
+    button.click()                                       # disabled: nothing asked
+    QTest.qWait(50)
+    assert len(world.controller.called("controller.cancel")) == 1
+    world.controller.push(state=G.QUEUED)                # still waiting its turn: a click drops it
+    assert wait_until(lambda: button.isEnabled() and button.text() == strings.GENERATE_QUEUED)
+    button.click()
+    assert wait_until(lambda: len(world.controller.called("controller.cancel")) == 2)
+
+
+def test_header_a_failed_generate_reaches_the_bar_and_needs_you_and_opens_its_log(world, monkeypatch):
+    # E10, IK-7: `failed` on the button with *Open the log*, the bar's failure line, a Needs you entry — never a box.
+    opened = []
+    monkeypatch.setattr(os, "startfile", lambda path: opened.append((path, threading.current_thread())),
+                        raising=False)
+    world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="C:/logs/gen.log")
+    assert wait_until(lambda: world.win.bar_failure.isVisibleTo(world.win))
+    assert "Generate stopped (exit code 1)." in world.win.bar_failure.full()
+    assert wait_until(lambda: not world.win.tab_buttons["needs"].isHidden())
+    assert world.win.tab_buttons["needs"].count == 1
+    world.d.generate.log_button.click()
+    if os.name == "nt":
+        assert wait_until(lambda: opened)
+        assert opened[0][0] == "C:/logs/gen.log" and opened[0][1] is not threading.main_thread()
+
+
+def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, monkeypatch, tmp_path):
+    from app import static_html_generator
+    report = tmp_path / "reading_list_static.html"
+    monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(report))
+    opened = []
+    monkeypatch.setattr(static_html_generator, "open_report",
+                        lambda app_mode=False: opened.append((app_mode, threading.current_thread())) or True)
+    world.start()
+    journey = world.d.journey
+    QTest.qWait(50)
+    assert not journey.isEnabled() and journey.toolTip() == strings.JOURNEY_NONE_TIP
+    report.write_text("<html></html>", encoding="utf-8")
+    world.controller.push(state=G.RUNNING, step="Writing the journey")
+    world.controller.push(state=G.CURRENT)               # a run ended: the journey is looked for again
+    assert wait_until(lambda: journey.isEnabled())
+    assert journey.toolTip() == strings.JOURNEY_TIP
+    journey.click()
+    assert wait_until(lambda: opened)
+    assert opened[0][0] is False and opened[0][1] is not threading.main_thread()
+
+
+def test_header_start_asks_the_journey_and_starts_every_duty_once(world):
+    world.start()
+    world.win.start_duties()                             # a second first frame: nothing twice
+    QTest.qWait(50)
+    for name in ("controller.check", "updates.begin", "automation.started", "chores.started"):
+        assert world.log.count(name) == 1, name
+
+
+# --- the update ---------------------------------------------------------------------------------------------------- #
+def _offer(world, **more):
+    offer = dict(state=U.AVAILABLE, version="99.0", cls="APP", body="A quick in-app update.",
+                 notes_url="https://example.invalid/notes")
+    offer.update(more)
+    return world.updates.push(**offer)
+
+
+def test_update_mark_says_ready_and_a_click_opens_the_sheet(world):
+    mark = world.d.update_mark
+    assert mark.isHidden()
+    _offer(world)
+    assert wait_until(lambda: mark.text() == strings.UPDATE_READY)
+    assert "99.0" in mark.toolTip()
+    sheet = world.d.sheet
+    assert not sheet.isVisible()
+    mark.click()
+    assert wait_until(lambda: sheet.isVisible())
+    assert "99.0" in sheet.title.text() and sheet.body.text() == "A quick in-app update."
+    assert sheet.buttons["start"].isVisibleTo(sheet) and not sheet.buttons["download"].isVisibleTo(sheet)
+    world.updates.push(state=U.WAITING, programs=(U.Program(1, "Content Manager", True),))
+    assert wait_until(lambda: mark.text() == strings.UPDATE_RESTART)
+
+
+def test_update_sheet_buttons_call_the_service(world):
+    _offer(world)
+    assert wait_until(lambda: not world.d.update_mark.isHidden())
+    sheet = world.d.sheet
+    world.win.open_update_sheet()
+    sheet.buttons["notes"].click()
+    sheet.buttons["start"].click()
+    assert wait_until(lambda: world.updates.called("updates.start") and world.updates.called("updates.open_download"))
+    sheet.buttons["later"].click()                       # Later: closed, nothing cancelled
+    assert wait_until(lambda: not sheet.isVisible())
+    assert not world.updates.called("updates.cancel")
+    world.win.open_update_sheet()
+    sheet.buttons["skip"].click()
+    assert wait_until(lambda: world.updates.called("updates.skip"))
+    assert world.updates.called("updates.skip")[0] == ("updates.skip", None) and not sheet.isVisible()
+    _offer(world, cls="FULL")                            # a manual release: Download, not Update now
+    assert wait_until(lambda: sheet.buttons["download"].isVisibleTo(sheet))
+    assert not sheet.buttons["start"].isVisibleTo(sheet)
+
+
+def test_update_skip_writes_only_skipped_version(qapp, monkeypatch):
+    """With the real update service: the sheet's *Skip this version* sends `skipped_version` alone to the settings
+    service (the Tk `_skip_update`), never the whole file."""
+    from app import update_checker, updater
+    from app.update_checker import UpdateInfo
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(update_checker, "get_update_info", lambda *a, **k: UpdateInfo(
+        version="99.0", update_type="app", runtime_baseline="0.0", sha256="a" * 64,
+        app_package_url="https://example.invalid/app.zip", notes_url="https://example.invalid/notes"))
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
+    log = []
+    registry = JobRegistry()
+    services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()),
+                              controller=FakeController(log), automation=FakeAutomation(log), chores=FakeChores(log))
+    services.updates = U.UpdateService(services.settings, registry, on_quit=lambda: None)
+    services._provide()
+    written = []
+    real_set = services.settings.set
+    monkeypatch.setattr(services.settings, "set", lambda changes, **kw: (written.append(dict(changes)),
+                                                                         real_set(changes, **kw)))
+    win = shell.open_window(qapp, services)
+    win.show()
+    try:
+        assert services.updates.check(now=True)
+        assert wait_until(lambda: win.duties.update_mark.text() == strings.UPDATE_READY)
+        win.open_update_sheet()
+        win.duties.sheet.buttons["skip"].click()
+        assert wait_until(lambda: written)
+        assert written == [{"skipped_version": "99.0"}]
+        assert wait_until(lambda: win.duties.update_mark.isHidden())
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_update_esc_while_waiting_cancels_and_the_wait_list_repaints_only_when_it_changes(world):
+    programs = (U.Program(41, "Content Manager", True), U.Program("Anki sync", "Anki sync", False))
+    _offer(world)
+    world.updates.push(state=U.WAITING, programs=programs)
+    sheet = world.d.sheet
+    assert wait_until(lambda: world.d.update_mark.text() == strings.UPDATE_RESTART)
+    world.win.open_update_sheet()
+    assert wait_until(lambda: sheet.isVisible())
+    stops = [b for b in sheet.findChildren(QPushButton) if b.text() == strings.UPDATE_STOP and b.isVisibleTo(sheet)]
+    assert len(stops) == 1                               # the sync is waited for, never stopped
+    assert sheet.buttons["stop-all"].isVisibleTo(sheet) and sheet.buttons["cancel"].isVisibleTo(sheet)
+    rows, paints = list(sheet.program_rows), sheet.paints
+    world.updates.push(state=U.WAITING, programs=programs)       # the same list again (a poll): nothing repainted
+    QTest.qWait(30)
+    assert sheet.paints == paints and sheet.program_rows == rows
+    stops[0].click()
+    assert wait_until(lambda: world.updates.called("updates.stop"))
+    assert world.updates.called("updates.stop")[0] == ("updates.stop", 41)
+    sheet.buttons["stop-all"].click()
+    assert wait_until(lambda: ("updates.stop", None) in world.updates.calls)
+    QTest.keyClick(world.win, Qt.Key.Key_Escape)                 # Esc while it waits: the update is cancelled (IK-2)
+    assert wait_until(lambda: world.updates.called("updates.cancel"))
+    assert not sheet.isVisible()
+    assert wait_until(lambda: world.automation.called("automation.update_cancelled"))   # a held Generate asks again
+
+
+def test_update_a_critical_release_opens_the_sheet_once(world):
+    _offer(world, critical=True, open_now=True)
+    sheet = world.d.sheet
+    assert wait_until(lambda: sheet.isVisible())
+    assert "important" in sheet.title.text()
+    sheet.close()                                        # Later / Esc: an offer is only closed
+    assert not world.updates.called("updates.cancel")
+    _offer(world, critical=True, open_now=False)         # asked again later: the service says it surfaced already
+    QTest.qWait(50)
+    assert not sheet.isVisible()
+
+
+def test_update_needs_you_cards_and_their_actions(world, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
+    (tmp_path / "logs").mkdir()
+    world.status.refresh()                               # the logs folder known to the bar
+    _offer(world)
+    cards = world.d.cards
+    assert wait_until(lambda: len(cards.cards) == 1)
+    assert not world.win.tab_buttons["needs"].isHidden()
+    assert world.win.tab_buttons["needs"].count == 0     # an offer is listed, never counted (the mark says it)
+    buttons = {b.text(): b for b in cards.findChildren(QPushButton)}
+    buttons[strings.UPDATE_NOW].click()
+    assert wait_until(lambda: world.updates.called("updates.start"))
+    failure = U.Failure("The automatic update didn't finish (exit code 3).", 0.0, False, "99.0", "report.txt")
+    world.updates.push(state=U.FAILED, message=failure.text, version="99.0", needs_you=(failure,))
+    assert wait_until(lambda: len(cards.cards) == 1
+                      and cards.cards[0].findChildren(QPushButton)[0].text() == strings.UPDATE_SKIP)
+    assert not cards.isHidden()
+    assert wait_until(lambda: world.win.tab_buttons["needs"].count == 1)
+    assert wait_until(lambda: "didn't finish" in world.win.bar_failure.full())     # the bar's failure line too
+    buttons = {b.text(): b for b in cards.cards[0].findChildren(QPushButton)}
+    buttons[strings.UPDATE_SKIP].click()
+    assert wait_until(lambda: ("updates.skip", "99.0") in world.updates.calls)
+    buttons[strings.BAR_LOGS].click()
+    if os.name == "nt":
+        assert wait_until(lambda: opened == [str(tmp_path / "logs")])
+    world.win.show_tab("needs")                          # looked at: it stops counting (P1.2-1)
+    assert wait_until(lambda: world.updates.called("updates.mark_seen"))
+
+
+# --- the bottom bar's marks ---------------------------------------------------------------------------------------- #
+def test_bar_marks_show_the_automation_state_and_repaint_only_on_change(world):
+    d = world.d
+    assert wait_until(lambda: d.anki.text() == strings.BAR_ANKI["off"])            # anki_sync_auto off by default
+    world.services.settings.set({"anki_sync_auto": True}, now=True)
+    assert wait_until(lambda: d.anki.isHidden())                                  # on, nothing synced yet
+    world.automation.push(sync=A.SYNCING)
+    assert wait_until(lambda: d.anki.text() == strings.BAR_ANKI["syncing"])
+    world.automation.push(sync=A.SYNCED, added=3, known=12345)
+    assert wait_until(lambda: d.known.text() == "12,345 known" and d.anki.text() == strings.BAR_ANKI["synced"])
+    assert "3" in d.anki.toolTip()
+    painted = (d.paints[d.known], d.paints[d.anki])
+    world.automation.push(junban="順: placed 20 cards")                         # nothing the marks show changed
+    QTest.qWait(30)
+    assert (d.paints[d.known], d.paints[d.anki]) == painted
+    world.automation.push(sync=A.CLOSED, message="Anki is closed")
+    assert wait_until(lambda: d.anki.text() == "Anki closed — work waits")
+    assert d.paints[d.known] == painted[0]                                        # the count didn't move: not repainted
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_bar_known_count_from_a_real_known_words_file(qapp, lang):
+    """The count the real automation service reads from the test root's KnownWord.json (Japanese and Chinese)."""
+    from app import anki_sync
+    h.seed_library(lang)
+    log = []
+    controller = FakeController(log)
+    registry = JobRegistry()
+    services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()))
+    automation = A.Automation(registry, controller, services.settings, lang)
+    world = None
+    try:
+        services.controller, services.updates, services.chores = controller, FakeUpdates(log), FakeChores(log)
+        services.automation = automation
+        win = shell.open_window(qapp, services)
+        win.show()
+        world = win
+        expected = anki_sync.count_known(lang)
+        assert expected > 0
+        win.start_duties()
+        assert wait_until(lambda: win.duties.known.text() == strings.BAR_KNOWN.format(n=expected))
+    finally:
+        if world is not None:
+            world.close()
+        services.shutdown(0.5)
+
+
+def test_bar_level_chip_reads_the_band_and_automatic(world):
+    world.services.settings.set({"logic.selection.band": "rare"}, now=True)
+    world.start()
+    level = world.d.level
+    assert wait_until(lambda: level.text() == "Rare")
+    world.services.settings.set({"logic.selection.auto": True}, now=True)
+    assert wait_until(lambda: level.text().startswith("Auto"))      # no store yet: "Auto" until a Generate
+    assert level.toolTip()
+
+
+def test_bar_a_status_change_takes_under_4_ms_on_the_window_thread(world):
+    # 07 §7.1: no GUI-thread step over 4 ms — painting a new state is a few label sets, never a read.
+    win = world.win
+    _offer(world)
+    assert wait_until(lambda: not world.d.update_mark.isHidden())
+    states = []
+    for n in range(20):
+        states.append(("auto", A.State(A.SYNCED, "ja", n, 1000 + n, None, None, n)))
+        states.append(("gen", G.State(G.RUNNING, "Counting words", n, 20, None, None, 1, n)))
+        states.append(("upd", world.updates.state()._replace(state=U.DOWNLOADING, done=n, total=20, seq=100 + n)))
+    took = []
+    for kind, state in states:
+        t0 = time.perf_counter()
+        {"auto": win._show_automation, "gen": win._show_generate, "upd": win._show_update}[kind](state)
+        took.append((time.perf_counter() - t0) * 1000)
+    took.sort()
+    assert took[int(len(took) * 0.9)] < 4.0, took[-5:]
+
+
+# --- the duties' wiring: activation, settings, quit --------------------------------------------------------------- #
+def test_chores_koe_switch_and_activation_reach_the_duties(world, monkeypatch):
+    world.start()
+    world.services.settings.set({"enable_koe": True}, now=True)
+    assert wait_until(lambda: world.chores.called("chores.koe_changed"))
+    monkeypatch.setattr(world.win, "isActiveWindow", lambda: True)
+    world.win.changeEvent(QEvent(QEvent.Type.ActivationChange))
+    assert wait_until(lambda: world.automation.called("automation.activated") and world.chores.called(
+        "chores.activated"))
+    assert world.automation.threads["automation.activated"] is not threading.main_thread()
+
+
+def test_chores_settings_that_stale_the_journey_ask_it_again(world):
+    world.start()
+    world.services.settings.set({"exclude_single": False}, now=True)
+    assert wait_until(lambda: world.automation.called("automation.recheck"))
+
+
+def test_quit_cancels_the_update_before_the_jobs_and_closes_the_duties_off_the_window_thread(qapp, monkeypatch):
+    w = World(qapp)
+    w.start()
+    real_quit = w.registry.quit
+    monkeypatch.setattr(w.registry, "quit", lambda timeout=2.0: (w.log.append("registry.quit"), real_quit(timeout)))
+    w.win.close()
+    w.services.shutdown(0.5)
+    assert w.log.index("updates.quit") < w.log.index("registry.quit")
+    assert "automation.close" in w.log and "chores.close" in w.log
+    assert w.automation.threads["automation.close"] is not threading.main_thread()
+    assert w.chores.threads["chores.close"] is not threading.main_thread()
+
+
+def test_the_update_hands_over_and_the_window_closes(world, monkeypatch):
+    quits = []
+    monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: quits.append(True)))
+    threading.Thread(target=world.services._ask_quit).start()      # the service's on_quit, on its worker
+    assert wait_until(lambda: quits and not world.win.isVisible())

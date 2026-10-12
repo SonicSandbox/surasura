@@ -114,3 +114,31 @@ def test_poll_never_reads_the_events_file_on_the_callers_thread():
     status.poll()
     assert h.until(lambda: reads, seconds=10)
     assert caller not in reads
+
+
+def test_the_duties_failures_reach_the_bar_once_and_generates_is_listed_in_needs_you():
+    """W3.5 (E10, IK-7): Generate's failure and the update's are the bar's failure line, each new one once; Generate's
+    is a Needs you entry, the update's is not (the window lists those with their own actions); a provider that goes
+    quiet and fails again with the same words counts again."""
+    lines = {"generate": None, "update": None}
+    status = StatusService(JobRegistry(), providers={"generate": lambda: lines["generate"],
+                                                     "update": lambda: lines["update"]})
+    status.refresh()
+    assert status.snapshot().failure is None and status.snapshot().needs_you == ()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    status.refresh()                                      # asked again: the same failure, not a second entry
+    snap = status.snapshot()
+    assert snap.failure == "Generate stopped (exit code 1)."
+    assert [e.text for e in snap.needs_you] == ["Generate stopped (exit code 1)."]
+    lines["update"] = "The automatic update didn't finish."
+    status.refresh()
+    snap = status.snapshot()
+    assert snap.failure == "The automatic update didn't finish."
+    assert [e.text for e in snap.needs_you] == ["Generate stopped (exit code 1)."]
+    assert snap.ankiweb is None and snap.connect is None   # the failure providers never become marks
+    lines["generate"] = None
+    status.refresh()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    assert len(status.snapshot().needs_you) == 2

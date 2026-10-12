@@ -8,7 +8,11 @@ What it holds, refreshed off the window's thread:
 - *Needs you*'s entries from the same failures (Sonic's 3.0 addition: a failure once looked at no longer counts, but
   stays listed; the logs folder is one more row);
 - the AnkiWeb mark (G1.5-7) and Connect's line, from providers the window registers once their specs exist (the
-  window's spec 04 §4.4 gaps 10 and 9): `None` until then. A provider that fails leaves the rest of the snapshot.
+  window's spec 04 §4.4 gaps 10 and 9): `None` until then. A provider that fails leaves the rest of the snapshot;
+- the failures of the window's own duties (W3.5, E10, IK-7), from providers too — `update` (the update service's
+  newest failure not looked at yet) and `generate` (Generate's, while it reads `failed`): each new one is the bar's
+  failure line, as a command-line one is, and (but the update's: Needs you lists those itself, with their actions)
+  a *Needs you* entry. Their service says when to look again (`refresh_soon`).
 
 `poll()` is safe on a window's thread (a stat, nothing read); it starts a refresh on a worker when the file changed.
 `subscribe(cb)` hears every new snapshot, on the thread that made it (a worker, or the registry's).
@@ -22,6 +26,9 @@ from app.services import jobs as jobs_module
 Entry = namedtuple("Entry", "text at seen")
 Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at")
 NEEDS_YOU_KEPT = 50
+LINE_PROVIDERS = ("ankiweb", "connect")
+FAILURE_PROVIDERS = ("update", "generate")
+LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their own service, with their actions
 
 
 def job_line(view):
@@ -40,7 +47,8 @@ def job_line(view):
 
 class StatusService:
     """`registry`: the window's job registry; `reader`: a `cli.events.Reader` (made on first use when None);
-    `providers`: {"ankiweb": fn, "connect": fn} -> a line or None, called on the worker."""
+    `providers`: {"ankiweb": fn, "connect": fn, "update": fn, "generate": fn} -> a line or None, called on the worker
+    (`FAILURE_PROVIDERS`' lines are failures). A window may add providers later (`providers` is the dict asked)."""
 
     def __init__(self, registry, reader=None, providers=None, logs_folder=None):
         self.registry = registry
@@ -53,6 +61,7 @@ class StatusService:
         self._failure = None
         self._needs = []                 # Entry, newest first
         self._extra = {"ankiweb": None, "connect": None}
+        self._provided = {}              # each failure provider's last line (a new one counts once)
         self._refreshing = False
         self._subscribers = []
         self._logs_path = self._logs()
@@ -106,7 +115,7 @@ class StatusService:
                 self._reader = events.Reader(events_path=self._events_path)
             newest = self._reader.newest_to_show() if self._reader is not None else None
             extra = {}
-            for name in ("ankiweb", "connect"):
+            for name in LINE_PROVIDERS + FAILURE_PROVIDERS:
                 provider = self.providers.get(name)
                 try:
                     extra[name] = provider() if provider is not None else None
@@ -117,7 +126,14 @@ class StatusService:
                 if newest is not None:
                     self._failure = events.plain(newest)
                     self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
-                    del self._needs[NEEDS_YOU_KEPT:]
+                for name in FAILURE_PROVIDERS:
+                    line = extra.pop(name)
+                    if line and line != self._provided.get(name):
+                        self._failure = line            # the newest failure is the bar's
+                        if name not in LISTED_BY_THE_WINDOW:
+                            self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False))
+                    self._provided[name] = line
+                del self._needs[NEEDS_YOU_KEPT:]
                 self._extra = extra
         finally:
             with self._lock:

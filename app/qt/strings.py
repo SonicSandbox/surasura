@@ -90,3 +90,91 @@ HUD_LINE = "step p95 {sp} max {sm} >4ms {so}  ·  frame p95 {fp} max {fm}"
 # --- M2.1: toasts (05 §5.4) and the motion
 TOAST_UNDO = "Undo"
 TOAST_UNDO_TIP = "Undo this change"
+
+# --- W3.5: the dashboard's duties (the header's Generate and journey, the bar's marks, the update) ------------------ #
+GENERATE = "Generate"
+GENERATE_CURRENT = "Generate ✓"
+GENERATE_QUEUED = "Generate · waiting"
+GENERATE_RUNNING = "Generating… {pct} %"
+GENERATE_RUNNING_NO_PCT = "Generating…"
+GENERATE_STOPPING = "Stopping…"
+GENERATE_FAILED = "Generate ⚠"
+GENERATE_WAITING = "Waiting to start"
+GENERATE_TIP = "Build your list and your journey from your library and the words you know\n• Click to generate"
+GENERATE_CURRENT_TIP = ("Your list is up to date: nothing in your library, your known words or your settings changed "
+                        "since your last Generate\n• Click to generate again anyway")
+GENERATE_STALE_TIP = "Something changed since your last Generate, so your list is out of date\n• Click to generate"
+GENERATE_QUEUED_TIP = "{line}\n• Click to cancel"
+GENERATE_RUNNING_TIP = "Generating your list: {step}\n• Click to stop before your list is written"
+GENERATE_WRITING_TIP = "Generating your list: {step}. It can't stop part-way here, and finishes in a moment"
+GENERATE_FAILED_TIP = "Generate didn't finish: {message}\n• Click to try again"
+GENERATE_LOG = "Open the log"
+GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
+GENERATE_PROGRESS_NAME = "Generate's progress"
+JOURNEY = "Your journey ↗"
+JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
+JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
+JOURNEY_FAILED = "Couldn't open your journey: {why}"
+
+# The bottom bar's marks: statuses with tooltips (W3.3 makes them open Settings' sections).
+BAR_KNOWN = "{n:,} known"
+BAR_KNOWN_TIP = "The words you know: from Anki and your own known-words list"
+BAR_ANKI = {
+    "syncing": "Anki: syncing…",
+    "synced": "Anki ✓",
+    "anki-closed": "Anki closed — work waits",
+    "failed": "Anki ⚠",
+    "off": "Automatic sync off",
+}
+BAR_ANKI_TIP = {
+    "syncing": "Reading the words you know from Anki",
+    "synced": "Your known words are up to date with Anki",
+    "synced-added": "Your known words are up to date with Anki: {n:,} new since the last sync",
+    "anki-closed": "Anki isn't open: the sync and Anki's re-order wait until it is",
+    "failed": "The last sync from Anki didn't finish: {message}",
+    "off": "Surasura doesn't read the words you know from Anki by itself: the automatic sync is off",
+}
+BAR_LEVEL_AUTO = "Auto · {band}"
+BAR_LEVEL_AUTO_NONE = "Auto"
+BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
+BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the rarest band whose list stays short, {band} now")
+BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
+
+# The update: the bar's mark, the sheet, Needs you's cards.
+UPDATE_READY = "Update ready"
+UPDATE_DOWNLOADING = "Downloading update {pct} %"
+UPDATE_DOWNLOADING_NO_PCT = "Downloading update…"
+UPDATE_RESTART = "Restart to update"
+UPDATE_HANDING = "Restarting to update…"
+UPDATE_MARK_IDLE_TIP = "Shown when a new Surasura is ready to install"
+UPDATE_MARK_TIP = "Surasura v{version} is ready\n• Click to see what it is and update"
+UPDATE_MARK_DOWNLOADING_TIP = "Downloading Surasura v{version}\n• Click to see its progress"
+UPDATE_MARK_WAIT_TIP = "Surasura v{version} is downloaded and waits for what's still running\n• Click to see what it waits for"
+UPDATE_MARK_HANDING_TIP = "Surasura closes, the update installs, and Surasura opens again by itself"
+UPDATE_SHEET_TITLE = "Surasura v{version}"
+UPDATE_SHEET_CRITICAL = "Surasura v{version}: an important update"
+UPDATE_DOWNLOADING_LINE = "Downloading the update… {pct} %"
+UPDATE_DOWNLOADING_LINE_NO_PCT = "Downloading the update…"
+UPDATE_WAITING_LINE = "The update is downloaded. It installs once these finish:"
+UPDATE_INSTALLING_LINE = "Installing: Surasura closes and opens again by itself"
+UPDATE_PROGRESS_NAME = "The update's download"
+UPDATE_NOTES = "What's new ↗"
+UPDATE_NOTES_TIP = "Open this version's release notes in your browser"
+UPDATE_NOW = "Update now"
+UPDATE_NOW_TIP = "Download the update and install it: Surasura closes for a moment and opens again"
+UPDATE_DOWNLOAD = "Download"
+UPDATE_DOWNLOAD_TIP = "Open the release page in your browser, to download this version yourself"
+UPDATE_SKIP = "Skip this version"
+UPDATE_SKIP_TIP = "Don't offer this version again (a newer one is still offered)"
+UPDATE_LATER = "Later"
+UPDATE_LATER_TIP = "Close this: the update stays offered in the bar"
+UPDATE_STOP = "Stop it"
+UPDATE_STOP_NAME = "Stop it: {name}"
+UPDATE_STOP_TIP = "Stop {name} now, so the update can install"
+UPDATE_STOP_ALL = "Stop all and update now"
+UPDATE_STOP_ALL_TIP = "Stop everything listed that can be stopped, then install the update"
+UPDATE_CANCEL = "Cancel"
+UPDATE_CANCEL_TIP = "Don't install it now: the update stays offered (Esc does the same)"
+NEEDS_UPDATE_TITLE = "Install the update"
+NEEDS_UPDATE_LINE = "Surasura v{version} is ready to install"
+NEEDS_UPDATE_FAILED_TITLE = "The update didn't finish"

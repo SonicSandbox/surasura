@@ -435,3 +435,32 @@ def test_a_language_switch_reindexes_that_language(indexing_on, monkeypatch):
     assert popen[0].args[-1] == "zh"
     popen[0].end(0)
     chores.close()
+
+
+# --- W3.5 worker K: the Haiku mutant list's survivors ------------------------------------------------------------ #
+def test_a_koe_start_queued_before_close_never_runs_after_it(monkeypatch):
+    """`_koe`'s closed check: the worker still runs what was queued before `close()`; a Koe start among it never
+    brings the helper back after the close stopped it (a port held after the window closed)."""
+    calls = _koe(monkeypatch)
+    chores, _r, _p = _make(_Settings(enable_koe=True))
+    hold = threading.Event()
+    chores.worker.put(hold.wait, 10)
+    chores.koe_changed()
+    chores.close()
+    hold.set()
+    assert chores.worker.idle(5)
+    assert "start" not in calls and calls[-1] == "stop" and chores.state().koe_port is None
+
+
+def test_after_close_no_trigger_arms_a_timer_or_asks_the_indexer(indexing_on, timers_on, monkeypatch):
+    """`close()` marks the chores closed: a focus or a language switch after it arms no store-helper timer, and the
+    indexer is refused as busy (`close()` leaves no timer)."""
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, registry, popen = _make(timers=timers)
+    chores.close()
+    chores.activated()
+    chores.language_changed("zh")
+    assert timers == []
+    assert chores.index(force=True) == "busy"
+    assert popen == [] and not registry.snapshot()

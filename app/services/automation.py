@@ -148,6 +148,46 @@ def journey_current(settings, language):
     return analyzer.journey_is_current(run_args.analyzer_args(settings, language), language)
 
 
+def level(settings, language):
+    """The bar's level chip (W3.5 row 5): (band, automatic) — `logic.selection.band`, or with Automatic rarity on the
+    band `word_selection.auto_band` picks over the Rarity slider's numbers (the Tk `_compute_band_previews` +
+    `_auto_band_choice`: the rule Generate applies, I3), band None while there are none yet. Reads the token store: a
+    worker's call."""
+    from app import word_selection
+    from app.settings_manager import DEFAULT_SETTINGS
+    settings = settings or {}
+    sel = ((settings.get("logic") or {}).get("selection") or {})
+    if not sel.get("auto"):
+        return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], False
+    try:
+        from app import analyzer, library_store, token_index
+        from app.path_utils import get_data_path, get_user_files_path
+        from app.zh_script import effective
+        for key in ("names_recurring", "names_kanji", "names_work_terms"):     # as the Tk refresh sets them
+            analyzer.LOGIC[key] = bool((settings.get("logic") or {}).get(key, True))
+        script = effective(language, settings.get("zh_script", "asis"))
+        try:
+            remembered = library_store.read_auto_band(language, get_data_path(language))
+        except Exception:
+            remembered = None
+        store = token_index.open_store(language)
+        try:
+            freqs = token_index.preview_frequencies(store, language, get_user_files_path(language), script)
+            if freqs is None:
+                return None, True
+            previews = word_selection.band_previews(
+                freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT),
+                freqs["total_tokens"] / (store.file_count() or 1),
+                sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
+        finally:
+            store.close()
+        return word_selection.auto_band(previews, sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS),
+                                        remembered=remembered), True
+    except Exception as e:
+        print(f"Automation: the level couldn't be read: {e}")
+        return None, True
+
+
 class AutoSync:
     """The background known-words sync from a running Anki (`_maybe_anki_sync`), its result
     (`_on_anki_sync_result`) and Generate's read of the Anki backlog (`_maybe_backlog_sync`)."""

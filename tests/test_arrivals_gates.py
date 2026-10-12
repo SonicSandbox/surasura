@@ -325,3 +325,60 @@ def test_with_tables_kept_the_names_gate_sums_the_records_one_at_a_time_and_keep
     assert store.read == len(library) and gates.records is None
     assert vars(gates.table_sums) == vars(names.TableSums(library))
     assert vars(gates.term_sums) == vars(names.TermSums(library, tables))
+
+
+def test_with_tables_kept_the_terms_are_summed_from_real_records_holding_katakana_runs(tmp_path):
+    """E2.3 (review X2): the test above sums records with no word spans, so its terms compare two empty sums. Here the
+    records are a real token store's — a transcript whose katakana runs the terms table cuts — and the gate's terms,
+    summed one record at a time, must equal the terms of the whole list, and hold something."""
+    import os
+    from app import analyzer, names, token_index
+    resources = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja")
+    files = [os.path.join(resources, name) for name in ("runaway_transcript.txt", "library_episode.ass")]
+    real = token_index.open_store("ja", path=str(tmp_path / "t.db"))
+    try:
+        real.reconcile(files, token_index.make_tokenizer("ja"), build_signature=token_index.build_signature("ja"))
+        library = real.names_records()
+    finally:
+        real.close()
+    assert any(span[5] == "w" for record in library for span in record.get("s", ())), "the transcript holds word runs"
+    tables = names.compute_tables(library, None, analyzer._sanitize_term)
+    store = _NamesStore(library, tables)
+    plan = SimpleNamespace(keys=[[*GAKKOU, False, False, 5]], rows=[], ties=[], spell={},
+                           header={"floor": 2, "total_tokens": 1000})
+    view = SimpleNamespace(
+        language="ja", plan=plan, args=SimpleNamespace(min_freq=2, exclude_freq_one=False, target_coverage=0),
+        counts={GAKKOU: 5}, total=1000, skip_singles=False, rare=frozenset(),
+        learning=SimpleNamespace(parts={}, credits=lambda compound: []),
+        known=lambda key: False, entry_of={}, phrase_set=None)
+    gates = arrivals.Gates.build(view, store, remembered=None)
+    whole = names.TermSums(library, tables)
+    assert whole.uses, "the records' runs give the terms table stretches to sum"
+    assert store.read == len(library) and vars(gates.term_sums) == vars(whole)
+
+
+def test_the_gate_takes_the_stores_phrase_sums_and_with_no_tables_the_records_list():
+    """E2.3 (planted bugs): with set phrases on, the gate keeps the store's phrase sums as they are read (left out, every
+    arrival with a phrase would read "can't tell"); with no name tables kept, it keeps the counted files' records,
+    the whole rule's input."""
+    library = [_name_record("ミカサ", ("ミ", "カサ")), _name_record("エレン", ("エ", "レン"))]
+    sums = (Counter({3: 4}), {3: ["気がする"]})
+
+    class Store(_NamesStore):
+        def names_records(self):
+            return list(self.records)
+
+        def phrase_sums(self):
+            return sums
+
+    store = Store(library, None)
+    plan = SimpleNamespace(keys=[[*GAKKOU, False, False, 5]], rows=[], ties=[], spell={},
+                           header={"floor": 2, "total_tokens": 1000})
+    view = SimpleNamespace(
+        language="ja", plan=plan, args=SimpleNamespace(min_freq=2, exclude_freq_one=False, target_coverage=0),
+        counts={GAKKOU: 5}, total=1000, skip_singles=False, rare=frozenset(),
+        learning=SimpleNamespace(parts={}, credits=lambda compound: []),
+        known=lambda key: False, entry_of={}, phrase_set=object())
+    gates = arrivals.Gates.build(view, store, remembered=None)
+    assert (gates.phrase_uses, gates.phrase_spellings) == sums
+    assert gates.tables is None and gates.records == library and store.read == 0

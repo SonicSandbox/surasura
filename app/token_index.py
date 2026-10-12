@@ -1274,10 +1274,15 @@ class Store:
         """`phrase_tallies` summed by phrase, as the arrivals gate reads it: ({phrase index: uses}, {phrase index:
         [spellings, as met]}) over the counted files, or None when `phrase_tallies` would be. Each file's tally is read
         on its own (SQLite's `json_each` over the kept table), so the whole table — hundreds of MB of Python objects at
-        20,000 files, most of it left on the heap after — is never held at once (E2.3)."""
+        20,000 files, most of it left on the heap after — is never held at once (E2.3). Its reads are one read
+        transaction (one snapshot, as `phrase_tallies`' one value was): an index committed between them never mixes a
+        new table with the old check."""
         if self.language != "ja":
             return None
+        own = not self.conn.in_transaction
         try:
+            if own:
+                self.conn.execute("BEGIN")
             from app import phrase_data
             base, _reads, names = self._phrases_basis(phrase_data.REVISION)
             head = self.conn.execute("SELECT json_extract(value, '$.state'), json_extract(value, '$.names') FROM meta "
@@ -1293,8 +1298,8 @@ class Store:
                 if stamp is None:
                     continue                            # a file no longer counted: not the gate's
                 entry = json.loads(text)
-                if entry[:2] != stamp:
-                    return None
+                if not isinstance(entry, list) or len(entry) < 5 or entry[:2] != stamp:
+                    return None                         # stale, or a shape `phrase_tallies` couldn't read either
                 seen += 1
                 for index, (n, spelled) in entry[3].items():
                     uses[int(index)] += n
@@ -1303,6 +1308,12 @@ class Store:
             return (uses, spellings) if seen == len(counted) else None
         except Exception:
             return None
+        finally:
+            if own and self.conn.in_transaction:
+                try:
+                    self.conn.execute("COMMIT")
+                except sqlite3.Error:
+                    pass
 
     def names_records(self):
         """The counted files' name records (`names.Record` data), in the table's order — what the name tables are

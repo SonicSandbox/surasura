@@ -272,3 +272,56 @@ def test_an_arrival_is_read_without_the_library_tables_and_the_view_keeps_its_ow
     assert tokenizer.reads == [False]
     assert tokenizer.library is True
     assert sentences == [("今日は晴れ。", [])]
+
+
+class _NamesStore:
+    """A Japanese token store with name tables kept: its files' name records read one at a time (E2.3)."""
+
+    def __init__(self, records, tables):
+        self.records, self.tables, self.read = records, tables, 0
+
+    def bound_counts(self):
+        return {}
+
+    def phrase_tallies(self):
+        return None
+
+    def phrase_sums(self):
+        return None
+
+    def names_tables(self):
+        return self.tables
+
+    def names_records(self):
+        raise AssertionError("every file's record read into one list")
+
+    def iter_names_records(self):
+        for record in self.records:
+            self.read += 1
+            yield record
+
+    def get_meta(self, key):
+        return None
+
+
+def test_with_tables_kept_the_names_gate_sums_the_records_one_at_a_time_and_keeps_none():
+    """E2.3: at 20,000 files every counted file's name record held by the gate was most of the warm worker's memory
+    (530 of 1,157 MB), though with the tables kept it only ever reads their sums. The gate now sums the records as
+    the store reads them, one at a time, and keeps none — the sums the same as summing the whole list."""
+    from app import analyzer, names
+    library = [_name_record("ミカサ", ("ミ", "カサ"), 2), _name_record("ミカサ", ("ミ", "カサ")),
+               _name_record("エレン", ("エ", "レン"))]
+    tables = names.compute_tables(library, None, analyzer._sanitize_term)
+    assert tables.get("k"), "the library's tables hold a katakana run"
+    store = _NamesStore(library, tables)
+    plan = SimpleNamespace(keys=[[*GAKKOU, False, False, 5]], rows=[], ties=[], spell={},
+                           header={"floor": 2, "total_tokens": 1000})
+    view = SimpleNamespace(
+        language="ja", plan=plan, args=SimpleNamespace(min_freq=2, exclude_freq_one=False, target_coverage=0),
+        counts={GAKKOU: 5}, total=1000, skip_singles=False, rare=frozenset(),
+        learning=SimpleNamespace(parts={}, credits=lambda compound: []),
+        known=lambda key: False, entry_of={}, phrase_set=None)
+    gates = arrivals.Gates.build(view, store, remembered=None)
+    assert store.read == len(library) and gates.records is None
+    assert vars(gates.table_sums) == vars(names.TableSums(library))
+    assert vars(gates.term_sums) == vars(names.TermSums(library, tables))

@@ -316,7 +316,7 @@ def main():
                                           and app._connect_row is None, timeout=120)
         out["times"]["switch_off_s"] = round(time.monotonic() - t, 2)
         out["off_question"] = questions
-        checks["off_asked_once"] = questions == ["Put the 1 shelved cards back into your new cards?"]
+        checks["off_asked_once"] = questions == ["Put the 1 shelved card back into your new cards?"]
         checks["off_put_back"] = not ask("findCards", query=f'"tag:{drill_tag}" is:suspended')
         with open(os.path.join(root_dir, "settings.json"), encoding="utf-8") as f:
             checks["saved_off"] = json.load(f).get("connect_enabled") is False

@@ -602,3 +602,10 @@ def test_a_cancelled_update_with_connect_off_imports_nothing_of_connect(dashboar
     app._cancel_update(job)
     _pump(app.root, lambda: False, timeout=0.3)
     assert not [m for m in sys.modules if m.startswith("app.connect")]
+
+def test_one_shelved_card_is_named_in_the_singular():
+    """The drill found "Put the 1 shelved cards back": the switch-off question and its answer count one card as one."""
+    import inspect
+    import app.main as app
+    src = inspect.getsource(app)
+    assert "shelved {'card' if n == 1 else 'cards'} back into your new cards?" in src

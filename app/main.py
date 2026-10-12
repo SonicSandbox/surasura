@@ -2539,7 +2539,7 @@ class MasterDashboardApp:
         n = sum(cards for cards, _runs in shelved.values())
         parent = self.settings_window if self.__dict__.get("settings_window") is not None else self.root
         try:
-            yes = messagebox.askyesno("Connect", f"Put the {n} shelved cards back into your new cards?", parent=parent)
+            yes = messagebox.askyesno("Connect", f"Put the {n} shelved {'card' if n == 1 else 'cards'} back into your new cards?", parent=parent)
         except tk.TclError:
             yes = False
         threading.Thread(target=self._connect_switch_off, args=(shelved if yes else None,), daemon=True).start()
@@ -2563,7 +2563,7 @@ class MasterDashboardApp:
                         lambda: undo.act(settings, lang, shelf_run=run, confirm=True),
                         lambda: self.log_to_terminal(self.PUT_BACK_WAITING))
                     said = (f"Not done: {out['skipped']}." if out.get("skipped") else
-                            f"{out.get('back', 0)} shelved cards back in your new cards.")
+                            f"{out.get('back', 0)} shelved {'card' if out.get('back', 0) == 1 else 'cards'} back in your new cards.")
                     if out.get("skipped"):
                         failed.append(said)
                 except Exception as e:

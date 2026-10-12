@@ -306,7 +306,7 @@ class TabButton(QToolButton):
                 w, h = self._count_w(), round(18 * f)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(style.qcolor(c["warn"]))
-                p.drawRoundedRect(QRectF(x, line - h / 2, w, h), h / 2, h / 2)
+                p.drawRoundedRect(QRectF(x, round((line - h / 2) * dpr) / dpr, w, h), h / 2, h / 2)   # crisp edges
                 p.setPen(style.qcolor(theme.FIXED["on-accent"]))
                 p.drawText(QPointF(x + (w - cm.horizontalAdvance(text)) / 2, figures), text)
             else:

@@ -262,7 +262,9 @@ def test_the_preview_moves_reach_real_anki_tomorrow_first(monkeypatch):
             return row
         row = {"move": name, "ok": ok, "line": host.last if host else None,
                "requests": len(log) - n0, "write_requests": len(writes), "cards_written": sum(e["subs"] for e in writes),
-               "tomorrow_landed_s": round(writes[0]["at"] + writes[0]["took"] - t_move, 3) if writes else None,
+               # E3.3: the first request is tomorrow's own cards; a move behind them left them in place (0 s)
+               "tomorrow_landed_s": (0.0 if host and "already in place" in (host.last or "") else
+                                     round(writes[0]["at"] + writes[0]["took"] - t_move, 3) if writes else None),
                "all_landed_s": round(writes[-1]["at"] + writes[-1]["took"] - t_move, 3) if writes else None,
                "tk_worst_gap_ms": round(max(gaps[1:]) * 1000, 1) if len(gaps) > 1 else None,
                "cardsInfo_ms": [round(e["took"] * 1000, 1) for e in log[n0:] if e["action"] == "cardsInfo"],

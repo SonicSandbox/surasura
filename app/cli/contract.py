@@ -26,7 +26,7 @@ CONTRACT = 1
 EXIT_CODES = {
     "failed": 1, "partial": 1, "crashed-child": 1, "bad-data": 1,
     "usage": 2, "not-set-up": 2, "version-skew": 2,
-    "busy": 3, "anki-closed": 3, "anki-busy": 3, "anki-miner-busy": 3, "update-staged": 3,
+    "busy": 3, "anki-closed": 3, "anki-busy": 3, "anki-miner-busy": 3, "update-staged": 3, "settings-unreadable": 3,
     "needs-you": 4,
 }
 

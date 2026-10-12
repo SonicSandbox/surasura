@@ -922,15 +922,21 @@ class Steps:
             named = pairing.get("video_path")
             paired = isinstance(named, str) and bool(named)
             subtitle = None if paired else self.subtitle(lang, job)
+        from app.connect import videos
         if paired:
             if _on_disk(named):
-                return named
+                return named                # the named path is trusted as it is: never read (a stat only)
             size = pairing.get("video_size")
-            return self._videos(lang).find([os.path.basename(named)],
-                                           size if isinstance(size, int) and size > 0 else None)
+            found = self._videos(lang).find([os.path.basename(named)],
+                                            size if isinstance(size, int) and size > 0 else None)
+            # away from its named path, a file of that name and size is the paired video only when its bytes say so
+            # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one
+            if found is not None and videos.content_key(found) != pairing.get("content_key"):
+                log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
+                return None
+            return found
         if not subtitle:
             return None
-        from app.connect import videos
         return beside(subtitle) or self._videos(lang).find(videos.names_for(subtitle))
 
     def _videos(self, lang):
@@ -1021,13 +1027,13 @@ class Steps:
         try:
             verbs.known_sync(ns)
         except CliError as e:
-            if e.code in ("anki-closed", "anki-busy", "busy"):
+            if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
                 raise Wait(ANKI_CLOSED if e.code == "anki-closed" else e.message) from None
             raise Needs("known-sync", e.message) from None
         try:
             verbs.generate(ns)
         except CliError as e:
-            if e.code == "busy":
+            if e.code in ("busy", "settings-unreadable"):     # exit 3: a moment's state, looked at again
                 raise Wait(e.message) from None
             raise Needs("generate", f"Generate didn't finish, so Connect waits for a current list. {e.message}") \
                 from None
@@ -1359,7 +1365,7 @@ def _unsure(word):
 
 def _wait_or_needs(error, resume):
     """A verb's CliError as the loop reads it: Anki or another writer busy → Wait (look again), else → Needs."""
-    if error.code in ("anki-closed", "anki-busy", "busy", "anki-miner-busy"):
+    if error.code in ("anki-closed", "anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
         say = {"anki-closed": ANKI_CLOSED, "anki-busy": REVIEWING, "anki-miner-busy": ANKI_MINER_OPEN}.get(
             error.code, error.message)
         return Wait(say, resume=resume)

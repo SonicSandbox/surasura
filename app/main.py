@@ -616,6 +616,10 @@ class MasterDashboardApp:
         # window's thread, and a failure is only logged (write_install_note never raises).
         threading.Thread(target=self._write_install_note, daemon=True).start()
 
+        # surasura.json in the shared tools folder: how hato finds Surasura (09-hato-layer §3). Off the window's
+        # thread; a failure is only printed to the log (a source checkout writes it only with SURASURA_TOOLS_CLI).
+        threading.Thread(target=self._refresh_tools_entry, daemon=True).start()
+
         # Initial UI update for language
         self.update_ui_for_language()
         
@@ -2708,6 +2712,14 @@ class MasterDashboardApp:
             path_utils.write_install_note()
         except Exception as e:
             print(f"Install note: {e}")
+
+    @staticmethod
+    def _refresh_tools_entry():
+        try:
+            from app import tools_entry
+            tools_entry.refresh()
+        except Exception as e:
+            print(f"Shared tools file (surasura.json): {e}")
 
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.

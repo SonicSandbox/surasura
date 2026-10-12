@@ -242,7 +242,7 @@ class SettingsError(Exception):
 def load_settings(strict: bool = False) -> Dict[str, Any]:
     """Loads settings from disk and merges with defaults (plus any present optional modules).
     `strict`: a settings.json that exists but can't be read raises `SettingsError` instead of falling back to the
-    defaults (the command line's `bad-data`: a fallback a later save would write back, P0.3 05 §1)."""
+    defaults (the command line's `settings-unreadable`: a fallback a later save would write back, P0.3 05 §1)."""
     settings_path = get_user_file("settings.json")
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     # Optional modules contribute their own defaults, but only when importable.

@@ -69,3 +69,67 @@ def test_a_paired_cloud_placeholder_is_no_video_and_the_index_is_asked(tmp_path,
     s._videos = lambda lang: index
     assert s.video("ja", {"id": 1, "item_id": 5}) is None, "a cloud placeholder is not a video"
     assert index.calls, "the index is asked for the same episode before giving up"
+
+
+# --------------------------------------------------------------------------- #
+# P3.2 row 3.2.3: a paired video found away from its named path is the paired one only when its bytes say so
+# --------------------------------------------------------------------------- #
+EPISODE = b"\x1aE\xdf\xa3" + bytes(i % 251 for i in range(200_000))     # a Matroska header, then 200 KB
+
+
+def _key(data):
+    """hato's `video_hash`, written out here so the test doesn't check the code with itself (09-hato-layer v2 §1.1)."""
+    import hashlib
+    import struct
+    body = data if len(data) <= 131072 else data[:65536] + data[-65536:]
+    return "v1-" + hashlib.sha256(struct.pack("<Q", len(data)) + body).hexdigest()
+
+
+def _moved(tmp_path, data):
+    """The paired episode gone from where hato saw it, and a file of its name and size in an indexed folder holding
+    `data` -> (the steps, the moved file's path)."""
+    from app.connect import videos
+    named = str(tmp_path / "Downloads" / "Bocchi - 05.mkv")              # where hato paired it: gone now
+    moved = tmp_path / "Anime" / "Bocchi the Rock" / "Bocchi - 05.mkv"
+    moved.parent.mkdir(parents=True)
+    moved.write_bytes(data)
+    index = videos.Index("ja", path=str(tmp_path / "videos-ja.json"))
+    index.refresh(shallow=[], deep=[str(tmp_path / "Anime")])
+    s = _steps()
+    s.pairing = lambda lang, job: {"video_path": named, "video_size": len(EPISODE), "content_key": _key(EPISODE)}
+    s._videos = lambda lang: index
+    return s, str(moved)
+
+
+def test_a_moved_video_of_the_same_name_and_size_but_other_bytes_is_not_the_paired_one(tmp_path):
+    # why: another episode (or a re-encode) under the same file name and size would be mined as this one — its lines'
+    # audio cut from the wrong video. Only the tail differs: the key reads the last 64 KiB too.
+    other = EPISODE[:-1] + bytes([(EPISODE[-1] + 1) % 256])
+    s, _moved_path = _moved(tmp_path, other)
+    assert s.video("ja", {"id": 1, "item_id": 5}) is None, "same name and size, other content: not found"
+
+
+def test_a_moved_video_whose_bytes_hash_to_the_pairings_key_is_used(tmp_path, monkeypatch):
+    # why: a video the learner moved to another folder is still the paired episode: its key matches, so it is mined
+    from app.connect import videos
+    read = []
+    real = videos.content_key
+    monkeypatch.setattr(videos, "content_key", lambda path: read.append(path) or real(path))
+    s, moved = _moved(tmp_path, EPISODE)
+    assert os.path.normcase(s.video("ja", {"id": 1, "item_id": 5})) == os.path.normcase(moved)
+    assert len(read) == 1, "the found file's key read once"
+
+
+def test_the_named_video_on_disk_is_trusted_without_reading_its_key(tmp_path, monkeypatch):
+    # why: the named path is hato's own word (a stat only); reading 128 KiB of every episode at every look would cost
+    # the disk (or a cloud folder's download) for nothing
+    from app.connect import videos
+    read = []
+    monkeypatch.setattr(videos, "content_key", lambda path: read.append(path) or "v1-" + "0" * 64)
+    path = tmp_path / "Bocchi - 05.mkv"
+    path.write_bytes(EPISODE)
+    s = _steps()
+    s.pairing = lambda lang, job: {"video_path": str(path), "video_size": len(EPISODE), "content_key": _key(b"x")}
+    s._videos = lambda lang: _NoVideoIndex()
+    assert s.video("ja", {"id": 1, "item_id": 5}) == str(path)
+    assert read == [], "no key computed for the named path"

@@ -234,3 +234,44 @@ def test_a_producer_that_isnt_a_short_program_name_is_bad_data(producer):
     c.library()
     code, line = _register(c.record(c.drop("Example Show - 05.ja.srt"), "video-05", producer=producer))
     assert (code, line["code"]) == (1, "bad-data") and "producer" in line["fields"]
+
+
+def test_a_torn_settings_file_is_settings_unreadable_exit_3_and_writes_nothing():
+    """09-hato-layer v2 Q5: settings.json cut short (a save caught half-way) is `settings-unreadable`, exit 3 — hato
+    tries again on its next run. As v1's `bad-data` (exit 1) hato would never retry, and the drop would stay unpaired
+    until the file changed; read as the defaults, the preview would read as off and the call would answer `skipped`."""
+    c.library()
+    path = c.drop("Example Show - 05.ja.srt")
+    rec = c.record(path, "video-05")
+    with open(os.path.join(h.root(), "settings.json"), "w", encoding="utf-8") as f:
+        f.write('{"target_language": "ja", "connect_enabled": tr')          # torn mid-save
+    before, stored = c.snapshot(), c.store_state()
+    code, line = _register(rec)
+    assert (code, line["code"]) == (3, "settings-unreadable"), line
+    assert "settings.json" in line["message"]
+    after = c.snapshot()
+    after.pop("record.json", None), before.pop("record.json", None)
+    assert after == before and c.store_state() == stored, "nothing written"
+    # the settings helper is every verb's: another verb answers the same, never the defaults
+    code, line = h.call("status")
+    assert (code, line["code"]) == (3, "settings-unreadable"), line
+
+
+def test_a_null_library_path_is_bad_data_naming_the_field():
+    """09-hato-layer v2, library_path: `library_path` is always a string; null is the record's fault (`bad-data`, exit 1: not retried until
+    the file changes), named in `fields` — never a crash (`failed`) from a path check handed None."""
+    c.library()
+    rec = c.record(c.drop("Example Show - 05.ja.srt"), "video-05")
+    rec["library_path"] = None
+    code, line = _register(rec)
+    assert (code, line["code"]) == (1, "bad-data") and "library_path" in line["fields"], line
+    assert _pairings() == 0
+
+
+def test_registers_answer_is_the_envelope_and_its_fields_with_no_verb():
+    """09-hato-layer v2, the answer: the result line is `type`, `contract`, `ok` and register's own fields; no `verb` (hato reads the
+    fields by name, and 09's example once showed one)."""
+    c.library()
+    code, line = _register(c.record(c.drop("Example Show - 05.ja.srt"), "video-05"))
+    assert code == 0 and "verb" not in line, line
+    assert set(line) == {"type", "contract", "ok", "file_id", "landed", "tier", "position", "pairing", "content_key"}

@@ -199,12 +199,13 @@ def test_known_with_an_unreadable_file_is_bad_data_and_leaves_it_untouched(gener
     assert open(path, "rb").read() == before
 
 
-def test_unreadable_settings_are_bad_data_never_the_defaults(generated):
+def test_unreadable_settings_are_settings_unreadable_never_the_defaults(generated):
+    # 09-hato-layer v2 Q5: exit 3, "try again later" — a half-written settings.json is a moment's state
     with open(os.path.join(h.root(), "settings.json"), "w", encoding="utf-8") as f:
         f.write('{"target_language": "ja",')
     for verb in ("status", "list", "known", "generate", "known-sync"):
         code, lines = h.run_cli(verb)
-        assert code == 1 and h.answer(lines)["code"] == "bad-data", (verb, lines)
+        assert code == 3 and h.answer(lines)["code"] == "settings-unreadable", (verb, lines)
 
 
 def test_a_language_never_set_up_is_not_set_up(generated):

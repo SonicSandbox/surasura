@@ -17,13 +17,18 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
   folder with more than are left keeps what it had, and the rest goes on to the next); a second miss in the run lists
   nothing again.
 - **Keyed by language** (D31): one index file per language, under local data (where a profile folder can sit above).
+- **A paired video found away from its named path** (moved; found by name and size) is the paired one only when its
+  `content_key` is the pairing's (09-hato-layer v2 §1.1: hato's `video_hash`, at most 128 KiB read); the named path on
+  disk is trusted as it is, never read (P3.2 row 3.2.3).
 
 A placeholder (a cloud file not downloaded) is indexed by name but never opened or taken: *No video* until it's on
 this computer. Standard library only.
 """
+import hashlib
 import json
 import logging
 import os
+import struct
 
 from app.connect import runner
 
@@ -32,6 +37,7 @@ log = logging.getLogger("surasura-cli")
 INDEX_VERSION = 2               # 2: each folder keeps its own spelling (`path`)
 DEPTH = 4                       # the folders you add: their subfolders this deep
 RELIST_MAX = 2000               # a missing video's re-list (once a run): at most this many folder entries read
+KEY_PART = 65536                # the content key: a file over 2 × this is read as its first and last KEY_PART bytes
 
 
 def configured(loaded, lang):
@@ -198,6 +204,34 @@ def _size(path):
         return os.stat(path).st_size
     except OSError:
         return None
+
+
+def content_key(path):
+    """The video's identity as hato keys it (09-hato-layer v2 §1.1, hato's `video_hash`): "v1-" + sha256 of the size
+    as 8 bytes little-endian, then the whole file when it is 2 × KEY_PART bytes or less, else its first and last
+    KEY_PART bytes. None when it can't be read, or its size or modified time moved while it was read (a file being
+    copied or replaced is not the paired video)."""
+    try:
+        before = os.stat(path)
+        body = _key_body(path, before.st_size)
+        after = os.stat(path)
+    except OSError:
+        return None
+    if body is None or (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+        return None
+    return "v1-" + hashlib.sha256(struct.pack("<Q", before.st_size) + body).hexdigest()
+
+
+def _key_body(path, size):
+    """The bytes the key reads from a file of `size` bytes, or None when fewer are there."""
+    with open(path, "rb") as f:
+        if size <= 2 * KEY_PART:
+            body = f.read(size + 1)                 # one more: a file grown since the stat is caught here too
+            return body if len(body) == size else None
+        head = f.read(KEY_PART)
+        f.seek(size - KEY_PART)
+        tail = f.read(KEY_PART)
+    return head + tail if len(head) == len(tail) == KEY_PART else None
 
 
 def names_for(subtitle):

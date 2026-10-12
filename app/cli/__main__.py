@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 
+from app import tools_entry
 from app.cli import connect_verbs, contract, verbs
 
 
@@ -96,6 +97,16 @@ def _root_option(argv):
     return None
 
 
+def _refresh_tools_entry():
+    """surasura.json in the shared tools folder, at every call (09-hato-layer §3): after --root, before the verb. A
+    failure is only logged: it never changes a verb's answer or exit code. A source checkout without
+    SURASURA_TOOLS_CLI returns before reading anything."""
+    try:
+        tools_entry.refresh()
+    except Exception:
+        contract.log.exception("surasura.json (the shared tools file) wasn't refreshed")
+
+
 def main(argv=None, out=None):
     """Run one call; returns its exit code. `out` replaces stdout (tests)."""
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -111,6 +122,7 @@ def main(argv=None, out=None):
             args, usage = None, e
         contract.open_log()
         sys.stdout = sys.stderr = contract._ToLog()
+        _refresh_tools_entry()
 
         if usage is None and not args.version and not args.verb:
             usage = contract.CliError("usage", "Say what to do: a command, or --version. Run surasura-cli --help.")

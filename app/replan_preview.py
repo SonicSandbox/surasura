@@ -646,6 +646,8 @@ class Host:
                 self._tell(f"Anki: spacing your new cards out once so later moves are quick — {done:,} of {total:,}…")
             elif done < len(job.front_ids):
                 self._tell(f"Anki: placing tomorrow's {n} cards…")
+            elif done < total and not job.front_ids:    # a move behind tomorrow's: they never had to wait (E3.3)
+                self._tell(f"Anki: tomorrow's {n} already in place · moving {total - done:,} more…")
             elif done < total:
                 self._tell(f"Anki: tomorrow's {n} cards placed · moving {total - done:,} more…")
         return progress

@@ -56,7 +56,7 @@ def test_rp2s_four_orders_have_one_order_free_signature(language):
     args = analyzer.parse_analysis_args(["--language", language])
     full, free = {}, {}
     for name, order in _rp2_orders(language).items():
-        cases.build(root, case, order)
+        cases.build(root, case, order, preview=False)       # the switch is in no signature
         found = analyzer.resolve_found_files(language, verbose=False)
         assert len(found) == len(order)
         assert [os.path.basename(f[0]) for f in found] == [n for _t, n in order]

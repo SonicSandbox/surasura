@@ -4,7 +4,8 @@ itself; when work appears — a placement into the top 20, a hato drop — the c
 update is staged (the updater swaps the files first; Connect refuses to start meanwhile). A Connect already running
 reads the log again before it exits, so a kick it answered isn't lost.
 
-In P2.1 the started Connect consumes every language's inbox and exits (`--consume-only`); its mining loop is P2.4's.
+The started Connect runs its loop (P2.4, `surasura-cli connect`): it reads every language's inbox, mines the jobs, and
+exits when no job is left (P2.1 started `--consume-only`, the inbox read once).
 The lock lives per install today (`get_local_data_path()/locks/`); one Connect per Windows user (`locks.SHARED`) is
 asked of Haya at P2.4's build.
 
@@ -29,10 +30,10 @@ def running():
 
 
 def command():
-    """`surasura-cli connect --consume-only`: the command-line program beside this one when frozen (`Surasura.exe` and
+    """`surasura-cli connect`: the command-line program beside this one when frozen (`Surasura.exe` and
     `surasura-cli.exe` ship side by side), else `python -m app.cli`."""
     from app.path_utils import is_frozen
-    args = ["connect", "--consume-only"]
+    args = ["connect"]
     if is_frozen():
         name = "surasura-cli.exe" if sys.platform == "win32" else "surasura-cli"
         return [os.path.join(os.path.dirname(sys.executable), name)] + args

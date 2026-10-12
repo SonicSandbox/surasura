@@ -224,6 +224,8 @@ def _junban_panel_save(**changes):
                             _ready_first_value=lambda: s["junban_ready_first"],
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
+                            _replan_values=lambda: {},      # E3.1's row: saved only once touched
+                            _own_values=lambda: {},         # P1.4-1's row: absent with the Connect preview off
                             _write=MagicMock())
     JunbanGui._save_scope(panel)
     panel._write.assert_not_called()

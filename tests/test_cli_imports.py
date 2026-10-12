@@ -93,13 +93,16 @@ def _loaded(argv, root):
 
 
 @pytest.mark.parametrize("argv", [["status"], ["status", "--anki"], ["list", "--limit", "5"],
-                                  ["list", "--order", "encounter"], ["known"]])
+                                  ["list", "--order", "encounter"], ["known"], ["setup"]])
 def test_the_quick_verbs_load_nothing_heavy_and_no_tokenizer(generated, argv):
     code, loaded = _loaded(argv, generated)
     assert code == 0 and not loaded & set(NOT_EVEN_TEXT), loaded
 
 
-@pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"]])
+@pytest.mark.parametrize("argv", [["generate"], ["known-sync"], ["junban", "--dry-run"], ["junban", "--auto"],
+                                  ["resort"], ["resort", "--dry-run"],
+                                  ["backfill", "--tag", "surasura::connect::job-1"],
+                                  ["backfill", "--notes", "1789712000000", "--dry-run"]])
 def test_the_other_verbs_load_no_gui_toolkit_pandas_or_network_library(generated, argv):
     """`generate` with nothing changed answers without pandas; the Anki verbs reach Anki through the standard library
     (here with Anki switched off for the run, as the suites keep it)."""
@@ -152,6 +155,7 @@ def paired_library():
     (["place", "--file", "1", "--to", "soon", "--source", "test"], 0),
     (["finish", "--file", "1", "--source", "test"], 2),            # held to 3.0
     (["connect", "--consume-only"], 0),
+    (["connect"], 0),                   # P2.4's loop: Anki switched off under the suites, the job waits; nothing heavy
 ])
 def test_p2_1s_verbs_load_nothing_heavy_and_no_tokenizer(paired_library, argv, exit_code):
     root, record = paired_library

@@ -25,6 +25,11 @@ PLACED = {
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
+    "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
+    "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
+    "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
+    "connect_video_folders": "neither",      # P2.5: where Connect looks for a moved video, never a run
+    "anki_sync_delay_min": "neither",       # the sync rule's minute (E1.1 04 §3): when Anki syncs, never a run
     "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",
     "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",
     "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
@@ -60,9 +65,13 @@ PLACED = {
     "junban_backfill_fields": "neither", "junban_backfill_fills": "neither", "junban_backfill_note_languages": "neither",
     "junban_backfill_replace": "neither", "junban_chunk_size": "neither", "junban_deck": "neither",
     "junban_frequency_field": "neither", "junban_later_flag": "neither", "junban_later_suspend": "neither",
+    "junban_own_tag": "neither", "junban_order_all": "neither",      # P1.4-1: Junban reads them, no run does
     "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
     "junban_tag_markers": "neither", "junban_unlisted": "neither",
+    "junban_replan_preview": "neither", "junban_replan_language": "neither", "junban_replan_deck": "neither",
+                                            # the fast re-plan's preview (E1.1 04 §1): a run reads it for the plan file,
+                                            # which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.

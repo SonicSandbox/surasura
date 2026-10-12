@@ -557,11 +557,28 @@ def _backlog_path(language):
     return os.path.join(get_user_files_path(language), BACKLOG_FILE)
 
 
-def backlog_query(decks):
+# Connect's own notes (P2.5 row 2.5.7): with its preview on, its waiting cards count as backlogged in any deck
+CONNECT_TAG_QUERY = '"tag:surasura::connect::*"'
+
+
+def backlog_query(decks, connect=False):
     """'(deck:"A" OR deck:"B") is:new -is:suspended' — the cards waiting to be learned (D6: the known
-    sync's own decks)."""
+    sync's own decks); with `connect`, Connect's waiting cards too, whatever their deck (P2.5 row 2.5.7: the
+    report's *In Anki* mark and Junban see what Connect made)."""
     terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
+    if connect:
+        terms += f" OR {CONNECT_TAG_QUERY}"
     return f"({terms}) is:new -is:suspended"
+
+
+def _connect_on():
+    """Connect's preview, as settings.json holds it now (one place for every caller of `sync_backlog`, so the
+    window's and the command line's reads never disagree about the scope). Off when it can't be read."""
+    try:
+        from app import settings_manager
+        return bool(settings_manager.load_settings().get("connect_enabled"))
+    except Exception:
+        return False
 
 
 def load_backlog(language):
@@ -623,6 +640,20 @@ def _backlog_entry(note, fields, language):
             "freqsort": int(freq) if freq.isdigit() else None}
 
 
+def read_known_signal(language, url, decks, fields, settings):
+    """Known from Anki (P2.4 row 2.4.15), beside this sync, in the same decks: cards you suspended (or the signal you
+    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect's preview is
+    on: off, nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
+    if not (settings or {}).get("connect_enabled"):
+        return None
+    try:
+        from app.connect import known_signal
+        return known_signal.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
+    except Exception as e:
+        print(f"Known from Anki skipped: {e}")
+        return None
+
+
 def sync_backlog(language, url, decks, fields):
     """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
 
@@ -641,14 +672,16 @@ def sync_backlog(language, url, decks, fields):
     if not decks:
         return 0, "Choose at least one deck first."
     url = url or anki_connect.DEFAULT_URL
+    connect = _connect_on()
     with _LOCK:
         old = load_backlog(language)
         same_scope = (old.get("version") == BACKLOG_VERSION and old.get("decks") == sorted(decks)
-                      and old.get("fields") == fields)
+                      and old.get("fields") == fields and bool(old.get("connect")) == connect)
         cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
+        query = backlog_query(decks, connect)
         try:
-            note_ids, edited = (_ids_and_edits(url, backlog_query(decks), old.get("synced_at")) if cached
-                                else (anki_connect.find_notes(url, backlog_query(decks)), set()))
+            note_ids, edited = (_ids_and_edits(url, query, old.get("synced_at")) if cached
+                                else (anki_connect.find_notes(url, query), set()))
             todo = [n for n in note_ids if str(n) not in cached or n in edited]
             notes = anki_connect.notes_info(url, todo) if todo else []
         except AnkiError as e:
@@ -663,10 +696,12 @@ def sync_backlog(language, url, decks, fields):
                                              "was kept.")
         if same_scope and old.get("notes") == entries:
             return len(entries), None       # nothing it holds changed: the file stays as it is
+        record = {"version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks),
+                  "fields": fields, "notes": entries}
+        if connect:
+            record["connect"] = True        # the scope read Connect's cards too (absent: as before P2.5)
         try:
-            _atomic_write_json(_backlog_path(language), {
-                "version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks),
-                "fields": fields, "notes": entries}, indent=None)
+            _atomic_write_json(_backlog_path(language), record, indent=None)
         except OSError as e:
             return count_backlog(language), f"Could not save your Anki backlog: {e}"
         return len(entries), None

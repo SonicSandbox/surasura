@@ -27,6 +27,7 @@ doesn't hold from its arrival record (`arrivals.record`) the same way; when the 
 """
 import bisect
 import gzip
+import io
 import json
 import zlib
 from array import array
@@ -129,6 +130,26 @@ def _spell_table(rows):
             raise PlanError("the plan file's spell table lists a word twice")
         spell[row[0]] = (row[1], row[2])
     return spell
+
+
+def read_header(path):
+    """The plan file's header (its first line), or None when there is no readable plan of this format. The whole
+    stream is read through, so a damaged file (the gzip CRC, a cut-off end) is None too: what the analyzer asks
+    before it reuses a run with the preview on (E1.1 01 §7, E1.2-1), cheaper than `load` (nothing past the first
+    line is decoded)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        stream = gzip.GzipFile(fileobj=io.BytesIO(data))
+        first = stream.readline()
+        while stream.read(1 << 20):
+            pass
+        header = json.loads(first)
+    except (OSError, EOFError, zlib.error, ValueError):
+        return None
+    if not isinstance(header, dict) or header.get("format") != FORMAT:
+        return None
+    return header
 
 
 def _validate(plan):

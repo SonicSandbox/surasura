@@ -42,10 +42,15 @@ KNOWN = (("suspended", "Suspended"), ("marked", "Marked")) + tuple(
     (f"flag:{n}", f"Flag {n} ({colour})") for n, colour in enumerate(FLAG_COLOURS, 1))
 
 
-def save(key, value):
-    """One control's key, onto settings.json as it is (`save_keys`): never another key, never the whole file."""
+def save(key, value=None, merge=None):
+    """One control's key, onto settings.json as it is (`save_keys`): never another key, never the whole file.
+    `merge(current)`: the value worked out from the key as the file holds it at the write (the cap, the video folders:
+    another language's newest value kept, D31). -> the file as saved; raises OSError when it wasn't written."""
     from app import settings_manager
-    settings_manager.save_keys({key: value})
+    if merge is None:
+        return settings_manager.save_keys({key: value}, strict=True)
+    return settings_manager.save_keys(update=lambda on_disk: on_disk.__setitem__(key, merge(on_disk.get(key))),
+                                      strict=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -81,6 +86,23 @@ def folders_value(current, language, folders):
     return {lang: (list(folders) if lang == language else list(every)) for lang in LANGUAGES}
 
 
+def sync_choices(held):
+    """The sync combo's (label, value)s: Settings' three, and the file's own value as itself when it is none of them
+    (順's "5 minutes after": 5), kept until the user picks another."""
+    if any(str(v) == str(held) for _label, v in SYNC):
+        return SYNC
+    try:
+        minutes = int(held)
+        label = f"{minutes} minute{'s' if minutes != 1 else ''} after"
+    except (TypeError, ValueError):
+        label = str(held)
+    return SYNC + ((label, held),)
+
+
+def sync_label(choices, held):
+    return next((label for label, v in choices if str(v) == str(held)), choices[0][0])
+
+
 def known_value(picked):
     """`known_from_anki`: the picked terms in the setting's order ("and": every one must hold); none → [] (off)."""
     return [term for term, _label in KNOWN if term in picked]
@@ -104,15 +126,15 @@ def star_answered():
 
 def answer_star(answer):
     """`starred` or `not-now`, kept so the suggestion doesn't come back. Never raises."""
-    path = star_path()
     try:
+        path = star_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         temp = f"{path}.{os.getpid()}.tmp"
         with open(temp, "w", encoding="utf-8") as f:
             json.dump({"answer": answer, "at": datetime.datetime.now().isoformat(timespec="seconds")}, f)
         os.replace(temp, path)
         return True
-    except OSError as e:
+    except Exception as e:
         print(f"The star's answer wasn't kept: {e}")
         return False
 
@@ -140,7 +162,19 @@ def card_state(result):
 
 def open_folder(folder):
     os.makedirs(folder, exist_ok=True)
-    os.startfile(folder)            # Windows: Explorer at the folder
+    open_path(folder)
+
+
+def open_path(path):
+    """A folder or a program opened as the system opens it (the dashboard's own branches, `open_data_folder`)."""
+    import subprocess
+    import sys
+    if sys.platform == "win32":
+        os.startfile(path)          # Windows: Explorer at the folder, or the program started
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 def junban_present():
@@ -226,14 +260,31 @@ class Panel:
                 pass
         threading.Thread(target=run, daemon=True).start()
 
-    def _set(self, key, value):
-        save(key, value)
-        self.settings[key] = value
+    def _set(self, key, value=None, default=None, merge=None, revert=None):
+        """One control's save -> True when saved (or nothing changed: the value shown picked again writes nothing,
+        S19). Not written → `revert(the value still saved)` puts the control back and the reason is shown."""
+        current = self.settings.get(key, default)
+        if merge is None and (value == current or str(value) == str(current)):
+            return True
+        try:
+            saved = save(key, value, merge)
+        except Exception as e:
+            print(f"Connect's setting {key} wasn't saved: {e}")
+            self.save_note.config(text=f"Not saved: {e}. Try again in a moment.")
+            if not self.save_note.winfo_ismapped():
+                self.save_note.pack(anchor=tk.W, before=self.controls_first)
+            if revert is not None:
+                revert(current)
+            return False
+        self.settings[key] = saved.get(key, value) if merge is not None else value
+        self.save_note.config(text="")
+        return True
 
     def _check(self, parent, text, key, default, tip):
         var = tk.BooleanVar(value=bool(self.settings.get(key, default)))
         chk = ttk.Checkbutton(parent, text=text, variable=var, style="CP.TCheckbutton",
-                              command=lambda: self._set(key, bool(var.get())))
+                              command=lambda: self._set(key, bool(var.get()), default,
+                                                        revert=lambda old: var.set(bool(old))))
         chk.pack(anchor=tk.W, pady=(4, 0))
         self.tooltip(chk, tip)
         return chk, var
@@ -248,13 +299,17 @@ class Panel:
         f = ttk.Frame(self.frame, style="CP.TFrame")
         f.pack(fill=tk.X)
         self.controls = f
+        # a save that failed says why here, above the controls (packed only then)
+        self.save_note = ttk.Label(f, text="", style="CP.Note.TLabel", foreground=ERROR, wraplength=WRAP)
 
-        ttk.Label(f, text="Words to make cards from:", style="CP.TLabel").pack(anchor=tk.W, pady=(6, 0))
+        self.controls_first = ttk.Label(f, text="Words to make cards from:", style="CP.TLabel")
+        self.controls_first.pack(anchor=tk.W, pady=(6, 0))
         self.var_words = tk.StringVar(value=self.settings.get("connect_mine_words", "list"))
         self.word_buttons = {}
         for value, label, line in WORDS:
             radio = ttk.Radiobutton(f, text=label, value=value, variable=self.var_words, style="CP.TRadiobutton",
-                                    command=lambda: self._set("connect_mine_words", self.var_words.get()))
+                                    command=lambda: self._set("connect_mine_words", self.var_words.get(), "list",
+                                                              revert=self.var_words.set))
             radio.pack(anchor=tk.W, padx=(10, 0))
             ttk.Label(f, text=line, style="CP.Note.TLabel", wraplength=WRAP - 30).pack(anchor=tk.W, padx=(30, 0))
             self.tooltip(radio, f"{label}: {line[0].lower()}{line[1:]}")
@@ -267,13 +322,13 @@ class Panel:
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(row, text="Sync Anki after tomorrow's cards change:", style="CP.TLabel").pack(anchor=tk.W)
-        labels = [label for label, _v in SYNC]
-        now = self.settings.get("anki_sync_delay_min", 1)
-        self.combo_sync = ttk.Combobox(row, values=labels, state="readonly", width=34)
-        self.combo_sync.set(next((label for label, v in SYNC if str(v) == str(now)), labels[0]))
+        choices = sync_choices(self.settings.get("anki_sync_delay_min", 1))
+        self.combo_sync = ttk.Combobox(row, values=[label for label, _v in choices], state="readonly", width=34)
+        self.combo_sync.set(sync_label(choices, self.settings.get("anki_sync_delay_min", 1)))
         self.combo_sync.pack(anchor=tk.W, padx=(10, 0))
         self.combo_sync.bind("<<ComboboxSelected>>", lambda _e: self._set(
-            "anki_sync_delay_min", dict(SYNC)[self.combo_sync.get()]))
+            "anki_sync_delay_min", dict(choices)[self.combo_sync.get()], 1,
+            revert=lambda old: self.combo_sync.set(sync_label(choices, old))))
         self.tooltip(self.combo_sync, "When Surasura asks Anki to sync with AnkiWeb after it changed tomorrow's "
                                       "cards, so your phone gets them.")
 
@@ -322,8 +377,7 @@ class Panel:
                                        selectforeground=BG, highlightthickness=0, borderwidth=0,
                                        font=("Segoe UI", 9))
         self.list_folders.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        for folder in self._folders():
-            self.list_folders.insert(tk.END, folder)
+        self._show_folders()
         buttons = ttk.Frame(row, style="CP.TFrame")
         buttons.pack(side=tk.LEFT, padx=(5, 0), anchor=tk.N)
         self.btn_add_folder = self._button(buttons, "Add…", self._add_folder,
@@ -333,15 +387,10 @@ class Panel:
                                               "Stop looking in the chosen folder.")
         self.btn_remove_folder.pack(fill=tk.X, pady=(2, 0))
 
+        # Junban's two switches, shown once the worker found Junban installed (`_junban_checks`: a file look)
         self.chk_reorder = self.chk_backfill = None
-        if junban_present():
-            self.chk_reorder, self.var_reorder = self._check(
-                f, "Re-order automatically", "junban_auto_reorder", False,
-                "After a Generate and when Surasura comes back into focus, 順 puts your new cards in the list's "
-                "order by itself (never while you review).")
-            self.chk_backfill, self.var_backfill = self._check(
-                f, "Fill new cards automatically", "junban_auto_backfill", False,
-                "After a re-order, Backfill fills your new cards' empty パターン and 例文 fields by itself.")
+        self.junban_row = ttk.Frame(f, style="CP.TFrame")
+        self.junban_row.pack(fill=tk.X)
 
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(8, 0))
@@ -363,7 +412,22 @@ class Panel:
         current = self.settings.get("connect_backlog_cap", 300)
         if cap_of(current, self.language()) == n:
             return                  # unchanged (a focus leaving the box): nothing written (S19)
-        self._set("connect_backlog_cap", cap_value(current, self.language(), n))
+        language = self.language()
+        # merged onto the cap as the file holds it at the write: another language's newer cap is kept (D31)
+        self._set("connect_backlog_cap", merge=lambda on_disk: cap_value(300 if on_disk is None else on_disk,
+                                                                          language, n),
+                  revert=lambda old: self.var_cap.set(str(cap_of(old, language))))
+
+    def _junban_checks(self, present):
+        if not present or self.chk_reorder is not None:
+            return
+        self.chk_reorder, self.var_reorder = self._check(
+            self.junban_row, "Re-order automatically", "junban_auto_reorder", False,
+            "After a Generate and when Surasura comes back into focus, 順 puts your new cards in the list's "
+            "order by itself (never while you review).")
+        self.chk_backfill, self.var_backfill = self._check(
+            self.junban_row, "Fill new cards automatically", "junban_auto_backfill", False,
+            "After a re-order, Backfill fills your new cards' empty パターン and 例文 fields by itself.")
 
     def _known_text(self):
         picked = known_value({t for t, v in self.known_vars.items() if v.get()})
@@ -371,35 +435,52 @@ class Panel:
         self.menu_known.config(text=" + ".join(names[t] for t in picked) if picked else "Off")
 
     def _save_known(self):
-        self._set("known_from_anki", known_value({t for t, v in self.known_vars.items() if v.get()}))
+        def revert(old):
+            old = [old] if isinstance(old, str) else list(old or [])
+            for term, var in self.known_vars.items():
+                var.set(term in old)
+        self._set("known_from_anki", known_value({t for t, v in self.known_vars.items() if v.get()}),
+                  ["suspended"], revert=revert)
         self._known_text()
 
     def _folders(self):
         from app.connect import videos
         return videos.configured(self.settings, self.language())
 
-    def _write_folders(self, folders):
-        self._set("connect_video_folders", folders_value(self.settings.get("connect_video_folders") or [],
-                                                         self.language(), folders))
+    def _write_folders(self, change):
+        """`change(folders)` -> this language's folders, applied to them as the file holds them at the write (another
+        language's newer folders kept, D31) -> True when saved."""
+        from app.connect import videos
+        language = self.language()
+
+        def merge(on_disk):
+            mine = videos.configured({"connect_video_folders": on_disk or []}, language)
+            return folders_value(on_disk or [], language, change(list(mine)))
+        return self._set("connect_video_folders", merge=merge)
 
     def _add_folder(self):
         folder = self.ask_folder()
         if not folder:
             return
         folder = os.path.normpath(folder)
-        folders = self._folders()
-        if folder in folders:
+        if folder in self._folders():
             return
-        self._write_folders(folders + [folder])
-        self.list_folders.insert(tk.END, folder)
+        if self._write_folders(lambda folders: folders if folder in folders else folders + [folder]):
+            self._show_folders()
 
     def _remove_folder(self):
         chosen = self.list_folders.curselection()
         if not chosen:
             return
         folder = self.list_folders.get(chosen[0])
-        self._write_folders([f for f in self._folders() if f != folder])
-        self.list_folders.delete(chosen[0])
+        if self._write_folders(lambda folders: [f for f in folders if f != folder]):
+            self._show_folders()
+
+    def _show_folders(self):
+        """The list as saved (another program's folders added meanwhile show too)."""
+        self.list_folders.delete(0, tk.END)
+        for folder in self._folders():
+            self.list_folders.insert(tk.END, folder)
 
     def open_logs(self):
         def job():
@@ -450,12 +531,15 @@ class Panel:
         language = self.language()
 
         def job():
+            # every file look here, on the worker: the whitelist's path (it makes its folder) and Junban's presence
+            from app.connect import anki_miner
+            path = anki_miner.whitelist_path(language)
             if self._checks is not None:
-                return self._checks(settings, language), star_answered()
+                return self._checks(settings, language), star_answered(), path, junban_present()
             from app import settings_manager
             from app.connect import setup
             loaded = settings_manager.load_settings() or settings
-            return setup.checks(loaded, language), star_answered()
+            return setup.checks(loaded, language), star_answered(), path, junban_present()
         self.worker(job, self.show_card)
 
     def show_card(self, out):
@@ -469,7 +553,8 @@ class Panel:
             self.state = None
             self._card_buttons(None)
             return
-        result, answered = out
+        result, answered, path, junban = out
+        self._junban_checks(junban)
         state = card_state(result)
         self.state = state
         self.lbl_state.config(text=state["say"])
@@ -478,12 +563,10 @@ class Panel:
         for line in state["missing"]:
             ttk.Label(self.body, text=line, style="CP.TLabel", wraplength=WRAP).pack(anchor=tk.W, pady=(2, 0))
         if state["steps"]:
-            self._steps()
+            self._steps(path)
         self._card_buttons(state)
 
-    def _steps(self):
-        from app.connect import anki_miner
-        path = anki_miner.whitelist_path(self.language())
+    def _steps(self, path):
         ttk.Label(self.body, text="1. In Anki Miner: Manage profiles… → New, and name it Surasura.", style="CP.TLabel",
                   wraplength=WRAP).pack(anchor=tk.W, pady=(6, 0))
         ttk.Label(self.body, text="2. In that profile's Settings: Whitelist → choose file, and pick this file:",
@@ -532,8 +615,8 @@ class Panel:
         path = self.ask_file()
         if not path:
             return
-        self._set("connect_anki_miner_path", os.path.normpath(path))
-        self.check()
+        if self._set("connect_anki_miner_path", os.path.normpath(path)):
+            self.check()
 
     def _open_miner(self):
         path = (self.state or {}).get("path")
@@ -541,7 +624,7 @@ class Panel:
             return
 
         def job():
-            os.startfile(path)
+            open_path(path)
         self.worker(job, lambda out: self.lbl_state.config(text=f"Couldn't open Anki Miner: {out}")
                     if isinstance(out, Exception) else None)
 

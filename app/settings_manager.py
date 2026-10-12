@@ -418,7 +418,8 @@ def _read_file_as_is() -> Dict[str, Any]:
     return settings
 
 
-def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None) -> Dict[str, Any]:
+def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None,
+              strict: bool = False) -> Dict[str, Any]:
     """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
     and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
     so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
@@ -429,7 +430,8 @@ def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callabl
     The read and the write hold the `settings` lock together, so no other program's save lands between them. Never
     waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
     by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
-    order the windows saved (`flush_keys` waits for them; the process writes them before it ends)."""
+    order the windows saved (`flush_keys` waits for them; the process writes them before it ends). `strict`: a write
+    that failed raises OSError (a control that must not show an unsaved value: Connect's, P3.1); a queued one doesn't."""
     entry = (dict(changes or {}), update)
     try:
         held = locks.take("settings", "saving settings") if not locks.held_here("settings") else None
@@ -443,10 +445,12 @@ def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callabl
         held = None
     try:
         settings = _apply([entry], _read_file_as_is())
-        save_settings(settings)
+        written = save_settings(settings)
     finally:
         if held is not None:
             held.release()
+    if strict and not written:
+        raise OSError("your settings file couldn't be written just now")
     return settings
 
 

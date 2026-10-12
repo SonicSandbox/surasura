@@ -186,3 +186,41 @@ def test_view_reads_the_record_for_one_language():
     from app.connect import ledger
     import os
     assert not os.path.exists(ledger.path())
+
+
+def test_a_failed_mark_seen_is_said_and_reads_nothing_again(root):
+    """H6: the ledger refusing `mark_seen` is said in the window (the badge keeps counting: true), never silent."""
+    changes = []
+
+    def refused(ids):
+        raise OSError("the ledger is locked")
+    pump2 = Pump()
+    win = connect_window.show(root, "ja", Tips(), RECORD, act=Act(), settings=lambda: {"connect_enabled": True},
+                              writer_busy=lambda: False, confirm=lambda t, x: True, junban=True, post=pump2.put,
+                              mark_seen=refused, on_change=lambda: changes.append(1))
+    assert pump2.run(root, lambda: "Couldn't mark these as seen" in win.logs_note.cget("text"))
+    assert "the ledger is locked" in win.logs_note.cget("text")
+    assert changes == [], "nothing read again on a failure"
+
+
+def test_the_wheel_scrolls_over_the_rows_and_leaves_other_wheel_bindings_alone(root):
+    """H7: Tk sends the tab a <Leave> as the pointer enters a row, so the wheel must still scroll over the rows; and
+    no other window's wheel binding (bind_all) is removed."""
+    many = dict(RECORD, needs=[dict(RECORD["needs"][0], id=100 + i, seen_at="2026-10-11T09:00:00Z")
+                               for i in range(30)], unseen=0)
+    other = []
+    root.bind_all("<MouseWheel>", lambda e: other.append(1))
+    win = connect_window.show(root, "ja", Tips(), many, act=Act(), settings=lambda: {"connect_enabled": True},
+                              writer_busy=lambda: False, confirm=lambda t, x: True, junban=True, post=Pump().put)
+    root.update()
+    outer = win.tab_needs.master.master             # the tab's frame: its canvas holds the rows
+    canvas = win.tab_needs.master
+    outer.event_generate("<Enter>")
+    outer.event_generate("<Leave>")                 # the pointer went on into a row
+    label = widgets(win.tab_needs, (ttk.Label,))[5]
+    assert canvas.yview()[0] == 0.0
+    label.event_generate("<MouseWheel>", delta=-120)
+    root.update()
+    assert canvas.yview()[0] > 0.0, "the wheel over a row scrolls the list"
+    assert root.bind_all("<MouseWheel>"), "the app's other wheel binding is still there"
+    root.unbind_all("<MouseWheel>")

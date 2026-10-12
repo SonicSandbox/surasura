@@ -76,8 +76,55 @@ def test_an_unchanged_stamp_reads_nothing_and_redraws_nothing(root):
     assert connect.count("stamp") == 3
     assert (connect.count("read"), row.redraws) == (1, 1), "the same stamp: no read, no redraw (S19)"
     connect.stamp_value[0] += 1                 # the ledger moved
+    connect.record = _record(line="Making cards 1 of 1 — Example Show - 06 (Anki Miner)")
     _look(row, pump, root)
     assert (connect.count("read"), row.redraws) == (2, 2)
+
+
+def test_a_moved_stamp_with_the_same_line_and_badge_reads_but_never_redraws(root):
+    """IK11 (S19): a Content Manager move changes the library file's stamp, not what the row shows."""
+    connect = Connect(_record(needs=[NEED], unseen=1))
+    row, pump, _tips = _row(root, connect)
+    _look(row, pump, root)
+    connect.stamp_value[0] += 1
+    connect.record = _record(needs=[NEED], unseen=1)    # read again, the same line, badge and hover
+    _look(row, pump, root)
+    assert (connect.count("read"), row.redraws) == (2, 1), "read on a moved stamp, redrawn only on a change"
+
+
+def test_a_write_between_the_stamp_and_the_read_costs_no_second_read(root):
+    """W4: the look keys on the stamp the read itself took, not the one before it."""
+    connect = Connect()
+    plain_read = connect.read
+
+    def read(languages=None):
+        connect.stamp_value[0] += 1             # Connect wrote between the look's stamp and the read
+        return dict(plain_read(languages), stamp=list(connect.stamp_value))
+    row, pump, _tips = _row(root, connect)
+    row._read = read
+    _look(row, pump, root)
+    row._read = plain_read
+    _look(row, pump, root)
+    assert connect.count("read") == 1, "the read's own stamp is the newest: nothing to read again"
+
+
+def test_a_failed_read_is_printed_once_and_read_again_only_when_the_stamp_moves(root, capsys):
+    """W5: a ledger that can't be read isn't read (and printed) every 3 s."""
+    connect = Connect()
+    tries = []
+
+    def broken(languages=None):
+        tries.append(1)
+        raise OSError("the ledger is locked")
+    row, pump, _tips = _row(root, connect)
+    row._read = broken
+    for _ in range(3):
+        _look(row, pump, root)
+    assert len(tries) == 1 and capsys.readouterr().out.count("wasn't read") == 1
+    connect.stamp_value[0] += 1
+    row._read = connect.read
+    _look(row, pump, root)
+    assert row.redraws == 1 and row.line.cget("text").startswith("Connect: Up to date")
 
 
 def test_the_tk_thread_never_calls_stamp_or_read(root):

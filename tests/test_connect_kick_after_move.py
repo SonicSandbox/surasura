@@ -32,6 +32,11 @@ class Stage:
         self.newest = None
         self.on = True
         self.kicks = []
+        self.refuse = False             # kick.kick's None: an update staged, Connect starting
+
+    def kick(self, settings):
+        self.kicks.append(settings.get("connect_enabled"))
+        return None if self.refuse else object()      # a started kick is its process
 
     def stamp(self, languages=None):
         return list(self.stamp_value)
@@ -52,7 +57,7 @@ def _row(root, stage):
     footer.pack(side="bottom")
     row = status_row.StatusRow(root, lambda: "ja", Tips(), lambda: None, below=footer,
                                settings=lambda: {"connect_enabled": stage.on}, stamp=stage.stamp, read=stage.read,
-                               kick=lambda s: stage.kicks.append(s.get("connect_enabled")),
+                               kick=stage.kick,
                                unread=lambda lang: stage.newest, post=pump.put)
 
     def look():
@@ -76,6 +81,22 @@ def test_a_new_event_kicks_once(root):
     stage.moved(newest=8)
     look()
     assert stage.kicks == [True, True]
+
+
+def test_a_refused_kick_is_tried_again_at_the_next_look_until_one_starts(root):
+    """H1: a kick refused (an update staged) doesn't use the event up; the stamp needn't move for the next try."""
+    stage = Stage()
+    look = _row(root, stage)
+    look()
+    stage.refuse = True
+    stage.moved(newest=7)
+    look()
+    look()                          # the same stamp: still owed
+    assert stage.kicks == [True, True]
+    stage.refuse = False
+    look()
+    look()
+    assert stage.kicks == [True, True, True], "once one started, no more for this event"
 
 
 def test_no_kick_when_off_when_running_or_when_nothing_is_new(root):

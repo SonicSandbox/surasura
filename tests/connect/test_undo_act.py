@@ -205,6 +205,21 @@ def test_the_shelf_without_junban_is_said_so(anki, monkeypatch):
     assert anki.synced == []
 
 
+def test_a_locked_or_unwritable_ledger_is_said_in_plain_words(anki, monkeypatch):
+    """H10: the ledger locked by another program (sqlite3) or a disk refusing the write (OSError) reaches the window
+    as one plain sentence, never a traceback; nothing deleted, no sync owed."""
+    import sqlite3
+    job_id = _batch(anki)
+    for error in (sqlite3.OperationalError("database is locked"), PermissionError(13, "Access is denied")):
+        def broken(*_a, _error=error, **_k):
+            raise _error
+        monkeypatch.setattr(undo, "run", broken)
+        e = _error(lambda: undo.act(ON, "ja", job=job_id, confirm=True))
+        assert e.code == "failed" and e.message.startswith(undo.RECORDS)
+        assert str(error) in e.message
+    assert anki.deleted == [] and anki.synced == []
+
+
 def test_the_shelf_while_you_review_and_an_unknown_restore_point(anki, monkeypatch):
     def reviewing(*_a, **_k):
         raise shelf.Reviewing()

@@ -163,3 +163,116 @@ def test_every_button_and_toggle_has_a_tooltip(root):
     assert len(controls) >= 10
     missing = [str(w) for w in controls if not tips.has(w)]
     assert missing == []
+
+
+# --- the review's rows (P3.1 W3) -----------------------------------------------------------------------------------
+
+def test_a_save_that_fails_puts_each_control_back_and_says_why(root, monkeypatch):
+    """H4: settings.json not written (the disk refusing) → the control shows the value still saved, and the reason."""
+    from app import settings_manager
+    panel, _tips, _pump, before = _panel(root, {"connect_backlog_cap": {"ja": 200, "zh": 80}})
+    monkeypatch.setattr(settings_manager, "save_settings", lambda *a, **k: False)
+    panel.word_buttons["i1"].invoke()
+    assert panel.var_words.get() == "list"
+    panel.chk_grammar.invoke()
+    assert panel.var_grammar.get() is True
+    panel.combo_sync.set("Right away")
+    panel.combo_sync.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert panel.combo_sync.get() == "About a minute after"
+    panel.var_cap.set("40")
+    panel._save_cap()
+    assert panel.var_cap.get() == "200"
+    labels = [panel.known_menu.entrycget(i, "label") for i in range(panel.known_menu.index("end") + 1)]
+    panel.known_menu.invoke(labels.index("Marked"))
+    assert panel.known_vars["marked"].get() is False and panel.menu_known.cget("text") == "Suspended"
+    assert panel.save_note.cget("text").startswith("Not saved: your settings file couldn't be written")
+    assert panel.save_note.winfo_manager() == "pack"
+    assert read_settings() == before
+
+
+def test_the_value_shown_picked_again_writes_nothing(root):
+    """IK11 (S19): re-picking the radio or the combo's shown value never rewrites settings.json."""
+    from tests.connect_tk_helpers import settings_bytes
+    panel, _tips, _pump, _before = _panel(root)
+    first = settings_bytes()
+    panel.word_buttons["list"].invoke()             # the default, shown: the key isn't in the file
+    panel.combo_sync.set("About a minute after")
+    panel.combo_sync.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert settings_bytes() == first and "connect_mine_words" not in read_settings()
+
+
+def test_a_sync_value_settings_doesnt_offer_is_shown_as_itself_and_kept(root):
+    """IK14: 順's "5 minutes after" (5) shows as itself, never as "About a minute after", and stays until another is
+    picked."""
+    from tests.connect_tk_helpers import settings_bytes
+    panel, _tips, _pump, _before = _panel(root, {"anki_sync_delay_min": 5})
+    assert panel.combo_sync.get() == "5 minutes after"
+    assert "5 minutes after" in panel.combo_sync.cget("values")
+    first = settings_bytes()
+    panel.combo_sync.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert settings_bytes() == first, "picked again: kept, nothing written"
+    panel.combo_sync.set("Right away")
+    panel.combo_sync.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert read_settings()["anki_sync_delay_min"] == 0
+
+
+def test_the_cap_and_the_folders_keep_another_languages_newer_value(root, tmp_path):
+    """H15 / IK13 (D31): the panel's snapshot is older than the file — Chinese's cap and folders saved meanwhile (another
+    window, another program) are kept when Japanese's change."""
+    from app import settings_manager
+    added = os.path.normpath(str(tmp_path / "アニメ"))
+    panel, _tips, _pump, _before = _panel(root, {"connect_backlog_cap": {"ja": 200, "zh": 80},
+                                                 "connect_video_folders": {"zh": ["D:\视频"]}},
+                                          ask_folder=lambda: added)
+    settings_manager.save_keys({"connect_backlog_cap": {"ja": 200, "zh": 120},
+                                "connect_video_folders": {"zh": ["D:\视频", "E:\电视剧"]}})
+    panel.var_cap.set("150")
+    panel._save_cap()
+    panel.btn_add_folder.invoke()
+    saved = read_settings()
+    assert saved["connect_backlog_cap"] == {"ja": 150, "zh": 120}
+    assert saved["connect_video_folders"] == {"zh": ["D:\视频", "E:\电视剧"], "ja": [added]}
+
+
+def test_the_whitelist_path_and_junban_are_looked_up_on_a_worker(root, monkeypatch):
+    """H13 / H12: the whitelist's path makes its folder, Junban's presence is a file look: never the Tk thread."""
+    from app.connect import anki_miner
+    threads = []
+    real = anki_miner.whitelist_path
+    monkeypatch.setattr(anki_miner, "whitelist_path", lambda lang: (threads.append(("path", on_main())),
+                                                                    real(lang))[1])
+    monkeypatch.setattr(settings_panel, "junban_present", lambda: (threads.append(("junban", on_main())), True)[1])
+    needs_setup = {"checks": [{"id": "anki_miner", "state": "ok"}, {"id": "anki_miner_version", "state": "ok"},
+                              {"id": "anki_miner_profile", "state": "needs-you", "say": "No Surasura profile."}],
+                   "anki_miner": {"path": "C:\\AnkiMiner.exe","app": "3.6.0"}}
+    h.write_settings(connect_enabled=True)
+    pump = Pump()
+    panel = settings_panel.build(root, lambda: "ja", Tips(), {"connect_enabled": True},
+                                 checks=lambda s, lang: needs_setup, post=pump.put)
+    assert pump.run(root, lambda: panel.lbl_state.cget("text") != "Checking…")
+    assert sorted(threads) == [("junban", False), ("path", False)]
+    assert panel.chk_reorder is not None, "Junban found: its two switches show"
+
+
+def test_the_stars_answer_never_raises(monkeypatch):
+    """H5: even the local data folder unreachable (`star_path` itself failing) is printed, not raised."""
+    def unreachable():
+        raise RuntimeError("no local data folder")
+    monkeypatch.setattr(settings_panel, "star_path", unreachable)
+    assert settings_panel.answer_star("not-now") is False
+
+
+@pytest.mark.parametrize("platform,command", [("darwin", "open"), ("linux", "xdg-open")])
+def test_a_folder_opens_on_macos_and_linux_too(monkeypatch, platform, command):
+    """IK12 (S17): `os.startfile` is Windows-only; the dashboard's own branches elsewhere."""
+    import subprocess
+    import sys
+    opened = []
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(subprocess, "Popen", lambda args: opened.append(args))
+    settings_panel.open_path("/home/learner/logs")
+    assert opened == [[command, "/home/learner/logs"]]

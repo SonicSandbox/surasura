@@ -1826,7 +1826,10 @@ class MasterDashboardApp:
     def create_settings_window(self):
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings & Logs")
-        self.settings_window.geometry("1260x740")      # three columns: Connect (preview) is the third (G1.3)
+        # three columns: Connect (preview) is the third (G1.3); never taller or wider than the screen (150 % on a
+        # 1080p screen is 720 logical): the columns that can't fit clip, Connect's scrolls
+        self.settings_window.geometry(self._settings_size(self.settings_window.winfo_screenwidth(),
+                                                          self.settings_window.winfo_screenheight()))
         self.settings_window.protocol("WM_DELETE_WINDOW", self.toggle_settings_window)
         
         # Bind Escape to hide the settings window
@@ -2287,6 +2290,11 @@ class MasterDashboardApp:
             self.settings_window.withdraw()
 
     @staticmethod
+    def _settings_size(screen_w, screen_h):
+        """Settings' size: 1260×740, or the screen less its taskbar and edges when that is smaller (IK15)."""
+        return f"{min(1260, screen_w - 40)}x{min(740, screen_h - 80)}"
+
+    @staticmethod
     def _scrolled_column(parent):
         """-> (outer, inner): a column whose groups scroll when they are taller than the window (Connect's third
         column). The bar shows only while it's needed; the wheel scrolls it while the pointer is over it."""
@@ -2308,9 +2316,23 @@ class MasterDashboardApp:
                 canvas.yview_moveto(0)
         inner.bind("<Configure>", fit)
         canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(item, width=e.width), fit()))
-        wheel = lambda e: canvas.yview_scroll(int(-e.delta / 120), "units") if bar.winfo_ismapped() else None  # noqa
-        outer.bind("<Enter>", lambda _e: outer.bind_all("<MouseWheel>", wheel))
-        outer.bind("<Leave>", lambda _e: outer.unbind_all("<MouseWheel>"))
+        # The wheel: a bind tag on every widget in the column (Tk sends the column a <Leave> as the pointer enters a
+        # child, so an Enter / Leave pair lost the wheel over the groups) — never bind_all, so no other wheel binding
+        # is touched. Tagged again as the column enters and as its groups change (Connect's panel comes and goes).
+        tag = "Wheel" + str(canvas).replace(".", "_")
+        canvas.bind_class(tag, "<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
+                          if bar.winfo_ismapped() else None)
+
+        def tag_all(_e=None):
+            stack = [outer]
+            while stack:
+                widget = stack.pop()
+                tags = widget.bindtags()
+                if tag not in tags:
+                    widget.bindtags(tags + (tag,))
+                stack.extend(widget.winfo_children())
+        outer.bind("<Enter>", tag_all, add="+")
+        inner.bind("<Configure>", tag_all, add="+")
         return outer, inner
 
     # --- Connect (preview) in this window (P3.1; P1.5 05-surface U1–U6) ------------------------------------------- #
@@ -2345,20 +2367,45 @@ class MasterDashboardApp:
             self.var_language.trace_add("write", lambda *_a: self._connect_panel_rebuild())
 
     def _connect_panel_rebuild(self):
-        if self._connect_panel is not None:
+        """The language trace: a panel shown is built again only when the language really changed (the trace fires
+        on every write of the same value too)."""
+        if self._connect_panel is not None and \
+                (self.var_language.get() or "ja") != self.__dict__.get("_connect_panel_language"):
             self._connect_panel_drop()
             self._connect_panel_build()
 
-    def _connect_panel_build(self):
+    def _connect_panel_build(self, settings=None):
+        """The panel, from `settings` (the file as the switch-on saved it), else from settings.json read on a worker
+        first — never on this thread."""
         if self._connect_panel is not None or self.__dict__.get("_connect_panel_host") is None:
+            return
+        if settings is None:
+            if self.__dict__.get("_connect_panel_reading"):
+                return
+            self._connect_panel_reading = True
+
+            def read():
+                try:
+                    loaded = settings_manager.load_settings() or {}
+                except Exception as e:
+                    print(f"Connect's settings weren't read: {e}")
+                    loaded = dict(getattr(self, "_current_settings", None) or {})
+
+                def build():
+                    self._connect_panel_reading = False
+                    if (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+                        self._connect_panel_build(loaded)
+                self.gui_queue.put(build)
+            threading.Thread(target=read, daemon=True).start()
             return
         try:
             if not self._connect_panel_host.winfo_exists():
                 return
             from app.connect import settings_panel
+            self._connect_panel_language = self.var_language.get() or "ja"
             self._connect_panel = settings_panel.build(
                 self._connect_panel_host, lambda: self.var_language.get() or "ja",
-                lambda widget, text: ToolTip(widget, text, wrap=320), settings_manager.load_settings() or {},
+                lambda widget, text: ToolTip(widget, text, wrap=320), dict(settings),
                 post=self.gui_queue.put, card_parent=self._connect_card_host)
         except Exception as e:
             print(f"Connect's settings weren't shown: {e}")
@@ -2368,53 +2415,158 @@ class MasterDashboardApp:
         if panel is not None:
             panel.destroy()
 
+    CONNECT_LANGUAGES = ("ja", "zh")
+
     def _connect_switch_toggled(self):
-        """The switch touched: `connect_enabled` saved, alone (`save_keys`: a file the switch never touched never gains
-        it). On: Connect's watermark on a worker, then its controls and the line appear; off: they go at once."""
+        """The switch touched; the rest on a worker, the switch greyed meanwhile. **On:** each language's watermark
+        first (✅ G1.1-2: nothing placed while it was off is ever mined; the list it last looked at forgotten, so a
+        level raise while off mines nothing), then — only once every language's succeeded — `connect_enabled` saved
+        alone (`save_keys`: a file the switch never touched never gains it), then its controls, the line and a session
+        look; no session look or kick before. A failure: the switch goes back off, nothing saved, the reason in the
+        Processing Log. **Off:** with cards on the shelf, asked once whether to put them back (before the save: the
+        put-back needs the preview on), then saved off (a running Connect stops at its next boundary), then the
+        controls and the line go and the readers are dropped where the store can. A failed save: back on."""
         on = bool(self.var_connect_enabled.get())
+        was_on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
+        self._connect_switch_enabled(False)
+        threading.Thread(target=self._connect_switched, args=(on, was_on), daemon=True).start()
+
+    def _connect_switch_enabled(self, enabled):
         try:
-            settings_manager.save_keys({"connect_enabled": on})
+            self.chk_connect.state(["!disabled"] if enabled else ["disabled"])
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _connect_switched(self, on, was_on=False):
+        """On a worker: the switch's work (`_connect_switch_toggled`)."""
+        if on:
+            failed = self._connect_watermarks()
+            saved = None
+            if not failed:
+                try:
+                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True)
+                except Exception as e:
+                    failed = f"the switch wasn't saved: {e}"
+            if failed:
+                self.log_to_terminal(f"Connect wasn't switched on: {failed}. Nothing changed; try again.")
+                self.gui_queue.put(lambda: self._connect_switch_done(False))
+                return
+            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards. "
+                                 "The back-fill is skipped: hato's pairings come later.")
+            self.gui_queue.put(lambda: self._connect_switch_done(True, saved=saved))
+            return
+        shelved = self._connect_shelved() if was_on else {}
+        if shelved:                     # asked on the Tk thread; the rest on another worker
+            self.gui_queue.put(lambda: self._connect_ask_put_back(shelved))
+            return
+        self._connect_switch_off()
+
+    def _connect_watermarks(self):
+        """Each language's watermark at its log's end and its last-looked-at list forgotten, each in its own try ->
+        None, or the failures named by language."""
+        failed = []
+        try:
+            from app.connect import level, library
+            from app.connect.ledger import path as ledger_path
         except Exception as e:
-            print(f"Error: Could not save settings: {e}")
+            return str(e)
+        for lang in self.CONNECT_LANGUAGES:
+            try:
+                store = library.open_store(lang, role="window")
+                if store is not None:
+                    with store:
+                        library.switch_on(store)
+                if os.path.exists(ledger_path()):   # no ledger: no list looked at yet (and none made here)
+                    level.forget(lang)
+            except Exception as e:
+                failed.append(f"{self.LANGUAGE_NAMES.get(lang, lang)}: {e}")
+        return "; ".join(failed) or None
+
+    LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
+
+    def _connect_shelved(self):
+        """{lang: (cards on the shelf, [its restore points with cards still on it])}, from the status record — only
+        where Junban can put them back. Read on a worker; only for a switch that was on (it imports Connect)."""
+        try:
+            from app.connect import setup, status
+            if not setup._present("modules.junban.reposition"):
+                return {}
+            records = status.read(list(self.CONNECT_LANGUAGES))["languages"]
+        except Exception as e:
+            print(f"Connect's shelf wasn't read: {e}")
+            return {}
+        out = {}
+        for lang, rec in records.items():
+            shelf = rec.get("shelf") or {}
+            runs = [r["run"] for r in shelf.get("runs") or () if (r.get("back") or 0) < (r.get("cards") or 0)]
+            if shelf.get("on_shelf") and runs:
+                out[lang] = (shelf["on_shelf"], runs)
+        return out
+
+    def _connect_ask_put_back(self, shelved):
+        """IK-D1 (S16, gate (b)): switched off with cards on the shelf, asked once; then the switch-off goes on."""
+        n = sum(cards for cards, _runs in shelved.values())
+        parent = self.settings_window if self.__dict__.get("settings_window") is not None else self.root
+        try:
+            yes = messagebox.askyesno("Connect", f"Put the {n} shelved cards back into your new cards?", parent=parent)
+        except tk.TclError:
+            yes = False
+        threading.Thread(target=self._connect_switch_off, args=(shelved if yes else None,), daemon=True).start()
+
+    def _connect_switch_off(self, put_back=None):
+        """On a worker: the shelf put back first when asked (as you: never shelved again), then the switch saved off,
+        then the readers dropped where the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing)."""
+        if put_back:
+            from app.connect import undo
+            settings = settings_manager.load_settings() or {}
+            for lang, (_cards, runs) in put_back.items():
+                for run in runs:
+                    try:
+                        out = undo.act(settings, lang, shelf_run=run, confirm=True)
+                        said = (f"Not done: {out['skipped']}." if out.get("skipped") else
+                                f"{out.get('back', 0)} shelved cards back in your new cards.")
+                    except Exception as e:
+                        said = f"Shelved cards weren't put back: {getattr(e, 'message', None) or e}"
+                    self.log_to_terminal(said)
+        try:
+            settings_manager.save_keys({"connect_enabled": False}, strict=True)
+        except Exception as e:
+            self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try again.")
+            self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
+            return
+        try:
+            from app import library_store
+            if hasattr(library_store.Store, "unregister_reader"):
+                from app.connect import library
+                for lang in self.CONNECT_LANGUAGES:
+                    store = library.open_store(lang, role="window")
+                    if store is None:
+                        continue
+                    with store:
+                        if library.has_reader(store):
+                            store.unregister_reader(library.READER)
+        except Exception as e:
+            print(f"Connect's readers weren't dropped: {e}")
+        self.log_to_terminal("Connect is off.")
+        self.gui_queue.put(lambda: self._connect_switch_done(False))
+
+    def _connect_switch_done(self, on, saved=None, fresh=True):
+        """On the Tk thread: the switch shows what is saved; on, the controls, the line and (a fresh switch-on) a
+        session look; off, they go."""
+        self._connect_switch_enabled(True)
+        try:
+            self.var_connect_enabled.set(on)
+        except (AttributeError, tk.TclError):
+            pass
         self._current_settings = dict(getattr(self, "_current_settings", None) or {}, connect_enabled=on)
         if not on:
             self._connect_panel_drop()
             self._connect_row_stop()
-        threading.Thread(target=self._connect_switched, args=(on,), daemon=True).start()
-
-    def _connect_switched(self, on):
-        """On a worker. On: every library's Connect watermark at its log's end (✅ G1.1-2: nothing placed while it was
-        off is ever mined), then the controls, the line and a session look. Off: Connect's readers dropped where the
-        store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing) — a running Connect stops at its next
-        step boundary by itself (it reads the switch again)."""
-        try:
-            from app import library_store
-            from app.connect import library
-            # Off on 2.x: the store has no `unregister_reader`, so no library is even opened
-            for lang in ("ja", "zh") if on or hasattr(library_store.Store, "unregister_reader") else ():
-                store = library.open_store(lang, role="window")
-                if store is None:
-                    continue
-                with store:
-                    if on:
-                        library.switch_on(store)
-                    elif library.has_reader(store):
-                        store.unregister_reader(library.READER)
-        except Exception as e:
-            print(f"Connect's switch: {e}")
-        if on:
-            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards. "
-                                 "The back-fill is skipped: hato's pairings come later.")
-            self.gui_queue.put(self._connect_switched_on)
-        else:
-            self.log_to_terminal("Connect is off.")
-
-    def _connect_switched_on(self):
-        if not self.var_connect_enabled.get():
-            return                      # switched off again meanwhile
-        self._connect_panel_build()
+            return
+        self._connect_panel_build(saved)
         self._connect_row_start()
-        self._connect_session()
+        if fresh:
+            self._connect_session()
 
     def _connect_row_start(self):
         """U1 + U2 (row 3.1.4): Connect's line and badge, their own row above the bottom bar — only with the preview
@@ -2447,21 +2599,24 @@ class MasterDashboardApp:
                 pass
 
     def _open_connect_window(self):
-        """U3 (row 3.1.6): the record read on a worker, then the window (one at a time: a second click shows it
-        fresh)."""
+        """U3 (row 3.1.6): the record (and whether Junban is installed) read on a worker, then the window (one at a
+        time: a second click shows it fresh). The switch off meanwhile: nothing of Connect's imported."""
         lang = self.var_language.get() or "ja"
 
         def work():
+            if not (getattr(self, "_current_settings", None) or {}).get("connect_enabled"):
+                return
             try:
                 from app.connect import connect_window
                 record = connect_window.view(lang)
+                junban = connect_window.junban_present()
             except Exception as e:
                 print(f"Connect's window: {e}")
                 return
-            self.gui_queue.put(lambda: self._show_connect_window(lang, record))
+            self.gui_queue.put(lambda: self._show_connect_window(lang, record, junban))
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_connect_window(self, lang, record):
+    def _show_connect_window(self, lang, record, junban=None):
         if self._connect_row is None:
             return                      # switched off meanwhile
         try:
@@ -2472,7 +2627,7 @@ class MasterDashboardApp:
             row = self._connect_row
             self._connect_window = connect_window.show(
                 self.root, lang, lambda widget, text: ToolTip(widget, text, wrap=320), record,
-                on_change=row.refresh, post=self.gui_queue.put)
+                on_change=row.refresh, post=self.gui_queue.put, junban=junban)
         except Exception as e:
             print(f"Connect's window wasn't shown: {e}")
 

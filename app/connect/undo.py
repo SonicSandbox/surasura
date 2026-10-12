@@ -25,6 +25,7 @@ import datetime
 import logging
 import os
 import re
+import sqlite3
 
 from app.connect import runfile
 
@@ -350,6 +351,7 @@ NO_SHELF_RUN = "There's no shelf restore point with that name."
 NEEDS_JUNBAN = "Putting the shelf back needs Junban (順), which isn't installed."
 REVIEWING = "You're reviewing in Anki. Undo once you've finished."
 WRITER_BUSY = "Another program is writing to Anki. Try again in a moment."
+RECORDS = "Connect's records couldn't be written just now: "
 
 
 def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
@@ -360,7 +362,8 @@ def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
     (`summary(done)` + {"language", "confirm": True}, or {"language", "shelf", "back", "confirm": True}), Anki's sync
     owed after (`sync(settings)`; default `owe_sync`). The ledger is never made here: none yet is
     *nothing made*. Raises `app.cli.contract.CliError` in plain words (`message`; `code` the command line's exit:
-    not-set-up, bad-data, needs-you, skipped, anki-busy, busy, anki-closed). Waits up to 10 s for Anki's write lock:
+    not-set-up, bad-data, needs-you, skipped, anki-busy, busy, anki-closed, failed — the ledger or the library locked or
+    unwritable, `RECORDS`). Waits up to 10 s for Anki's write lock:
     the window calls it on a worker, never the Tk thread."""
     from app.cli.contract import CliError
     if not (settings or {}).get("connect_enabled"):
@@ -409,6 +412,8 @@ def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
         raise contract.busy_error("anki-writer", e.holder, WRITER_BUSY) from None
     except anki_connect.AnkiError as e:
         raise CliError("anki-closed", f"Anki isn't open (or stopped answering): {e}") from None
+    except (sqlite3.Error, OSError) as e:               # the ledger or the library locked, a disk refusing a write
+        raise CliError("failed", RECORDS + (str(e).splitlines() or [type(e).__name__])[0][:160]) from None
 
 
 def owe_sync(settings):

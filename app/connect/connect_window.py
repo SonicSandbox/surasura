@@ -87,8 +87,30 @@ def question(plan):
 
 
 def junban_present():
+    """Is Junban installed (a file look: the caller's worker asks it, `show(..., junban=)`)."""
     from app.connect import setup
     return setup._present("modules.junban.reposition")
+
+
+def wheel_scrolls(outer, canvas, can_scroll=lambda: True):
+    """The wheel scrolls `canvas` while the pointer is over `outer` or anything in it: a bind tag on every widget under
+    `outer` (Tk sends the parent a <Leave> as the pointer enters a child, so an Enter / Leave pair loses the wheel
+    over the rows) — never `bind_all`, so no other window's wheel binding is touched. -> `tag_all`, to call again
+    when widgets are added (bound to <Enter> here)."""
+    tag = "Wheel" + str(canvas).replace(".", "_")
+    canvas.bind_class(tag, "<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
+                      if can_scroll() else None)
+
+    def tag_all(_e=None):
+        stack = [outer]
+        while stack:
+            widget = stack.pop()
+            tags = widget.bindtags()
+            if tag not in tags:
+                widget.bindtags(tags + (tag,))
+            stack.extend(widget.winfo_children())
+    outer.bind("<Enter>", tag_all, add="+")
+    return tag_all
 
 
 def _say(out):
@@ -180,9 +202,8 @@ class ConnectWindow:
         item = canvas.create_window((0, 0), window=tab, anchor="nw")
         tab.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=e.width))
-        wheel = lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")     # noqa: E731
-        outer.bind("<Enter>", lambda _e: outer.bind_all("<MouseWheel>", wheel))
-        outer.bind("<Leave>", lambda _e: outer.unbind_all("<MouseWheel>"))
+        tag_all = wheel_scrolls(outer, canvas)
+        tab.bind("<Configure>", tag_all, add="+")
         return tab
 
     def worker(self, job, then):
@@ -273,7 +294,14 @@ class ConnectWindow:
                 return self._mark_seen(ids)
             from app.connect import status
             return status.mark_seen(ids)
-        self.worker(job, lambda out: self.on_change())
+
+        def done(out):
+            if isinstance(out, Exception):          # the badge keeps counting them: say why, nothing read again
+                print(f"Connect's Needs you weren't marked seen: {out}")
+                self.logs_note.config(text=f"Couldn't mark these as seen just now: {_say(out)}")
+                return
+            self.on_change()
+        self.worker(job, done)
 
     def dismiss(self, need, row):
         key = ("needs", need["id"], "Dismiss")

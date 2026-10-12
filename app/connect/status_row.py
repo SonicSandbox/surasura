@@ -60,6 +60,11 @@ def detail(rec):
     return "\n".join(lines) or (rec or {}).get("line") or ""
 
 
+def drawn(rec):
+    """What the row shows from a record (the line, the badge, the hover): the same → no redraw (S19)."""
+    return (rec or {}).get("line"), badge_state(rec), detail(rec)
+
+
 def badge_state(rec):
     """`filled` (n unseen), `outlined` (all seen), or None (nothing open)."""
     if not (rec or {}).get("needs"):
@@ -81,7 +86,9 @@ class StatusRow:
         self._stamp, self._read, self._kick, self._unread = stamp, read, kick, unread
         self._post_to = post
         self._last = None               # (language, stamp) last drawn
-        self._kicked = None             # the newest event a kick was sent for
+        self._kicked = None             # the newest event a kick started Connect for
+        self._kick_due = False          # the stamp moved and no kick has started yet
+        self._shown = None              # what the last draw put on the row (`drawn`)
         self._looking = False
         self._timer = None
         self.stopped = False
@@ -134,39 +141,60 @@ class StatusRow:
         threading.Thread(target=self._look, args=(self.language(),), daemon=True).start()
 
     def _look(self, language):
-        """On a worker: the stamp; only when it changed, the record (and the kick's look)."""
+        """On a worker: the stamp; only when it changed, the record — keyed on the stamp the read itself took, so a
+        write between the two looks costs no second read — and a redraw only when what is drawn changed (S19). A
+        failed read is printed once: the next read waits for the stamp to move. A kick still owed (refused: an update
+        staged) is tried again at each look until one starts."""
         try:
             stamp = (self._stamp or _status().stamp)(languages=[language])
             key = (language, stamp)
-            if key == self._last:
-                return
-            self.reads += 1
-            rec = (self._read or _status().read)([language])["languages"][language]
-            self._last = key
-            self._maybe_kick(language, stamp)
-            self._post(lambda: self.draw(rec))
+            if key != self._last:
+                self._last = key
+                self._kick_due = True
+                self.reads += 1
+                try:
+                    full = (self._read or _status().read)([language])
+                except Exception as e:
+                    print(f"Connect's status wasn't read: {e}")
+                else:
+                    stamp = full.get("stamp", stamp)
+                    self._last = (language, stamp)
+                    rec = full["languages"][language]
+                    shown = drawn(rec)
+                    if shown != self._shown:
+                        self._shown = shown
+                        self._post(lambda: self.draw(rec))
+            if self._kick_due:
+                self._maybe_kick(language, stamp)
         except Exception as e:
             print(f"Connect's status wasn't read: {e}")
         finally:
             self._looking = False
 
     def _maybe_kick(self, language, stamp):
-        """3.1.9: an event Connect hasn't read, and Connect not running → one kick for it."""
+        """3.1.9: an event Connect hasn't read, and Connect not running → one kick for it. The event counts as kicked
+        only once a kick started Connect (a process); refused (an update staged, Connect starting), it is tried again
+        at the next look."""
         try:
             if not (self.settings() or {}).get("connect_enabled"):
+                self._kick_due = False
                 return                  # off (switched off since the row was built): nothing
             if len(stamp) > 2 and stamp[2]:
+                self._kick_due = False
                 return                  # running: it reads the log again before it exits
             newest = (self._unread or unread)(language)
             if newest is None or newest == self._kicked:
+                self._kick_due = False
                 return
-            self._kicked = newest
             if self._kick is not None:
-                self._kick(self.settings())
+                started = self._kick(self.settings())
             else:
                 from app.connect import kick
-                kick.kick(self.settings())
+                started = kick.kick(self.settings())
+            if started:
+                self._kicked, self._kick_due = newest, False
         except Exception as e:
+            self._kick_due = False
             print(f"Connect wasn't started: {e}")
 
     def _post(self, job):
@@ -196,7 +224,8 @@ class StatusRow:
         self.badge_shown = state
 
     def refresh(self):
-        """Read again at the next look (after the window marked needs seen, dismissed one, undid a batch)."""
+        """Read again at the next look (after the window marked needs seen, dismissed one, undid a batch); redrawn
+        only if what it shows changed."""
         self._last = None
         self.look_now()
 

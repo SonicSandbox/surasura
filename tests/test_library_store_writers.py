@@ -1053,3 +1053,79 @@ def test_store_soon_never_clears_the_builds_mark_the_drain_reads(window, languag
     app._store_waiting = mark
     assert app._store_soon(None) is False
     assert app._store_waiting is mark
+
+
+# --- The worker with no store, a lost store, a lost track -------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_with_no_store_to_watch_the_worker_sleeps_until_woken(window, language, monkeypatch):
+    """JSON mode with nothing building: the worker checks once for a wake, then sleeps (RETRY_S) until the next one;
+    it never loops on a wake it has already taken (a loop would hold a core for as long as the window is open), nor
+    looks again every STORE_POLL_S while nothing is coming. Only the worker's own checks are counted."""
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    app = window(language)
+    app._refresh_from_focus = lambda: None               # only the one wake below may start a check
+    app._store_waiting = None
+    opener = app._opener()
+    _pump(app, lambda: False, timeout=0.5)                       # the open's own first check
+    assert opener.check() != "store" and app._store_soon(None) is False, "precondition: JSON mode, nothing coming"
+    checks = []
+    real_check = opener.check
+
+    def counting_check():
+        if threading.current_thread() is app._worker:
+            checks.append(1)
+        return real_check()
+    monkeypatch.setattr(opener, "check", counting_check)
+    app._worker_wake.set()
+    _pump(app, lambda: False, timeout=1.6)                       # three STORE_POLL_S: a poller would check 3-4 times
+    assert len(checks) == 1, f"the worker checked {len(checks)} times in 1.6 s for one wake"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_that_stops_being_a_store_closes_the_workers_lookout(window, language, monkeypatch):
+    """When the window's store is no longer a store (damaged, made read-only, gone), the worker closes its lookout:
+    the tree watch ends and the bell gives back its slot. Dropped without a close, the watch thread, its handles and
+    the bell's slot would stay taken while the window lives."""
+    app = _settled_window(window, language, monkeypatch)
+    lookout = app._lookout
+    assert lookout.tree.alive and lookout.bell.slot is not None, "precondition: watched, with a bell"
+    monkeypatch.setattr(app._opener(), "check", lambda: "json")
+    lookout.wake.set()                                           # the worker sleeps in the lookout's wait
+    assert _pump(app, lambda: app.__dict__.get("_lookout") is None, timeout=5.0), "the worker kept its lookout"
+    deadline = time.monotonic() + 5.0
+    while lookout.tree.alive and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not lookout.tree.alive, "the tree watch outlived the store"
+    assert lookout.bell.slot is None, "the bell kept its slot"
+
+
+@windows_only
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_when_windows_loses_track_the_worker_runs_one_full_look(window, language, monkeypatch):
+    """Windows can lose track of a folder's changes (its buffer overflowed): the watch then asks for a full look, and
+    the worker syncs the whole library once and records the look, so nothing that changed meanwhile is missed."""
+    app = _settled_window(window, language, monkeypatch)
+    app._refresh_from_focus = lambda: None               # only the watch's report may start a look here
+    lookout = app._lookout
+    full_looks, looked = [], []
+    real_sync = ls.sync_for_window
+
+    def counting_sync(store, folders=None):
+        if folders is None:
+            full_looks.append(1)
+        return real_sync(store, folders=folders)
+
+    real_looked = lookout.looked
+
+    def recording_looked(now=None):
+        result = real_looked(now)
+        looked.append(1)
+        return result
+
+    monkeypatch.setattr(ls, "sync_for_window", counting_sync)
+    monkeypatch.setattr(lookout, "looked", recording_looked)
+    lookout.tree._overflow()                                     # what the watch does when Windows loses track
+    assert _pump(app, lambda: bool(looked), timeout=5.0), "the lost track never led to a full look"
+    assert full_looks, "no full sync ran for the lost track"

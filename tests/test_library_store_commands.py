@@ -1981,3 +1981,42 @@ def test_whole_tier_move_within_20_percent_of_12_1(language):
     assert store.ids(largest) == whole and pieces_ok(store) is None
     probe.close()
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_mine_line_zero_is_written_and_only_a_negative_mine_line_is_refused(language):
+    """The mine line is a count of Current's top rows: 0 is a real choice (Connect mines none) and is written;
+    only a line below 0 is refused."""
+    store = migrated(language, shows=3, episodes=4)
+    try:
+        change = store.set_library_options(mine_line=0)
+        assert change is not None and store.meta()["mine_line"] == 0
+        with pytest.raises(ValueError):
+            store.set_library_options(mine_line=-1)
+        assert store.meta()["mine_line"] == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_listed_folder_that_vanishes_and_returns_is_reported_by_its_name(language):
+    """L3.2: the slow look names a listed folder that disappears from disk, and again when it comes back, even though
+    no store write moved the versions. The folder's failed stat is kept as None in the poll's record, so its return
+    reads as a change; a folder the poll dropped would be silently forgotten."""
+    store = migrated(language, shows=3, episodes=3)
+    data_dir, _u = roots(language)
+    poll = ls.DiskPoll(store)
+    show = next(i for i in store.ids("soon") if store.item(i)["parent_folder"])
+    folder = store.item(show)["rel_path"].rsplit("/", 1)[0]
+    path = os.path.join(data_dir, *folder.split("/"))
+    gone = path + "_renamed"
+    try:
+        assert poll.check() is False
+        os.rename(path, gone)
+        try:
+            assert poll.check() is True and folder in poll.changed, "a vanished folder is not reported"
+        finally:
+            os.rename(gone, path)
+        assert poll.check() is True and folder in poll.changed, "a returning folder is not reported"
+    finally:
+        store.close()

@@ -9,7 +9,9 @@ requests to settle, for a job it can't run beside, or for another program's Gene
 - `request(...)` builds the analyzer's argv with `run_args.analyzer_args` (one builder: the command line's run
   signature) plus `--progress-json`, and coalesces: one run once the requests stop for `settle` seconds; a request
   during a run runs once after it, or cancels it and runs after when the caller says so (`restart`, E3.2's burst rule).
-  A user's request while an automatic run still waits takes its place. The run is a `generate` job in the registry
+  A user's request takes an automatic run's place (one still waiting is dropped, one running asked to stop as a
+  cancel asks); an automatic request while a user's waits leaves it in place (`request` returns the user's run). Each
+  run's end is told to `on_end` listeners, whatever state the window then shows. The run is a `generate` job in the registry
   (`app/services/jobs.py`: never beside the indexer, never two).
 - The run waits on a worker until `results` is free (`locks.take("results", …, wait=None, cancel=…)`): a cancel, or
   the window closing, while it waits drops the request with nothing started (P1.2 left this cancel to W1.3). It lets go
@@ -182,6 +184,7 @@ class GenerateController:
         self._timer = None
         self._subscribers = []
         self._text_listeners = []
+        self._end_listeners = []
 
     # --- reading ------------------------------------------------------------------------------------------------ #
     def state(self):
@@ -192,6 +195,19 @@ class GenerateController:
         """`callback(State)` after every change, in order."""
         with self._lock:
             self._subscribers.append(callback)
+
+    def unsubscribe(self, callback):
+        """Stop `callback`'s deliveries (`subscribe`'s and `on_end`'s): a keeper that closed."""
+        with self._lock:
+            self._subscribers = [c for c in self._subscribers if c != callback]
+            self._end_listeners = [c for c in self._end_listeners if c != callback]
+
+    def on_end(self, callback):
+        """`callback(run, outcome)` once per run that ended — "current" (it finished: its lists and plan are written),
+        "stale" (it stopped when asked), "failed", or "dropped" (it never started) — told by the run itself, so a run
+        that ends while another request waits (whose state reads `queued`, never `current`) is told too (E3.2)."""
+        with self._lock:
+            self._end_listeners.append(callback)
 
     def on_text(self, callback):
         """`callback(line)` for every text line the child prints (a window's log)."""
@@ -241,10 +257,13 @@ class GenerateController:
         run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline)
         snap = None
         with self._lock:
+            waiting = self._pending
+            if quiet and waiting is not None and not waiting.quiet:
+                return waiting              # the user's request already waits: it stays, and runs (E3.2's keeper)
             self._pending = run
             in_flight = self._run
-            if in_flight is not None and not quiet and in_flight.quiet and not in_flight.launched:
-                restart = True              # an automatic run still waiting: the user's takes its place
+            if in_flight is not None and not quiet and in_flight.quiet:
+                restart = True              # an automatic run: the user's takes its place (asked to stop if it runs)
             if in_flight is None:
                 snap = self._assign(QUEUED)
             if self._timer is not None:
@@ -279,6 +298,25 @@ class GenerateController:
                 snap = self._assign(self._settled)
         self._send(snap)
         if run is not None:
+            self._cancel(run)
+
+    def withdraw(self, run):
+        """Take back one request (`run`, as `request` returned it) and nothing else — E3.2's journey keeper withdraws
+        its own automatic run when the moves start again, never a run the user asked for: dropped while it settles or
+        waits its turn; cancelled in flight (as `cancel`). Nothing when it is over or another request took its place."""
+        snap = None
+        with self._lock:
+            pending = self._pending is run
+            if pending:
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
+                self._pending = None
+                if self._run is None:
+                    snap = self._assign(self._settled)
+            in_flight = self._run is run
+        self._send(snap)
+        if in_flight:
             self._cancel(run)
 
     # --- inside: starting --------------------------------------------------------------------------------------- #
@@ -419,9 +457,13 @@ class GenerateController:
             if not run.begun or run.job is None or run.job.state != jobs_module.CANCELLING:
                 self._dropped(run)          # never started, or waiting for the registry: nothing to wait for
             return                          # waiting for `results`: its wait sees the cancel and drops it
-        self._set(CANCELLING, job_id=run.job.id,
-                  message="Stopping before your list is written" if asked
-                  else "Finishing: Generate can't stop part-way here")
+        with self._lock:
+            if self._run is not run or run.done:
+                return                      # it ended meanwhile: its end said what it is, never "Stopping…" for good
+            snap = self._assign(CANCELLING, job_id=run.job.id,
+                                message="Stopping before your list is written" if asked
+                                else "Finishing: Generate can't stop part-way here")
+        self._send(snap)
 
     def _dropped(self, run):
         """Cancelled (or the window closed) before the child started: nothing ran."""
@@ -432,20 +474,33 @@ class GenerateController:
         if run.job is not None:
             run.job.finish(ok=True, cancelled=True)
         self._after(run, None)
+        self._tell_end(run, "dropped")
 
     def _ended(self, run, returncode):
         final = run.final
         if final is not None and final[0] == "error" and final[1].get("code") == "cancelled":
             run.job.finish(ok=True, message="cancelled", cancelled=True)
+            self._tell_end(run, "stale")
             self._after(run, STALE)
         elif returncode == 0:
             run.job.finish(ok=True)
+            self._tell_end(run, "current")
             self._after(run, CURRENT)
         else:
             what = "couldn't start" if returncode is None else f"stopped (exit code {returncode})"
             message = f"Generate {what}." + (f" The details are in {self.log_path()}" if self.log_path() else "")
             run.job.finish(ok=False, message=message)
+            self._tell_end(run, "failed")
             self._after(run, FAILED, message=message, log_path=self.log_path())
+
+    def _tell_end(self, run, outcome):
+        with self._lock:
+            listeners = list(self._end_listeners)
+        for callback in listeners:
+            try:
+                callback(run, outcome)
+            except Exception as e:                    # a listener's fault never stops a Generate
+                print(f"Generate: an end listener failed: {e}")
 
     def _after(self, run, state, message=None, log_path=None):
         """`run` is over (`state`; None: back to what the last check found)."""

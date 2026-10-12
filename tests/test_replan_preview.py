@@ -1075,3 +1075,16 @@ def test_a_move_behind_tomorrows_cards_says_they_are_already_in_place_while_the_
     assert lines[-1] == "Anki: placing tomorrow's 20 cards…"
     ahead(20, 140)
     assert lines[-1] == "Anki: tomorrow's 20 cards placed · moving 120 more…"
+
+
+def test_the_done_line_says_tomorrows_cards_were_placed_whenever_any_of_them_moved():
+    """E3.3: a move that placed tomorrow's 20 and moved 120 more says so — however many more there were — and one
+    that moved none of tomorrow's says they were already in place."""
+    from types import SimpleNamespace
+    from modules.junban import spaced
+    host, lines = _host()
+    job = SimpleNamespace(front_size=20, kind=spaced.DELTA, front_ids=frozenset(range(20)))
+    host._said_done({"written": list(range(140))}, job)
+    assert lines[-1] == "Anki: tomorrow's 20 cards placed · 120 more moved"
+    host._said_done({"written": list(range(100, 205))}, job)
+    assert lines[-1] == "Anki: 105 cards moved · tomorrow's 20 already in place"

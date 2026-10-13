@@ -51,17 +51,23 @@ VERBS = {
     "known-sync": (verbs.known_sync_args, verbs.known_sync, True),
     "generate": (verbs.generate_args, verbs.generate, True),
     "junban": (verbs.junban_args, verbs.junban, True),
+    "resort": (verbs.resort_args, verbs.resort, True),          # P2.2
+    "backfill": (verbs.backfill_args, verbs.backfill, True),
     "pick": (verbs.pick_args, verbs.pick, True),
     # P2.1: the library verbs for Connect and hato (app/cli/connect_verbs.py)
     "register": (connect_verbs.register_args, connect_verbs.register, True),
     "place": (connect_verbs.place_args, connect_verbs.place, True),
     "finish": (connect_verbs.finish_args, connect_verbs.finish, True),
     "connect": (connect_verbs.connect_args, connect_verbs.connect, True),
+    # P2.3: the setup checks
+    "setup": (connect_verbs.setup_args, connect_verbs.setup, True),
+    "undo": (connect_verbs.undo_args, connect_verbs.undo, True),               # P2.5
+    "logs": (connect_verbs.logs_args, connect_verbs.logs, True),               # P2.5
 }
 
 # The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other
 # verb answers `update-staged` (02 §7).
-ANSWER_WHILE_UPDATING = {"status"}
+ANSWER_WHILE_UPDATING = {"status", "logs"}
 
 
 def _parser():

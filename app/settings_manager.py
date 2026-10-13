@@ -85,6 +85,11 @@ DEFAULT_SETTINGS = {
     # in known words. Only then — new episodes are the user's to order first. Never in the run
     # signature.
     "anki_auto_generate": False,
+    # The Anki sync rule's S4 (E1.1 04 §3; app/anki_sync_rule.py; shared with Connect, P1.5): with the fast re-plan's
+    # preview on, Surasura asks Anki to sync this many minutes after a write that changed tomorrow's cards (0 = right
+    # away), or "off": only at a session's first write (and Anki's own sync on close). 順's "Sync AnkiWeb". Never in a
+    # signature (analyzer._NON_ANALYSIS_SETTINGS); the dashboard's save keeps it only as written.
+    "anki_sync_delay_min": 1,
     # Surasura Connect's mine path (P1.3; docs/agent instructions/3.0/P1.3-mine-path/): which words of an episode
     # become cards (`list`: on your list, not known, no card yet · `unknown`: every word you don't know · `i1`: only
     # words with a line whose other words you know), whether grammar words go too (names follow logic.ignore_names:
@@ -95,6 +100,25 @@ DEFAULT_SETTINGS = {
     "connect_send_grammar": True,
     "connect_anki_miner_path": "",
     "connect_anki_miner_profile": "Surasura",
+    # Open Anki for me (P2.3; ✅ Q4-16; app/connect/open_anki.py): with Connect's preview on, Surasura starts Anki when a
+    # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
+    # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
+    "connect_open_anki": False,
+    # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
+    # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
+    # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least
+    # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own cards never count. Never in a
+    # signature.
+    "connect_backlog_cap": 300,
+    # Where Connect looks for an episode's video when it isn't where its pairing says (P2.5, G1.3-12): these folders and
+    # their subfolders, beside the folders your paired videos are in. A list for every language, or {lang: [...]}.
+    # Never in a signature.
+    "connect_video_folders": [],
+    # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
+    # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
+    # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's
+    # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
+    "known_from_anki": ["suspended"],
     "logic": {
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:
@@ -411,7 +435,8 @@ def _read_file_as_is() -> Dict[str, Any]:
     return settings
 
 
-def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None) -> Dict[str, Any]:
+def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None,
+              strict: bool = False) -> Dict[str, Any]:
     """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
     and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
     so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
@@ -422,7 +447,8 @@ def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callabl
     The read and the write hold the `settings` lock together, so no other program's save lands between them. Never
     waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
     by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
-    order the windows saved (`flush_keys` waits for them; the process writes them before it ends)."""
+    order the windows saved (`flush_keys` waits for them; the process writes them before it ends). `strict`: a write
+    that failed raises OSError (a control that must not show an unsaved value: Connect's, P3.1); a queued one doesn't."""
     entry = (dict(changes or {}), update)
     try:
         held = locks.take("settings", "saving settings") if not locks.held_here("settings") else None
@@ -436,10 +462,12 @@ def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callabl
         held = None
     try:
         settings = _apply([entry], _read_file_as_is())
-        save_settings(settings)
+        written = save_settings(settings)
     finally:
         if held is not None:
             held.release()
+    if strict and not written:
+        raise OSError("your settings file couldn't be written just now")
     return settings
 
 

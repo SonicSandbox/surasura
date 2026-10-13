@@ -1,4 +1,4 @@
-"""Connect on demand (P2.1 row 2.1.5): `kick` starts `surasura-cli connect --consume-only` detached when work appears,
+"""Connect on demand (P2.1 row 2.1.5): `kick` starts `surasura-cli connect` (P2.4: its loop) detached when work appears,
 unless Connect is off, already running (its single-instance lock) or an update is staged.
 
 What a wrong answer would cost: two Connects at once would mine one episode twice; a Connect started while an update
@@ -39,14 +39,17 @@ def _work():
     return item
 
 
-def test_a_kick_starts_connect_which_queues_the_work_and_exits(kicks):
+def test_a_kick_starts_connects_loop_which_takes_the_work_and_exits(kicks):
     item = _work()
     proc = kick.kick({"connect_enabled": True})
     assert proc is not None
     kicks.append(proc)
     assert proc.wait(timeout=120) == 0
+    # P2.4: the started Connect runs its loop; under a test root Anki is switched off, so the job waits for the next
+    # start (never a look every 2 minutes for Anki that can't come)
+    from app.connect import runner
     with Ledger() as ledger:
-        assert [(j["item_id"], j["state"]) for j in ledger.jobs("ja")] == [(item, "queued")]
+        assert [(j["item_id"], j["state"], j["reason"]) for j in ledger.jobs("ja")] ==             [(item, "waiting", runner.ANKI_OFF)]
     assert not kick.running(), "it exited: Connect runs only while there's work"
 
 
@@ -109,9 +112,11 @@ def test_the_connect_verb_with_the_preview_off_or_without_consume_only():
     c.library(connect=False)
     code, line = h.call("connect", "--consume-only")
     assert code == 0 and line["skipped"] == "connect preview off"
+    code, line = h.call("connect")
+    assert code == 0 and line["skipped"] == "connect preview off", "off: the loop never starts either"
     h.write_settings(connect_enabled=True)
     code, line = h.call("connect")
-    assert (code, line["code"]) == (2, "usage")
+    assert code == 0 and line["looks"] == 1 and line["languages"]["ja"]["done"] == [], "P2.4: no job, it exits"
 
 
 def test_register_kicks_connect_when_it_is_on(kicks, monkeypatch):

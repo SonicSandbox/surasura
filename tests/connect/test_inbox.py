@@ -232,3 +232,24 @@ def test_a_gap_keeps_the_top_20_episodes_without_cards_for_needs_you_and_mines_n
         gaps = ledger.gaps("ja")
     assert [g["items"] for g in gaps] == [line[1:]] and gaps[0]["since"] and gaps[0]["until"] >= gaps[0]["since"]
     assert _jobs() == []
+
+
+def test_a_look_that_finds_nothing_new_writes_nothing_to_the_ledger(monkeypatch):
+    # charter S19 (Sonic, 2026-10-08): update only what changed. An idle look every 2 minutes all night must leave the
+    # ledger as it was: the last-read stamp moves only when the log had something to read
+    _library()
+    _consume()                                          # Connect on: the watermark
+    with c.store() as s:
+        moved = s.ids("now")[-1]
+    from app.connect import ledger as ledger_module, library
+    with c.store() as s:
+        library.place(s, moved, "now", source="my-script")
+    assert _consume()["queued"] == [moved]
+    with Ledger() as ledger:
+        stamp = ledger.last_read("ja")
+    assert stamp is not None
+    monkeypatch.setattr(ledger_module, "_now", lambda: "2099-01-01T00:00:00")   # a write would show this stamp
+    out = _consume()                                    # nothing placed since
+    assert out["read"] == 0 and out["queued"] == [] and out["dropped"] == []
+    with Ledger() as ledger:
+        assert ledger.last_read("ja") == stamp, "an idle look leaves the last-read stamp alone"

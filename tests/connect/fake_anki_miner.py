@@ -1,5 +1,8 @@
 """A fake Anki Miner for the tests (P1.5 07-tests §1): the `--api` contract as API.md documents it for 3.5.0 / 3.6.0,
-run as a child process exactly as the real one is (`AnkiMiner.exe --api <command> …`), and never Anki, never media.
+and 3.7.0's additions where the plan's `features` names them (as 3.7.0 `cli/api/files.py`, `settings.py` check them:
+`surface` / `reading` on a word with `word-from-line`, `bold_target_in_sentence` with `bold-target`, `dry_run` with
+`dry-run`, the two sentence keys only as false with `sentence-rules-off`; each row's `from_line` and `filter`). Run as
+a child process exactly as the real one is (`AnkiMiner.exe --api <command> …`), and never Anki, never media.
 
 What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; every key optional):
 
@@ -12,7 +15,10 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "statuses": {"<word>": "<status>"},                   # each named word's status (default created)
      "shift": {"<word>": 1.5},                             # seconds added to a word's returned line_start
      "fail_after": 2,                                      # mining-failed: rows past this many are uncertain
-     "forms": {"<word>": "<mined_form>"}}                  # a word Anki Miner placed by another form
+     "forms": {"<word>": "<mined_form>"},                  # a word Anki Miner placed by another form
+     "from_line": ["<word>"],                              # (word-from-line) made from its named line
+     "filter": {"<word>": "duplicate-expression"},         # (filter-names) why a not_found word was dropped
+     "replay": {"<command>": {...}}}                       # answer a command with a recorded verdict, as it is
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order. The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -28,6 +34,9 @@ EPISODE_KEYS = {"run_id", "video_file", "subtitle_file", "subtitle_offset", "aud
                 "source_label_override", "secondary_subtitle_file", "secondary_subtitle_offset", "series_name_override",
                 "episode_name_override", "tags", "words"}
 WORD_KEYS = {"word", "line_start", "line_text", "line_expansion"}
+# 3.7.0 (contract.py FEATURES): what each name adds to what the run file may hold
+FEATURES_37 = ["sentence-rules-off", "bold-target", "named-words-whitelisted", "script-fold", "filter-names",
+               "word-from-line", "dry-run", "render", "media", "settings-import", "setup", "fetch", "beside-window"]
 CONFIG_KEYS = {"anki_deck_name", "anki_note_type", "anki_fields", "card_type", "card_type_marker_fields",
                "allow_duplicate_cards", "merge_incomplete_cues", "max_parallel_workers", "min_frequency_rank",
                "max_frequency_rank", "use_blacklist", "use_whitelist", "deduplicate_sentences", "use_i_plus_one_filter",
@@ -75,18 +84,26 @@ def _read_run_file(path, plan):
     if raw.startswith(b"\xef\xbb\xbf"):
         raise ValueError("a BOM")
     data = json.loads(raw.decode("utf-8"))          # strict: a lone surrogate in the bytes refuses here
-    if set(data) - RUN_KEYS:
-        raise ValueError(f"unknown keys {sorted(set(data) - RUN_KEYS)}")
+    features = set(plan.get("features", []))
+    run_keys = RUN_KEYS | ({"dry_run"} if "dry-run" in features else set())
+    if set(data) - run_keys:
+        raise ValueError(f"unknown keys {sorted(set(data) - run_keys)}")
     if data.get("schema") != 1 or not {"run_dir", "language", "episodes"} <= set(data):
         raise ValueError("schema must be 1; run_dir, language and episodes are required")
+    if not isinstance(data.get("dry_run", False), bool):
+        raise ValueError("dry_run must be true or false.")
     if not os.path.isdir(data["run_dir"]):
         raise ValueError("run_dir must be an existing folder")
     config = data.get("config", {})
     if not isinstance(config, dict):
         raise ValueError("config must be an object")
     allowed = CONFIG_KEYS - (set(SENTENCE_KEYS) if plan.get("mine") == "refuse-sentence-keys" else set())
+    allowed |= {"bold_target_in_sentence"} if "bold-target" in features else set()
     if set(config) - allowed:
         raise ValueError(f"These config keys are not allowed: {', '.join(sorted(set(config) - allowed))}")
+    if "sentence-rules-off" in features and any(config.get(k, False) is not False for k in SENTENCE_KEYS):
+        raise ValueError("deduplicate_sentences is always off for API runs: send false, or leave it out.")
+    word_keys = WORD_KEYS | ({"surface", "reading"} if "word-from-line" in features else set())
     for episode in data["episodes"]:
         if set(episode) - EPISODE_KEYS or not {"run_id", "video_file", "subtitle_file", "words"} <= set(episode):
             raise ValueError("unknown or missing episode keys")
@@ -95,8 +112,11 @@ def _read_run_file(path, plan):
         if not episode.get("words"):
             raise ValueError("words must list at least one word")
         for word in episode["words"]:
-            if set(word) - WORD_KEYS or not isinstance(word.get("word"), str):
+            if set(word) - word_keys or not isinstance(word.get("word"), str):
                 raise ValueError("unknown word keys")
+            for key in ("surface", "reading"):
+                if key in word and (not isinstance(word[key], str) or not word[key].strip()):
+                    raise ValueError(f"words.{key} is empty.")
             expansion = word.get("line_expansion")
             if expansion is not None and not (isinstance(expansion, list) and len(expansion) == 2 and all(
                     isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in expansion)):
@@ -125,7 +145,8 @@ def _mine(argv, plan):
         runs = [{"run_id": e["run_id"], "ok": False, "error": "VIDEO_UNREADABLE",
                  "message": f"The video cannot be opened: {e['video_file']}", "file": None} for e in data["episodes"]]
         return {**_ok("mine", runs=runs), "ok": False}
-    runs = []
+    runs, made_from_line = [], "word-from-line" in plan.get("features", [])
+    dry = data.get("dry_run") is True
     for episode in data["episodes"]:
         folder = os.path.join(data["run_dir"], episode["run_id"])
         os.makedirs(folder, exist_ok=True)
@@ -134,20 +155,28 @@ def _mine(argv, plan):
             status = plan.get("statuses", {}).get(request["word"], "created")
             if how == "mining-failed" and n >= plan.get("fail_after", 0):
                 status = "uncertain" if n == plan.get("fail_after", 0) else "not_attempted"
+            if dry and status == "created":
+                status = "ready"                    # a dry run: what it would mine, nothing written
             note += 1
             start = request.get("line_start")
             if start is not None:
                 start += plan.get("shift", {}).get(request["word"], 0.0)
             form = plan.get("forms", {}).get(request["word"], request["word"])   # placed by its dictionary form
-            rows.append({"word": request["word"], "mined_form": form if status != "not_found" else None,
-                         "status": status, "note_id": note if status == "created" else None, "media_missing": [],
-                         "line_start": start if status != "not_found" else None, "sentence": None, "start": start,
-                         "end": None, "filter": None})
+            row = {"word": request["word"], "mined_form": form if status != "not_found" else None,
+                   "status": status, "note_id": note if status == "created" else None, "media_missing": [],
+                   "line_start": start if status != "not_found" else None, "sentence": None, "start": start,
+                   "end": None, "filter": plan.get("filter", {}).get(request["word"]) if status == "not_found" else None}
+            if made_from_line:                      # 3.7: every row says whether its word was made from its line
+                row["from_line"] = status not in ("not_found", "not_attempted") and \
+                    request["word"] in plan.get("from_line", [])
+            rows.append(row)
         failed = how == "mining-failed"
         result = {"schema": 1, "run_id": episode["run_id"], "outcome": "failed" if failed else "success",
                   "anki_write_state": "partial" if failed else "complete", "failure_is_transient": False,
                   "error": "MINING_FAILED" if failed else None, "message": "addNotes failed" if failed else None,
                   "media_store_failures": 0, "words": rows}
+        if "dry-run" in plan.get("features", []):
+            result["dry_run"] = dry
         numbers = [int(p[7:-5]) for p in os.listdir(folder) if p.startswith("result-") and p.endswith(".json")]
         name = f"result-{max(numbers, default=0) + 1}.json"
         with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
@@ -173,6 +202,9 @@ def main(argv):
         return 0
     if plan.get("mine") == "no-stdout" and command == "mine":
         return 0
+    if command in plan.get("replay", {}):         # a verdict a real build gave, word for word
+        _say(plan["replay"][command])
+        return 0
     if command == "version":
         verdict = {**_ok("version"), "result": {"schema": plan.get("schema", 1), "app": plan.get("app", "3.5.0"),
                                                 "commands": ["mine", "check", "version", "profiles",
@@ -180,7 +212,7 @@ def main(argv):
                                                 "features": plan.get("features", [])}}
     elif command == "profiles":
         listed = plan.get("profiles", [{"id": "default", "name": "Default"}, {"id": "p-surasura", "name": "Surasura"}])
-        verdict = {**_ok("profiles"), "result": {"profiles": [dict(p, active=False) for p in listed]}}
+        verdict = {**_ok("profiles"), "result": {"profiles": [dict({"active": False}, **p) for p in listed]}}
     elif command == "check":
         verdict = {**_ok("check"), "result": plan.get("check", {"ready": True, "items": [
             {"name": "anki", "ok": True, "message": None}]})}

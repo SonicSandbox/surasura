@@ -9,8 +9,9 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
 - `version`, `profiles`, `check`, `settings_export` — read before every batch, never cached (E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
-  version and `features` read again, the profile checked, the whitelist file rewritten (N10, until Z-1), the run file
-  written (`runfile`), `mine` called, its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
+  version and `features` read again, the profile chosen (`choose_profile`), the whitelist file rewritten (N10, until
+  Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and reading — Z-2), `mine` called,
+  its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
   `duplicate`, `not_found`, `no_definition`, `media_failed`, `refused`, `not_attempted`, `uncertain`. Each returned
   `line_start` is checked against the one sent: off by more than 0.05 s, the card took another line, and the row says
   so. Then the cards made for names get `surasura::name` (G1.3: Anki Miner's tags belong to an episode, never to one
@@ -20,7 +21,7 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
 Failures are AnkiMinerError with a `kind` the runner (P2.4) acts on: `busy` (its window is open, or another run works:
 retry later, E8), `writer-busy` (another Surasura program writes Anki), `reviewing` (you're reviewing: E2), `anki-closed` (E1), `quarantined` (Windows Security blocked it: WinError 225, never retried
 silently, W1), `crashed` / `timeout` (the batch is `uncertain`: checked in Anki by the job's tag before any retry,
-E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `refused` (a run file it refused), `setup` (its
+E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `too-old` (a build before 3.5.0, never run), `refused` (a run file it refused), `setup` (its
 setup is incomplete: `check`'s items name what), `absent`.
 """
 import json
@@ -38,10 +39,14 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{15B09250-
 EXE = "AnkiMiner.exe"
 CREATE_NO_WINDOW = 0x08000000
 WINERROR_VIRUS = 225            # "Operation did not complete successfully because the file contains a virus"
+DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings_manager)
 
-# Anki Miner's `features` names (Z-4), and the ask each answers
-FEATURES = {"named-words-whitelisted": "Z-1", "word-from-line": "Z-2", "settings-import": "Z-3",
-            runfile.SENTENCE_RULES_OFF: "Z-4"}
+# Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
+# here is a later addition: ignored until Surasura knows it.
+FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "settings-import": "Z-3",
+            runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
+            runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
+            "script-fold": "Z-12", "beside-window": "Z-13"}
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
@@ -52,12 +57,13 @@ KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setu
 # The outcome of each status (IS §4.4)
 OUTCOMES = {"created": "made", "duplicate": "duplicate", "not_found": "not_found", "no_definition": "no_definition",
             "media_failed": "media_failed", "refused": "refused", "not_attempted": "not_attempted",
-            "uncertain": "uncertain"}
+            "uncertain": "uncertain", "ready": "ready"}       # ready: a dry run would make it (Z-7)
 # A run that stopped with one of these and wrote no result never reached Anki: refused, never uncertain
 BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "ANKI_UNREACHABLE", "SETUP_ERROR",
                          "PROFILE_UNREADABLE", "BAD_RUN_FILE", "CANCELLED"))
 # When a word went as two entries (its card front, and Surasura's Word), the better outcome is the word's
-_BEST = ("made", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted", "not_found")
+_BEST = ("made", "ready", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted",
+         "not_found")
 
 
 class AnkiMinerError(Exception):
@@ -82,6 +88,58 @@ def _registry_location():
             return winreg.QueryValueEx(key, "InstallLocation")[0] or None
     except OSError:
         return None
+
+
+MIN_VERSION = (3, 5, 0)        # the first release with `--api` (IS §4.1)
+
+
+def version_tuple(text):
+    """"3.7.0" -> (3, 7, 0), padded to three parts ("3.5" -> (3, 5, 0)); None when it isn't a dotted version."""
+    parts = []
+    for piece in str(text or "").strip().lstrip("vV").split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple((parts + [0, 0, 0])[:max(3, len(parts))]) if parts else None
+
+
+def too_old(text):
+    found = version_tuple(text)
+    return found is not None and found < MIN_VERSION
+
+
+def too_old_install(path):
+    """The installer's version when the program at `path` is the one its installer put in place (InstallLocation)
+    and it is older than 3.5.0, else None. Such a build has no `--api`: run with it, it opens its window."""
+    folder = _registry_location()
+    if not folder or not path:
+        return None
+    try:
+        same = os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(os.path.join(folder, EXE)))
+    except (TypeError, ValueError):
+        return None
+    installed = installed_version() if same else None
+    return installed if installed and too_old(installed) else None
+
+
+def installed_version():
+    """DisplayVersion from Anki Miner's per-user uninstall key ("3.7.0"), or None (not installed by its installer, off
+    Windows, under a test root). Read before Anki Miner is first run (P2.3's setup checks): a build older than 3.5.0
+    has no `--api`, and running it opens its window."""
+    if sys.platform != "win32" or os.environ.get("SURASURA_TEST_ROOT"):
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            value = winreg.QueryValueEx(key, "DisplayVersion")[0]
+    except OSError:
+        return None
+    return str(value).strip() or None
 
 
 def _default_location():
@@ -110,6 +168,48 @@ def _command(path):
 # --------------------------------------------------------------------------- #
 # One call
 # --------------------------------------------------------------------------- #
+_job_handle = None      # Windows: one job object for this process's Anki Miner calls, closed (and they ended) with it
+
+
+def _bind(proc):
+    """Windows: Anki Miner (and its ffmpeg children) ends when this process ends, however it ends — a Connect killed
+    mid-batch never leaves an Anki Miner adding cards with no one holding Anki's write lock (adversary P2.4-A #4).
+    Standard library `ctypes`; anything that fails leaves the call as it was."""
+    global _job_handle
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if _job_handle is None:
+            class _Basic(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD)]
+
+            class _Extended(ctypes.Structure):
+                _fields_ = [("BasicLimitInformation", _Basic), ("IoInfo", ctypes.c_uint64 * 6),
+                            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
+                return
+            info = _Extended()
+            info.BasicLimitInformation.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(wintypes.HANDLE(handle), 9, ctypes.byref(info),
+                                                    ctypes.sizeof(info)):    # 9: JobObjectExtendedLimitInformation
+                kernel32.CloseHandle(wintypes.HANDLE(handle))
+                return
+            _job_handle = handle
+        kernel32.AssignProcessToJobObject(wintypes.HANDLE(_job_handle), wintypes.HANDLE(int(proc._handle)))
+    except Exception:
+        pass
+
+
 def _stop(proc):
     """Stop a call past its timeout with every process it started (Anki Miner's ffmpeg children too)."""
     if sys.platform == "win32":
@@ -130,6 +230,7 @@ def api(path, args, timeout=QUICK_TIMEOUT):
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
+        _bind(proc)
     except FileNotFoundError:
         raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
     except OSError as e:
@@ -165,7 +266,12 @@ def _result(verdict):
 
 
 def version(path):
-    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read every batch, E10)."""
+    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read every batch, E10). A build
+    its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window): AnkiMinerError
+    `too-old`."""
+    old = too_old_install(path)
+    if old:
+        raise AnkiMinerError("too-old", f"Anki Miner {old} is too old for Surasura: Connect needs 3.5.0 or later.")
     result = _result(api(path, ["version"]))
     if result.get("schema") != API_SCHEMA:
         raise AnkiMinerError("unknown-version", f"Anki Miner {result.get('app')} isn't one Surasura has been "
@@ -201,11 +307,33 @@ def settings_export(path, language, out, profile=None):
 
 
 def profile_id(listed, name):
-    """The id of the profile called `name` (or with that id) among `profiles`' list, or None (E9)."""
+    """The id of the profile called `name` (or with that id) among `profiles`' list, or None (E9). Names compare
+    ignoring case, as Anki Miner keeps them apart."""
     for entry in listed:
-        if name in (entry.get("id"), entry.get("name")):
+        called = entry.get("name")
+        if name == entry.get("id") or (isinstance(called, str) and called.casefold() == name.casefold()):
             return entry.get("id")
     return None
+
+
+def choose_profile(info, listed, name):
+    """The id of the Anki Miner profile Connect mines with — the run file, `check` and the settings export all name
+    it, so one batch reads one profile. The one `connect_anki_miner_profile` names when Anki Miner has it. Once every
+    named word is whitelisted (Z-1, 3.7) the "Surasura" profile is optional (Sonic, 2026-10-07): with the setting left
+    at its default (or empty) and no such profile, the profile `profiles` marks active, your usual one (None only when
+    none is marked: Anki Miner then reads its window's settings). A profile you named yourself that Anki Miner doesn't
+    have is never swapped for another: AnkiMinerError `needs-you` (E9), as is a missing "Surasura" profile before Z-1
+    (its whitelist is how the named words pass the name lists, IS-R3, N10)."""
+    found = profile_id(listed, name) if name else None
+    if found is not None:
+        return found
+    if name and name != DEFAULT_PROFILE:
+        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name}" (Surasura\'s Anki Miner profile '
+                             "setting). Choose one Anki Miner has, or make it in Anki Miner.")
+    if "Z-1" in features(info):
+        return next((entry.get("id") for entry in listed if entry.get("active")), None)
+    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{DEFAULT_PROFILE}". Make it once in Anki '
+                         "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
 
 
 # --------------------------------------------------------------------------- #
@@ -263,18 +391,21 @@ def read_result(run_dir, run_id, name=None, before=()):
         raise AnkiMinerError("crashed", f"Anki Miner's result couldn't be read: {e}") from None
 
 
-def outcomes(words, rows, run_failed=False):
-    """Surasura's outcome for each picked word (pick's `words`), from one run's result rows — one row per entry, in
-    the run file's order: [{word, reading, outcome, note_id, mined_form, line_start, returned_start, other_line,
-    statuses}]. A word sent as two entries takes the better one. No rows at all (the run wrote no result) is
-    `uncertain` when the run failed (it may have written to Anki), `not_attempted` otherwise."""
+def outcomes(words, rows, run_failed=False, features=()):
+    """Surasura's outcome for each picked word (pick's `words`), from one run's result rows — one row per entry
+    (`runfile.entries` under these `features`), in the run file's order: [{word, reading, outcome, note_id, mined_form,
+    line_start, returned_start, other_line, from_line, filter, statuses}]. A word sent as two entries takes the better
+    one. `from_line`: made from its line (Z-2, counted as made); `filter`: why Anki Miner dropped it, where it says
+    (Z-6, `duplicate-expression`). No rows at all (the run wrote no result) is `uncertain` when the run failed (it may
+    have written to Anki), `not_attempted` otherwise."""
     rows, out, at = list(rows or ()), [], 0
     for word in words:
-        mine = rows[at:at + len(word["sent"])]
-        at += len(word["sent"])
+        names = runfile.entries(word, features)
+        mine = rows[at:at + len(names)]
+        at += len(names)
         # a row that isn't the entry it stands for (another build's order or count) proves nothing: uncertain
         statuses = [OUTCOMES.get(row.get("status"), "uncertain") if row.get("word") == name else "uncertain"
-                    for row, name in zip(mine, word["sent"])] or ["uncertain" if run_failed else "not_attempted"]
+                    for row, name in zip(mine, names)] or ["uncertain" if run_failed else "not_attempted"]
         outcome = min(statuses, key=_BEST.index)
         row = next((r for r, s in zip(mine, statuses) if s == outcome), {})
         returned = row.get("line_start")
@@ -282,19 +413,18 @@ def outcomes(words, rows, run_failed=False):
         out.append({"word": word["word"], "reading": word["reading"], "outcome": outcome,
                     "note_id": row.get("note_id"), "mined_form": row.get("mined_form"),
                     "line_start": word["line_start"], "returned_start": returned, "other_line": other,
+                    "from_line": row.get("from_line") is True, "filter": row.get("filter"),
                     "statuses": {r.get("word"): r.get("status") for r in mine}})
     return out
 
 
 def preflight(path, language, profile_name):
     """Before every batch (E9, E10): what this Anki Miner is (`version`, never cached), the id of the profile Connect
-    mines with, and its `check` for the language. Raises AnkiMinerError: `needs-you` when the profile is missing,
-    `anki-closed` when Anki isn't reachable, `setup` naming what Anki Miner's own setup lacks."""
+    mines with (`choose_profile`), and its `check` for the language. Raises AnkiMinerError: `needs-you` when that
+    profile is missing (`choose_profile`), `anki-closed` when Anki isn't reachable, `setup` naming what Anki Miner's
+    own setup lacks."""
     info = version(path)
-    profile = profile_id(profiles(path), profile_name)
-    if profile is None:
-        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{profile_name}". Make it once in Anki '
-                             "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
+    profile = choose_profile(info, profiles(path), profile_name)
     ready = check(path, language, profile)
     items = {item.get("name"): item for item in ready.get("items") or ()}
     if items.get("anki") and not items["anki"].get("ok"):
@@ -318,12 +448,14 @@ def tag_names(url, words, outcomes):
 
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
-               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0):
+               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
     {"run_file", "run", "result", "outcomes", "app", "features", "tagged", "tag_pending"}; raises AnkiMinerError
-    (busy, anki-closed, needs-you, setup, refused, crashed …)."""
+    (busy, anki-closed, needs-you, setup, refused, crashed …). `expect_profile`: the profile id the words were
+    picked for (P1.3-AM37 #5, the runner's half): another one active now -> AnkiMinerError `profile-changed`, before
+    anything is mined (the runner picks again)."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -334,7 +466,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout)
+                              subtitle_offset, timeout, expect_profile)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -349,17 +481,18 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-               subtitle_offset, timeout):
+               subtitle_offset, timeout, expect_profile=None):
     info, profile = preflight(path, language, profile_name)
-    asks = features(info)
-    names = [name for word in words for name in word["sent"]]
+    if expect_profile is not None and profile != expect_profile:
+        raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
+    asks, named = features(info), info.get("features")
     if "Z-1" not in asks:
-        write_whitelist(language, names)
+        write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     run_id = f"{job}-{attempt}"
-    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words),
+    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named),
                               tags=runfile.job_tag(job), subtitle_offset=subtitle_offset)
     data = runfile.build(run_dir, language, [episode], profile=profile,
-                         run_config=runfile.config(mapping, info.get("app"), info.get("features")))
+                         run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
@@ -380,14 +513,14 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         result = read_result(run_dir, run_id, before=before)
         if result is None:
             raise
-        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True))
+        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named))
         return done
     run = next((r for r in verdict.get("runs") or [] if r.get("run_id") == run_id), None)
     if not verdict.get("ok") and run is None:
         result = read_result(run_dir, run_id, before=before) if verdict.get("error") == "INTERNAL" else None
         if result is None:
             _result(verdict)                # a refusal of the whole call: busy, anki-closed, refused, setup …
-        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True))
+        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named))
         return done
     if run is not None and not run.get("ok") and not run.get("file") and run.get("error") in BEFORE_ANKI:
         # stopped before anything reached Anki (a video or subtitle it can't read, Anki gone at its own check,
@@ -395,7 +528,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         raise AnkiMinerError(KINDS.get(run["error"], "failed"), run.get("message") or run["error"], code=run["error"])
     result = read_result(run_dir, run_id, run["file"]) if run is not None and run.get("file") else None
     done.update(run=run, result=result,
-                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok")))
+                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named))
     return done
 
 
@@ -428,5 +561,5 @@ def uncertain_by_tag(url, job, words, word_field):
         out.append({"word": word["word"], "reading": word["reading"],
                     "outcome": "made" if note_id is not None else "uncertain", "note_id": note_id,
                     "mined_form": None, "line_start": word["line_start"], "returned_start": None,
-                    "other_line": False, "statuses": {}})
+                    "other_line": False, "from_line": False, "filter": None, "statuses": {}})
     return out

@@ -88,6 +88,8 @@ def _generated(language):
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    from tests.plan_file_cases import write_plan_header
+    write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
     analyzer._set_run_stamp(results, sig)
     return argv
 
@@ -215,6 +217,7 @@ def test_close_terminates_children_destroys_the_window_then_maintains():
     order = []
     app = MagicMock()
     app._update_job = None
+    app._replan_finishing.return_value = False      # no fast re-plan preview waiting to finish (E3.1)
     child = MagicMock()
     child.poll.return_value = None
     child.terminate.side_effect = lambda: order.append("terminate")
@@ -573,3 +576,62 @@ def test_an_outside_change_taken_in_is_told_quietly_once(dashboard, language):
     app.status_var.set("Ready")
     app._update_library_notice()
     assert app.status_var.get() == "Ready", "told once"
+
+
+def test_repair_terminates_only_the_content_importers_still_running(store_helper_spawns):
+    """Repair stops the Content Importer processes that are still running and leaves the finished ones alone:
+    a process that has already exited is not ours to terminate. (The helper spawn is stubbed to None, so the
+    action stops at "Couldn't start" and nothing else runs.)"""
+    from app.main import MasterDashboardApp
+    live = MagicMock(surasura_desc="Content Importer")
+    live.poll.return_value = None
+    done = MagicMock(surasura_desc="Content Importer")
+    done.poll.return_value = 0
+    # Still running but not a Content Importer: Repair must leave it alone too (the "only" half of the rule).
+    other = MagicMock(surasura_desc="Content Manager")
+    other.poll.return_value = None
+    app = MagicMock()
+    app._library_notice_kind = "damaged"
+    app._generate_running = None
+    app.active_processes = [live, done, other]
+    MasterDashboardApp._library_notice_action(app)
+    assert live.terminate.call_count == 1
+    assert done.terminate.call_count == 0
+    assert other.terminate.call_count == 0
+
+
+# --- the update's own lock hold: a folder with no store, and a lock file that can't be opened ---------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_language_with_no_store_folder_gets_no_lock_and_no_folder_is_made(language):
+    """Library_Store_Spec §7: a language that never had a store gets no maintenance lock, and taking the
+    hold must not create its folder or a lock file (the update goes on for the others)."""
+    from app import updater, path_utils
+    db = ls.library_db_path(language, path_utils.get_data_path(language))
+    assert not os.path.exists(os.path.dirname(db)), "a fresh test root has no store folder yet"
+    held = updater.hold_library_locks((language,))
+    try:
+        assert held == [], "no folder, so nothing to hold"
+        assert not os.path.exists(os.path.dirname(db)), "the hold made a store folder"
+    finally:
+        updater.release_library_locks(held)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_maintenance_lock_file_that_cannot_be_opened_counts_as_held_and_the_update_goes_on(language, monkeypatch):
+    """Library_Store_Spec §7: a lock file that can't be opened can't be held by a helper either, so the hold
+    counts it as taken and moves on -- nothing raises, and the update is not kept waiting (the result is a
+    list, not None)."""
+    from app import updater, path_utils
+    db = ls.library_db_path(language, path_utils.get_data_path(language))
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+
+    def cannot_open(self):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(ls.MaintenanceLock, "try_acquire", cannot_open)
+    held = updater.hold_library_locks((language,))
+    try:
+        assert held == [], "an unopenable lock is no lock to keep, and the update is not made to wait"
+    finally:
+        updater.release_library_locks(held)

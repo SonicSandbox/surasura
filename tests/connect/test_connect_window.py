@@ -528,3 +528,21 @@ def test_view_carries_the_notice_from_the_status_record(monkeypatch):
     from app.connect import status
     monkeypatch.setattr(status, "anki_miner_update", lambda: {"version": "3.8.0", "url": RELEASE_PAGE})
     assert connect_window.view("ja")["anki_miner_update"] == {"version": "3.8.0", "url": RELEASE_PAGE}
+
+
+def test_a10_a_browser_that_fails_never_raises_into_tk(root, monkeypatch):
+    """A10 (the first review): the window's link is guarded as the row's is — a `webbrowser.open` failure (no
+    browser, a broken handler) is printed, never raised into Tk's callback."""
+    reported = []
+    monkeypatch.setattr(root, "report_callback_exception", lambda *exc: reported.append(exc))
+
+    def broken(url):
+        raise OSError("no browser")
+    tips = Tips()
+    win = connect_window.show(root, "ja", tips, dict(RECORD, anki_miner_update={"version": "3.8.0",
+                                                                                "url": RELEASE_PAGE}),
+                              act=Act(), settings=lambda: {"connect_enabled": True}, junban=True, post=Pump().put,
+                              mark_seen=lambda ids: None, open_url=broken)
+    win.update_link.event_generate("<Button-1>")
+    root.update()
+    assert reported == [], "the click raised into Tk"

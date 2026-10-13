@@ -166,17 +166,6 @@ def test_an_unchanged_state_is_never_written_again():
     assert os.stat(am_release.path()).st_mtime_ns == before, "not due: the file is left alone"
 
 
-def test_a_state_file_that_cant_be_written_is_silent(monkeypatch):
-    def refused(src, dst):
-        raise PermissionError(13, "Access is denied", dst)
-    monkeypatch.setattr(am_release.os, "replace", refused)
-    out = am_release.check(ON, now=NOON, fetch=Fetch(release()))
-    assert out["latest"] == "3.8.0", "the check itself still answers"
-    folder = os.path.dirname(am_release.path())
-    assert not os.path.exists(am_release.path())
-    assert not [n for n in os.listdir(folder) if n.endswith(".tmp")], "no temp file left behind"
-
-
 def test_an_unreadable_state_file_is_a_check_due():
     os.makedirs(os.path.dirname(am_release.path()), exist_ok=True)
     with open(am_release.path(), "w", encoding="utf-8") as f:
@@ -318,3 +307,125 @@ def test_the_stamp_moves_when_the_release_state_or_the_setup_record_changes():
     assert status.stamp(languages=["ja"]) == second, "nothing changed: the same stamp"
     _installed("3.8.0")
     assert status.stamp(languages=["ja"]) != second, "Anki Miner's version recorded again: the row looks again"
+
+
+# --------------------------------------------------------------------------- #
+# The first review's rows (reviews/P3.2-AMN-haiku.md): A1, A2–A4, A7, A8
+# --------------------------------------------------------------------------- #
+def test_a1_the_stamp_moves_when_anki_miner_is_updated_by_hand(monkeypatch):
+    """A1: the registry's installed version (what `installed()` reads first) is in the stamp, so a hand update — no
+    setup record written, no state file touched — moves it and the row reads the record again at its next look: the
+    notice goes at once, as the docstring says. Nothing moved → the same stamp (S19)."""
+    from app.connect import anki_miner, status
+    _installed("3.7.0")
+    am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
+    monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.7.0")
+    before = status.stamp(languages=["ja"])
+    assert status.read(["ja"])["anki_miner_update"] == {"version": "3.8.0", "url": PAGE}
+    assert status.stamp(languages=["ja"]) == before, "nothing changed: the same stamp"
+    monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.8.0")
+    assert status.stamp(languages=["ja"]) != before, "updated by hand: the stamp moves, the row reads again"
+    assert status.read(["ja"])["anki_miner_update"] is None
+
+
+def test_a4_the_attempt_is_saved_before_github_is_asked():
+    """A4: a check cut off mid-fetch (the process killed, a hang left behind at exit) has already kept its attempt
+    time — with the last good release — so the next run doesn't ask again that day."""
+    am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
+    seen = []
+
+    def killed():
+        seen.append(state())
+        raise KeyboardInterrupt         # stands in for the process ending mid-fetch (never caught by `check`)
+    with pytest.raises(KeyboardInterrupt):
+        am_release.check(ON, now=NOON + DAY, fetch=killed)
+    assert seen == [{"checked_at": "2026-10-14T12:00:00Z", "latest": "3.8.0", "url": PAGE}], \
+        "the attempt was on disk before GitHub was asked, the last good release kept"
+    again = Fetch(release("v3.9.0"))
+    am_release.check(ON, now=NOON + DAY + 60, fetch=again)
+    assert again.calls == 0, "the cut-off check was the day's one try"
+
+
+def test_a3_a_connect_started_while_a_check_is_out_finds_none_due(monkeypatch):
+    """A3: `_kick` can start the next Connect before this one's `finish()`; its check must not ask GitHub again. The
+    attempt is saved by `start` itself, before the thread asks."""
+    gate = threading.Event()
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(am_release, "_fetch", lambda: gate.wait(10) and release())
+    try:
+        assert am_release.start(ON) is not None
+        second = Fetch(release("v3.9.0"))
+        am_release.check(ON, fetch=second)
+        assert second.calls == 0, "GitHub asked twice in a day"
+    finally:
+        gate.set()
+    assert am_release.finish() is True
+    assert state()["latest"] == "3.8.0"
+
+
+def test_a3_start_when_not_due_starts_no_thread(monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    am_release.check(ON, fetch=Fetch(release()))
+    monkeypatch.setattr(am_release, "_fetch", lambda: pytest.fail("asked twice in a day"))
+    assert am_release.start(ON) is None
+    assert not [t for t in threading.enumerate() if t.name == "anki-miner-release"]
+
+
+def test_a4_an_attempt_that_cant_be_saved_asks_github_nothing(monkeypatch):
+    """A state that can't be written can't keep the day's attempt: asking anyway would ask every run. Silent; no temp
+    file left."""
+    def refused(src, dst):
+        raise PermissionError(13, "Access is denied", dst)
+    monkeypatch.setattr(am_release.os, "replace", refused)
+    fetch = Fetch(release())
+    assert am_release.check(ON, now=NOON, fetch=fetch) == {}
+    assert fetch.calls == 0
+    folder = os.path.dirname(am_release.path())
+    assert not os.path.exists(am_release.path())
+    assert not [n for n in os.listdir(folder) if n.endswith(".tmp")], "no temp file left behind"
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(am_release, "_fetch", lambda: pytest.fail("asked with no attempt saved"))
+    assert am_release.start(ON) is None
+
+
+@pytest.mark.parametrize("raised", ["too-new", "other"])
+@pytest.mark.parametrize("staged", [False, True])
+def test_a2_connects_exit_waits_for_the_check_when_the_run_raises(monkeypatch, raised, staged):
+    """A2: a raise from `runner.run` (TooNew, anything) still gives a check in flight the rest of its wait, outside
+    the lock — unless an update is staged (the updater waits on this exit)."""
+    from app import library_store
+    from app.cli import connect_verbs
+    from app.cli.contract import CliError
+    from app.connect.ledger import TooNew
+    finished = []
+
+    def run(loaded, languages, looks=None):
+        raise TooNew("made by a newer Surasura") if raised == "too-new" else RuntimeError("torn")
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr(library_store, "update_staged", lambda *a, **k: staged)
+    monkeypatch.setattr(am_release, "finish", lambda: finished.append(1) or True)
+    with pytest.raises(CliError if raised == "too-new" else RuntimeError):
+        connect_verbs._loop(ON, ["ja"])
+    assert bool(finished) is (not staged)
+
+
+def test_a7_an_installed_version_with_no_digits_is_unknown(monkeypatch):
+    """A7: only a version with digits counts as known; neither known → no notice (never "3.8 is out" over an
+    Anki Miner whose version is unknown)."""
+    from app.connect import anki_miner
+    am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
+    _installed("unknown")
+    assert am_release.installed() is None
+    assert am_release.notice(am_release.installed()) is None
+    assert am_release.notice("unknown") is None and am_release.notice("  ") is None
+    monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.7.0")
+    assert am_release.installed() == "3.7.0", "the one known version counts"
+    assert am_release.notice("3.7.0") == {"version": "3.8.0", "url": PAGE}
+
+
+@pytest.mark.parametrize("failure", [OSError(5, "no local data folder"), RuntimeError("ledger folder")])
+def test_a8_write_never_raises_even_when_its_path_cant_be_named(monkeypatch, failure):
+    def no_path():
+        raise failure
+    monkeypatch.setattr(am_release, "path", no_path)
+    assert am_release._write({"checked_at": "2026-10-13T12:00:00Z", "latest": None, "url": None}) is False

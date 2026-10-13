@@ -255,9 +255,17 @@ class ConnectWindow:
         text, url = update
         link = ttk.Label(frame, text=text, style="CW.Link.TLabel", cursor="hand2")
         link.pack(anchor=tk.W, pady=(0, 8))
-        link.bind("<Button-1>", lambda _e: self.open_url(url))
+        link.bind("<Button-1>", lambda _e: self._open_update(url))
         self.tooltip(link, "Opens Anki Miner's releases page")
         self.update_link = link
+
+    def _open_update(self, url):
+        """A click on the notice: the releases page in the browser; a browser that fails is printed, never raised into
+        Tk (as the dashboard row's)."""
+        try:
+            self.open_url(url)
+        except Exception as e:
+            print(f"Anki Miner's releases page wasn't opened: {e}")
 
     def _style(self):
         style = ttk.Style(self.win)

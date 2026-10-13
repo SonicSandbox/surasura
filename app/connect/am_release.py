@@ -3,15 +3,20 @@ GitHub update notice — shown when its window opens — is never seen. Connect 
 
 - **The call** (CLAUDE.md §1, a core touchpoint; Sonic's yes, 2026-10-12): Anki Miner's latest release
   (`api.github.com/repos/0xzerolight/anki_miner/releases/latest`, which skips pre-releases), **at most once a day,
-  only while Connect's preview is on**, in Connect's own process on a daemon thread (`start`, from `runner.run`),
-  bounded by TIMEOUT_S. Surasura's own HTTP helper (`update_checker._http_json`); no new HTTP code. Every failure is
-  swallowed and logged to Connect's log, never a *Needs you*. Nothing is downloaded or installed.
+  only while Connect's preview is on**, in Connect's own process on a daemon thread (`start`, from `runner.run`).
+  Surasura's own HTTP helper (`update_checker._http_json`); no new HTTP code. urllib's TIMEOUT_S bounds each socket
+  wait, not the whole look (a name lookup isn't covered); what is bounded is Connect's exit (`finish`): it waits what
+  is left of TIMEOUT_S + 1 s from the check's start, then leaves the daemon thread behind. Every failure is swallowed
+  and logged to Connect's log, never a *Needs you*. Nothing is downloaded or installed.
 - **What is kept:** `am_release.json` beside `setup.json` in Connect's local data — `{checked_at, latest, url}`. The
-  attempt time is kept on a failure too (one try a day), the last good `latest` stays; written atomically, only when
-  it changed.
+  attempt time is saved **before** GitHub is asked (`_claim`, on the run's own thread in `start`), the last good
+  `latest` and `url` kept: a check cut off (a raise at exit, an update stop, a hang past the exit's wait, the process
+  killed) is still the day's one try, and a Connect started meanwhile (`_kick`) finds none due. An attempt that can't
+  be saved asks nothing. Written atomically; the answer written again only when it changed.
 - **What shows:** `notice(installed)` → `{version, url}` when the kept `latest` is newer than the Anki Miner installed
   (`installed()`: what Connect already knows — the installer's version, the setup record's `version` answer; never a
-  new probe), else None. No fetch: an Anki Miner updated by hand clears it at once. The status record carries it
+  new probe; only a version with digits counts), else None. No fetch: an Anki Miner updated by hand clears it at once
+  (the registry's version is in `status.stamp`, so the row reads again at its next look). The status record carries it
   (`status.read`'s `anki_miner_update`); the dashboard's row and the Connect window show *Anki Miner 3.8 is out*,
   a link to the releases page (never a download).
 
@@ -22,6 +27,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import threading
 import time
 
@@ -29,7 +35,7 @@ REPO = "0xzerolight/anki_miner"
 STATE = "am_release.json"
 RELEASES = f"https://github.com/{REPO}/releases"
 EVERY_S = 24 * 3600             # at most once a day
-TIMEOUT_S = 5                   # the fetch's bound (and how long Connect's exit waits for one still running)
+TIMEOUT_S = 5                   # urllib's per-socket-wait timeout; Connect's exit waits this (+1 s) at most
 NO_CHECK_ENV = "SURASURA_NO_UPDATE_CHECK"
 
 log = logging.getLogger("surasura-cli")
@@ -66,21 +72,23 @@ def read_state():
 
 
 def _write(state):
-    """Atomically (temp + replace) -> written or not. Never raises."""
-    target = path()
-    temp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
+    """Atomically (temp + replace) -> written or not. Never raises (its path is named inside the guard too)."""
+    temp = None
     try:
+        target = path()
+        temp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(temp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=1)
         os.replace(temp, target)
         return True
-    except OSError as e:
+    except Exception as e:
         log.warning("Anki Miner's release check: its state wasn't written (%s)", e)
-        try:
-            os.remove(temp)
-        except OSError:
-            pass
+        if temp:
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
         return False
 
 
@@ -101,55 +109,82 @@ def _page(url):
     return url if isinstance(url, str) and url.startswith(RELEASES + "/") and "/download/" not in url else RELEASES
 
 
+def _allowed(settings, fetch):
+    """May a check read or write anything: Connect's preview on, and the real fetch not gated (NO_CHECK_ENV)."""
+    return bool((settings or {}).get("connect_enabled")) and not (fetch is None and os.environ.get(NO_CHECK_ENV))
+
+
+def _claim(now):
+    """-> (the state as kept, the attempt claimed or None). Due → the attempt time saved now, before GitHub is asked,
+    with the last good `latest` and `url`: a check cut off still counts, a Connect started meanwhile finds none due.
+    None when not due, or when the attempt couldn't be saved (asking anyway would ask every run)."""
+    state = read_state()
+    if not due(state, now):
+        return state, None
+    claimed = {"checked_at": _iso(now), "latest": state.get("latest"), "url": state.get("url")}
+    return state, (claimed if _write(claimed) else None)
+
+
+def _ask(claimed, fetch=None):
+    """GitHub asked once for a claimed attempt -> the state kept: a new release written over the claim, a failure
+    leaving it as claimed (the attempt time, the last good one). Never raises."""
+    latest, url = claimed["latest"], claimed["url"]
+    try:
+        reply = (fetch or _fetch)()
+        from app import update_checker
+        version = update_checker.version_string(str(reply.get("tag_name") or "")) if isinstance(reply, dict) else ""
+        if version:
+            latest, url = version, _page(reply.get("html_url"))
+        else:
+            log.info("Anki Miner's release check: no release version in GitHub's answer")
+    except Exception as e:          # offline, a timeout, a 404, a torn answer: the last good one stays
+        log.info("Anki Miner's release check failed: %s: %s", type(e).__name__, e)
+    new = dict(claimed, latest=latest, url=url)
+    if new != claimed:
+        _write(new)
+    return new
+
+
 def check(settings, now=None, fetch=None):
     """One look when it's due -> the state kept (None: preview off or the gate set, nothing read or written). Only
-    while Connect's preview is on; `fetch` a test's own (the real one is never called under NO_CHECK_ENV). Never
-    raises."""
+    while Connect's preview is on; `fetch` a test's own (the real one is never called under NO_CHECK_ENV). The
+    attempt is saved before GitHub is asked (`_claim`). Never raises."""
     try:
-        if not (settings or {}).get("connect_enabled"):
+        if not _allowed(settings, fetch):
             return None
-        if fetch is None and os.environ.get(NO_CHECK_ENV):
-            return None
-        now = time.time() if now is None else now
-        state = read_state()
-        if not due(state, now):
-            return state
-        latest, url = state.get("latest"), state.get("url")
-        try:
-            reply = (fetch or _fetch)()
-            from app import update_checker
-            version = update_checker.version_string(str(reply.get("tag_name") or "")) if isinstance(reply, dict) \
-                else ""
-            if version:
-                latest, url = version, _page(reply.get("html_url"))
-            else:
-                log.info("Anki Miner's release check: no release version in GitHub's answer")
-        except Exception as e:      # offline, a timeout, a 404, a torn answer: the last good one stays
-            log.info("Anki Miner's release check failed: %s: %s", type(e).__name__, e)
-        new = {"checked_at": _iso(now), "latest": latest, "url": url}
-        if new != {k: state.get(k) for k in new}:
-            _write(new)
-        return new
+        state, claimed = _claim(time.time() if now is None else now)
+        return state if claimed is None else _ask(claimed, fetch)
     except Exception:
         log.exception("Anki Miner's release check failed")
         return None
 
 
 def start(settings):
-    """At a Connect run's start: the check on a daemon thread, never waited for by mining -> the thread, or None with
-    Connect's preview off (no thread)."""
+    """At a Connect run's start: the attempt claimed here, on the run's thread (a small read; a write once a day), so
+    a Connect `_kick` starts before this one's exit finds none due; then GitHub asked on a daemon thread, never
+    waited for by mining -> the thread, or None (preview off, the gate set, not due, the attempt not saved: no
+    thread)."""
     global _thread, _started
-    if not (settings or {}).get("connect_enabled"):
+    try:
+        if not _allowed(settings, None):
+            return None
+        claimed = _claim(time.time())[1]
+        if claimed is None:
+            return None
+        _thread, _started = threading.Thread(target=_ask, args=(claimed,), daemon=True,
+                                             name="anki-miner-release"), time.monotonic()
+        _thread.start()
+        return _thread
+    except Exception:
+        log.exception("Anki Miner's release check wasn't started")
         return None
-    _thread, _started = threading.Thread(target=check, args=(dict(settings),), daemon=True,
-                                         name="anki-miner-release"), time.monotonic()
-    _thread.start()
-    return _thread
 
 
 def finish():
-    """At Connect's exit, outside its lock: a check still running is given what is left of its bound (TIMEOUT_S, and a
-    second for its write), so a short run doesn't end it mid-fetch. -> True when none is left running."""
+    """At Connect's exit, outside its lock: a check still running is given what is left of TIMEOUT_S + 1 s from its
+    start — this wait is what is bounded, not the fetch (urllib's timeout is per socket wait) — so a short run doesn't
+    end it mid-fetch; past it the daemon thread is left (its attempt already saved). -> True when none is left
+    running."""
     thread = _thread
     if thread is None or not thread.is_alive():
         return True
@@ -166,9 +201,14 @@ def _key(version):
     return tuple(numbers)
 
 
+def known(version):
+    """A version counts as known only when it holds a digit ("unknown" is no version)."""
+    return isinstance(version, str) and bool(re.search(r"\d", version))
+
+
 def installed():
     """The Anki Miner installed, as Connect already knows it (never a new probe): the newer of its installer's version
-    and the setup record's `version` answer, or None."""
+    and the setup record's `version` answer — only a version with digits counts — or None."""
     seen = []
     try:
         from app.connect import anki_miner
@@ -180,7 +220,7 @@ def installed():
         seen.append((setup.read_record().get("anki_miner") or {}).get("app"))
     except Exception:
         pass
-    seen = [str(v) for v in seen if v]
+    seen = [str(v).strip() for v in seen if v is not None and known(str(v))]
     return max(seen, key=_key) if seen else None
 
 
@@ -190,7 +230,7 @@ def notice(installed_version, state=None):
     try:
         state = read_state() if state is None else state
         latest = state.get("latest")
-        if not latest or not installed_version or not isinstance(latest, str):
+        if not known(latest) or not known(installed_version):
             return None
         if _key(latest) <= _key(installed_version):
             return None

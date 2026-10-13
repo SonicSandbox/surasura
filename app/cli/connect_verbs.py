@@ -446,17 +446,36 @@ def _loop(loaded, languages, looks=None):
         held = locks.take(kick.LOCK, "Connect", wait=1.0)
     except locks.Busy:
         return {"skipped": "already running"}
+    summary = None
     try:
-        with held:
-            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
-    except TooNew as e:
-        raise CliError("needs-you", str(e), ask="Update Surasura") from None
-    if not summary.get("stopped") and any(_pending(lang) for lang in languages):
-        _kick(loaded)                   # logged after its last read: the next Connect reads it
-    if summary.get("stopped") != runner.STOPPED_FOR_UPDATE:
+        try:
+            with held:
+                summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
+        except TooNew as e:
+            raise CliError("needs-you", str(e), ask="Update Surasura") from None
+        if not summary.get("stopped") and any(_pending(lang) for lang in languages):
+            _kick(loaded)               # logged after its last read: the next Connect reads it
+        return summary
+    finally:
+        _release_finish(summary, runner)
+
+
+def _release_finish(summary, runner):
+    """P3.2-AMN: outside the lock, a check still running gets what is left of its wait (`am_release.finish`) — after
+    a run that ended or raised alike, never when the run stopped for an update or (after a raise) one is staged: the
+    updater waits on this exit. Its attempt was saved before GitHub was asked, so a check cut off still counts."""
+    try:
+        if summary is not None:
+            if summary.get("stopped") == runner.STOPPED_FOR_UPDATE:
+                return
+        else:
+            from app import library_store
+            if library_store.update_staged():
+                return
         from app.connect import am_release
-        am_release.finish()             # P3.2-AMN: outside the lock, a check still running gets the rest of its 5 s
-    return summary
+        am_release.finish()
+    except Exception:
+        pass                            # a courtesy: Connect's exit never fails on it
 
 
 def _level(store, lang, loaded):

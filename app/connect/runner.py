@@ -175,9 +175,9 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
 
 
 def _release_check(loaded):
-    """P3.2-AMN: Anki Miner's once-a-day release check (`am_release`), started on a daemon thread at the run's start:
-    mining never waits on it (its exit gives it what is left of its 5 s, `connect_verbs._loop`). Preview off → no
-    thread. -> the thread or None."""
+    """P3.2-AMN: Anki Miner's once-a-day release check (`am_release`): its attempt saved here, then GitHub asked on a
+    daemon thread: mining never waits on it (Connect's exit gives it what is left of 5 s + 1 s, `connect_verbs._loop`).
+    Preview off, not due → no thread. -> the thread or None."""
     try:
         from app.connect import am_release
         return am_release.start(loaded)

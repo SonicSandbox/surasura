@@ -60,8 +60,8 @@ def running():
 def stamp(path=None, languages=None):
     """What the record is read from, as it stands: the ledger's and its WAL's size and modified time, whether Connect
     runs, today's date (*cards made today*), each language's library file (the titles), and Anki Miner's release
-    state and the setup record (P3.2-AMN: the update notice). The same stamp → the same record: the window reads and
-    redraws nothing (S19)."""
+    state, the setup record and the installer's version in the registry (P3.2-AMN: the update notice; a hand update
+    moves the stamp, ~10 µs a look). The same stamp → the same record: the window reads and redraws nothing (S19)."""
     path = path or book.path()
     out = [_file_stat(path), _file_stat(path + "-wal"), running(), _today().isoformat()]
     for lang in languages or LANGUAGES:
@@ -72,10 +72,10 @@ def stamp(path=None, languages=None):
 
 def _release_stat():
     try:
-        from app.connect import am_release, setup
-        return [_file_stat(am_release.path()), _file_stat(setup.record_path())]
+        from app.connect import am_release, anki_miner, setup
+        return [_file_stat(am_release.path()), _file_stat(setup.record_path()), anki_miner.installed_version()]
     except Exception:
-        return [None, None]
+        return [None, None, None]
 
 
 def anki_miner_update():

@@ -100,6 +100,8 @@ def test_help_is_plain_text_and_exit_0(root):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert proc.returncode == 0
     assert b"--version" in proc.stdout and not proc.stdout.startswith(b"{")
+    # exit 3 is "try later" (busy, Anki, settings.json being saved, an update waiting: EXIT_CODES), never only "busy"
+    assert b"3 try later:" in b" ".join(proc.stdout.split())
 
 
 def test_ok_echoes_japanese_escaped(root, ja_resources_dir):

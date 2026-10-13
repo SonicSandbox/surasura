@@ -1,10 +1,11 @@
 """The rules every surasura-cli verb follows (docs/agent instructions/3.0/P0.3-cli-contract/02-contract.md).
 
 stdout carries only JSON lines — ASCII-escaped, one object a line, each flushed: any number of `progress` lines (with
---progress), then exactly one `result` or `error`. The exit code says how it went: 0 done, 1 failed, 2 wrong command
-or not set up, 3 busy, 4 needs a person. Nothing opens a dialog: an exception becomes an `error` line, a traceback in
-the log and exit 1. Diagnostics go to <local data>/logs/cli.log, never to stdout; every `error` is also kept in
-<local data>/logs/cli-events.jsonl (the newest 200) for the window to show.
+--progress), then exactly one `result` or `error`. The exit code says how it went: 0 done, 1 failed, 2 wrong command or
+not set up, 3 try later (busy, settings.json unreadable just now, an update staged), 4 needs a person. Nothing opens a
+dialog: an exception becomes an `error` line, a traceback in the log and exit 1. Diagnostics go to
+<local data>/logs/cli.log, never to stdout; every `error` is also kept in <local data>/logs/cli-events.jsonl (the newest
+200) for the window to show.
 
 Light by rule (02 §5): nothing here imports tkinter, Qt, pandas or requests.
 """

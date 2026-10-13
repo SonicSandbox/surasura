@@ -10,6 +10,7 @@ match a half-written file and mine its lines against the wrong audio.
 The seven vectors are hato's own (09-hato-layer v2 §1.1): byte i = i % 251, files written in the test's temp folder.
 """
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,3 +71,16 @@ def test_a_file_that_changes_while_it_is_read_has_no_key(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(videos, "_key_body", rewritten)
     assert videos.content_key(path) is None, "modified during the read"
+
+
+@pytest.mark.parametrize("size, stated", [(100000, 99990), (100000, 100010), (300000, 310000)],
+                         ids=["whole-read-longer", "whole-read-shorter", "tail-short"])
+def test_a_file_whose_bytes_differ_from_its_stat_has_no_key(tmp_path, monkeypatch, size, stated):
+    # why: a network share keeps a file's size and time cached for seconds, so both stats can agree on a size the
+    # bytes no longer have — a video still being copied in. The read itself must find exactly the bytes the stat
+    # counted (one byte more on a whole read; a full tail on a head + tail read), or there is no key.
+    path = _file(tmp_path, size)
+    real_stat = os.stat
+    lagging = SimpleNamespace(st_size=stated, st_mtime_ns=real_stat(path).st_mtime_ns)
+    monkeypatch.setattr(videos.os, "stat", lambda p, *a, **k: lagging if p == path else real_stat(p, *a, **k))
+    assert videos.content_key(path) is None

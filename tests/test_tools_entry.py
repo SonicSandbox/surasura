@@ -218,6 +218,28 @@ def test_retries_span_about_one_second():
     assert abs((tools_entry.REPLACE_TRIES - 1) * tools_entry.REPLACE_WAIT - 1.0) < 1e-9
 
 
+def test_the_tmp_file_is_synced_to_disk_before_it_replaces_the_entry(root, tools, frozen, monkeypatch):
+    """The tmp file's own descriptor is fsynced, then renamed over surasura.json. Why: a power cut after the rename
+    can leave the new name over bytes never written (NTFS and ext4 may commit the rename first) — an empty entry, and
+    hato finds no Surasura. Every other test passes with the fsync gone, so this one watches it."""
+    tools_entry.refresh({})
+    real_fsync, real_replace, events = os.fsync, os.replace, []
+    def fsync(fd):
+        synced = [name for name in os.listdir(tools) if name.endswith(".tmp")
+                  and os.path.samestat(os.fstat(fd), os.stat(tools / name))]
+        events.append(("fsync", synced))
+        return real_fsync(fd)
+    def replace(src, dst):
+        events.append(("replace", [os.path.basename(src)]))
+        return real_replace(src, dst)
+    monkeypatch.setattr(tools_entry.os, "fsync", fsync)
+    monkeypatch.setattr(tools_entry.os, "replace", replace)
+    assert tools_entry.refresh({"connect_enabled": True}) is True
+    tmp = f"surasura.json.{os.getpid()}.tmp"
+    assert events == [("fsync", [tmp]), ("replace", [tmp])]
+    assert _load(tools)["verbs"] == ["status", "register"]
+
+
 def test_an_entry_over_4_KiB_is_refused(root, tools, monkeypatch, caplog):
     """The file is small by rule: a command line path long enough to pass 4 KiB is never written."""
     monkeypatch.setenv("SURASURA_TOOLS_CLI", os.path.join(str(root), "長" * 1500, "surasura-cli.exe"))
@@ -281,6 +303,21 @@ def test_read_an_entry_whose_cli_is_gone_is_absent(tools, tmp_path):
 @pytest.mark.parametrize("field", ["contract", "schema"])
 def test_read_an_entry_too_new_is_absent(tools, tmp_path, field):
     _hato(tools, tmp_path, **{field: 2})
+    assert tools_entry.read("hato") is None
+
+
+@pytest.mark.parametrize("wrong", [[], "hato", None, {"schema": "1"}, {"contract": "1"}, {"cli": None}],
+                         ids=["a-list", "a-string", "null", "schema-as-text", "contract-as-text", "cli-null"])
+def test_read_an_entry_written_wrong_is_absent_never_a_crash(tools, tmp_path, wrong):
+    """Another program's file: no object at all, a version that isn't a number or no command line named means hato
+    counts as absent. Why: a TypeError here would stop the caller (the back-fill, the window's worker asking for hato)
+    instead of saying "hato isn't there"."""
+    entry = _hato(tools, tmp_path)
+    if isinstance(wrong, dict):
+        entry.update(wrong)
+    else:
+        entry = wrong
+    (tools / "hato.json").write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
     assert tools_entry.read("hato") is None
 
 

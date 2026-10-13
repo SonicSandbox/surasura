@@ -226,6 +226,73 @@ def test_the_wheel_scrolls_over_the_rows_and_leaves_other_wheel_bindings_alone(r
     root.unbind_all("<MouseWheel>")
 
 
+# --- P3.2: *Ask hato again* (RUNBOOK-P3.2 row 3.2.4) -----------------------------------------------------------------
+
+NO_PAIRING = {"id": 21, "kind": "no-pairing", "item": None, "title": None, "at": "2026-10-12T09:00:00Z",
+              "seen_at": None, "say": "4 files in hato's folder have no pairing from hato, so Connect can't tell which "
+                                      "video they belong to."}
+
+
+def _summary(**more):
+    from app.connect import hato
+    out = {"language": "ja", "hato": hato.ASKED, "new": 2, "same": 61, "replaced": 0, "refused": [],
+           "unpaired": ["a.srt", "b.srt"], "stopped": None, "skipped": None, "need": "raised"}
+    out.update(more)
+    return out
+
+
+def test_ask_hato_again_back_fills_on_a_worker_and_says_its_words_in_the_entrys_note(root, monkeypatch):
+    """The no-pairing entry's one action: hato asked again on a worker (it waits up to a minute for hato), the
+    summary's words in the entry's note, the dashboard's line read again; the button back for another try while files
+    are left, gone once none are (the entry fixed). Its tooltip says what it does; Esc still closes."""
+    from app.connect import hato
+    calls, answers = [], [_summary(), _summary(new=2, same=63, unpaired=[], need="fixed")]
+
+    def backfill(lang, settings, wait=10, run=None):
+        calls.append((lang, settings, on_main()))
+        return answers.pop(0)
+    monkeypatch.setattr(hato, "backfill", backfill)
+    pump, tips, changes = Pump(), Tips(), []
+    win = connect_window.show(root, "ja", tips, dict(RECORD, needs=[NO_PAIRING], unseen=1), act=Act(),
+                              settings=lambda: {"connect_enabled": True}, writer_busy=lambda: False,
+                              confirm=lambda t, x: True, junban=True, post=pump.put, mark_seen=lambda ids: 1,
+                              on_change=lambda: changes.append(1))
+    key = ("needs", 21, "Ask hato again")
+    note = win.notes[("needs", 21)]
+    assert tips.has(win.buttons[key]) and "pairings" in [t for w, t in tips if w is win.buttons[key]][0]
+    pump.run(root, lambda: changes)                         # marked seen first
+    changes.clear()
+    _press(win, *key)
+    assert pump.run(root, lambda: note.cget("text").startswith("hato's pairings (Japanese): 2 new, 61 already there."))
+    assert note.cget("text").endswith(NO_PAIRING["say"].replace("4 files", "2 files"))
+    assert calls == [("ja", {"connect_enabled": True}, False)], "hato.backfill on a worker, never the Tk thread"
+    assert str(win.buttons[key].cget("state")) == "normal" and changes == [1], "files left: it can be asked again"
+    _press(win, *key)
+    assert pump.run(root, lambda: key not in win.buttons), "none left: the entry is fixed, its button goes"
+    assert note.cget("text") == "hato's pairings (Japanese): 2 new, 63 already there."
+    win.win.focus_force()
+    root.update()
+    win.win.event_generate("<Escape>")
+    root.update()
+    assert not win.win.winfo_exists()
+
+
+def test_ask_hato_again_that_fails_says_why_and_keeps_its_button(root, monkeypatch):
+    from app.connect import hato
+
+    def backfill(lang, settings, wait=10, run=None):
+        raise OSError("the ledger is locked")
+    monkeypatch.setattr(hato, "backfill", backfill)
+    pump = Pump()
+    win = connect_window.show(root, "ja", Tips(), dict(RECORD, needs=[NO_PAIRING], unseen=1), act=Act(),
+                              settings=lambda: {"connect_enabled": True}, writer_busy=lambda: False,
+                              confirm=lambda t, x: True, junban=True, post=pump.put, mark_seen=lambda ids: 1)
+    _press(win, "needs", 21, "Ask hato again")
+    note = win.notes[("needs", 21)]
+    assert pump.run(root, lambda: note.cget("text") == "hato's pairings weren't read: the ledger is locked")
+    assert str(win.buttons[("needs", 21, "Ask hato again")].cget("state")) == "normal"
+
+
 # --- the final adversary's rows (P3.1 W5) -----------------------------------------------------------------------------
 
 class Clock:

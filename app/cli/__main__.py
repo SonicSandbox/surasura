@@ -78,7 +78,8 @@ def _parser():
     common.add_argument("--root", default=argparse.SUPPRESS, help=argparse.SUPPRESS)    # tests only (02 §6)
     parser = _Parser(prog="surasura-cli", parents=[common],
                      description="Surasura's command line: one JSON line on stdout, and an exit code "
-                                 "(0 done, 1 failed, 2 wrong command, 3 busy, 4 needs you).")
+                                 "(0 done, 1 failed, 2 wrong command, 3 try later: busy, Anki closed, settings.json "
+                                 "being saved or an update waiting, 4 needs you).")
     parser.add_argument("--version", action="store_true", help="the versions of the app, its engine and its stores")
     shown = [name for name, (_add, _run, public) in VERBS.items() if public]
     verbs = parser.add_subparsers(dest="verb", metavar="<verb>", parser_class=_Parser,

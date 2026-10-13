@@ -196,6 +196,46 @@ def test_a_refresh_asked_for_while_one_runs_runs_once_more():
     assert len(asked) == 2
 
 
+
+def test_a_refresh_asked_for_as_one_ends_never_runs_beside_the_next():
+    """Two refreshes at once read the events file and the providers twice over (a failure could be listed twice): a
+    request that comes as a refresh publishes, while the one asked for during it is still to run, waits its turn."""
+    calls, running, overlap, entered, release = [], [0], [], threading.Event(), threading.Event()
+    lock = threading.Lock()
+
+    def generate():
+        with lock:
+            running[0] += 1
+            overlap.append(running[0])
+            calls.append(1)
+        try:
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(10)
+            else:
+                threading.Event().wait(0.2)        # long enough for a second refresh to meet this one
+        finally:
+            with lock:
+                running[0] -= 1
+        return None
+    status = StatusService(JobRegistry(), providers={"generate": generate})
+    publish, asked_once = status._publish, []
+
+    def publish_and_ask():                          # a window's request landing just as the first refresh publishes
+        if not asked_once:
+            asked_once.append(1)
+            status.refresh_soon()
+        publish()
+    status._publish = publish_and_ask
+    status.refresh_soon()
+    assert entered.wait(5)
+    status.refresh_soon()                           # asked for during the first: it runs once more
+    release.set()
+    assert h.until(lambda: len(calls) >= 2 and running[0] == 0, seconds=5)
+    threading.Event().wait(0.3)
+    assert max(overlap) == 1
+    assert len(calls) == 2                          # the late request is the one still to run, not a third
+
 def test_marking_needs_you_seen_with_nothing_unseen_says_nothing():
     """S19: opening Needs you again with every entry looked at sends no new snapshot."""
     status = StatusService(JobRegistry(), providers={"generate": lambda: "Generate stopped (exit code 1)."})

@@ -122,11 +122,11 @@ class StatusService:
                 self.refresh()
             except Exception as e:                      # a fault of this refresh never drops the next one asked for
                 print(f"Status: the refresh failed: {e}")
-            with self._lock:
-                again, self._again = self._again, False
-                if not again:
+            with self._lock:                            # the loop owns the flag: no second refresh starts between two
+                if not self._again:
+                    self._refreshing = False
                     return
-                self._refreshing = True
+                self._again = False
 
     # --- the worker's side -------------------------------------------------------------------------------------- #
     def refresh(self):
@@ -160,9 +160,7 @@ class StatusService:
                 del self._needs[NEEDS_YOU_KEPT:]
                 self._extra = extra
         finally:
-            with self._lock:
-                self._refreshing = False
-        self._publish()
+            self._publish()
 
     def _jobs_changed(self, views):
         lines = tuple(job_line(v) for v in views if v.state in (jobs_module.RUNNING, jobs_module.CANCELLING,

@@ -149,6 +149,21 @@ def test_a_focus_storm_starts_one_indexer(indexing_on):
     chores.close()
 
 
+def test_a_trigger_while_the_indexer_runs_asks_for_no_second_one(indexing_on):
+    """`_indexer_busy`, from the check until the indexer's end (HR-11 clears it only when no job was made): a trigger
+    while the indexer runs asks nothing — never a second indexer queued behind the first."""
+    clock = _Clock(0.0)
+    chores, registry, popen = _make(clock=clock)
+    assert chores.index() is None
+    assert h.until(lambda: len(popen) == 1, seconds=5) and chores.worker.idle(5)
+    clock.now += 5.0
+    assert chores.index() == "busy"
+    assert chores.worker.idle(5) and len(registry.live("indexer")) == 1
+    popen[0].end(0)
+    assert h.until(lambda: not registry.live("indexer"), seconds=5)
+    chores.close()
+
+
 def test_the_indexer_check_is_throttled_two_seconds_unless_forced(indexing_on):
     """`if not force and (now - self._last_index_check) < 2.0: return` — counted from never."""
     clock = _Clock(0.0)

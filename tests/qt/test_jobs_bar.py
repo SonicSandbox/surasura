@@ -118,7 +118,11 @@ class FakeChores(_Duty):
     def activated(self): self._record("chores.activated")
     def language_changed(self, language): self._record("chores.language_changed", language)
     def koe_changed(self): self._record("chores.koe_changed")
-    def close(self, store=True): self._record("chores.close", store)
+    def close(self, store=True):            # as the real one: the store's close trigger too, unless store=False
+        self._record("chores.close", store)
+        if store:
+            self.close_store()
+
     def close_store(self): self._record("chores.close_store")
 
 
@@ -694,6 +698,18 @@ def _services_only(log):
     return services
 
 
+def test_the_quit_waits_for_an_anki_write_past_its_short_timeout(qapp):
+    """IK-22 / HR-22 (E20): with no wait of the window's before it (the update's hand-over closes at once), `shutdown`
+    still lets a running Anki write finish its batch — up to `QUIT_ANKI_WAIT`, past the short `timeout` it gives the
+    rest — before the process goes on to end."""
+    log = []
+    services = _services_only(log)
+    write = services.registry.submit("junban", A.JUNBAN_LABEL, lambda j: threading.Timer(0.5, j.finish).start(),
+                                     automatic=True, on_quit="wait")
+    services.shutdown(0.05)
+    assert write.state == "done" and not write.cancelled
+
+
 def test_quit_never_waits_on_a_close_chore_that_never_returns(qapp, monkeypatch):
     """F.md (`shutdown` joined the duties' close with no bound): a chore of the close that hangs (Koe's stop, Connect's
     `at_close`) would keep a windowless process — and the single-instance claim — for ever. The quit goes on at
@@ -709,6 +725,23 @@ def test_quit_never_waits_on_a_close_chore_that_never_returns(qapp, monkeypatch)
     hung = quitting.is_alive()
     never.set()
     assert not hung and released == [1]
+
+
+def test_the_close_chores_cap_counts_from_the_quits_start(qapp, monkeypatch):
+    """The quit's close cap (`QUIT_CLOSE_WAIT` from the quit's start): the duties' close runs beside the wait for an Anki write, so a hung
+    close chore and a write finishing its batch keep the claim for the longer of the two — never their sum."""
+    monkeypatch.setattr(shell, "QUIT_CLOSE_WAIT", 1.0)
+    log, never, released = [], threading.Event(), []
+    services = _services_only(log)
+    monkeypatch.setattr(services.chores, "close", lambda *a, **k: never.wait())
+    write = services.registry.submit("junban", A.JUNBAN_LABEL, lambda j: threading.Timer(1.0, j.finish).start(),
+                                     automatic=True, on_quit="wait")
+    t0 = time.monotonic()
+    try:
+        services.shutdown(0.05, release=lambda: released.append(time.monotonic() - t0))
+    finally:
+        never.set()
+    assert write.state == "done" and len(released) == 1 and released[0] < 1.6, released
 
 
 def test_quit_lets_the_claim_go_before_the_stores_close_and_never_waits_on_a_hung_one(qapp, monkeypatch):
@@ -743,6 +776,53 @@ def test_quit_lets_the_claim_go_before_the_stores_close_and_never_waits_on_a_hun
     assert free == [True]
     assert log.index("settings") < log.index("release") < log.index("store close")
     assert took < 3.0
+
+
+def test_main_hands_its_claim_to_the_quit_before_the_stores_close_trigger(qapp, monkeypatch):
+    """Main's order: `main` gives its single-instance claim to `shutdown`, which lets it go once the settings are
+    written and before the store's close trigger (seconds at 100k items) — so a start meanwhile opens its window
+    instead of giving up after `WAIT_FOR_FIRST_S` with none."""
+    import sys
+    from app import path_utils
+    from app.qt import single
+    made, free = [], []
+
+    class Claim(single.SingleInstance):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(self)
+
+    class QuittingServices:
+        def shutdown(self, timeout=2.0, release=None):
+            if release is not None:
+                release()                                   # the settings written: the claim goes here
+            lock = path_utils.try_lock(made[0].lock_file)   # the store's close trigger: what a new start takes
+            free.append(lock is not None)
+            path_utils.release_lock(lock)
+
+    class Window:
+        class first_frame:
+            @staticmethod
+            def connect(_slot): pass
+
+        def start_duties(self): pass
+        def show_first(self): pass
+
+    monkeypatch.setattr(single, "SingleInstance", Claim)
+    monkeypatch.setattr(shell, "Services", QuittingServices)
+    monkeypatch.setattr(shell, "open_window", lambda app, services: Window())
+    monkeypatch.setattr(shell, "connect_instance", lambda window, instance: None)
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0)
+    monkeypatch.delenv("SURASURA_SHELL_PROBE", raising=False)
+    monkeypatch.delenv("SURASURA_HUD", raising=False)
+    hook, interval = sys.excepthook, sys.getswitchinterval()
+    try:
+        assert shell.main(["claim-test"]) == 0
+    finally:
+        sys.excepthook, _ = hook, sys.setswitchinterval(interval)
+        for claim in made:
+            claim.release()
+    assert len(made) == 1 and free == [True]
 
 
 def test_junbans_line_and_the_update_that_landed_are_said_once(world, monkeypatch):

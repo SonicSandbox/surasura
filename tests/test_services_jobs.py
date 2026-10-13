@@ -198,6 +198,19 @@ def test_quit_lets_an_anki_write_finish_its_batch_and_drops_one_that_never_start
     assert still == () and time.monotonic() - t0 < 4
 
 
+def test_quit_gives_a_job_it_cancels_only_the_short_timeout_never_an_anki_writes():
+    """IK-22 / HR-22: `wait_timeout` is a running Anki write's alone. A `cancel` job still ending after its cancel
+    (Generate past *Writing your list* can't stop part-way) is waited for the short `timeout` only and left running:
+    the quit never waits an Anki write's cap (AnkiConnect's 30 s) for it."""
+    registry = JobRegistry()
+    writing_list = registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: None, on_quit="cancel")
+    t0 = time.monotonic()
+    still = registry.quit(timeout=0.05, wait_timeout=5)
+    assert time.monotonic() - t0 < 2
+    assert [v.id for v in still] == [writing_list.id] and writing_list.state == J.CANCELLING
+    writing_list.finish(cancelled=True)
+
+
 def test_what_closing_the_window_waits_for_is_an_anki_write_under_way_only():
     """E20 (W3.5: the window stays up while an Anki write finishes its batch): only a `wait` job under way keeps it —
     one not started yet has nothing to finish (`quit` drops it), Generate (`cancel`) is stopped and Connect (`detach`)

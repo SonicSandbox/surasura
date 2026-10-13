@@ -722,6 +722,23 @@ def test_no_new_job_starts_while_the_update_waits_and_it_starts_after_a_cancel(w
     assert started == ["generate", "sync", "arrivals"]
 
 
+@pytest.mark.parametrize("kind", sorted(kind for kind in J.RESOURCES if kind != "update"))
+def test_every_kind_of_job_but_the_update_waits_while_the_update_waits(world, kind):
+    """IK-19 (the Tk `hold_children` held every child, `children_held()` every sync and Generate): while the update
+    waits, nothing but the update itself starts — whatever its kind (the indexer too: it runs this install's program)
+    — and Cancel starts it."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING, seconds=10)
+    started = []
+    job = registry.submit(kind, "Asked for while the update waits", lambda job: started.append(kind))
+    assert (job.state, job.reason, started) == (J.WAITING, U.HELD_REASON, [])
+    assert svc.cancel()
+    assert started == [kind]
+
+
 # --- the registers' rows (W3.5 worker F) --------------------------------------------------------------------------- #
 def test_anki_writing_jobs_are_only_waited_for_and_junban_is_listed_once(world):
     """IK-18 (_busy_threads: "the window's own background work that writes to Anki … Waited for; no Stop"): a registry
@@ -810,6 +827,49 @@ def test_an_unexpected_fault_in_update_now_lets_go_of_everything(world, monkeypa
     svc.__dict__.pop("_wait", None)
     assert svc.start() is True
     svc.cancel()
+
+
+def test_a_fault_while_it_downloads_leaves_the_lock_to_the_download(world):
+    """HR-14 with the download still running (the Tk `_update_downloaded`): the fault ends the update, but the lock
+    and the staging stay the download's until it ends — so a new *Update now* never stages into the folder it still
+    writes — then both go."""
+    world.stage = Stage(gate=False)
+    svc = world.offered(world.service())
+
+    def broken_wait(update):
+        raise ValueError("the wait list broke")
+    svc._wait = broken_wait
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.FAILED, seconds=10)
+    assert not _lock_is_free() and "discard" not in world.log
+    world.stage.gate.set()
+    assert h.until(lambda: world.log.count("discard") == 1 and _lock_is_free(), seconds=10)
+
+
+def test_a_fault_once_the_download_is_in_discards_it_and_starts_what_was_held(world):
+    """HR-14 after the download ended (a fault in the wait's own run): this run drops the lock and the staging — never
+    left for the next *Update now* to trip on — and what the update held starts, as after a failed download: the
+    children asked for meanwhile and the registry's held jobs."""
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+    go = threading.Event()
+
+    def broken_wait(update):
+        assert go.wait(10) and h.until(lambda: update.done, seconds=10)
+        raise ValueError("the wait list broke")
+    svc._wait = broken_wait
+    assert svc.start()
+    assert h.until(lambda: updater.children_held(), seconds=10)
+    started = []
+    assert updater.defer_child(lambda: started.append("Content Manager")) is True
+    held = registry.submit("generate", "Generating", lambda job: started.append("Generating"))
+    assert (held.state, held.reason) == (J.WAITING, U.HELD_REASON)
+    go.set()
+    assert h.until(lambda: svc.state().state == U.FAILED, seconds=10)
+    assert "the wait list broke" in svc.state().message
+    assert h.until(lambda: world.log.count("discard") == 1 and _lock_is_free(), seconds=10)
+    assert h.until(lambda: sorted(started) == ["Content Manager", "Generating"], seconds=10)
+    assert not updater.children_held()
 
 
 def test_a_listing_that_fails_keeps_the_last_list(world, monkeypatch):

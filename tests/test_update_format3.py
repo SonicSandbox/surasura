@@ -124,6 +124,7 @@ def test_the_manifest_is_canonical_signed_and_lists_every_file(release, tmp_path
                                      "args": [], "min_from": "2.5"}
     package = manifest["package"]
     assert package["min_from"] == "3.0.0" and package["needs_installer"] is False
+    assert package["install_shape"] == package_app.install_shape()          # the .iss the build's installer is from
     built = tmp_path / "dist" / "Surasura"
     on_disk = {p.relative_to(built).as_posix() for p in built.rglob("*") if p.is_file()}
     assert {f["path"] for f in package["files"]} == on_disk
@@ -344,10 +345,12 @@ def _resign(out, change):
     lambda m: m["package"]["files"][0].update(sha256="ABC"),
     lambda m: m["package"]["files"][0].update(size=True),
     lambda m: m["package"].update(needs_installer="no"),
+    lambda m: m["package"].update(install_shape="1ff00720"),
+    lambda m: m["package"].update(install_shape="ZZZZZZZZZZZZZZZZ"),
     lambda m: m["package"].update(files=[]),
     lambda m: m.update(package="all"),
-], ids=["unknown part", "missing asset", "bad sha256", "bool size", "needs_installer not bool", "no files",
-        "not a dict"])
+], ids=["unknown part", "missing asset", "bad sha256", "bool size", "needs_installer not bool", "short shape",
+        "shape not hex", "no files", "not a dict"])
 def test_a_signed_but_malformed_package_is_told_only(release, rehearsal, change):
     out, _ = release()
     _resign(out, change)
@@ -355,3 +358,70 @@ def test_a_signed_but_malformed_package_is_told_only(release, rehearsal, change)
     info = update_checker.get_update_info()
     assert info.signed is True and info.package is None
     assert update_checker.classify_update("3.0.0", info) == "FULL"
+
+
+# --- the install shape (S3.1 D7): a release whose installer changes what only it can change runs it ---------------------
+
+OTHER_SHAPE = "0123456789abcdef"
+
+
+@pytest.fixture
+def stamped(tmp_path, monkeypatch):
+    """-> stamp(shape, frozen=True, raw=None): this program as an installed 3.0.0 whose _internal/build_stamp.json
+    carries `shape` (None: an earlier 3.x's stamp, without one; `raw`: the file's bytes as given)."""
+    def stamp(shape, frozen=True, raw=None):
+        internal = tmp_path / "Programs" / "スラスラ" / "_internal"
+        internal.mkdir(parents=True, exist_ok=True)
+        data = {"build_id": "20261012T000000Z-0a1b2c3d", "data_name": "Surasura", "version": "3.0.0"}
+        if shape is not None:
+            data["install_shape"] = shape
+        (internal / "build_stamp.json").write_bytes(raw if raw is not None else json.dumps(data).encode("utf-8"))
+        monkeypatch.setattr(path_utils, "is_frozen", lambda: frozen)
+        monkeypatch.setattr(path_utils, "get_base_path", lambda: str(internal))
+    return stamp
+
+
+@pytest.mark.parametrize("own, installer, needs_installer, expected", [
+    ("same", True, False, "APP"),           # the .iss this program was built with: the parts alone
+    ("other", True, False, "INSTALLER"),    # another shape: the release's installer runs, silently
+    ("other", False, False, "FULL"),        # ... and with no installer in the release, a download
+    (None, True, False, "APP"),             # an earlier 3.x's stamp, without a shape: the parts
+    (None, True, True, "INSTALLER"),        # ... unless the release asks for its installer itself
+    ("same", True, True, "INSTALLER"),      # the override, whatever the shapes say
+], ids=["same shape", "another shape", "another shape, no installer", "no shape stamped", "no shape, the override",
+        "same shape, the override"])
+def test_the_install_shape_decides_between_the_parts_and_the_installer(release, rehearsal, stamped, own, installer,
+                                                                       needs_installer, expected):
+    out, manifest = release(installer=installer, needs_installer=needs_installer)
+    assert manifest["package"]["install_shape"] != OTHER_SHAPE
+    rehearsal(out)
+    stamped({"same": manifest["package"]["install_shape"], "other": OTHER_SHAPE}.get(own))
+    assert update_checker.classify_update("3.0.0", update_checker.get_update_info()) == expected
+
+
+def test_a_release_without_a_shape_takes_the_parts(release, rehearsal, stamped):
+    """A release written before the shape (or by hand without one) compares as the same: the parts."""
+    out, _ = release()
+    _resign(out, lambda m: m["package"].pop("install_shape"))
+    rehearsal(out)
+    stamped(OTHER_SHAPE)
+    info = update_checker.get_update_info()
+    assert info.package is not None and "install_shape" not in info.package
+    assert update_checker.classify_update("3.0.0", info) == "APP"
+
+
+def test_this_programs_shape_is_read_from_its_own_stamp_only_when_frozen(stamped):
+    assert update_checker.installed_shape() is None                     # from source: no stamp of its own
+    stamped("fedcba9876543210")
+    assert update_checker.installed_shape() == "fedcba9876543210"
+    stamped("fedcba9876543210", frozen=False)                           # a stamp where a source run's resources are
+    assert update_checker.installed_shape() is None
+    stamped(None)
+    assert update_checker.installed_shape() is None
+    stamped("FEDCBA9876543210")                                         # no shape the packager writes
+    assert update_checker.installed_shape() is None
+    stamped(None, raw=b"\xef\xbb\xbf" + json.dumps({"install_shape": "fedcba9876543210"}).encode("ascii"))
+    assert update_checker.installed_shape() == "fedcba9876543210"      # a BOM, as Windows tools may write
+    for raw in (b"{not json", b'["install_shape"]'):
+        stamped(None, raw=raw)
+        assert update_checker.installed_shape() is None

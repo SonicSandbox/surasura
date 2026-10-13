@@ -71,6 +71,11 @@ def smoke(command, install_dir, frozen):
 
     try:
         if frozen:
+            # The test root stands in for the frozen program's base path (path_utils.get_base_path: its _internal), so
+            # the program's build stamp goes there, as its templates do below; else every call is version-skew (D18).
+            stamp = os.path.join(install_dir, "_internal", path_utils.BUILD_STAMP)
+            if os.path.isfile(stamp):
+                shutil.copy2(stamp, root)
             exe = command[0]
             check(_subsystem(exe) == 3, f"{CLI_EXE_NAME} is a console program")
             check(_subsystem(os.path.join(install_dir, "Surasura.exe")) == 2, "Surasura.exe keeps its window")

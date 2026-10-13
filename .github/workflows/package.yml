@@ -1,0 +1,84 @@
+# The package on Windows, before any tag (S3.1 D19): the frozen program built from this public tree on GitHub's Windows
+# runner, its command line smoke-tested, the installer built and installed silently as "Surasura (test)" (a test build's
+# own AppId, program folder and data folders: never the real program's) into a stand-in profile on the runner
+# (USERPROFILE, LOCALAPPDATA, APPDATA and TEMP moved: Inno Setup's folders follow USERPROFILE), updated once by the
+# one-click path to a second build, and uninstalled. Manual, and on pull requests that touch the package or the updater.
+# NOTHING built here leaves the runner: no artifact upload of any build, ever (no PyQt6 build leaves a machine before
+# the licence switch): each build is built, checked and thrown away with the runner. Every step is one command of
+# package_app.py, scripts/cli_smoke.py or packaging/install_proof.py, which runs the same by hand on Windows in a
+# throwaway checkout.
+name: Package
+run-name: "Package proof (${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || github.ref_name }})"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "packaging/**"
+      - "package_app.py"
+      - "updater_helper.py"
+      - "app/updater.py"
+      - "app/update_checker.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONIOENCODING: utf-8
+      DATA_NAME: Surasura-test            # a test build: its own AppId, folders and "Surasura (test)" (S3.1-3)
+      WORK: ${{ runner.temp }}/package-proof
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"          # the newest 3.11: at or above build_config's python_min
+      - name: Install (requirements.txt at the versions the release is built with, and PyInstaller)
+        run: >-
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          pandas==2.0.0 numpy==1.25.2 fugashi==1.5.2 unidic-lite==1.0.8 pysrt==1.1.2 EbookLib==0.20
+          beautifulsoup4==4.12.2 soupsieve==2.4 lxml==4.9.2 requests==2.28.2 tkinterdnd2==0.4.3 jieba==0.42.1
+          pytest==9.0.2 python-dotenv==1.0.0 zstandard==0.25.0
+          PyQt6==6.11.0 PyQt6-Qt6==6.11.2 PyQt6-sip==13.13.0
+          pyinstaller==6.18.0 pyinstaller-hooks-contrib==2026.0
+      - name: Inno Setup 6 is on the image
+        run: python -c "import sys, package_app; p = package_app.find_iscc(); print(p or 'ISCC.exe not found'); sys.exit(0 if p else 1)"
+      - name: The build's .env (telemetry off - dev, no address) and the work folder
+        run: |
+          test ! -e .env
+          printf 'TELEMETRY_ENV=dev\n' > .env
+          mkdir -p "$WORK"
+      - name: Build the version to install, with its installer
+        run: |
+          python packaging/install_proof.py version old
+          python package_app.py --skip-tests --installer --data-name "$DATA_NAME"
+      - name: Smoke-test its command line
+        run: python scripts/cli_smoke.py dist/Surasura
+      - name: Keep it aside
+        run: mv dist "$WORK/old"
+      - name: Build the update, signed with a throwaway key made on this runner
+        run: |
+          python packaging/install_proof.py key "$WORK/test-key.hex"
+          python packaging/install_proof.py version new
+          SURASURA_SIGNING_KEY_FILE="$WORK/test-key.hex" python package_app.py --skip-tests --release --data-name "$DATA_NAME"
+      - name: Install the first build silently, into a stand-in profile
+        run: >-
+          python packaging/install_proof.py install "$WORK/old" "$WORK/library"
+          --data-name "$DATA_NAME" --profile "$WORK/profile"
+      - name: Update it by the one-click path to the second build
+        run: >-
+          python packaging/install_proof.py update dist "$WORK/test-key.hex"
+          --data-name "$DATA_NAME" --profile "$WORK/profile"
+      - name: Uninstall it
+        run: python packaging/install_proof.py uninstall --data-name "$DATA_NAME" --profile "$WORK/profile"

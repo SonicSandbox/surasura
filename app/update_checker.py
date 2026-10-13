@@ -295,10 +295,15 @@ def _is_size(value):
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_shape(value):
+    return isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value)
+
+
 def _read_package(package, urls):
     """update.json's `package` when its shape is whole -> the dict, else None: parts each {name, asset, sha256, size}
     with its asset among the release's; files each {path, sha256, size, part} naming one of those parts;
-    needs_installer a bool; min_from a version. (Each path's safety is the assembler's check, S3.1 3.1.3.)"""
+    needs_installer a bool; min_from a version; install_shape, when given, 16 hex. (Each path's safety is the
+    assembler's check, S3.1 3.1.3.)"""
     if not isinstance(package, dict):
         return None
     parts, files = package.get("parts"), package.get("files")
@@ -320,7 +325,23 @@ def _read_package(package, urls):
         return None
     if package.get("min_from") is not None and not version_string(str(package.get("min_from"))):
         return None
+    if package.get("install_shape") is not None and not _is_shape(package["install_shape"]):
+        return None
     return package
+
+
+def installed_shape():
+    """This program's install shape (S3.1 D7): its `_internal/build_stamp.json`'s "install_shape", or None — from
+    source, with no stamp, or a stamp an earlier 3.x wrote without one."""
+    from app import path_utils
+    if not path_utils.is_frozen():
+        return None
+    try:
+        with open(os.path.join(path_utils.get_base_path(), path_utils.BUILD_STAMP), "r", encoding="utf-8-sig") as f:
+            shape = json.load(f).get("install_shape")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return shape if _is_shape(shape) else None
 
 
 INSTALLER_FROM_VERSION = (3, 0)
@@ -384,9 +405,10 @@ def classify_update(current_version: str, info: Optional[UpdateInfo]) -> str:
 
 def _classify_3x(current_version: str, info: UpdateInfo) -> str:
     """A 3.x release (format 2), for a 3.x install. Unsigned, or a bad signature -> FULL (told only, nothing
-    installed). APP: its package read, this version at or past `min_from`, and nothing only the installer may change
-    (`needs_installer`). INSTALLER: the installer must run (`needs_installer`, or this version below `min_from`) and
-    the release names a complete one. Anything else: FULL."""
+    installed). APP: its package read, this version at or past `min_from`, and nothing only the installer may change.
+    INSTALLER: the installer must run — `needs_installer`, this program's install shape and the release's both known
+    and different (a stamp without one, an earlier 3.x's, compares as the same), or this version below `min_from` —
+    and the release names a complete one. Anything else: FULL."""
     if not info.signed:
         return "FULL"
     package = info.package if isinstance(info.package, dict) else None
@@ -394,7 +416,8 @@ def _classify_3x(current_version: str, info: UpdateInfo) -> str:
         return "FULL"
     min_from = package.get("min_from")
     too_old = bool(min_from) and parse_version(current_version) < parse_version(str(min_from))
-    needs_installer = package.get("needs_installer") is True
+    shape, own = package.get("install_shape"), installed_shape()
+    needs_installer = package.get("needs_installer") is True or bool(shape and own and shape != own)
     if not too_old and not needs_installer:
         return "APP"
     if installer_ready(current_version, info):

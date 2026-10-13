@@ -312,9 +312,12 @@ def test_the_update_marker_is_the_updaters_and_a_look_makes_no_folder(root, monk
 
 def test_a_staged_update_answers_update_staged_exit_3(root):
     _staged_marker(root).write_text("{}", encoding="utf-8")
-    for args in (("--version",), ("_selftest", "ok")):
-        code, lines, _raw, _err = run_cli(root, *args)
-        assert code == 3 and lines[0]["code"] == "update-staged"
+    code, lines, _raw, _err = run_cli(root, "_selftest", "ok")
+    assert code == 3 and lines[0]["code"] == "update-staged"
+    # --version answers all the same: the swapper proves a swap by the new CLI's --version while its own marker still
+    # exists (S3.1 D9), and --version writes nothing and reads no store. Refused, every real update rolled back.
+    code, lines, _raw, _err = run_cli(root, "--version")
+    assert code == 0 and lines[0]["type"] == "result" and lines[0]["app"]
 
 
 def test_a_marker_over_an_hour_old_is_a_crashed_update_and_blocks_nothing(root):

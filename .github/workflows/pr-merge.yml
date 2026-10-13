@@ -62,4 +62,13 @@ jobs:
             skipped) echo "docs only: no test run needed (run $run)";;
             *) refuse "run $run's tests job: '$tests'";;
           esac
+          # package.yml runs only on a pull request that touches the package or the updater: when it ran on this head,
+          # it must have passed too (none = it had nothing to prove).
+          # (Asked of every run on the head, not of package.yml by name: a base without the file has no such workflow.)
+          read -r pkg pstatus pconclusion < <(gh api "repos/$REPO/actions/runs?event=pull_request&head_sha=$head&per_page=100" \
+            --jq "[.workflow_runs[] | select(.path == \".github/workflows/package.yml\" and .display_title == \"Package proof (PR #$PR)\")] | (max_by(.run_number) // {}) | \"\(.id // \"none\") \(.status // \"-\") \(.conclusion // \"-\")\"")
+          echo "package proof: run $pkg, $pstatus, $pconclusion"
+          if [ "$pkg" != none ] && { [ "$pstatus" != completed ] || [ "$pconclusion" != success ]; }; then
+            refuse "the package proof on $head hasn't passed (run $pkg: $pstatus, $pconclusion)"
+          fi
           gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$head" || refuse "the merge failed (see above)"

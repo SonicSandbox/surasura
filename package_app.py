@@ -354,8 +354,9 @@ def read_signing_key(path):
 def _build_release(final_dist, version, config, out_dir="dist", installer=None, needs_installer=False):
     """Write a 3.x release's update artifacts into `out_dir`: one zip per part (surasura_part_<name>_v<ver>.zip),
     update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
-    (its 2.x hand-off block is written only then). `needs_installer`: this release changes what only the installer
-    owns (3.1.5 sets it from the .iss). -> the manifest dict."""
+    (its 2.x hand-off block is written only then). `package.install_shape`: the .iss's shape (`install_shape`); a 3.x
+    program stamped with another runs the installer. `needs_installer`: the manual override, for what the shape can't
+    see (`--needs-installer`). -> the manifest dict."""
     import zipfile
     from app import ed25519
 
@@ -383,7 +384,7 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
         "notes_url": f"https://github.com/SonicSandbox/surasura/releases/tag/v{version}",
         "format": 2,
         "package": {"parts": parts, "files": files, "needs_installer": bool(needs_installer),
-                    "min_from": config["release"]["min_from"]},
+                    "min_from": config["release"]["min_from"], "install_shape": install_shape()},
     }
     if installer:
         # 2.x's hand-off (S1.3-6): 2.5 runs this installer, its wizard showing (args empty); 2.4.0 and older see a
@@ -428,6 +429,27 @@ INSTALLER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pac
 APP_GUID = "0EF53F4A-4995-48AA-A8EA-91649B265D82"   # the real program's AppId (made once, 2026-10-12): never change it
 ISCC_PLACES = (r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe",       # installed for this user (S3.1-2)
                r"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe")            # installed for everyone (GitHub's runner)
+
+
+def install_shape(path=INSTALLER_SCRIPT):
+    """What only the installer can change (S3.1 D7): the first 16 hex of the sha256 of packaging/surasura.iss, its
+    comment and blank lines dropped (; and //, and a line that is one { } comment) and its [Files] section left out:
+    the program's files ride in the parts. A line's line end and outer spaces never count. The build stamps it into
+    the program and into update.json's package; a 3.x program stamped with another runs the installer
+    (update_checker._classify_3x)."""
+    import hashlib
+    kept, in_files = [], False
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith((";", "//")) or \
+                    (line.startswith("{") and not line.startswith("{$") and line.find("}") == len(line) - 1):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                in_files = line.lower() == "[files]"
+            if not in_files:
+                kept.append(line)
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest()[:16]
 
 
 def installer_name(version):
@@ -551,13 +573,19 @@ def copy_default_lists(final_dist):
     return written
 
 
-def write_build_stamp(final_dist, version, build_id, data_name):
-    """_internal/build_stamp.json {version, build_id, data_name} (S3.1 D18): each program compares its own with it at
-    start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>)."""
+def write_build_stamp(final_dist, version, build_id, data_name, shape):
+    """_internal/build_stamp.json {version, build_id, data_name, install_shape} (S3.1 D18): each program compares its
+    own with it at start; data_name names the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>);
+    install_shape (`install_shape()`) is what the update check compares with a release's (D7)."""
     path = os.path.join(final_dist, "_internal", "build_stamp.json")
     with open(path, "wb") as f:
-        f.write(canonical_json({"version": version, "build_id": build_id, "data_name": data_name}))
+        f.write(canonical_json({"version": version, "build_id": build_id, "data_name": data_name,
+                                "install_shape": shape}))
     return path
+
+
+def _is_shape(value):
+    return isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value)
 
 
 def sqlite_version_of(dll):
@@ -611,9 +639,10 @@ def check_program(final_dist, config):
         with open(os.path.join(internal, "build_stamp.json"), encoding="utf-8") as f:
             stamp = json.load(f)
         facts["stamp"] = stamp
-        if set(stamp) != {"version", "build_id", "data_name"} or not stamp["build_id"] or \
-                not valid_data_name(stamp["data_name"]):
-            failures.append(f"_internal/build_stamp.json is not {{version, build_id, data_name}}: {stamp}")
+        if set(stamp) != {"version", "build_id", "data_name", "install_shape"} or not stamp["build_id"] or \
+                not valid_data_name(stamp["data_name"]) or not _is_shape(stamp["install_shape"]):
+            failures.append(f"_internal/build_stamp.json is not {{version, build_id, data_name, install_shape}}: "
+                            f"{stamp}")
     except (OSError, ValueError) as e:
         failures.append(f"_internal/build_stamp.json can't be read ({e})")
     # PyQt6: only the window's modules, with PyQt6's and Qt's licence notices.
@@ -642,7 +671,8 @@ def check_zip_licences(zip_path):
             if not any(f"/_internal/licenses/{dist}/" in n for n in names)]
 
 
-def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False):
+def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False,
+          needs_installer=False):
     version = get_version()
     build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
     zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
@@ -675,6 +705,11 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
 
     if installer and not find_iscc():
         print(f"Build aborted: --installer: {ISCC_MISSING}")
+        return
+    try:
+        shape = install_shape()
+    except OSError as e:
+        print(f"Build aborted: packaging/surasura.iss can't be read for the install shape ({e}).")
         return
 
     # Gate: everything being bundled must be testable first.
@@ -765,8 +800,8 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             print(f"Warning: Documentation file not found: {src}")
 
     # 4. The build stamp (S3.1 D18).
-    write_build_stamp(final_dist, version, build_id, data_name)
-    print(f"Build stamp: version {version}, build {build_id}, data folder name {data_name}")
+    write_build_stamp(final_dist, version, build_id, data_name, shape)
+    print(f"Build stamp: version {version}, build {build_id}, data folder name {data_name}, install shape {shape}")
 
     # 5. Bundle updater.exe BEFORE the checks, the zip, the installer and the release's file list: every build ships
     #    the swapper (S3.1 D9), a test build too.
@@ -812,7 +847,8 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     # 9. The 3.x update artifacts (parts, update.json, update.json.sig) — release only. The installer built just now
     #    rides as 2.x's hand-off (update_type "installer"); without one, update.json says "full".
     if release:
-        _build_release(final_dist, version, config, out_dir="dist", installer=built_installer)
+        _build_release(final_dist, version, config, out_dir="dist", installer=built_installer,
+                       needs_installer=needs_installer)
         print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
               + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
               + (", the installer" if built_installer else ""))
@@ -845,6 +881,9 @@ if __name__ == "__main__":
     parser.add_argument("--installer", action="store_true",
                         help="Also compile packaging/surasura.iss with Inno Setup 6 (ISCC) into "
                              "dist\\Surasura-<ver>-setup.exe; with --release, update.json carries it for 2.x.")
+    parser.add_argument("--needs-installer", action="store_true",
+                        help="With --release: every 3.x install takes this release through its installer, even when "
+                             "packaging/surasura.iss's install shape is unchanged (e.g. a new install folder).")
     parser.add_argument("--check", metavar="FOLDER", default=None,
                         help="Only run the post-build checks on a built program folder (e.g. dist\\Surasura); "
                              "prints CHECKS OK or the failures.")
@@ -860,4 +899,4 @@ if __name__ == "__main__":
         print("CHECKS OK" if not checked else "CHECKS FAILED:\n  " + "\n  ".join(checked))
         sys.exit(1 if checked else 0)
     build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release, full_update=args.full_update,
-          data_name=args.data_name, installer=args.installer)
+          data_name=args.data_name, installer=args.installer, needs_installer=args.needs_installer)

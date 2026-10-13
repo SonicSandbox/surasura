@@ -65,9 +65,10 @@ VERBS = {
     "logs": (connect_verbs.logs_args, connect_verbs.logs, True),               # P2.5
 }
 
-# The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other
+# The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`); `--version`
+# writes nothing and reads no store, and the swapper proves a swap by it while its marker exists (S3.1 D9). Every other
 # verb answers `update-staged` (02 §7).
-ANSWER_WHILE_UPDATING = {"status", "logs"}
+ANSWER_WHILE_UPDATING = {"status", "logs", "--version"}
 
 
 def _parser():

@@ -125,6 +125,9 @@ hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_g
                   'app.content_importer_gui', 'app.frequency_list_gui', 'app.anki_db_importer_gui', 'app.indexer',
                   'app.arrivals_worker', 'app.sentence_corpus', 'app.telemetry', 'app.main', 'app.qt.shell',
                   'app.replan_preview']
+# The 2.x -> 3.0 import and the GraduatedList merge (S3.1 D11-D13): the window's first-run page imports them inside a
+# function, so nothing at the top of the import graph names them (row 3.1.9b found both missing from a build).
+hiddenimports += ['app.import_2x', 'app.graduated_merge']
 
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps

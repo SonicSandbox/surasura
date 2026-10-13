@@ -382,6 +382,47 @@ def test_the_store_helper_once_per_burst_and_detached(monkeypatch, timers_on):
     chores.close()
 
 
+def test_the_copys_stat_is_handed_on_only_when_a_helper_started(monkeypatch):
+    """HR-24: `spawn_maintain` starts nothing while an update is staged (None) — that stat was never handed to a
+    helper, so the next check offers it again instead of skipping the copy's upkeep for the rest of the session."""
+    from app import library_store
+    spawned, handed = _library_store(monkeypatch)
+    spawn = library_store.spawn_maintain
+    answers = [None]
+    monkeypatch.setattr(library_store, "spawn_maintain",
+                        lambda language, *extra: answers.pop(0) if answers else spawn(language, *extra))
+    chores, registry, _p = _make()
+    chores.worker.put(chores._maintain)
+    chores.worker.put(chores._maintain)
+    assert chores.worker.idle(5)
+    assert handed == ["", ""] and len(spawned) == 1
+    chores.worker.put(chores._maintain)
+    assert chores.worker.idle(5) and handed == ["", "", "stat-1"]
+    for proc in spawned:
+        proc.end(0)
+    chores.close()
+
+
+def test_a_fault_in_the_indexer_check_leaves_nothing_busy(indexing_on, monkeypatch):
+    """HR-11: whatever fails in the check before the indexer's job is made (the script, the settings, the update's
+    flag) leaves the chores free to index on the next trigger — never "busy" for the rest of the session."""
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    broken = [True]
+
+    def staged():
+        if broken[0]:
+            raise RuntimeError("the update's flag couldn't be read")
+        return False
+    chores, registry, popen = _make(staged=staged)
+    assert chores.index(force=True) is None
+    assert chores.worker.idle(5) and popen == []
+    broken[0] = False
+    assert chores.index(force=True) is None
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    popen[0].end(0)
+    chores.close()
+
+
 @pytest.mark.parametrize("mode, expected", [("json", 1), ("read-only", 0)])
 def test_the_store_helper_by_mode(monkeypatch, mode, expected):
     """No store yet: the build is asked for (`spawn_build_if_waiting`); read-only: nothing."""

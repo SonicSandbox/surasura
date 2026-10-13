@@ -188,13 +188,61 @@ def test_header_generate_shows_each_state(world, changes, text, look, enabled, b
     assert g.button.toolTip()
 
 
-def test_header_holds_generate_and_the_journey_and_no_level_menu_or_question_mark(world):
-    # Sonic's W3.5-1: the Level menu (Generate's ▾) is not built; ? is drawn only with a guide URL the app holds — it
-    # holds none as a constant, so no ? (no control that does nothing: IK-15).
+def test_header_holds_generate_the_journey_and_help_and_no_level_menu(world):
+    # Sonic's W3.5-1: the Level menu (Generate's ▾) is not built. ? holds *Online guide* only until the tours (IK-15).
     header = world.win.header
     texts = [b.text() for b in header.findChildren(QAbstractButton)]
-    assert strings.GENERATE in texts and strings.JOURNEY in texts
-    assert not any("▾" in t or t.strip() == "?" for t in texts)
+    assert strings.GENERATE in texts and strings.JOURNEY in texts and strings.HELP in texts
+    assert not any("▾" in t for t in texts)
+
+
+def test_header_help_opens_the_online_guide_the_tk_dashboard_opens_too(world, monkeypatch):
+    """IK-24 (RUNBOOK row 4: ? with *Online guide*, the browser's link): one constant, `path_utils.GUIDE_URL`, read
+    by both windows — the Tk dashboard's Help › Tutorial and this ?; the browser opens on a worker."""
+    import webbrowser
+    from app import path_utils
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append((url, threading.current_thread())))
+    help_button = world.d.help
+    actions = help_button.menu().actions()
+    assert [a.text() for a in actions] == [strings.HELP_GUIDE]
+    assert help_button.toolTip()
+    actions[0].trigger()
+    assert wait_until(lambda: opened)
+    assert opened[0][0] == path_utils.GUIDE_URL and opened[0][1] is not threading.main_thread()
+    from app import main as tk_dashboard
+    tk_dashboard.MasterDashboardApp.open_tutorial(None)
+    assert opened[-1][0] == path_utils.GUIDE_URL
+
+
+def test_header_click_during_an_automatic_generate_is_the_users_own_run(world):
+    """IK-20 (the Tk `run_analyzer`: a press while a quiet run goes is the user's Generate, never a cancel of it): the
+    click asks the controller for the user's run, which takes the automatic one's place — even once it writes."""
+    button = world.d.generate.button
+    world.controller.push(state=G.RUNNING, step="Picking sentences", done=3, total=10, quiet=True)
+    assert wait_until(lambda: button.text().startswith("Generating…"))
+    assert button.isEnabled()
+    button.click()
+    assert wait_until(lambda: world.controller.called("controller.request"))
+    assert world.controller.called("controller.request")[0][1:] == ("ja", False)
+    world.controller.push(state=G.RUNNING, step="Writing your list", done=None, total=None, quiet=True)
+    assert wait_until(lambda: button.text() == "Generating… 60 %")
+    assert button.isEnabled()
+    button.click()
+    assert wait_until(lambda: len(world.controller.called("controller.request")) == 2)
+    assert not world.controller.called("controller.cancel")
+
+
+def test_header_generate_sets_up_the_language_folders_first(world, monkeypatch):
+    """IK-21 (`run_analyzer`: `ensure_data_setup(language)` before every Generate — the tier folders, the word lists,
+    the 30-day .trash clean-up): on the worker, before the controller's run."""
+    from app import path_utils
+    monkeypatch.setattr(path_utils, "ensure_data_setup", lambda language=None: (
+        world.log.append(("ensure_data_setup", language, threading.current_thread() is threading.main_thread()))))
+    world.d.generate.button.click()
+    assert wait_until(lambda: world.controller.called("controller.request"))
+    assert ("ensure_data_setup", "ja", False) in world.log
+    assert world.log.index(("ensure_data_setup", "ja", False)) < world.log.index("controller.request")
 
 
 def test_header_generate_click_runs_through_the_controller(world):
@@ -515,13 +563,77 @@ def test_quit_cancels_the_update_before_the_jobs_and_closes_the_duties_off_the_w
     w = World(qapp)
     w.start()
     real_quit = w.registry.quit
-    monkeypatch.setattr(w.registry, "quit", lambda timeout=2.0: (w.log.append("registry.quit"), real_quit(timeout)))
+    monkeypatch.setattr(w.registry, "quit", lambda timeout=2.0, **kw: (w.log.append("registry.quit"),
+                                                                        real_quit(timeout, **kw)))
     w.win.close()
     w.services.shutdown(0.5)
     assert w.log.index("updates.quit") < w.log.index("registry.quit")
     assert "automation.close" in w.log and "chores.close" in w.log
     assert w.automation.threads["automation.close"] is not threading.main_thread()
     assert w.chores.threads["chores.close"] is not threading.main_thread()
+
+
+def test_quit_lets_an_anki_write_finish_and_runs_the_close_chores_to_the_end(qapp, monkeypatch):
+    """IK-22 / HR-22 (E20: "an Anki write finishes its batch first"; the Tk `on_closing` ran Koe's stop, Connect's
+    `at_close` and the store's close trigger to their end): the window's short quit timeout never cuts them."""
+    w = World(qapp)
+    w.start()
+    finished = []
+    job = w.registry.submit("junban", "Re-ordering Anki (automatic)",
+                            lambda j: threading.Timer(0.6, j.finish).start(), automatic=True, on_quit="wait")
+    monkeypatch.setattr(w.chores, "close", lambda: (time.sleep(0.6), finished.append("chores.close")))
+    w.win.close()
+    w.services.shutdown(0.1)
+    assert job.state == "done" and not job.cancelled
+    assert finished == ["chores.close"]
+
+
+def test_junbans_line_and_the_update_that_landed_are_said_once(world, monkeypatch):
+    """IK-23 (the Tk `_on_junban_auto`: never the same line twice running; `reconcile_update_result`: *Updated to
+    v… ✓*): one toast each, never repeated by a state that didn't change them."""
+    said = []
+    monkeypatch.setattr(world.win.toasts, "show", lambda message, **kw: said.append(message))
+    world.automation.push(junban="順 (automatic): 12 cards moved")
+    assert wait_until(lambda: said == ["順 (automatic): 12 cards moved"])
+    world.automation.push(sync=A.SYNCED, known=40)                 # the same line in a newer state: not again
+    world.updates.push(updated="99.0")
+    assert wait_until(lambda: len(said) == 2)
+    assert said[1] == strings.UPDATED.format(version="99.0")
+    world.updates.push(state=U.NONE)
+    world.automation.push(junban="順 (automatic): choose one deck")
+    assert wait_until(lambda: len(said) == 3)
+    QTest.qWait(30)
+    assert said[2] == "順 (automatic): choose one deck" and len(said) == 3
+
+
+def test_the_level_is_read_again_only_after_what_it_reads(world, monkeypatch):
+    """IK-28 (S19): a `logic` write the level doesn't read (the names switch, phrase rows) never reads the token store
+    again; the selection does."""
+    reads = []
+    monkeypatch.setattr(world.services, "level", lambda: reads.append(1) or ("rare", False))
+    world.start()
+    assert wait_until(lambda: reads)
+    before = len(reads)
+    world.services.settings.set({"logic.ignore_names": True}, now=True)
+    QTest.qWait(80)
+    assert len(reads) == before
+    world.services.settings.set({"logic.selection.band": "rare"}, now=True)
+    assert wait_until(lambda: len(reads) == before + 1)
+
+
+def test_a_duty_failure_leaves_the_bar_once_it_is_over(world):
+    """HR-23 (E10: `failed` in the bar while it is): a Generate that runs cleanly again, and an update failure looked
+    at in Needs you, take their line off the bar (both stay listed)."""
+    world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log")
+    assert wait_until(lambda: world.win.bar_failure.isVisibleTo(world.win))
+    world.controller.push(state=G.RUNNING, step="Reading your files")
+    world.controller.push(state=G.CURRENT)
+    assert wait_until(lambda: not world.win.bar_failure.isVisibleTo(world.win))
+    failure = U.Failure("The automatic update didn't finish.", 0.0, False, "99.0", "")
+    world.updates.push(state=U.FAILED, message=failure.text, version="99.0", needs_you=(failure,))
+    assert wait_until(lambda: "didn't finish" in world.win.bar_failure.full())
+    world.updates.push(needs_you=(failure._replace(seen=True),))      # looked at (`mark_seen`)
+    assert wait_until(lambda: not world.win.bar_failure.isVisibleTo(world.win))
 
 
 def test_the_update_hands_over_and_the_window_closes(world, monkeypatch):

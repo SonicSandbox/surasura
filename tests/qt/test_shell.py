@@ -328,7 +328,7 @@ def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch)
 def test_quitting_flushes_settings_and_tells_the_jobs(qapp, monkeypatch):
     services = shell.Services()
     calls = []
-    monkeypatch.setattr(services.registry, "quit", lambda timeout=None: calls.append("jobs"))
+    monkeypatch.setattr(services.registry, "quit", lambda timeout=None, **kw: calls.append("jobs"))
     monkeypatch.setattr(services.settings, "flush", lambda timeout=None: calls.append("settings") or False)
     services.shutdown(0.1)
     assert calls == ["jobs", "settings"]

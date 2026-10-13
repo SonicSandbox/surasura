@@ -191,18 +191,21 @@ class JobRegistry:
         return job.cancel() if job is not None else False
 
     # --- quitting ----------------------------------------------------------------------------------------------- #
-    def quit(self, timeout=10.0):
+    def quit(self, timeout=10.0, wait_timeout=None):
         """What closing the window does to each live job: `cancel` ones are cancelled, `wait` ones waited for (up to
-        `timeout` in all), `detach` ones left running. A worker's call. -> the jobs still running after it."""
+        `timeout` in all; a running `wait` job — an Anki write finishing its batch, E20 — up to `wait_timeout` when
+        given), `detach` ones left running. A `wait` job that never started has nothing to finish: it is cancelled,
+        never waited for. A worker's call. -> the jobs still running after it."""
         with self._lock:
             live = [j for j in self._jobs if j.state in LIVE]
         for job in live:
-            if job.on_quit == "cancel":
+            if job.on_quit == "cancel" or (job.on_quit == "wait" and job.state in (QUEUED, WAITING)):
                 job.cancel()
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
         for job in live:
             if job.on_quit in ("wait", "cancel"):
-                job.wait(max(0.0, deadline - time.monotonic()))
+                limit = wait_timeout if job.on_quit == "wait" and wait_timeout is not None else timeout
+                job.wait(max(0.0, start + limit - time.monotonic()))
         with self._lock:
             return tuple(j.view() for j in self._jobs if j.state in LIVE)
 

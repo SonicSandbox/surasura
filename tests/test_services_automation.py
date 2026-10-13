@@ -17,6 +17,7 @@ KnownWord.json. Generate's child is a launcher that records each run (the real c
 import os
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -450,12 +451,16 @@ def test_the_automatic_generate_waits_while_something_holds_it(live, monkeypatch
 
 
 def test_an_automatic_generate_yields_to_the_users_running_one(live):
-    """The user's Generate runs: the words wait; its end includes them (the Tk `run_analyzer` clears the pending
-    language as any Generate of it starts) — one run, the user's."""
-    auto, registry, controller, launches = _make(_settings())
+    """Words wait while the user's Generate runs; a Generate that started after they came includes them (the Tk
+    `run_analyzer` clears the pending language as any Generate of it starts) — one run, the user's."""
+    staged = [True]
+    auto, registry, controller, launches = _make(_settings(), staged=lambda: staged[0])
+    auto.worker.put(auto.generate.known_words_changed, "ja")      # held back (an update waits): the words wait
+    assert auto.worker.idle(5) and auto.generate.pending == "ja" and launches.count() == 0
+    staged[0] = False
+    time.sleep(0.05)
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches, settle=0)
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    auto.worker.put(auto.generate.known_words_changed, "ja")
     auto.activated()
     assert auto.worker.idle(5)
     assert launches.count() == 1 and auto.generate.pending == "ja"
@@ -466,6 +471,115 @@ def test_an_automatic_generate_yields_to_the_users_running_one(live):
     assert auto.worker.idle(5)
     assert launches.count() == 1, "never a second run for words the user's already took in"
     auto.close()
+
+
+def test_words_that_come_while_a_generate_runs_wait_for_the_next_one(live):
+    """HR-1: the Tk `run_analyzer` cleared the pending language as a Generate of it *started* — words a sync brings in
+    after that are not in that run, so they stay pending and its end asks for the quiet run (never lost until some
+    other trigger)."""
+    auto, registry, controller, launches = _make(_settings())
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches, settle=0)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    time.sleep(0.05)
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert auto.worker.idle(5) and auto.generate.pending == "ja"
+    user.ended(0)
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    assert launches.runs[1].quiet and launches.runs[1].language == "ja"
+    launches.runs[1].ended(0)
+    auto.close()
+
+
+def test_the_controllers_state_says_when_a_run_is_automatic(live):
+    """IK-20: the Generate button tells an automatic run from the user's (a click on an automatic one is the user's
+    own request, never its cancel) — the controller's state carries `quiet` while the run is asked for and running."""
+    auto, registry, controller, launches = _make(_settings())
+    seen = []
+    controller.subscribe(seen.append)
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert controller.state().state == G.RUNNING and controller.state().quiet is True
+    assert all(s.quiet for s in seen if s.state in (G.QUEUED, G.RUNNING))
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    assert controller.state().quiet is False
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches, settle=0)
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    assert controller.state().state == G.RUNNING and controller.state().quiet is False
+    user.ended(0)
+    auto.close()
+
+
+def test_the_automatic_generate_sets_up_the_language_folders_first(live, monkeypatch):
+    """IK-21: `run_analyzer` (quiet too) called `ensure_data_setup(language)` before every Generate — the tier folders,
+    the word lists, the 30-day .trash clean-up — on the worker."""
+    from app import path_utils
+    calls = []
+    monkeypatch.setattr(path_utils, "ensure_data_setup", lambda language=None: calls.append(
+        (language, threading.current_thread().name)))
+    auto, registry, controller, launches = _make(_settings())
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert calls == [("ja", "automation")]
+    launches.runs[0].ended(0)
+    auto.close()
+
+
+def test_a_journey_check_running_never_loses_the_newer_timer(live, monkeypatch):
+    """HR-21: a check that rings while a newer burst armed the next timer forgets only its own timer — `close()` still
+    takes the newer one back, and the burst after it replaces it (one check per burst)."""
+    timers = _Timers()
+    auto, registry, controller, _l = _make(_settings(anki_sync_auto=False), timers=timers)
+    monkeypatch.setattr(controller, "check", lambda settings, language, then=None: None)
+    hold = threading.Event()
+    auto.worker.put(hold.wait, 10)                       # the worker busy: the first check waits its turn
+    auto.recheck()
+    first = timers[-1]
+    first.call()                                         # it rings: its check is queued
+    auto.recheck()
+    second = timers[-1]
+    assert second is not first
+    hold.set()
+    assert auto.worker.idle(5)                           # the first timer's check ran
+    auto.recheck()
+    assert second.cancelled, "the burst after it replaced the newer timer"
+    third = timers[-1]
+    auto.close()
+    assert third.cancelled, "close takes the armed timer back"
+
+
+def test_the_level_of_a_hand_edited_line_is_your_own_band(monkeypatch):
+    """IK-28 (`_auto_band_choice`): an Automatic line the rule can't compare with ("850" in quotes, hand-edited into
+    settings.json) makes the analyzer keep your own band — so that is the band the level chip shows."""
+    from app import analyzer, library_store, token_index, word_selection
+    for key in ("names_recurring", "names_kanji", "names_work_terms"):
+        monkeypatch.setitem(analyzer.LOGIC, key, analyzer.LOGIC.get(key, True))
+
+    class Store:
+        def file_count(self):
+            return 4
+
+        def close(self):
+            pass
+    monkeypatch.setattr(token_index, "open_store", lambda language: Store())
+    monkeypatch.setattr(token_index, "preview_frequencies", lambda *a, **k: {"total_tokens": 4000})
+    monkeypatch.setattr(word_selection, "band_previews", lambda *a, **k: {
+        band: {"word_count": 100 * (n + 1)} for n, band in enumerate(word_selection.BANDS_ORDER)})
+    monkeypatch.setattr(library_store, "read_auto_band", lambda *a, **k: None)
+    selection = {"auto": True, "band": "uncommon", "auto_max_words": 350}
+    assert A.level({"logic": {"selection": selection}}, "ja") == ("occasional", True)
+    selection["auto_max_words"] = "850"
+    assert A.level({"logic": {"selection": selection}}, "ja") == ("uncommon", True)
+
+
+@pytest.mark.parametrize("keys, moves", [
+    (["logic.selection.band"], True), (["logic.selection.auto_max_words"], True), (["logic.names_kanji"], True),
+    (["zh_script"], True), (["logic"], True), (["logic.ignore_names"], False), (["logic.phrase_rows"], False),
+    (["anki_sync_auto", "theme"], False)])
+def test_only_what_the_level_reads_reads_it_again(keys, moves):
+    """IK-28 (S19): the level chip is read again (a token store read) only after a write of what `level` reads — the
+    selection, the names layers the Tk refresh sets, the Chinese script — never after any other `logic` key."""
+    assert A.moves_level(keys) is moves
 
 
 def test_a_users_press_while_the_automatic_one_waits_its_turn_joins_it(live):

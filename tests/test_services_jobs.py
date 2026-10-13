@@ -8,6 +8,7 @@ What a wrong answer would cost:
   * closing that hangs or leaves work half-done — quitting must cancel, wait for or leave each job as it says.
 """
 import threading
+import time
 
 import pytest
 
@@ -176,6 +177,25 @@ def test_quit_cancels_waits_for_and_leaves_each_job_as_it_says():
     assert waited.state == J.DONE and not waited.cancelled
     assert {v.label for v in still} == {"Mining", "Updating known words from Anki"}
     assert left.state in (J.RUNNING, J.WAITING) and left_running.state == J.RUNNING
+
+
+def test_quit_lets_an_anki_write_finish_its_batch_and_drops_one_that_never_started():
+    """IK-22 / HR-22 (E20: "an Anki write finishes its batch first"): a running `wait` job is waited for up to its own
+    `wait_timeout`, past the window's short `timeout` for the rest; a `wait` job that never started (held back by the
+    update, or behind another writer) has nothing to finish — it is dropped, never waited for, never started."""
+    registry = JobRegistry()
+    registry.gate(lambda kind: "waits for the update" if kind == "anki-sync" else None)
+    held = registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, automatic=True,
+                           on_quit="wait")
+    writing = registry.submit("junban", "Re-ordering Anki", lambda j: threading.Timer(0.4, j.finish).start(),
+                              on_quit="wait")
+    behind = registry.submit("backfill", "Filling Anki fields", lambda j: j.finish(), automatic=True, on_quit="wait")
+    t0 = time.monotonic()
+    still = registry.quit(timeout=0.05, wait_timeout=5)
+    assert writing.state == J.DONE and not writing.cancelled          # its batch finished
+    assert held.state == J.DONE and held.cancelled                    # held back: dropped, not waited for
+    assert behind.state == J.DONE and behind.cancelled                # behind the writer: never started at quit
+    assert still == () and time.monotonic() - t0 < 4
 
 
 def test_ended_jobs_are_kept_only_to_a_limit():

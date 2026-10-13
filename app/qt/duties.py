@@ -28,7 +28,7 @@ def _set_prop(widget, name, value):
 # --- the header: Generate --------------------------------------------------------------------------------------- #
 def generate_look(state):
     """(text, tooltip, look, enabled, percent) of the Generate button for the controller's State (E10: `failed` reads
-    as such; a click cancels only before *Writing your list*)."""
+    as such; a click cancels only before *Writing your list* — on an automatic run it is the user's own run, IK-20)."""
     s = state.state
     if s == gen.CURRENT:
         return strings.GENERATE_CURRENT, strings.GENERATE_CURRENT_TIP, "current", True, None
@@ -36,11 +36,15 @@ def generate_look(state):
         return strings.GENERATE, strings.GENERATE_STALE_TIP, "stale", True, None
     if s == gen.QUEUED:
         line = state.message or strings.GENERATE_WAITING
+        if state.quiet:
+            return strings.GENERATE_QUEUED, strings.GENERATE_AUTO_TIP.format(step=line), "busy", True, None
         return strings.GENERATE_QUEUED, strings.GENERATE_QUEUED_TIP.format(line=line), "busy", True, None
     if s == gen.RUNNING:
         pct = gen.percent(state)
         text = strings.GENERATE_RUNNING.format(pct=pct) if pct is not None else strings.GENERATE_RUNNING_NO_PCT
         step = state.step or strings.GENERATE_WAITING
+        if state.quiet:
+            return text, strings.GENERATE_AUTO_TIP.format(step=step), "busy", True, pct or 0
         if gen.can_cancel(state):
             return text, strings.GENERATE_RUNNING_TIP.format(step=step), "busy", True, pct or 0
         return text, strings.GENERATE_WRITING_TIP.format(step=step), "busy", False, pct or 0

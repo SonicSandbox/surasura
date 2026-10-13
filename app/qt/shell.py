@@ -26,7 +26,7 @@ import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QLinearGradient, QPainter
-from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from app import path_utils, theme
@@ -41,6 +41,9 @@ STATE_FILE = "window_state.json"
 STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
+# E20 (IK-22): at quit, an Anki write the window started finishes its batch — waited for up to AnkiConnect's own call
+# timeout (`anki_connect.invoke`), so a hung Anki never keeps the closed window's process longer.
+QUIT_ANKI_WAIT = 30.0
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
@@ -142,13 +145,30 @@ class Services:
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
-        Anki backlog read beside it, then the controller's run — the user's, which an automatic one makes way for."""
+        language's folders and word lists set up (the Tk `run_analyzer`'s `ensure_data_setup`, IK-21), the Anki backlog
+        read beside it, then the controller's run — the user's, which an automatic one makes way for."""
         try:
             self.settings.flush(10.0)
         except Exception as e:
             applog.log("shell", f"settings before Generate: {e}")
+        try:
+            path_utils.ensure_data_setup(self.language)
+        except Exception as e:
+            applog.log("shell", f"folders before Generate: {e}")
         self.automation.before_generate()
         return self.controller.request(self.language, settings=settings_service.thaw(self.settings.get()))
+
+    @staticmethod
+    def open_guide():
+        """(A worker.) ? › *Online guide*: the browser (IK-24; the Tk dashboard's Help › Tutorial opens the same)."""
+        import webbrowser
+        webbrowser.open(path_utils.GUIDE_URL)
+
+    @staticmethod
+    def level_moved(keys):
+        """Whether a settings write of `keys` can move the level chip (`automation.moves_level`, IK-28)."""
+        from app.services import automation as automation_module
+        return automation_module.moves_level(keys)
 
     def journey_exists(self):
         """(A worker.) Whether a journey (the report) is on disk to open."""
@@ -178,8 +198,9 @@ class Services:
 
     def shutdown(self, timeout=2.0):
         """At quit, after the window is gone: an update under way cancelled first (nothing it held starts), the
-        duties closed on a thread of their own (Koe's stop may wait), pending settings written, jobs told (their
-        `on_quit`), the library's reader stopped."""
+        duties closed on a thread of their own (Koe's stop may wait) and to their end (the store's close trigger, as
+        the Tk `on_closing`), pending settings written, jobs told (their `on_quit`: an Anki write finishes its batch,
+        up to `QUIT_ANKI_WAIT` — E20, IK-22), the library's reader stopped."""
         self.closing.set()
         if self.updates is not None:
             try:
@@ -194,10 +215,10 @@ class Services:
             except Exception as e:
                 applog.log("shell", f"library reader at quit: {e}")
         try:
-            self.registry.quit(timeout)
+            self.registry.quit(timeout, wait_timeout=QUIT_ANKI_WAIT)
         except Exception as e:
             applog.log("shell", f"jobs at quit: {e}")
-        closer.join(timeout)
+        closer.join()
         try:
             if not self.settings.flush(timeout):           # a held settings lock: the change is lost, so say so
                 applog.log("shell", f"settings at quit: not written within {timeout} s (pending: "
@@ -512,10 +533,11 @@ class _Duties:
 
     def __init__(self):
         self.module = None
-        self.generate = self.journey = self.known = self.anki = self.level = self.update_mark = None
+        self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
         self.sheet = self.cards = None
         self.update_state = self.generate_state = self.auto_state = None
-        self.notice = None
+        self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
+        self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
         self.paints = {}                    # control -> how many times it was repainted (S19)
 
 
@@ -866,7 +888,8 @@ class ShellWindow(QMainWindow):
         s = self.services
         d = self.duties = _Duties()
         d.module = duties_module
-        # the header: Generate, Your journey ↗ (no ▾ yet, no ?: the RUNBOOK's *Waits for Sonic's pages*, IK-15)
+        # the header: Generate, Your journey ↗, ? (no ▾ yet: the RUNBOOK's *Waits for Sonic's pages*; ? holds *Online
+        # guide* only until the tours, IK-15 / IK-24)
         d.generate = duties_module.GenerateControl(self.header)
         d.generate.pressed.connect(self._generate_pressed)
         d.generate.log_asked.connect(self._open_generate_log)
@@ -877,8 +900,19 @@ class ShellWindow(QMainWindow):
         d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
         d.journey.setEnabled(False)                     # until a journey is found on disk
         d.journey.clicked.connect(self._open_journey)
+        d.help = QToolButton(self.header)
+        d.help.setText(strings.HELP)
+        d.help.setToolTip(strings.HELP_TIP)
+        d.help.setAccessibleName(strings.HELP_NAME)
+        d.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        d.help.setCursor(Qt.CursorShape.PointingHandCursor)
+        d.help.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(d.help)
+        menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
+        d.help.setMenu(menu)
         self.header.layout().addWidget(d.generate)
         d.generate.add_beside(d.journey)
+        d.generate.add_beside(d.help)
         # the bar: N known, the Anki mark, the level chip (statuses: W3.3 makes them open Settings), the update mark
         row = self.footer.layout()
         for name in ("known", "anki", "level"):
@@ -942,7 +976,7 @@ class ShellWindow(QMainWindow):
         language = settings.get("target_language") or "ja"
         if "target_language" in keys and language != s.language:
             bridge.run_in_worker(s.language_changed, language, then=lambda _r: self._read_level())
-        elif any(k == "logic" or k.startswith("logic.") for k in keys):
+        elif s.level_moved(keys):                           # only what the level reads (IK-28, S19)
             self._read_level()
         if "anki_sync_auto" in keys:
             self._show_automation(s.automation.state())
@@ -959,18 +993,20 @@ class ShellWindow(QMainWindow):
         before, d.generate_state = d.generate_state, state
         d.generate.show_state(state)
         busy = ("queued", "running", "cancelling")
-        if state.state == "failed" and (before is None or before.state != "failed"):
-            self.services.status.refresh_soon()            # its failure: the bar's line and Needs you (E10)
-        if before is not None and before.state in busy and state.state not in busy:
+        ended = before is not None and before.state in busy and state.state not in busy
+        if (state.state == "failed") != (before is not None and before.state == "failed") or ended:
+            self.services.status.refresh_soon()            # its failure on, or off, the bar and Needs you (E10, HR-23)
+        if ended:
             self._check_journey()                          # a run ended: a journey on disk now, the level again
             self._read_level()
 
     def _generate_pressed(self):
-        """A click runs Generate — or, while one is asked for or running, cancels it (before *Writing your list*)."""
+        """A click runs Generate — or, while one the user asked for is asked for or running, cancels it (before
+        *Writing your list*). On an automatic run the click is the user's own run, which takes its place (IK-20)."""
         d = self.duties
         state = d.generate_state
         s = self.services
-        if state is not None and state.state in ("queued", "running", "cancelling"):
+        if state is not None and state.state in ("queued", "running", "cancelling") and not state.quiet:
             if d.module.gen.can_cancel(state):
                 bridge.run_in_worker(s.controller.cancel)
             return
@@ -980,6 +1016,9 @@ class ShellWindow(QMainWindow):
         path = getattr(self.duties.generate_state, "log_path", None)
         if path:
             self._open_path(path)
+
+    def _open_guide(self, _checked=False):
+        bridge.run_in_worker(self.services.open_guide)     # the browser can take a moment: off the GUI thread
 
     def _open_path(self, path):
         if sys.platform == "win32":
@@ -1019,6 +1058,10 @@ class ShellWindow(QMainWindow):
     def _show_automation(self, state):
         d = self.duties
         d.auto_state = state
+        junban = getattr(state, "junban", None)
+        if junban and junban != d.junban_said:             # 順's line, once (the Tk `_on_junban_auto`: IK-23)
+            d.junban_said = junban
+            self.toasts.show(junban)
         known = getattr(state, "known", None)
         self._mark(d.known, strings.BAR_KNOWN.format(n=known) if known is not None else "",
                    strings.BAR_KNOWN_TIP if known is not None else "")
@@ -1078,8 +1121,13 @@ class ShellWindow(QMainWindow):
             d.sheet.hide()                                 # nothing on offer: the sheet goes (hidden: no cancel)
         if state.open_now:
             self.open_update_sheet()                       # a critical release, once (the service says when)
-        if state.state == "failed":
-            self.services.status.refresh_soon()            # its failure: the bar's line
+        if state.updated and state.updated != d.updated_said:
+            d.updated_said = state.updated                 # *Updated to v… ✓*, once (the Tk reconcile: IK-23)
+            self.toasts.show(strings.UPDATED.format(version=state.updated))
+        unseen = tuple(f.text for f in state.needs_you if not f.seen)
+        if unseen != d.update_unseen:
+            d.update_unseen = unseen
+            self.services.status.refresh_soon()            # its newest unseen failure on, or off, the bar (HR-23)
         if d.cards.show_state(state, logs=bool(self._logs_folder)) or force_cards:
             self._paint_needs()
 

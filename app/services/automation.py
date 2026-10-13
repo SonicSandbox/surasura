@@ -49,6 +49,8 @@ BACKLOG_LABEL = "Reading Anki's new cards"
 JUNBAN_LABEL = "Re-ordering Anki (automatic)"
 
 State = namedtuple("State", "sync language added known message junban seq")
+# What `level` reads (IK-28): only a write of one of these reads the token store again for the bar's level chip.
+LEVEL_KEYS = ("logic.selection", "logic.names_recurring", "logic.names_kanji", "logic.names_work_terms", "zh_script")
 
 
 def start_timer(delay, call):
@@ -119,6 +121,16 @@ def _thaw(settings):
     return thaw(settings or {})
 
 
+def _set_up(language):
+    """The language's folders and word lists, and the 30-day .trash clean-up, before a Generate (the Tk `run_analyzer`'s
+    `ensure_data_setup`, IK-21). A worker's call."""
+    try:
+        from app import path_utils
+        path_utils.ensure_data_setup(language)
+    except Exception as e:
+        print(f"Generate: the folders couldn't be set up: {e}")
+
+
 def library_has_content(language):
     """Whether `language`'s library has a file Generate would read (the Tk `_library_has_content` /
     `_folders_have_content`): the store's answer when it is ready, else the tier folders walked. A worker's call."""
@@ -146,6 +158,12 @@ def journey_current(settings, language):
     """The Generate button's own question (`analyzer.journey_is_current`), asked on a worker."""
     from app import analyzer, run_args
     return analyzer.journey_is_current(run_args.analyzer_args(settings, language), language)
+
+
+def moves_level(keys):
+    """Whether a write of `keys` (the settings service's: dotted under `logic`) can move the level chip: the whole
+    `logic` block, or a key `level` reads (`LEVEL_KEYS`)."""
+    return any(key == "logic" or any(key == k or key.startswith(k + ".") for k in LEVEL_KEYS) for key in keys)
 
 
 def level(settings, language):
@@ -181,8 +199,13 @@ def level(settings, language):
                 sel.get("minutes_per_file", word_selection.MINUTES_PER_FILE))
         finally:
             store.close()
-        return word_selection.auto_band(previews, sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS),
-                                        remembered=remembered), True
+        try:
+            return word_selection.auto_band(previews, sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS),
+                                            remembered=remembered), True
+        except (TypeError, ValueError):
+            # A line the rule can't compare with ("850" in quotes, hand-edited into settings.json) makes the analyzer
+            # keep your own band: so that is the band shown (the Tk `_auto_band_choice`).
+            return sel.get("band") or DEFAULT_SETTINGS["logic"]["selection"]["band"], True
     except Exception as e:
         print(f"Automation: the level couldn't be read: {e}")
         return None, True
@@ -299,12 +322,13 @@ class AutoGenerate:
         self._last = float("-inf")
         self._alarm = None
         self.pending = False        # False, or the language Anki brought words in for, not generated since
+        self.pending_at = None      # when they came (the clock the registry stamps a job's start with)
         self._children = 0
 
     def known_words_changed(self, language):
         """(The worker.) Words came in for `language`: pending with *Generate when Anki adds known words* on."""
         if self._owner.settings_now().get("anki_auto_generate"):
-            self.pending = language
+            self.pending, self.pending_at = language, time.time()
         return self.maybe()
 
     def maybe(self):
@@ -335,6 +359,7 @@ class AutoGenerate:
         self._last = now
         self.pending = False            # this run includes them (run_analyzer clears it as it starts)
         print("Anki brought in words you know now — generating in the background; the report is not opened.")
+        _set_up(o.language)
         o.sync.backlog()
         o.controller.request(o.language, settings=_thaw(settings), quiet=True, settle=0, launcher=o.launcher)
         return True
@@ -362,10 +387,13 @@ class AutoGenerate:
         if alarm is not None:
             alarm.cancel()
 
-    def ended(self, language, outcome):
+    def ended(self, language, outcome, started_at=None):
         """(The worker, after the controller's end.) A Generate of the pending language that ran includes its words
-        (the Tk `run_analyzer` cleared them as any Generate of it started); else the waiting one asks again."""
-        if outcome != "dropped" and self.pending and (language or self._owner.language) == self.pending:
+        when they came before it started (`started_at`, its job's start: the Tk `run_analyzer` cleared them as any
+        Generate of it started) — words that came while it ran are not in it and wait for the next (HR-1); else the
+        waiting one asks again."""
+        if (outcome != "dropped" and self.pending and (language or self._owner.language) == self.pending
+                and started_at is not None and self.pending_at is not None and self.pending_at <= started_at):
             self.pending = False
         if self.pending:
             self.maybe()
@@ -514,7 +542,10 @@ class Automation:
                 return
             if self._check_timer is not None:
                 self._check_timer.cancel()
-            self._check_timer = self.timer(CHECK_SETTLE, lambda: self.worker.put(self.check))
+
+            def ring():
+                self.worker.put(self.check, timer)
+            timer = self._check_timer = self.timer(CHECK_SETTLE, ring)
 
     def update_cancelled(self):
         """An update that held everything was cancelled: a Generate it held back asks again."""
@@ -547,10 +578,12 @@ class Automation:
         except Exception as e:
             print(f"Automation: the settings couldn't be written first: {e}")
 
-    def check(self):
-        """(The worker.) The journey asked again (the Generate button's mark), on the controller's worker."""
+    def check(self, timer=None):
+        """(The worker.) The journey asked again (the Generate button's mark), on the controller's worker. `timer`: the
+        one that rang — forgotten only if no newer burst armed another meanwhile (HR-21: `close` takes that one back)."""
         with self.lock:
-            self._check_timer = None
+            if timer is None or timer is self._check_timer:
+                self._check_timer = None
             if self.closed:
                 return
         try:
@@ -598,7 +631,7 @@ class Automation:
             return
         if outcome == "current":
             self.worker.put(self.junban.maybe, True)
-        self.worker.put(self.generate.ended, run.language, outcome)
+        self.worker.put(self.generate.ended, run.language, outcome, getattr(run.job, "started_at", None))
 
     def _jobs_changed(self, views):
         if not self.closed:

@@ -198,8 +198,8 @@ def main():
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 sys.exit(patterns_build.main())
             elif command == 'dashboard':
-                # The 2.x Tk dashboard, kept reachable on the 3.0 line until the window takes over its duties (W3.5
-                # retires it; W2.1 RUNBOOK G-1). Falls through to the default start below, in Tk.
+                # The 2.x Tk dashboard, kept reachable on the 3.0 line until nothing opens a Tk window (W3.4's last row
+                # retires it; W2.1 RUNBOOK G-1, IK-14). Falls through to the default start below, in Tk.
                 use_tk = True
             else:
                 log_error(f"Unknown command: {command}")

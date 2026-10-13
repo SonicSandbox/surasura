@@ -12,7 +12,9 @@ What it holds, refreshed off the window's thread:
 - the failures of the window's own duties (W3.5, E10, IK-7), from providers too — `update` (the update service's
   newest failure not looked at yet) and `generate` (Generate's, while it reads `failed`): each new one is the bar's
   failure line, as a command-line one is, and (but the update's: Needs you lists those itself, with their actions)
-  a *Needs you* entry. Their service says when to look again (`refresh_soon`).
+  a *Needs you* entry. Their service says when to look again (`refresh_soon`). A duty's line is the bar's while its
+  provider gives it (Generate failed until it runs cleanly again, the update's failure until looked at), then it goes
+  — still listed (HR-23); a command line's stays the bar's until a newer one.
 
 `poll()` is safe on a window's thread (a stat, nothing read); it starts a refresh on a worker when the file changed.
 `subscribe(cb)` hears every new snapshot, on the thread that made it (a worker, or the registry's).
@@ -59,6 +61,7 @@ class StatusService:
         self._deliver = threading.RLock()
         self._lines = ()
         self._failure = None
+        self._failure_from = None        # the failure provider whose line the bar's failure is (None: a command line's)
         self._needs = []                 # Entry, newest first
         self._extra = {"ankiweb": None, "connect": None}
         self._provided = {}              # each failure provider's last line (a new one counts once)
@@ -124,14 +127,16 @@ class StatusService:
                     extra[name] = None
             with self._lock:
                 if newest is not None:
-                    self._failure = events.plain(newest)
+                    self._failure, self._failure_from = events.plain(newest), None
                     self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
                 for name in FAILURE_PROVIDERS:
                     line = extra.pop(name)
                     if line and line != self._provided.get(name):
-                        self._failure = line            # the newest failure is the bar's
+                        self._failure, self._failure_from = line, name      # the newest failure is the bar's
                         if name not in LISTED_BY_THE_WINDOW:
                             self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False))
+                    elif not line and self._failure_from == name:
+                        self._failure, self._failure_from = None, None      # over, or looked at: off the bar
                     self._provided[name] = line
                 del self._needs[NEEDS_YOU_KEPT:]
                 self._extra = extra

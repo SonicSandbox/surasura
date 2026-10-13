@@ -230,21 +230,26 @@ class Chores:
 
     # --- inside: the indexer ------------------------------------------------------------------------------------ #
     def _index_check(self, language):
-        """(The worker.) The stat-only check, then the job."""
-        from app.zh_script import effective
-        script = effective(language, self._settings.get().get("zh_script", "asis"))
+        """(The worker.) The stat-only check, then the job. Whatever fails before the job is made (the script, the
+        settings, the update's flag) leaves nothing busy: the next trigger asks again (HR-11)."""
+        submitted = False
         try:
-            need = self._needed(language, script)
-        except Exception:
-            need = False
-        if not need or self._update_staged() or self._closed:
-            with self._lock:
-                self._indexing = False
-            return
-        self.registry.submit("indexer", INDEX_LABEL, automatic=True, on_quit="cancel",
-                             start=lambda job: threading.Thread(target=self._run_indexer, args=(job, language),
-                                                                name="chores-indexer", daemon=True).start(),
-                             cancel=self._cancel_indexer)
+            from app.zh_script import effective
+            script = effective(language, self._settings.get().get("zh_script", "asis"))
+            try:
+                need = self._needed(language, script)
+            except Exception:
+                need = False
+            if need and not self._update_staged() and not self._closed:
+                self.registry.submit("indexer", INDEX_LABEL, automatic=True, on_quit="cancel",
+                                     start=lambda job: threading.Thread(target=self._run_indexer, args=(job, language),
+                                                                        name="chores-indexer", daemon=True).start(),
+                                     cancel=self._cancel_indexer)
+                submitted = True
+        finally:
+            if not submitted:
+                with self._lock:
+                    self._indexing = False
 
     def _run_indexer(self, job, language):
         """(The job's thread.) The indexer as a child process, to its end."""
@@ -334,8 +339,10 @@ class Chores:
             with store:
                 due, seen = library_store.maintain_due(store, self._handed.get(language, ""))
             if due:
-                self._handed[language] = seen
-                self._watch(library_store.spawn_maintain(language))
+                proc = library_store.spawn_maintain(language)
+                if proc is not None:              # None while an update is staged: not handed on, asked again (HR-24)
+                    self._handed[language] = seen
+                self._watch(proc)
         except Exception as e:
             print(f"Library store helper check: {e}")
 

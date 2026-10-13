@@ -702,8 +702,9 @@ def test_the_service_imports_no_qt_tk_or_pandas():
 # --- the hold on new work (the Tk `hold_children` / `defer_child`) -------------------------------------------------- #
 def test_no_new_job_starts_while_the_update_waits_and_it_starts_after_a_cancel(world):
     """_start_update's `hold_children` + run_command_async's `defer_child` + `_maybe_auto_generate` / `_maybe_anki_sync`'s
-    `children_held()`: a Generate or a sync asked for while the update waits waits too (an arrivals reader, which only
-    reads, still starts); Cancel starts what was held (`release_children(start=True)`)."""
+    `children_held()`: a Generate, a sync or the arrivals worker asked for while the update waits waits too (IK-19: the
+    arrivals worker is a child process running this install's program — `app_entry.py arrivals-worker` — so it would
+    hold the files the update replaces); Cancel starts what was held (`release_children(start=True)`)."""
     world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
     registry = JobRegistry()
     svc = world.offered(world.service(registry=registry))
@@ -713,11 +714,126 @@ def test_no_new_job_starts_while_the_update_waits_and_it_starts_after_a_cancel(w
     generate = registry.submit("generate", "Generating", lambda job: started.append("generate"))
     sync = registry.submit("anki-sync", "Updating known words from Anki", lambda job: started.append("sync"),
                            automatic=True)
-    registry.submit("arrivals-ja", "New arrivals", lambda job: started.append("arrivals"))
-    assert started == ["arrivals"]
+    arrivals = registry.submit("arrivals-ja", "New arrivals", lambda job: started.append("arrivals"))
+    assert started == []
     assert (generate.state, generate.reason) == (J.WAITING, U.HELD_REASON) and sync.state == J.WAITING
+    assert (arrivals.state, arrivals.reason) == (J.WAITING, U.HELD_REASON)
     assert svc.cancel()
-    assert started == ["arrivals", "generate", "sync"]
+    assert started == ["generate", "sync", "arrivals"]
+
+
+# --- the registers' rows (W3.5 worker F) --------------------------------------------------------------------------- #
+def test_anki_writing_jobs_are_only_waited_for_and_junban_is_listed_once(world):
+    """IK-18 (_busy_threads: "the window's own background work that writes to Anki … Waited for; no Stop"): a registry
+    job that quits with `wait` — the sync, 順, the backlog read, none of which can be cancelled — has no *Stop it*;
+    and 順's own row goes while the Anki writer lock's row names the automatic step (never listed twice)."""
+    registry = JobRegistry()
+    sync = registry.submit("anki-sync", "Updating known words from Anki", lambda job: None, automatic=True,
+                           on_quit="wait")
+    junban = registry.submit("junban", "Re-ordering Anki (automatic)", lambda job: None, automatic=True,
+                             on_quit="wait")
+    held = locks.take(anki_connect.WRITER_LOCK, anki_connect.AUTOMATIC_STEP, owner=object())
+    try:
+        svc = world.offered(world.service(registry=registry))
+        assert svc.start()
+        assert h.until(lambda: svc.state().state == U.WAITING and len(svc.state().programs) == 2, seconds=10)
+        assert [(p.name, p.can_stop) for p in svc.state().programs] == [
+            (f"Writing to Anki ({anki_connect.AUTOMATIC_STEP})", False), ("Updating known words from Anki", False)]
+        assert svc.stop() is False                           # Stop all: nothing here can be stopped
+    finally:
+        held.release()
+    assert h.until(lambda: [p.name for p in svc.state().programs] == ["Updating known words from Anki",
+                                                                       "Re-ordering Anki (automatic)"], seconds=10)
+    sync.finish()
+    junban.finish()
+    assert h.until(lambda: world.quits, seconds=10)
+
+
+def test_two_jobs_with_one_label_are_stopped_one_at_a_time(world):
+    """HR-4: the wait list keys a registry job by the job, never by its words — the Japanese and the Chinese arrivals
+    workers share one label, and *Stop it* on one must not stop the other."""
+    registry = JobRegistry()
+    cancelled = []
+    ja = registry.submit("arrivals-ja", "Counting new arrivals", lambda job: None,
+                         cancel=lambda job: cancelled.append(job.id), automatic=True)
+    registry.submit("arrivals-zh", "Counting new arrivals", lambda job: None,
+                    cancel=lambda job: cancelled.append(job.id), automatic=True)
+    svc = world.offered(world.service(registry=registry))
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING and len(svc.state().programs) == 2, seconds=10)
+    keys = [p.key for p in svc.state().programs]
+    assert len(set(keys)) == 2
+    assert svc.stop(keys[0]) is True
+    assert h.until(lambda: cancelled == [ja.id], seconds=5)
+    time.sleep(0.1)
+    assert cancelled == [ja.id]
+    svc.cancel()
+
+
+def test_looking_at_needs_you_with_nothing_unseen_sends_nothing(world, monkeypatch):
+    """HR-8 (S19, update only what changed): `mark_seen` with no failure left to see sends no state; with one, once."""
+    svc = world.service()
+    seen = _states(svc)
+    svc.mark_seen()
+    assert seen == []
+    monkeypatch.setattr(updater, "consume_result", lambda: {"status": "failed", "from": "2.5.0", "to": NEWER})
+    monkeypatch.setattr(updater, "write_report", lambda *a, **k: "")
+    monkeypatch.setattr(updater, "record_failed_version", lambda version: None)
+    assert svc.reconcile() == "failed"
+    before = len(seen)
+    svc.mark_seen()
+    svc.mark_seen()
+    assert len(seen) == before + 1 and svc.failure() is None
+
+
+@pytest.mark.parametrize("where", ["before the lock", "while it waits"])
+def test_an_unexpected_fault_in_update_now_lets_go_of_everything(world, monkeypatch, where):
+    """HR-14: a fault the update didn't foresee, anywhere in *Update now*'s run, never leaves it stuck — the update
+    lock, the held children and its job let go, the failure said in the bar and Needs you, and *Update now* works
+    again (else every job the hold kept back would wait for the rest of the session)."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
+    registry = JobRegistry()
+    svc = world.offered(world.service(registry=registry))
+
+    def boom(*_a, **_k):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+    if where == "before the lock":
+        monkeypatch.setattr(updater, "can_auto_apply", boom)
+    else:
+        svc._wait = boom
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.FAILED, seconds=10)
+    assert "mount" in svc.state().message and svc.failure()
+    assert h.until(lambda: _lock_is_free() and not updater.children_held(), seconds=10)
+    assert h.until(lambda: registry.live("update") == () and svc._update is None, seconds=10)
+    monkeypatch.setattr(updater, "can_auto_apply", lambda info=None: True)
+    svc.__dict__.pop("_wait", None)
+    assert svc.start() is True
+    svc.cancel()
+
+
+def test_a_listing_that_fails_keeps_the_last_list(world, monkeypatch):
+    """HR-16: one failed look at what runs never shows an empty wait list (nor hands over on it): the last list stands
+    until the next look."""
+    world.stage = Stage(gate=False)
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": lambda: None}]
+    svc = world.offered(world.service())
+    seen = _states(svc)
+    looks = []
+    listing = updater.running_children
+
+    def flaky(active=(), images=None):
+        looks.append(1)
+        if len(looks) == 3:
+            raise OSError("the process list couldn't be read")
+        return listing(active, images)
+    monkeypatch.setattr(updater, "running_children", flaky)
+    assert svc.start()
+    assert h.until(lambda: len(looks) >= 6, seconds=10)
+    shown = [s.programs for s in seen if s.state in (U.DOWNLOADING, U.WAITING)]
+    first = next(i for i, programs in enumerate(shown) if programs)          # the first look's list
+    assert all(programs == (U.Program(4242, "Content Manager", True),) for programs in shown[first:]), shown
+    svc.cancel()
 
 
 def test_closing_mid_wait_starts_none_of_the_held_jobs(world):
@@ -742,9 +858,9 @@ def test_a_running_job_is_waited_for_and_stop_it_cancels_it(world):
     junban = registry.submit("junban", "Re-ordering Anki", lambda job: None, cancel=lambda job: cancelled.append(job.id))
     svc = world.offered(world.service(registry=registry))
     assert svc.start()
-    assert h.until(lambda: svc.state().programs == (U.Program("Re-ordering Anki", "Re-ordering Anki", True),),
-                   seconds=10)
-    assert svc.stop("Re-ordering Anki") is True
+    key = ("job", junban.id)                                   # keyed by the job, never its words (HR-4)
+    assert h.until(lambda: svc.state().programs == (U.Program(key, "Re-ordering Anki", True),), seconds=10)
+    assert svc.stop(key) is True
     assert h.until(lambda: cancelled == [junban.id], seconds=5)
     time.sleep(0.15)
     assert world.quits == [] and svc.state().state == U.WAITING      # cancelling: still waited for

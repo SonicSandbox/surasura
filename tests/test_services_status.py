@@ -142,3 +142,30 @@ def test_the_duties_failures_reach_the_bar_once_and_generates_is_listed_in_needs
     lines["generate"] = "Generate stopped (exit code 1)."
     status.refresh()
     assert len(status.snapshot().needs_you) == 2
+
+
+def test_a_duty_failure_leaves_the_bar_once_it_is_over_and_a_command_lines_stays():
+    """HR-23 (E10: `failed` in the bar while it is): a duty's failure line is the bar's while its provider gives it —
+    Generate failed until it runs cleanly again, the update's failure until it is looked at — then the bar's line goes
+    (still listed in Needs you); a command line's failure stays the bar's until a newer one (W1.3), and a duty going
+    quiet never takes away a command line's line that came after it."""
+    lines = {"generate": None, "update": None}
+    status = StatusService(JobRegistry(), providers={"generate": lambda: lines["generate"],
+                                                     "update": lambda: lines["update"]})
+    status.refresh()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    assert status.snapshot().failure == "Generate stopped (exit code 1)."
+    lines["generate"] = None                              # it ran again, cleanly
+    status.refresh()
+    assert status.snapshot().failure is None
+    assert [e.text for e in status.snapshot().needs_you] == ["Generate stopped (exit code 1)."]
+    lines["update"] = "The automatic update didn't finish."
+    status.refresh()
+    assert status.snapshot().failure == "The automatic update didn't finish."
+    _failure()                                            # a command line's failure after it
+    status.refresh()
+    assert status.snapshot().failure.startswith("Command line (status)")
+    lines["update"] = None                                # looked at: it stops counting
+    status.refresh()
+    assert status.snapshot().failure.startswith("Command line (status)")

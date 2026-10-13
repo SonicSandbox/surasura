@@ -2,7 +2,7 @@
 
 What a wrong answer would cost: the 3.0 line still opening the Tk dashboard (the window never seen), or a build
 without PyQt6 crashing at start instead of opening the dashboard; the Tk dashboard unreachable while the window can't
-do its work yet (until W3.5); a headless verb (the analyzer Connect runs, the store's helper) loading Qt.
+do its work yet (until W3.4's last row); a second heartbeat from the window; a headless verb (the analyzer Connect runs, the store's helper) loading Qt.
 
 Each case runs app_entry.main() in a fresh process with the window and the dashboard replaced by recorders, so
 nothing opens.
@@ -18,8 +18,9 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _run(tmp_path, argv, hide_qt=False, fake_window=True):
-    """-> (exit code, what opened: ["window"] / ["dashboard"], Qt modules loaded, the log)."""
+def _run(tmp_path, argv, hide_qt=False, fake_window=True, beats=False):
+    """-> (exit code, what opened: ["window"] / ["dashboard"] — with `beats`, each heartbeat too, as "heartbeat" —, Qt
+    modules loaded, the log)."""
     script = textwrap.dedent(f"""
         import json, sys, types
         opened = []
@@ -35,7 +36,7 @@ def _run(tmp_path, argv, hide_qt=False, fake_window=True):
         dash.main = lambda: opened.append("dashboard")
         sys.modules["app.main"] = dash
         tele = types.ModuleType("app.telemetry")
-        tele.init = lambda *a, **k: None
+        tele.init = lambda *a, **k: opened.append("heartbeat") if {beats!r} else None
         sys.modules["app.telemetry"] = tele
         if {fake_window!r} and not {hide_qt!r}:
             win = types.ModuleType("app.qt.shell")
@@ -70,6 +71,19 @@ def test_the_default_start_opens_the_window(tmp_path):
     code, opened, _qt, log = _run(tmp_path, [])
     assert opened == ["window"] and code in (0, None)
     assert "Launching the window" in log
+
+
+def test_the_window_route_sends_the_heartbeat_once_before_the_window(tmp_path):
+    """IK-27 (W3.5 RUNBOOK row 6: the heartbeat stays where it is — `app_entry.py` sends it before either window
+    opens): the window's route sends it once, before the window; nothing in the window or its services starts another
+    (the update's own event, `send_update_event`, is the reconcile's)."""
+    code, opened, _qt, _log = _run(tmp_path, [], beats=True)
+    assert opened == ["heartbeat", "window"] and code in (0, None)
+    for folder in (os.path.join(ROOT, "app", "qt"), os.path.join(ROOT, "app", "services")):
+        for name in sorted(os.listdir(folder)):
+            if name.endswith(".py"):
+                with open(os.path.join(folder, name), encoding="utf-8") as f:
+                    assert "telemetry.init" not in f.read(), name
 
 
 def test_without_pyqt6_the_dashboard_opens_and_the_log_says_why(tmp_path):

@@ -47,10 +47,10 @@ POLL = 0.3                                  # the Tk `_update_poll`'s period (se
 JUNBAN_AUTO = "Junban's automatic reorder"  # a `busy()` name the Anki writer lock's own entry stands in for
 RELEASES_PAGE = "https://github.com/SonicSandbox/surasura/releases/latest"
 NEEDS_YOU_KEPT = 20
-# What still starts while an update waits: the update itself and the arrivals readers (they only read). Every other job
-# — a child process, an Anki write, a sync — waits, as the Tk dashboard's `hold_children` / `defer_child` and its
-# `children_held()` checks held them, and starts when the update is cancelled.
-FREE_KINDS = ("update", "arrivals-ja", "arrivals-zh")
+# What still starts while an update waits: the update itself. Every other job — a child process (the arrivals worker
+# too: it runs this install's program, IK-19), an Anki write, a sync — waits, as the Tk dashboard's `hold_children` /
+# `defer_child` and its `children_held()` checks held them, and starts when the update is cancelled.
+FREE_KINDS = ("update",)
 HELD_REASON = "waits for the update"
 _MB = 1 << 20
 
@@ -111,6 +111,7 @@ class _Update:
         self.shown = None               # the progress last reported (percent, or MB when the size is unknown)
         self.message = None
         self.job = None                 # its record in the job registry
+        self.downloading = None         # the download's thread, once started (it drops the lock at its end)
         self.wake = threading.Event()   # list again now (a Stop, the download's end, a cancel)
 
 
@@ -309,8 +310,11 @@ class UpdateService:
             return next((f.text for f in self._needs if not f.seen), None)
 
     def mark_seen(self):
-        """The user looked at *Needs you*: the update's failures stop counting, and stay listed."""
+        """The user looked at *Needs you*: the update's failures stop counting, and stay listed. Nothing unseen: no new
+        state (HR-8, S19)."""
         with self._lock:
+            if all(f.seen for f in self._needs):
+                return
             self._needs = [f._replace(seen=True) for f in self._needs]
             snap = self._assign(self._state.state, keep=True)
         self._send(snap)
@@ -336,6 +340,25 @@ class UpdateService:
         threading.Thread(target=self._run, args=(update,), name="update-run", daemon=True).start()
 
     def _run(self, update):
+        try:
+            self._steps(update)
+        except Exception as e:                        # a fault nobody foresaw never leaves it stuck (HR-14)
+            self._broke(update, e)
+
+    def _broke(self, update, error):
+        """An unexpected fault in *Update now*'s run: everything it holds let go — the update lock (here, when no
+        download was started to drop it), the held children, its job — and the failure said, as a failed download's."""
+        print(f"Update: {error}")
+        with self._lock:
+            started = update.downloading is not None
+            if not started:
+                update.done = True                    # no download to end: this run drops the lock (`_end`)
+        if not self._end(update, start_held=True, discard=started):
+            return                                    # cancelled meanwhile: the cancel said so
+        report = updater.write_report("update", error, to_version=getattr(update.info, "version", ""))
+        self._fail(update, f"The update stopped: {error}." + report_note(report), report)
+
+    def _steps(self, update):
         info = update.info
         if update.cls == "APP":
             manual = not updater.can_auto_apply(info)  # no updater.exe (a source checkout), or a list it may not write
@@ -365,7 +388,9 @@ class UpdateService:
             self._close_job(update, cancelled=True)
             return
         self._send(snap)
-        threading.Thread(target=self._download, args=(update, stage), name="update-download", daemon=True).start()
+        update.downloading = threading.Thread(target=self._download, args=(update, stage), name="update-download",
+                                              daemon=True)
+        update.downloading.start()
         self._wait(update)
 
     def _download(self, update, stage):
@@ -414,6 +439,8 @@ class UpdateService:
             with self._lock:
                 if update.ended:
                     return
+                if children is None:                  # the look failed: the last list stands until the next (HR-16)
+                    children = update.children or []
                 update.children = children
                 if children:
                     update.message = None
@@ -438,26 +465,36 @@ class UpdateService:
             busy.append({"pid": None, "name": name, "stop": None})
         if writing is not None:
             busy.append({"pid": None, "name": f"Writing to Anki ({writing or 'Surasura'})", "stop": None})
-        # The registry's running jobs (the Qt window's Generate, indexer, sync, 順 …): *Stop it* cancels the job as its
-        # own Cancel does. A recorded job is a child the window passes in `active()`: listed there, never twice.
+        # The registry's running jobs (the Qt window's Generate, indexer, sync, 順 …), each keyed by its job (two may
+        # share a label: HR-4): *Stop it* cancels the job as its own Cancel does — but a job that quits with `wait` (an
+        # Anki write: the sync, 順, the backlog read) is only waited for, as Tk; 順's own row goes while the writer
+        # lock's row names its automatic step (IK-18). A recorded job is a child the window passes in `active()`:
+        # listed there, never twice.
         for view in self.registry.live():
-            if view.gated and view.kind != "update" and view.state in (jobs_module.RUNNING, jobs_module.CANCELLING):
-                busy.append({"pid": None, "name": view.label,
-                             "stop": (lambda job_id=view.id: self.registry.cancel(job_id))})
+            if not view.gated or view.kind == "update" or view.state not in (jobs_module.RUNNING,
+                                                                              jobs_module.CANCELLING):
+                continue
+            if view.kind == "junban" and writing == anki_connect.AUTOMATIC_STEP:
+                continue
+            stop = None if view.on_quit == "wait" else (lambda job_id=view.id: self.registry.cancel(job_id))
+            busy.append({"pid": None, "key": ("job", view.id), "name": view.label, "stop": stop})
         return busy
 
     def _listing(self):
-        """What still runs (the Tk `_list_update_children`)."""
+        """What still runs (the Tk `_list_update_children`), or None when it couldn't be read."""
         try:
             return self._busy_entries() + updater.running_children(list(self._active() or ()))
         except Exception as e:
             print(f"Update: {e}")
-            return []
+            return None
 
     @staticmethod
-    def _programs(update):
-        return tuple(Program(c.get("pid") or c.get("name"), c.get("name"), c.get("stop") is not None)
-                     for c in update.children or ())
+    def _key(child):
+        return child.get("key") or child.get("pid") or child.get("name")
+
+    @classmethod
+    def _programs(cls, update):
+        return tuple(Program(cls._key(c), c.get("name"), c.get("stop") is not None) for c in update.children or ())
 
     def _say(self, update):
         """The state while it waits, sent only when it changed."""
@@ -483,7 +520,7 @@ class UpdateService:
             if update is None or update.ended:
                 return False
             targets = [c for c in update.children or ()
-                       if c.get("stop") is not None and (key is None or (c.get("pid") or c.get("name")) == key)]
+                       if c.get("stop") is not None and (key is None or self._key(c) == key)]
         if not targets:
             return False
 

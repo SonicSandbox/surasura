@@ -49,7 +49,8 @@ STEPS = ("Reading your files", "Counting words", "Picking sentences", "Writing y
 LOG_NAME = "generate-window.log"
 PROGRESS_FLAG = "--progress-json"
 
-State = namedtuple("State", "state step done total message log_path job_id seq")
+# `quiet`: the run asked for or running is an automatic one (IK-20: a click on it is the user's own request).
+State = namedtuple("State", "state step done total message log_path job_id seq quiet", defaults=(False,))
 WRITING = STEPS.index("Writing your list")
 
 
@@ -285,7 +286,7 @@ class GenerateController:
             if in_flight is not None and not quiet and in_flight.quiet:
                 restart = True              # an automatic run: the user's takes its place (asked to stop if it runs)
             if in_flight is None:
-                snap = self._assign(QUEUED)
+                snap = self._assign(QUEUED, quiet=quiet)
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
@@ -370,7 +371,7 @@ class GenerateController:
         if run.cancel_event.is_set() and job.state in (jobs_module.QUEUED, jobs_module.WAITING):
             job.cancel()                    # cancelled while the job was being made
         elif job.state == jobs_module.WAITING:
-            self._set(QUEUED, message=job.reason)
+            self._set(QUEUED, message=job.reason, quiet=run.quiet)
 
     def _begin(self, run):
         """The registry let it start: wait for `results` (a worker), then launch."""
@@ -405,7 +406,7 @@ class GenerateController:
 
     def _waiting(self, run, holder):
         verb = (holder or {}).get("verb") or "another Generate"
-        self._set(QUEUED, message=f"Waiting for {verb} to finish")
+        self._set(QUEUED, message=f"Waiting for {verb} to finish", quiet=run.quiet)
         if run.on_wait is not None:
             run.on_wait(holder)
 
@@ -417,7 +418,7 @@ class GenerateController:
         if stop:
             self._dropped(run)
             return
-        self._set(RUNNING, job_id=run.job.id)
+        self._set(RUNNING, job_id=run.job.id, quiet=run.quiet)
         try:
             (run.launcher or self._spawn)(run)
         except Exception as e:
@@ -482,7 +483,7 @@ class GenerateController:
                 return                      # it ended meanwhile: its end said what it is, never "Stopping…" for good
             snap = self._assign(CANCELLING, job_id=run.job.id,
                                 message="Stopping before your list is written" if asked
-                                else "Finishing: Generate can't stop part-way here")
+                                else "Finishing: Generate can't stop part-way here", quiet=run.quiet)
         self._send(snap)
 
     def _dropped(self, run):
@@ -531,7 +532,7 @@ class GenerateController:
                 self._settled = state
             nxt = self._pending
             if nxt is not None:
-                snap = self._assign(QUEUED)
+                snap = self._assign(QUEUED, quiet=nxt.quiet)
             else:
                 snap = self._assign(self._settled if state is None else state, message=message, log_path=log_path)
         self._send(snap)
@@ -543,7 +544,8 @@ class GenerateController:
         with self._lock:
             if self._run is not run or self._state.state != RUNNING:
                 return                      # over, or cancelling: an update read late never moves the state back
-            snap = self._assign(RUNNING, step=update.step, done=update.done, total=update.total, job_id=run.job.id)
+            snap = self._assign(RUNNING, step=update.step, done=update.done, total=update.total, job_id=run.job.id,
+                                quiet=run.quiet)
         self._send(snap)
 
     def _text(self, run, line):
@@ -555,14 +557,15 @@ class GenerateController:
             except Exception as e:
                 print(f"Generate: a log listener failed: {e}")
 
-    def _set(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None):
+    def _set(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None, quiet=False):
         with self._lock:
-            snap = self._assign(state, step, done, total, message, log_path, job_id)
+            snap = self._assign(state, step, done, total, message, log_path, job_id, quiet)
         self._send(snap)
 
-    def _assign(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None):
+    def _assign(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None,
+                quiet=False):
         """The new state (inside `self._lock`), numbered."""
-        self._state = State(state, step, done, total, message, log_path, job_id, self._state.seq + 1)
+        self._state = State(state, step, done, total, message, log_path, job_id, self._state.seq + 1, bool(quiet))
         return self._state
 
     def _send(self, snap):

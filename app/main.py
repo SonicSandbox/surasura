@@ -3747,7 +3747,8 @@ class MasterDashboardApp:
 
     def open_tutorial(self):
         try:
-            webbrowser.open("https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md")
+            from app.path_utils import GUIDE_URL       # one link both windows open (the 3.0 window's ? › Online guide)
+            webbrowser.open(GUIDE_URL)
         except Exception as e:
             messagebox.showerror("Error", f"Could not open tutorial: {e}")
 

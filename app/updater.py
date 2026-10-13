@@ -1590,6 +1590,11 @@ def _consume(state):
                 m = {}
         except Exception:
             m = {}
+        if _swapper_running(m):
+            # The swap is still running: this is the new version its proof started. The swapper writes the result
+            # and removes the marker itself; reading it now would remove the marker under a swap that may still be
+            # undone, and say "Updated" twice.
+            return None
         if _cut_off(m):
             # A swap cut off half-way (S3.1-5, S3.1-6), and a program started before the next sign-in: Windows
             # then runs the swapper's copy with --recover, which finishes or undoes it from this marker, so the marker
@@ -1628,6 +1633,20 @@ def _read_marker(path):
     except (OSError, ValueError):
         return {}
     return m if isinstance(m, dict) else {}
+
+
+def _swapper_running(m):
+    """An armed marker whose swapper is still running: its pid alive and that process the program the marker names
+    (a pid Windows gave to something else after a cut-off is not it)."""
+    pid, image = m.get("swapper_pid"), m.get("swapper_image")
+    if not m.get("armed") or not isinstance(pid, int) or isinstance(pid, bool) or not isinstance(image, str) \
+            or not image or sys.platform != "win32":
+        return False
+    try:
+        running = _image_of(pid)
+    except Exception:
+        return False
+    return bool(running) and os.path.normcase(os.path.abspath(running)) == os.path.normcase(os.path.abspath(image))
 
 
 def _cut_off(m):

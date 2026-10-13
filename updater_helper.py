@@ -910,12 +910,14 @@ def run_folder(marker_path, m, ops=None, clock=time.monotonic, sleep=time.sleep)
     the moment this ends, whatever the outcome. -> 0 on success, 2 on failure (`recover`'s codes when it recovers)."""
     ops = WinOps() if ops is None else ops
     root = os.path.dirname(os.path.abspath(marker_path))
+    recovering = bool(m.get("armed"))
     try:
-        if m.get("armed"):
+        if recovering:
             return recover(marker_path, ops, sleep)
         return _hand_off(marker_path, m, ops, clock, sleep)
     finally:
-        forget_recovery(root)
+        if not recovering:                  # `recover` keeps or takes away the entry itself (written again: try later)
+            forget_recovery(root)
 
 
 def _hand_off(marker_path, m, ops, clock, sleep):
@@ -1004,14 +1006,29 @@ def arm_recovery(marker_path, m, plan=None):
     """Just before a swap's first move: the RunOnce value, then the marker stamped "armed" (`recover` acts on no other,
     so a cut-off between the two leaves an entry that finds an unarmed marker and goes, and a marker the app reads as
     it always has), with a folder swap's `plan` (`apply_folder`). Raises when either can't be written: then nothing
-    moves, and the value goes again."""
+    moves, and the value goes again. The marker also names this swapper (its pid and program), so the new version this
+    swap starts for its proof leaves the marker alone while the swap still runs (`app.updater._swapper_running`)."""
     _write_recovery(marker_path)
     m.update(plan or {})
+    m["swapper_pid"], m["swapper_image"] = os.getpid(), _own_image()
     m["armed"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     if not _write_json_atomic(marker_path, m):
         m.pop("armed", None)
         forget_recovery(os.path.dirname(os.path.abspath(marker_path)))
         raise OSError("the update's marker could not be written")
+
+
+def _own_image():
+    """This process's program as Windows names it (what `QueryFullProcessImageName` gives another process asking)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetModuleFileNameW(None, buf, len(buf)):
+                return buf.value
+        except Exception:
+            pass
+    return sys.executable
 
 
 def _write_recovery(marker_path):
@@ -1042,9 +1059,10 @@ def recover(marker_path, ops=None, sleep=time.sleep):
         `--version`, the headless proof (D9) -> finished: kept, one previous version kept (folder mode: the uninstall
         entry names the release), and the success result the app knows written;
       * otherwise -> the swap's own failure branch from the marker (`_put_back`, `_put_back_folder`), and a failed
-        result written.
+        result written — unless an entry couldn't be put back: then the marker stays armed, no result, and the
+        RunOnce value is written again, so the next sign-in tries again (`--version` is asked twice before that).
     The marker goes after either of the last two; one missing, damaged or never armed moves nothing. The RunOnce value
-    goes in every case but the first. -> 0 finished, 2 put back, 1 nothing done."""
+    goes in every case but the first and the held put-back. -> 0 finished, 2 put back (or held), 1 nothing done."""
     ops = WinOps() if ops is None else ops
     root = os.path.dirname(os.path.abspath(marker_path))
     later = False
@@ -1075,13 +1093,18 @@ def _recover(marker_path, root, ops, sleep):
         if folder and not _arrived(m):
             raise SwapError("the release's entries aren't all in")
         _verify(m["install"], m.get("files"))
-        _reports(m, ops)
+        try:
+            _reports(m, ops)
+        except SwapError:
+            _reports(m, ops)                # a first start just after sign-in can be slow (antivirus): asked once more
         status, reason = SUCCESS, RECOVERED
     except Exception:
         status, reason = FAILED, "the update was cut off before it finished, so the old version was put back"
         stuck = _put_back_folder(m, sleep) if folder else _put_back(m, sleep)
         if stuck:
-            reason += f" -- and {len(stuck)} item(s) could not be put back"
+            # Something held (antivirus, the indexer): the marker stays armed, no result yet, and the next sign-in
+            # tries again — the put-back reads what to do from the folders as they are, so a second run is safe.
+            return 2, True
     if status == SUCCESS:
         if folder:
             if m.get("app_id"):

@@ -912,6 +912,18 @@ def _cut_off(marker, monkeypatch, setup_wrote=None, at_rename=None):
         updater_helper.run(path, ops=kit.FakeOps(setup=setup))
     monkeypatch.setattr(updater_helper, "forget_recovery", real_forget)
     monkeypatch.setattr(updater_helper, "_rename", real_rename)
+    return _swapper_ended(path)
+
+
+def _swapper_ended(path):
+    """The swapper ran in this test's own process, so the marker names it as running: a killed swapper's is gone."""
+    m = updater._read_marker(path)
+    if not m.get("armed"):
+        return path
+    assert m["swapper_pid"] == os.getpid() and m["swapper_image"] == updater_helper._own_image(), "its swapper named"
+    m["swapper_image"] = os.path.join(os.path.dirname(path), "swapper", "updater-ended.exe")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(m, f)
     return path
 
 
@@ -1249,12 +1261,19 @@ def test_recovery_without_the_releases_list_needs_the_new_command_line(installer
     assert kit.tree(root) == before
 
 
-def test_recovery_says_so_when_an_entry_cant_come_back(installer_marker, runonce, monkeypatch):
-    root, marker, _before = installer_marker
+def test_recovery_with_an_entry_held_tries_again_at_the_next_sign_in(installer_marker, runonce, monkeypatch):
+    """Something holds a file Setup wrote (antivirus, the indexer): the recovery never gives up for good. The marker
+    stays armed, no result is written, the entry is written again; once the hold is gone, the next sign-in finishes
+    the put-back."""
+    root, marker, before = installer_marker
     path = _cut_off(marker, monkeypatch, _half(root))
     with open(root / "_internal" / "base_library.zip", "rb"):         # Setup's file, held: _internal can't go
         assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
-    assert _result()["reason"].endswith(" -- and 1 item(s) could not be put back")
+    assert not os.path.exists(updater.result_path()), "no result while something is held"
+    assert updater._read_marker(path).get("armed") and _entry(runonce, path) == updater_helper.recovery_command(path)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert _result()["status"] == "failed" and "could not be put back" not in _result()["reason"]
+    assert kit.tree(root) == before and not os.path.exists(path) and _entry(runonce, path) is None
 
 
 @pytest.mark.parametrize("finished", [False, True])
@@ -1384,7 +1403,7 @@ def _cut_off_folder(marker, monkeypatch, at_rename=None):
         updater_helper.run(path, ops=_CutInProof())
     monkeypatch.setattr(updater_helper, "forget_recovery", real_forget)
     monkeypatch.setattr(updater_helper, "_rename", real_rename)
-    return path
+    return _swapper_ended(path)
 
 
 @pytest.mark.parametrize("outcome", ["proven", "its proof failed"])
@@ -1533,6 +1552,77 @@ def test_folder_recovery_of_go_back_without_its_list_waits_for_every_entry(stage
     assert result["status"] == "failed" and result["going_back"] is True and result["to"] == kit.OLD
 
 
+@pytest.mark.parametrize("proof", ["proven", "its window closed"])
+def test_the_new_version_the_proof_starts_leaves_the_marker_to_the_swap_still_running(staged, runonce, monkeypatch,
+                                                                                      proof):
+    """The swapper starts the new Surasura.exe to see its window, and that program reads the update folder as it
+    opens. The swap is still running — and may yet be undone — so it leaves the marker and the entry alone and says
+    nothing; the one result the swapper writes is read once, at the next start (never "Updated" twice)."""
+    root, marker, before = staged
+    marker["window"] = True
+    seen = []
+
+    class Opening(kit.FakeOps):
+        def start(self, exe):
+            monkeypatch.setattr(updater, "__version__", kit.NEW)
+            path = updater.marker_path()
+            seen.append((updater.consume_result(), os.path.exists(path), updater._read_marker(path).get("armed"),
+                         _entry(runonce, path)))
+            return super().start(exe)
+    ops = Opening() if proof == "proven" else Opening(window=None, exits=1, code=1)
+    path = updater.write_marker(marker)
+    code = updater_helper.run(path, ops=ops)
+    assert seen, "the proof started the new version"
+    for read, kept, armed, entry in seen:                              # every start while the swap runs
+        assert read is None and kept and armed and entry == updater_helper.recovery_command(path)
+    first = updater.consume_result()
+    assert first["status"] == ("success" if proof == "proven" else "failed") and code == (0 if proof == "proven" else 2)
+    assert updater.consume_result() is None, "read once"
+    if proof != "proven":
+        assert kit.tree(root) == before
+
+
+def test_a_swapper_is_running_only_while_its_own_program_holds_its_pid():
+    """A pid Windows hands to something else after a cut-off is not the swapper: the program must match too."""
+    me = {"armed": "2026-10-13T14:00:00", "swapper_pid": os.getpid(), "swapper_image": updater_helper._own_image()}
+    assert updater._swapper_running(me) is (sys.platform == "win32")
+    assert not updater._swapper_running(dict(me, swapper_image=os.path.join(os.path.dirname(sys.executable),
+                                                                             "updater-3.0.1.exe")))
+    assert not updater._swapper_running(dict(me, armed=None))
+    assert not updater._swapper_running(dict(me, swapper_pid=str(os.getpid())))
+    assert not updater._swapper_running({k: v for k, v in me.items() if k != "swapper_image"})
+
+
+def test_a_later_swapper_that_finds_the_install_in_use_leaves_the_entry_for_the_next_sign_in(staged, runonce,
+                                                                                             monkeypatch):
+    """A second swapper handed an armed marker recovers it; with something running from the install, the recovery
+    writes the entry again for the next sign-in — and the swapper's own end must not take it away."""
+    root, marker, _before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=10)
+    now = kit.tree(root)
+    assert updater_helper.run(path, ops=kit.FakeOps(running=[4242])) == 1
+    assert kit.tree(root) == now and updater._read_marker(path).get("armed")
+    assert _entry(runonce, path) == updater_helper.recovery_command(path)
+
+
+def test_folder_recovery_asks_a_slow_first_start_twice_before_putting_back(staged, runonce, monkeypatch):
+    """Just after sign-in antivirus can make the first `--version` miss its time: every file already matches its
+    sha256, so the recovery asks once more before undoing a finished update."""
+    root, marker, _before = staged
+    path = _cut_off_folder(marker, monkeypatch)                         # every entry in, cut off in its proof
+
+    class SlowFirst(kit.FakeOps):
+        asked = 0
+
+        def version(self, cli):
+            self.asked += 1
+            return None if self.asked == 1 else super().version(cli)
+    ops = SlowFirst()
+    assert updater_helper.recover(path, ops=ops) == 0 and ops.asked == 2
+    assert _result()["reason"] == updater_helper.RECOVERED
+    assert _program_part(kit.tree(root)) == kit.digests(kit.program(kit.NEW))
+
+
 @pytest.mark.parametrize("cut", ["all but updater.exe in", "every entry in, cut off in its proof"])
 def test_go_back_without_its_list_cut_off_half_in_is_never_read_as_landed_by_the_version_it_brings_back(
         staged, runonce, monkeypatch, cut):
@@ -1582,17 +1672,22 @@ def test_a_folder_marker_without_a_plan_it_can_trust_moves_nothing(staged, runon
     assert _entry(runonce, path) is None
 
 
-def test_folder_recovery_says_so_when_an_entry_cant_come_back(staged, runonce, monkeypatch):
+def test_folder_recovery_with_an_entry_held_tries_again_at_the_next_sign_in(staged, runonce, monkeypatch):
     """The new _internal is in and one of its files is held: it can't go back to the stage, so the old _internal stays
-    safe in previous\\3.0.0 — one item, said once — while every other entry is put back."""
+    safe in previous\\3.0.0 while every other entry is put back — and the recovery doesn't give up for good: the
+    marker stays armed, no result yet, the entry written again. The next sign-in, the hold gone, finishes it."""
     root, marker, before = staged
     path = _cut_off_folder(marker, monkeypatch, at_rename=13)
     with open(root / "_internal" / "base_library.zip", "rb"):
         assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
-    assert _result()["reason"] == PUT_BACK + " -- and 1 item(s) could not be put back"
     assert os.listdir(os.path.join(updater.previous_root(), kit.OLD)) == ["_internal"], "the old one kept safe"
     outside = {p: d for p, d in kit.tree(root).items() if not p.startswith("_internal/")}
     assert outside == {p: d for p, d in before.items() if not p.startswith("_internal/")}, "the rest put back"
+    assert not os.path.exists(updater.result_path()), "no result while something is held"
+    assert updater._read_marker(path).get("armed") and _entry(runonce, path) == updater_helper.recovery_command(path)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert _result()["reason"] == PUT_BACK and kit.tree(root) == before
+    assert not os.path.exists(path) and _entry(runonce, path) is None
 
 
 def test_folder_recovery_leaves_alone_an_install_something_runs_from(staged, runonce, monkeypatch):

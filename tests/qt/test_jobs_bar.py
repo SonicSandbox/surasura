@@ -118,7 +118,8 @@ class FakeChores(_Duty):
     def activated(self): self._record("chores.activated")
     def language_changed(self, language): self._record("chores.language_changed", language)
     def koe_changed(self): self._record("chores.koe_changed")
-    def close(self): self._record("chores.close")
+    def close(self, store=True): self._record("chores.close", store)
+    def close_store(self): self._record("chores.close_store")
 
 
 class QuietReader:
@@ -568,24 +569,180 @@ def test_quit_cancels_the_update_before_the_jobs_and_closes_the_duties_off_the_w
     w.win.close()
     w.services.shutdown(0.5)
     assert w.log.index("updates.quit") < w.log.index("registry.quit")
-    assert "automation.close" in w.log and "chores.close" in w.log
+    assert "automation.close" in w.log and "chores.close" in w.log and "chores.close_store" in w.log
     assert w.automation.threads["automation.close"] is not threading.main_thread()
     assert w.chores.threads["chores.close"] is not threading.main_thread()
+    assert w.chores.threads["chores.close_store"] is not threading.main_thread()
 
 
 def test_quit_lets_an_anki_write_finish_and_runs_the_close_chores_to_the_end(qapp, monkeypatch):
     """IK-22 / HR-22 (E20: "an Anki write finishes its batch first"; the Tk `on_closing` ran Koe's stop, Connect's
-    `at_close` and the store's close trigger to their end): the window's short quit timeout never cuts them."""
+    `at_close` and the store's close trigger to their end): the window's short quit timeout never cuts them — nor
+    does the quit when the window didn't wait for the write itself (the update's hand-over closes at once)."""
     w = World(qapp)
     w.start()
     finished = []
     job = w.registry.submit("junban", "Re-ordering Anki (automatic)",
                             lambda j: threading.Timer(0.6, j.finish).start(), automatic=True, on_quit="wait")
-    monkeypatch.setattr(w.chores, "close", lambda: (time.sleep(0.6), finished.append("chores.close")))
-    w.win.close()
+    monkeypatch.setattr(w.chores, "close_store", lambda: (time.sleep(0.6), finished.append("chores.close_store")))
+    monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: None))
+    assert wait_until(lambda: A.JUNBAN_LABEL in w.win.bar_line.full())
+    w.win._quit_for_update()                                    # the update hands over: the window goes at once
+    assert not w.win.isVisible()
     w.services.shutdown(0.1)
     assert job.state == "done" and not job.cancelled
-    assert finished == ["chores.close"]
+    assert finished == ["chores.close_store"]
+
+
+# --- W3.5: quitting while an Anki write runs (E20), and no unbounded wait at exit ------------------------------- #
+def _anki_write(registry):
+    """順's automatic reorder under way (`wait` at quit: an Anki write finishes its batch), ended when the test says."""
+    return registry.submit("junban", A.JUNBAN_LABEL, lambda j: None, automatic=True, on_quit="wait")
+
+
+def _bar_shows(world, text):
+    return wait_until(lambda: text in world.win.bar_line.full())
+
+
+def test_closing_while_an_anki_write_runs_keeps_the_window_with_one_line_until_it_ends(world):
+    """E20 (W1.2 06: "an Anki write finishes its batch first (≤ a few seconds, a line says so)"; the Tk
+    `_replan_finishing`, which kept the window with *Finishing the re-order in Anki…*): the close leaves the window up
+    with one line in the bar; Generate is cancelled at once and Connect's job goes on (`detach`); a second close and
+    Esc change nothing; the window closes by itself when the write ends — the registry's own signal, no poll."""
+    world.start()
+    gen = world.registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: j.finish(cancelled=True),
+                                on_quit="cancel")
+    connect = world.registry.submit("arrivals-ja", "New arrivals", lambda j: None, on_quit="detach")
+    write = _anki_write(world.registry)
+    assert _bar_shows(world, A.JUNBAN_LABEL)
+    world.win.close()
+    assert world.win.isVisible()
+    assert world.win.bar_line.full() == strings.QUIT_FINISHING                  # one line, the jobs' lines behind it
+    assert wait_until(lambda: gen.state == "done" and gen.cancelled)            # Generate: cancelled at once
+    assert connect.state == "running" and write.state == "running"
+    world.win.close()                                                           # a second close: nothing changes
+    QTest.keyClick(world.win, Qt.Key.Key_Escape)                                # nor Esc
+    QTest.qWait(60)
+    assert world.win.isVisible() and world.log.count("updates.quit") == 1
+    assert world.win.bar_line.full() == strings.QUIT_FINISHING
+    write.finish()
+    assert wait_until(lambda: not world.win.isVisible())
+
+
+def test_nothing_new_starts_while_the_window_waits_for_an_anki_write(world, monkeypatch):
+    """E20: while the window waits for the write, the header's Generate, the window's activation (the sync, 順, the
+    indexer, the store's helper) and any duty's job start nothing — a job asked for is held, with its reason."""
+    world.start()
+    monkeypatch.setattr(world.win, "isActiveWindow", lambda: True)
+    write = _anki_write(world.registry)
+    assert _bar_shows(world, A.JUNBAN_LABEL)
+    activated = len(world.automation.called("automation.activated")), len(world.chores.called("chores.activated"))
+    world.win.close()
+    assert wait_until(lambda: world.services.closing.is_set())
+    world.d.generate.button.click()
+    world.win.changeEvent(QEvent(QEvent.Type.ActivationChange))
+    started = []
+    held = world.registry.submit("indexer", C.INDEX_LABEL, lambda j: started.append(j), automatic=True)
+    QTest.qWait(100)
+    assert not world.controller.called("controller.request")
+    assert (len(world.automation.called("automation.activated")),
+            len(world.chores.called("chores.activated"))) == activated
+    assert held.state == "waiting" and held.reason == strings.QUIT_HELD and started == []
+    write.finish()
+    assert wait_until(lambda: not world.win.isVisible())
+    assert started == []
+
+
+def test_closing_with_an_anki_write_that_never_started_closes_at_once(world):
+    """E20: a `wait` job still waiting for its turn (behind Connect's miner on Anki's writer) has nothing to finish —
+    the window closes at once, and the quit drops it."""
+    world.start()
+    world.registry.submit("mine", "Mining", lambda j: None, on_quit="detach")
+    queued = _anki_write(world.registry)
+    assert _bar_shows(world, "Mining") and queued.state == "waiting"
+    world.win.close()
+    assert not world.win.isVisible()
+
+
+def test_the_window_closes_by_itself_at_the_cap_and_the_quit_waits_no_longer(world, monkeypatch):
+    """E20's bound (`QUIT_ANKI_WAIT`, AnkiConnect's own call timeout: a hung Anki): the window closes by itself at the
+    cap, and the quit after it doesn't wait the cap a second time."""
+    monkeypatch.setattr(shell, "QUIT_ANKI_WAIT", 1.0)
+    world.start()
+    write = _anki_write(world.registry)                                       # never ends by itself
+    assert _bar_shows(world, A.JUNBAN_LABEL)
+    t0 = time.monotonic()
+    world.win.close()
+    assert world.win.isVisible()
+    assert wait_until(lambda: not world.win.isVisible(), 5)
+    assert time.monotonic() - t0 >= 0.9
+    t1 = time.monotonic()
+    world.services.shutdown(0.1)
+    assert time.monotonic() - t1 < 0.6 and write.state == "running"         # its time was spent with the window up
+    assert world.log.count("updates.quit") == 1                               # the quit began once, at the close
+    write.finish()
+
+
+def _services_only(log):
+    """The window's services with stand-in duties, started, and no window: what `main` runs once the window's loop
+    ended."""
+    registry = JobRegistry()
+    services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()),
+                              controller=FakeController(log), updates=FakeUpdates(log),
+                              automation=FakeAutomation(log), chores=FakeChores(log))
+    assert services.start()
+    return services
+
+
+def test_quit_never_waits_on_a_close_chore_that_never_returns(qapp, monkeypatch):
+    """F.md (`shutdown` joined the duties' close with no bound): a chore of the close that hangs (Koe's stop, Connect's
+    `at_close`) would keep a windowless process — and the single-instance claim — for ever. The quit goes on at
+    `QUIT_CLOSE_WAIT`, and the claim still goes."""
+    monkeypatch.setattr(shell, "QUIT_CLOSE_WAIT", 0.3)
+    log, never, released = [], threading.Event(), []
+    services = _services_only(log)
+    monkeypatch.setattr(services.chores, "close", lambda *a, **k: never.wait())
+    quitting = threading.Thread(target=services.shutdown, args=(0.1,), kwargs={"release": lambda: released.append(1)},
+                                daemon=True)
+    quitting.start()
+    quitting.join(3.0)
+    hung = quitting.is_alive()
+    never.set()
+    assert not hung and released == [1]
+
+
+def test_quit_lets_the_claim_go_before_the_stores_close_and_never_waits_on_a_hung_one(qapp, monkeypatch):
+    """F.md: the store's close trigger (`maintain_at_close`, as the Tk `on_closing` runs it: an export took 6.7–14.5 s
+    at 100k items) ran with the single-instance claim held, so a start meanwhile waited for it and gave up after 10 s
+    with no window. The claim goes once the settings are written, before that trigger; a trigger that never returns
+    keeps the process `QUIT_STORE_WAIT` at most."""
+    from app import path_utils
+    from app.qt import single
+    monkeypatch.setattr(shell, "QUIT_STORE_WAIT", 0.5)
+    log, free, never = [], [], threading.Event()
+    services = _services_only(log)
+    first = single.SingleInstance()
+    assert first.claim([])
+
+    def hung_store_close():
+        log.append("store close")
+        lock = path_utils.try_lock(first.lock_file)                     # what a new start takes to become the first
+        free.append(lock is not None)
+        path_utils.release_lock(lock)
+        never.wait()
+
+    monkeypatch.setattr(services.chores, "close_store", hung_store_close)
+    monkeypatch.setattr(services.settings, "flush", lambda timeout=None: log.append("settings") or True)
+    t0 = time.monotonic()
+    try:
+        services.shutdown(0.1, release=lambda: (log.append("release"), first.release()))
+        took = time.monotonic() - t0
+    finally:
+        never.set()
+        first.release()
+    assert free == [True]
+    assert log.index("settings") < log.index("release") < log.index("store close")
+    assert took < 3.0
 
 
 def test_junbans_line_and_the_update_that_landed_are_said_once(world, monkeypatch):

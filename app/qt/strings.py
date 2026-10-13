@@ -185,3 +185,8 @@ NEEDS_UPDATE_TITLE = "Install the update"
 NEEDS_UPDATE_LINE = "Surasura v{version} is ready to install"
 NEEDS_UPDATE_FAILED_TITLE = "The update didn't finish"
 UPDATED = "Updated to v{version} ✓"
+
+# Closing while an Anki write runs (E20: it finishes its batch first, and a line says so) — the bar's one line, and
+# the reason a job asked for meanwhile waits.
+QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
+QUIT_HELD = "Surasura is closing"

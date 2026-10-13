@@ -66,6 +66,12 @@ def conflicts(kind_a, kind_b):
     return bool(RESOURCES.get(kind_a, set()) & RESOURCES.get(kind_b, set()))
 
 
+def waits_at_quit(jobs):
+    """Of `jobs` (views or Jobs), those closing the window waits for: a `wait` job under way — an Anki write
+    finishing its batch (E20). One not started yet has nothing to finish (`quit` drops it). -> a tuple."""
+    return tuple(j for j in jobs if j.on_quit == "wait" and j.state in (RUNNING, CANCELLING))
+
+
 class Job:
     """One job. Its owner reports `progress(...)` and `finish(...)`; anyone may `cancel()`."""
 
@@ -198,8 +204,9 @@ class JobRegistry:
         never waited for. A worker's call. -> the jobs still running after it."""
         with self._lock:
             live = [j for j in self._jobs if j.state in LIVE]
+            under_way = waits_at_quit(live)
         for job in live:
-            if job.on_quit == "cancel" or (job.on_quit == "wait" and job.state in (QUEUED, WAITING)):
+            if job.on_quit == "cancel" or (job.on_quit == "wait" and job not in under_way):
                 job.cancel()
         start = time.monotonic()
         for job in live:

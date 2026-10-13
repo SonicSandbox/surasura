@@ -19,7 +19,8 @@ the library store's helper (`_maybe_maintain`, `_schedule_maintain`, `maintain_a
   change. `on_indexed(cb)`: `cb(language)` after each indexer run (the Rarity numbers' refresh).
 
 `close()` is the window's close, after the window is gone (it waits: a worker's call or the process's last one): Koe
-stopped, Connect's `at_close`, and the store's close trigger for each language.
+stopped, Connect's `at_close`, and the store's close trigger for each language (`close_store`, which the window's
+quit runs apart: `close(store=False)` first, the trigger once the single-instance claim is let go).
 """
 import importlib
 import os
@@ -182,9 +183,10 @@ class Chores:
             return "closed"
         return None
 
-    def close(self):
-        """The window closed (after it is gone: this waits). No timer left, Koe stopped, Connect's `at_close`, the
-        store's close trigger for each language (`maintain_at_close`: in-process, never waits for a helper)."""
+    def close(self, store=True):
+        """The window closed (after it is gone: this waits). No timer left, Koe stopped, Connect's `at_close`, then —
+        unless `store=False` (the window's quit runs it apart, after the single-instance claim is let go) — the store's
+        close trigger (`close_store`)."""
         with self._lock:
             self._closed = True
             timers, self._timers = self._timers, []
@@ -200,6 +202,12 @@ class Chores:
                 notice.at_close(self.language)
         except Exception as e:
             print(f"Arrivals notice at close: {e}")
+        if store:
+            self.close_store()
+
+    def close_store(self):
+        """The store's close trigger for each language (`maintain_at_close`: in-process, never waits for a helper; an
+        export of the copy takes seconds at 100k items: Library_Store_Spec's L3.1 figures, 6.7–14.5 s)."""
         try:
             from app import library_store
             for language in ("ja", "zh"):

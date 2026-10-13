@@ -22,6 +22,7 @@ import math
 import os
 import sys
 import threading
+import time
 import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
@@ -42,8 +43,16 @@ STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
 # E20 (IK-22): at quit, an Anki write the window started finishes its batch — waited for up to AnkiConnect's own call
-# timeout (`anki_connect.invoke`), so a hung Anki never keeps the closed window's process longer.
+# timeout (`anki_connect.invoke`), so a hung Anki never keeps the window longer: with the window up and its bar saying so
+# (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`.
 QUIT_ANKI_WAIT = 30.0
+# No unbounded wait at exit. The duties' close — Koe's stop (two 2 s joins at most), Connect's `at_close` (the
+# store opened with its 1 s busy wait, one write) — goes on for at most this long before the single-instance claim is
+# let go; then the store's close trigger (`maintain_at_close` for both languages, as the Tk `on_closing` runs it: an
+# export of the copy measured 6.7–14.5 s at 100k items, L3.1) for at most QUIT_STORE_WAIT. Past a cap the process ends
+# without it: the store stays the truth, the copy is exported at the next trigger (a temp file left is cleared, §6.7).
+QUIT_CLOSE_WAIT = 6.0
+QUIT_STORE_WAIT = 60.0
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
@@ -70,6 +79,8 @@ class Services:
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
         self.started = False
+        self._quit_lock = threading.Lock()
+        self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
         if self.has_duties():
             self._provide()
 
@@ -131,22 +142,26 @@ class Services:
         return True
 
     def activated(self):
-        """(A worker.) The window came back into focus: the journey, the sync, 順, a waiting Generate, the indexer."""
-        if self.started:
+        """(A worker.) The window came back into focus: the journey, the sync, 順, a waiting Generate, the indexer —
+        nothing once the quit began (E20: the window may still be up while an Anki write ends)."""
+        if self.started and not self.closing.is_set():
             self.automation.activated()
             self.chores.activated()
 
     def language_changed(self, language):
         """(A worker.) Another language is open (D31: nothing assumes one)."""
         self.language = language or "ja"
-        if self.started:
+        if self.started and not self.closing.is_set():
             self.automation.language_changed(self.language)
             self.chores.language_changed(self.language)
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
         language's folders and word lists set up (the Tk `run_analyzer`'s `ensure_data_setup`, IK-21), the Anki backlog
-        read beside it, then the controller's run — the user's, which an automatic one makes way for."""
+        read beside it, then the controller's run — the user's, which an automatic one makes way for. Nothing once the
+        quit began (E20)."""
+        if self.closing.is_set():
+            return None
         try:
             self.settings.flush(10.0)
         except Exception as e:
@@ -186,27 +201,77 @@ class Services:
         return automation_module.level(settings_service.thaw(self.settings.get()), self.language)
 
     def _close_duties(self):
+        """The duties' close but the store's trigger (`_close_store`): their timers and workers, Koe, Connect's
+        `at_close`."""
         for name in ("automation", "chores"):
             duty = getattr(self, name)
             if duty is None or (name == "chores" and not self.started):
-                continue                  # (the chores' close runs the store's close trigger: only once started)
+                continue                  # (the chores' close stops Koe and tells Connect: only once started)
             try:
-                duty.close()
+                if name == "chores":
+                    duty.close(store=False)
+                else:
+                    duty.close()
             except Exception as e:
                 applog.log("shell", f"{name} at quit: {e}")
+
+    def _close_store(self):
+        try:
+            self.chores.close_store()
+        except Exception as e:
+            applog.log("shell", f"the store's close at quit: {e}")
+
+    # --- E20: the quit begins (the window may stay up while an Anki write ends) --------------------------------- #
+    def begin_quit(self):
+        """(A worker; the window's close while an Anki write runs, E20.) At once, nothing waited for: nothing new
+        starts (`_stop_starting`), Generate and every `cancel` job are cancelled, a `wait` job not started yet is
+        dropped, `detach` ones (Connect) go on. A running `wait` job finishes its batch: the window closes when it ends
+        or at `QUIT_ANKI_WAIT`, and `shutdown` waits only what is left of that. -> False when the quit began already."""
+        if not self._stop_starting():
+            return False
+        try:
+            self.registry.quit(0.0, wait_timeout=0.0)
+        except Exception as e:
+            applog.log("shell", f"jobs at quit: {e}")
+        return True
+
+    def _stop_starting(self):
+        """Once: `closing` set (a Generate waiting for `results` starts nothing), every gated job held from now on
+        (the registry's gate), and an update under way cancelled first — before the registry's quit (U.md): the jobs it
+        held are dropped, not started. -> False when it was done already."""
+        with self._quit_lock:                 # (a worker's or the last call: never the window's thread)
+            if self._quit_began is not None:
+                return False
+            self._quit_began = time.monotonic()
+            self.closing.set()
+            self.registry.gate(self._closing_gate)
+            if self.updates is not None:
+                try:
+                    self.updates.quit()
+                except Exception as e:
+                    applog.log("shell", f"update at quit: {e}")
+        return True
+
+    @staticmethod
+    def _closing_gate(_kind):
+        return strings.QUIT_HELD
+
+    def _anki_wait_left(self):
+        """What is left of `QUIT_ANKI_WAIT` since the quit began (the window's wait counts: never the cap twice)."""
+        began = self._quit_began
+        return QUIT_ANKI_WAIT if began is None else max(0.0, QUIT_ANKI_WAIT - (time.monotonic() - began))
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
-    def shutdown(self, timeout=2.0):
-        """At quit, after the window is gone: an update under way cancelled first (nothing it held starts), the
-        duties closed on a thread of their own (Koe's stop may wait) and to their end (the store's close trigger, as
-        the Tk `on_closing`), pending settings written, jobs told (their `on_quit`: an Anki write finishes its batch,
-        up to `QUIT_ANKI_WAIT` — E20, IK-22), the library's reader stopped."""
-        self.closing.set()
-        if self.updates is not None:
-            try:
-                self.updates.quit()       # before the registry's quit (U.md): the jobs it held are dropped, not started
-            except Exception as e:
-                applog.log("shell", f"update at quit: {e}")
+    def shutdown(self, timeout=2.0, release=None):
+        """At quit, after the window is gone: nothing new starts and an update under way is cancelled first (nothing it
+        held starts), the duties closed on a thread of their own (Koe's stop may wait; at most `QUIT_CLOSE_WAIT`),
+        the library's reader stopped, jobs told (their `on_quit`: an Anki write finishes its batch within what is left
+        of `QUIT_ANKI_WAIT` — E20, IK-22), pending settings written. Then `release()` — the single-instance claim: a
+        new start opens its window from now on — and only then the store's close trigger, as the Tk `on_closing` runs
+        it (seconds at 100k items), for at most `QUIT_STORE_WAIT`: no hung chore keeps a windowless process holding
+        the claim."""
+        self._stop_starting()
+        began = time.monotonic()
         closer = threading.Thread(target=self._close_duties, name="duties-close", daemon=True)
         closer.start()
         if self.library is not None:
@@ -215,16 +280,30 @@ class Services:
             except Exception as e:
                 applog.log("shell", f"library reader at quit: {e}")
         try:
-            self.registry.quit(timeout, wait_timeout=QUIT_ANKI_WAIT)
+            self.registry.quit(timeout, wait_timeout=self._anki_wait_left())
         except Exception as e:
             applog.log("shell", f"jobs at quit: {e}")
-        closer.join()
+        closer.join(max(0.0, began + QUIT_CLOSE_WAIT - time.monotonic()))
+        if closer.is_alive():
+            applog.log("shell", f"the duties' close still runs after {QUIT_CLOSE_WAIT} s: quitting without it")
         try:
             if not self.settings.flush(timeout):           # a held settings lock: the change is lost, so say so
                 applog.log("shell", f"settings at quit: not written within {timeout} s (pending: "
                                     f"{self.settings.pending()})")
         except Exception as e:
             applog.log("shell", f"settings at quit: {e}")
+        if release is not None:
+            try:
+                release()
+            except Exception as e:
+                applog.log("shell", f"the window's claim at quit: {e}")
+        if self.chores is not None and self.started:
+            store = threading.Thread(target=self._close_store, name="store-close", daemon=True)
+            store.start()
+            store.join(QUIT_STORE_WAIT)
+            if store.is_alive():
+                applog.log("shell", f"the store's close still runs after {QUIT_STORE_WAIT} s: quitting without it "
+                                    f"(the store stays the truth; its copy is written at the next trigger)")
 
 
 # --- window_state.json (02 §2.1) ---------------------------------------------------------------------------------- #
@@ -586,6 +665,10 @@ class ShellWindow(QMainWindow):
         # the services, through the bridge
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
+        self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
+        self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
+        self._quit_timer = None
+        self.bridge.jobs_changed.connect(self._jobs_changed)
         self._library_needs = 0
         self._status_snap = None
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
@@ -807,10 +890,11 @@ class ShellWindow(QMainWindow):
             applog.log("shell", f"status poll: {e}")
 
     def show_status(self, snap):
-        busy = bool(snap.lines)
+        lines = (strings.QUIT_FINISHING,) if self._quit == "waiting" else snap.lines     # E20: one line says so
+        busy = bool(lines)
         self.bar_dot.setProperty("busy", "true" if busy else "false")
         self.bar_dot.set_running(busy)
-        self.bar_line.set_full(" · ".join(snap.lines))
+        self.bar_line.set_full(" · ".join(lines))
         failure = snap.failure or ""
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
         self.bar_failure.setVisible(bool(failure))
@@ -1171,7 +1255,9 @@ class ShellWindow(QMainWindow):
                              then=lambda cancelled: cancelled and bridge.run_in_worker(s.automation.update_cancelled))
 
     def _quit_for_update(self, _value=None):
-        """The update hands over (its `on_quit`): the window closes, and the app with it."""
+        """The update hands over (its `on_quit`): the window closes, and the app with it — at once: the update waited
+        for the Anki writers itself (its wait list), and the updater waits on this process."""
+        self._quit = "ready"
         self.close()
         QApplication.quit()
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
@@ -1262,7 +1348,42 @@ class ShellWindow(QMainWindow):
         else:
             self.show()
 
+    # --- E20: closing while an Anki write runs -------------------------------------------------------------- #
+    def _finish_first(self):
+        """The close while a `wait` job runs (an Anki write mid-batch; the Tk `_replan_finishing`): the window stays,
+        the bar's one line says why, nothing new starts and Generate is cancelled at once (`Services.begin_quit`, on a
+        worker), and the window closes by itself when no such job runs any more — the registry's own signal
+        (`_jobs_changed`) — or at `QUIT_ANKI_WAIT`. A second close, or Esc, changes nothing. Once."""
+        if self._quit == "waiting":
+            return
+        self._quit = "waiting"
+        self.closing.emit()                               # a start from now on waits for the claim (single.py)
+        self._quit_timer = QTimer(self)
+        self._quit_timer.setSingleShot(True)
+        self._quit_timer.timeout.connect(self._close_now)
+        self._quit_timer.start(int(QUIT_ANKI_WAIT * 1000))
+        if self._status_snap is not None:
+            self.show_status(self._status_snap)
+        bridge.run_in_worker(self.services.begin_quit,
+                             failed=lambda info: applog.log("shell", f"the quit's start: {info[1]}"))
+
+    def _jobs_changed(self, views):
+        self._jobs = views
+        if self._quit == "waiting" and not jobs_module.waits_at_quit(views):
+            self._close_now()
+
+    def _close_now(self):
+        if self._quit != "waiting":
+            return
+        self._quit = "ready"
+        self._quit_timer.stop()
+        self.close()
+
     def closeEvent(self, event):
+        if self._quit == "waiting" or (self._quit is None and jobs_module.waits_at_quit(self._jobs)):
+            event.ignore()                                # E20: an Anki write finishes its batch first
+            self._finish_first()
+            return
         self.closing.emit()                               # single instance stops listening before the window hides
         self._poll.stop()
         state = self.state_now()
@@ -1346,8 +1467,10 @@ def main(argv=None):
     try:
         code = app.exec()
     finally:
-        services.shutdown()
-        instance.release()
+        try:
+            services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
+        finally:
+            instance.release()                            # (once: done already unless the quit failed before it)
     return code
 
 

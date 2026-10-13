@@ -198,6 +198,24 @@ def test_quit_lets_an_anki_write_finish_its_batch_and_drops_one_that_never_start
     assert still == () and time.monotonic() - t0 < 4
 
 
+def test_what_closing_the_window_waits_for_is_an_anki_write_under_way_only():
+    """E20 (W3.5: the window stays up while an Anki write finishes its batch): only a `wait` job under way keeps it —
+    one not started yet has nothing to finish (`quit` drops it), Generate (`cancel`) is stopped and Connect (`detach`)
+    goes on without the window. One rule for the window and `quit` (`waits_at_quit`)."""
+    registry = JobRegistry()
+    writing = registry.submit("junban", "Re-ordering Anki", lambda j: None, on_quit="wait")
+    behind = registry.submit("backfill", "Filling Anki fields", lambda j: None, on_quit="wait")    # behind the writer
+    registry.submit("generate", "Generating", lambda j: None, on_quit="cancel")
+    registry.submit("arrivals-ja", "New arrivals", lambda j: None, on_quit="detach")
+    assert [v.id for v in J.waits_at_quit(registry.snapshot())] == [writing.id]
+    writing.finish()                                                  # the one behind it starts
+    assert [v.id for v in J.waits_at_quit(registry.snapshot())] == [behind.id]
+    registry.cancel(behind.id)                                        # asked to stop: still under way until it ends
+    assert [v.id for v in J.waits_at_quit(registry.snapshot())] == [behind.id]
+    behind.finish(cancelled=True)
+    assert J.waits_at_quit(registry.snapshot()) == ()
+
+
 def test_ended_jobs_are_kept_only_to_a_limit():
     registry = JobRegistry(keep_ended=3)
     for n in range(6):

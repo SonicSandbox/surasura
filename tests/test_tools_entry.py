@@ -86,6 +86,17 @@ def test_frozen_cli_run_beside_a_missing_window_exe_writes_app_null(root, tools,
     assert got["app"] is None and got["cli"] == str(frozen / "surasura-cli.exe")
 
 
+def test_frozen_off_windows_names_the_programs_without_exe(root, tools, frozen, monkeypatch):
+    """A frozen macOS / Linux build ships `surasura-cli` and `Surasura` (no .exe), as Connect's own start
+    (`kick.command`) names them: the entry names those, never a .exe hato would find missing (adversary #2)."""
+    (frozen / "Surasura").write_bytes(b"ELF")
+    (frozen / "surasura-cli").write_bytes(b"ELF")
+    monkeypatch.setattr(sys, "executable", str(frozen / "Surasura"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    got = tools_entry.entry({})
+    assert got["cli"] == str(frozen / "surasura-cli") and got["app"] == str(frozen / "Surasura")
+
+
 def test_register_is_offered_only_while_connects_preview_is_on(root, tools, frozen):
     """hato registers only when `register` is listed (09-hato-layer v2 Q1): the preview's switch decides it."""
     assert tools_entry.entry({"connect_enabled": True})["verbs"] == ["status", "register"]

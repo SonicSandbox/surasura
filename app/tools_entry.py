@@ -56,12 +56,14 @@ def tools_dir():
 
 def _advertised():
     """(cli, app) this process advertises, or None when it writes no entry: frozen → surasura-cli.exe and Surasura.exe
-    in the running exe's folder (app null when absent); source → SURASURA_TOOLS_CLI, app null; else None."""
+    in the running exe's folder (no .exe off Windows, as `connect.kick` names them; app null when absent); source →
+    SURASURA_TOOLS_CLI, app null; else None."""
     from app import path_utils
     if path_utils.is_frozen():
         folder = os.path.dirname(os.path.abspath(sys.executable))
-        app = os.path.join(folder, "Surasura.exe")
-        return os.path.join(folder, "surasura-cli.exe"), (app if os.path.isfile(app) else None)
+        ext = ".exe" if sys.platform == "win32" else ""
+        app = os.path.join(folder, "Surasura" + ext)
+        return os.path.join(folder, "surasura-cli" + ext), (app if os.path.isfile(app) else None)
     cli = os.environ.get("SURASURA_TOOLS_CLI")
     if cli:
         return os.path.abspath(cli), None

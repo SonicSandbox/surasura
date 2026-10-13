@@ -42,7 +42,6 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       DATA_NAME: Surasura-test            # a test build: its own AppId, folders and "Surasura (test)" (S3.1-3)
-      WORK: ${{ runner.temp }}/package-proof
     defaults:
       run:
         shell: bash
@@ -65,7 +64,10 @@ jobs:
         run: |
           test ! -e .env
           printf 'TELEMETRY_ENV=dev\n' > .env
+          # the runner's temp folder (the runner context isn't readable in a job's env, only here)
+          WORK="$(cygpath -m "$RUNNER_TEMP")/package-proof"
           mkdir -p "$WORK"
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
       - name: Build the version to install, with its installer
         run: |
           python packaging/install_proof.py version old

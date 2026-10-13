@@ -248,6 +248,28 @@ def test_a_job_that_passes_the_point_it_can_stop_at_while_the_quit_waits_is_wait
     assert registry.snapshot()[0].on_quit == "wait"
 
 
+
+def test_a_job_that_passes_its_stop_point_during_the_quit_is_held_only_to_the_shorter_finish_cap():
+    """The other way round: the window already spent most of its finish cap, so what is left (`wait_timeout`) is
+    shorter than the quit's `timeout`. A job that turns `wait` meanwhile is held to that shorter cap from the moment it
+    turns, never to the longer one it started under: the exit stays within the window's promise."""
+    registry = JobRegistry()
+    run = registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: None, on_quit="cancel")
+    done = threading.Event()
+
+    def child():
+        time.sleep(0.1)
+        run.finishes_at_quit()                                        # writing now, and it never ends in time
+        done.wait(10)
+        run.finish()
+    threading.Thread(target=child, daemon=True).start()
+    t0 = time.monotonic()
+    still = registry.quit(timeout=3.0, wait_timeout=0.4)
+    took = time.monotonic() - t0
+    done.set()
+    assert [v.kind for v in still] == ["generate"]
+    assert took < 1.5
+
 def test_the_pids_of_a_jobs_child_and_whether_it_can_be_cancelled_are_on_its_record():
     """The update's wait list reads them: a job's own child process is listed as the job alone, and a job with no
     cancel (the sync, the backlog read) has no *Stop it* whatever it does at quit."""

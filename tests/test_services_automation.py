@@ -943,6 +943,56 @@ def test_a_sync_that_ends_after_a_language_switch_shows_the_open_languages_count
     auto.close()
 
 
+
+def test_a_sync_that_ends_after_a_language_switch_never_shows_its_count_even_for_a_moment(live, monkeypatch):
+    """S19 and D31 together: once Chinese is open, no state the window hears carries Japanese's count — not even one
+    corrected a moment later (the bar's number would flicker to the wrong language's)."""
+    h.seed_library("ja")
+    h.seed_library("zh")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=2)
+    anki.gate = threading.Event()
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    auto.language_changed("ja")
+    assert h.until(lambda: len(anki.syncs) == 1, seconds=5)
+    auto.language_changed("zh")
+    assert auto.worker.idle(5)
+    zh = anki_sync.count_known("zh")
+    heard = []
+    auto.subscribe(lambda state: heard.append(state.known))
+    anki.gate.set()
+    _settle(auto, registry)
+    assert auto.worker.idle(5)
+    assert heard and set(heard) == {zh}, heard
+    auto.close()
+
+
+def test_a_switch_that_lands_while_a_sync_says_its_count_is_read_again_after_it(live, monkeypatch):
+    """The narrow case: the sync saw its own language still open, and the switch (with its count read) lands just
+    before the sync says Japanese's count. That count is the last word unless the open language's is read again after
+    it."""
+    h.seed_library("ja")
+    h.seed_library("zh")
+    _synced_once("ja")
+    _Anki(monkeypatch, added=2)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    zh = anki_sync.count_known("zh")
+    publish, switched = auto.publish, []
+
+    def publish_after_a_switch(**changes):
+        if changes.get("sync") == A.SYNCED and not switched:
+            switched.append(1)
+            with auto.lock:                                # the switch's first half: Chinese open, its count read
+                auto.language = "zh"
+            auto._read_known()
+        publish(**changes)
+    monkeypatch.setattr(auto, "publish", publish_after_a_switch)
+    auto.language_changed("ja")
+    assert h.until(lambda: switched, seconds=5)
+    _settle(auto, registry)
+    assert h.until(lambda: auto.worker.idle(0.05) and auto.state().known == zh, seconds=5), auto.state()
+    auto.close()
+
 def test_the_automatic_generate_launches_only_once_its_folders_are_set_up(live, monkeypatch):
     """`run_analyzer`'s order: the folders and word lists set up, then the run — a slow set-up (the 30-day .trash
     clean-up) is over before the analyzer starts, never raced by it."""

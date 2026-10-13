@@ -484,6 +484,26 @@ def test_connects_notices_only_with_it_on(monkeypatch, timers_on, on):
         assert calls == [] and chores.state().notice is None
 
 
+
+def test_connects_notice_timer_that_rang_as_the_quit_began_names_nothing(monkeypatch, timers_on):
+    """A close in the first seconds: the notice's timer was already ringing as the quit took the timers back. A window
+    about to close never asks Connect what arrived (nor shows it)."""
+    from app.connect import notice
+    calls = []
+    monkeypatch.setattr(notice, "at_open", lambda language: calls.append(("open", language)) or "3 arrived")
+    monkeypatch.setattr(notice, "at_close", lambda language: None)
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(_Settings(connect_enabled=True), timers=timers)
+    chores.started()
+    ringing = [t for t in timers if t.delay == C.ARRIVALS_AT][0]
+    chores.halt()
+    assert ringing.cancelled
+    ringing.call()                                       # it rang anyway, a moment before it was taken back
+    assert chores.worker.idle(5)
+    assert calls == [] and chores.state().notice is None
+    chores.close()
+
 def test_close_runs_the_stores_close_trigger_for_each_language(monkeypatch):
     from app import library_store
     closed = []

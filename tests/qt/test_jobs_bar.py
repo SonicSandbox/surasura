@@ -937,10 +937,13 @@ def test_while_the_window_waits_at_quit_generate_and_the_update_sheet_are_off(wo
     write = _anki_write(world.registry)
     assert _bar_shows(world, A.JUNBAN_LABEL)
     assert world.d.generate.button.isEnabled() and world.d.sheet.buttons["start"].isEnabled()
+    card_starts = [b for b in world.d.cards.findChildren(QPushButton) if b.property("action") == "start"]
+    assert card_starts and all(b.isEnabled() for b in card_starts)      # Needs you's *Install the update*
     world.win.close()
     assert world.win.isVisible()
     assert not world.d.generate.button.isEnabled()
     assert not world.d.sheet.buttons["start"].isEnabled() and not world.d.sheet.buttons["skip"].isEnabled()
+    assert not any(b.isEnabled() for b in card_starts)
     world.controller.push(state=G.STALE)                             # a new state never turns it back on
     QTest.qWait(30)
     assert not world.d.generate.button.isEnabled()

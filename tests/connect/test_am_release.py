@@ -272,6 +272,7 @@ def test_connects_exit_waits_for_the_check_unless_an_update_is_staged(monkeypatc
     finished = []
     monkeypatch.setattr(runner, "run", lambda loaded, languages, looks=None: {"stopped": stopped} if stopped else {})
     monkeypatch.setattr(connect_verbs, "_pending", lambda lang: False)
+    monkeypatch.setattr(am_release, "running", lambda: True)
     monkeypatch.setattr(am_release, "finish", lambda: finished.append(1) or True)
     connect_verbs._loop(ON, ["ja"])
     assert bool(finished) is waits
@@ -403,6 +404,7 @@ def test_a2_connects_exit_waits_for_the_check_when_the_run_raises(monkeypatch, r
         raise TooNew("made by a newer Surasura") if raised == "too-new" else RuntimeError("torn")
     monkeypatch.setattr(runner, "run", run)
     monkeypatch.setattr(library_store, "update_staged", lambda *a, **k: staged)
+    monkeypatch.setattr(am_release, "running", lambda: True)
     monkeypatch.setattr(am_release, "finish", lambda: finished.append(1) or True)
     with pytest.raises(CliError if raised == "too-new" else RuntimeError):
         connect_verbs._loop(ON, ["ja"])
@@ -429,3 +431,49 @@ def test_a8_write_never_raises_even_when_its_path_cant_be_named(monkeypatch, fai
         raise failure
     monkeypatch.setattr(am_release, "path", no_path)
     assert am_release._write({"checked_at": "2026-10-13T12:00:00Z", "latest": None, "url": None}) is False
+
+
+@pytest.mark.parametrize("ended", ["done", "raised"])
+def test_final_review_an_update_staged_after_the_runs_last_look_skips_the_exit_wait(monkeypatch, ended):
+    """The final review (the exit wait): whether the run returned or raised, an update staged by the time Connect exits means no
+    wait (the updater waits on this exit), and the staged check looks PROBE_LOOKS times, as the command line should."""
+    from app import library_store
+    from app.cli import connect_verbs
+    finished, looks = [], []
+
+    def run(loaded, languages, looks=None):
+        if ended == "raised":
+            raise RuntimeError("torn")
+        return {"stopped": None}
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr(library_store, "update_staged", lambda *a, **k: looks.append(k.get("looks")) or True)
+    monkeypatch.setattr(am_release, "running", lambda: True)
+    monkeypatch.setattr(am_release, "finish", lambda: finished.append(1) or True)
+    try:
+        connect_verbs._loop(ON, ["ja"])
+    except RuntimeError:
+        assert ended == "raised"
+    assert not finished and looks == [library_store.PROBE_LOOKS]
+
+
+def test_final_review_a_state_file_there_but_held_open_is_not_due(monkeypatch):
+    """The final review (a held file): a state file that is there but can't be opened just now (a scanner holding it) is not "never
+    checked": GitHub isn't asked a second time that day and the kept release stays; a torn file is rewritten."""
+    am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
+    kept = open(am_release.path(), encoding="utf-8").read()
+    real_open = open
+
+    def held(file, *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(am_release.path()):
+            raise PermissionError(13, "held by another process")
+        return real_open(file, *a, **k)
+    fetch = Fetch(release("v3.9.0"))
+    with monkeypatch.context() as m:
+        m.setattr("builtins.open", held)
+        assert am_release._claim(NOON + 2 * am_release.EVERY_S)[1] is None
+        am_release.check(ON, now=NOON + 2 * am_release.EVERY_S, fetch=fetch)
+    assert fetch.calls == 0
+    assert open(am_release.path(), encoding="utf-8").read() == kept
+    with open(am_release.path(), "w", encoding="utf-8") as f:
+        f.write('{"checked_at": "2026-10')
+    assert am_release._claim(NOON + 2 * am_release.EVERY_S)[1] is not None, "a torn file is due and rewritten"

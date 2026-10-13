@@ -63,12 +63,22 @@ def _seconds(text):
 
 def read_state():
     """The kept state, or {} (none yet, unreadable, not an object). Never raises."""
+    return _load() or {}
+
+
+def _load():
+    """The kept state; {} when there is none or it is torn (not an object); None when the file is there but can't be
+    opened just now (another program holding it), which `_claim` reads as not due. Never raises."""
     try:
         with open(path(), "r", encoding="utf-8") as f:
             state = json.load(f)
         return state if isinstance(state, dict) else {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except ValueError:
+        return {}
+    except Exception:
+        return None
 
 
 def _write(state):
@@ -118,7 +128,9 @@ def _claim(now):
     """-> (the state as kept, the attempt claimed or None). Due → the attempt time saved now, before GitHub is asked,
     with the last good `latest` and `url`: a check cut off still counts, a Connect started meanwhile finds none due.
     None when not due, or when the attempt couldn't be saved (asking anyway would ask every run)."""
-    state = read_state()
+    state = _load()
+    if state is None:                   # there but held just now: not "never checked" (the final review)
+        return {}, None
     if not due(state, now):
         return state, None
     claimed = {"checked_at": _iso(now), "latest": state.get("latest"), "url": state.get("url")}
@@ -178,6 +190,12 @@ def start(settings):
     except Exception:
         log.exception("Anki Miner's release check wasn't started")
         return None
+
+
+def running():
+    """-> True while a check started by this process is still running."""
+    thread = _thread
+    return thread is not None and thread.is_alive()
 
 
 def finish():

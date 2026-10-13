@@ -462,17 +462,18 @@ def _loop(loaded, languages, looks=None):
 
 def _release_finish(summary, runner):
     """P3.2-AMN: outside the lock, a check still running gets what is left of its wait (`am_release.finish`) — after
-    a run that ended or raised alike, never when the run stopped for an update or (after a raise) one is staged: the
-    updater waits on this exit. Its attempt was saved before GitHub was asked, so a check cut off still counts."""
+    a run that ended or raised alike, never when the run stopped for an update or one is staged by now (looked at
+    `PROBE_LOOKS` times, as the command line does): the updater waits on this exit. Its attempt was saved before
+    GitHub was asked, so a check cut off still counts."""
     try:
-        if summary is not None:
-            if summary.get("stopped") == runner.STOPPED_FOR_UPDATE:
-                return
-        else:
-            from app import library_store
-            if library_store.update_staged():
-                return
+        if summary is not None and summary.get("stopped") == runner.STOPPED_FOR_UPDATE:
+            return
         from app.connect import am_release
+        if not am_release.running():
+            return                      # no check running: nothing to wait for, no look needed
+        from app import library_store
+        if library_store.update_staged(looks=library_store.PROBE_LOOKS):
+            return
         am_release.finish()
     except Exception:
         pass                            # a courtesy: Connect's exit never fails on it

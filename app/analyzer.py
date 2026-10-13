@@ -4083,14 +4083,9 @@ def journey_check(args, language):
 
 
 def _plan_kept(language, sig, results_dir):
-    """The analyzer's own reuse gate, asked as the window and the command line ask it: with the fast re-plan's
-    preview on for `language`, a run is current only with its plan file (E1.2-1). Off: always True."""
-    try:
-        from app import replan_preview
-        if not replan_preview.is_on(settings_manager.load_settings(), language):
-            return True
-    except Exception:
-        return True
+    """The analyzer's own reuse gate, asked as the window and the command line ask it: a run is current only with its
+    plan file (E1.2-1). On the 3.0 line every Generate writes the plan ("every Generate from 3.0"; E1.1 04 §5: with the
+    automation off too), so this always asks; 2.x asks only while the fast re-plan's preview is on."""
     return _plan_is_this_runs(sig, results_dir)
 
 
@@ -4730,13 +4725,10 @@ def main():
     # New Logic: Use master_manifest.json if available.
     # Fallback: Alphabetical scan (Phase 0 behavior)
     
-    # The plan file (E1.1 01; read only by the fast re-plan) is kept and written only while its preview is on
-    # (E1.2-1 = B, Sonic 2026-10-05): off, a Generate does exactly the work it did before the plan existed.
-    try:
-        from app import replan_preview as _replan_preview
-        _plan_on = _replan_preview.is_on(settings_manager.load_settings(), language)
-    except Exception:
-        _plan_on = False
+    # The plan file (E1.1 01; the fast re-plan's, the arrivals' and the journey's) is kept and written by every
+    # Generate on the 3.0 line (E1.2-1 = B, Sonic 2026-10-05: "every Generate from 3.0"; E1.1 04 §5: with the
+    # automation off too). 2.x writes it only while the fast re-plan's preview is on.
+    _plan_on = True
 
     # The library's list: the store's (built, checked and synced with the disk first), else the file.
     _library = prepare_library(language, data_dir, user_files_dir)

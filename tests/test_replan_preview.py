@@ -82,6 +82,7 @@ def lib(tmp_path, monkeypatch):
     for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(name, env[name])
     monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    cases.needs_junban()                         # the preview needs Junban (3.0: the plan doesn't)
     cases.build(root, CASE)
     _settings_file(root)
     from app.path_utils import ensure_data_setup

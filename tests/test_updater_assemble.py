@@ -212,7 +212,9 @@ def test_a_part_whose_file_isnt_the_listed_one_stages_nothing(tmp_path, monkeypa
                                          {"name": "rest", "asset": "rest.zip", "sha256": "00" * 32, "size": 0}],
                                "files": files, "min_from": "3.0.0", "needs_installer": False})
     before = kit.tree(root)
-    with pytest.raises(updater.UpdateError, match="web_app.html"):
+    # "in the app part": refused as the file leaves its part (`_extract`), not only by the stage check after it, which
+    # raises too — with the sha256 taken out of `_extract` (mutant U14) this passed on the stage check's message.
+    with pytest.raises(updater.UpdateError, match=r"web_app\.html in the app part"):
         updater.prepare_update(info)
     assert _update_folder_names() == [] and kit.tree(root) == before
 

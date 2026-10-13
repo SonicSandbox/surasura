@@ -427,7 +427,8 @@ def test_a_real_swapper_process_puts_back_a_version_whose_command_line_wont_run(
 # --- a marker the app didn't write -----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("change", ["staged outside", "previous outside", "install inside", "install missing",
-                                    "owns User Files", "owns the uninstaller", "stage is previous", "no version"])
+                                    "owns User Files", "owns the uninstaller", "stage is previous",
+                                    "previous inside the stage", "no version"])
 def test_a_marker_reaching_outside_surasuras_folders_changes_nothing(staged, tmp_path, change):
     root, marker, before = staged
     elsewhere = str(tmp_path / "elsewhere")
@@ -446,6 +447,10 @@ def test_a_marker_reaching_outside_surasuras_folders_changes_nothing(staged, tmp
         marker["owned"] = marker["owned"] + ["unins000.dat"]
     elif change == "stage is previous":
         marker["previous"] = marker["staged"]
+    elif change == "previous inside the stage":
+        # Inside the update folder, its parent too: only the overlap check refuses it. "stage is previous" is refused
+        # earlier (its parent is the update folder itself), so with the overlap check gone (mutant H05) it still passed.
+        marker["previous"] = os.path.join(marker["staged"], kit.OLD)
     else:
         marker["target_version"] = ""
     ops = kit.FakeOps()
@@ -552,6 +557,21 @@ def test_the_uninstall_entry_is_never_written_for_another_folder_or_made(staged,
         winreg.OpenKey(winreg.HKEY_CURRENT_USER, path.replace("TEST-3", "NOT-THERE"))
     for bad in ("..\\..\\Run", "a/b", ""):
         assert updater_helper.write_uninstall_version(bad, str(root), kit.NEW) is False
+
+
+def test_an_app_id_holding_a_path_never_reaches_a_key_below_another(tmp_path, registry):
+    """The AppId comes from the marker. One holding a backslash would address a key below another entry: refused by
+    its shape, even when that key exists and names this install. (The cases above fail only because no such key
+    exists, so with the shape check gone — mutant H21 — they still passed.)"""
+    root = tmp_path / "スラスラ 本番"
+    root.mkdir()
+    outer = registry("{SURASURA-TEST-6}", root, DisplayVersion=kit.OLD)
+    nested = registry("{SURASURA-TEST-6}_is1\\{SURASURA-TEST-7}", root, DisplayVersion=kit.OLD)
+    assert updater_helper.write_uninstall_version("{SURASURA-TEST-6}_is1\\{SURASURA-TEST-7}", str(root),
+                                                  kit.NEW) is False
+    assert _values(nested)["DisplayVersion"] == kit.OLD and _values(outer)["DisplayVersion"] == kit.OLD
+    assert updater_helper.write_uninstall_version("{SURASURA-TEST-6}", str(root), kit.NEW) is True, \
+        "the same install under a plain AppId is written: only the shape refused the other"
 
 
 def test_a_failed_swap_leaves_the_uninstall_entry_alone(staged, registry):

@@ -162,6 +162,16 @@ def build(root, case, order=None, preview=False):
         os.utime(path, (MTIME, MTIME))
 
 
+def write_plan_header(results_dir, run_signature):
+    """A plan file holding only its header, naming `run_signature`: what the up-to-date check reads
+    (`analyzer._plan_kept`, `plan_engine.read_header`). On the 3.0 line every Generate writes a plan, so a test that
+    seeds a finished Generate (its stamp, its outputs) seeds its plan too."""
+    import gzip
+    from app import analyzer, plan_engine
+    with gzip.open(os.path.join(results_dir, analyzer.PLAN_FILE), "wb") as f:
+        f.write((json.dumps({"format": plan_engine.FORMAT, "run_signature": run_signature}) + "\n").encode("utf-8"))
+
+
 def needs_junban():
     """The fast re-plan's preview needs Junban installed (E3.1: `replan_preview.is_on`): a build without modules/
     (the public CI) skips a test that needs the preview on. (2.x: the plan file too; 3.0 writes it either way.)"""

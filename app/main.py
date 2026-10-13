@@ -2504,7 +2504,7 @@ class MasterDashboardApp:
         if shelved:                     # asked on the Tk thread; the rest on another worker
             self.gui_queue.put(lambda: self._connect_ask_put_back(shelved))
             return
-        self._connect_switch_off()
+        self._connect_switch_off(was_on=was_on)
 
     def _connect_watermarks(self):
         """Each language's watermark at its log's end and its last-looked-at list forgotten, each in its own try ->
@@ -2609,11 +2609,12 @@ class MasterDashboardApp:
         self.log_to_terminal("Connect stays on: put the shelved cards back from its window, or turn it off again.")
         self._connect_switch_done(True, fresh=False)
 
-    def _connect_switch_off(self, put_back=None):
+    def _connect_switch_off(self, put_back=None, was_on=True):
         """On a worker: the shelf put back first when asked (as you: never shelved again; each restore point waiting
         for Anki's write lock as the Connect window does), then the switch saved off, then the readers dropped where
-        the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing). A restore point not put back: the
-        switch stays on and you're asked whether to turn it off anyway (`_connect_ask_off_anyway`)."""
+        the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing) — only for a switch that was on
+        (H11: a switch that was off imports nothing of app.connect). A restore point not put back: the switch stays
+        on and you're asked whether to turn it off anyway (`_connect_ask_off_anyway`)."""
         if put_back:
             failed = self._connect_put_back(put_back)
             if failed:
@@ -2627,7 +2628,7 @@ class MasterDashboardApp:
             return
         try:
             from app import library_store
-            if hasattr(library_store.Store, "unregister_reader"):
+            if was_on and hasattr(library_store.Store, "unregister_reader"):
                 from app.connect import library
                 for lang in self.CONNECT_LANGUAGES:
                     store = library.open_store(lang, role="window")

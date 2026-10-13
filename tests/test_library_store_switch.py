@@ -88,6 +88,8 @@ def _generated(language):
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    from tests.plan_file_cases import write_plan_header
+    write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
     analyzer._set_run_stamp(results, sig)
     return argv
 

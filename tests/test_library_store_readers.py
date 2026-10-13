@@ -360,6 +360,9 @@ def test_generate_takes_in_a_file_dropped_since_the_last_run(env, language):
     dropped file is missing from the schedule until some later step notices it."""
     data_dir, user_files_dir, _doc = _library(language)
     _run(env, language)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:                   # the 3.0 line: New arrivals off, so a drop lands at NOW's top as in 2.x (Q4-11)
+        store.set_library_options(arrivals_on=False)
     drop = os.path.join(data_dir, *ls.HATO_FOLDER.split("/"), f"{names(language)[5]}.txt")
     os.makedirs(os.path.dirname(drop), exist_ok=True)
     shutil.copy(TEXTS[language][0][1], drop)

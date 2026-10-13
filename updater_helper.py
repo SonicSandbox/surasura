@@ -11,7 +11,9 @@ This runs AS A SEPARATE PROCESS, launched by the app just before it exits. Two h
   Surasura's window visible within 20 s and alive 3 s. Any failure moves everything back, newest first, starts the
   old version and says why in the result. Entries the program doesn't own — Inno's ``unins000.*``, and the library's
   ``User Files``, ``data``, ``results``, ``settings.json`` should one sit there — are never touched. Installer mode
-  (``"kind": "installer"``) runs the release's Setup silently in place of the staged folder, then the same proof.
+  (``"kind": "installer"``) runs the release's Setup silently in place of the staged folder, then the same proof;
+  before its first move it leaves Windows a one-time RunOnce entry, ``updater.exe --recover <marker>``, that finishes
+  or undoes a swap cut off half-way at the next sign-in (`recover`, S3.1-5), and takes it away when it ends.
   A splash (`show_splash`) shows meanwhile; a splash that can't be drawn never stops the update.
 * **2.x's** (no format): the targets the marker lists, each a file or a folder — Surasura.exe, ``_internal/templates``,
   RELEASE_NOTES.md, and since 2.5 whatever the release's own file list names — swapped with a backup, then the app
@@ -316,6 +318,10 @@ SETUP_TIMEOUT = 900.0
 VERSION_TIMEOUT = 60.0
 APP_EXE, CLI_EXE = "Surasura.exe", "surasura-cli.exe"
 UNINSTALL_ROOT = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"     # under HKEY_CURRENT_USER (D8)
+RUNONCE_ROOT = r"Software\Microsoft\Windows\CurrentVersion\RunOnce"         # under HKEY_CURRENT_USER (S3.1-5)
+RECOVERY_NAME = "SurasuraUpdateRecovery"
+TEST_RUNONCE_ENV = "SURASURA_TEST_RUNONCE"  # a test's own RunOnce key: honoured only under HKCU\Software\SurasuraTests\
+RECOVERED = "ok (the updater ended before reporting)"       # app/updater.py's words for a swap that landed unreported
 SUCCESS, FAILED = "success", "failed"
 SETUP_FLAGS = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCLOSEAPPLICATIONS")
 # Inno Setup's exit codes (jrsoftware.org/ishelp/topic_setupexitcodes.htm); any other code is a failure too.
@@ -737,10 +743,26 @@ def _setup_says(code):
     return SETUP_EXIT.get(code, f"Setup ended with code {code}")
 
 
-def apply_installer(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None):
+def _clear_setups(m, names, sleep):
+    """What Setup wrote under `names` in the install goes (by way of update\\previous\\failed-<ver>), so the old
+    entries can come back."""
+    install = m["install"]
+    failed = os.path.join(os.path.dirname(os.path.abspath(m["previous"])), f"failed-{m['target_version']}")
+    _quietly(_clear_same, failed)
+    for name in names:
+        if os.path.lexists(os.path.join(install, name)):
+            try:
+                _move([name], install, failed, [], sleep)
+            except OSError:
+                _remove(os.path.join(install, name))
+    _quietly(_clear_same, failed)
+
+
+def apply_installer(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None, arm=None):
     """Installer mode (D7): the program's entries to `previous`, Setup run silently into the emptied folder, the
-    same proof; any failure takes what Setup wrote away and puts the old entries back. -> (status, reason,
-    touched). Never raises."""
+    same proof; any failure takes what Setup wrote away and puts the old entries back. `arm()` runs just before the
+    first move, once `previous` is empty (the recovery entry, S3.1-5); one that raises stops the update unchanged.
+    -> (status, reason, touched). Never raises."""
     install, previous = m["install"], m["previous"]
     try:
         if not wait_gone(install, ops, float(m.get("wait_timeout") or WAIT_FOR_EXIT), clock, sleep):
@@ -748,6 +770,8 @@ def apply_installer(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None):
         if not os.path.isfile(m["setup"]):
             return FAILED, "the new installer is missing, so nothing was changed", False
         _clear_same(previous)
+        if arm is not None:
+            arm()
     except Exception as e:
         return FAILED, f"the update stopped before changing anything ({type(e).__name__})", False
     owned = sorted(set(m["owned"]), key=str.lower)
@@ -769,15 +793,7 @@ def apply_installer(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None):
         _stop_started(m, started, ops, clock, sleep)
         if ran:
             # What Setup wrote under the program's names goes, so the old entries can come back.
-            failed = os.path.join(os.path.dirname(os.path.abspath(previous)), f"failed-{m['target_version']}")
-            _quietly(_clear_same, failed)
-            for name in owned:
-                if os.path.lexists(os.path.join(install, name)):
-                    try:
-                        _move([name], install, failed, [], sleep)
-                    except OSError:
-                        _remove(os.path.join(install, name))
-            _quietly(_clear_same, failed)
+            _clear_setups(m, owned, sleep)
         stuck = _undo(moves, sleep)
         _quietly(os.rmdir, previous)
         if ran and m.get("app_id"):
@@ -841,13 +857,16 @@ def _overlap_exact(a, b):
 
 
 def _write_json_atomic(path, data):
+    """-> True when written (a refused write leaves nothing behind)."""
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        return True
     except Exception:
-        pass
+        _quietly(os.remove, tmp)
+        return False
 
 
 def _keep_one_previous(m):
@@ -862,15 +881,32 @@ def _keep_one_previous(m):
             _remove(os.path.join(root, name))
 
 
-def run_folder(marker_path, m, ops=None, clock=time.monotonic, sleep=time.sleep):
-    """A 3.x hand-off from start to end: the splash, the swap (or Setup), the uninstall entry, the result
-    (`last_update_result.json`, this swap's alone), one previous version kept, the staged leftovers and the marker
-    removed. -> 0 on success, 2 on failure."""
-    ops = WinOps() if ops is None else ops
-    root = os.path.dirname(os.path.abspath(marker_path))
+def _result_file(m, marker_path, root):
     result_path = m.get("result_path")
     if not isinstance(result_path, str) or not _strictly_inside(root, result_path):
         result_path = marker_path + ".result"
+    return result_path
+
+
+def run_folder(marker_path, m, ops=None, clock=time.monotonic, sleep=time.sleep):
+    """A 3.x hand-off from start to end (`_hand_off`). A marker an earlier swapper armed — so armed before this one
+    started: that swap was cut off — is recovered (`recover`), never swapped a second time. The recovery entry goes
+    the moment this ends, whatever the outcome. -> 0 on success, 2 on failure (`recover`'s codes when it recovers)."""
+    ops = WinOps() if ops is None else ops
+    root = os.path.dirname(os.path.abspath(marker_path))
+    try:
+        if m.get("armed"):
+            return recover(marker_path, ops, sleep)
+        return _hand_off(marker_path, m, ops, clock, sleep)
+    finally:
+        forget_recovery(root)
+
+
+def _hand_off(marker_path, m, ops, clock, sleep):
+    """The splash, the swap (or Setup), the uninstall entry, the result (`last_update_result.json`, this swap's
+    alone), one previous version kept, the staged leftovers and the marker removed. -> 0 on success, 2 on failure."""
+    root = os.path.dirname(os.path.abspath(marker_path))
+    result_path = _result_file(m, marker_path, root)
     _quietly(os.remove, result_path)                        # the result belongs to THIS swap
     base = {"from": m.get("from_version", ""), "to": m.get("target_version", ""),
             "going_back": bool(m.get("going_back")), "kind": m.get("kind", "folder"),
@@ -887,9 +923,11 @@ def run_folder(marker_path, m, ops=None, clock=time.monotonic, sleep=time.sleep)
             # Nothing touched and nothing started: a marker reaching outside Surasura's folders isn't one it wrote.
             status, reason, touched = FAILED, f"the update's instructions were not Surasura's ({outside}), so " \
                                               "nothing was changed", False
+        elif m.get("kind") == "installer":
+            status, reason, touched = apply_installer(m, ops, clock, sleep, None if splash is None else splash.close,
+                                                      arm=lambda: arm_recovery(marker_path, m))
         else:
-            apply = apply_installer if m.get("kind") == "installer" else apply_folder
-            status, reason, touched = apply(m, ops, clock, sleep, None if splash is None else splash.close)
+            status, reason, touched = apply_folder(m, ops, clock, sleep, None if splash is None else splash.close)
     finally:
         if splash is not None:
             splash.close()
@@ -907,6 +945,127 @@ def run_folder(marker_path, m, ops=None, clock=time.monotonic, sleep=time.sleep)
     _write_json_atomic(result_path, dict(base, status=status, reason=reason, touched=touched))
     _quietly(os.remove, marker_path)
     return 0 if status == SUCCESS else 2
+
+
+# =====================================================================================================================
+# An installer-mode swap cut off half-way (S3.1-5): power lost, or the swapper and Setup both ended, with the program's
+# entries in previous\<from> and Setup's work unfinished — the program folder can't start anything. Before its first
+# move the swapper leaves Windows one value under HKCU's RunOnce (its only registry write besides the uninstall entry);
+# at the next sign-in Windows runs it: `recover` finishes or undoes the swap from the marker alone.
+# =====================================================================================================================
+def _runonce_root():
+    """HKCU's RunOnce key — or, for a test, the throwaway key TEST_RUNONCE_ENV names (only under Software\\
+    SurasuraTests\\: nothing else can be pointed at). Under pytest without one: refused (OSError)."""
+    test = os.environ.get(TEST_RUNONCE_ENV, "")
+    if test.startswith("Software\\SurasuraTests\\"):
+        return test
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        raise OSError("a test reached for the user's own RunOnce key")
+    return RUNONCE_ROOT
+
+
+def _recovery_value(root):
+    """This install's value name: one per update folder (`root`), so a test copy never meets the real one."""
+    import hashlib
+    return f"{RECOVERY_NAME}-{hashlib.sha256(os.path.normcase(os.path.abspath(root)).encode('utf-8')).hexdigest()[:12]}"
+
+
+def recovery_command(marker_path):
+    """What Windows runs at the next sign-in: this swapper — frozen, its own exe, the copy in update\\swapper\\ outside
+    the program folder; from source, Python and this file — `--recover <marker>`."""
+    me = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(__file__)]
+    return " ".join(f'"{p}"' for p in me) + f' --recover "{os.path.abspath(marker_path)}"'
+
+
+def arm_recovery(marker_path, m):
+    """Just before installer mode's first move: the marker stamped "armed" (`recover` acts on no other), then the
+    RunOnce value. Raises when either can't be written: then nothing moves."""
+    import winreg
+    m["armed"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if not _write_json_atomic(marker_path, m):
+        raise OSError("the update's marker could not be written")
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _runonce_root(), 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, _recovery_value(os.path.dirname(os.path.abspath(marker_path))), 0, winreg.REG_SZ,
+                          recovery_command(marker_path))
+
+
+def forget_recovery(root):
+    """The RunOnce value gone (the swap or the recovery ended, whatever the outcome). Never raises."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _runonce_root(), 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, _recovery_value(root))
+    except Exception:
+        pass
+
+
+def recover(marker_path, ops=None, sleep=time.sleep):
+    """`updater.exe --recover <marker>`: an installer-mode swap cut off half-way, finished or undone — run by Windows at
+    the next sign-in, and by a later swapper handed a marker an earlier one armed. Never starts the program:
+      * something runs from the install folder -> left as it is;
+      * the install holds the release — every file's sha256 and `--version`, the headless proof (D9) -> Setup
+        finished: kept, one previous version kept, and the success result the app knows written;
+      * otherwise -> installer mode's own failure branch (`_put_back`), and a failed result written.
+    The marker goes after either of the last two; one missing, damaged or never armed moves nothing. The RunOnce value
+    goes whatever the outcome. -> 0 finished, 2 put back, 1 nothing done."""
+    ops = WinOps() if ops is None else ops
+    root = os.path.dirname(os.path.abspath(marker_path))
+    try:
+        return _recover(marker_path, root, ops, sleep)
+    finally:
+        forget_recovery(root)
+
+
+def _recover(marker_path, root, ops, sleep):
+    try:
+        with open(marker_path, "r", encoding="utf-8") as f:
+            m = json.load(f)
+        if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("kind") != "installer" \
+                or not m.get("armed") or _uncontained(m, root) is not None:
+            return 1
+        if ops.processes_in(m["install"]):
+            return 1
+    except Exception:
+        return 1
+    try:
+        _verify(m["install"], m.get("files"))
+        _reports(m, ops)
+        status, reason = SUCCESS, RECOVERED
+    except Exception:
+        status, reason = FAILED, "the update was cut off before it finished, so the old version was put back"
+        stuck = _put_back(m, sleep)
+        if stuck:
+            reason += f" -- and {len(stuck)} item(s) could not be put back"
+    if status == SUCCESS:
+        _quietly(_keep_one_previous, m)
+    _write_json_atomic(_result_file(m, marker_path, root), {
+        "from": m.get("from_version", ""), "to": m["target_version"], "going_back": False, "kind": "installer",
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": status, "reason": reason, "touched": True})
+    _quietly(os.remove, marker_path)
+    return 0 if status == SUCCESS else 2
+
+
+def _put_back(m, sleep):
+    """`apply_installer`'s failure branch from the marker alone, with no journal: what Setup wrote under a name
+    previous\\<from> holds, or under a name the old program never had (`kept_files`), goes; every entry previous\\<from>
+    holds comes back; the uninstall entry names <from>. An old entry the cut-off swap never moved stays where it is.
+    -> the entries that couldn't be put back."""
+    install, previous = m["install"], m["previous"]
+    kept = m.get("kept_files")
+    old = {path.split("/")[0].lower() for path in kept} if isinstance(kept, dict) and kept else None    # unknown: keep
+    held = [name for name in m["owned"] if os.path.lexists(os.path.join(previous, name))]
+    _clear_setups(m, [name for name in m["owned"] if name in held or (old is not None and name.lower() not in old)],
+                  sleep)
+    stuck = []
+    for name in held:
+        try:
+            _move([name], previous, install, [], sleep)
+        except OSError:
+            stuck.append(name)
+    _quietly(os.rmdir, previous)
+    if m.get("app_id"):
+        _quietly(write_uninstall_version, m["app_id"], install, m.get("from_version", ""))
+    return stuck
 
 
 # =====================================================================================================================
@@ -1339,9 +1498,13 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--marker", help="Path to pending_update.json")
     group.add_argument("--selftest", help="Draw the splash once and write what was seen to this JSON file")
+    group.add_argument("--recover", help="Finish or undo an installer-mode update cut off half-way (Windows runs this "
+                                         "at the next sign-in)")
     args = parser.parse_args(argv)
     if args.selftest:
         return selftest(args.selftest)
+    if args.recover:
+        return recover(args.recover)
     return run(args.marker)
 
 

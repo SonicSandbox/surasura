@@ -453,6 +453,9 @@ def _loop(loaded, languages, looks=None):
         raise CliError("needs-you", str(e), ask="Update Surasura") from None
     if not summary.get("stopped") and any(_pending(lang) for lang in languages):
         _kick(loaded)                   # logged after its last read: the next Connect reads it
+    if summary.get("stopped") != runner.STOPPED_FOR_UPDATE:
+        from app.connect import am_release
+        am_release.finish()             # P3.2-AMN: outside the lock, a check still running gets the rest of its 5 s
     return summary
 
 

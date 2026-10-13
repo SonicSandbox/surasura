@@ -59,14 +59,38 @@ def running():
 
 def stamp(path=None, languages=None):
     """What the record is read from, as it stands: the ledger's and its WAL's size and modified time, whether Connect
-    runs, today's date (*cards made today*) and each language's library file (the titles). The same stamp → the
-    same record: the window reads and redraws nothing (S19)."""
+    runs, today's date (*cards made today*), each language's library file (the titles), and Anki Miner's release
+    state and the setup record (P3.2-AMN: the update notice). The same stamp → the same record: the window reads and
+    redraws nothing (S19)."""
     path = path or book.path()
     out = [_file_stat(path), _file_stat(path + "-wal"), running(), _today().isoformat()]
     for lang in languages or LANGUAGES:
         db = _store_path(lang)
         out += [_file_stat(db), _file_stat(db + "-wal")] if db else [None, None]
-    return out
+    return out + _release_stat()
+
+
+def _release_stat():
+    try:
+        from app.connect import am_release, setup
+        return [_file_stat(am_release.path()), _file_stat(setup.record_path())]
+    except Exception:
+        return [None, None]
+
+
+def anki_miner_update():
+    """P3.2-AMN: {"version", "url"} when a newer Anki Miner is out than the one installed, else None. No fetch (the
+    check is Connect's, once a day); never raises."""
+    try:
+        from app.connect import am_release
+        return am_release.notice(am_release.installed())
+    except Exception:
+        return None
+
+
+def language_record(record, lang):
+    """One language's record from `read`'s, with the Anki Miner notice the window and the row show."""
+    return dict(record["languages"][lang], anki_miner_update=record.get("anki_miner_update"))
 
 
 def _store_path(lang):
@@ -84,11 +108,13 @@ def _empty(lang):
 
 
 def read(languages=None, words=False, path=None):
-    """The status record (RUNBOOK-P2.5): {"schema", "running", "stamp", "languages": {lang: {...}}}. `words`: each job's
-    not-made words too (N7, `status --words`). A ledger made by a newer Surasura → each language says so."""
+    """The status record (RUNBOOK-P2.5): {"schema", "running", "stamp", "anki_miner_update", "languages": {lang:
+    {...}}}. `words`: each job's not-made words too (N7, `status --words`). A ledger made by a newer Surasura → each
+    language says so. `anki_miner_update` (P3.2-AMN): null, or {"version", "url"} when a newer Anki Miner is out."""
     path = path or book.path()
     languages = tuple(languages or LANGUAGES)
-    out = {"schema": SCHEMA, "running": False, "stamp": stamp(path, languages), "languages": {}}
+    out = {"schema": SCHEMA, "running": False, "stamp": stamp(path, languages),
+           "anki_miner_update": anki_miner_update(), "languages": {}}
     out["running"] = out["stamp"][2]
     if out["stamp"][0] is None:
         out["languages"] = {lang: _empty(lang) for lang in languages}

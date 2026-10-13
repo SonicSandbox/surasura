@@ -489,3 +489,42 @@ def test_a_done_undo_and_put_back_take_their_button_away_and_a_refused_one_keeps
     _press(win, "batch", 7, "Undo this batch")
     assert pump.run(root, lambda: win.notes[("batch", 7)].cget("text").startswith("You're reviewing"))
     assert str(win.buttons[("batch", 7, "Undo this batch")].cget("state")) == "normal"
+
+
+# --------------------------------------------------------------------------- #
+# P3.2-AMN: Anki Miner's update notice above the tabs
+# --------------------------------------------------------------------------- #
+RELEASE_PAGE = "https://github.com/0xzerolight/anki_miner/releases/tag/v3.8.0"
+
+
+def _window_with(root, update, opened):
+    tips = Tips()
+    win = connect_window.show(root, "ja", tips, dict(RECORD, anki_miner_update=update), act=Act(),
+                              settings=lambda: {"connect_enabled": True}, junban=True, post=Pump().put,
+                              mark_seen=lambda ids: None, open_url=opened.append)
+    return win, tips
+
+
+def test_anki_miners_notice_sits_above_the_tabs_and_opens_its_releases_page(root):
+    opened = []
+    win, tips = _window_with(root, {"version": "3.8.0", "url": RELEASE_PAGE}, opened)
+    link = win.update_link
+    assert link is not None and link.cget("text") == "Anki Miner 3.8.0 is out"
+    assert ("Opens Anki Miner's releases page" in [t for w, t in tips if w is link])
+    slaves = link.master.pack_slaves()
+    assert slaves.index(link) < slaves.index(win.tabs), "above Needs you (the tabs)"
+    link.event_generate("<Button-1>")
+    assert opened == [RELEASE_PAGE]
+
+
+def test_no_notice_no_line_in_the_window(root):
+    win, _tips = _window_with(root, None, [])
+    assert win.update_link is None
+    labels = [w.cget("text") for w in widgets(win.win, (ttk.Label,))]
+    assert not any("is out" in str(t) for t in labels)
+
+
+def test_view_carries_the_notice_from_the_status_record(monkeypatch):
+    from app.connect import status
+    monkeypatch.setattr(status, "anki_miner_update", lambda: {"version": "3.8.0", "url": RELEASE_PAGE})
+    assert connect_window.view("ja")["anki_miner_update"] == {"version": "3.8.0", "url": RELEASE_PAGE}

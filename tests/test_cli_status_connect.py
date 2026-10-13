@@ -59,3 +59,21 @@ def test_status_words_is_accepted_with_the_preview_on():
     code, line = h.call("status", "--words")
     assert code == 0, line
     assert line["connect"]["line"] == "Up to date"
+
+
+def test_status_carries_anki_miners_update_notice_null_until_one_is_kept():
+    """P3.2-AMN (P0.3 02 §2, additive): `connect.anki_miner_update` is null with nothing kept, and {version, url}
+    once Connect's check kept a release newer than the Anki Miner installed. The status call itself never fetches."""
+    from app.connect import am_release, setup
+    _set_up_ja()
+    h.write_settings(connect_enabled=True)
+    code, line = h.call("status")
+    assert code == 0, line
+    assert "anki_miner_update" in line["connect"] and line["connect"]["anki_miner_update"] is None
+    setup.write_record({"anki_miner": {"path": "C:/x/AnkiMiner.exe", "app": "3.7.0"}})
+    page = "https://github.com/0xzerolight/anki_miner/releases/tag/v3.8.0"
+    am_release.check({"connect_enabled": True}, fetch=lambda: {"tag_name": "v3.8.0", "html_url": page})
+    code, line = h.call("status")
+    assert code == 0, line
+    assert line["connect"]["anki_miner_update"] == {"version": "3.8.0", "url": page}
+    assert line["connect"]["line"] == "Up to date", "the record's own fields unchanged"

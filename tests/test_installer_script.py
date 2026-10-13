@@ -338,8 +338,14 @@ def test_the_install_proof_points_the_swappers_recovery_entry_at_its_own_key_and
     takes the key away."""
     import winreg
     proof = _install_proof()
-    for name in ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "SURASURA_TEST_RUNONCE"):
-        monkeypatch.setenv(name, os.environ.get(name, ""))                  # isolate() rewrites them: put back after
+    for name in ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "SURASURA_TEST_RUNONCE",
+                 "SURASURA_TEST_ROOT", "PYTEST_CURRENT_TEST"):
+        # isolate() rewrites or removes each: put back exactly after (without SURASURA_TEST_ROOT every later test in
+        # this process would write the real data folders)
+        if name in os.environ:
+            monkeypatch.setenv(name, os.environ[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
     profile = str(tmp_path / "stand-in")
     proof.isolate(profile)
     key = os.environ["SURASURA_TEST_RUNONCE"]

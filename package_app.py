@@ -57,11 +57,14 @@ def _version_tuple(text):
         return ()
 
 
-def valid_data_name(name):
+def valid_data_name(name, real_name=None):
     """The name of the program's own data folders (%LOCALAPPDATA%\\Houseki\\<data_name>): "Surasura", or a test
-    build's own ("Surasura-test"), so a test build never shares a real install's folders. Letters, digits, - and _."""
+    build's own ("Surasura-test"), so a test build never shares a real install's folders. Letters, digits, - and _.
+    With `real_name` (build_config's), the real name in another case ("surasura") is refused: Windows' folders ignore
+    case, so its program and data folders would be the real install's."""
     return isinstance(name, str) and 0 < len(name) <= 64 and \
-        all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
+        all(c.isascii() and (c.isalnum() or c in "-_") for c in name) and \
+        (real_name is None or name == real_name or name.casefold() != real_name.casefold())
 
 
 def _python_version():
@@ -337,10 +340,12 @@ def canonical_json(manifest):
 
 def read_signing_key(path):
     """The 32-byte Ed25519 private key in `path`: 32 raw bytes, or 64 hex characters. Raises ValueError, never
-    quoting the file."""
+    quoting the file. 32 bytes of hex text are a hex key cut short, never a raw key."""
     with open(path, "rb") as f:
         raw = f.read(4096)
     if len(raw) == 32:
+        if raw.strip() and all(c in b"0123456789abcdefABCDEF" for c in raw.strip()):
+            raise ValueError("the signing key file holds 32 hex characters: a hex key has 64 (cut short?)")
         return raw
     try:
         seed = bytes.fromhex(raw.decode("ascii").strip())
@@ -356,9 +361,20 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
     update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
     (its 2.x hand-off block is written only then). `package.install_shape`: the .iss's shape (`install_shape`); a 3.x
     program stamped with another runs the installer. `needs_installer`: the manual override, for what the shape can't
-    see (`--needs-installer`). -> the manifest dict."""
+    see (`--needs-installer`). -> the manifest dict, or None when SURASURA_SIGNING_KEY_FILE names a key that can't be
+    used: then nothing is written (a release named a key, so it never goes out unsigned)."""
     import zipfile
     from app import ed25519
+
+    key_file = os.environ.get(SIGNING_KEY_ENV)
+    seed = None
+    if key_file:
+        try:
+            seed = read_signing_key(key_file)
+        except (OSError, ValueError) as e:
+            print(f"\n*** ERROR: the signing key {SIGNING_KEY_ENV} names can't be used "
+                  f"({e if isinstance(e, ValueError) else type(e).__name__}): no update.json written. ***")
+            return None
 
     parts_rule = config["parts"]
     files = program_files(final_dist, parts_rule)
@@ -402,15 +418,8 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
     sig_path = os.path.join(out_dir, SIGNATURE_NAME)
     if os.path.exists(sig_path):
         os.remove(sig_path)                                  # never a stale signature beside a new manifest
-    key_file = os.environ.get(SIGNING_KEY_ENV)
-    seed = None
-    if key_file:
-        try:
-            seed = read_signing_key(key_file)
-        except (OSError, ValueError) as e:
-            print(f"\n*** ERROR: the signing key {SIGNING_KEY_ENV} names can't be used ({type(e).__name__}). ***")
     if seed is None:
-        print(f"\n*** WARNING: update.json is NOT signed (no usable {SIGNING_KEY_ENV}). A 3.x install will only be "
+        print(f"\n*** WARNING: update.json is NOT signed (no {SIGNING_KEY_ENV} set). A 3.x install will only be "
               "told this release is out; it installs nothing unsigned. ***\n")
     else:
         with open(sig_path, "wb") as f:
@@ -459,8 +468,11 @@ def installer_name(version):
 def installer_defines(version, data_name, program_dir, real_name):
     """The .iss's defines. The real program: APP_GUID, "Surasura", %LOCALAPPDATA%\\Programs\\Surasura. A test build:
     an AppId of its own (derived from its data_name, so each test name has one), "Surasura (test)", and its data_name
-    as the program folder, the data folder and the mutexes' name."""
-    test = data_name != real_name
+    as the program folder, the data folder and the mutexes' name. The real name in another case is refused
+    (ValueError, `valid_data_name`): its folders would be the real install's."""
+    if not valid_data_name(data_name, real_name):
+        raise ValueError(f"{data_name!r} is not a test build's data name (the real one is {real_name!r})")
+    test = data_name.casefold() != real_name.casefold()
     import uuid
     return {
         "AppVersion": version,
@@ -629,6 +641,14 @@ def check_program(final_dist, config):
     stray = [n for n in LIBRARY_NAMES if os.path.exists(os.path.join(final_dist, n))]
     if stray:
         failures.append(f"the program folder holds the library's {stray}")
+    # Every top-level entry is one an update owns: a one-click update moves only app.updater.OWNED_ENTRIES (and what
+    # the new release names), so any other would stay behind at the next update, never swapped or removed.
+    from app import updater
+    unowned = sorted(n for n in (os.listdir(final_dist) if os.path.isdir(final_dist) else ())
+                     if n not in updater.OWNED_ENTRIES)
+    if unowned:
+        failures.append(f"the program folder's top holds {unowned}, which app.updater.OWNED_ENTRIES doesn't name: "
+                        "an update would leave it behind (add it there first)")
     # SQLite at or above the floor, read from the frozen program's own DLL.
     version = sqlite_version_of(os.path.join(internal, "sqlite3.dll"))
     facts["sqlite"] = version
@@ -640,7 +660,7 @@ def check_program(final_dist, config):
             stamp = json.load(f)
         facts["stamp"] = stamp
         if set(stamp) != {"version", "build_id", "data_name", "install_shape"} or not stamp["build_id"] or \
-                not valid_data_name(stamp["data_name"]) or not _is_shape(stamp["install_shape"]):
+                not valid_data_name(stamp["data_name"], config["data_name"]) or not _is_shape(stamp["install_shape"]):
             failures.append(f"_internal/build_stamp.json is not {{version, build_id, data_name, install_shape}}: "
                             f"{stamp}")
     except (OSError, ValueError) as e:
@@ -681,11 +701,12 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         config = load_build_config()
     except (OSError, ValueError) as e:
         print(f"Build aborted: {e}")
-        return
+        return False
     data_name = data_name or config["data_name"]
-    if not valid_data_name(data_name):
-        print(f"Build aborted: --data-name {data_name!r} is not a plain folder name.")
-        return
+    if not valid_data_name(data_name, config["data_name"]):
+        print(f"Build aborted: --data-name {data_name!r} is not a plain folder name, or is the real one "
+              f"({config['data_name']!r}) in another case.")
+        return False
 
     # A release always produces the full zip too; --full-update (2.x's runtime release) implies --release.
     if full_update:
@@ -696,40 +717,39 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     if _python_version() < _version_tuple(config["python_min"]):
         # P0.3 02-contract §8: on 3.11.2 a frozen console program with no stderr crashes on a usage error. A real
         # release stops; a test build (its own data_name), release or not, only warns.
-        if release and data_name == config["data_name"]:
+        if release and data_name.casefold() == config["data_name"].casefold():
             print(f"Build aborted: a release needs Python {config['python_min']} or later "
                   f"(this is {sys.version.split()[0]}).")
-            return
+            return False
         print(f"WARNING: building on Python {sys.version.split()[0]}; surasura-cli wants {config['python_min']} "
               "or later. A test build only: a real --release refuses it.")
 
     if installer and not find_iscc():
         print(f"Build aborted: --installer: {ISCC_MISSING}")
-        return
+        return False
     try:
         shape = install_shape()
     except OSError as e:
         print(f"Build aborted: packaging/surasura.iss can't be read for the install shape ({e}).")
-        return
+        return False
 
     # Gate: everything being bundled must be testable first.
     if skip_tests:
         print("WARNING: --skip-tests set; skipping the pre-build test gate.")
     elif not run_pre_build_tests(config["modules"]):
         print("Build aborted: fix failing tests first (or pass --skip-tests to override).")
-        return
+        return False
 
-    # Clean previous build
-    if os.path.exists("dist"):
-        try:
-            shutil.rmtree("dist")
-        except Exception:
-            pass
-    if os.path.exists("build"):
-        try:
-            shutil.rmtree("build")
-        except Exception:
-            pass
+    # Clean previous build: a tree that can't be removed stops the build, so a stale dist\Surasura (one an earlier
+    # build's program still holds open) is never packaged.
+    for folder in ("dist", "build"):
+        if os.path.exists(folder):
+            try:
+                shutil.rmtree(folder)
+            except OSError as e:
+                print(f"Build aborted: {os.path.abspath(folder)} can't be removed ({e}). Close what holds it open "
+                      "(an earlier build's Surasura, a window on it) and build again.")
+                return False
 
     # PyInstaller Command
     # Use the spec file in packaging/ directory
@@ -757,7 +777,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
 
     if result.returncode != 0:
         print("Build failed. Check debug/build_log.txt for details.")
-        return
+        return False
 
     # Post-Build: the program folder. It holds the program only (S3.1 D15): no settings.json, User Files\, data\ or
     # results\ — those are the library's, made at the program's first start.
@@ -765,21 +785,21 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     final_dist = os.path.join("dist", build_name)
     if not os.path.exists(final_dist):
         print(f"Error: Build output not found at {final_dist}")
-        return
+        return False
 
     print(f"Build output verified at {final_dist}")
     for exe_name in ("Surasura.exe", CLI_EXE_NAME):
         exe_path = os.path.join(final_dist, exe_name)
         if not os.path.isfile(exe_path):
             print(f"Error: {exe_name} not found in {final_dist}")
-            return
+            return False
         print(f"  {exe_name}: {os.path.getsize(exe_path) / (1024 * 1024):.1f} MB")
 
     # 1. SQLite: the vendored sqlite.org build replaces the one Python 3.11 bundles (S3.1 D16).
     reason = swap_sqlite(final_dist, config)
     if reason:
         print(f"Build failed: {reason}.")
-        return
+        return False
 
     # 2. The bundled lists, for a new library's first start.
     for path in copy_default_lists(final_dist):
@@ -807,7 +827,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     #    the swapper (S3.1 D9), a test build too.
     if not _build_updater_exe(final_dist):
         print("Build failed: every build needs updater.exe.")
-        return
+        return False
 
     # 6. The post-build checks: exactly the three programs, no library, SQLite's floor, the stamp, PyQt6's modules and
     #    licences. Any failure stops here (nothing is zipped).
@@ -816,9 +836,10 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
           f"PyQt6 {facts.get('qt_modules', 'not bundled')}")
     if failures:
         print("Build failed:\n  " + "\n  ".join(failures))
-        return
+        return False
 
     # 7. Create Zip Archive
+    zipped = False
     if zip_output:
         print("Creating Zip Archive...")
         archive_base = os.path.join("dist", zip_name) # -> dist/Surasura_v<version>.zip
@@ -827,12 +848,16 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             # of a version-stamped folder that would look stale after an in-place update.
             shutil.make_archive(archive_base, 'zip', root_dir="dist", base_dir=build_name)
             print(f"Zip archive created: {archive_base}.zip")
+            zipped = True
         except Exception as e:
             print(f"Warning: Could not create zip archive: {e}")
-        zip_failures = check_zip_licences(archive_base + ".zip") if os.path.isfile(archive_base + ".zip") else []
+            if release:
+                print("Build failed: a release needs its full zip.")
+                return False
+        zip_failures = check_zip_licences(archive_base + ".zip") if zipped else []
         if zip_failures:
             print("Build failed:\n  " + "\n  ".join(zip_failures))
-            return
+            return False
     else:
         print("Skipping Zip Archive creation (use --zip to enable).")
 
@@ -842,20 +867,22 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         built_installer = build_installer(final_dist, version, data_name, config["data_name"])
         if built_installer is None:
             print("Build failed: --installer asked for the installer.")
-            return
+            return False
 
     # 9. The 3.x update artifacts (parts, update.json, update.json.sig) — release only. The installer built just now
     #    rides as 2.x's hand-off (update_type "installer"); without one, update.json says "full".
     if release:
-        _build_release(final_dist, version, config, out_dir="dist", installer=built_installer,
-                       needs_installer=needs_installer)
+        if _build_release(final_dist, version, config, out_dir="dist", installer=built_installer,
+                          needs_installer=needs_installer) is None:
+            print("Build failed: the release's update.json was not written (see the error above).")
+            return False
         print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
               + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
               + (", the installer" if built_installer else ""))
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")
-    if zip_output:
+    if zipped:
         print(f"Zip Archive: {os.path.abspath(archive_base + '.zip')}")
     print("---------------------------------------------------")
 
@@ -864,6 +891,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         os.startfile(os.path.abspath("dist"))
     except Exception:
         pass
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build and package Surasura.")
@@ -898,5 +926,7 @@ if __name__ == "__main__":
         print(json.dumps(found, ensure_ascii=False))
         print("CHECKS OK" if not checked else "CHECKS FAILED:\n  " + "\n  ".join(checked))
         sys.exit(1 if checked else 0)
-    build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release, full_update=args.full_update,
-          data_name=args.data_name, installer=args.installer, needs_installer=args.needs_installer)
+    # A failed build exits 1, so a workflow step or a script that runs it stops there.
+    sys.exit(0 if build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release,
+                        full_update=args.full_update, data_name=args.data_name, installer=args.installer,
+                        needs_installer=args.needs_installer) else 1)

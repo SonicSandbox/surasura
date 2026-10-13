@@ -79,6 +79,11 @@ Type: files; Name: "{app}\updater.exe"
 Type: files; Name: "{app}\RELEASE_NOTES.md"
 
 [Code]
+const
+  // The library's name in Documents when Documents\Surasura holds a program (a 2.x unzipped there; IK-1).
+  // app/import_2x.py's LIBRARY_FALLBACK says the same.
+  LibraryFallback = 'Surasura Library';
+
 var
   LibraryPage: TInputDirWizardPage;
   KeepNote: Boolean;        { an upgrade with no /LIBRARY=: library.json stays as it is }
@@ -159,6 +164,13 @@ begin
   Result := RemoveBackslashUnlessRoot(ExpandFileName(Trim(LibraryPage.Values[0])));
 end;
 
+// A folder holding a Surasura program (Surasura.exe or _internal: a 2.x unzipped there, or an install) is never a
+// library: 3.0 would work on that copy in place. app/import_2x.py's holds_program asks the same.
+function HoldsProgram(const Folder: String): Boolean;
+begin
+  Result := FileExists(AddBackslash(Folder) + 'Surasura.exe') or DirExists(AddBackslash(Folder) + '_internal');
+end;
+
 { '' when the folder can be the library; else why not. }
 function LibraryProblem: String;
 var
@@ -173,7 +185,10 @@ begin
   Prog := Lowercase(AddBackslash(WizardDirValue));
   if Copy(Folder, 1, Length(Prog)) = Prog then
     Result := 'Your library can''t be inside Surasura''s program folder (' + WizardDirValue + '): updating or ' +
-      'uninstalling Surasura replaces that folder. Choose another folder, such as Documents\Surasura.';
+      'uninstalling Surasura replaces that folder. Choose another folder, such as Documents\Surasura.'
+  else if HoldsProgram(LibraryFolder) then
+    Result := 'That folder holds a Surasura program, not a library. Choose another folder, such as Documents\' +
+      LibraryFallback + '.';
 end;
 
 function InitializeSetup: Boolean;
@@ -191,6 +206,8 @@ begin
   LibraryPage.Add('');
   if LibraryParam <> '' then
     LibraryPage.Values[0] := LibraryParam
+  else if HoldsProgram(ExpandConstant('{userdocs}\Surasura')) then
+    LibraryPage.Values[0] := AddBackslash(ExpandConstant('{userdocs}')) + LibraryFallback
   else
     LibraryPage.Values[0] := ExpandConstant('{userdocs}\Surasura');
 end;
@@ -277,7 +294,8 @@ begin
     MsgBox('{#AppName} is removed. Everything that is yours was kept, where it is:' + #13#10#13#10 +
       'Your library: ' + Lib + #13#10 +
       'Your settings: ' + ExpandConstant('{userappdata}\Houseki\{#DataName}') + #13#10 +
-      'Surasura''s own data (its word index and logs): ' + ExpandConstant('{localappdata}\Houseki\{#DataName}') + #13#10#13#10 +
+      'Surasura''s own data (its word index, its logs, and in update\previous the earlier version it kept for Go ' +
+      'back): ' + ExpandConstant('{localappdata}\Houseki\{#DataName}') + #13#10#13#10 +
       'Delete these folders yourself if you no longer want them.', mbInformation, MB_OK);
   end;
 end;

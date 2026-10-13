@@ -508,6 +508,9 @@ def _close_windows(pid):
 
 
 CONNECT_ROW = "Surasura Connect — stops after this batch of cards"
+# The re-plan preview's helper (`replan_preview.open_host`'s process): the window stops its host before the wait list is
+# read, and the helper ends after the job in hand (an Anki re-order mid-write is never cut), so its row is wait-only.
+REPLAN_ROW = "Re-ordering Anki's new cards — stops after its current step"
 
 
 def connect_pid():
@@ -585,7 +588,8 @@ def running_children(active_processes=(), images=None):
     splicer and the importers' children, a command line hato started). Any other program running from this
     install's folder (an uninstaller, a helper a later version adds) is listed too, wait-only (`stop` None: never
     ended from here). Connect (its lock's holder) is waited for and has no stop either: it stops by itself after its
-    batch of cards once the update is staged (P3.1 row 3.1.8). `images` overrides which programs count (a test, a
+    batch of cards once the update is staged (P3.1 row 3.1.8); so has the re-plan preview's helper (`REPLAN_ROW`), which
+    ends after the job in hand once its window has stopped its host. `images` overrides which programs count (a test, a
     source checkout; exactly those, no folder). The auto-Generate guard does NOT ask this (Backfill's build goes
     behind a Generate)."""
     found, seen = [], {os.getpid()}
@@ -602,6 +606,11 @@ def running_children(active_processes=(), images=None):
     if process is not None and process.pid not in seen:
         seen.add(process.pid)
         found.append({"pid": process.pid, "name": "Building パターン data", "stop": _stopper(process)})
+    replan = sys.modules.get("app.replan_preview")      # its helpers: only when it was ever used, never imported here
+    for process in (getattr(replan, "helper_processes", list)() if replan else []):
+        if process.pid not in seen:
+            seen.add(process.pid)
+            found.append({"pid": process.pid, "name": REPLAN_ROW, "stop": None})
     folder = {}
     try:
         mine = _install_images() if images is None else images

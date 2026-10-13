@@ -484,6 +484,32 @@ def test_a_library_inside_the_old_folder_is_refused(tmp_path, roaming):
     assert import_2x.run_import(old, old + " 3.0")["status"] == "done", "a folder beside it with a longer name is not in it"
 
 
+def test_a_library_holding_a_program_is_refused_and_left_untouched(tmp_path, roaming):
+    """IK-1: a folder holding a Surasura program — a 2.x unzipped into Documents\\Surasura, or a 3.0 install — is never
+    a library: 3.0 would work on that copy in place, and an update or an uninstall replaces it. Either mark alone
+    (Surasura.exe, `_internal`) is a program; the refusal names the fallback folder (the seam: one constant)."""
+    old = _old_install(tmp_path, store=False)
+    install = tmp_path / "Programs" / "すらすら 3.0"                     # a 3.0 program folder: no library in it
+    _write(str(install / "Surasura.exe"), b"MZ 3.0 program")
+    _write(str(install / "_internal" / "base_library.zip"), b"PK program files")
+    before = _tree(str(install))
+    result = import_2x.run_import(old, str(install))
+    assert result["status"] == "refused" and result["reason"] == "holds_program"
+    assert f"Documents\\{import_2x.LIBRARY_FALLBACK}" in result["message"]
+    assert _tree(str(install)) == before, "nothing written into the program folder"
+    for mark, make in (("Surasura.exe", lambda p: _write(str(p / "Surasura.exe"), b"MZ")),
+                       ("_internal", lambda p: os.makedirs(p / "_internal"))):
+        folder = tmp_path / f"一つだけ {mark}"
+        folder.mkdir()
+        make(folder)
+        assert import_2x.holds_program(str(folder)), mark
+        assert import_2x.run_import(old, str(folder))["reason"] == "holds_program", mark
+    library = tmp_path / "空の図書館"
+    library.mkdir()
+    (library / "User Files").mkdir()
+    assert not import_2x.holds_program(str(library)) and not import_2x.holds_program(str(tmp_path / "missing"))
+
+
 def test_a_folder_without_a_library_is_refused(tmp_path):
     empty = str(tmp_path / "空")
     os.makedirs(empty)

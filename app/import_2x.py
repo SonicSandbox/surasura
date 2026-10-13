@@ -49,6 +49,9 @@ PROGRAM_SKIP = ("User Files", "data", "results", ".trash", ".update_staging", ".
 EMPTY_LISTS = ("Blacklist.txt", "IgnoreList.txt")   # a new library's start writes these with comments only
 TMP_SUFFIX = ".import-tmp"
 PROBE_NAME = ".surasura-write-check"
+PROGRAM_MARKS = ("Surasura.exe", "_internal")   # a folder holding either is a Surasura program, never a library
+LIBRARY_FALLBACK = "Surasura Library"           # the library's name in Documents when Documents\Surasura holds a
+                                                # program (IK-1; the installer's LibraryFallback says the same)
 
 CFA_MESSAGE = (
     "Surasura could not write to {folder}. Windows may be protecting this folder (Controlled folder access). "
@@ -84,6 +87,12 @@ def _inside(path, folder):
 def is_2x_folder(folder):
     """A folder holding a 2.x library: `User Files\\` or `data\\` in it."""
     return any(os.path.isdir(os.path.join(folder, name)) for name in LIBRARY_FOLDERS)
+
+
+def holds_program(folder):
+    """A folder holding a Surasura program (`Surasura.exe` or `_internal`): a 2.x unzipped there, or a 3.0 install.
+    It is never a library: 3.0 would work on that copy in place, and an update or an uninstall replaces it."""
+    return any(os.path.exists(os.path.join(folder, name)) for name in PROGRAM_MARKS)
 
 
 def find_installs():
@@ -468,7 +477,8 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
 
     -> a dict: `status` done | cancelled | failed | refused | dry-run, `reason` and `message` (a plain sentence)
     when not done, and the counts. Refusals: `running`, `missing`, `not_2x` (`check_source`), `same_folder` (the
-    library inside the old folder or the other way round), `already_imported`, `other_import` (an unfinished import
+    library inside the old folder or the other way round), `holds_program` (a folder holding Surasura.exe or
+    `_internal`: `holds_program`), `already_imported`, `other_import` (an unfinished import
     into this folder from another install), `not_empty` (a 3.0 library holding content), `access_denied` / `error`
     (`probe_library`)."""
     source, library = os.path.abspath(source), os.path.abspath(library)
@@ -477,6 +487,9 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
         return _refused(check["reason"], check["message"], running=check["running"])
     if _inside(library, source) or _inside(source, library):
         return _refused("same_folder", "Choose a library folder outside your old Surasura folder.")
+    if holds_program(library):
+        return _refused("holds_program", f"{library} holds a Surasura program, not a library. Choose another folder, "
+                        f"such as Documents\\{LIBRARY_FALLBACK}.")
     previous = read_import_note()
     resuming = False
     if previous and previous.get("complete") and not again:

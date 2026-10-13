@@ -5,6 +5,7 @@ program and a test build; when Inno Setup's compiler is on this PC, the script i
 import os
 import re
 import subprocess
+import sys
 import uuid
 
 import pytest
@@ -157,6 +158,41 @@ def test_a_library_inside_the_program_folder_is_refused_silently_too():
     assert "MsgBox(Problem" not in code.replace("SuppressibleMsgBox(Problem", "")   # a silent run never hangs on a box
 
 
+def test_a_folder_holding_a_program_is_never_the_library():
+    """IK-1: a 2.x unzipped into Documents\\Surasura (Surasura.exe and _internal beside its library) is exactly the
+    page's default; 3.0 would then work on the 2.x copy in place, and an upgrade skips the page, so nothing could fix
+    it. The default steps aside to Documents\\<LibraryFallback> when that folder holds a program, and Next on a folder
+    holding one is refused (LibraryProblem: the page, and a silent run's PrepareToInstall)."""
+    code = "\n".join(_sections()["code"])
+    assert re.findall(r"LibraryFallback = '([^']*)';", code) == ["Surasura Library"]      # the one place it is named
+    assert "Surasura Library" not in code.replace("LibraryFallback = 'Surasura Library';", "")
+    holds = code[code.index("function HoldsProgram"):code.index("end;", code.index("function HoldsProgram"))]
+    assert "FileExists(AddBackslash(Folder) + 'Surasura.exe') or DirExists(AddBackslash(Folder) + '_internal')" in holds
+    default = code[code.index("procedure InitializeWizard"):code.index("function ShouldSkipPage")]
+    assert ("else if HoldsProgram(ExpandConstant('{userdocs}\\Surasura')) then\n"
+            "LibraryPage.Values[0] := AddBackslash(ExpandConstant('{userdocs}')) + LibraryFallback\n"
+            "else\n"
+            "LibraryPage.Values[0] := ExpandConstant('{userdocs}\\Surasura');") in default
+    problem = code[code.index("function LibraryProblem"):code.index("function InitializeSetup")]
+    assert "else if HoldsProgram(LibraryFolder) then" in problem and "LibraryFallback" in problem
+
+
+def test_the_python_side_names_the_same_fallback_and_the_same_marks():
+    # The seam (Sonic's answer S3.1-7 pending): one constant each side; a different answer is a one-line change there.
+    from app import import_2x
+    code = "\n".join(_sections()["code"])
+    assert f"LibraryFallback = '{import_2x.LIBRARY_FALLBACK}';" in code
+    assert import_2x.PROGRAM_MARKS == ("Surasura.exe", "_internal")
+
+
+def test_the_uninstallers_last_message_names_the_kept_previous_version():
+    # IK-12: Houseki\<name> keeps more than the word index and logs: update\previous holds a whole earlier program,
+    # kept for Go back. The last page says so, in plain words.
+    code = "\n".join(_sections()["code"])
+    message = code[code.index("procedure CurUninstallStepChanged"):]
+    assert "update\\previous the earlier version it kept for Go ' +\n'back)" in message
+
+
 # --- the packager's defines --------------------------------------------------------------------------------------------
 
 def test_the_scripts_defaults_are_the_real_programs():
@@ -229,6 +265,69 @@ def test_a_real_release_stops_on_a_python_below_the_floor(tmp_path, monkeypatch,
 def test_a_test_release_only_warns_on_a_python_below_the_floor(tmp_path, monkeypatch, capsys):
     assert _freeze_reached(tmp_path, monkeypatch, release=True, data_name="Surasura-test")
     assert "WARNING: building on Python" in capsys.readouterr().out
+
+
+def test_the_real_name_in_another_case_is_no_test_release(tmp_path, monkeypatch, capsys):
+    # `--release --data-name surasura` on Python 3.11.2 skipped the floor as a "test build"; it is the real
+    # install's name on Windows, so the build stops before freezing.
+    assert not _freeze_reached(tmp_path, monkeypatch, release=True, data_name="surasura")
+    assert "Build aborted" in capsys.readouterr().out
+
+
+# --- packaging/install_proof.py: only ever a test identity, only ever a stand-in profile --------------------------------
+
+def _install_proof():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("install_proof_under_test",
+                                                  os.path.join(PROJECT, "packaging", "install_proof.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("name", ["Surasura", "surasura", "SURASURA"])
+def test_the_install_proof_refuses_the_real_name_in_any_case(tmp_path, monkeypatch, name):
+    """`--data-name surasura` passed the proof's refusal; on Windows its program folder and Houseki folders are
+    the real install's, which `uninstall` removes."""
+    proof = _install_proof()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    with pytest.raises(SystemExit):
+        proof.identity(name)
+    assert proof.identity("Surasura-test")["name"] == "Surasura (test)"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the install proof runs on Windows only")
+@pytest.mark.parametrize("given", ["same", "case", "trailing separator"])
+def test_the_install_proof_refuses_this_users_own_profile(tmp_path, monkeypatch, given):
+    """`--profile C:\\Users\\<name>` made the "stand-in" the real profile: the real program folder, the real
+    Houseki folders removed by `uninstall`. Refused before anything is moved or made (`isolate` never runs)."""
+    proof = _install_proof()
+    me = tmp_path / "Users" / "Michael"
+    monkeypatch.setenv("USERPROFILE", str(me))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    isolated = []
+    monkeypatch.setattr(proof, "isolate", lambda profile: isolated.append(profile) or pytest.fail("isolated"))
+    profile = {"same": str(me), "case": str(me).upper(), "trailing separator": str(me) + os.sep}[given]
+    with pytest.raises(SystemExit) as refused:
+        proof.main(["uninstall", "--profile", profile])
+    assert "own profile" in str(refused.value) and isolated == []
+    assert not me.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the install proof runs on Windows only")
+def test_the_install_proof_takes_a_stand_in_profile(tmp_path, monkeypatch):
+    proof = _install_proof()
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "Users" / "Michael"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+
+    def stop_here(profile):
+        raise RuntimeError(f"isolated in {profile}")
+    monkeypatch.setattr(proof, "isolate", stop_here)
+    with pytest.raises(RuntimeError, match="isolated in"):
+        proof.main(["uninstall", "--profile", str(tmp_path / "Users" / "Michael" / "stand-in")])
 
 
 ISCC = package_app.find_iscc()

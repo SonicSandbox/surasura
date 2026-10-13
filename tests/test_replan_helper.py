@@ -136,6 +136,23 @@ def test_the_helper_ends_with_its_window(served):
         host.stop()
 
 
+def test_an_update_waits_for_the_helper_with_no_stop_until_it_has_ended(served):
+    """S3.1 F10 (Mado's W3.5 ask): the helper is a Surasura process an update waits for. The window stops its host
+    first and the helper ends after the job in hand, so its row on the update's wait list has no *Stop it* (one would
+    end it mid-way through an Anki re-order); once it has ended, it is no row at all."""
+    from app import updater
+    _root, _store, _fake, hosts = served
+    host = _open(hosts)
+    assert _wait(lambda: host._conn is not None, 60), "the helper never answered"
+    assert host._proc in replan_preview.helper_processes()
+    rows = [c for c in updater.running_children([], images=[]) if c["pid"] == host._proc.pid]
+    assert rows == [{"pid": host._proc.pid, "name": updater.REPLAN_ROW, "stop": None}]
+    host.stop()
+    assert host._proc.wait(30) == 0
+    assert host._proc not in replan_preview.helper_processes()
+    assert not [c for c in updater.running_children([], images=[]) if c["pid"] == host._proc.pid]
+
+
 def test_a_helper_that_cant_start_leaves_the_jobs_to_the_windows_process(served, monkeypatch):
     root, store, fake, hosts = served
     monkeypatch.setattr(replan_preview, "_helper_args", lambda language, generate: [sys.executable, "-c", "pass"])

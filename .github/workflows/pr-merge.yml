@@ -1,6 +1,7 @@
 # Adding the `reviewed` label merges a pull request into 3.0-dev or 2.x-dev, on ubuntu, without running the tests
 # again: the session adds it after its local review (the register is kept outside this repo). It merges the head commit
-# only if pr.yml's run on that commit passed (docs only: that run passed with no test job), and only if the pull
+# only if pr.yml's run on that commit passed (docs only: that run passed with no test job), and package.yml's too when
+# the pull request touches its paths (PROOF_PATHS), and only if the pull
 # request still carries the label, isn't a draft and hasn't moved. A label added before the tests pass, or on a draft,
 # merges nothing and is taken off again: add it once they have. main takes only pull requests the owner merges.
 name: PR merge
@@ -33,6 +34,11 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LABELLED: ${{ github.event.pull_request.head.sha }}
+          # package.yml's `paths`, the same strings in the same order (tests/test_packaging_config.py checks it).
+          PROOF_PATHS: >-
+            packaging/** package_app.py updater_helper.py app/updater.py app/update_checker.py app_entry.py
+            app/build_info.py app/cli/** scripts/cli_smoke.py .github/workflows/package.yml
+            .github/workflows/pr-merge.yml
         run: |
           read -r base head draft labelled < <(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isDraft,labels \
             --jq '[.baseRefName, .headRefOid, (.isDraft|tostring), ([.labels[].name] | index("reviewed") != null | tostring)] | join(" ")')
@@ -63,12 +69,34 @@ jobs:
             *) refuse "run $run's tests job: '$tests'";;
           esac
           # package.yml runs only on a pull request that touches the package or the updater: when it ran on this head,
-          # it must have passed too (none = it had nothing to prove).
+          # it must have passed too.
           # (Asked of every run on the head, not of package.yml by name: a base without the file has no such workflow.)
           read -r pkg pstatus pconclusion < <(gh api "repos/$REPO/actions/runs?event=pull_request&head_sha=$head&per_page=100" \
             --jq "[.workflow_runs[] | select(.path == \".github/workflows/package.yml\" and .display_title == \"Package proof (PR #$PR)\")] | (max_by(.run_number) // {}) | \"\(.id // \"none\") \(.status // \"-\") \(.conclusion // \"-\")\"")
           echo "package proof: run $pkg, $pstatus, $pconclusion"
           if [ "$pkg" != none ] && { [ "$pstatus" != completed ] || [ "$pconclusion" != success ]; }; then
             refuse "the package proof on $head hasn't passed (run $pkg: $pstatus, $pconclusion)"
+          fi
+          # No run is fine only when there is nothing to prove: the pull request touches none of PROOF_PATHS, or neither
+          # its head nor its base has package.yml (2.x-dev). Else the proof hasn't started yet, and the label waits.
+          has_package_yml() {    # does $1 (a commit or a branch) hold package.yml? Any answer but "not found" refuses
+            local out
+            out=$(gh api "repos/$REPO/contents/.github/workflows/package.yml?ref=$1" --jq .path 2>&1) && return 0
+            case "$out" in *"HTTP 404"*) return 1;; esac
+            refuse "package.yml could not be looked up at $1 ($out)"
+          }
+          if [ "$pkg" = none ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)') \
+              || refuse "the pull request's files could not be read"
+            read -ra proof_paths <<< "$PROOF_PATHS"
+            touched=
+            while IFS= read -r f; do
+              for p in "${proof_paths[@]}"; do
+                if [ -n "$f" ] && [[ "$f" == $p ]]; then touched=$f; fi
+              done
+            done <<< "$files"
+            if [ -n "$touched" ] && { has_package_yml "$head" || has_package_yml "$base"; }; then
+              refuse "the package proof hasn't started yet on $head ($touched is in its paths); add the label again when it has"
+            fi
           fi
           gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$head" || refuse "the merge failed (see above)"

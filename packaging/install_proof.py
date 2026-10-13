@@ -75,9 +75,9 @@ def isolate(profile):
 
 def identity(data_name):
     """Where a test install of `data_name` lives -> {app_id, name, program, local, roaming, shortcut}. The real
-    program's data name is refused (SystemExit)."""
+    program's data name is refused (SystemExit), in any case: Windows' folders ignore it."""
     config = package_app.load_build_config()
-    if data_name == config["data_name"] or not package_app.valid_data_name(data_name):
+    if not package_app.valid_data_name(data_name) or data_name.casefold() == config["data_name"].casefold():
         raise SystemExit(f"refused: {data_name!r} is not a test build's data name")
     defines = package_app.installer_defines("0", data_name, PROJECT_ROOT, config["data_name"])
     local, roaming = os.environ["LOCALAPPDATA"], os.environ["APPDATA"]
@@ -295,6 +295,9 @@ def main(argv=None):
         raise SystemExit("the install proof runs on Windows only")
     if not a.profile:
         parser.error(f"{a.command} needs --profile: it never runs in the real profile")
+    real = os.environ.get("USERPROFILE")
+    if real and _same(os.path.abspath(a.profile), real):
+        raise SystemExit(f"refused: --profile {a.profile} is this user's own profile; give a stand-in folder")
     identity(a.data_name)                  # the real data name is refused before anything is made
     isolate(a.profile)
     ident = identity(a.data_name)          # its places inside the stand-in profile

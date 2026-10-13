@@ -170,6 +170,24 @@ def test_a_library_store_of_this_or_an_older_schema_passes(offset):
     assert code == 0
 
 
+def test_a_language_whose_store_cant_be_named_never_skips_the_others_check(monkeypatch):
+    """Review P item 4 (S3.1 F11): when Japanese has no library store to name (its data folder missing, the store
+    switched off), the check returned there — a Chinese library from a newer Surasura then opened with no
+    version-skew. Each language is checked on its own."""
+    from app.cli import contract
+    _library_store("zh", library_store.STORE_SCHEMA + 1)
+    real = library_store.library_db_path
+
+    def no_japanese(language, data_path):
+        if language == "ja":
+            raise FileNotFoundError("no ja data folder")
+        return real(language, data_path)
+    monkeypatch.setattr(library_store, "library_db_path", no_japanese)
+    with pytest.raises(contract.CliError) as refused:
+        contract.check_build()
+    assert refused.value.code == "version-skew" and refused.value.context["language"] == "zh"
+
+
 def test_no_library_store_is_fine(tmp_path):
     root = tmp_path / "root"
     root.mkdir()

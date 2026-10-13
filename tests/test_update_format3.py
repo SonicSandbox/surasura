@@ -161,13 +161,35 @@ def test_the_key_is_never_printed(release, capsys):
 
 def test_an_unreadable_key_file_signs_nothing(release, tmp_path, monkeypatch, capsys):
     out, _ = release(seed=None)
+    before = (out / "update.json").read_bytes()
     (tmp_path / "bad.key").write_text("not a key", encoding="ascii")
     monkeypatch.setenv(package_app.SIGNING_KEY_ENV, str(tmp_path / "bad.key"))
     (tmp_path / "dist2").mkdir()
     _program(tmp_path / "dist2")
-    package_app._build_release(str(tmp_path / "dist2"), "3.0.1", package_app.load_build_config(), out_dir=str(out))
-    assert not (out / "update.json.sig").exists()
+    # a key was named, so the release never goes out unsigned: nothing is written, and None says so.
+    assert package_app._build_release(str(tmp_path / "dist2"), "3.0.1", package_app.load_build_config(),
+                                      out_dir=str(out)) is None
+    assert not (out / "update.json.sig").exists() and (out / "update.json").read_bytes() == before
     assert "not a key" not in capsys.readouterr().out
+
+
+def test_a_hex_key_cut_to_32_characters_is_refused_never_used_as_raw_bytes(tmp_path):
+    """A 64-character hex export cut short at 32 characters is 32 bytes long, like a raw key; used as one,
+    every release it signed would fail every client's check (a dead update, found only by users). It is refused,
+    saying why, never quoting the file. The real forms still read: 32 raw bytes, 64 hex characters."""
+    cut = tmp_path / "cut.hex"
+    cut.write_bytes(SEED.hex()[:32].encode("ascii"))
+    with pytest.raises(ValueError) as refused:
+        package_app.read_signing_key(str(cut))
+    assert "64" in str(refused.value) and SEED.hex()[:32] not in str(refused.value)
+    cut.write_bytes(SEED.hex()[:31].upper().encode("ascii") + b"\n")          # its line end inside the 32 bytes
+    with pytest.raises(ValueError):
+        package_app.read_signing_key(str(cut))
+    assert not all(b in b"0123456789abcdefABCDEF" for b in SEED)               # (a raw key is not hex text)
+    (tmp_path / "raw.key").write_bytes(SEED)
+    assert package_app.read_signing_key(str(tmp_path / "raw.key")) == SEED
+    (tmp_path / "full.hex").write_text(SEED.hex() + "\n", encoding="ascii")
+    assert package_app.read_signing_key(str(tmp_path / "full.hex")) == SEED
 
 
 # --- 2.5.0's own client: INSTALLER with an installer, FULL without ----------------------------------------------------------

@@ -618,6 +618,31 @@ def test_connect_is_named_by_its_lock_and_has_no_stop(procs, tmp_path):
     assert children[other.pid]["name"] == "Surasura's command line" and children[other.pid]["stop"] is not None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' process listing")
+def test_the_replan_previews_helper_is_waited_for_and_has_no_stop(procs, tmp_path, monkeypatch):
+    """Mado's W3.5 ask (S3.1 F10): the re-plan preview's helper (`replan_preview.open_host`'s process, frozen
+    `Surasura.exe replan_helper`) was listed as *Another Surasura window* with a *Stop it* that ends it — mid-way
+    through an Anki re-order, maybe. The window stops its host before the wait list is read and the helper ends after
+    the job in hand, so its row is wait-only, as Connect's. Another program from the same exe keeps its row and stop;
+    a helper that has ended is no row."""
+    import shutil
+    from app import replan_preview
+    install = tmp_path / "スラスラ 本番"
+    install.mkdir()
+    exe = install / "Surasura.exe"
+    shutil.copy(sys.executable, exe)
+    helper = subprocess.Popen([str(exe), "-c", "import time; time.sleep(30)"])     # Surasura.exe replan_helper, say
+    other = subprocess.Popen([str(exe), "-c", "import time; time.sleep(30)"])      # another Surasura window
+    procs.extend([helper, other])
+    monkeypatch.setattr(replan_preview, "_HELPERS", [helper])
+    children = {c["pid"]: c for c in updater.running_children([], images=[str(exe)])}
+    assert children[helper.pid] == {"pid": helper.pid, "name": updater.REPLAN_ROW, "stop": None}
+    assert children[other.pid]["name"] == "Another Surasura window" and children[other.pid]["stop"] is not None
+    helper.kill()
+    helper.wait(timeout=10)
+    assert helper.pid not in {c["pid"] for c in updater.running_children([], images=[str(exe)])}
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' process handles")
 def test_stop_pid_never_ends_connect(procs):
     connect = _sleeper(60)

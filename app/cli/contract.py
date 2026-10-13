@@ -302,7 +302,7 @@ def check_build(store=True):
             path = library_store.library_db_path(language, get_data_path(language))
         except Exception as e:                  # no library store here (switched off, or no data folder)
             log.warning("library store for %s not checked: %s", language, e)
-            return
+            continue                            # the other language's store is still checked
         if not os.path.isfile(path):
             continue
         try:

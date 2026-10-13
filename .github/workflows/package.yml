@@ -14,12 +14,19 @@ on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # pr-merge.yml's PROOF_PATHS holds the same list (tests/test_packaging_config.py checks the two match).
     paths:
       - "packaging/**"
       - "package_app.py"
       - "updater_helper.py"
       - "app/updater.py"
       - "app/update_checker.py"
+      - "app_entry.py"
+      - "app/build_info.py"
+      - "app/cli/**"
+      - "scripts/cli_smoke.py"
+      - ".github/workflows/package.yml"
+      - ".github/workflows/pr-merge.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 
 SCHEMA = 1
@@ -27,6 +28,9 @@ LANGUAGES = ("ja", "zh")
 
 # A child of the command line's logger, so a refusal lands in cli.log during a verb; the window has no handler on it.
 log = logging.getLogger("surasura-cli.tools")
+# One refresh at a time in a process (the window's start-up worker and the Connect switch's): the later one reads the
+# settings and the entry after the earlier one has written, so it is the one that counts
+_refreshing = threading.Lock()
 
 
 def tools_dir():
@@ -108,12 +112,17 @@ def _same(old, new):
 
 def refresh(settings=None):
     """Rewrite surasura.json when a field other than `updated` differs; True when written. The gate comes first: a
-    process that writes no entry reads nothing. `settings` None → read strictly; unreadable → skipped (logged). A
-    replace that keeps failing returns False with the old file intact and no tmp left; other errors raise (callers
-    wrap)."""
+    process that writes no entry reads nothing. `settings` None → read strictly (inside the refresh's lock, so a
+    later refresh never writes settings older than an earlier one's); unreadable → skipped (logged). A replace that
+    keeps failing returns False with the old file intact and no tmp left; other errors raise (callers wrap)."""
     from app import path_utils
     if not (path_utils.is_frozen() or os.environ.get("SURASURA_TOOLS_CLI")):
         return False
+    with _refreshing:
+        return _refresh(settings)
+
+
+def _refresh(settings):
     if settings is None:
         from app import settings_manager
         try:
@@ -138,7 +147,7 @@ def refresh(settings=None):
         log.warning("surasura.json not written: %d bytes, over the %d-byte limit", len(data), MAX_BYTES)
         return False
     os.makedirs(folder, exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"     # its own per process and thread
     written = False
     try:
         with open(tmp, "wb") as f:

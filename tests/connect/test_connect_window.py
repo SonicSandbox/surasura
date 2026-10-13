@@ -293,6 +293,29 @@ def test_ask_hato_again_that_fails_says_why_and_keeps_its_button(root, monkeypat
     assert str(win.buttons[("needs", 21, "Ask hato again")].cget("state")) == "normal"
 
 
+def test_ask_hato_again_with_settings_json_half_saved_says_try_again_and_asks_hato_nothing(root, monkeypatch):
+    """settings.json read the moment another window is saving it: *Ask hato again* says it can't be read just now and
+    keeps its button — hato isn't asked."""
+    # why: read leniently (the window's own settings reader, as the dashboard opens it), a half-saved settings.json is
+    # the defaults — the preview off — so the back-fill answered "Connect's preview is off" while it was on
+    import os
+    from app.connect import hato
+    calls = []
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, **k: (calls.append(settings), {})[1])
+    with open(os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json"), "w", encoding="utf-8") as f:
+        f.write('{"target_language": "ja", "connect_enabled": tr')
+    pump = Pump()
+    win = connect_window.show(root, "ja", Tips(), dict(RECORD, needs=[NO_PAIRING], unseen=1), act=Act(),
+                              writer_busy=lambda: False, confirm=lambda t, x: True, junban=True, post=pump.put,
+                              mark_seen=lambda ids: 1)
+    _press(win, "needs", 21, "Ask hato again")
+    note = win.notes[("needs", 21)]
+    assert pump.run(root, lambda: note.cget("text") == "hato's pairings weren't read: settings.json can't be read "
+                                                       "just now; try again.")
+    assert calls == [], "hato isn't asked on a guess at the switch"
+    assert str(win.buttons[("needs", 21, "Ask hato again")].cget("state")) == "normal"
+
+
 # --- the final adversary's rows (P3.1 W5) -----------------------------------------------------------------------------
 
 class Clock:

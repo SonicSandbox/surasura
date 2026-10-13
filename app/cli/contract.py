@@ -148,6 +148,7 @@ def close_log():
             faulthandler.enable(sys.__stderr__, all_threads=True)
         _fault_file.close()
         _fault_file = None
+    log.propagate = True                        # its records passed on again, as before `open_log` (in-process calls)
     logging.raiseExceptions = _raise_exceptions
 
 

@@ -2524,8 +2524,17 @@ class MasterDashboardApp:
 
     def _connect_backfill(self, saved):
         """On the switch-on's worker, after the save (P3.2 row 3.2.4; 09-hato-layer v2 §4): hato's pairings back-filled
-        for each language Surasura is set up for (`hato.backfill`: none mined because of it), each one's summary in the
-        Processing Log. A failure is only said: the switch stays on."""
+        for each language Surasura is set up for (`hato.backfill`: none mined because of it). With hato's entry in the
+        shared tools folder (hato.json), the Processing Log says hato is being asked (it may take up to a minute a
+        language), then each language's summary; without one (no hato here), nothing of it is said there — Connect's
+        log has why. A failure is only said: the switch stays on."""
+        try:
+            from app.connect import hato
+            shown = hato.connected()
+        except Exception:
+            shown = False
+        if shown:
+            self.log_to_terminal("Asking hato for its pairings…")
         for lang in self.CONNECT_LANGUAGES:
             name = self.LANGUAGE_NAMES.get(lang, lang)
             try:
@@ -2533,10 +2542,14 @@ class MasterDashboardApp:
                 from app.path_utils import get_user_files_path
                 if not os.path.isdir(get_user_files_path(lang)):
                     continue
-                self.log_to_terminal(hato.say(hato.backfill(lang, saved)))
+                line = hato.say(hato.backfill(lang, saved))
             except Exception as e:
-                self.log_to_terminal(f"hato's pairings ({name}) weren't read: {e}. Connect stays on; ask again from "
-                                     "its window when Needs you lists the files.")
+                line = (f"hato's pairings ({name}) weren't read: {e}. Connect stays on; ask again from its window "
+                        "when Needs you lists the files.")
+            if shown:
+                self.log_to_terminal(line)
+            else:
+                print(line)
 
     def _connect_shelved(self):
         """{lang: (cards on the shelf, [its restore points with cards still on it])}, from the status record — only

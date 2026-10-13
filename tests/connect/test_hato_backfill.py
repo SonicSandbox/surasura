@@ -431,3 +431,214 @@ def test_a_chinese_line_lands_in_chinese_store(tmp_path):
         rows, _gap = s.read_events(library.READER)
         assert rows == [] and not inbox.pending(s)
     assert hato.say(out) == "hato's pairings (Chinese): 2 new, 0 already there."
+
+
+# --- the review's rows (P3.2 fixer) -----------------------------------------------------------------------------------
+
+def _answer(lines, result):
+    """hato's answer as bytes, each line ASCII-escaped JSON (so a lone surrogate travels as hato would send it)."""
+    return b"".join(json.dumps(x).encode("ascii") + b"\n" for x in list(lines) + [result])
+
+
+def test_a_second_back_fill_while_one_runs_answers_at_once_that_hato_is_being_asked(tmp_path):
+    """*Ask hato again* pressed while the switch's back-fill still waits for hato (up to a minute): the second one
+    answers at once, "hato is being asked already", and hato isn't started a second time."""
+    # why: one back-fill at a time in a process; a second that queued behind the first left the window's note on
+    # "Asking hato…" for up to a minute with nothing said, then asked hato all over again
+    import threading
+    c.fake_hato(tmp_path, [], c.result_line(0, None))
+    started, release, asked = threading.Event(), threading.Event(), []
+
+    def slow(argv, timeout):
+        asked.append(argv)
+        started.set()
+        release.wait(10)
+        return 0, _answer([], c.result_line(0, None))
+    first, second = {}, {}
+    one = threading.Thread(target=lambda: first.update(hato.backfill("ja", {"connect_enabled": True}, run=slow)))
+    two = threading.Thread(target=lambda: second.update(hato.backfill("ja", {"connect_enabled": True}, run=slow)))
+    one.start()
+    try:
+        assert started.wait(10)
+        two.start()
+        two.join(2)
+        assert not two.is_alive(), "the second back-fill answered at once, never waiting behind the first"
+    finally:
+        release.set()
+        one.join(10)
+        if two.ident is not None:
+            two.join(10)
+    assert first["hato"] == hato.ASKED and len(asked) == 1, "hato asked once"
+    assert (second["hato"], second["new"], second["need"]) == (hato.ASKING, 0, None)
+    assert hato.say(second) == "hato is being asked already (Japanese); try again once it has answered."
+
+
+def test_the_same_count_again_takes_no_write_lock_on_the_ledger_of_its_own(tmp_path, monkeypatch):
+    """Asked again with the same files left: the entry is kept as it is, and only read — no write transaction beyond
+    the one the ledger's opening always takes."""
+    # why: a back-fill with nothing new to say that takes the ledger's write lock waits behind a Connect run writing
+    # it (up to 5 s), for a write it never makes
+    import sqlite3
+    for n in (3, 4, 5, 6):
+        _old(c.drop(f"Example Show - {n:02d}.ja.srt"))
+    c.library()
+    _switched_on()
+    c.fake_hato(tmp_path, [], c.result_line(0, _since()))
+    assert hato.backfill("ja", _settings())["need"] == "raised"
+    statements, real = [], sqlite3.connect
+
+    def traced(target, *a, **k):
+        conn = real(target, *a, **k)
+        if str(target).endswith("ledger.sqlite"):
+            conn.set_trace_callback(statements.append)
+        return conn
+    monkeypatch.setattr(book.sqlite3, "connect", traced)
+    assert hato.backfill("ja", _settings())["need"] == "kept"
+    opened = statements.index("COMMIT")             # the ledger's opening (its tables made if absent)
+    assert [s for s in statements[opened + 1:] if s.startswith("BEGIN")] == [], statements[opened + 1:]
+    with Ledger() as ledger:
+        assert [n["say"] for n in ledger.needs("ja")] == [FOUR]
+
+
+@pytest.mark.parametrize("error, refused", [
+    (PermissionError(13, "The process cannot access the file because it is being used by another process"), True),
+    (RuntimeError("a fault of Surasura's own"), False)], ids=["locked", "other-fault"])
+def test_a_line_whose_subtitle_cant_be_read_is_refused_and_the_rest_go_on(error, refused, tmp_path, monkeypatch):
+    """One copy hato paired that can't be read just now (another program holding it, an unreadable copy): that line
+    is refused, counted and logged, and the lines after it are paired. Any other fault still stops the back-fill."""
+    # why: hato's order is stable, so a read error that stopped the back-fill stopped it at the same line every time:
+    # every line after it would never be paired
+    from app.cli import connect_verbs
+    paths = [c.drop(f"Example Show - {n:02d}.ja.srt") for n in range(1, 5)]
+    c.library()
+    _switched_on()
+    real = connect_verbs._sha256
+
+    def reads(path):
+        if path == paths[1]:
+            raise error
+        return real(path)
+    monkeypatch.setattr(connect_verbs, "_sha256", reads)
+    c.fake_hato(tmp_path, _lines(paths), c.result_line(4, None))
+    out = hato.backfill("ja", _settings())
+    if refused:
+        assert out["stopped"] is None and out["new"] == 3, out
+        assert [(p, code) for p, code, _m in out["refused"]] == [(paths[1], "unreadable")]
+        assert sorted(_pairings()) == sorted(paths[:1] + paths[2:])
+        assert "refused (unreadable)" in _log() and "1 refused: the logs say why." in hato.say(out)
+    else:
+        assert out["new"] == 1 and out["refused"] == [] and "RuntimeError" in out["stopped"], out
+        assert list(_pairings()) == paths[:1]
+
+
+def test_a_line_with_a_lone_surrogate_in_its_path_is_refused_and_the_rest_go_on(tmp_path):
+    """A line whose `library_path` holds a lone surrogate (valid JSON, never a file name Surasura can write down):
+    refused and logged, the others paired."""
+    # why: the record's UTF-8 size check raised UnicodeEncodeError, which stopped the back-fill there every time
+    paths = [c.drop(f"Example Show - {n:02d}.ja.srt") for n in range(1, 4)]
+    c.library()
+    _switched_on()
+    lines = _lines(paths)
+    lines[1] = dict(lines[1], library_path=paths[1][:-len(".ja.srt")] + "\ud800.ja.srt")
+    c.fake_hato(tmp_path, [], c.result_line(0, None))
+    out = hato.backfill("ja", _settings(), run=lambda argv, timeout: (0, _answer(lines, c.result_line(3, None))))
+    assert out["stopped"] is None and out["new"] == 2, out
+    assert [code for _p, code, _m in out["refused"]] == ["bad-data"]
+    assert sorted(_pairings()) == sorted([paths[0], paths[2]])
+    assert "refused (bad-data)" in _log() and "\\ud800" in _log(), "logged, the surrogate written as an escape"
+
+
+def _count_opens(monkeypatch):
+    """Every store handle opened from here on (each `Store` made)."""
+    opened, real = [], library_store.Store.__init__
+
+    def counting(self, *a, **k):
+        opened.append(1)
+        return real(self, *a, **k)
+    monkeypatch.setattr(library_store.Store, "__init__", counting)
+    return opened
+
+
+def test_the_lines_go_through_one_store_handle_back_to_back(tmp_path, monkeypatch):
+    """Every line of one answer is registered through the one store handle the first opened (measured on already
+    paired lines: 60 took 0.88 s with a handle a line and 0.11 s with one; 2,000 took 139 s and 3.9 s)."""
+    # why: opening the store costs 14 ms on a 60-item library and 68 ms on a 2,000-item one, so a handle a line made
+    # a back-fill of a large Hato folder take minutes, at every switch-on and every *Ask hato again*
+    paths = [c.drop(f"Example Show - {n:02d}.ja.srt") for n in range(1, 7)]
+    c.library()
+    _switched_on()
+    c.fake_hato(tmp_path, _lines(paths), c.result_line(6, None))
+    opened = _count_opens(monkeypatch)
+    out = hato.backfill("ja", _settings())
+    assert out["new"] == 6 and out["stopped"] is None, out
+    assert len(opened) == 1, f"one handle for the six lines, not {len(opened)}"
+    assert library_store._span() is None, "the span ends with the lines"
+
+
+def test_a_busy_library_is_waited_for_with_no_store_handle_held_then_the_rest_go_on(tmp_path, monkeypatch):
+    """Another Surasura program writing the library at the third line: the handle the lines shared is let go before
+    the back-fill waits for the library, the line is tried again after the wait, and the rest go on in a new span."""
+    # why: a span held across a lock's wait keeps a store handle open through another program's write (a store marked
+    # damaged meanwhile couldn't be set aside by Repair): spans are for store work back to back only
+    import types
+    from app.cli import connect_verbs
+    paths = [c.drop(f"Example Show - {n:02d}.ja.srt") for n in range(1, 7)]
+    c.library()
+    _switched_on()
+    real, busy, waits = library_store.register_headless, [2], []
+
+    def busy_twice_at_the_third(language, path, pairing, **kw):
+        if path == paths[2] and busy[0]:
+            busy[0] -= 1
+            raise library_store.StoreBusy("another Surasura program holds the library")
+        return real(language, path, pairing, **kw)
+    monkeypatch.setattr(library_store, "register_headless", busy_twice_at_the_third)
+    monkeypatch.setattr(connect_verbs, "time", types.SimpleNamespace(
+        monotonic=time.monotonic, sleep=lambda s: waits.append(library_store._span() is None)))
+    c.fake_hato(tmp_path, _lines(paths), c.result_line(6, None))
+    opened = _count_opens(monkeypatch)
+    out = hato.backfill("ja", _settings())
+    assert out["new"] == 6 and out["stopped"] is None and out["refused"] == [], out
+    assert waits and all(waits), "every wait for the library with no span (no handle) held"
+    assert len(opened) == 3, "the lines before it, the busy line after its wait, the rest: one handle each"
+
+
+def test_a_back_fill_the_switch_stopped_says_connect_was_switched_off_never_try_again_later():
+    """The learner turned Connect off: the words say so, and never send them to try again."""
+    # why: "it stopped part-way, so try again later" reads as a fault to retry, after the learner's own switch-off
+    out = {"language": "ja", "hato": hato.ASKED, "new": 1, "same": 0, "replaced": 0, "refused": [], "unpaired": [],
+           "stopped": hato.SWITCHED_OFF, "skipped": None, "need": None}
+    assert hato.say(out) == "hato's pairings (Japanese): 1 new, 0 already there. Connect was switched off, so it " \
+                            "stopped."
+
+
+@pytest.mark.parametrize("when", ["no-lines", "after-the-last-line"])
+def test_connect_switched_off_with_no_line_left_to_see_it_raises_no_need(when, tmp_path, monkeypatch):
+    """The preview switched off while hato is asked (it has no lines), or after the last line was registered: no
+    line comes after to see it, so settings.json is read again before the *Needs you* entry — off, none is raised and
+    the back-fill says it stopped."""
+    # why: the per-line read sees a switch-off only at the next line; without one, an entry was raised with the
+    # preview off (with the preview off nothing of Connect's is written)
+    paths = [c.drop(f"Example Show - {n:02d}.ja.srt") for n in (1, 2)]
+    _old(c.drop("Example Show - 09.ja.srt"))                    # an old file no line names
+    c.library()
+    _switched_on()
+    lines = [] if when == "no-lines" else _lines(paths)
+    answer = _answer(lines, c.result_line(len(lines), _since()))
+    real = library_store.register_headless
+
+    def then_off(language, path, pairing, **kw):
+        done = real(language, path, pairing, **kw)
+        if path == paths[-1]:
+            settings_manager.save_keys({"connect_enabled": False})
+        return done
+    monkeypatch.setattr(library_store, "register_headless", then_off)
+
+    def run(argv, timeout):
+        if when == "no-lines":
+            settings_manager.save_keys({"connect_enabled": False})
+        return 0, answer
+    c.fake_hato(tmp_path, [], c.result_line(0, None))
+    out = hato.backfill("ja", _settings(), run=run)
+    assert out["new"] == len(lines) and out["stopped"] == hato.SWITCHED_OFF, out
+    assert out["need"] is None and out["unpaired"] == [] and not os.path.exists(book.path()), "nothing of Connect's"

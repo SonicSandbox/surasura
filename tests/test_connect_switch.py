@@ -616,11 +616,21 @@ def _summary(lang, **more):
     return out
 
 
-def test_switching_on_back_fills_each_set_up_language_on_the_worker_and_logs_its_summary(dashboard, monkeypatch):
+def _hato_connected(tmp_path):
+    """hato's entry in the shared tools folder (hato.json), as hato 1.1.0 writes it while it connects to Surasura."""
+    cli = tmp_path / "hato" / "hato-cli.exe"
+    cli.parent.mkdir(exist_ok=True)
+    cli.write_bytes(b"MZ")
+    c.FakeHato(str(cli.parent), str(cli)).entry()
+
+
+def test_switching_on_back_fills_each_set_up_language_on_the_worker_and_logs_its_summary(dashboard, monkeypatch,
+                                                                                          tmp_path):
     """09-hato-layer v2 §4: once the switch is saved on, hato's pairings are back-filled on the switch's worker (never
     the Tk thread), once per language Surasura is set up for, each summary in the Processing Log in place of 2.5's
     "the back-fill is skipped"."""
     from app.connect import hato
+    _hato_connected(tmp_path)
     c.library()
     os.makedirs(os.path.join(h.root(), "User Files", "zh"), exist_ok=True)       # Chinese set up too
     calls = []
@@ -638,8 +648,9 @@ def test_switching_on_back_fills_each_set_up_language_on_the_worker_and_logs_its
     assert not any("back-fill is skipped" in x for x in lines)
 
 
-def test_a_language_not_set_up_isnt_back_filled(dashboard, monkeypatch):
+def test_a_language_not_set_up_isnt_back_filled(dashboard, monkeypatch, tmp_path):
     from app.connect import hato
+    _hato_connected(tmp_path)
     c.library()                                                     # Japanese only
     calls = []
     monkeypatch.setattr(hato, "backfill", lambda lang, settings, **k: (calls.append(lang), _summary(lang))[1])
@@ -650,10 +661,11 @@ def test_a_language_not_set_up_isnt_back_filled(dashboard, monkeypatch):
     assert calls == ["ja"]
 
 
-def test_a_back_fill_that_fails_leaves_the_switch_on_and_says_so(dashboard, monkeypatch):
+def test_a_back_fill_that_fails_leaves_the_switch_on_and_says_so(dashboard, monkeypatch, tmp_path):
     """A back-fill that fails (hato's answer, the ledger, anything) is said in the Processing Log; Connect stays on,
     saved on, with its controls and line — never turned back off by it."""
     from app.connect import hato
+    _hato_connected(tmp_path)
     c.library()
 
     def backfill(lang, settings, wait=10, run=None):
@@ -667,6 +679,41 @@ def test_a_back_fill_that_fails_leaves_the_switch_on_and_says_so(dashboard, monk
     assert app._current_settings["connect_enabled"] is True and "disabled" not in app.chk_connect.state()
     assert _pump(app.root, lambda: app._connect_panel is not None and app._connect_row is not None)
     assert not any(x.startswith("Connect wasn't switched on") for x in lines)
+
+
+def test_switching_on_with_hato_connected_says_it_is_asking_hato_before_the_answers(dashboard, monkeypatch, tmp_path):
+    """hato's entry in the shared tools folder: a line says hato is being asked as the back-fill starts, then each
+    language's summary once it has answered."""
+    # why: hato is given up to a minute a language; with no line until it ends, the Processing Log said nothing of it
+    from app.connect import hato
+    _hato_connected(tmp_path)
+    c.library()
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, **k: _summary(lang))
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: "hato's pairings (Japanese): 3 new, 0 already there." in lines)
+    assert "Asking hato for its pairings…" in lines
+    assert lines.index("Asking hato for its pairings…") < lines.index(
+        "hato's pairings (Japanese): 3 new, 0 already there."), "said as it starts, before the answer"
+
+
+def test_switching_on_without_hato_says_nothing_of_hato_in_the_processing_log(dashboard, monkeypatch):
+    """No hato.json in the shared tools folder (hato isn't installed, or never connected): the switch-on still runs
+    the back-fill, whose reason goes to Connect's own log, and the Processing Log says nothing of hato."""
+    # why: every switch-on for a learner without hato logged "hato couldn't be asked for its pairings" per language
+    from app.connect import hato
+    c.library()
+    calls = []
+
+    def backfill(lang, settings, wait=10, run=None):
+        calls.append(lang)
+        return _summary(lang, hato="hato isn't connected to Surasura (it has no entry in the shared tools folder)")
+    monkeypatch.setattr(hato, "backfill", backfill)
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: calls == ["ja"])
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert [x for x in lines if "hato" in x] == [], lines
 
 
 def test_the_switch_refreshes_surasura_json_on_and_off(dashboard, monkeypatch, tmp_path):

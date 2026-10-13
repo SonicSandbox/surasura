@@ -213,6 +213,46 @@ def test_a_replace_that_keeps_failing_leaves_the_old_file_and_no_tmp(root, tools
     assert "held it open" in caplog.text
 
 
+def test_two_refreshes_at_once_never_share_a_tmp_and_the_switchs_settings_win(root, tools, frozen, monkeypatch):
+    """The window's start-up refresh (reading settings.json itself, Connect off) still replacing the entry when the
+    Connect switch's refresh comes with the settings it just saved (on): neither fails, each writes its own tmp file,
+    and the entry ends as the switch left it — `register` listed."""
+    # why: both threads wrote surasura.json.<pid>.tmp, so the second os.replace found it gone (FileNotFoundError, not
+    # the PermissionError the retry knows); and a start-up refresh holding the settings from before the switch could
+    # replace the entry last, so hato saw no `register` while Connect was on
+    (root / "settings.json").write_text(json.dumps({"connect_enabled": False}), encoding="utf-8")
+    real, inside, release, sources, errors = os.replace, threading.Event(), threading.Event(), [], []
+
+    def replace(src, dst):
+        sources.append(os.path.basename(src))
+        if threading.current_thread().name == "start-up" and not inside.is_set():
+            inside.set()
+            release.wait(5)                     # the start-up refresh caught between its tmp and its replace
+        return real(src, dst)
+    monkeypatch.setattr(tools_entry.os, "replace", replace)
+
+    def refresh(settings):
+        try:
+            tools_entry.refresh(settings)
+        except Exception as e:
+            errors.append((threading.current_thread().name, e))
+    start_up = threading.Thread(target=refresh, args=(None,), name="start-up")
+    start_up.start()
+    assert inside.wait(5)
+    saved = {"connect_enabled": True}           # the switch saved on, then refreshes with what it saved
+    (root / "settings.json").write_text(json.dumps(saved), encoding="utf-8")
+    switch = threading.Thread(target=refresh, args=(saved,), name="switch")
+    switch.start()
+    switch.join(0.5)
+    release.set()
+    start_up.join(5)
+    switch.join(5)
+    assert errors == [], errors
+    assert _load(tools)["verbs"] == ["status", "register"], "the entry as the switch left it"
+    assert len(set(sources)) == len(sources) == 2, f"each refresh its own tmp file: {sources}"
+    assert [p for p in os.listdir(tools) if p.endswith(".tmp")] == []
+
+
 def test_retries_span_about_one_second():
     """§3's 'retried for up to 1 s': the waits between tries add up to one second."""
     assert abs((tools_entry.REPLACE_TRIES - 1) * tools_entry.REPLACE_WAIT - 1.0) < 1e-9
@@ -235,7 +275,7 @@ def test_the_tmp_file_is_synced_to_disk_before_it_replaces_the_entry(root, tools
     monkeypatch.setattr(tools_entry.os, "fsync", fsync)
     monkeypatch.setattr(tools_entry.os, "replace", replace)
     assert tools_entry.refresh({"connect_enabled": True}) is True
-    tmp = f"surasura.json.{os.getpid()}.tmp"
+    tmp = f"surasura.json.{os.getpid()}.{threading.get_ident()}.tmp"
     assert events == [("fsync", [tmp]), ("replace", [tmp])]
     assert _load(tools)["verbs"] == ["status", "register"]
 

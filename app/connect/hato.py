@@ -10,17 +10,21 @@ pairing it has made (`hato-cli pairings --json --lang <lang>`) and registers eac
   and nothing is registered.
 - **Registered**, every line (09-hato-layer v2, the back-fill): the record without its `type` and `registered`, through
   `connect_verbs.register_record(..., backfill=True)` — one already in the store answers `same` and writes nothing,
-  and no registration logs a placement event, so nothing is mined because of it and no job is queued. A line Surasura
-  refuses (`bad-data`, `version-skew`, `usage`) is logged and counted, and the rest go on; the library or the settings
-  not available (`busy`, `settings-unreadable`, `update-staged`, `needs-you`, `failed`, `not-set-up`) stops it there:
-  what was registered stays, the next back-fill takes the rest.
+  and no registration logs a placement event for the item it registers (items it pushes out of the top 20 log
+  `left_mine_line`), so nothing is mined because of it and no job is queued. A line Surasura refuses (`bad-data`,
+  `version-skew`, `usage`, or its own copy or record that can't be read: `unreadable`) is logged and counted, and the
+  rest go on; the library or the settings not available (`busy`, `settings-unreadable`, `update-staged`, `needs-you`,
+  `failed`, `not-set-up`) or any other fault stops it there: what was registered stays, the next back-fill takes the
+  rest.
 - **No pairing from hato:** the files in the language's drop folder (sub-folders too, the disk sync's file rules) last
   changed before hato's `complete_since` that no line names → one *Needs you* entry per language (`no-pairing`) saying
-  how many, the files themselves in the log; raised again only when its words change, fixed by a back-fill that finds
-  none left. `complete_since` null: nothing is listed.
+  how many, the files themselves in the log; raised again only when its words change (a dismissed one stays dismissed,
+  its words as they were), fixed by a back-fill that finds none left. `complete_since` null: nothing is listed.
+  settings.json is read again first: the preview switched off meanwhile (or the file unreadable) → no entry.
 
-With the preview off: `skipped`, hato never asked, nothing written. The lines go to Connect's logger; in the window
-(no command-line log open) to `hato-backfill.log` in the logs folder too, where *Open logs folder* finds them.
+With the preview off: `skipped`, hato never asked, nothing written. One back-fill at a time in a process: a second
+while one runs answers at once that hato is being asked already. The lines go to Connect's logger; in the window (no
+command-line log open) to `hato-backfill.log` in the logs folder too, where *Open logs folder* finds them.
 """
 import contextlib
 import datetime
@@ -38,11 +42,13 @@ TIMEOUT = 60.0                  # seconds hato is given to answer
 MAX_OUT = 16 * 1024 * 1024      # its answer read up to this; more → not used
 CREATE_NO_WINDOW = 0x08000000
 ASKED = "asked"
+ASKING = "hato is being asked already"      # a second back-fill while one runs: answered at once, nothing done
 LOG_FILE = "hato-backfill.log"
 PREVIEW_OFF = "connect preview off"
 SWITCHED_OFF = "Connect's preview was switched off."
 # A line's own fault: refused, logged and counted; the rest go on. Any other refusal stops the back-fill there.
 REFUSED = ("bad-data", "version-skew", "usage")
+STOP, LEAVE = "stop", "leave"   # a line's outcome besides "go on": the back-fill stops · the span is left (library busy)
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 
 log = logging.getLogger("surasura-cli.hato")
@@ -57,12 +63,19 @@ class Unavailable(Exception):
         self.reason = reason
 
 
+def connected():
+    """Has hato an entry in the shared tools folder (`hato.json`, usable or not)? Without one, hato isn't installed or
+    never connected to Surasura: the switch-on says nothing of it in the Processing Log."""
+    from app import tools_entry
+    return os.path.exists(os.path.join(tools_entry.tools_dir(), "hato.json"))
+
+
 def find():
     """hato's entry in the shared tools folder (a dict with its `cli`), or `Unavailable`."""
     from app import tools_entry
     entry = tools_entry.read("hato")
     if entry is None:
-        if not os.path.exists(os.path.join(tools_entry.tools_dir(), "hato.json")):
+        if not connected():
             raise Unavailable("hato isn't connected to Surasura (it has no entry in the shared tools folder)")
         raise Unavailable("hato's entry in the shared tools folder can't be used: its program isn't there, or it is "
                           "newer than this Surasura reads")
@@ -207,7 +220,8 @@ def _logged():
             os.makedirs(folder, exist_ok=True)
             path = os.path.join(folder, LOG_FILE)
             contract._rotate(path)
-            handler = logging.FileHandler(path, encoding="utf-8", delay=True)
+            # a path hato sent with a lone surrogate is written as an escape, never a logging error in its place
+            handler = logging.FileHandler(path, encoding="utf-8", delay=True, errors="backslashreplace")
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             log.addHandler(handler)
             log.setLevel(logging.INFO)
@@ -232,54 +246,105 @@ def backfill(lang, settings, wait=10, run=None):
     if not (settings or {}).get("connect_enabled"):
         summary["skipped"] = PREVIEW_OFF
         return summary
-    with _running, _logged():
-        try:
-            entry = find()
-            lines, result = pairings(entry["cli"], lang, run=run, timeout=TIMEOUT)
-        except Unavailable as e:
-            summary["hato"] = e.reason
-            log.warning("hato's pairings (%s) weren't read, nothing registered: %s", lang, e.reason)
-            return summary
-        summary["hato"] = ASKED
-        _register_all(lang, lines, wait, summary)
-        try:
-            if summary["stopped"] != SWITCHED_OFF:          # switched off: nothing more of Connect's is written
-                _no_pairing(lang, lines, _since(result), summary)
-        except Exception as e:      # the ledger busy or newer: the entry waits for the next back-fill
-            log.warning("hato's files with no pairing (%s) weren't noted: %s", lang, e)
-        log.info("hato's pairings (%s): %d new, %d same, %d replaced, %d refused, %d with no pairing%s", lang,
-                 summary["new"], summary["same"], summary["replaced"], len(summary["refused"]),
-                 len(summary["unpaired"]), f"; stopped: {summary['stopped']}" if summary["stopped"] else "")
+    if not _running.acquire(blocking=False):        # the switch's back-fill or *Ask hato again* is asking hato now
+        summary["hato"] = ASKING
+        return summary
+    try:
+        with _logged():
+            _backfill(lang, wait, run, summary)
+    finally:
+        _running.release()
     return summary
 
 
+def _backfill(lang, wait, run, summary):
+    try:
+        entry = find()
+        lines, result = pairings(entry["cli"], lang, run=run, timeout=TIMEOUT)
+    except Unavailable as e:
+        summary["hato"] = e.reason
+        log.warning("hato's pairings (%s) weren't read, nothing registered: %s", lang, e.reason)
+        return
+    summary["hato"] = ASKED
+    _register_all(lang, lines, wait, summary)
+    try:
+        if summary["stopped"] != SWITCHED_OFF:          # switched off: nothing more of Connect's is written
+            # read again (strictly) before the entry: a switch-off no line came after to see (none, or after the last)
+            from app.cli import verbs
+            if verbs.settings().get("connect_enabled"):
+                _no_pairing(lang, lines, _since(result), summary)
+            else:
+                summary["stopped"] = SWITCHED_OFF
+    except Exception as e:      # the ledger busy or newer, settings.json unreadable: the entry waits for the next one
+        log.warning("hato's files with no pairing (%s) weren't noted: %s", lang, e)
+    log.info("hato's pairings (%s): %d new, %d same, %d replaced, %d refused, %d with no pairing%s", lang,
+             summary["new"], summary["same"], summary["replaced"], len(summary["refused"]),
+             len(summary["unpaired"]), f"; stopped: {summary['stopped']}" if summary["stopped"] else "")
+
+
 def _register_all(lang, lines, wait, summary):
+    """The lines in turn, back to back through one store handle (`library_store.held()`; measured on already-paired
+    lines: 60 took 0.88 s with a handle a line and 0.11 s with one, 2,000 took 139 s and 3.9 s). Never a lock's wait
+    inside the span: a busy library ends it, the line is tried again with its `wait` and no handle held, and the rest
+    go on in a new span."""
+    from app import library_store
+    n = 0
+    while n < len(lines):
+        with library_store.held():
+            while n < len(lines):
+                done = _register_one(lang, lines[n], 0.0, summary, leave=True)
+                if done == LEAVE:
+                    break
+                n += 1
+                if done == STOP:
+                    return
+        if n < len(lines):                      # the library busy: waited for outside the span
+            done = _register_one(lang, lines[n], wait, summary)
+            n += 1
+            if done == STOP:
+                return
+
+
+def _register_one(lang, line, wait, summary, leave=False):
+    """One line registered, refused or the back-fill stopped (summary written) -> None (go on), STOP, or LEAVE (`leave`:
+    the library busy, nothing written to the summary: the caller waits for it with no handle held)."""
     from app.cli import connect_verbs
     from app.cli.contract import CliError
-    for line in lines:
-        record = {k: v for k, v in line.items() if k not in ("type", "registered")}
-        path = record.get("library_path")
-        try:
-            if len(json.dumps(record, ensure_ascii=False).encode("utf-8")) > connect_verbs.RECORD_MAX:
-                raise CliError("bad-data", f"The pairing record is over {connect_verbs.RECORD_MAX // 1024} KiB.")
-            # settings.json read again for each line (`loaded` None): switched off part-way, the rest are skipped
-            out = connect_verbs.register_record(record, lang, backfill=True, wait=wait, loaded=None)
-        except CliError as e:
-            if e.code in REFUSED:
-                summary["refused"].append((path, e.code, e.message))
-                log.warning("hato's pairing refused (%s) for %s: %s", e.code, path, e.message)
-                continue
-            summary["stopped"] = e.message
-            log.warning("hato's pairings (%s) stopped at %s (%s): %s", lang, path, e.code, e.message)
-            return
-        except Exception as e:
-            log.exception("hato's pairings (%s) stopped at %s", lang, path)
-            summary["stopped"] = f"Surasura couldn't take hato's pairing ({type(e).__name__}: {e})."
-            return
-        if out.get("skipped"):
-            summary["stopped"] = SWITCHED_OFF
-            return
-        summary[out["pairing"]] += 1
+    record = {k: v for k, v in line.items() if k not in ("type", "registered")}
+    path = record.get("library_path")
+    try:
+        if len(json.dumps(record, ensure_ascii=False).encode("utf-8")) > connect_verbs.RECORD_MAX:
+            raise CliError("bad-data", f"The pairing record is over {connect_verbs.RECORD_MAX // 1024} KiB.")
+        # settings.json read again for each line (`loaded` None): switched off part-way, the rest are skipped
+        out = connect_verbs.register_record(record, lang, backfill=True, wait=wait, loaded=None)
+    except CliError as e:
+        if e.code in REFUSED:
+            summary["refused"].append((path, e.code, e.message))
+            log.warning("hato's pairing refused (%s) for %s: %s", e.code, path, e.message)
+            return None
+        if leave and e.code == "busy":
+            return LEAVE
+        summary["stopped"] = e.message
+        log.warning("hato's pairings (%s) stopped at %s (%s): %s", lang, path, e.code, e.message)
+        return STOP
+    except (OSError, ValueError) as e:
+        # this line's own read: its copy held by another program or unreadable, a path no file system takes, a lone
+        # surrogate (a UnicodeError is a ValueError) — the line refused, the rest go on (hato's order is stable:
+        # stopping here would stop every back-fill at the same line)
+        code = "unreadable" if isinstance(e, OSError) else "bad-data"
+        message = f"Its copy or record can't be read ({type(e).__name__}: {e})."
+        summary["refused"].append((path, code, message))
+        log.warning("hato's pairing refused (%s) for %s: %s", code, path, message)
+        return None
+    except Exception as e:
+        log.exception("hato's pairings (%s) stopped at %s", lang, path)
+        summary["stopped"] = f"Surasura couldn't take hato's pairing ({type(e).__name__}: {e})."
+        return STOP
+    if out.get("skipped"):
+        summary["stopped"] = SWITCHED_OFF
+        return STOP
+    summary[out["pairing"]] += 1
+    return None
 
 
 def _no_pairing(lang, lines, since, summary):
@@ -313,13 +378,22 @@ def _need(lang, n):
             log.info("Connect: fixed by itself (%s, %s): %s", lang, KIND, row["say"])
         return "fixed" if rows else None
     say = need_words(n)
-    with book.Ledger() as ledger, ledger.transaction():
-        open_ = [x for x in ledger.needs(lang, listed=False) if x["kind"] == KIND and x["item_id"] is None]
-        if open_ and (open_[0]["say"] == say or open_[0]["dismissed_at"]):
-            return "kept"
-        if open_:
-            ledger.fix(lang, kinds=(KIND,))     # its words changed: the old entry gives way to one that counts
-        ledger.need(lang, KIND, say)
+
+    def standing(ledger):
+        """The open entry (or None), and whether it stays as it is: the same words, or dismissed."""
+        found = [x for x in ledger.needs(lang, listed=False) if x["kind"] == KIND and x["item_id"] is None]
+        entry = found[0] if found else None
+        return entry, entry is not None and (entry["say"] == say or bool(entry["dismissed_at"]))
+    with book.Ledger() as ledger:
+        if standing(ledger)[1]:
+            return "kept"                       # read only: no write transaction for a write never made
+        with ledger.transaction():
+            entry, keep = standing(ledger)      # read again under the lock: a Dismiss meanwhile is kept as it is
+            if keep:
+                return "kept"
+            if entry is not None:
+                ledger.fix(lang, kinds=(KIND,))     # its words changed: the old entry gives way to one that counts
+            ledger.need(lang, KIND, say)
     return "raised"
 
 
@@ -328,6 +402,8 @@ def say(summary):
     name = LANGUAGE_NAMES.get(summary.get("language"), summary.get("language") or "")
     if summary.get("skipped"):
         return f"hato's pairings ({name}) weren't asked for: Connect's preview is off."
+    if summary.get("hato") == ASKING:
+        return f"hato is being asked already ({name}); try again once it has answered."
     if summary.get("hato") != ASKED:
         return f"hato couldn't be asked for its pairings ({name}): {summary.get('hato')}."
     parts = [f"{summary['new']} new", f"{summary['same']} already there"]
@@ -338,6 +414,8 @@ def say(summary):
         text += f" {len(summary['refused'])} refused: the logs say why."
     if summary["unpaired"]:
         text += " " + need_words(len(summary["unpaired"]))
-    if summary["stopped"]:
+    if summary["stopped"] == SWITCHED_OFF:
+        text += " Connect was switched off, so it stopped."
+    elif summary["stopped"]:
         text += f" It stopped part-way, so try again later (what was paired stays): {summary['stopped']}"
     return text

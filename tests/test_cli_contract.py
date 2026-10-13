@@ -262,6 +262,19 @@ def test_an_event_is_never_lost_when_the_file_is_held_open(root):
     assert [n for n in os.listdir(_logs(root)) if n.endswith(".tmp")] == []
 
 
+def test_an_in_process_call_hands_the_loggers_back_as_it_found_them(caplog):
+    """After an in-process call (a window's or a test's), the command line's loggers pass their records on again, as
+    before the call: only while the call runs do they go to cli.log alone."""
+    # why: `open_log` stops `surasura-cli` passing records on and `close_log` never undid it, so every later record of
+    # its children (surasura.json's refusals, hato's back-fill) reached no one but cli.log: in one test session, a
+    # test reading them through caplog failed whenever an in-process call ran before it
+    import logging
+    assert cli.main(["--version"], out=io.StringIO()) == 0
+    with caplog.at_level(logging.WARNING):
+        logging.getLogger("surasura-cli.tools").warning("surasura.json not written: a check")
+    assert "surasura.json not written: a check" in caplog.text
+
+
 def test_a_stray_print_goes_to_the_log_not_stdout(monkeypatch, tmp_path):
     # Any module that prints while a verb runs (the analyzer's settings warning, say) must not break the JSON channel.
     def noisy(_args):

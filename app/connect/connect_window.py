@@ -33,6 +33,7 @@ RETRY_GAP_S = 1.0               # at least this long between two tries while ano
 QUESTION = "Remove all of this episode's Anki cards that aren't studied?"
 WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your undo goes on once it's done…"
 UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
+SETTINGS_UNREADABLE = "settings.json can't be read just now; try again."
 
 # Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; "hato" asks hato for its
 # pairings again (`ask_hato`); text is shown under the entry
@@ -417,7 +418,8 @@ class ConnectWindow:
         note.config(text="Asking hato for its pairings…")
 
         def job():
-            settings = self._settings() if self._settings else _load_settings()
+            # read strictly: a settings.json caught half-saved read leniently is the defaults — the preview off
+            settings = self._settings() if self._settings else _load_settings(strict=True)
             from app.connect import hato
             return hato.backfill(self.language, settings)
 
@@ -602,9 +604,13 @@ class ConnectWindow:
                                                  else f"Saved {len(out)} files to {dest}"))
 
 
-def _load_settings():
+def _load_settings(strict=False):
+    """settings.json as the window reads it; `strict`: one that can't be read just now raises, in plain words."""
     from app import settings_manager
-    return settings_manager.load_settings() or {}
+    try:
+        return settings_manager.load_settings(strict=strict) or {}
+    except settings_manager.SettingsError:
+        raise RuntimeError(SETTINGS_UNREADABLE) from None
 
 
 def show(parent, language, tooltip, record, **kw):

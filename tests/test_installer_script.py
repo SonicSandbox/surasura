@@ -330,6 +330,29 @@ def test_the_install_proof_takes_a_stand_in_profile(tmp_path, monkeypatch):
         proof.main(["uninstall", "--profile", str(tmp_path / "Users" / "Michael" / "stand-in")])
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the install proof runs on Windows only")
+def test_the_install_proof_points_the_swappers_recovery_entry_at_its_own_key_and_uninstall_removes_it(tmp_path,
+                                                                                                       monkeypatch):
+    """Every folder swap writes a next-sign-in entry (S3.1-6): in a proof run it goes under the stand-in profile's own
+    HKCU\\Software\\SurasuraTests key — the one the swapper honours — never the user's RunOnce; the uninstall step
+    takes the key away."""
+    import winreg
+    proof = _install_proof()
+    for name in ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "SURASURA_TEST_RUNONCE"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))                  # isolate() rewrites them: put back after
+    profile = str(tmp_path / "stand-in")
+    proof.isolate(profile)
+    key = os.environ["SURASURA_TEST_RUNONCE"]
+    assert key.startswith("Software\\SurasuraTests\\install-proof-") and key.endswith("\\RunOnce")
+    assert key == proof.proof_key(profile) + "\\RunOnce", "the same key for every step run in that profile"
+    assert proof.proof_key(profile) != proof.proof_key(str(tmp_path / "another"))
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as made:
+        winreg.SetValueEx(made, "SurasuraUpdateRecovery-test", 0, winreg.REG_SZ, "left by a cut-off swap")
+    assert proof.forget_proof_key(profile) is False
+    with pytest.raises(FileNotFoundError):
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER, proof.proof_key(profile))
+
+
 ISCC = package_app.find_iscc()
 
 

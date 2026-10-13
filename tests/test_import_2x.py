@@ -423,6 +423,73 @@ def test_the_record_keeps_the_graduated_lists_outcome(tmp_path, roaming):
     assert import_2x.read_import_note()["graduated"] == result["graduated"]
 
 
+def test_an_old_folder_that_cant_be_read_is_refused_before_anything_is_written(tmp_path, roaming, monkeypatch):
+    # A file of the old folder that can't be read as the import plans its copy (held, or its permissions changed): the
+    # import says so and stops before its record or any copy, instead of raising out of the window's thread.
+    old = _old_install(tmp_path, store=False, languages=("ja",))
+    before = {f: _tree(f) for f in [old] + _protected()}
+    real = os.path.getsize
+
+    def denied(path):
+        if os.path.basename(path) == "context_test.txt":
+            raise PermissionError(13, "Access is denied", path)
+        return real(path)
+
+    monkeypatch.setattr(os.path, "getsize", denied)
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "refused" and result["reason"] == "error"
+    assert "could not be read" in result["message"] and "context_test.txt" in result["message"]
+    assert import_2x.read_import_note() is None and import_2x.library_content(_root()) is None
+    assert {f: _tree(f) for f in [old] + _protected()} == before
+
+
+def test_a_record_that_cant_be_started_refuses_the_import_before_any_copy(tmp_path, roaming, monkeypatch):
+    # import.json can't be written as the import starts (a full disk): without it a copy cut off later would never read
+    # as unfinished, so nothing is copied and the import says why, instead of raising.
+    old = _old_install(tmp_path, store=False, languages=("ja",))
+    before = {f: _tree(f) for f in [old] + _protected()}
+
+    def full(path, data):
+        raise OSError(28, "No space left on device", path)
+
+    monkeypatch.setattr(import_2x, "_write_json", full)
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "refused" and result["reason"] == "error" and "could not start" in result["message"]
+    assert import_2x.read_import_note() is None and import_2x.library_content(_root()) is None, "nothing copied"
+    assert {f: _tree(f) for f in [old] + _protected()} == before
+
+
+def test_a_record_that_cant_be_closed_leaves_the_import_unfinished_and_the_next_run_finishes_it(tmp_path, roaming,
+                                                                                                monkeypatch):
+    # Every file copied, but the closing record can't be written (the disk filled): the import reports failed, never
+    # done and never an exception; the record still reads unfinished from its start, so the next run resumes and ends
+    # it, as the message says.
+    old = _old_install(tmp_path, store=False, languages=("ja",))
+    real = import_2x._write_json
+
+    def full_at_the_end(path, data):
+        if data.get("finished"):
+            raise OSError(28, "No space left on device", path)
+        return real(path, data)
+
+    monkeypatch.setattr(import_2x, "_write_json", full_at_the_end)
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "failed" and result["reason"] == "failed"
+    assert "record could not be written" in result["message"] and "run the import again" in result["message"]
+    note = import_2x.read_import_note()
+    assert note["complete"] is False and note["finished"] is None
+    monkeypatch.setattr(import_2x, "_write_json", real)
+    again = import_2x.run_import(old, _root())
+    assert again["status"] == "done" and again["resumed"] is True
+    assert import_2x.read_import_note()["complete"] is True
+    # the first run's GraduatedList merge is not lost: the resume copies the old list and known words again (they
+    # changed) and merges them again
+    with open(os.path.join(_root(), "User Files", "ja", "KnownWord.json"), encoding="utf-8") as f:
+        words = {w["dictForm"]: w for w in json.load(f)["words"]}
+    for word in GRADUATED["ja"]:
+        assert words[word]["knownStatus"] == "KNOWN" and words[word]["source"] == "GraduatedList"
+
+
 def test_a_second_run_after_a_complete_import_is_refused(tmp_path, roaming):
     old = _old_install(tmp_path, store=False)
     assert import_2x.run_import(old, _root())["status"] == "done"

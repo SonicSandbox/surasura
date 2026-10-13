@@ -11,9 +11,10 @@ This runs AS A SEPARATE PROCESS, launched by the app just before it exits. Two h
   Surasura's window visible within 20 s and alive 3 s. Any failure moves everything back, newest first, starts the
   old version and says why in the result. Entries the program doesn't own — Inno's ``unins000.*``, and the library's
   ``User Files``, ``data``, ``results``, ``settings.json`` should one sit there — are never touched. Installer mode
-  (``"kind": "installer"``) runs the release's Setup silently in place of the staged folder, then the same proof;
-  before its first move it leaves Windows a one-time RunOnce entry, ``updater.exe --recover <marker>``, that finishes
-  or undoes a swap cut off half-way at the next sign-in (`recover`, S3.1-5), and takes it away when it ends.
+  (``"kind": "installer"``) runs the release's Setup silently in place of the staged folder, then the same proof.
+  Before either's first move it leaves Windows a one-time RunOnce entry, ``updater.exe --recover <marker>``, that
+  finishes or undoes a swap cut off half-way at the next sign-in (`recover`, S3.1-5 / S3.1-6), and takes it away when
+  it ends.
   A splash (`show_splash`) shows meanwhile; a splash that can't be drawn never stops the update.
 * **2.x's** (no format): the targets the marker lists, each a file or a folder — Surasura.exe, ``_internal/templates``,
   RELEASE_NOTES.md, and since 2.5 whatever the release's own file list names — swapped with a backup, then the app
@@ -700,9 +701,11 @@ def _clear_same(previous):
         shutil.rmtree(previous)
 
 
-def apply_folder(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None):
-    """The staged folder's entries into the install, the program's old ones to `previous`, proven. -> the result's
-    (status, reason, touched). Never raises."""
+def apply_folder(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None, arm=None):
+    """The staged folder's entries into the install, the program's old ones to `previous`, proven. `arm(plan)` runs
+    just before the first move (the recovery entry, S3.1-6), handed what the moves will be: "leaving", the install's
+    entries going to `previous`, and "arriving", the staged ones coming in; one that raises stops the update unchanged.
+    -> the result's (status, reason, touched). Never raises."""
     install, staged, previous = m["install"], m["staged"], m["previous"]
     try:
         if not wait_gone(install, ops, float(m.get("wait_timeout") or WAIT_FOR_EXIT), clock, sleep):
@@ -711,9 +714,11 @@ def apply_folder(m, ops, clock=time.monotonic, sleep=time.sleep, seen=None):
         if not all(_plain_entry(n) for n in entries) or APP_EXE not in entries or CLI_EXE not in entries:
             return FAILED, f"{_named(m)} is incomplete, so nothing was changed", False
         _clear_same(previous)
+        owned = sorted(set(m["owned"]) | set(entries), key=str.lower)
+        if arm is not None:
+            arm({"leaving": [n for n in owned if os.path.lexists(os.path.join(install, n))], "arriving": entries})
     except Exception as e:
         return FAILED, f"the update stopped before changing anything ({type(e).__name__})", False
-    owned = sorted(set(m["owned"]) | set(entries), key=str.lower)
     moves, started = [], None
     try:
         _move(owned, install, previous, moves, sleep)
@@ -938,7 +943,8 @@ def _hand_off(marker_path, m, ops, clock, sleep):
             status, reason, touched = apply_installer(m, ops, clock, sleep, None if splash is None else splash.close,
                                                       arm=lambda: arm_recovery(marker_path, m))
         else:
-            status, reason, touched = apply_folder(m, ops, clock, sleep, None if splash is None else splash.close)
+            status, reason, touched = apply_folder(m, ops, clock, sleep, None if splash is None else splash.close,
+                                                   arm=lambda plan: arm_recovery(marker_path, m, plan))
     finally:
         if splash is not None:
             splash.close()
@@ -964,10 +970,11 @@ def _hand_off(marker_path, m, ops, clock, sleep):
 
 
 # =====================================================================================================================
-# An installer-mode swap cut off half-way (S3.1-5): power lost, or the swapper and Setup both ended, with the program's
-# entries in previous\<from> and Setup's work unfinished — the program folder can't start anything. Before its first
-# move the swapper leaves Windows one value under HKCU's RunOnce (its only registry write besides the uninstall entry);
-# at the next sign-in Windows runs it: `recover` finishes or undoes the swap from the marker alone.
+# A swap cut off half-way: power lost, or the swapper (and Setup) ended, with the program's entries in previous\<from>
+# and Setup's work unfinished (installer mode, S3.1-5) or the release's entries not all in (folder mode, S3.1-6) — the
+# program folder can't start anything. Before its first move the swapper leaves Windows one value under HKCU's RunOnce
+# (its only registry write besides the uninstall entry); at the next sign-in Windows runs it: `recover` finishes or
+# undoes the swap from the marker alone.
 # =====================================================================================================================
 def _runonce_root():
     """HKCU's RunOnce key — or, for a test, the throwaway key TEST_RUNONCE_ENV names (only under Software\\
@@ -993,11 +1000,13 @@ def recovery_command(marker_path):
     return " ".join(f'"{p}"' for p in me) + f' --recover "{os.path.abspath(marker_path)}"'
 
 
-def arm_recovery(marker_path, m):
-    """Just before installer mode's first move: the RunOnce value, then the marker stamped "armed" (`recover` acts on
-    no other, so a cut-off between the two leaves an entry that finds an unarmed marker and goes, and a marker the app
-    reads as it always has). Raises when either can't be written: then nothing moves, and the value goes again."""
+def arm_recovery(marker_path, m, plan=None):
+    """Just before a swap's first move: the RunOnce value, then the marker stamped "armed" (`recover` acts on no other,
+    so a cut-off between the two leaves an entry that finds an unarmed marker and goes, and a marker the app reads as
+    it always has), with a folder swap's `plan` (`apply_folder`). Raises when either can't be written: then nothing
+    moves, and the value goes again."""
     _write_recovery(marker_path)
+    m.update(plan or {})
     m["armed"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     if not _write_json_atomic(marker_path, m):
         m.pop("armed", None)
@@ -1024,13 +1033,16 @@ def forget_recovery(root):
 
 
 def recover(marker_path, ops=None, sleep=time.sleep):
-    """`updater.exe --recover <marker>`: an installer-mode swap cut off half-way, finished or undone — run by Windows at
-    the next sign-in, and by a later swapper handed a marker an earlier one armed. Never starts the program:
+    """`updater.exe --recover <marker>`: a swap cut off half-way (installer or folder mode), finished or undone — run
+    by Windows at the next sign-in, and by a later swapper handed a marker an earlier one armed. Never starts the
+    program:
       * something runs from the install folder -> left as it is, and the RunOnce value written again (Windows
         removed it to run this), so the next sign-in tries again;
-      * the install holds the release — every file's sha256 and `--version`, the headless proof (D9) -> Setup
-        finished: kept, one previous version kept, and the success result the app knows written;
-      * otherwise -> installer mode's own failure branch (`_put_back`), and a failed result written.
+      * the install holds the release — folder mode: every staged entry moved in — every file's sha256 and
+        `--version`, the headless proof (D9) -> finished: kept, one previous version kept (folder mode: the uninstall
+        entry names the release), and the success result the app knows written;
+      * otherwise -> the swap's own failure branch from the marker (`_put_back`, `_put_back_folder`), and a failed
+        result written.
     The marker goes after either of the last two; one missing, damaged or never armed moves nothing. The RunOnce value
     goes in every case but the first. -> 0 finished, 2 put back, 1 nothing done."""
     ops = WinOps() if ops is None else ops
@@ -1051,29 +1063,77 @@ def _recover(marker_path, root, ops, sleep):
     try:
         with open(marker_path, "r", encoding="utf-8") as f:
             m = json.load(f)
-        if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("kind") != "installer" \
-                or not m.get("armed") or _uncontained(m, root) is not None:
+        if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("kind") not in ("installer", "folder") \
+                or not m.get("armed") or _uncontained(m, root) is not None or not _planned(m):
             return 1, False
         if ops.processes_in(m["install"]):
             return 1, True
     except Exception:
         return 1, False
+    folder = m["kind"] == "folder"
     try:
+        if folder and not _arrived(m):
+            raise SwapError("the release's entries aren't all in")
         _verify(m["install"], m.get("files"))
         _reports(m, ops)
         status, reason = SUCCESS, RECOVERED
     except Exception:
         status, reason = FAILED, "the update was cut off before it finished, so the old version was put back"
-        stuck = _put_back(m, sleep)
+        stuck = _put_back_folder(m, sleep) if folder else _put_back(m, sleep)
         if stuck:
             reason += f" -- and {len(stuck)} item(s) could not be put back"
     if status == SUCCESS:
+        if folder:
+            if m.get("app_id"):
+                _quietly(write_uninstall_version, m["app_id"], m["install"], m["target_version"],
+                         _folder_kb(m["install"]))
+            _quietly(os.rmdir, m["staged"])                 # emptied by the moves
         _quietly(_keep_one_previous, m)
     _write_json_atomic(_result_file(m, marker_path, root), {
-        "from": m.get("from_version", ""), "to": m["target_version"], "going_back": False, "kind": "installer",
-        "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": status, "reason": reason, "touched": True})
+        "from": m.get("from_version", ""), "to": m["target_version"], "going_back": bool(m.get("going_back")),
+        "kind": m["kind"], "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": status, "reason": reason,
+        "touched": True})
     _quietly(os.remove, marker_path)
     return (0 if status == SUCCESS else 2), False
+
+
+def _planned(m):
+    """A folder swap's marker names what its moves were (`apply_folder`'s plan): "leaving" and "arriving", lists of
+    plain entries, something arriving. An installer-mode marker needs none."""
+    if m["kind"] != "folder":
+        return True
+    leaving, arriving = m.get("leaving"), m.get("arriving")
+    return isinstance(leaving, list) and isinstance(arriving, list) and bool(arriving) and \
+        all(_plain_entry(name) for name in leaving + arriving)
+
+
+def _arrived(m):
+    """Every staged entry of a folder swap has left the stage: the moves in all ran."""
+    return not any(os.path.lexists(os.path.join(m["staged"], name)) for name in m["arriving"])
+
+
+def _put_back_folder(m, sleep):
+    """`apply_folder`'s undo from the marker alone: each staged entry that came in goes back to the stage — under a
+    name the old program had, only once that old entry is in previous\\<from> (else it is the old entry, never moved,
+    and stays) — then each old entry previous\\<from> holds comes back. -> the entries that couldn't be put back."""
+    install, staged, previous = m["install"], m["staged"], m["previous"]
+    leaving = {name.lower() for name in m["leaving"]}
+    stuck = set()
+    for name in m["arriving"]:
+        if os.path.lexists(os.path.join(install, name)) and \
+                (name.lower() not in leaving or os.path.lexists(os.path.join(previous, name))):
+            try:
+                _move([name], install, staged, [], sleep)
+            except OSError:
+                stuck.add(name.lower())
+    for name in m["leaving"]:
+        if os.path.lexists(os.path.join(previous, name)):
+            try:
+                _move([name], previous, install, [], sleep)
+            except OSError:
+                stuck.add(name.lower())
+    _quietly(os.rmdir, previous)
+    return sorted(stuck)
 
 
 def _put_back(m, sleep):
@@ -1529,8 +1589,8 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--marker", help="Path to pending_update.json")
     group.add_argument("--selftest", help="Draw the splash once and write what was seen to this JSON file")
-    group.add_argument("--recover", help="Finish or undo an installer-mode update cut off half-way (Windows runs this "
-                                         "at the next sign-in)")
+    group.add_argument("--recover", help="Finish or undo an update cut off half-way (Windows runs this at the next "
+                                         "sign-in)")
     args = parser.parse_args(argv)
     if args.selftest:
         return selftest(args.selftest)

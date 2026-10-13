@@ -51,7 +51,7 @@ BACKUP_DIRNAME = ".update_backup"
 MARKER_NAME = path_utils.UPDATE_MARKER      # pending_update.json (library_store's status look names it too)
 ADDED_NAME = "pending_update_added.json"    # what the swap creates: the helper deletes the marker, so it is kept here
 RESULT_NAME = "last_update_result.json"
-# consume_result's reason for an installer-mode update cut off half-way (S3.1-5): its recovery waits for the sign-in.
+# consume_result's reason for an update cut off half-way (S3.1-5, S3.1-6): its recovery waits for the sign-in.
 CUT_OFF = "the update was cut off before it finished; Windows finishes it, or puts the old version back, at your next " \
           "sign-in"
 REPORT_NAME = "update_report.txt"
@@ -1551,8 +1551,9 @@ def consume_result():
       1. A ``last_update_result.json`` written by the helper -> return it.
       2. A leftover ``pending_update.json`` with no result -> the helper started but never
          finished (crash / kill / power loss). Synthesize a 'failed' outcome so the app
-         surfaces it and never auto-retries that version. An installer-mode marker the swapper armed that hasn't
-         landed is left, with the swapper's copy, for the recovery Windows runs at the next sign-in (S3.1-5).
+         surfaces it and never auto-retries that version. A marker the swapper armed (installer or folder mode)
+         that hasn't landed is left, with the swapper's copy, for the recovery Windows runs at the next sign-in
+         (S3.1-5, S3.1-6).
       3. Nothing pending -> None.
 
     The update folder's state is read first; then, once, 2.x's beside the exe (`_legacy_folders`), which is
@@ -1590,7 +1591,7 @@ def _consume(state):
         except Exception:
             m = {}
         if _cut_off(m):
-            # An installer-mode swap cut off half-way (S3.1-5), and a program started before the next sign-in: Windows
+            # A swap cut off half-way (S3.1-5, S3.1-6), and a program started before the next sign-in: Windows
             # then runs the swapper's copy with --recover, which finishes or undoes it from this marker, so the marker
             # and that copy stay (removing them would leave the old version unused in previous\).
             return {"status": "failed", "from": m.get("from_version", ""), "to": m.get("target_version", ""),
@@ -1630,21 +1631,28 @@ def _read_marker(path):
 
 
 def _cut_off(m):
-    """An installer-mode swap cut off half-way (S3.1-5): its marker armed by the swapper, the release not in place."""
-    return m.get("kind") == "installer" and bool(m.get("armed")) and \
+    """A swap cut off half-way (installer mode S3.1-5, folder mode S3.1-6): its marker armed by the swapper, the
+    release not in place."""
+    return m.get("kind") in ("installer", "folder") and bool(m.get("armed")) and \
         not (_is_this_version(m.get("target_version")) and _swap_landed(m))
 
 
 def _swap_landed(marker):
     """A leftover marker's targets all in place, each file with the sha256 it names (the helper's own last check).
     A 3.x marker: every file of the release in the install with its sha256 (Go back with no list: this version runs,
-    so it landed)."""
+    so it landed — once every entry its swapper's plan brings has left the stage for the install: cut off after
+    Surasura.exe and _internal, its surasura-cli.exe and updater.exe are still in previous\\, S3.1-6)."""
     if marker.get("format") == FOLDER_FORMAT:
         install, files = marker.get("install"), marker.get("files")
         if not isinstance(install, str) or not os.path.isdir(install):
             return False
         if files is None and marker.get("going_back"):
-            return True
+            arriving, staged = marker.get("arriving"), marker.get("staged")
+            if arriving is None:
+                return True
+            return isinstance(arriving, list) and isinstance(staged, str) and all(
+                isinstance(name, str) and name and os.path.lexists(os.path.join(install, name)) and
+                not os.path.lexists(os.path.join(staged, name)) for name in arriving)
         if not isinstance(files, dict) or not files:
             return False
         try:

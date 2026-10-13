@@ -15,7 +15,9 @@ Only ever a TEST identity (`--data-name`, default Surasura-test: its own AppId, 
 in a stand-in profile (`--profile`): this process and every one it starts — Setup, the programs, the swapper, the
 uninstaller — get USERPROFILE, LOCALAPPDATA, APPDATA, TEMP and TMP inside it (Inno Setup's {localappdata},
 {userappdata} and {userprograms} follow USERPROFILE, not LOCALAPPDATA: row 3.1.9b's probe), so the only thing outside
-it is the test AppId's uninstall entry in HKCU, which the uninstall removes. `update`
+it is the test AppId's uninstall entry in HKCU, which the uninstall removes, and the profile's own key under
+HKCU's Software/SurasuraTests (SURASURA_TEST_RUNONCE: the swapper's next-sign-in entry, which every folder swap writes
+and then takes away, S3.1-6, lands there, never in the user's RunOnce), which the uninstall removes too. `update`
 is the window's Update button without the window: this process takes the installed program's place (frozen, its
 folder, its version) and calls the same service — `update_checker` reads the release folder through
 SURASURA_UPDATE_SOURCE and the throwaway key, `updater.prepare_update` assembles the new program from the parts it
@@ -40,6 +42,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import package_app  # noqa: E402
 
 UNINSTALL = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"     # under HKEY_CURRENT_USER (a per-user install)
+TEST_KEYS = r"Software\SurasuraTests"      # under HKEY_CURRENT_USER: the only RunOnce a test swapper may write (S3.1-6)
 SETUP_FLAGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
 INNO_FILES = {"unins000.exe", "unins000.dat"}                           # Setup's own, beside the program
 
@@ -70,7 +73,44 @@ def isolate(profile):
     os.environ.update(USERPROFILE=profile, LOCALAPPDATA=local, APPDATA=roaming, TEMP=temp, TMP=temp)
     for name in ("SURASURA_TEST_ROOT", "PYTEST_CURRENT_TEST"):
         os.environ.pop(name, None)
+    os.environ["SURASURA_TEST_RUNONCE"] = proof_key(profile) + "\\RunOnce"        # never the user's own RunOnce
     print(f"Stand-in profile: {profile}")
+
+
+def proof_key(profile):
+    """The stand-in profile's own key under HKCU\\Software\\SurasuraTests, the same for every step run in it."""
+    digest = hashlib.sha256(os.path.abspath(profile).lower().encode("utf-8")).hexdigest()[:12]
+    return TEST_KEYS + "\\install-proof-" + digest
+
+
+def forget_proof_key(profile):
+    """The profile's test key and everything under it removed (SurasuraTests too, once empty). -> still there?"""
+    import winreg
+
+    def delete(path):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+                children = []
+                while True:
+                    try:
+                        children.append(winreg.EnumKey(key, len(children)))
+                    except OSError:
+                        break
+            for child in children:
+                delete(path + "\\" + child)
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        except FileNotFoundError:
+            pass
+    delete(proof_key(profile))
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, TEST_KEYS)      # refused while another test's key is under it
+    except OSError:
+        pass
+    try:
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER, proof_key(profile)).Close()
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def identity(data_name):
@@ -255,7 +295,7 @@ def cmd_update(release, key_file, ident):
     return p.end()
 
 
-def cmd_uninstall(ident):
+def cmd_uninstall(ident, profile):
     p = Proof()
     program = ident["program"]
     code = subprocess.run([os.path.join(program, "unins000.exe"), *SETUP_FLAGS], timeout=600).returncode
@@ -272,6 +312,7 @@ def cmd_uninstall(ident):
         if os.path.isdir(folder):
             shutil.rmtree(folder)
             print(f"  removed {folder} (the test install's data)")
+    p.check(not forget_proof_key(profile), "the profile's test RunOnce key gone")
     return p.end()
 
 
@@ -305,7 +346,7 @@ def main(argv=None):
         return cmd_install(os.path.abspath(a.args[0]), os.path.abspath(a.args[1]), ident)
     if a.command == "update":
         return cmd_update(a.args[0], a.args[1], ident)
-    return cmd_uninstall(ident)
+    return cmd_uninstall(ident, a.profile)
 
 
 if __name__ == "__main__":

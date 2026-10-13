@@ -951,16 +951,6 @@ def test_installer_mode_leaves_its_recovery_entry_before_the_first_move_and_take
     assert _entry(runonce, path) is None, "gone the moment the swap ended"
 
 
-def test_a_folder_swap_never_leaves_a_recovery_entry(staged, runonce, monkeypatch):
-    root, marker, _before = staged
-    seen, path = [], updater.marker_path()
-    real_rename = updater_helper._rename
-    monkeypatch.setattr(updater_helper, "_rename",
-                        lambda s, d, sleep=None: seen.append(_entry(runonce, path)) or real_rename(s, d))
-    code, result = _run(marker, kit.FakeOps())
-    assert result["status"] == "success" and seen and not any(seen)
-
-
 @pytest.mark.parametrize("how", ["Setup fails", "Setup raises", "the swap raises"])
 def test_the_recovery_entry_goes_whatever_the_outcome(installer_marker, runonce, monkeypatch, how):
     root, marker, before = installer_marker
@@ -1294,7 +1284,7 @@ def test_recovery_with_a_marker_it_cant_trust_moves_nothing_and_takes_its_entry_
         text = json.dumps([m])
     elif damage == "2.x's":
         m.pop("format")
-    elif damage == "a folder swap's":                    # a folder swap's whole contract, so only its kind refuses it
+    elif damage == "a folder swap's":                    # a folder swap's contract, without the plan its swap stamps
         m["kind"], m["staged"] = "folder", os.path.join(updater.update_dir(), f"stage-{kit.NEW}")
     elif damage == "never armed":
         m.pop("armed")
@@ -1352,6 +1342,321 @@ def test_a_real_recover_process_puts_back_a_cut_off_swap(installer_marker, runon
     root, marker, before = installer_marker
     path = _cut_off(marker, monkeypatch, _half(root))
     assert _entry(runonce, path).endswith(f' --recover "{path}"')
+    done = subprocess.run([kit.PYTHON, os.path.join(PROJECT, "updater_helper.py"), "--recover", path],
+                          capture_output=True, timeout=120, cwd=updater.update_dir())
+    assert done.returncode == 2, done.stderr.decode("utf-8", "replace")
+    assert kit.tree(root) == before and not os.path.exists(path) and _entry(runonce, path) is None
+
+
+# --- a folder swap cut off half-way (S3.1-6): the same RunOnce entry and --recover, for every update -------------------
+# The kit's swap is 13 renames: the old program's 7 entries out to previous\3.0.0 (_internal, README.md,
+# RELEASE_NOTES.md, surasura-cli.exe, Surasura.exe, UPDATE_INSTRUCTIONS.md, updater.exe), then the release's 6 in from
+# the stage (README.md, RELEASE_NOTES.md, Surasura.exe, _internal, surasura-cli.exe, updater.exe).
+OLD_ENTRIES = ["_internal", "README.md", "RELEASE_NOTES.md", "surasura-cli.exe", "Surasura.exe",
+               "UPDATE_INSTRUCTIONS.md", "updater.exe"]
+NEW_ENTRIES = ["README.md", "RELEASE_NOTES.md", "Surasura.exe", "_internal", "surasura-cli.exe", "updater.exe"]
+PUT_BACK = "the update was cut off before it finished, so the old version was put back"
+
+
+class _CutInProof(kit.FakeOps):
+    """Every entry has moved; the swapper is cut off while it asks the new command line its version."""
+
+    def version(self, cli):
+        raise _PowerLost()
+
+
+def _cut_off_folder(marker, monkeypatch, at_rename=None):
+    """A folder swap run until it is cut off — at the `at_rename`-th move, or (None) once every entry has moved, during
+    its proof — leaving exactly what a killed swapper leaves. -> the marker's path."""
+    marker["window"] = False
+    real_forget, real_rename = updater_helper.forget_recovery, updater_helper._rename
+    monkeypatch.setattr(updater_helper, "forget_recovery", lambda root: None)     # a killed process runs no finally
+    renames = []
+
+    def rename(src, dst, sleep=None):
+        renames.append(src)
+        if len(renames) == at_rename:
+            raise _PowerLost()
+        return real_rename(src, dst)
+    monkeypatch.setattr(updater_helper, "_rename", rename)
+    path = updater.write_marker(marker)
+    with pytest.raises(_PowerLost):
+        updater_helper.run(path, ops=_CutInProof())
+    monkeypatch.setattr(updater_helper, "forget_recovery", real_forget)
+    monkeypatch.setattr(updater_helper, "_rename", real_rename)
+    return path
+
+
+@pytest.mark.parametrize("outcome", ["proven", "its proof failed"])
+def test_a_folder_swap_leaves_its_recovery_entry_before_the_first_move_and_takes_it_away_at_the_end(
+        staged, runonce, monkeypatch, outcome):
+    """Every update, the everyday one-click one too (Sonic, S3.1-6): the entry and the marker's stamp — with the plan
+    the recovery reads, what leaves the install and what arrives from the stage — are on disk at the first rename, and
+    gone once the swap ends, whatever it ends in."""
+    root, marker, before = staged
+    path = updater.marker_path()
+    at_first_move = []
+    real_rename = updater_helper._rename
+
+    def rename(src, dst, sleep=None):
+        if not at_first_move:
+            with open(path, encoding="utf-8") as f:
+                at_first_move.append((_entry(runonce, path), json.load(f)))
+        return real_rename(src, dst)
+    monkeypatch.setattr(updater_helper, "_rename", rename)
+    code, result = _run(marker, kit.FakeOps(version=None if outcome == "proven" else "2.9.9"))
+    assert result["status"] == ("success" if outcome == "proven" else "failed")
+    [(command, stamped)] = at_first_move
+    assert command == updater_helper.recovery_command(path)
+    assert stamped.get("armed"), "the marker on disk says it was armed: recovery acts on no other"
+    assert stamped["leaving"] == OLD_ENTRIES and stamped["arriving"] == NEW_ENTRIES
+    assert _entry(runonce, path) is None, "gone the moment the swap ended"
+    if outcome != "proven":
+        assert kit.tree(root) == before
+
+
+@pytest.mark.parametrize("refused", ["something still runs there", "the stage is incomplete", "the registry",
+                                     "the marker"])
+def test_a_folder_swap_refused_before_its_first_move_leaves_no_entry(staged, runonce, monkeypatch, refused):
+    """Refused before anything moves: nothing needs finishing or undoing, so no entry stays (and none is ever written
+    while the swap still waits or checks its stage); an entry or a stamp that can't be written stops it unchanged."""
+    root, marker, before = staged
+    path = updater.write_marker(marker)
+    ops, written = kit.FakeOps(), []
+    real_write = updater_helper._write_recovery
+    monkeypatch.setattr(updater_helper, "_write_recovery", lambda p: written.append(p) or real_write(p))
+    if refused == "something still runs there":
+        marker["wait_timeout"] = 0.05
+        path = updater.write_marker(marker)
+        ops = kit.FakeOps(running=[4242])
+    elif refused == "the stage is incomplete":
+        os.remove(os.path.join(marker["staged"], "surasura-cli.exe"))
+    elif refused == "the registry":
+        import winreg
+
+        def denied(*args):
+            raise PermissionError(5, "Access is denied")
+        monkeypatch.setattr(winreg, "SetValueEx", denied)
+    if refused == "the marker":
+        with open(path, "rb"):                            # held: Windows won't replace it, so it can't be stamped
+            updater_helper.run(path, ops=ops)
+        assert not [n for n in os.listdir(updater.update_dir()) if n.endswith(".tmp")]
+    else:
+        updater_helper.run(path, ops=ops)
+    result = _result()
+    assert result["status"] == "failed" and result["touched"] is False
+    assert kit.tree(root) == before and not os.path.exists(os.path.join(updater.previous_root(), kit.OLD))
+    assert _entry(runonce, path) is None
+    if refused in ("something still runs there", "the stage is incomplete"):
+        assert written == [], "never written while the swap waits or checks its stage"
+    else:
+        assert "before changing anything" in result["reason"]
+
+
+@pytest.mark.parametrize("nth", [1, 4, 7, 8, 10, 13])
+def test_folder_recovery_after_a_cut_off_at_any_move_puts_back_exactly_what_moved(staged, runonce, monkeypatch, nth):
+    """Cut off at the first move (armed, nothing moved), part-way out (4, 7), with every old entry out (8), part-way in
+    (10: README.md and RELEASE_NOTES.md, names the old program had too), or with all but updater.exe in (13): the
+    sign-in's recovery puts the old program back byte for byte and the release back in its stage — an old entry never
+    moved stays, a new one goes only where its old one had left — and starts nothing."""
+    root, marker, before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=nth)
+    assert _entry(runonce, path) == updater_helper.recovery_command(path), "cut off: the entry left for the sign-in"
+    ops = kit.FakeOps()
+    assert updater_helper.recover(path, ops=ops) == 2
+    assert kit.tree(root) == before, "byte-identical: the old program back, the foreign files untouched"
+    assert kit.tree(marker["staged"]) == kit.digests(kit.program(kit.NEW)), "the release back in its stage"
+    assert not os.path.exists(os.path.join(updater.previous_root(), kit.OLD))
+    assert ops.started == [], "nothing started: it runs at sign-in, without the program"
+    result = _result()
+    assert (result["status"], result["reason"], result["kind"], result["going_back"]) == \
+        ("failed", PUT_BACK, "folder", False)
+    assert not os.path.exists(path) and _entry(runonce, path) is None
+    assert updater.consume_result()["status"] == "failed", "the app reads it as a failed update"
+
+
+def test_folder_recovery_finishes_a_swap_cut_off_once_every_entry_moved(staged, runonce, registry, monkeypatch):
+    """Cut off during its proof, every entry moved: the release is in place (every file's sha256, and the command line
+    says so), so it is kept — 3.0.0 kept for Go back with its list, the stage gone, the uninstall entry naming 3.0.1 —
+    and the app reads the success it knows."""
+    root, marker, before = staged
+    entry = registry("{SURASURA-TEST-9}", root, DisplayVersion=kit.OLD)
+    marker["app_id"] = "{SURASURA-TEST-9}"
+    path = _cut_off_folder(marker, monkeypatch)
+    assert _entry(runonce, path) and _values(entry)["DisplayVersion"] == kit.OLD
+    ops = kit.FakeOps()
+    assert updater_helper.recover(path, ops=ops) == 0
+    after = kit.tree(root)
+    assert _program_part(after) == kit.digests(kit.program(kit.NEW)) and _foreign(after) == _foreign(before)
+    assert ops.started == []
+    assert sorted(os.listdir(updater.previous_root())) == [kit.OLD, f"{kit.OLD}.files.json"]
+    assert kit.tree(os.path.join(updater.previous_root(), kit.OLD)) == kit.digests(kit.old_program())
+    assert not os.path.exists(marker["staged"])
+    assert _values(entry)["DisplayVersion"] == kit.NEW, "Windows' installed-apps list follows (D8)"
+    assert not os.path.exists(path) and _entry(runonce, path) is None
+    result = updater.consume_result()
+    assert (result["status"], result["reason"]) == ("success", "ok (the updater ended before reporting)")
+    assert (result["from"], result["to"], result["kind"]) == (kit.OLD, kit.NEW, "folder")
+
+
+def test_folder_recovery_takes_back_an_entry_the_old_program_never_had(staged, runonce, monkeypatch):
+    """A release adding a top-level entry (here a Connect program): cut off once it has arrived, it goes back to the
+    stage with the rest — it is the release's, since the old program had no such entry."""
+    root, marker, before = staged
+    kit.write_tree(marker["staged"], {"surasura-connect.exe": b"MZ\x90\x00connect " + kit.NEW.encode()})
+    marker["files"] = dict(marker["files"], **kit.digests({"surasura-connect.exe": b"MZ\x90\x00connect " +
+                                                           kit.NEW.encode()}))
+    marker["owned"] = sorted(marker["owned"] + ["surasura-connect.exe"], key=str.lower)
+    release = kit.tree(marker["staged"])
+    path = _cut_off_folder(marker, monkeypatch, at_rename=14)           # 7 out, 6 in: all but updater.exe
+    assert os.path.isfile(root / "surasura-connect.exe")
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert kit.tree(root) == before and kit.tree(marker["staged"]) == release
+
+
+def test_folder_recovery_of_go_back_without_its_list_waits_for_every_entry(staged, runonce, monkeypatch):
+    """Go back with its kept list lost has only its command line for a proof — and 3.0.0's command line answers as
+    soon as it and _internal are in. Cut off before updater.exe came in, the swap isn't finished: put back (3.0.1 runs
+    again, 3.0.0 is kept again), never kept half."""
+    root, marker, _before = staged
+    assert _run(marker, kit.FakeOps())[1]["status"] == "success"
+    monkeypatch.setattr(updater, "__version__", kit.NEW)
+    os.remove(os.path.join(updater.previous_root(), f"{kit.OLD}.files.json"))
+    back = updater.prepare_go_back()
+    assert back["files"] is None
+    now, kept = kit.tree(root), kit.tree(os.path.join(updater.previous_root(), kit.OLD))
+    path = _cut_off_folder(back, monkeypatch, at_rename=13)            # 6 out, 6 of 7 in: all but updater.exe
+    assert kit.FakeOps().version(str(root / "surasura-cli.exe")) == kit.OLD, "its command line already answers"
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert kit.tree(root) == now and kit.tree(os.path.join(updater.previous_root(), kit.OLD)) == kept
+    result = _result()
+    assert result["status"] == "failed" and result["going_back"] is True and result["to"] == kit.OLD
+
+
+@pytest.mark.parametrize("cut", ["all but updater.exe in", "every entry in, cut off in its proof"])
+def test_go_back_without_its_list_cut_off_half_in_is_never_read_as_landed_by_the_version_it_brings_back(
+        staged, runonce, monkeypatch, cut):
+    """Go back with its kept list lost, cut off once 3.0.0's Surasura.exe and _internal are in but before its
+    updater.exe: 3.0.0 can start before the next sign-in, and its own version runs — yet the swap hasn't landed. It
+    reports the cut-off and keeps the marker for the sign-in's recovery (never cleans it away, which would leave
+    updater.exe in previous\\); cut off only in its proof, every entry in, it has landed."""
+    root, marker, _before = staged
+    assert _run(marker, kit.FakeOps())[1]["status"] == "success"
+    monkeypatch.setattr(updater, "__version__", kit.NEW)
+    os.remove(os.path.join(updater.previous_root(), f"{kit.OLD}.files.json"))
+    back = updater.prepare_go_back()
+    assert back["files"] is None
+    path = _cut_off_folder(back, monkeypatch, at_rename=13 if cut == "all but updater.exe in" else None)
+    monkeypatch.setattr(updater, "__version__", kit.OLD)              # the version it brings back starts first
+    result = updater.consume_result()
+    if cut == "all but updater.exe in":
+        assert result["status"] == "failed" and result["reason"] == updater.CUT_OFF
+        assert os.path.exists(path) and _entry(runonce, path), "kept for the sign-in"
+        assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    else:
+        assert result["status"] == "success" and result["reason"] == "ok (the updater ended before reporting)"
+        assert not os.path.exists(path)
+
+
+@pytest.mark.parametrize("damage", ["no plan", "a plan naming the library", "nothing arriving", "leaving not a list"])
+def test_a_folder_marker_without_a_plan_it_can_trust_moves_nothing(staged, runonce, monkeypatch, damage):
+    """A folder swap is recovered only from the plan its swapper stamped, naming the program's own plain entries:
+    anything else (here, after a cut-off with two new entries in) moves nothing, and the entry goes."""
+    root, marker, _before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=10)
+    with open(path, encoding="utf-8") as f:
+        m = json.load(f)
+    if damage == "no plan":
+        del m["leaving"], m["arriving"]
+    elif damage == "a plan naming the library":
+        m["arriving"] = m["arriving"] + ["User Files"]
+    elif damage == "nothing arriving":
+        m["arriving"] = []
+    else:
+        m["leaving"] = "_internal"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(m, f)
+    now, install = kit.tree(updater.update_dir()), kit.tree(root)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 1
+    assert kit.tree(updater.update_dir()) == now and kit.tree(root) == install, "nothing moved, nothing written"
+    assert _entry(runonce, path) is None
+
+
+def test_folder_recovery_says_so_when_an_entry_cant_come_back(staged, runonce, monkeypatch):
+    """The new _internal is in and one of its files is held: it can't go back to the stage, so the old _internal stays
+    safe in previous\\3.0.0 — one item, said once — while every other entry is put back."""
+    root, marker, before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=13)
+    with open(root / "_internal" / "base_library.zip", "rb"):
+        assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert _result()["reason"] == PUT_BACK + " -- and 1 item(s) could not be put back"
+    assert os.listdir(os.path.join(updater.previous_root(), kit.OLD)) == ["_internal"], "the old one kept safe"
+    outside = {p: d for p, d in kit.tree(root).items() if not p.startswith("_internal/")}
+    assert outside == {p: d for p, d in before.items() if not p.startswith("_internal/")}, "the rest put back"
+
+
+def test_folder_recovery_leaves_alone_an_install_something_runs_from(staged, runonce, monkeypatch):
+    root, marker, before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=10)
+    now = kit.tree(root)
+    updater_helper.forget_recovery(os.path.dirname(path))           # Windows removes the value before it runs it
+    assert updater_helper.recover(path, ops=kit.FakeOps(running=[4242])) == 1
+    assert kit.tree(root) == now and os.path.exists(path) and not os.path.exists(updater.result_path())
+    assert _entry(runonce, path) == updater_helper.recovery_command(path), "written again for the next sign-in"
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2 and kit.tree(root) == before
+
+
+@pytest.mark.parametrize("started", ["the half-new program", "the old program (cut off at the first move)"])
+def test_a_program_started_before_the_sign_in_leaves_a_cut_off_folder_swap_to_its_recovery(staged, runonce,
+                                                                                            monkeypatch, started):
+    """Cut off, then a program started before the next sign-in reads the marker: it reports the cut-off, keeps the
+    marker and the swapper's copy the entry names, and starts no update or Go back over it (each would write its own
+    marker over this one); the sign-in's recovery then puts it right."""
+    root, marker, before = staged
+    info = update_checker.get_update_info()
+    if started == "the half-new program":
+        path = _cut_off_folder(marker, monkeypatch, at_rename=13)
+        monkeypatch.setattr(updater, "__version__", kit.NEW)
+    else:
+        path = _cut_off_folder(marker, monkeypatch, at_rename=1)
+        monkeypatch.setattr(updater, "__version__", kit.OLD)
+    os.makedirs(updater.swapper_dir(), exist_ok=True)
+    swapper = os.path.join(updater.swapper_dir(), f"updater-{kit.NEW}.exe")
+    with open(swapper, "wb") as f:
+        f.write(b"MZ the swapper's copy")
+    result = updater.consume_result()
+    assert result["status"] == "failed" and result["reason"] == updater.CUT_OFF
+    assert (result["from"], result["to"]) == (kit.OLD, kit.NEW)
+    assert os.path.exists(path) and os.path.isfile(swapper) and _entry(runonce, path), "all kept for the sign-in"
+    for start in (lambda: updater.prepare_update(info), updater.prepare_go_back):     # (installer mode: the same guard)
+        with pytest.raises(updater.UpdateError) as refused:
+            start()
+        assert str(refused.value) == updater.CUT_OFF
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert kit.tree(root) == before and _entry(runonce, path) is None
+    assert updater.consume_result()["status"] == "failed" and not os.path.exists(path)
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_a_later_swapper_handed_an_armed_folder_marker_recovers_it_and_never_swaps_twice(staged, runonce,
+                                                                                         monkeypatch, finished):
+    root, marker, before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=None if finished else 10)
+    ops = kit.FakeOps()
+    code = updater_helper.run(path, ops=ops)
+    assert ops.started == [], "nothing started: a recovery, not a swap"
+    if finished:
+        assert code == 0 and _result()["reason"] == updater_helper.RECOVERED
+        assert _program_part(kit.tree(root)) == kit.digests(kit.program(kit.NEW))
+    else:
+        assert code == 2 and _result()["status"] == "failed" and kit.tree(root) == before
+    assert not os.path.exists(path) and _entry(runonce, path) is None
+
+
+def test_a_real_recover_process_puts_back_a_cut_off_folder_swap(staged, runonce, monkeypatch):
+    """`python updater_helper.py --recover <marker>` with real Windows calls on a folder swap cut off part-way in."""
+    root, marker, before = staged
+    path = _cut_off_folder(marker, monkeypatch, at_rename=10)
     done = subprocess.run([kit.PYTHON, os.path.join(PROJECT, "updater_helper.py"), "--recover", path],
                           capture_output=True, timeout=120, cwd=updater.update_dir())
     assert done.returncode == 2, done.stderr.decode("utf-8", "replace")

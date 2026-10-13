@@ -1076,6 +1076,55 @@ def test_recovery_leaves_alone_an_install_something_runs_from(installer_marker, 
     assert kit.tree(root) == before
 
 
+@pytest.mark.parametrize("started", ["the half-new program", "the old program (cut off at the first move)"])
+def test_a_program_started_before_the_sign_in_leaves_the_cut_off_update_to_its_recovery(installer_marker, runonce,
+                                                                                         monkeypatch, started):
+    """Cut off, then a program started before the next sign-in reads the marker: it reports the cut-off and keeps the
+    marker and the swapper's copy, which the RunOnce entry names, so the sign-in's recovery still puts it right
+    (consuming them left the old version unused in previous\\ and the entry naming a deleted program)."""
+    root, marker, before = installer_marker
+    if started == "the half-new program":
+        path = _cut_off(marker, monkeypatch, _half(root))
+        monkeypatch.setattr(updater, "__version__", kit.NEW)
+    else:
+        path = _cut_off(marker, monkeypatch, at_rename=1)
+        monkeypatch.setattr(updater, "__version__", kit.OLD)
+    os.makedirs(updater.swapper_dir(), exist_ok=True)
+    swapper = os.path.join(updater.swapper_dir(), f"updater-{kit.NEW}.exe")
+    with open(swapper, "wb") as f:
+        f.write(b"MZ the swapper's copy")
+    result = updater.consume_result()
+    assert result["status"] == "failed" and result["reason"] == updater.CUT_OFF
+    assert (result["from"], result["to"]) == (kit.OLD, kit.NEW)
+    assert os.path.exists(path) and os.path.isfile(swapper) and _entry(runonce, path), "all kept for the sign-in"
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
+    assert kit.tree(root) == before and _entry(runonce, path) is None
+    assert updater.consume_result()["status"] == "failed" and not os.path.exists(path)
+
+
+def test_an_installer_marker_never_armed_is_consumed_as_an_update_that_did_not_complete(installer_marker, runonce,
+                                                                                        monkeypatch):
+    """The swapper ended before its first move (no entry, nothing moved): nothing at the sign-in would act on the
+    marker, so the program consumes it as it always has, once."""
+    root, marker, before = installer_marker
+    path = updater.write_marker(marker)
+    monkeypatch.setattr(updater, "__version__", kit.OLD)
+    result = updater.consume_result()
+    assert result["status"] == "failed" and result["reason"] == "update did not complete"
+    assert not os.path.exists(path) and updater.consume_result() is None and kit.tree(root) == before
+
+
+def test_a_cut_off_update_that_landed_is_read_as_landed_by_the_new_program(installer_marker, runonce, monkeypatch):
+    """Setup finished before the cut-off and the new program starts first: its files prove it, so it is a success
+    (the entry left behind then finds no marker at the sign-in and goes)."""
+    root, marker, before = installer_marker
+    path = _cut_off(marker, monkeypatch, _whole(root))
+    monkeypatch.setattr(updater, "__version__", kit.NEW)
+    result = updater.consume_result()
+    assert result["status"] == "success" and not os.path.exists(path)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 1 and _entry(runonce, path) is None
+
+
 @pytest.mark.parametrize("kept", ["listed", "no list", "an empty list"])
 @pytest.mark.parametrize("nth", [1, 3])
 def test_recovery_after_a_cut_off_between_moves_puts_back_exactly_what_moved(installer_marker, runonce, monkeypatch,

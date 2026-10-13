@@ -369,3 +369,63 @@ def test_graduated_words_are_added_to_the_list_in_its_own_encoding(app_instance,
     words = read_text(str(graduated), "ja", errors="strict").split("\n")
     assert {"練習", "勉強", "頑張る"} <= set(words)
     assert graduated.read_bytes().decode("cp932")      # still Shift_JIS throughout
+
+
+def test_file_with_no_graduated_words_adds_nothing_to_the_list(app_instance, tmp_path):
+    # A lesson none of whose words are in the graduate index must not write an empty "# Source" block
+    # into GraduatedList.txt: the list stays untouched and the call reports nothing graduated.
+    lesson = tmp_path / "data" / "ja" / "HighPriority" / "lesson.txt"
+    lesson.write_text("今日も勉強を頑張る。", encoding="utf-8")
+
+    result = app_instance._append_graduated_words(str(lesson), {"other.txt": ["勉強"]})
+
+    assert result == (None, 0)
+    assert not (tmp_path / "User Files" / "ja" / "GraduatedList.txt").exists()
+
+
+def test_file_with_no_graduated_words_leaves_an_existing_list_byte_for_byte_unchanged(app_instance, tmp_path):
+    # The normal real-world state: the list already exists. A lesson with no graduated words must not
+    # append an empty "# Source" block, so the list's bytes stay exactly as they were.
+    lesson = tmp_path / "data" / "ja" / "HighPriority" / "lesson.txt"
+    lesson.write_text("今日も勉強を頑張る。", encoding="utf-8")
+    graduated = tmp_path / "User Files" / "ja" / "GraduatedList.txt"
+    graduated.parent.mkdir(parents=True)
+    graduated.write_bytes("# 卒業した言葉\r\n練習\r\n".encode("cp932"))
+    before = graduated.read_bytes()
+
+    result = app_instance._append_graduated_words(str(lesson), {"other.txt": ["勉強"]})
+
+    assert result == (None, 0)
+    assert graduated.read_bytes() == before
+
+
+def test_graduation_count_is_the_number_of_words_written(app_instance, tmp_path):
+    # The count is the words written (3), not the number of matched file names (1): the caller
+    # reports it to the user as "N words graduated".
+    lesson = tmp_path / "data" / "ja" / "HighPriority" / "lesson.txt"
+    lesson.write_text("今日も勉強を頑張る。", encoding="utf-8")
+
+    result = app_instance._append_graduated_words(str(lesson), {"lesson.txt": ["今日", "勉強", "頑張る"]})
+
+    assert result == ("HighPriority/lesson.txt", 3)
+
+
+def test_chinese_graduated_list_stays_gb18030_after_graduation(app_instance, tmp_path):
+    # A Chinese GraduatedList.txt saved in GB18030 must stay GB18030 once a graduation adds to it:
+    # the append uses the library's own language, not Japanese.
+    from app.path_utils import read_text
+    app_instance.language = "zh"
+    app_instance.data_root = str(tmp_path / "data" / "zh")
+    (tmp_path / "data" / "zh" / "HighPriority").mkdir(parents=True)
+    lesson = tmp_path / "data" / "zh" / "HighPriority" / "lesson.txt"
+    lesson.write_text("我们今天学习中文。", encoding="utf-8")
+    graduated = tmp_path / "User Files" / "zh" / "GraduatedList.txt"
+    graduated.parent.mkdir(parents=True)
+    graduated.write_bytes("# 已学会的词\r\n练习\r\n".encode("gb18030"))
+    with pytest.raises(UnicodeDecodeError):            # precondition: this file is not UTF-8
+        "# 已学会的词\r\n练习\r\n".encode("gb18030").decode("utf-8")
+
+    app_instance._append_graduated_words(str(lesson), {"lesson.txt": ["学习", "中文"]})
+
+    assert {"练习", "学习", "中文"} <= set(read_text(str(graduated), "zh", errors="strict").split("\n"))
+    assert {"练习", "学习", "中文"} <= set(graduated.read_bytes().decode("gb18030").replace("\r", "").split("\n"))

@@ -1,9 +1,11 @@
 """surasura-cli's library verbs for Connect (P2.1; P1.5 09-hato-layer §2, P0.3 03-verbs): `register`, `place`, `finish`,
-and `connect` (in P2.1: `--consume-only`, the inbox read once).
+and `connect` (in P2.1: `--consume-only`, the inbox read once); P2.5's `undo` (a batch, the shelf) and `logs`.
 
 - `register` takes hato's pairing record v1 on stdin (`--pairing -`) or from a file — never on the command line, which
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
   nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5.
+- `connect` (P2.4) runs Connect's loop (`app/connect/runner.py`) until no job is left; `--consume-only` reads the
+  inbox once and exits (P2.1).
 - `place` and `finish` are a person's verbs, accepted from any program: each placement is logged with `--source`
   (✅ G1.3-5: another program's placement counts like yours, its name recorded). `finish` comes with Surasura 3.0
   (✅ P2.1-1): through 2.x the window's Graduate still marks an item's words known, and finish never does (✅ Q2-5).
@@ -354,14 +356,16 @@ def finish(args):
 
 
 # --------------------------------------------------------------------------- #
-# connect (P2.1: the inbox, once; the loop is P2.4's)
+# connect (P2.1: the inbox, once; P2.4: the loop)
 # --------------------------------------------------------------------------- #
 ROUNDS = 20         # reads of the log a Connect makes before it leaves the rest to the next one
 
 
 def connect_args(parser):
+    import argparse
     parser.add_argument("--consume-only", action="store_true",
-                        help="read the library's new placements into Connect's queue, then exit")
+                        help="read the library's new placements into Connect's queue, then exit (no mining)")
+    parser.add_argument("--looks", type=int, default=None, help=argparse.SUPPRESS)    # tests and drills: at most N
 
 
 def connect(args):
@@ -372,14 +376,19 @@ def connect(args):
     loaded = settings()
     if not loaded.get("connect_enabled"):
         return {"skipped": PREVIEW_OFF}
-    if not args.consume_only:
-        raise CliError("usage", "Connect's mining isn't built yet: run it with --consume-only.")
     from app import locks
     from app.connect import inbox, kick, library
     from app.path_utils import get_user_files_path
     languages = [lang for lang in LANGUAGES if os.path.isdir(get_user_files_path(lang))]
     if not languages:
         raise CliError("not-set-up", "Surasura isn't set up yet. Open Surasura once to set it up.")
+    from app.connect.ledger import Ledger, TooNew
+    try:
+        Ledger().close()                    # a ledger a newer Surasura wrote: refused, said so (both paths)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    if not args.consume_only:
+        return _loop(loaded, languages, getattr(args, "looks", None))
     out = {lang: {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []} for lang in languages}
     rounds = 0
     while rounds < ROUNDS:
@@ -397,6 +406,8 @@ def connect(args):
                     continue                                    # no store (JSON mode, read-only): nothing written
                 with store:
                     got = _store_write(lambda: inbox.consume(store, lang), 10.0)
+                    if rounds == 1:
+                        out[lang]["level"] = _level(store, lang, loaded)     # P2.2: once a run, after the inbox
                 mine = out[lang]
                 mine["queued"] += got["queued"]
                 mine["dropped"] += got["dropped"]
@@ -405,7 +416,79 @@ def connect(args):
                 mine["missed"] += got["missed"]
         if not any(_pending(lang) for lang in languages):
             break
+    # A sync a writer verb left pending (S3) is sent before Connect exits, never once Anki has closed (P2.3; E1.1 04
+    # §3: a pending sync never dies with its process). Outside Connect's lock: a kick meanwhile starts a reader.
+    from app.cli.verbs import _session
+    session = _session(loaded)
+    if session is not None:
+        from app import anki_connect
+        session.settle(anki_connect.address(loaded), loaded)
     return {"languages": out, "rounds": rounds}
+
+
+def _loop(loaded, languages, looks=None):
+    """P2.4: Connect's loop under its one lock (a second Connect answers `skipped`), the cycle collector paused while
+    it runs (`batch_gc`); a kick that came while it held the lock is read by the next one, started before this exits."""
+    from app import batch_gc, locks
+    from app.connect import kick, runner
+    from app.connect.ledger import TooNew
+    try:
+        held = locks.take(kick.LOCK, "Connect", wait=1.0)
+    except locks.Busy:
+        return {"skipped": "already running"}
+    try:
+        with held:
+            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
+    except TooNew as e:
+        raise CliError("needs-you", str(e), ask="Update Surasura") from None
+    if not summary.get("stopped") and any(_pending(lang) for lang in languages):
+        _kick(loaded)                   # logged after its last read: the next Connect reads it
+    return summary
+
+
+def _level(store, lang, loaded):
+    """P2.2, the level raise's look (`app/connect/level.py`) on the list `results/` holds for this language: the
+    newly listed words of the episodes already mined, top 20 first, as `level` jobs; None when there's no list of it
+    to read (another language's, none yet, a Generate writing it)."""
+    from app.connect import level
+    try:
+        read = _read_list(lang)
+        if read is None:
+            return None
+        signature, listed, file_words = read
+        return level.check(store, lang, listed, signature, file_words,
+                           mode=loaded.get("connect_mine_words") or "list")
+    except Exception as e:      # a busy ledger, a store that can't be read: this look is skipped, never the run
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def _read_list(lang):
+    """(the run signature, the list's keys {(Word, Reading)}, `file_words.json`) of the last Generate, read under
+    `results` (a Generate writing them is waited for 5 s, then left to the next look) — or None."""
+    from app.cli import verbs
+    try:
+        with contract.take_lock("results", "Connect reading the list", wait=5.0):
+            holds = verbs._results_language()
+            folder = verbs._results_dir()
+            path = os.path.join(folder, verbs.PRIORITY_CSV)
+            # Only a list known to be this language's: one whose language can't be told is no look (another
+            # language's list recorded as this one's would make its whole list "newly listed" at its next Generate)
+            if holds != lang or not os.path.exists(path):
+                return None
+            signature = verbs.read_run_stamp_here()
+            if signature is None:
+                return None                         # a Generate that didn't finish: its list may be cut short
+            rows = verbs._read_rows(path)
+            try:
+                with open(os.path.join(folder, "file_words.json"), "r", encoding="utf-8") as f:
+                    file_words = json.load(f)
+            except (OSError, ValueError):
+                file_words = {}
+    except CliError:
+        return None
+    if not isinstance(file_words, dict):
+        file_words = {}
+    return signature, {(row.get("Word", ""), row.get("Reading", "")) for row in rows}, file_words
 
 
 def _pending(lang):
@@ -415,3 +498,83 @@ def _pending(lang):
         return False
     with store:
         return inbox.pending(store)
+
+
+# --------------------------------------------------------------------------- #
+# setup (P2.3: the setup checks, P1.5 04-onboarding §1)
+# --------------------------------------------------------------------------- #
+def setup_args(parser):
+    add_language(parser)
+    parser.add_argument("--use-anki-profile", action="store_true",
+                        help="Connect makes cards in the Anki profile open now, from now on")
+
+
+def setup(args):
+    """Every piece Connect needs, in order, each missing one named in plain words with its one action
+    (`app/connect/setup.py`). Exit 0 whatever is missing: the list is the answer. With Connect's preview on the setup
+    record is kept (`<local data>/connect/setup.json`); off, nothing is written. Asks Anki read-only and Anki Miner its
+    `--api version`, `profiles` and `check`; never syncs, writes Anki or starts Anki."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    if args.use_anki_profile and not loaded.get("connect_enabled"):
+        raise CliError("usage", "--use-anki-profile is for Connect's preview: switch it on first.")
+    from app.connect import setup as checking
+    contract.emit_progress("checking Anki and Anki Miner", 0, 1)
+    out = checking.checks(loaded, lang, use_open_profile=args.use_anki_profile)
+    if args.use_anki_profile:
+        anki, profile = out["checks"][0], out["checks"][1]
+        if anki["state"] != checking.OK:
+            raise CliError("anki-closed", f"{anki['say']} Surasura can't see which profile to use until it answers.")
+        if profile["state"] != checking.OK:
+            raise CliError("failed", profile["say"])
+        if not out["recorded"]:
+            raise CliError("failed", "Surasura couldn't save Connect's setup record. Try again in a moment.")
+    contract.emit_progress("done", 1, 1)
+    return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))
+
+
+# --------------------------------------------------------------------------- #
+# undo, logs (P2.5: *Undo this batch*, the shelf put back; 03-actors §4's logs)
+# --------------------------------------------------------------------------- #
+def undo_args(parser):
+    add_language(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--job", type=int, metavar="N", help="the batch (Connect's job, as `status` lists it) to undo")
+    which.add_argument("--shelf", metavar="RUN", help="a shelf restore point to put back (as `status` lists it)")
+    parser.add_argument("--confirm", action="store_true",
+                        help="do it (it can't be undone); without it, only what it would do")
+
+
+def undo(args):
+    """*Undo this batch* (`--job`): the batch's cards nobody studied or changed, deleted from Anki; the rest listed
+    with why (`app/connect/undo.py`). `--shelf`: a shelf restore point put back. Without `--confirm`, the plan only
+    (nothing written). The window's in 2.x; only with Connect's preview on. Never while you review."""
+    loaded = settings()
+    if not loaded.get("connect_enabled"):
+        return {"skipped": PREVIEW_OFF}
+    from app.connect import undo as undoing
+    # the window's sequence too (P3.1 row 3.1.5): the checks, the plain words and the owed sync live in one place
+    return undoing.act(loaded, language(args, loaded), job=args.job, shelf_run=args.shelf, confirm=args.confirm,
+                       sync=_owe_sync)
+
+
+def _owe_sync(loaded):
+    """Cards deleted or back from the shelf change tomorrow's cards: the session's sync (P2.3), sent by Connect."""
+    from app.connect import undo as undoing
+    undoing.owe_sync(loaded)
+
+
+def logs_args(parser):
+    parser.add_argument("--path", action="store_true", help="print the logs folder (the default)")
+    parser.add_argument("--save", metavar="ZIP", help="save Surasura's logs and Anki Miner's results of the last "
+                                                      "7 days to one zip")
+
+
+def logs(args):
+    """Where Surasura's logs are (`--path`), or one zip of them (`--save`): never a key or a token (CLAUDE.md §6)."""
+    from app.connect import status
+    if args.save:
+        names = status.save_logs(args.save)
+        return {"saved": args.save, "files": len(names)}
+    return {"path": status.logs_folder()}

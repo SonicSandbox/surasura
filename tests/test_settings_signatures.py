@@ -149,14 +149,17 @@ def _render_sig(lang="ja"):
 
 def _seed_generate(lang="ja"):
     """What a finished Generate leaves for the settings as they are now: the store's last run signature, the results
-    stamp and the three outputs journey_is_current looks for."""
+    stamp, the three outputs journey_is_current looks for and the run's plan file (the 3.0 line: every Generate
+    writes one, and the up-to-date check asks for it, E1.2-1)."""
     from app import token_index
+    from tests.plan_file_cases import write_plan_header
     signature = _run_sig(lang)
     results = os.path.join(_root(), "results")
     os.makedirs(results, exist_ok=True)
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    write_plan_header(results, signature)
     analyzer._set_run_stamp(results, signature)
     store = token_index.open_store(lang)
     try:
@@ -224,6 +227,8 @@ def _junban_panel_save(**changes):
                             _ready_first_value=lambda: s["junban_ready_first"],
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
+                            _replan_values=lambda: {},      # E3.1's row: saved only once touched
+                            _own_values=lambda: {},         # P1.4-1's row: absent with the Connect preview off
                             _write=MagicMock())
     JunbanGui._save_scope(panel)
     panel._write.assert_not_called()

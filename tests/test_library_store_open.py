@@ -266,10 +266,14 @@ def test_no_checkpoint_outside_the_write_helper():
             if "wal_checkpoint" in body:
                 inner = [n for n in ast.walk(node) if isinstance(n, ast.FunctionDef) and n is not node]
                 if not inner:
-                    found.append((node.name, "self._writing(begin=False)" in body))
+                    found.append((node.name, "self._writing(begin=False" in body))     # its wait may follow
     code_lines = [l for l in source.splitlines() if "wal_checkpoint" in l and not l.strip().startswith("#")]
     assert found == [("checkpoint", True)], found
     assert len([l for l in code_lines if "execute(" in l]) == 1
+    # K18: the one checkpoint is PASSIVE; TRUNCATE or RESTART can block readers and reset the WAL under them.
+    # Every line that calls wal_checkpoint( must be the PASSIVE one (a docstring mention has no "(" and is skipped).
+    calls = [l for l in code_lines if "wal_checkpoint(" in l]
+    assert calls and all("wal_checkpoint(PASSIVE)" in l for l in calls), calls
 
 
 _WRITER = """
@@ -748,3 +752,154 @@ def test_imports_and_commits_with_2_4_0s_runtime(language):
                           user_files_dir, language], capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.startswith("ok 3.39.4"), out.stdout
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_build_helper_spawns_at_most_once_a_minute_per_language(language, monkeypatch, store_helper_spawns):
+    """A window that finds no ready store starts the builder at most once every 60 s per language: a retry
+    1 s later spawns nothing, and a retry exactly 60 s after the spawn spawns again. Clock is faked so the
+    boundary is exact (the spawn time is recorded, and the window is strict on the 60th second)."""
+    data_dir, user_files_dir, doc = library(language)
+    write_manifest(user_files_dir, doc)
+    monkeypatch.setattr(ls, "_build_spawned", {})
+    clock = [1000.0]
+
+    class _FakeTime:
+        monotonic = staticmethod(lambda: clock[0])
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(ls, "time", _FakeTime())
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,)]
+    clock[0] = 1001.0
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,)], "a retry 1 s later must not spawn again"
+    clock[0] = 1060.0
+    ls.spawn_build_if_waiting(language, data_dir, user_files_dir)
+    assert store_helper_spawns == [(language,), (language,)], "a retry exactly 60 s later spawns again"
+    # The 60 s window is per language: another language finding no ready store at the same moment spawns its own
+    # builder (a throttle keyed on one global timestamp would stay silent here).
+    other = [lang for lang in LANGUAGES if lang != language][0]
+    o_data, o_files, o_doc = library(other)
+    write_manifest(o_files, o_doc)
+    ls.spawn_build_if_waiting(other, o_data, o_files)
+    assert store_helper_spawns == [(language,), (language,), (other,)], "the throttle is per language"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_backups_keep_exactly_the_newest_bak_keep(language, monkeypatch):
+    # Four backups with BAK_KEEP=2 must leave exactly two: the rule is "keep the newest N",
+    # so neither fewer (an off-by-one that deletes too little) nor more survives a run.
+    store = migrated(language)
+    try:
+        monkeypatch.setattr(ls, "BAK_KEEP", 2)
+        folder, base = os.path.split(store.db_path)
+        created = []
+        for i in range(4):
+            before = set(os.listdir(folder))
+            ls._backup_db(store.conn, store.db_path)
+            new = (set(os.listdir(folder)) - before).pop()
+            # Pin each backup's mtime: the prune sorts by mtime, which has one-second resolution, so four quick
+            # backups can tie and the survivors would depend on listdir order. Increasing values make it exact.
+            os.utime(os.path.join(folder, new), (1_000_000 + i, 1_000_000 + i))
+            created.append(new)
+        baks = [f for f in os.listdir(folder) if f.startswith(base + ".bak.")]
+        assert len(baks) == 2
+        # The survivors must be the last two made, not any two: a mutant that drops the newest one fails here.
+        assert sorted(baks) == sorted(created[-2:])
+    finally:
+        store.close()
+
+
+def test_parent_folder_drops_a_tier_folder_only_at_the_second_level():
+    """Only the first folder under the tier is dropped as the tier's own folder: a tier-named folder
+    deeper down is part of the show's path, so it stays. Why: a dropped leaf folder would merge two
+    different shows' parents, and a kept first-level one would put a tier name into the parent."""
+    assert ls.parent_folder_of("HighPriority/HighPriority/Show/ep01.srt") == "Show"
+    assert ls.parent_folder_of("HighPriority/Show/HighPriority/ep01.srt") == "Show/HighPriority"
+    assert ls.parent_folder_of("LowPriority/Show/ep01.srt") == "Show"
+    assert ls.parent_folder_of("LowPriority/ep01.srt") == ""
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_library_file_name_carries_a_16_hex_key_that_never_changes(language):
+    """The key is the first 16 hex digits of the data folder's hash: a shorter or longer key would
+    name a different file after an update, and the update would open a new, empty library."""
+    import re
+    data_dir, _u = roots(language)
+    name = os.path.basename(ls.library_db_path(language, data_dir))
+    assert re.fullmatch(rf"library_{language}_[0-9a-f]{{16}}\.db", name), name
+    if sys.platform == "win32":
+        # Pin the value, not just the shape: a fixed Windows folder names this literal file in every version, so
+        # a changed key (its length, its hash, the path's normal form) fails here.
+        fixed = os.path.basename(ls.library_db_path(language, r"C:\Users\x\data"))
+        assert fixed == f"library_{language}_163d9e9a2cf7a158.db", fixed
+
+
+def test_the_os_write_lock_gets_only_what_is_left_of_the_callers_timeout(tmp_path, monkeypatch):
+    # the caller's 1.0 s covers the thread lock's wait AND the OS lock's: 0.4 s went to the thread
+    # lock (fake clock), so the OS lock may wait 0.6 s, never the full 1.0 s
+    wl = ls._WriteLock(str(tmp_path / "x.db"))
+    seen = []
+    monkeypatch.setattr(wl.file, "acquire", lambda t, r: seen.append(t) or True)
+    # one scripted source for both clocks, so the rule holds whichever clock the code reads; the last
+    # value repeats, so an extra clock call cannot exhaust it
+    values = [100.0, 100.4]
+
+    def scripted_clock():
+        return values.pop(0) if len(values) > 1 else values[0]
+
+    class _ScriptedTime:
+        perf_counter = staticmethod(scripted_clock)
+        monotonic = staticmethod(scripted_clock)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    with monkeypatch.context() as m:
+        m.setattr(ls, "time", _ScriptedTime())                   # the store module's clock only
+        wl.acquire(1.0)
+    wl.release()
+    assert len(seen) == 1 and abs(seen[0] - 0.6) < 1e-9
+
+
+def test_a_busy_os_write_lock_raises_store_busy_and_frees_the_thread_lock(tmp_path, monkeypatch):
+    # a failed OS lock must not leave this thread's RLock owned: another thread can still take it
+    wl = ls._WriteLock(str(tmp_path / "x.db"))
+    monkeypatch.setattr(wl.file, "acquire", lambda t, r: False)
+    with pytest.raises(ls.StoreBusy):
+        wl.acquire(0.1)
+    assert not wl.rlock._is_owned()
+    assert wl.depth == 0
+    got = []
+
+    def take():
+        got.append(wl.rlock.acquire(timeout=0.5))
+        if got[0]:
+            wl.rlock.release()
+
+    thread = threading.Thread(target=take)
+    thread.start()
+    thread.join(5)
+    assert got == [True]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_malformed_error_inside_a_write_marks_the_store_damaged(language):
+    """The rule: a 'malformed' database error raised inside a write sets the damaged marker, so the next write is
+    refused (StoreReadOnly) until Repair. Without the marker a damaged file would keep taking writes (I2)."""
+    store = migrated(language)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            with store._writing():
+                raise sqlite3.DatabaseError("database disk image is malformed")
+        assert os.path.exists(ls.damaged_marker(store.db_path)), "a malformed write leaves the damaged marker"
+        with pytest.raises(ls.StoreReadOnly):
+            with store._writing():
+                pass
+    finally:
+        if os.path.exists(ls.damaged_marker(store.db_path)):
+            os.remove(ls.damaged_marker(store.db_path))
+        store.close()

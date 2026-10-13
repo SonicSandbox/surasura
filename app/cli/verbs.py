@@ -112,6 +112,8 @@ def _module_present(name):
 def status_args(parser):
     add_language(parser)
     parser.add_argument("--anki", action="store_true", help="also ask whether Anki is reachable (~1 s when it's closed)")
+    parser.add_argument("--words", action="store_true",
+                        help="Connect's preview: each episode's words it didn't make cards for, with why")
 
 
 def status(args):
@@ -135,7 +137,7 @@ def status(args):
     if args.anki:
         from app import anki_connect
         anki["reachable"] = bool(anki_connect.probe(anki_connect.address(loaded)).get("ok"))
-    return {
+    out = {
         "language": lang,
         "journey_current": analyzer.journey_check(argv, lang),
         "last_generate": last_generate,
@@ -148,6 +150,11 @@ def status(args):
         "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
+    if loaded.get("connect_enabled"):           # P2.5: Connect's record (read-only; no ledger → Up to date)
+        from app.connect import status as connect_status
+        record = connect_status.read([lang], words=getattr(args, "words", False))
+        out["connect"] = dict(record["languages"][lang], running=record["running"])
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -419,6 +426,31 @@ def known(args):
 
 
 # --------------------------------------------------------------------------- #
+# Connect's Anki session, for the verbs that read or write Anki (P2.3 row 2.3.5)
+# --------------------------------------------------------------------------- #
+def _session(loaded):
+    """`app/connect/anki_session` while Connect's preview is on (✅ Q4-1, Q4-4: the session's one sync before Connect
+    reads what you studied or writes Anki), else None — off, nothing of Connect's is imported and every request is as
+    before; never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
+    if not (loaded or {}).get("connect_enabled") or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return None
+    from app.connect import anki_session
+    return anki_session
+
+
+def _sync_pending(loaded, due):
+    """A writer verb left the rule's S3 sync pending (`due`, its wall time): kick Connect, whose run sends it before it
+    exits (`connect` → `anki_session.settle`), so this verb never waits a minute for it."""
+    if due is None:
+        return
+    try:
+        from app.connect import kick
+        kick.kick(loaded)
+    except Exception:                   # Connect not started: the next Surasura program that looks sends it
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # known-sync
 # --------------------------------------------------------------------------- #
 def known_sync_args(parser):
@@ -429,7 +461,8 @@ def known_sync_args(parser):
 
 def known_sync(args):
     """New known words from Anki into KnownWord.json (append-only), and the decks' new cards into the backlog — the
-    window's automatic sync, with its gates (`anki_sync.may_sync`), under the `known-words-<lang>` lock."""
+    window's automatic sync, with its gates (`anki_sync.may_sync`), under the `known-words-<lang>` lock. Connect's
+    preview on: its session's sync first, so the phone's reviews are in before what you studied is read (P2.3)."""
     from app import anki_connect, anki_sync
     loaded = settings()
     lang = language(args, loaded)
@@ -445,6 +478,9 @@ def known_sync(args):
     decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
     fields = list((loaded.get("anki_sync_fields") or {}).get(lang) or [])
     url = anki_connect.address(loaded)
+    session = _session(loaded)
+    if session is not None:
+        session.begin(url, loaded)      # S1, eagerly (Q4-1's fresh state): before the known-words lock is taken
     with contract.take_lock(anki_sync.known_lock_name(lang), "surasura-cli known-sync", wait=args.wait):
         try:
             anki_sync._read_known_file(lang)
@@ -461,8 +497,12 @@ def known_sync(args):
             raise CliError("failed", result.error)
         contract.emit_progress("reading Anki's new cards", 1, 2)
         anki_sync.sync_backlog(lang, url, decks, fields)
-    return {"language": lang, "added": result.added, "total": result.total_known,
-            "backlog": anki_sync.count_backlog(lang), "last_sync": anki_sync.load_state(lang).get("last_sync")}
+    out = {"language": lang, "added": result.added, "total": result.total_known,
+           "backlog": anki_sync.count_backlog(lang), "last_sync": anki_sync.load_state(lang).get("last_sync")}
+    signal = anki_sync.read_known_signal(lang, url, decks, fields, loaded)       # P2.4: only with Connect on
+    if signal is not None:
+        out["known_from_anki"] = {"marked": len(signal.get("marked") or ()), "offered": signal.get("offered", 0)}
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -619,30 +659,60 @@ def junban(args):
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
+    job = numbering_job(junban_settings, lang)
     if args.dry_run:
-        return _junban_dry_run(lang, junban_settings, reposition)
-    return _junban_auto(args, lang, junban_settings, auto)
+        return _junban_dry_run(lang, junban_settings, reposition, job)[0]
+    return _junban_auto(args, lang, junban_settings, auto, job)[0]
 
 
-def _junban_dry_run(lang, junban_settings, reposition):
+def numbering_job(junban_settings, lang):
+    """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
+    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
+    on for this language (`replan_preview.is_on`: its switch in 順, Junban on and present, the language it was turned
+    on in — E3.1's rule for `auto.reorder`); None — 2.5's dense block — otherwise, so the command line and the window
+    never renumber each other's deck."""
+    from app import replan_preview
+    if not replan_preview.is_on(junban_settings, lang):
+        return None
+    from modules.junban import spaced
+    return spaced.Job(automatic=True)
+
+
+def _numbering(stats, job):
+    """How the run numbered its cards, for `resort`'s answer: `dense` (2.5's block), `full` (a deck spaced out at
+    once) or `delta` (only what changed)."""
+    if job is None:
+        return "dense"
+    return str(((stats or {}).get("numbering") or {}).get("kind") or "dense").lower()
+
+
+def _junban_dry_run(lang, junban_settings, reposition, job=None, unattended=False):
     from app import anki_connect
     if not anki_connect.probe(reposition._url(junban_settings)).get("ok"):
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     try:
-        writes, stats = reposition.dry_run(junban_settings)
+        writes, stats = reposition.dry_run(junban_settings, job=job, unattended=unattended)
     except reposition.AnkiError as e:
         raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
     if stats.get("problems"):
         raise CliError("needs-you", stats["problems"][0], ask=stats["problems"][0])
-    return {"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
-            "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}
+    return ({"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
+             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}, stats)
 
 
-def _junban_auto(args, lang, junban_settings, auto):
+def _reviewing(report):
+    """Did Junban or Backfill stop because you are reviewing — asked again inside the writer's hold, or by the writer
+    lock after a wait (`anki_connect.REVIEWING`)? Then it's `anki-busy`, never another program's `busy`."""
+    from app import anki_connect
+    return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
+
+
+def _junban_auto(args, lang, junban_settings, auto, job=None):
+    """The automatic reorder, headless -> (its answer, the run's stats or {})."""
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False)
     if why is not None:
-        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}
+        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}, {}
     # The 順 window holds `junban-window` while open: looked at (never held, so a window opened meanwhile still takes
     # it), and waited for up to --wait.
     deadline = time.monotonic() + max(0.0, args.wait or 0.0)
@@ -653,30 +723,218 @@ def _junban_auto(args, lang, junban_settings, auto):
                                       "it's closed.")
         time.sleep(locks.POLL)
     argv = run_args.analyzer_args(junban_settings, lang, headless=True)
-    done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True)
+    # Connect's preview (P1.4 row 1.4.2): the run keeps a snapshot of its own, never the window's Restore point.
+    from modules.junban import connect, reposition, undo
+    run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
+    session, url = _session(junban_settings), reposition._url(junban_settings)
+    if session is not None:
+        session.begin(url, junban_settings)     # S1 before the run reads Anki (P2.3): the phone's reviews come first
+    done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
+                        run_id=run_id, job=job)
     outcome, report = done["outcome"], done.get("report") or {}
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
                        ask="choose a deck in 順")
     if outcome == "anki-closed":
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
-    if outcome == "reviewing":
+    if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
         raise CliError("anki-busy", "You're reviewing in Anki. Surasura reorders once you've finished.")
     if outcome == "busy":
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
     if outcome == "list-stale":
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
-                "skipped": "the list is out of date: Generate first"}
+                "skipped": "the list is out of date: Generate first"}, {}
     if outcome in ("refused", "failed"):
         problem = (report.get("problems") or [done.get("error") or "it could not finish"])[0]
         raise CliError("failed", f"Junban did not make any changes: {problem}")
     stats = report.get("stats") or {}
     written = report.get("written") or []
     snapshot = report.get("snapshot")
-    return {"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
-            "not_on_list": stats.get("unmatched", 0),
-            "undo": os.path.basename(snapshot) if snapshot and written else None}
+    if session is not None and written:
+        # S3's clock: a spaced run (a job) told the rule itself; a dense one is read here, by the re-plan's own test
+        from app import anki_sync_rule
+        due = (anki_sync_rule.due_at(junban_settings) if job is not None else session.after_write(
+            junban_settings, session.front_changed(report, session.per_day(url, junban_settings.get("junban_deck")))))
+        _sync_pending(junban_settings, due)
+    if run_id is not None:
+        undo_id = run_id if snapshot else None
+    else:
+        undo_id = os.path.basename(snapshot) if snapshot and written else None
+    return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
+             "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+
+
+# --------------------------------------------------------------------------- #
+# resort (P2.2; P0.3 03-verbs: "Junban pins on spaced numbers"; HC-N7 as amended)
+# --------------------------------------------------------------------------- #
+def resort_args(parser):
+    add_language(parser)
+    add_wait(parser)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="the re-sort the 順 window would preview, numbered as the run would; writes nothing")
+
+
+def resort(args):
+    """Re-sort Anki's new cards now: one Junban run over its one deck — the cards of the items you chose *Study its
+    cards first* for go first (3.0; none in 2.x, ✅ E1.3-3), then Junban's order — positions only, numbered by the one
+    rule every writer follows (`numbering_job`). Un-pinning is the store's `unpin`, never this (HC-N7 as amended:
+    nothing pins or un-pins by itself). The automatic reorder's body (`junban --auto`): every guard, and its own run
+    snapshot while the Connect preview is on. 2.x: only while that preview is on (P0.3 04 §5)."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    idle = {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "pinned_first": 0, "numbering": None,
+            "undo": None}
+    if loaded.get("connect_enabled") is not True:
+        return dict(idle, skipped="the Connect preview is off")
+    try:
+        from modules.junban import auto, reposition
+    except ImportError:
+        return dict(idle, skipped="junban absent")
+    junban_settings = _junban_settings(loaded, lang)
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return dict(idle, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
+    job = numbering_job(junban_settings, lang)
+    if args.dry_run:
+        # What the run would do, no more: its guards and its list check first, then planned as that unattended run
+        why = auto.blocked(junban_settings, window=False)
+        if why is not None:
+            return dict(idle, skipped=why)
+        from app import analyzer, run_args
+        argv = run_args.analyzer_args(junban_settings, lang, headless=True)
+        current = analyzer.journey_is_current(argv, lang)
+        if current is False or (current is None and reposition.list_is_stale(
+                lang, reposition.order_csv_path(junban_settings))):
+            return dict(idle, skipped="the list is out of date: Generate first")
+        answer, stats = _junban_dry_run(lang, junban_settings, reposition, job, unattended=True)
+    else:
+        answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
+    if answer.get("skipped"):
+        return dict(idle, **answer)
+    answer.update(pinned_first=int((stats or {}).get("pinned") or 0), numbering=_numbering(stats, job))
+    return answer
+
+
+# --------------------------------------------------------------------------- #
+# backfill (P1.4 row 1.4.7)
+# --------------------------------------------------------------------------- #
+def backfill_args(parser):
+    add_language(parser)
+    add_wait(parser)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--tag", help="the notes carrying this tag (a Connect job's: surasura::connect::<job>)")
+    which.add_argument("--notes", help="note ids, comma-separated")
+    parser.add_argument("--dry-run", action="store_true", help="what it would fill; writes nothing")
+
+
+def _note_ids(text):
+    ids = []
+    for part in str(text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise CliError("usage", f"--notes takes note ids, comma-separated: {part!r} isn't one.")
+        ids.append(int(part))
+    if not ids:
+        raise CliError("usage", "--notes names no note.")
+    return ids
+
+
+def _job_source(tag, lang):
+    """`(source text, note type, field)` for a Connect job's notes (K40), read from the job's own run folder: the video
+    its run file names (the show is its folder, the episode its name) and the source field Anki Miner's settings export
+    maps — or None when the tag is no job's, or the folder doesn't say."""
+    from app.connect import fields, runfile
+    if not str(tag or "").lower().startswith(runfile.TAG_PREFIX):
+        return None
+    job = tag[len(runfile.TAG_PREFIX):]
+    if not job or not all(ch.isalnum() or ch in "-_" for ch in job):
+        return None
+    run_dir = os.path.join(_connect_folder(), "runs", job)
+    try:
+        with open(os.path.join(run_dir, "run-1.json"), "r", encoding="utf-8") as f:
+            video = (json.load(f).get("episodes") or [{}])[0].get("video_file")
+        with open(os.path.join(run_dir, "settings-export.json"), "r", encoding="utf-8") as f:
+            export = json.load(f)
+        mapping = fields.from_export(export, lang)
+    except (OSError, ValueError, AttributeError, IndexError, fields.NeedsYou):
+        return None
+    from modules.junban import backfill as filling
+    text = filling.source_text(video)
+    return (text, mapping.note_type, mapping.source) if text and mapping.source else None
+
+
+def backfill(args):
+    """Backfill for the notes a Connect job made (`--tag`) or named ones (`--notes`): new cards only, empty fields
+    only, Backfill's one deck, the source field (K40); its own undo snapshot. Only while the Connect preview is on;
+    never while the Backfill window is open, on "All decks" or while you review; each note re-read before it's written
+    (§7.2). Junban not installed: `skipped` (RD-S10)."""
+    loaded = settings()
+    lang = language(args, loaded)
+    require_set_up(lang)
+    out = {"language": lang, "notes": 0, "filled": 0, "undo": None}
+    try:
+        from modules.junban import backfill as filling, connect, undo
+    except ImportError:
+        return dict(out, skipped="backfill absent")
+    if not connect.preview_on(loaded):
+        return dict(out, skipped="the Connect preview is off")
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):         # the test suites, a developer's run: Anki is never reached
+        return dict(out, skipped="Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)")
+    ids = _note_ids(args.notes) if args.notes is not None else None
+    fill_settings = _junban_settings(loaded, lang)
+    if not filling._deck(fill_settings):
+        raise CliError("needs-you", "Backfill runs for one deck only: choose one in the Backfill window.",
+                       ask="choose a deck in Backfill")
+    from app import anki_connect, locks
+    deadline = time.monotonic() + max(0.0, args.wait or 0.0)
+    while locks.in_use("backfill-window"):
+        if time.monotonic() >= deadline:
+            raise contract.busy_error("backfill-window", locks.read_holder("backfill-window"),
+                                      "The Backfill window is open: Surasura leaves the fill to you there. Try again "
+                                      "once it's closed.")
+        time.sleep(locks.POLL)
+    url = filling._url(fill_settings)
+    if not anki_connect.probe(url).get("ok"):
+        raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
+    anki_session = None if args.dry_run else _session(fill_settings)
+    if anki_session is not None:
+        anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
+    try:
+        if anki_connect.invoke("guiReviewActive", url, timeout=5) is True:
+            raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
+        if ids is None:
+            ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')
+    except anki_connect.AnkiError as e:
+        raise CliError("anki-closed", f"Anki stopped answering: {e}") from None
+    out["notes"] = len(ids)
+    if not ids:
+        return dict(out, skipped={})
+    source = _job_source(args.tag, lang) if args.tag else None
+    run_id = None if args.dry_run else undo.new_run_id("backfill", lang)
+    session = filling.Session(fill_settings)
+    try:
+        report = filling.run_named(fill_settings, session, ids, source=source, dry_run=args.dry_run, run_id=run_id,
+                                   wait=args.wait or 0.0, verb="surasura-cli backfill")
+    finally:
+        session.close()
+    if report.get("reviewing") or (report.get("busy") and _reviewing(report)):
+        raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
+    if report.get("busy"):
+        raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
+                                  (report.get("problems") or ["Another program is writing to Anki."])[0])
+    if not report.get("ok"):
+        problem = (report.get("problems") or ["it could not finish"])[0]
+        raise CliError("failed", f"Nothing was filled: {problem}")
+    if args.dry_run:
+        return dict(out, filled=report.get("planned", 0), skipped=report.get("skipped") or {}, dry_run=True)
+    if anki_session is not None and report.get("filled"):
+        # The session's last write; fields never change tomorrow's cards (an S3 already pending still kicks Connect)
+        _sync_pending(fill_settings, anki_session.after_write(fill_settings, False))
+    return dict(out, filled=len(report.get("filled") or []), skipped=report.get("skipped") or {},
+                undo=report.get("undo"))
 
 
 
@@ -688,7 +946,8 @@ MINE_WORDS = ("list", "unknown", "i1")
 # The caller's kinds of failure (app/connect/anki_miner.py) -> the contract's codes (02 §3)
 _MINER_CODES = {"busy": "anki-miner-busy", "writer-busy": "busy", "reviewing": "anki-busy",
                 "anki-closed": "anki-closed", "quarantined": "needs-you",
-                "unknown-version": "needs-you", "needs-you": "needs-you", "setup": "needs-you",
+                "unknown-version": "needs-you", "too-old": "needs-you", "needs-you": "needs-you",
+                "setup": "needs-you",
                 "refused": "failed", "crashed": "failed", "timeout": "failed", "failed": "failed",
                 "unreadable": "bad-data", "cancelled": "failed", "absent": "failed"}
 
@@ -756,6 +1015,32 @@ def _job_id(args):
     return job
 
 
+def _level_job(job, lang):
+    """Connect's ledger job a `--job` names (its id), when it is a level job of this language (P2.2) -> its row; else
+    None. Never creates the ledger."""
+    if not job or not str(job).isdigit():
+        return None
+    import sqlite3
+    from app.connect import ledger
+    if not os.path.exists(ledger.path()):
+        return None
+    try:            # read only: a pick never writes (nor upgrades) Connect's ledger
+        conn = sqlite3.connect(f"file:{ledger.path()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            cur = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job),))
+            row = cur.fetchone()
+            row = None if row is None else dict(zip([d[0] for d in cur.description], row))
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        # A job named by its ledger id that can't be read is never mined as the whole list: refused
+        raise CliError("failed", f"Connect's ledger can't be read for job {job}: {e}") from None
+    if row is None or row.get("kind") != ledger.LEVEL or row.get("language") != lang:
+        return None
+    row["words"] = ledger._words(row.get("words"))
+    return row
+
+
 def _connect_folder():
     from app.path_utils import get_local_data_path
     return os.path.join(get_local_data_path(), "connect")
@@ -771,11 +1056,7 @@ def _anki_miner_setup(loaded, lang, run_dir):
     name = loaded.get("connect_anki_miner_profile") or "Surasura"
     try:
         info = anki_miner.version(miner)
-        profile = anki_miner.profile_id(anki_miner.profiles(miner), name)
-        if profile is None:
-            raise anki_miner.AnkiMinerError(
-                "needs-you", f'Anki Miner has no profile called "{name}". Make it once in Anki Miner (a copy of your '
-                "profile, its whitelist on), as Surasura's Connections page shows.")
+        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
         os.makedirs(run_dir, exist_ok=True)
         mapping = fields.from_export(
             anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)
@@ -825,6 +1106,11 @@ def pick(args):
         raise CliError("bad-data", f"There's no video at {args.video}.")
     job = _job_id(args)
     listed = _listed(args, lang)
+    level_job = _level_job(args.job, lang)
+    if level_job is not None:
+        # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
+        from app.connect import level
+        mode, listed = "list", (level.restrict(listed, level_job) if listed is not None else None)
     if mode == "list" and listed is None:
         raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
 
@@ -854,6 +1140,9 @@ def pick(args):
 
     contract.emit_progress("choosing the words and their lines", 2, 3)
     keys, source = picking.carded(lang, loaded, [setup[2].deck] if setup else ())
+    # Connect's runner (P2.4): every word it has made a card for, whatever became of the card (G1.3-4: a card you
+    # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
+    keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
     view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
@@ -864,14 +1153,17 @@ def pick(args):
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup
-        out["anki_miner"] = {"app": info.get("app"), "features": info.get("features") or []}
+        named = info.get("features") or []
+        out["anki_miner"] = {"app": info.get("app"), "features": named, "profile": profile}
+        for word in chosen["words"]:
+            word["sent"] = runfile.entries(word, named)         # the names the run file carries (Z-2: one a word)
         if not chosen["words"]:
             out["skipped"] = "no words to make cards from"
         else:
-            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"]),
+            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"], named),
                                       tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
-                                 run_config=runfile.config(mapping, info.get("app"), info.get("features")))
+                                 run_config=runfile.config(mapping, info.get("app"), named))
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

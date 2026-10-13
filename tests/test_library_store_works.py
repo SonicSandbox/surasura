@@ -969,6 +969,43 @@ def test_cards_of_and_made_words(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_card_made_again_after_its_notes_went_is_recorded_on_its_emptied_row(language):
+    """IK-6 (L3.3 intent review, §12.10; G1.3-4): `notes_gone` empties a made word's note list but keeps its row, so the
+    word is never made again automatically. A card the learner asks for again must then be recorded: `record_made` adds
+    its notes to the emptied row (an odd entry `notes_gone` kept stays) — while a row still holding a live note keeps
+    its first record, and a record with no notes changes nothing. Why: without it the remade card is never in Anki for
+    the store (`cards_of`, `made`), and the next deletion of it is never seen."""
+    store = migrated(language)
+    try:
+        a = store.ids("now")[0]
+        w1, w2, w3 = names(language)[1:4]
+        assert store.record_made(a, [(w1, [601]), (w2, [602, 603]), (w3, [604])], "b1") == [w1, w2, w3]
+        with store._writing():
+            store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                               (json.dumps([604, None]), a, w3))
+        assert store.notes_gone([601, 602, 604]) == [601, 602, 604]
+        assert store.made(a) == {w1: [], w2: [603], w3: [None]}, "each made word keeps its row"
+        v0 = store.versions()
+
+        assert store.record_made(a, [(w1, [611]), (w2, [612]), (w3, [614])], "b2") == [w1, w3]
+        assert store.made(a) == {w1: [611], w2: [603], w3: [None, 614]}, \
+            "an emptied row takes the remade card's notes; a row with a live note keeps its first record"
+        assert store.versions()["state_version"] == v0["state_version"] + 1
+        assert {603, 611, 614} <= set(store.cards_of([a])[a]), "the remade cards are in Anki for the store again"
+        batch = store.conn.execute("SELECT batch FROM made_words WHERE item_id = ? AND word = ?", (a, w1)).fetchone()
+        assert batch == ("b2",), "the row names the batch that made its card now"
+
+        v1 = store.versions()
+        assert store.record_made(a, [(w1, [621]), (w2, [622])], "b3") == [], "rows with live notes: first record kept"
+        assert store.notes_gone([611]) == [611]
+        assert store.record_made(a, [(w1, [])], "b4") == [], "no notes: nothing to add to the emptied row"
+        assert store.made(a)[w1] == []
+        assert store.versions()["state_version"] == v1["state_version"] + 1, "only notes_gone wrote"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_each_cards_line_is_kept_by_its_address_and_fingerprint(language):
     """D1 (Sonic, 2026-10-07: 3.1's journey plays a card's line): per note Connect made from a line — its item, the
     line's start and end and a fingerprint of its text, never the text; empty until Connect fills it; the same words

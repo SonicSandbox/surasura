@@ -12,6 +12,7 @@ What a wrong answer would cost, in order:
 Across processes the holder is a real child Python (`subprocess`), never a mock: the claim is about
 the OS lock, and only a second process can prove it.
 """
+import gc
 import os
 import statistics
 import subprocess
@@ -288,3 +289,25 @@ def test_the_record_is_written_through_a_readers_brief_sharing_violation(monkeyp
     monkeypatch.setattr(locks.os, "replace", busy_replace)
     with locks.take("anki-writer", "Backfill"):
         assert locks.read_holder("anki-writer")["verb"] == "Backfill"
+
+
+def test_an_interrupted_take_lets_the_os_lock_go_even_while_its_traceback_is_alive(monkeypatch):
+    # The interrupt's traceback keeps the failed take's frame and its open lock file alive. The rule: the
+    # take must release the OS lock itself, not wait for the file to be garbage-collected.
+    def interrupted(path, record):
+        raise KeyboardInterrupt
+    caught = None
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(locks, "_write_holder", interrupted)
+            # The local binding keeps the traceback, and the failed take's frame, alive until the function returns.
+            with pytest.raises(KeyboardInterrupt) as caught:
+                locks.take("anki-writer", "順 reorder")
+        with locks.take("anki-writer", "順 reorder"):            # must not raise Busy: the lock is free
+            pass
+        assert caught.value is not None                          # keeps the traceback alive up to here
+    finally:
+        # If the test fails with the lock still held by the traceback's frame, drop the traceback and collect it,
+        # so the OS lock does not leak into the rest of the session.
+        caught = None
+        gc.collect()

@@ -211,6 +211,26 @@ def _junban_settings():
     return settings
 
 
+def test_a_missing_item_keeps_the_run_current_for_the_preview(lib):
+    """The 3.0 line (E2.2's K2): an item whose file is gone from the disk keeps counting until the user decides, so
+    Generate and the journey checks sign the library with it (`resolve_found_files(..., missing=True)`). The preview
+    signs it the same way — else, after every Generate, it read the run as stale and asked for a Generate again."""
+    root, store = lib
+    from app import plan_rules, settings_manager
+    from app.path_utils import get_data_path, get_user_file, get_user_files_path
+    entry = store.schedule()[library_store.TIERS["goal"][0]][0]
+    os.remove(os.path.join(get_data_path("ja"), entry["physical_path"]))
+    store.close()
+    _generate(root)                              # the Generate keeps the missing item (its cached words)
+    store = library_store.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
+    try:
+        host, _lines = _host()
+        parts = host._parts(dict(settings_manager.load_settings()), store)
+    finally:
+        store.close()
+    assert plan_rules.signature_digest(parts) == analyzer.read_run_stamp(get_user_file("results"))
+
+
 def test_after_the_job_the_next_generate_reorders_nothing(lib):
     """The parity a learner feels (05 §1 through Junban): the fast path left Anki where the next full Generate's own
     list puts it — the after-Generate re-order, from the new plan, writes no card."""
@@ -385,7 +405,9 @@ def test_a_new_file_alone_starts_nothing_but_a_move_with_it_asks_for_a_generate(
         dash._job("catch-up")                    # placed: nothing owed
         asked.clear()
         from app.path_utils import get_data_path
-        path = os.path.join(get_data_path("ja"), "HighPriority", "new_episode.txt")
+        # 6+ Months, not NOW: on the 3.0 line Current's tiers follow the Soon line (L2.2 05 §5.1), so a file placed at
+        # NOW's top pushes NOW's last row into Soon — a move of a planned file. 6+ Months' top moves no row's tier.
+        path = os.path.join(get_data_path("ja"), "GoalContent", "new_episode.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write("新しい話が始まった。今日は学校で友達に会った。\n")
         library_store.sync_for_window(store)

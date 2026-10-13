@@ -366,9 +366,10 @@ class Host:
         return self._engine, ids
 
     def _parts(self, settings, store):
-        """The run signature's parts for the library as it stands (stats every file: on this worker only)."""
+        """The run signature's parts for the library as it stands (stats every file: on this worker only). A missing
+        item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`)."""
         from app import analyzer, run_args
-        found = analyzer.resolve_found_files(self.language, verbose=False, schedule=store.schedule())
+        found = analyzer.resolve_found_files(self.language, verbose=False, schedule=store.schedule(), missing=True)
         args = analyzer.parse_analysis_args(run_args.analyzer_args(settings, self.language)[1:])
         return analyzer.run_signature_parts(self.language, found, args)
 

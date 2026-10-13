@@ -135,8 +135,8 @@ def _spell_table(rows):
 def read_header(path):
     """The plan file's header (its first line), or None when there is no readable plan of this format. The whole
     stream is read through, so a damaged file (the gzip CRC, a cut-off end) is None too: what the analyzer asks
-    before it reuses a run with the preview on (E1.1 01 §7, E1.2-1), cheaper than `load` (nothing past the first
-    line is decoded)."""
+    before it reuses a run (E1.1 01 §7, E1.2-1; 2.x only with the preview on), cheaper than `load` (nothing past the
+    first line is decoded)."""
     try:
         with open(path, "rb") as f:
             data = f.read()

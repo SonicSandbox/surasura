@@ -187,7 +187,7 @@ def test_closing_waits_for_a_reorder_then_goes_on():
 
 def test_a_dashboard_save_never_writes_the_previews_keys_into_a_file_without_them():
     """Off = 2.5's settings.json too: the dashboard's save carries the switch, its language and the sync minute only
-    as the file holds them (JUNBAN_AS_WRITTEN, `as_written`) — never a default into a 2.5 user's file."""
+    as the file holds them (3.0: the dashboard saves only its own keys) — never a default into a 2.5 user's file."""
     from tests.test_settings_signatures import _dashboard_saved, _write
     _write({"target_language": "ja"})
     saved = _dashboard_saved()

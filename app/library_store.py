@@ -3653,8 +3653,8 @@ class Store:
                 if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_words'").fetchone():
                     for item_id, notes in self.conn.execute(f"SELECT item_id, note_ids FROM made_words WHERE item_id "
                                                             f"IN ({marks})", chunk):
-                        try:
-                            out[item_id].update(int(n) for n in json.loads(notes))
+                        try:            # entry by entry: an odd entry `notes_gone` kept hides no note (IK-6)
+                            out[item_id].update(n for n in map(_note_id, json.loads(notes)) if n is not None)
                         except (ValueError, TypeError):
                             continue
                 if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'made_lines'").fetchone():

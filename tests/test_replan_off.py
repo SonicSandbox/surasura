@@ -105,7 +105,7 @@ def test_the_windows_up_to_date_check_asks_for_the_plan_too(tmp_path, monkeypatc
     env = cases.child_env(root)
     for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(name, env[name])
-    cases.build(root, case)                                     # the switch on in settings.json
+    cases.build(root, case, preview=True)                       # the switch on in settings.json
     from app import run_args, settings_manager, token_index
     argv = run_args.analyzer_args(settings_manager.load_settings(), "ja", headless=True)
     cases.generate(root, case, argv=argv[1:])

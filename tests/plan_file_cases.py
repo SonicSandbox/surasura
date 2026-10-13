@@ -118,12 +118,13 @@ SHIPPED = {"ja": ["Blacklist.txt", "IgnoreList.txt", "frequency_list_ja_global50
            "zh": ["Blacklist.txt", "IgnoreList.txt"]}
 
 
-def build(root, case, order=None, preview=True):
+def build(root, case, order=None, preview=False):
     """A case's library under `root`, every file's mtime pinned. `order`: [(tier, name)] in place of the case's own
     (the same files; RP-2's other orders). `preview`: the fast re-plan's preview switched on in the root's
-    settings.json, for the case's language (E3.1: the switch is its language's); False leaves no settings.json (2.5's
-    run). On the 3.0 line every Generate writes the plan file, either way (E1.2-1: "every Generate from 3.0"); a test
-    that needs the preview itself asks `needs_junban()`."""
+    settings.json, for the case's language (E3.1: the switch is its language's); False (the 3.0 line's default)
+    leaves no settings.json, so a Generate runs on the defaults. On the 3.0 line every Generate writes the plan file
+    either way (E1.2-1: "every Generate from 3.0"); 2.x needs the switch on for it. A test that needs the preview
+    itself asks `needs_junban()`."""
     language, library, shipped, _args = ALL_CASES[case]
     for sub in ("results", "appdata", "localappdata"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)

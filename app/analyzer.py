@@ -3646,8 +3646,8 @@ _PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never 
 
 
 def _plan_is_this_runs(run_signature, results_dir=None):
-    """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question while the
-    fast re-plan's preview is on (E1.2-1): a plan switched on, lost or damaged gets a full run, never the reuse."""
+    """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question (E1.2-1;
+    on the 3.0 line always, 2.x while the fast re-plan's preview is on): a plan lost or damaged gets a full run."""
     from app import plan_engine
     path = os.path.join(results_dir or RESULTS_DIR, PLAN_FILE)
     try:

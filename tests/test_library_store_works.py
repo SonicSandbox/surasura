@@ -988,9 +988,10 @@ def test_a_card_made_again_after_its_notes_went_is_recorded_on_its_emptied_row(l
         v0 = store.versions()
 
         assert store.record_made(a, [(w1, [611]), (w2, [612]), (w3, [614])], "b2") == [w1, w3]
-        assert store.made(a) == {w1: [611], w2: [603], w3: [None, 614]},             "an emptied row takes the remade card's notes; a row with a live note keeps its first record"
+        assert store.made(a) == {w1: [611], w2: [603], w3: [None, 614]}, \
+            "an emptied row takes the remade card's notes; a row with a live note keeps its first record"
         assert store.versions()["state_version"] == v0["state_version"] + 1
-        assert {603, 611} <= set(store.cards_of([a])[a]), "the remade card is in Anki for the store again"
+        assert {603, 611, 614} <= set(store.cards_of([a])[a]), "the remade cards are in Anki for the store again"
         batch = store.conn.execute("SELECT batch FROM made_words WHERE item_id = ? AND word = ?", (a, w1)).fetchone()
         assert batch == ("b2",), "the row names the batch that made its card now"
 

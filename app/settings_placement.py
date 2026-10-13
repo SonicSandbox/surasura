@@ -70,8 +70,8 @@ PLACED = {
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
     "junban_tag_markers": "neither", "junban_unlisted": "neither",
     "junban_replan_preview": "neither", "junban_replan_language": "neither", "junban_replan_deck": "neither",
-                                            # the fast re-plan's preview (E1.1 04 §1): a run reads it for the plan file,
-                                            # which no output and no signature holds
+                                            # the fast re-plan's preview (E1.1 04 §1): 2.x's runs read it for the plan
+                                            # file (3.0 writes the plan always), which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.

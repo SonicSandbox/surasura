@@ -149,14 +149,18 @@ def _render_sig(lang="ja"):
 
 def _seed_generate(lang="ja"):
     """What a finished Generate leaves for the settings as they are now: the store's last run signature, the results
-    stamp and the three outputs journey_is_current looks for."""
-    from app import token_index
+    stamp, the three outputs journey_is_current looks for and the run's plan file (the 3.0 line: every Generate
+    writes one, and the up-to-date check asks for it, E1.2-1)."""
+    import gzip
+    from app import plan_engine, token_index
     signature = _run_sig(lang)
     results = os.path.join(_root(), "results")
     os.makedirs(results, exist_ok=True)
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json"):
         with open(os.path.join(results, name), "w", encoding="utf-8") as f:
             f.write("x")
+    with gzip.open(os.path.join(results, analyzer.PLAN_FILE), "wb") as f:
+        f.write((json.dumps({"format": plan_engine.FORMAT, "run_signature": signature}) + "\n").encode("utf-8"))
     analyzer._set_run_stamp(results, signature)
     store = token_index.open_store(lang)
     try:

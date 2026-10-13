@@ -156,6 +156,7 @@ def _merge_held(language, words, result):
     for entry in raise_:                    # in place: `data` holds these very entries (read here, never kept)
         entry["previousStatus"] = entry["knownStatus"]
         entry["knownStatus"] = "KNOWN"
+        entry[anki_sync.GRADUATED_MARK] = True      # a replacer keeps it known (anki_sync.kept_graduated)
     if data is None:
         data = {"exportDate": now, "source": SOURCE, "statistics": {}, "words": new}
     elif isinstance(data, list):

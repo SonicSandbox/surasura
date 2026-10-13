@@ -178,7 +178,8 @@ def test_unknown_and_learning_words_are_raised_known_ignored_and_known_ones_are_
     old = words[:len(ja_known["words"])]
     for status in ("LEARNING", "UNKNOWN"):
         raised = next(w for w in old if w["dictForm"] == before[status]["dictForm"])
-        assert raised == dict(before[status], knownStatus="KNOWN", previousStatus=status)   # every other field kept
+        assert raised == dict(before[status], knownStatus="KNOWN", previousStatus=status,   # every other field kept
+                              graduated=True)
     for status in ("KNOWN", "IGNORED"):
         assert next(w for w in old if w["dictForm"] == before[status]["dictForm"]) == before[status]
     untouched = [w for w in ja_known["words"] if w["dictForm"] not in (before["LEARNING"]["dictForm"],
@@ -424,6 +425,35 @@ def test_anki_replace_keeps_the_merged_words(ja_known, ja_words):
     assert [w["dictForm"] for w in words if w["source"] == "GraduatedList"] == [w for w in ja_words if w != "危険"]
     assert not any(w.get("source") not in ("AnkiConnect", "GraduatedList") for w in words)   # Migaku's gone
     assert result.total_known == 2 + 5
+
+
+def test_a_word_the_merge_raised_stays_known_through_anki_replace(ja_known):
+    # A LEARNING word (here Migaku's) the list graduated is raised in place: Replace rebuilds the file from Anki, which
+    # doesn't name it, and it stays known as the words the merge added do (D13), not dropped with Migaku's entries.
+    from tests.test_anki_sync import URL, FakeCollection
+    learning = next(w for w in ja_known["words"] if w["knownStatus"] == "LEARNING" and w.get("hasCard") != 1
+                    and not re.search(r"[-\s]", w["dictForm"]))
+    _write_list("ja", HEADER + _graduated("a.txt", [learning["dictForm"]]))
+    assert graduated_merge.merge("ja")["raised"] == 1
+    with mock.patch("urllib.request.urlopen", FakeCollection([{"word": "素晴らしい"}])):
+        result = anki_sync.replace("ja", URL, ["TheBank"], [])
+    assert result.error is None
+    kept = [w for w in _words("ja") if w["dictForm"] == learning["dictForm"]]
+    assert len(kept) == 1 and kept[0]["knownStatus"] == "KNOWN" and kept[0]["graduated"] is True
+
+
+def test_a_replacer_naming_a_graduated_word_as_learning_writes_it_known(tmp_path):
+    # A Jiten or Migaku import that names a graduated word as LEARNING writes it KNOWN (and marked); its other words
+    # are left as the import says.
+    path = tmp_path / "KnownWord.json"
+    path.write_text(json.dumps({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "source": "GraduatedList"}]},
+                               ensure_ascii=False), encoding="utf-8")
+    words = [{"dictForm": "冒険", "knownStatus": "LEARNING", "source": "Migaku"},
+             {"dictForm": "準備", "knownStatus": "LEARNING", "source": "Migaku"}]
+    assert anki_sync.kept_graduated(str(path), "ja", words) == []
+    assert words[0] == {"dictForm": "冒険", "knownStatus": "KNOWN", "previousStatus": "LEARNING", "source": "Migaku",
+                        "graduated": True}
+    assert words[1] == {"dictForm": "準備", "knownStatus": "LEARNING", "source": "Migaku"}
 
 
 def test_the_migaku_import_keeps_the_merged_words(ja_resources_dir, ja_words, tmp_path):

@@ -621,6 +621,26 @@ def _stub_setup(tmp_path, code):
     return str(stub)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Setup runs on Windows")
+def test_a_setup_past_its_time_is_ended_with_every_process_it_started(tmp_path, monkeypatch):
+    """Inno's setup.exe runs its installer as a child: past SETUP_TIMEOUT the whole tree is ended, so nothing of it
+    still writes into the program folder while the old program is put back (ending the parent alone left the child)."""
+    pid_file = str(tmp_path / "child.pid")
+    child = "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(120)"
+    parent = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}, {pid_file!r}]); " \
+             "time.sleep(120)"
+    monkeypatch.setattr(updater_helper, "SETUP_TIMEOUT", 8.0)
+    started = time.monotonic()
+    assert updater_helper.WinOps().run_setup([sys.executable, "-c", parent]) is None
+    assert time.monotonic() - started < 60
+    with open(pid_file, encoding="utf-8") as f:
+        pid = int(f.read())
+    deadline = time.monotonic() + 10
+    while pid in updater_helper._process_images() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert pid not in updater_helper._process_images(), "Setup's own child is ended too"
+
+
 @pytest.fixture
 def installer_marker(tmp_path, monkeypatch):
     kit.isolate_registry(monkeypatch)
@@ -1069,11 +1089,15 @@ def test_recovery_leaves_alone_an_install_something_runs_from(installer_marker, 
     root, marker, before = installer_marker
     path = _cut_off(marker, monkeypatch, _half(root))
     now, kept = kit.tree(root), kit.tree(updater.previous_root())
+    forget = updater_helper.forget_recovery
+    forget(os.path.dirname(path))                  # Windows removes the value before it runs it
     assert updater_helper.recover(path, ops=kit.FakeOps(running=[4242])) == 1
     assert kit.tree(root) == now and kit.tree(updater.previous_root()) == kept and os.path.exists(path)
-    assert not os.path.exists(updater.result_path()) and _entry(runonce, path) is None
+    assert not os.path.exists(updater.result_path())
+    assert _entry(runonce, path) == updater_helper.recovery_command(path), \
+        "the entry is written again, so the next sign-in tries again (the app keeps saying so)"
     assert updater_helper.recover(path, ops=kit.FakeOps()) == 2, "once nothing runs there, a recovery puts it right"
-    assert kit.tree(root) == before
+    assert kit.tree(root) == before and _entry(runonce, path) is None
 
 
 @pytest.mark.parametrize("started", ["the half-new program", "the old program (cut off at the first move)"])
@@ -1100,6 +1124,81 @@ def test_a_program_started_before_the_sign_in_leaves_the_cut_off_update_to_its_r
     assert updater_helper.recover(path, ops=kit.FakeOps()) == 2
     assert kit.tree(root) == before and _entry(runonce, path) is None
     assert updater.consume_result()["status"] == "failed" and not os.path.exists(path)
+
+
+def test_a_cut_off_between_the_entry_and_the_stamp_moves_nothing_and_the_entry_goes(installer_marker, runonce,
+                                                                                    monkeypatch):
+    """Killed after the RunOnce value is written, before the marker is stamped: nothing moved and the marker is not
+    armed, so the sign-in's recovery leaves everything and takes its entry away, and the program reads the marker as
+    an update that did not complete (stamping first left an armed marker no entry would ever act on)."""
+    root, marker, before = installer_marker
+    path = updater.write_marker(marker)
+    real_forget, real_write = updater_helper.forget_recovery, updater_helper._write_json_atomic
+    monkeypatch.setattr(updater_helper, "forget_recovery", lambda root: None)     # a killed process runs no finally
+
+    def write(target, data):
+        if os.path.normcase(target) == os.path.normcase(path) and data.get("armed"):
+            raise _PowerLost()
+        return real_write(target, data)
+    monkeypatch.setattr(updater_helper, "_write_json_atomic", write)
+    with pytest.raises(_PowerLost):
+        updater_helper.run(path, ops=kit.FakeOps())
+    monkeypatch.setattr(updater_helper, "forget_recovery", real_forget)
+    monkeypatch.setattr(updater_helper, "_write_json_atomic", real_write)
+    assert _entry(runonce, path) and kit.tree(root) == before
+    with open(path, encoding="utf-8") as f:
+        assert "armed" not in json.load(f)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 1
+    assert _entry(runonce, path) is None and kit.tree(root) == before
+    monkeypatch.setattr(updater, "__version__", kit.OLD)
+    assert updater.consume_result()["reason"] == "update did not complete" and not os.path.exists(path)
+
+
+def test_a_result_that_cant_be_written_leaves_the_marker_for_the_program_to_judge(installer_marker, runonce,
+                                                                                  monkeypatch):
+    """The swap landed but its result file can't be written: the marker stays, no longer armed (nothing waits at the
+    sign-in), so the new program still reads the update as landed instead of nothing at all."""
+    root, marker, before = installer_marker
+    real_write = updater_helper._write_json_atomic
+    monkeypatch.setattr(updater_helper, "_write_json_atomic",
+                        lambda target, data: False if os.path.normcase(target) == os.path.normcase(
+                            updater.result_path()) else real_write(target, data))
+    path = updater.write_marker(marker)
+    assert updater_helper.run(path, ops=kit.FakeOps(setup=lambda argv: _whole(root)() or 0)) == 0
+    assert not os.path.exists(updater.result_path()) and _entry(runonce, path) is None
+    with open(path, encoding="utf-8") as f:
+        assert "armed" not in json.load(f), "kept, unarmed"
+    monkeypatch.setattr(updater, "__version__", kit.NEW)
+    result = updater.consume_result()
+    assert result["status"] == "success" and result["reason"] == "ok (the updater ended before reporting)"
+    assert not os.path.exists(path)
+
+
+def test_no_update_starts_over_an_update_cut_off_half_way(installer_marker, runonce, monkeypatch):
+    """A new update, installer or Go back would write its own marker over the cut-off one and lose its recovery: each
+    is refused with the cut-off's words until the sign-in has finished or undone it."""
+    root, marker, before = installer_marker
+    path = _cut_off(marker, monkeypatch, _half(root))
+    monkeypatch.setattr(updater, "__version__", kit.NEW)
+    info = update_checker.get_update_info()
+    for start in (lambda: updater.prepare_update(info), lambda: updater.prepare_installer(info),
+                  updater.prepare_go_back):
+        with pytest.raises(updater.UpdateError) as refused:
+            start()
+        assert str(refused.value) == updater.CUT_OFF
+    assert os.path.exists(path) and _entry(runonce, path)
+    assert updater_helper.recover(path, ops=kit.FakeOps()) == 2 and kit.tree(root) == before
+
+
+def test_installer_mode_never_runs_an_unsigned_releases_installer(installer_marker, monkeypatch):
+    """The installer and its file list are trusted only through the release's signature, as the one-click update's
+    parts are: an unsigned release is refused before anything is downloaded."""
+    info = update_checker.get_update_info()
+    monkeypatch.setattr(info, "signed", False)
+    before = sorted(os.listdir(updater.update_dir()))
+    with pytest.raises(updater.UpdateError, match="isn't signed"):
+        updater.prepare_installer(info)
+    assert sorted(os.listdir(updater.update_dir())) == before
 
 
 def test_an_installer_marker_never_armed_is_consumed_as_an_update_that_did_not_complete(installer_marker, runonce,

@@ -319,6 +319,18 @@ def test_a_generate_makes_results_itself_before_writing(tmp_path, monkeypatch, j
         assert "冒険" in f.read()
 
 
+def test_a_generate_on_a_missing_installed_library_runs_nothing_and_makes_nothing(tmp_path, monkeypatch):
+    # An installed library folder that isn't there (a drive unplugged, a folder renamed): a run makes no empty library
+    # in its place (one would pass for the real library from then on, D3) and says why in its exit code.
+    from app import analyzer
+    library = tmp_path / "Documents" / "すらすら図書館"            # not there
+    monkeypatch.setattr(analyzer, "library_available", lambda: False)
+    monkeypatch.setattr(analyzer, "RESULTS_DIR", str(library / "results"))
+    monkeypatch.setattr(sys, "argv", ["analyzer.py", "--language", "ja", "--min-freq", "1"])
+    assert analyzer.main() == analyzer.LIBRARY_MISSING
+    assert not os.path.exists(library) and not os.path.exists(library.parent)
+
+
 def test_portable_source_and_test_root_libraries_are_always_available(program, monkeypatch):
     assert path_utils.library_available() is True                  # portable
     monkeypatch.setattr(path_utils, "is_frozen", lambda: False)

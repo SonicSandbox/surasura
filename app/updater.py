@@ -1043,6 +1043,8 @@ def _require_installed():
         raise UpdateError("auto-update is only available in a packaged (frozen) build")
     if not is_installed():
         raise UpdateError("only an installed Surasura updates itself: download the new version to update this copy")
+    if _cut_off(_read_marker(_state()["marker"])):
+        raise UpdateError(CUT_OFF)
     return _install_dir()
 
 
@@ -1183,6 +1185,8 @@ def _prepare_setup(info, progress_cb=None, window=True):
     """Installer mode (S3.1 D7): the release's installer downloaded and checked — the swapper runs it silently, then
     proves the result as it proves a swap. -> the marker, NOT written; its `path` / `args` are 2.x's keys."""
     install = _require_installed()
+    if not getattr(info, "signed", False):
+        raise UpdateError("the release's package isn't signed and whole, so its installer isn't run")
     if not os.path.isfile(updater_exe_path()):
         raise UpdateError("this install has no updater.exe to run the installer")
     version = _version_name(info.version)
@@ -1197,9 +1201,8 @@ def _prepare_setup(info, progress_cb=None, window=True):
         download(info.installer_url, path, progress_cb=progress_cb)
         if sha256_file(path).lower() != str(info.installer["sha256"]).lower():
             raise UpdateError("checksum mismatch — the installer download is corrupted or tampered")
-        package = getattr(info, "package", None)
-        files = package_files(package) if getattr(info, "signed", False) and isinstance(package, dict) else []
-        owned = _owned_names(files) if files else list(OWNED_ENTRIES)
+        files = package_files(info.package)
+        owned = _owned_names(files)
         listing = _program_files(install, owned)
         kept = {v[0]: v[2] for v in _hash_program(listing, _Progress(None, 1)).values()}
     except UpdateError:
@@ -1431,6 +1434,8 @@ def _remove_added(path=None):
             record = json.load(f)
     except (OSError, ValueError):
         return
+    if not isinstance(record, dict):
+        return
     install = _install_dir()
     for dest in record.get("added") or []:
         try:
@@ -1575,8 +1580,7 @@ def _consume(state):
                 m = {}
         except Exception:
             m = {}
-        if m.get("kind") == "installer" and m.get("armed") and \
-                not (_is_this_version(m.get("target_version")) and _swap_landed(m)):
+        if _cut_off(m):
             # An installer-mode swap cut off half-way (S3.1-5), and a program started before the next sign-in: Windows
             # then runs the swapper's copy with --recover, which finishes or undoes it from this marker, so the marker
             # and that copy stay (removing them would leave the old version unused in previous\).
@@ -1604,6 +1608,22 @@ def _consume(state):
 
 def _is_this_version(version):
     return bool(version) and version == __version__
+
+
+def _read_marker(path):
+    """A marker as written, or {} (none, unreadable, not an object)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            m = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return m if isinstance(m, dict) else {}
+
+
+def _cut_off(m):
+    """An installer-mode swap cut off half-way (S3.1-5): its marker armed by the swapper, the release not in place."""
+    return m.get("kind") == "installer" and bool(m.get("armed")) and \
+        not (_is_this_version(m.get("target_version")) and _swap_landed(m))
 
 
 def _swap_landed(marker):

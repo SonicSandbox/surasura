@@ -383,6 +383,46 @@ def test_a_library_holding_content_is_refused_and_a_fresh_starts_files_are_not_c
     assert _tree(library) == before and import_2x.read_import_note() is None
 
 
+def test_a_users_list_named_like_a_bundled_default_is_content_and_is_never_copied_over(tmp_path, roaming):
+    # Only the bundled default itself, byte for byte, is left out: a user's own IgnoreList in an existing 3.0 library
+    # (named like the bundled one) makes it a library, so the import refuses it instead of copying 2.x's list over it.
+    old = _old_install(tmp_path, store=False, languages=("ja",))
+    library = str(tmp_path / "新しい図書館")
+    _write(os.path.join(_root(), "defaults", "ja", "IgnoreList.txt"), "# 無視する単語\nです\n")
+    _write(os.path.join(library, "User Files", "ja", "IgnoreList.txt"), "# 無視する単語\nです\n")
+    assert import_2x.library_content(library) is None, "the bundled default as installed"
+    mine = _write(os.path.join(library, "User Files", "ja", "IgnoreList.txt"), "# 無視する単語\nです\n冒険\n")
+    assert import_2x.library_content(library) == mine
+    before = _tree(library)
+    result = import_2x.run_import(old, library)
+    assert result["status"] == "refused" and result["reason"] == "not_empty" and result["found"] == mine
+    assert _tree(library) == before
+
+
+def test_an_old_program_started_during_the_import_stops_it_before_it_is_marked_done(tmp_path, roaming, monkeypatch):
+    # The running check before the copy can't see a 2.x started meanwhile, whose store may move under the copy: it is
+    # asked again once the stores are copied, and the import stops unfinished (run again once 2.x is closed).
+    old = _old_install(tmp_path, languages=("ja",))
+    looks = []
+
+    def fake(images):
+        looks.append(1)
+        return {} if len(looks) == 1 else {4242: os.path.join(old, "Surasura.exe")}
+
+    monkeypatch.setattr(updater, "_processes_running", fake)
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "failed" and "started during the import" in result["message"]
+    assert len(looks) == 2 and import_2x.read_import_note()["complete"] is False
+
+
+def test_the_record_keeps_the_graduated_lists_outcome(tmp_path, roaming):
+    # A merge that failed for a language leaves the list where it is; the record says so for the window to show.
+    old = _old_install(tmp_path, store=False, languages=("ja",))
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "done"
+    assert import_2x.read_import_note()["graduated"] == result["graduated"]
+
+
 def test_a_second_run_after_a_complete_import_is_refused(tmp_path, roaming):
     old = _old_install(tmp_path, store=False)
     assert import_2x.run_import(old, _root())["status"] == "done"

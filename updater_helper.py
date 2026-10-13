@@ -423,11 +423,22 @@ class WinOps:
             pass
 
     def run_setup(self, argv):
-        """-> Setup's exit code, or None when it couldn't be started or ran past SETUP_TIMEOUT (then it is ended:
-        it is this swap's own)."""
+        """-> Setup's exit code, or None when it couldn't be started or ran past SETUP_TIMEOUT (then it is ended with
+        every process it started: it is this swap's own, and Inno's setup.exe runs its installer as a child)."""
         try:
-            return subprocess.run(argv, cwd=os.path.dirname(argv[0]), timeout=SETUP_TIMEOUT).returncode
+            process = subprocess.Popen(argv, cwd=os.path.dirname(argv[0]))
         except (OSError, subprocess.SubprocessError):
+            return None
+        try:
+            return process.wait(timeout=SETUP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, timeout=30,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.SubprocessError):
+                pass
+            _quietly(process.kill)
+            _quietly(process.wait, 30)
             return None
 
 
@@ -645,8 +656,8 @@ def _reports(m, ops):
 
 
 def _proven(m, process, ops, clock, sleep, seen):
-    """What a person would see: the window, titled, within WAIT_FOR_WINDOW, still running WINDOW_SETTLE later. ->
-    None, or the reason not. `seen()` is called at its first sight (the splash goes then)."""
+    """What a person would see: the window, titled, within WAIT_FOR_WINDOW, still running WINDOW_SETTLE later (or closed
+    by its person in that time: exit code 0). -> None, or the reason not. `seen()` is called at its first sight (the splash goes then)."""
     deadline = clock() + WAIT_FOR_WINDOW
     while not ops.window_visible(process.pid):
         if process.poll() is not None:
@@ -942,7 +953,12 @@ def _hand_off(marker_path, m, ops, clock, sleep):
         restarted = _restart(m, ops)
     if not restarted:
         reason += " -- and Surasura could not be started again"
-    _write_json_atomic(result_path, dict(base, status=status, reason=reason, touched=touched))
+    if not _write_json_atomic(result_path, dict(base, status=status, reason=reason, touched=touched)):
+        # No result: the marker stays for the app to judge as it judges a swapper that ended before reporting
+        # (consume_result), unarmed, since nothing waits at the sign-in now.
+        m.pop("armed", None)
+        if _write_json_atomic(marker_path, m):
+            return 0 if status == SUCCESS else 2
     _quietly(os.remove, marker_path)
     return 0 if status == SUCCESS else 2
 
@@ -978,12 +994,20 @@ def recovery_command(marker_path):
 
 
 def arm_recovery(marker_path, m):
-    """Just before installer mode's first move: the marker stamped "armed" (`recover` acts on no other), then the
-    RunOnce value. Raises when either can't be written: then nothing moves."""
-    import winreg
+    """Just before installer mode's first move: the RunOnce value, then the marker stamped "armed" (`recover` acts on
+    no other, so a cut-off between the two leaves an entry that finds an unarmed marker and goes, and a marker the app
+    reads as it always has). Raises when either can't be written: then nothing moves, and the value goes again."""
+    _write_recovery(marker_path)
     m["armed"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     if not _write_json_atomic(marker_path, m):
+        m.pop("armed", None)
+        forget_recovery(os.path.dirname(os.path.abspath(marker_path)))
         raise OSError("the update's marker could not be written")
+
+
+def _write_recovery(marker_path):
+    """The RunOnce value naming this swapper's `--recover <marker>` (raises when it can't be written)."""
+    import winreg
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _runonce_root(), 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, _recovery_value(os.path.dirname(os.path.abspath(marker_path))), 0, winreg.REG_SZ,
                           recovery_command(marker_path))
@@ -1002,31 +1026,38 @@ def forget_recovery(root):
 def recover(marker_path, ops=None, sleep=time.sleep):
     """`updater.exe --recover <marker>`: an installer-mode swap cut off half-way, finished or undone — run by Windows at
     the next sign-in, and by a later swapper handed a marker an earlier one armed. Never starts the program:
-      * something runs from the install folder -> left as it is;
+      * something runs from the install folder -> left as it is, and the RunOnce value written again (Windows
+        removed it to run this), so the next sign-in tries again;
       * the install holds the release — every file's sha256 and `--version`, the headless proof (D9) -> Setup
         finished: kept, one previous version kept, and the success result the app knows written;
       * otherwise -> installer mode's own failure branch (`_put_back`), and a failed result written.
     The marker goes after either of the last two; one missing, damaged or never armed moves nothing. The RunOnce value
-    goes whatever the outcome. -> 0 finished, 2 put back, 1 nothing done."""
+    goes in every case but the first. -> 0 finished, 2 put back, 1 nothing done."""
     ops = WinOps() if ops is None else ops
     root = os.path.dirname(os.path.abspath(marker_path))
+    later = False
     try:
-        return _recover(marker_path, root, ops, sleep)
+        code, later = _recover(marker_path, root, ops, sleep)
+        return code
     finally:
-        forget_recovery(root)
+        if later:
+            _quietly(_write_recovery, marker_path)
+        else:
+            forget_recovery(root)
 
 
 def _recover(marker_path, root, ops, sleep):
+    """-> (recover's code, whether the next sign-in should try again)."""
     try:
         with open(marker_path, "r", encoding="utf-8") as f:
             m = json.load(f)
         if not isinstance(m, dict) or m.get("format") != FORMAT or m.get("kind") != "installer" \
                 or not m.get("armed") or _uncontained(m, root) is not None:
-            return 1
+            return 1, False
         if ops.processes_in(m["install"]):
-            return 1
+            return 1, True
     except Exception:
-        return 1
+        return 1, False
     try:
         _verify(m["install"], m.get("files"))
         _reports(m, ops)
@@ -1042,7 +1073,7 @@ def _recover(marker_path, root, ops, sleep):
         "from": m.get("from_version", ""), "to": m["target_version"], "going_back": False, "kind": "installer",
         "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": status, "reason": reason, "touched": True})
     _quietly(os.remove, marker_path)
-    return 0 if status == SUCCESS else 2
+    return (0 if status == SUCCESS else 2), False
 
 
 def _put_back(m, sleep):

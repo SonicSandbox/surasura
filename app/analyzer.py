@@ -4409,6 +4409,7 @@ def _set_run_stamp(results_dir, signature):
 # 3 too, and a crash must never read as "busy, try later".
 RESULTS_WAIT = 10.0
 RESULTS_BUSY = 75
+LIBRARY_MISSING = 76        # an installed library that isn't there: nothing run, nothing made (S3.1 D3)
 
 
 def _report_written(path, since):
@@ -4565,8 +4566,15 @@ def _holding_results(run):
 @_holding_results
 def main():
     """The analyzer's run. Returns its exit code: None (0) when it finished, 1 when the report couldn't be written
-    (results/ is complete; the next Generate re-renders it), RESULTS_BUSY when another program held results/."""
+    (results/ is complete; the next Generate re-renders it), RESULTS_BUSY when another program held results/,
+    LIBRARY_MISSING when the installed library folder isn't there."""
     import sys
+
+    # An installed library that isn't there (offline, unplugged, renamed) is never made again by a run (S3.1 D3): an
+    # empty folder in its place would pass for the library from then on.
+    if not library_available():
+        print("Error: your library folder isn't available, so nothing was run. Reconnect it, or choose it again.")
+        return LIBRARY_MISSING
 
     # --- VISUALIZER REMOVED ---
     # Legacy interactive visualizer logic removed.

@@ -35,6 +35,9 @@ def frozen(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(build_info, "BUILD_ID", BUILD)
     monkeypatch.setattr(build_info, "_running", None)
+    # Never the real named mutex: it would be the test installer's AppMutex ("Surasura-test.Running") held for the
+    # whole pytest process, and a test install or uninstall on this machine would wait for it.
+    monkeypatch.setattr(build_info, "create_mutex", lambda name: None)
     return os.environ["SURASURA_TEST_ROOT"]
 
 

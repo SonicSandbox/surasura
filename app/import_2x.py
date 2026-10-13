@@ -26,6 +26,7 @@ ever read, so the user can go back to 2.x at any time (CLAUDE.md §4: user data 
 
 import argparse
 import errno
+import filecmp
 import hashlib
 import json
 import os
@@ -231,6 +232,14 @@ def _only_comments(path):
     return all(not line.strip() or line.strip().startswith("#") for line in text.splitlines())
 
 
+def _is_default(path, default):
+    """Is the file at `path` the bundled default list, byte for byte (an edited one is the user's)?"""
+    try:
+        return os.path.isfile(default) and filecmp.cmp(path, default, shallow=False)
+    except OSError:
+        return False
+
+
 def library_content(library):
     """The first file that makes `library` a library holding content, or None for an empty or new one. A new 3.0
     library's start writes only folders, the bundled default lists and comment-only Blacklist / IgnoreList: those
@@ -244,7 +253,7 @@ def library_content(library):
                     language = os.path.basename(dirpath)
                     if name in EMPTY_LISTS and _only_comments(path):
                         continue
-                    if os.path.isfile(os.path.join(path_utils.get_base_path(), "defaults", language, name)):
+                    if _is_default(path, os.path.join(path_utils.get_base_path(), "defaults", language, name)):
                         continue
                 return path
     return None
@@ -485,7 +494,10 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
             return _refused("not_empty", f"{library} already holds a library. Choose an empty folder.",
                             found=found)
 
-    files, folders = _plan_files(source)
+    try:
+        files, folders = _plan_files(source)
+    except OSError as e:
+        return _refused("error", f"Your old Surasura folder could not be read ({e}). Nothing was copied.")
     languages = [lang for lang in LANGUAGES if any(
         os.path.isdir(os.path.join(source, top, lang)) for top in LIBRARY_FOLDERS)]
     entry = _note_entry(source)
@@ -508,7 +520,11 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
               "started": _now(), "finished": None, "complete": False}
     if resuming:
         record["started"] = previous.get("started") or record["started"]
-    _write_json(note_path(), record)
+    try:
+        _write_json(note_path(), record)
+    except OSError as e:
+        return _refused("error", f"The import could not start: its record could not be written ({e}). Nothing was "
+                        "copied.")
 
     def tick(stage, done, total):
         if progress is not None:
@@ -549,6 +565,8 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
             os.rmdir(staging)
         except OSError:
             pass
+        if running_from(source):        # started meanwhile: its store may have moved under the copy
+            raise ImportFailed("your old Surasura was started during the import; close it, then run the import again")
 
         names = list(result["roaming"])
         for i, name in enumerate(names):
@@ -570,10 +588,16 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
                       message=f"The import stopped: {e}. Your old Surasura is unchanged; run it again to finish.")
     record.update({"finished": _now(), "complete": result["status"] == "done", "status": result["status"],
                    "languages": languages, "counts": result["counts"], "settings": result["settings"],
-                   "store": result["store"], "roaming": result["roaming"], "sha256": result["sha256"]})
+                   "store": result["store"], "roaming": result["roaming"], "sha256": result["sha256"],
+                   "graduated": result["graduated"]})
     if result["message"]:
         record["message"] = result["message"]
-    _write_json(note_path(), record)
+    try:
+        _write_json(note_path(), record)
+    except OSError as e:
+        result.update(status="failed", reason="failed",
+                      message=f"The import's record could not be written ({e}). Your old Surasura is unchanged; run "
+                              "the import again to finish.")
     return result
 
 

@@ -49,6 +49,7 @@ SOURCE = "AnkiConnect"
 # The source of the words GraduatedList.txt held, merged once into KnownWord.json (app/graduated_merge.py): Replace
 # keeps them.
 GRADUATED_SOURCE = "GraduatedList"
+GRADUATED_MARK = "graduated"        # an entry the merge raised to KNOWN: kept_graduated keeps it known too
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
 BACKLOG_FILE = "anki_backlog.json"
@@ -811,10 +812,11 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
 
 
 def kept_graduated(path, language, words):
-    """The `source: "GraduatedList"` entries of the KnownWord.json at `path` (the old GraduatedList.txt merged once,
-    app/graduated_merge.py) that `words` doesn't name: every import that replaces the file — Anki's Replace, the Jiten
-    and Migaku imports — keeps them, so they stay known words (S3.1 D13, Q4-10). A file that is missing or can't be
-    read keeps none (the replacer's backup holds them)."""
+    """The old GraduatedList.txt's words (merged once, app/graduated_merge.py: entries of `source: "GraduatedList"`,
+    or raised and marked GRADUATED_MARK) in the KnownWord.json at `path`, kept known by every import that replaces
+    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add;
+    and an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too). A file that is
+    missing or can't be read keeps none (the replacer's backup holds them)."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -822,14 +824,26 @@ def kept_graduated(path, language, words):
     current = data.get("words") if isinstance(data, dict) else data
     if not isinstance(current, list):
         return []
-    taken = {_norm(w.get("dictForm")) for w in words if isinstance(w, dict)}
-    kept = []
+    graduated = {}
     for entry in current:
-        if isinstance(entry, dict) and entry.get("source") == GRADUATED_SOURCE:
+        if isinstance(entry, dict) and (entry.get("source") == GRADUATED_SOURCE or entry.get(GRADUATED_MARK) is True):
             key = _norm(entry.get("dictForm"))
-            if key and key not in taken:
-                taken.add(key)
-                kept.append(entry)
+            if key:
+                graduated.setdefault(key, entry)
+    taken = set()
+    for w in words:
+        if isinstance(w, dict):
+            key = _norm(w.get("dictForm"))
+            taken.add(key)
+            if key in graduated and w.get("knownStatus") in ("UNKNOWN", "LEARNING"):
+                w["previousStatus"] = w["knownStatus"]
+                w["knownStatus"] = "KNOWN"
+                w[GRADUATED_MARK] = True
+    kept = []
+    for key, entry in graduated.items():
+        if key not in taken:
+            taken.add(key)
+            kept.append(entry)
     return kept
 
 

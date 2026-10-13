@@ -65,6 +65,7 @@ class _Timers(list):
 
 class _Proc:
     """A child that runs until the test (or a terminate) ends it."""
+    pid = 4321
 
     def __init__(self, args, **kw):
         self.args, self.kw = args, kw
@@ -219,6 +220,17 @@ def test_quitting_stops_the_indexer(indexing_on):
     assert popen[0].terminated and not left
     view = registry.snapshot()[-1]
     assert view.kind == "indexer" and view.cancelled
+    chores.close()
+
+
+def test_the_indexers_job_names_its_child_so_the_update_lists_it_once(indexing_on):
+    """A frozen build's indexer is `Surasura.exe index …`: the update's scan of this install's programs finds it too.
+    Its job carries the child's pid, so the wait list shows it as the job alone (never also as another window)."""
+    chores, registry, popen = _make()
+    chores.index(force=True)
+    assert h.until(lambda: registry.live("indexer") and registry.live("indexer")[0].pid == 4321, seconds=5)
+    popen[0].end(0)
+    assert h.until(lambda: not registry.live("indexer"), seconds=5)
     chores.close()
 
 

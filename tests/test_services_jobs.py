@@ -229,6 +229,37 @@ def test_what_closing_the_window_waits_for_is_an_anki_write_under_way_only():
     assert J.waits_at_quit(registry.snapshot()) == ()
 
 
+def test_a_job_that_passes_the_point_it_can_stop_at_while_the_quit_waits_is_waited_for_as_an_anki_write():
+    """E20: Generate cancelled at quit may already be writing your list (the window reads its step a moment late). Once
+    its owner says it is past its cancel point (`finishes_at_quit`) — while the quit waits its short `timeout` for it —
+    the quit gives it an Anki write's `wait_timeout` instead: the process's exit never cuts a list half-written."""
+    registry = JobRegistry()
+    run = registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: None, on_quit="cancel")
+
+    def child():
+        time.sleep(0.2)
+        run.finishes_at_quit()                                        # the step read late: it is writing
+        time.sleep(0.6)                                               # past the short timeout: still writing
+        run.finish()
+    threading.Thread(target=child, daemon=True).start()
+    t0 = time.monotonic()
+    still = registry.quit(timeout=0.5, wait_timeout=5)
+    assert still == () and run.state == J.DONE and time.monotonic() - t0 < 4
+    assert registry.snapshot()[0].on_quit == "wait"
+
+
+def test_the_pids_of_a_jobs_child_and_whether_it_can_be_cancelled_are_on_its_record():
+    """The update's wait list reads them: a job's own child process is listed as the job alone, and a job with no
+    cancel (the sync, the backlog read) has no *Stop it* whatever it does at quit."""
+    registry = JobRegistry()
+    gen = registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: None)
+    sync = registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, on_quit="detach")
+    gen.started_process(4242)
+    views = {v.kind: v for v in registry.snapshot()}
+    assert (views["generate"].pid, views["generate"].can_cancel) == (4242, True)
+    assert (views["anki-sync"].pid, views["anki-sync"].can_cancel) == (None, False)
+
+
 def test_ended_jobs_are_kept_only_to_a_limit():
     registry = JobRegistry(keep_ended=3)
     for n in range(6):

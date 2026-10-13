@@ -7,6 +7,8 @@ Every look here is the shell's own widgets and the theme's tokens (Sonic is rede
 QPushButton (`kind=chip`, `kind=primary`, `size=sm`), the stylesheet's QProgressBar, labels named for the stylesheet,
 a `motion.Overlay` with its `sheet` shadow. Nothing decides here: the states and their numbers are the services'.
 """
+import os
+
 from PyQt6.QtCore import QEvent, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
@@ -97,15 +99,25 @@ class GenerateControl(QWidget):
         self.log_button.setVisible(False)
         row.addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignTop)
         self._shown = None
+        self._held = None                                  # the window is closing: off, with this tooltip
         self.paints = 0                                    # how many times a new state was painted (tests: S19)
 
     def add_beside(self, widget):
         """A header button beside Generate (*Your journey ↗*), its top on Generate's (the bar hangs below both)."""
         self.row.addWidget(widget, 0, Qt.AlignmentFlag.AlignTop)
 
+    def hold(self, tip):
+        """The window is closing (it waits for what can't stop part-way): a click would start nothing, so the button is
+        off, with `tip` — whatever state comes next."""
+        self._held = tip
+        self.button.setEnabled(False)
+        self.button.setToolTip(tip)
+
     def show_state(self, state):
         """-> True when something on it changed (and was repainted)."""
         text, tip, look, enabled, pct = generate_look(state)
+        if self._held is not None:
+            tip, enabled = self._held, False
         failed_log = state.state == gen.FAILED and bool(state.log_path)
         shown = (text, tip, look, enabled, pct, failed_log)
         if shown == self._shown:
@@ -217,6 +229,7 @@ class UpdateSheet(motion.Overlay):
         box.addLayout(buttons)
         self.state = None
         self._programs = None
+        self._held = False
         self.paints = 0
         self.shadow = shadow.Follower(self, self.shadow_name)
         parent.installEventFilter(self)
@@ -283,6 +296,7 @@ class UpdateSheet(motion.Overlay):
         f = theme.text_factor(style.current()[1])
         for program in programs:
             row = QWidget(self)
+            row.setEnabled(not self._held)
             line = QHBoxLayout(row)
             line.setContentsMargins(0, 0, 0, 0)
             line.setSpacing(round(toast.PAD[1] * f))
@@ -317,6 +331,15 @@ class UpdateSheet(motion.Overlay):
     def open(self):
         self.place()
         return super().open()
+
+    def hold(self, tip):
+        """The window is closing: *Update now* would start nothing, so every action is off, with `tip`."""
+        for b in self.buttons.values():
+            b.setEnabled(False)
+            b.setToolTip(tip)
+        for row in self.program_rows:
+            row.setEnabled(False)
+        self._held = True
 
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
@@ -353,7 +376,16 @@ class UpdateCards(QWidget):
         self.cards = []
         self._key = None
         self.logs = False                       # whether *Open the logs folder* has a folder to open
+        self._held = None                       # the window is closing: *Update now* off, with this tooltip
         self.setVisible(False)
+
+    def hold(self, tip):
+        """The window is closing: *Update now* would start nothing, so it is off, with `tip`."""
+        self._held = tip
+        for b in self.findChildren(QPushButton):
+            if b.property("action") == "start":
+                b.setEnabled(False)
+                b.setToolTip(tip)
 
     def counts(self):
         """(listed, unseen): what the Needs you tab counts for these cards (the offer is listed, never counted)."""
@@ -366,7 +398,7 @@ class UpdateCards(QWidget):
         """-> True when the cards changed (rebuilt only then: S19)."""
         offer = (state.version, state.cls, state.state == upd.AVAILABLE and state.cls in ("APP", "INSTALLER")) \
             if state.state == upd.AVAILABLE else None
-        failures = tuple((f.text, f.version, f.seen) for f in state.needs_you)
+        failures = tuple((f.text, f.version, f.seen, f.report) for f in state.needs_you)
         key = (offer, failures, bool(logs))
         if key == self._key:
             return False
@@ -382,12 +414,13 @@ class UpdateCards(QWidget):
                        [("start" if in_app else "download", strings.UPDATE_NOW if in_app else strings.UPDATE_DOWNLOAD,
                          strings.UPDATE_NOW_TIP if in_app else strings.UPDATE_DOWNLOAD_TIP, None),
                         ("skip", strings.UPDATE_SKIP, strings.UPDATE_SKIP_TIP, version)])
-        for text, version, _seen in failures:
+        for text, version, _seen, report in failures:
             actions = []
             if version:
                 actions.append(("skip", strings.UPDATE_SKIP, strings.UPDATE_SKIP_TIP, version))
-            if logs:
-                actions.append(("logs", strings.BAR_LOGS, strings.BAR_LOGS_TIP, None))
+            folder = os.path.dirname(report) if report else ""     # its report is beside the install, not in the logs
+            if logs or folder:
+                actions.append(("logs", strings.BAR_LOGS, strings.BAR_LOGS_TIP, folder or None))
             self._card(strings.NEEDS_UPDATE_FAILED_TITLE, text, actions)
         self.setVisible(bool(self.cards))
         return True
@@ -411,6 +444,10 @@ class UpdateCards(QWidget):
         for name, label, tip, key in actions:
             b = QPushButton(label, card)
             b.setProperty("size", "sm")
+            b.setProperty("action", name)
+            if name == "start" and self._held is not None:
+                tip = self._held
+                b.setEnabled(False)
             b.setToolTip(tip)
             b.setAccessibleName(label)
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)

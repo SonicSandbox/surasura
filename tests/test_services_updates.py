@@ -34,6 +34,9 @@ from app.services.settings import SettingsService, freeze
 from app.update_checker import UpdateInfo
 from tests import services_helpers as h
 
+# The real process scan, kept before any test replaces it (a test of the window's own children reads it).
+REAL_RUNNING_CHILDREN = updater.running_children
+
 NEWER = "99.0"          # newer than this build, whatever __version__ says
 NOTES = "https://github.com/SonicSandbox/surasura/releases/tag/v99.0"
 FAST = 0.02             # the wait list's period in these tests (the app's is U.POLL)
@@ -746,7 +749,7 @@ def test_anki_writing_jobs_are_only_waited_for_and_junban_is_listed_once(world):
     and 順's own row goes while the Anki writer lock's row names the automatic step (never listed twice)."""
     registry = JobRegistry()
     sync = registry.submit("anki-sync", "Updating known words from Anki", lambda job: None, automatic=True,
-                           on_quit="wait")
+                           on_quit="detach")          # read-only on Anki: never waited for at quit, still no Stop
     junban = registry.submit("junban", "Re-ordering Anki (automatic)", lambda job: None, automatic=True,
                              on_quit="wait")
     held = locks.take(anki_connect.WRITER_LOCK, anki_connect.AUTOMATIC_STEP, owner=object())
@@ -1080,3 +1083,39 @@ def test_a_late_turn_of_the_wait_never_overwrites_the_cancel(world):
     seen = _states(svc)
     svc._say(update)
     assert (svc.state().state, svc.state().message) == (U.AVAILABLE, "Update cancelled.") and seen == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the process scan is Windows-only (the in-place updater)")
+def test_the_windows_own_generate_is_listed_once_as_its_job_never_as_another_window(world, monkeypatch):
+    """A frozen build's Generate is `Surasura.exe analyzer …`, so the scan of this install's programs finds it too: it
+    was listed twice — as its job (*Stop it* asks the run, which finishes *Writing your list*) and as *Another
+    Surasura window*, whose Stop ends the process at once (half-written CSVs). The window's own child is its job's row
+    alone. The scan is the real one, over `images=` naming this Python as the install's program."""
+    from app.services.generate import GenerateController
+    monkeypatch.setattr(updater, "running_children",
+                        lambda active=(), images=None: REAL_RUNNING_CHILDREN(active, images=[sys.executable]))
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    procs = []
+
+    def launcher(run):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin=subprocess.DEVNULL,
+                                creationflags=0x08000000)          # CREATE_NO_WINDOW
+        procs.append(proc)
+        run.started(proc)
+    try:
+        controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launcher)
+        assert h.until(lambda: procs and registry.live("generate"), seconds=10)
+        pid = procs[0].pid
+        assert pid in [c["pid"] for c in REAL_RUNNING_CHILDREN((), images=[sys.executable])], "the scan sees it"
+        svc = world.offered(world.service(registry=registry))
+        assert svc.start()
+        assert h.until(lambda: svc.state().state == U.WAITING and svc.state().programs, seconds=10)
+        programs = svc.state().programs
+        assert [p.name for p in programs].count("Generating") == 1
+        assert pid not in [p.key for p in programs]
+        svc.cancel()
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait(10)

@@ -124,6 +124,7 @@ class FakeChores(_Duty):
             self.close_store()
 
     def close_store(self): self._record("chores.close_store")
+    def halt(self): self._record("chores.halt")
 
 
 class QuietReader:
@@ -669,9 +670,9 @@ def test_closing_with_an_anki_write_that_never_started_closes_at_once(world):
 
 
 def test_the_window_closes_by_itself_at_the_cap_and_the_quit_waits_no_longer(world, monkeypatch):
-    """E20's bound (`QUIT_ANKI_WAIT`, AnkiConnect's own call timeout: a hung Anki): the window closes by itself at the
+    """E20's bound (`QUIT_FINISH_WAIT`: a hung Anki): the window closes by itself at the
     cap, and the quit after it doesn't wait the cap a second time."""
-    monkeypatch.setattr(shell, "QUIT_ANKI_WAIT", 1.0)
+    monkeypatch.setattr(shell, "QUIT_FINISH_WAIT", 1.0)
     world.start()
     write = _anki_write(world.registry)                                       # never ends by itself
     assert _bar_shows(world, A.JUNBAN_LABEL)
@@ -700,7 +701,7 @@ def _services_only(log):
 
 def test_the_quit_waits_for_an_anki_write_past_its_short_timeout(qapp):
     """IK-22 / HR-22 (E20): with no wait of the window's before it (the update's hand-over closes at once), `shutdown`
-    still lets a running Anki write finish its batch — up to `QUIT_ANKI_WAIT`, past the short `timeout` it gives the
+    still lets a running Anki write finish its batch — up to `QUIT_FINISH_WAIT`, past the short `timeout` it gives the
     rest — before the process goes on to end."""
     log = []
     services = _services_only(log)
@@ -878,3 +879,193 @@ def test_the_update_hands_over_and_the_window_closes(world, monkeypatch):
     monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: quits.append(True)))
     threading.Thread(target=world.services._ask_quit).start()      # the service's on_quit, on its worker
     assert wait_until(lambda: quits and not world.win.isVisible())
+
+
+# --- the final review's fixes: the quit, Needs you, the bridge ---------------------------------------------------- #
+class _Analyzer:
+    """A scripted analyzer child for a real Generate controller: the test feeds its lines and ends it."""
+    returncode = None
+
+    def poll(self):
+        return self.returncode
+
+
+def _line(record):
+    import json
+    return json.dumps(record) + "\n"
+
+
+def _writing_generate(registry):
+    """A real Generate controller on `registry` whose run has told it *Writing your list* (past its cancel point)."""
+    controller = G.GenerateController(registry, settle=0)
+    holder = {}
+
+    def launcher(run):
+        holder["run"] = run
+        run.started(_Analyzer())
+    controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launcher)
+    assert wait_until(lambda: "run" in holder)
+    holder["run"].feed(_line({"type": "progress", "step": "Writing your list", "done": None, "total": None}))
+    return holder["run"]
+
+
+def test_closing_while_generate_writes_your_list_keeps_the_window_until_it_ends(world):
+    """E20 ("Generate is cancelled cleanly (the last good journey kept)"): a Generate past its cancel point can't stop,
+    and the process's exit would cut it between the list and the journey (its output pipe closes). The window stays
+    with one line, as for an Anki write, and closes by itself when the run ends."""
+    world.start()
+    run = _writing_generate(world.registry)
+    assert _bar_shows(world, "Writing your list")
+    world.win.close()
+    assert world.win.isVisible()
+    assert world.win.bar_line.full() == strings.QUIT_FINISHING_LIST
+    QTest.qWait(60)
+    assert not run.job.cancelled and run.job.state == "running"
+    run.feed(_line({"type": "result", "contract": 1, "ok": True, "ran": True}))
+    run.ended(0)
+    assert wait_until(lambda: not world.win.isVisible())
+
+
+def test_while_the_window_waits_at_quit_generate_and_the_update_sheet_are_off(world):
+    """No control that does nothing: while the window waits for a write to end, Generate's click and *Update now*
+    are refused (nothing new starts) — so the header's Generate and the update sheet's actions are disabled."""
+    world.start()
+    _offer(world)
+    assert wait_until(lambda: not world.d.update_mark.isHidden())
+    world.win.open_update_sheet()
+    assert wait_until(lambda: world.d.sheet.isVisible())
+    write = _anki_write(world.registry)
+    assert _bar_shows(world, A.JUNBAN_LABEL)
+    assert world.d.generate.button.isEnabled() and world.d.sheet.buttons["start"].isEnabled()
+    world.win.close()
+    assert world.win.isVisible()
+    assert not world.d.generate.button.isEnabled()
+    assert not world.d.sheet.buttons["start"].isEnabled() and not world.d.sheet.buttons["skip"].isEnabled()
+    world.controller.push(state=G.STALE)                             # a new state never turns it back on
+    QTest.qWait(30)
+    assert not world.d.generate.button.isEnabled()
+    write.finish()
+    assert wait_until(lambda: not world.win.isVisible())
+
+
+def test_opening_needs_you_marks_a_generate_failure_seen_and_keeps_it_listed(world):
+    """P1.2-1 (E10): a failure looked at stops counting. Opening Needs you marks the bar's failures seen — Generate's
+    and the command line's, not only the update's — so the badge goes to 0 while the entry stays listed."""
+    world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log")
+    needs = world.win.tab_buttons["needs"]
+    assert wait_until(lambda: needs.count == 1)
+    world.win.show_tab("needs")
+    assert wait_until(lambda: needs.count == 0)
+    assert not needs.isHidden()
+    assert [e.text for e in world.status.snapshot().needs_you] == ["Generate stopped (exit code 1)."]
+
+
+def test_an_update_failures_logs_button_opens_the_folder_its_report_is_in(world, monkeypatch, tmp_path):
+    """The update's report is written beside the install (`updater.report_path`), not in the logs folder: *Open the
+    logs folder* on its Needs you card, and the bar's while the failure is the bar's, open the report's folder."""
+    opened = []
+    monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
+    (tmp_path / "logs").mkdir()
+    world.status.refresh()
+    report = tmp_path / "debug" / "update_report.txt"
+    failure = U.Failure("The automatic update didn't finish (exit code 3).", 0.0, False, "99.0", str(report))
+    world.updates.push(state=U.FAILED, message=failure.text, version="99.0", needs_you=(failure,))
+    cards = world.d.cards
+    assert wait_until(lambda: len(cards.cards) == 1 and "didn't finish" in world.win.bar_failure.full())
+    buttons = {b.text(): b for b in cards.cards[0].findChildren(QPushButton)}
+    buttons[strings.BAR_LOGS].click()
+    assert wait_until(lambda: world.win.logs_button.isVisibleTo(world.win))
+    world.win.logs_button.click()
+    if os.name == "nt":
+        assert wait_until(lambda: len(opened) == 2)
+        assert opened == [str(tmp_path / "debug")] * 2
+
+
+def test_after_the_window_closed_a_duty_change_reaches_none_of_its_slots(world, monkeypatch):
+    """At quit `shutdown` runs on the window's thread after its loop ended, so a service's callback then reaches the
+    window's slots directly: a Generate dropped at quit would start a journey look and a token-store read as the
+    process exits. Once the window is closed, nothing a service says reaches it."""
+    reads = []
+    monkeypatch.setattr(world.services, "journey_exists", lambda: reads.append("journey") or False)
+    monkeypatch.setattr(world.services, "level", lambda: reads.append("level") or ("rare", False))
+    world.win.close()
+    assert not world.win.isVisible()
+    for state in (G.State(G.RUNNING, "Counting words", 1, 2, None, None, 1, 50),
+                  G.State(G.STALE, None, None, None, None, None, None, 51)):
+        for callback in list(world.controller.subscribers):
+            callback(state)                                         # on this (the window's) thread, as at quit
+    QTest.qWait(80)
+    assert reads == []
+
+
+def test_the_quit_wait_ends_before_a_new_start_stops_waiting_for_the_claim():
+    """A start while the window waits at quit finds the claim free in time: the wait's cap is under the next start's
+    `WAIT_FOR_FIRST_S`, and within E20's "a few seconds"."""
+    from app.qt import single
+    assert shell.QUIT_FINISH_WAIT <= 8.0 and shell.QUIT_FINISH_WAIT < single.WAIT_FOR_FIRST_S
+
+
+def test_a_start_after_the_quit_began_starts_no_duty(qapp):
+    """A close in the moment the duties are being made: the window's `ready` asks `start()` after the quit began —
+    nothing starts (the update's last outcome isn't consumed, no chore's timer is armed)."""
+    log = []
+    registry = JobRegistry()
+    services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()),
+                              controller=FakeController(log), updates=FakeUpdates(log),
+                              automation=FakeAutomation(log), chores=FakeChores(log))
+    assert services.begin_quit()
+    assert services.start() is False
+    assert not [n for n in log if n in ("updates.begin", "automation.started", "chores.started", "controller.check")]
+    services.shutdown(0.1)
+    assert "chores.close" not in log
+
+
+class _Timer:
+    def __init__(self, delay, call):
+        self.delay, self.call, self.cancelled = delay, call, False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def test_a_close_in_the_first_seconds_spawns_nothing(qapp, monkeypatch, tmp_path):
+    """The chores' start-up timers (the store's helper at 1.5 s, Connect's notice at 2.5 s) are taken back as the quit
+    begins — the window may stay up a while for a write — and one already ringing does nothing: no helper is spawned
+    for a window that is closing."""
+    import sys
+    from app import library_store, path_utils, token_index
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS", raising=False)
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: None)
+    monkeypatch.setattr(token_index, "prepare_preview", lambda *a, **k: None)
+    looked = []
+    monkeypatch.setattr(library_store, "check_mode", lambda *a, **k: looked.append(1) or ("none", ""))
+    monkeypatch.setattr(library_store, "maintain_at_close", lambda language: None)
+    timers, log = [], []
+    registry = JobRegistry()
+    services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()),
+                              controller=FakeController(log), updates=FakeUpdates(log),
+                              automation=FakeAutomation(log))
+    services.chores = C.Chores(registry, services.settings, "ja", update_staged=lambda: False,
+                               timer=lambda delay, call: timers.append(_Timer(delay, call)) or timers[-1],
+                               log_folder=str(tmp_path / "logs"))
+    assert services.start()
+    armed = list(timers)
+    assert C.START_MAINTAIN in [t.delay for t in armed]
+    services.begin_quit()
+    assert all(t.cancelled for t in armed)
+    for t in armed:
+        t.call()                                                    # one that rang just as the quit began
+    assert services.chores.worker.idle(5)
+    assert looked == []
+    services.shutdown(0.1)
+
+
+def test_a_language_switch_after_the_quit_began_reaches_no_duty(qapp):
+    """E20: once the quit began (the window may still be up), a language switch asks no duty for anything."""
+    log = []
+    services = _services_only(log)
+    services.begin_quit()
+    services.language_changed("zh")
+    assert "automation.language_changed" not in log and "chores.language_changed" not in log
+    services.shutdown(0.1)

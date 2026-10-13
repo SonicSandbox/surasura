@@ -183,6 +183,17 @@ class Chores:
             return "closed"
         return None
 
+    def halt(self):
+        """The quit began (the window may stay up a while for a write to end): the start-up timers taken back and
+        nothing more started from here — no store helper, no Connect notice, no indexer. `close()` still runs the rest
+        at the end."""
+        with self._lock:
+            self._closed = True
+            timers, self._timers = self._timers, []
+            maintain, self._maintain_timer = self._maintain_timer, None
+        for timer in timers + ([maintain] if maintain is not None else []):
+            timer.cancel()
+
     def close(self, store=True):
         """The window closed (after it is gone: this waits). No timer left, Koe stopped, Connect's `at_close`, then —
         unless `store=False` (the window's quit runs it apart, after the single-instance claim is let go) — the store's
@@ -275,6 +286,7 @@ class Chores:
             with self._lock:
                 self._proc = proc
                 stop = job.cancelled
+            job.started_process(getattr(proc, "pid", None))     # the update's wait list: this job's row alone
             if stop:
                 proc.terminate()
             returncode = proc.wait()
@@ -331,6 +343,8 @@ class Chores:
         """The store's helper when it has something to do (`_maybe_maintain`): no store yet but a manifest to build
         from, a change since the last export, or a copy someone else rewrote (once per new stat)."""
         language = self.language
+        if self._closed:
+            return                              # a timer that rang as the quit began: no helper for a closing window
         try:
             from app import library_store
             from app.path_utils import get_data_path, get_user_files_path
@@ -370,7 +384,7 @@ class Chores:
 
     def _arrivals(self):
         """With Connect's preview on: what another program registered while Surasura was closed, named once."""
-        if not self._settings.get().get("connect_enabled"):
+        if self._closed or not self._settings.get().get("connect_enabled"):
             return
         try:
             from app.connect import notice

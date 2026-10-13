@@ -9,6 +9,7 @@ What a wrong answer would cost:
   * a stutter — the window's poll must be a stat, never a read.
 """
 import os
+import threading
 
 from app.cli import contract
 from app.services import jobs as J
@@ -169,3 +170,39 @@ def test_a_duty_failure_leaves_the_bar_once_it_is_over_and_a_command_lines_stays
     lines["update"] = None                                # looked at: it stops counting
     status.refresh()
     assert status.snapshot().failure.startswith("Command line (status)")
+
+
+def test_a_refresh_asked_for_while_one_runs_runs_once_more():
+    """The window asks for one refresh per Generate transition; a request that comes while a refresh runs (one started
+    by a command line's event, which already asked the `generate` provider) is not dropped: the refresh runs once more,
+    so Generate's failure reaches the bar and Needs you."""
+    asked, entered, release = [], threading.Event(), threading.Event()
+    lines = {"generate": None}
+
+    def generate():
+        asked.append(lines["generate"])
+        if len(asked) == 1:
+            entered.set()
+            assert release.wait(10)
+        return lines["generate"]
+    status = StatusService(JobRegistry(), providers={"generate": generate})
+    status.refresh_soon()                                 # the first refresh, already past its provider
+    assert entered.wait(5)
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh_soon()                                 # Generate failed meanwhile
+    release.set()
+    assert h.until(lambda: status.snapshot().failure == "Generate stopped (exit code 1).", seconds=5)
+    assert [e.text for e in status.snapshot().needs_you] == ["Generate stopped (exit code 1)."]
+    assert len(asked) == 2
+
+
+def test_marking_needs_you_seen_with_nothing_unseen_says_nothing():
+    """S19: opening Needs you again with every entry looked at sends no new snapshot."""
+    status = StatusService(JobRegistry(), providers={"generate": lambda: "Generate stopped (exit code 1)."})
+    status.refresh()
+    heard = []
+    status.subscribe(heard.append)
+    status.mark_seen()
+    assert len(heard) == 1 and all(e.seen for e in heard[0].needs_you)
+    status.mark_seen()
+    assert len(heard) == 1

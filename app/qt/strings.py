@@ -189,4 +189,6 @@ UPDATED = "Updated to v{version} ✓"
 # Closing while an Anki write runs (E20: it finishes its batch first, and a line says so) — the bar's one line, and
 # the reason a job asked for meanwhile waits.
 QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
+QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
+QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"

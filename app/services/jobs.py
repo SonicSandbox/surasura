@@ -3,8 +3,13 @@ which jobs may run together.
 
 A job is anything that runs while the window stays usable: Generate, the indexer, an Anki sync, 順's reorder, Connect's
 mining, a child process. Its record — `id`, `kind`, `label` (the user's words: *Generating*), `state`, `progress`,
-`started_at`, whether it was automatic, and what quitting does to it (`wait` · `cancel` · `detach`) — is what the bottom
-bar shows (`snapshot()`), and a window hears every change (`subscribe`).
+`started_at`, whether it was automatic, what quitting does to it (`wait` · `cancel` · `detach`), whether it can be
+cancelled at all and the pid of the child process it runs (when it runs one) — is what the bottom bar shows
+(`snapshot()`), and a window hears every change (`subscribe`).
+
+Quitting: `cancel` jobs are stopped; `wait` jobs keep the window while under way — a job writing Anki finishes its
+batch, and a job past the point it can stop at says so (`finishes_at_quit`: Generate writing your list); `detach` jobs
+go on without the window (Connect) or are cut by the exit (the sync and the backlog read: they only read Anki).
 
 States: `queued` (asked for, not started) · `waiting` (held back, with its reason in plain words) · `running` ·
 `cancelling` (asked to stop; still ending) · `done` · `failed` (with its message). A job cancelled before it started is
@@ -30,6 +35,7 @@ from collections import namedtuple
 QUEUED, WAITING, RUNNING, CANCELLING, DONE, FAILED = "queued", "waiting", "running", "cancelling", "done", "failed"
 LIVE = (QUEUED, WAITING, RUNNING, CANCELLING)
 QUIT_CHOICES = ("wait", "cancel", "detach")
+QUIT_LOOK = 0.05            # at quit, how often a job waited for is asked again what quitting does to it
 
 # What each kind of job uses. Two jobs sharing a resource never run together; a kind always conflicts with itself.
 RESOURCES = {
@@ -56,7 +62,7 @@ RESOURCES = {
 
 Progress = namedtuple("Progress", "step done total")
 JobView = namedtuple("JobView", "id kind label state reason message progress started_at ended_at automatic on_quit "
-                                "cancelled gated")
+                                "cancelled gated pid can_cancel", defaults=(None, True))
 
 
 def conflicts(kind_a, kind_b):
@@ -68,7 +74,8 @@ def conflicts(kind_a, kind_b):
 
 def waits_at_quit(jobs):
     """Of `jobs` (views or Jobs), those closing the window waits for: a `wait` job under way — an Anki write
-    finishing its batch (E20). One not started yet has nothing to finish (`quit` drops it). -> a tuple."""
+    finishing its batch, or a job past the point it can stop at (E20). One not started yet has nothing to finish
+    (`quit` drops it). The one rule, for the window and `quit`. -> a tuple."""
     return tuple(j for j in jobs if j.on_quit == "wait" and j.state in (RUNNING, CANCELLING))
 
 
@@ -92,11 +99,13 @@ class Job:
         self.started_at = None
         self.ended_at = None
         self.cancelled = False
+        self.pid = None                 # the child process it runs, once started (`started_process`)
         self.ended = threading.Event()
 
     def view(self):
         return JobView(self.id, self.kind, self.label, self.state, self.reason, self.message, self.progress_now,
-                       self.started_at, self.ended_at, self.automatic, self.on_quit, self.cancelled, self.gated)
+                       self.started_at, self.ended_at, self.automatic, self.on_quit, self.cancelled, self.gated,
+                       self.pid, self._cancel is not None)
 
     def progress(self, step, done=None, total=None):
         """Where the running job is: a step in the user's words, and how far through it."""
@@ -116,6 +125,15 @@ class Job:
     def wait(self, timeout=None):
         """Wait until the job ended (a worker's call, never a window's thread). True when it has."""
         return self.ended.wait(timeout)
+
+    def started_process(self, pid):
+        """The child process it runs is `pid`: the update's wait list shows that process as this job alone."""
+        self.pid = pid
+
+    def finishes_at_quit(self):
+        """It is past the point it can stop at (Generate writing your list): closing the window now waits for it as
+        for an Anki write (`on_quit` becomes `wait`). Said at once, before its owner reports the step."""
+        self._registry._finishes(self)
 
 
 class JobRegistry:
@@ -201,7 +219,8 @@ class JobRegistry:
         """What closing the window does to each live job: `cancel` ones are cancelled, `wait` ones waited for (up to
         `timeout` in all; a running `wait` job — an Anki write finishing its batch, E20 — up to `wait_timeout` when
         given), `detach` ones left running. A `wait` job that never started has nothing to finish: it is cancelled,
-        never waited for. A worker's call. -> the jobs still running after it."""
+        never waited for. A `cancel` job that passes the point it can stop at meanwhile (`finishes_at_quit`) is waited
+        for as a `wait` one from then on. A worker's call. -> the jobs still running after it."""
         with self._lock:
             live = [j for j in self._jobs if j.state in LIVE]
             under_way = waits_at_quit(live)
@@ -210,9 +229,11 @@ class JobRegistry:
                 job.cancel()
         start = time.monotonic()
         for job in live:
-            if job.on_quit in ("wait", "cancel"):
+            while job.on_quit in ("wait", "cancel"):
                 limit = wait_timeout if job.on_quit == "wait" and wait_timeout is not None else timeout
-                job.wait(max(0.0, start + limit - time.monotonic()))
+                left = start + limit - time.monotonic()
+                if left <= 0 or job.wait(min(left, QUIT_LOOK)):
+                    break
         with self._lock:
             return tuple(j.view() for j in self._jobs if j.state in LIVE)
 
@@ -264,6 +285,13 @@ class JobRegistry:
                 job._start(job)
             except Exception as e:                    # a start that fails is a failed job, never a stuck one
                 self._end(job, FAILED, f"couldn't start: {e}")
+
+    def _finishes(self, job):
+        with self._lock:
+            if job.state not in (RUNNING, CANCELLING) or job.on_quit == "wait":
+                return
+            job.on_quit = "wait"
+        self._notify()
 
     def _change(self, job, progress=None):
         with self._lock:

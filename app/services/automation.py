@@ -22,8 +22,10 @@ and `_maybe_junban_auto`, as one service a window builds once.
   `failed`), how many words it added, the known-words count (read on the worker: at the start, on a language switch and
   after each sync) and 順's last line. Delivered only when it changed, on the worker's thread; a window posts it on.
 
-`close()` leaves nothing: no timer, no listener acting, the worker stopped. A sync or 順 already running finishes
-(their jobs are `on_quit="wait"`: an append or an Anki write is never cut in half).
+`close()` leaves nothing: no timer, no listener acting, the worker stopped. 順 already running finishes its batch
+(`on_quit="wait"`: an Anki write is never cut in half, and the window stays until it ends, E20). The sync and the
+backlog read only read Anki and write their files atomically under the known-words lock, so closing never waits for
+them (`on_quit="detach"`, as the Tk `on_closing`); neither can be cancelled (no Stop on the update's wait list).
 """
 import importlib
 import math
@@ -241,7 +243,7 @@ class AutoSync:
         decks = list((settings.get("anki_sync_decks") or {}).get(language) or [])
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
         suspended = bool(settings.get("anki_sync_include_suspended", False))
-        o.registry.submit("anki-sync", SYNC_LABEL, automatic=True, on_quit="wait",
+        o.registry.submit("anki-sync", SYNC_LABEL, automatic=True, on_quit="detach",
                           start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended))
         return None
 
@@ -267,8 +269,13 @@ class AutoSync:
             o.publish(sync=FAILED, message=problem)
         elif result.error:
             o.publish(sync=FAILED, message=result.error)
-        else:
+        elif language == o.language:
             o.publish(sync=SYNCED, added=result.added, known=result.total_known, message=None)
+            if language != o.language:          # switched as it was said: the open language's count, read after it
+                o.worker.put(o._read_known)
+        else:
+            o.publish(sync=SYNCED, added=result.added, message=None)     # its count is another language's (D31)
+
         failed = (result is None and not closed) or (result is not None and bool(result.error))
         job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
         if result is not None:
@@ -309,7 +316,7 @@ class AutoSync:
             except Exception as e:
                 print(f"Anki backlog skipped: {e}")
             job.finish(ok=True)
-        o.registry.submit("anki-backlog", BACKLOG_LABEL, automatic=True, on_quit="wait",
+        o.registry.submit("anki-backlog", BACKLOG_LABEL, automatic=True, on_quit="detach",
                           start=lambda job: o.thread(work, job))
         return None
 

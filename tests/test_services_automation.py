@@ -799,7 +799,7 @@ def test_a_second_program_writing_known_words_is_never_written_across(live, monk
     assert state.sync == A.FAILED and "the Anki window" in (state.message or "")
     assert open(path, "rb").read() == before and launches.count() == 0
     job = [v for v in registry.snapshot() if v.kind == "anki-sync"][0]
-    assert job.state == J.FAILED and job.on_quit == "wait", "an Anki write is never cut in half at quit (E20)"
+    assert job.state == J.FAILED and job.on_quit == "detach", "read-only on Anki: closing never waits for it"
     auto.close()
 
 
@@ -893,21 +893,72 @@ def test_a_stale_state_is_never_delivered_after_a_newer_one(live):
     auto.close()
 
 
-def test_the_backlog_read_is_waited_for_at_quit_never_cancelled(live, monkeypatch):
-    """`_maybe_backlog_sync`'s job is `on_quit="wait"`: closing the window lets the read of Anki's new cards finish its
-    write of anki_backlog.json — never marked cancelled half-way."""
+def test_the_sync_and_the_backlog_read_never_keep_the_window_at_quit_and_are_never_cancelled(live, monkeypatch):
+    """Both only read Anki, and write their local files atomically under the known-words lock (temp + replace), so the
+    exit may cut them; the Tk `on_closing` never waited for them. Closing the window waits for neither (`detach`: only
+    a job writing Anki keeps it, E20's "a few seconds"), and the quit never marks one cancelled half-way — they have
+    no cancel, so the update's wait list gives them no *Stop it* either."""
     entered, gate = threading.Event(), threading.Event()
-    monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": True})
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=0)
+    anki.gate = gate
     monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: (entered.set(), gate.wait(10)))
     auto, registry, _c, _l = _make(_settings())
     auto.before_generate()
-    assert entered.wait(5)
-    still = [v for v in registry.quit(timeout=0) if v.kind == "anki-backlog"]
-    assert [(v.state, v.cancelled, v.on_quit) for v in still] == [(J.RUNNING, False, "wait")]
+    auto.language_changed("ja")
+    assert entered.wait(5) and h.until(lambda: anki.syncs, seconds=5)
+    running = [v for v in registry.live() if v.kind in ("anki-sync", "anki-backlog")]
+    assert sorted((v.kind, v.on_quit, v.can_cancel) for v in running) == [
+        ("anki-backlog", "detach", False), ("anki-sync", "detach", False)]
+    assert J.waits_at_quit(registry.snapshot()) == ()
+    still = [v for v in registry.quit(timeout=0, wait_timeout=0) if v.kind in ("anki-sync", "anki-backlog")]
+    assert sorted((v.kind, v.state, v.cancelled) for v in still) == [
+        ("anki-backlog", J.RUNNING, False), ("anki-sync", J.RUNNING, False)]
     gate.set()
     _settle(auto, registry)
-    view = [v for v in registry.snapshot() if v.kind == "anki-backlog"][0]
-    assert view.state == J.DONE and not view.cancelled
+    assert all(v.state == J.DONE and not v.cancelled for v in registry.snapshot()
+               if v.kind in ("anki-sync", "anki-backlog"))
+    auto.close()
+
+
+def test_a_sync_that_ends_after_a_language_switch_shows_the_open_languages_count(live, monkeypatch):
+    """D31 (a language switch re-reads what it shows): a Japanese sync that ends after the user opened Chinese never
+    puts Japanese's known count in the Chinese window's bar — the count shown is Chinese's."""
+    h.seed_library("ja")
+    h.seed_library("zh")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=2)
+    anki.gate = threading.Event()
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    auto.language_changed("ja")
+    assert h.until(lambda: len(anki.syncs) == 1, seconds=5)
+    auto.language_changed("zh")
+    assert auto.worker.idle(5)
+    zh = anki_sync.count_known("zh")
+    assert zh != anki_sync.count_known("ja"), "two different counts"
+    anki.gate.set()
+    _settle(auto, registry)
+    assert h.until(lambda: auto.worker.idle(0.05) and auto.state().known == zh, seconds=5), auto.state()
+    auto.close()
+
+
+def test_the_automatic_generate_launches_only_once_its_folders_are_set_up(live, monkeypatch):
+    """`run_analyzer`'s order: the folders and word lists set up, then the run — a slow set-up (the 30-day .trash
+    clean-up) is over before the analyzer starts, never raced by it."""
+    from app import path_utils
+    seen, holder = [], {}
+
+    def slow_setup(language=None):
+        time.sleep(0.3)
+        seen.append(holder["launches"].count())
+    monkeypatch.setattr(path_utils, "ensure_data_setup", slow_setup)
+    auto, registry, controller, launches = _make(_settings())
+    holder["launches"] = launches
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert seen == [0]
+    launches.runs[0].ended(0)
     auto.close()
 
 

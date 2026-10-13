@@ -23,7 +23,9 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   else finishes. Only the run knows which step it is in — the reader always trails it — so the controller never ends
   the child itself. A run started without `--progress-json` (the Tk dashboard's) can't be asked: a cancel waits for its
   end. A cancelled run leaves the last journey's files as they were; the analyzer dropped its stamp as it started, so
-  the journey reads `stale` and the next Generate runs it again.
+  the journey reads `stale` and the next Generate runs it again. From *Writing your list* on, its job quits with
+  `wait` (`Job.finishes_at_quit`, as soon as the line is read): closing the window waits for the run's end, capped, so
+  the process's exit never cuts it between the list and the journey (E20: the last good journey kept).
 - Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
   environment from `path_utils.build_subprocess_env`. A window that starts the child its own way (the Tk dashboard:
   its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
@@ -140,6 +142,8 @@ class Run:
             self.proc = proc
             if self.cancel_asked:
                 self._ask_to_stop()
+        if self.job is not None:
+            self.job.started_process(getattr(proc, "pid", None))
 
     def feed(self, line):
         """One line of the child's stdout."""
@@ -147,6 +151,8 @@ class Run:
         if kind == "progress":
             with self.lock:
                 self.step = value.step
+            if value.step in STEPS and STEPS.index(value.step) >= WRITING and self.job is not None:
+                self.job.finishes_at_quit()  # from here it can't stop: closing the window waits for it (E20)
         self.coalescer.feed(line)
 
     def ended(self, returncode):

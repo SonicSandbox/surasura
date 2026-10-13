@@ -66,6 +66,7 @@ class StatusService:
         self._extra = {"ankiweb": None, "connect": None}
         self._provided = {}              # each failure provider's last line (a new one counts once)
         self._refreshing = False
+        self._again = False              # asked for while a refresh ran: it runs once more
         self._subscribers = []
         self._logs_path = self._logs()
         # The events file's path, settled now (on the window's start): a refresh later never works one out again.
@@ -97,17 +98,35 @@ class StatusService:
         return self.snapshot()
 
     def refresh_soon(self):
+        """A refresh on a worker; asked for while one runs (which may have asked its providers already), it runs once
+        more after it — a request is never dropped."""
         with self._lock:
             if self._refreshing:
+                self._again = True
                 return
             self._refreshing = True
-        threading.Thread(target=self.refresh, name="status-refresh", daemon=True).start()
+        threading.Thread(target=self._refresh_while_asked, name="status-refresh", daemon=True).start()
 
     def mark_seen(self):
-        """The user looked at *Needs you*: its entries stop counting, and stay listed."""
+        """The user looked at *Needs you*: its entries stop counting, and stay listed. Nothing unseen: no new snapshot
+        (S19)."""
         with self._lock:
+            if all(e.seen for e in self._needs):
+                return
             self._needs = [e._replace(seen=True) for e in self._needs]
         self._publish()
+
+    def _refresh_while_asked(self):
+        while True:
+            try:
+                self.refresh()
+            except Exception as e:                      # a fault of this refresh never drops the next one asked for
+                print(f"Status: the refresh failed: {e}")
+            with self._lock:
+                again, self._again = self._again, False
+                if not again:
+                    return
+                self._refreshing = True
 
     # --- the worker's side -------------------------------------------------------------------------------------- #
     def refresh(self):

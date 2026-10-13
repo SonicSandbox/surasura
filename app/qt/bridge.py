@@ -59,6 +59,12 @@ class Bridge(QObject):
         """(Any thread.) The update service's `on_quit`: the window closes on its own thread."""
         self._emit("quit_asked", None)
 
+    def stop(self):
+        """The window closed: no service's callback reaches a slot from here on. The quit runs on the window's thread
+        after its loop ended, where a signal would reach its slot at once (a Generate dropped at quit would start a
+        journey look and a token-store read as the process exits)."""
+        self._alive = False
+
     def _gone(self, *_):
         self._alive = False
 

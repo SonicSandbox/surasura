@@ -466,24 +466,31 @@ class UpdateService:
         if writing is not None:
             busy.append({"pid": None, "name": f"Writing to Anki ({writing or 'Surasura'})", "stop": None})
         # The registry's running jobs (the Qt window's Generate, indexer, sync, 順 …), each keyed by its job (two may
-        # share a label: HR-4): *Stop it* cancels the job as its own Cancel does — but a job that quits with `wait` (an
-        # Anki write: the sync, 順, the backlog read) is only waited for, as Tk; 順's own row goes while the writer
-        # lock's row names its automatic step (IK-18). A recorded job is a child the window passes in `active()`:
-        # listed there, never twice.
+        # share a label: HR-4): *Stop it* cancels the job as its own Cancel does — but a job with no cancel (the sync,
+        # the backlog read, 順) or one that quits with `wait` (an Anki write, Generate writing your list: it can't
+        # stop) is only waited for, as Tk; 順's own row goes while the writer lock's row names its automatic step
+        # (IK-18). A job's child process (its `pid`) is listed as the job alone (`_listing`). A recorded job is a child
+        # the window passes in `active()`: listed there, never twice.
         for view in self.registry.live():
             if not view.gated or view.kind == "update" or view.state not in (jobs_module.RUNNING,
                                                                               jobs_module.CANCELLING):
                 continue
             if view.kind == "junban" and writing == anki_connect.AUTOMATIC_STEP:
                 continue
-            stop = None if view.on_quit == "wait" else (lambda job_id=view.id: self.registry.cancel(job_id))
-            busy.append({"pid": None, "key": ("job", view.id), "name": view.label, "stop": stop})
+            stop = (None if view.on_quit == "wait" or not view.can_cancel
+                    else (lambda job_id=view.id: self.registry.cancel(job_id)))
+            busy.append({"pid": view.pid, "key": ("job", view.id), "name": view.label, "stop": stop})
         return busy
 
     def _listing(self):
-        """What still runs (the Tk `_list_update_children`), or None when it couldn't be read."""
+        """What still runs (the Tk `_list_update_children`), or None when it couldn't be read. The window's own
+        children (Generate's analyzer, the indexer: `Surasura.exe …` in a frozen build, so the scan finds them too)
+        are their jobs' rows alone — never also *Another Surasura window*, whose Stop would end one at once."""
         try:
-            return self._busy_entries() + updater.running_children(list(self._active() or ()))
+            busy = self._busy_entries()
+            own = {entry["pid"] for entry in busy if entry.get("pid")}
+            return busy + [child for child in updater.running_children(list(self._active() or ()))
+                           if child.get("pid") not in own]
         except Exception as e:
             print(f"Update: {e}")
             return None

@@ -147,8 +147,9 @@ def _read_runtime_baseline(default):
 
 
 def _build_updater_exe(final_dist):
-    """Build the standalone updater.exe and drop it next to Surasura.exe (release only)."""
-    print("Building updater.exe (release artifact)...")
+    """Build the standalone updater.exe and drop it next to Surasura.exe — every build: each 3.x program carries the
+    swapper its next update runs (S3.1 D9), and its `app` part lists it."""
+    print("Building updater.exe...")
     cmd = [
         sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
         "--distpath", "dist", "--workpath", "build",
@@ -585,13 +586,13 @@ def swap_sqlite(final_dist, config):
     return None
 
 
-def check_program(final_dist, config, release):
+def check_program(final_dist, config):
     """The post-build checks (S3.1 D15–D17), also runnable on a built folder: `python package_app.py --check
     dist\\Surasura`. -> (failures, facts): failures a list of reasons (empty = all passed)."""
     failures, facts = [], {}
     internal = os.path.join(final_dist, "_internal")
-    # Exactly the three programs at the top (updater.exe only once a release built it).
-    expected = set(PROGRAM_EXES) if release else {"Surasura.exe", CLI_EXE_NAME}
+    # Exactly the three programs at the top, every build (updater.exe: the swapper, S3.1 D9).
+    expected = set(PROGRAM_EXES)
     found = {n for n in os.listdir(final_dist) if n.lower().endswith(".exe")} if os.path.isdir(final_dist) else set()
     facts["exes"] = sorted(found)
     if found != expected:
@@ -767,14 +768,15 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     write_build_stamp(final_dist, version, build_id, data_name)
     print(f"Build stamp: version {version}, build {build_id}, data folder name {data_name}")
 
-    # 5. Bundle updater.exe BEFORE zipping so the full package ships the helper (release only).
-    if release and not _build_updater_exe(final_dist):
-        print("Build failed: a release needs updater.exe.")
+    # 5. Bundle updater.exe BEFORE the checks, the zip, the installer and the release's file list: every build ships
+    #    the swapper (S3.1 D9), a test build too.
+    if not _build_updater_exe(final_dist):
+        print("Build failed: every build needs updater.exe.")
         return
 
     # 6. The post-build checks: exactly the three programs, no library, SQLite's floor, the stamp, PyQt6's modules and
     #    licences. Any failure stops here (nothing is zipped).
-    failures, facts = check_program(final_dist, config, release)
+    failures, facts = check_program(final_dist, config)
     print(f"Checks: programs {facts.get('exes')}, SQLite {facts.get('sqlite')}, "
           f"PyQt6 {facts.get('qt_modules', 'not bundled')}")
     if failures:
@@ -832,8 +834,8 @@ if __name__ == "__main__":
     parser.add_argument("--zip", action="store_true", help="Create a zip archive of the distribution folder.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the pre-build test gate (not recommended).")
     parser.add_argument("--release", action="store_true",
-                        help="Also build updater.exe and emit the 3.x update artifacts (parts, update.json, "
-                             "update.json.sig). Implies --zip. Refuses a Python below build_config's floor.")
+                        help="Also emit the 3.x update artifacts (parts, update.json, update.json.sig). "
+                             "Implies --zip. Refuses a Python below build_config's floor.")
     parser.add_argument("--full-update", action="store_true",
                         help="2.x's runtime release; on the 3.0 line the same as --release (every release lists "
                              "every file).")
@@ -848,8 +850,7 @@ if __name__ == "__main__":
                              "prints CHECKS OK or the failures.")
     args = parser.parse_known_args()[0]
     if args.check:
-        checked, found = check_program(args.check, load_build_config(),
-                                       release=os.path.isfile(os.path.join(args.check, "updater.exe")))
+        checked, found = check_program(args.check, load_build_config())
         zips = [os.path.join(os.path.dirname(os.path.abspath(args.check)), n)
                 for n in os.listdir(os.path.dirname(os.path.abspath(args.check)))
                 if n.startswith("Surasura_v") and n.endswith(".zip")]

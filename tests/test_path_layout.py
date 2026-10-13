@@ -22,6 +22,7 @@ import pytest
 from app import locks, path_utils
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PYTHON = sys.executable          # the real interpreter: the `program` fixture points sys.executable at a fake exe
 WINDOWS = sys.platform == "win32"
 
 
@@ -76,7 +77,9 @@ def _library_note(program, library):
 # --- installed vs portable vs source vs test root ------------------------------------------------------------------
 
 def test_an_installed_program_keeps_the_library_in_the_chosen_folder_and_settings_in_the_roaming_root(tmp_path,
-                                                                                                      program):
+                                                                                                      program,
+                                                                                                      monkeypatch):
+    _outside_pytest(monkeypatch)                        # the roaming root refuses a test without a root
     library = str(tmp_path / "ドキュメント" / "すらすら 图书馆")
     note = _library_note(program, library)
     assert os.path.dirname(note) == os.path.join(path_utils._local_base(), "Houseki", "Surasura")   # LOCAL root
@@ -251,6 +254,69 @@ def test_a_missing_library_folder_is_never_created_nor_an_empty_library_made(tmp
     assert path_utils.library_available() is True
     assert path_utils.ensure_data_setup("ja") is True
     assert os.path.isdir(library / "User Files" / "ja") and os.path.isdir(library / "data" / "ja" / "HighPriority")
+
+
+# A command line run as an installed program: path_utils reads the installed layout (the rest of the app is source).
+_INSTALLED_CLI = r"""
+import os, sys
+from app import path_utils
+program, call = sys.argv[1], sys.argv[2:]
+path_utils.is_frozen = lambda: True
+sys.executable = os.path.join(program, "surasura-cli.exe")
+sys._MEIPASS = os.path.join(program, "_internal")
+from app.cli import __main__ as cli
+sys.exit(cli.main(call))
+"""
+
+
+def test_the_command_lines_version_never_makes_a_missing_library(tmp_path, program, bases):
+    # `surasura-cli --version` imports the analyzer, whose import made <library>\results: on a first start, before the
+    # window's write check (D12), it made the library folder; on a NAS offline, an empty one (D3).
+    library = tmp_path / "NAS" / "すらすら 图书馆"
+    _library_note(program, str(library))
+    env = dict(os.environ, LOCALAPPDATA=bases["local"], APPDATA=bases["roaming"], XDG_DATA_HOME=bases["local"],
+               PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    for name in ("SURASURA_TEST_ROOT", "PYTEST_CURRENT_TEST"):          # as the installed program runs
+        env.pop(name, None)
+
+    def version():
+        out = subprocess.run([PYTHON, "-c", _INSTALLED_CLI, program, "--version"], cwd=str(tmp_path),
+                             env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
+        line = json.loads(out.stdout.decode("ascii").splitlines()[-1])
+        assert line["type"] == "result" and line["engine"]
+
+    version()
+    assert not os.path.exists(library.parent), "the command line made the missing library"
+    library.mkdir(parents=True)                         # back online: the import makes results\ as before
+    version()
+    assert os.listdir(library) == ["results"]
+
+
+def test_a_generate_makes_results_itself_before_writing(tmp_path, monkeypatch, ja_resources_dir):
+    # The import makes results\ only where the library is there, so a run makes it before it writes: a window that
+    # imported the analyzer before its first-run page made the library, then generates.
+    import shutil
+    from app import analyzer
+    data = tmp_path / "data" / "ja"
+    for bucket in ("HighPriority", "LowPriority", "GoalContent"):
+        (data / bucket).mkdir(parents=True)
+    shutil.copy(os.path.join(ja_resources_dir, "context_test.txt"), str(data / "HighPriority" / "冒険.txt"))
+    user_files = tmp_path / "User Files" / "ja"
+    user_files.mkdir(parents=True)
+    (user_files / "KnownWord.json").write_text("{}", encoding="utf-8")
+    results = tmp_path / "results"                      # not there
+    monkeypatch.setattr(analyzer, "get_data_path", lambda lang=None: str(data))
+    monkeypatch.setattr(analyzer, "get_user_files_path", lambda lang=None: str(user_files))
+    monkeypatch.setattr(analyzer, "RESULTS_DIR", str(results))
+    for name, file in (("OUTPUT_CSV", "priority_learning_list.csv"), ("OUTPUT_STATS", "file_statistics.txt"),
+                       ("OUTPUT_PROGRESSIVE", "progressive_learning_list.csv")):
+        monkeypatch.setattr(analyzer, name, str(results / file))
+    monkeypatch.setattr(sys, "argv", ["analyzer.py", "--language", "ja", "--min-freq", "1", "--context-min", "0",
+                                      "--target-coverage", "100"])
+    analyzer.main()
+    with open(results / "priority_learning_list.csv", encoding="utf-8-sig") as f:
+        assert "冒険" in f.read()
 
 
 def test_portable_source_and_test_root_libraries_are_always_available(program, monkeypatch):

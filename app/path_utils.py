@@ -46,6 +46,8 @@ LEGACY_VENDOR = "SonicSandbox"
 LIBRARY_NOTE = "library.json"
 DATA_NAME = "Surasura"
 BUILD_STAMP = "build_stamp.json"
+UPDATE_DIRNAME = "update"               # <Houseki local root>\update: the updater's state (S3.1 D9, app/updater.py)
+UPDATE_MARKER = "pending_update.json"   # its marker there, armed at the hand-over (library_store.update_staged reads it)
 
 _LIBRARY = {}   # (library.json's path, the program folder) -> the library folder, or None: read once per process (the
                 # installer writes it only while no Surasura runs: its AppMutex)
@@ -165,8 +167,10 @@ def get_persistent_user_data_path():
     This path should survive application updates/reinstalls.
     Windows: %APPDATA%/Houseki/<data name>/
     Linux/Mac: ~/.local/share/Houseki/<data name>/
+    SURASURA_TEST_ROOT moves it to <test root>/persistent_root; a test that reaches the real one raises (as the local
+    root does: a read made the real folder).
     """
-    path = os.path.join(_roaming_base(), VENDOR, data_name())
+    path = _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
     return path

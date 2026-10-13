@@ -10,8 +10,9 @@ What a wrong answer would cost, in order:
 
 Every root is a temp folder: the test root (conftest) is the new library, the program's own, so 2.x's per-user
 folders are `<root>/legacy_local_root` and `<root>/legacy_persistent_root` and the store is `<root>/index`; the
-Houseki roaming root is pointed into tmp_path through %APPDATA% / XDG_DATA_HOME. Content, known words and list words
-are real Japanese and Chinese from tests/Test Resources/; folder names carry both scripts, as users' paths do."""
+Houseki roaming root is the test root's, `<root>/persistent_root` (%APPDATA% / XDG_DATA_HOME pointed into tmp_path
+as well). Content, known words and list words are real Japanese and Chinese from tests/Test Resources/; folder names
+carry both scripts, as users' paths do."""
 import hashlib
 import json
 import os
@@ -196,10 +197,11 @@ def _protected():
 
 @pytest.fixture
 def roaming(tmp_path, monkeypatch):
-    """The Houseki roaming root pointed into tmp_path."""
+    """The Houseki roaming root: the test root's, <root>/persistent_root (path_utils.get_persistent_user_data_path);
+    %APPDATA% / XDG_DATA_HOME pointed into tmp_path as well, so nothing could reach the real one."""
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "Roaming"))
-    return os.path.join(str(tmp_path / "Roaming"), path_utils.VENDOR, path_utils.DATA_NAME)
+    return os.path.join(_root(), "persistent_root")
 
 
 # --- the whole import ----------------------------------------------------------------------------------------------

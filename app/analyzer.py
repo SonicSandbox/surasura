@@ -25,7 +25,7 @@ from datetime import datetime
 import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
-                            is_content_file, infer_source_type, read_source_marker, read_text,
+                            is_content_file, infer_source_type, library_available, read_source_marker, read_text,
                             SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
@@ -169,7 +169,8 @@ except Exception as e:
 # Paths - Now determined dynamically in main()
 # RESULTS_DIR remains shared for the "Active" analysis result
 RESULTS_DIR = get_user_file("results")
-os.makedirs(RESULTS_DIR, exist_ok=True)
+if library_available():         # an installed library not there (offline, or a first start) is never made (S3.1 D3)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
 
 OUTPUT_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
 OUTPUT_STATS = os.path.join(RESULTS_DIR, "file_statistics.txt")
@@ -4749,6 +4750,7 @@ def main():
 
     # A real run is about to replace results/. Drop the stamp first, so a run that dies part-way
     # leaves outputs that no skip will ever mistake for a finished run. Re-stamped at the end.
+    os.makedirs(RESULTS_DIR, exist_ok=True)     # made here as it is written (the import makes it only where it may)
     _set_run_stamp(RESULTS_DIR, None)
     _PROGRESS["ran"] = True
     _progress("Reading your files", 0, len(found_files))

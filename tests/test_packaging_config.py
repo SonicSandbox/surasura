@@ -234,11 +234,11 @@ def test_each_program_file_falls_in_its_part():
 
 # --- the post-build checks (D15-D18): `python package_app.py --check dist\Surasura` ----------------------------------------
 
-def _program(tmp_path, release=True, qt=True, licences=True):
+def _program(tmp_path, qt=True, licences=True):
     folder = tmp_path / "Surasura"
     internal = folder / "_internal"
     internal.mkdir(parents=True)
-    for exe in package_app.PROGRAM_EXES if release else ("Surasura.exe", "surasura-cli.exe"):
+    for exe in package_app.PROGRAM_EXES:
         (folder / exe).write_bytes(b"MZ")
     config = package_app.load_build_config()
     (internal / "sqlite3.dll").write_bytes(open(os.path.join(PROJECT, *config["sqlite_dll"].split("/")), "rb").read())
@@ -257,7 +257,7 @@ def _program(tmp_path, release=True, qt=True, licences=True):
 
 def test_a_whole_program_passes_every_check(tmp_path):
     folder, config = _program(tmp_path)
-    failures, facts = package_app.check_program(str(folder), config, release=True)
+    failures, facts = package_app.check_program(str(folder), config)
     assert failures == []
     assert facts["exes"] == ["Surasura.exe", "surasura-cli.exe", "updater.exe"]
     assert package_app._version_tuple(facts["sqlite"]) >= (3, 51, 3)
@@ -279,21 +279,67 @@ def test_a_whole_program_passes_every_check(tmp_path):
 def test_each_damage_fails_its_check(tmp_path, damage, expected):
     folder, config = _program(tmp_path)
     damage(folder)
-    failures, _facts = package_app.check_program(str(folder), config, release=True)
+    failures, _facts = package_app.check_program(str(folder), config)
     assert any(expected in f for f in failures), failures
 
 
-def test_a_test_build_has_two_programs_and_no_updater(tmp_path):
-    folder, config = _program(tmp_path, release=False)
-    assert package_app.check_program(str(folder), config, release=False)[0] == []
-    (folder / "updater.exe").write_bytes(b"MZ")
-    assert package_app.check_program(str(folder), config, release=False)[0]
+def _stubbed_build(tmp_path, monkeypatch, release, updater_builds=True):
+    """build(release) with PyInstaller stubbed — each spec "builds" a tiny file where the real one would; the updater's
+    fails when `updater_builds` is False — the SQLite swap stubbed, and the checks and the release's file list
+    recording the program folder they read. -> (the specs frozen, in order; {"checked" / "listed": the names seen})."""
+    import subprocess
+    (tmp_path / "app").mkdir()
+    with open(os.path.join(PROJECT, "app", "build_info.py"), "rb") as f:
+        (tmp_path / "app" / "build_info.py").write_bytes(f.read())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "get_version", lambda: "3.0.0")
+    monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 4))
+    frozen, seen = [], {}
+
+    def pyinstaller(cmd, **kwargs):
+        frozen.append(os.path.basename(cmd[-1]))
+        if frozen[-1] == "Surasura.spec":
+            (tmp_path / "dist" / "Surasura" / "_internal").mkdir(parents=True)
+            for exe in ("Surasura.exe", "surasura-cli.exe"):
+                (tmp_path / "dist" / "Surasura" / exe).write_bytes(b"MZ")
+        elif updater_builds:
+            (tmp_path / "dist" / "updater.exe").write_bytes(b"MZ updater")
+        return subprocess.CompletedProcess(cmd, 0 if updater_builds or frozen[-1] == "Surasura.spec" else 1)
+
+    def checks(final, config):
+        seen["checked"] = sorted(os.listdir(final))
+        return [], {}
+    monkeypatch.setattr(package_app.subprocess, "run", pyinstaller)
+    monkeypatch.setattr(package_app, "swap_sqlite", lambda final, config: None)
+    monkeypatch.setattr(package_app, "check_program", checks)
+    monkeypatch.setattr(package_app, "_build_release",
+                        lambda final, *a, **k: seen.setdefault("listed", sorted(os.listdir(final))))
+    monkeypatch.setattr(os, "startfile", lambda path: None, raising=False)
+    package_app.build(release=release, skip_tests=True)
+    return frozen, seen
+
+
+@pytest.mark.parametrize("release", [False, True])
+def test_every_build_freezes_updater_exe_before_its_checks_and_its_file_list(tmp_path, monkeypatch, release):
+    """updater.exe is the swapper a 3.x program's next update runs (S3.1 D9): every build freezes it — a test build
+    too, not only --release — and puts it in the program before the checks, the zip, the installer and the release's
+    parts list read the folder."""
+    frozen, seen = _stubbed_build(tmp_path, monkeypatch, release)
+    assert frozen == ["Surasura.spec", "updater.spec"]
+    assert "updater.exe" in seen["checked"]
+    assert ("updater.exe" in seen["listed"]) if release else ("listed" not in seen)
+
+
+def test_a_build_whose_updater_exe_fails_stops_before_its_checks(tmp_path, monkeypatch, capsys):
+    frozen, seen = _stubbed_build(tmp_path, monkeypatch, release=False, updater_builds=False)
+    assert frozen == ["Surasura.spec", "updater.spec"] and seen == {}
+    assert "Build failed: every build needs updater.exe." in capsys.readouterr().out
 
 
 def test_missing_qt_licences_fail_the_folder_and_the_zip(tmp_path):
     import shutil
     folder, config = _program(tmp_path, licences=False)
-    failures, _ = package_app.check_program(str(folder), config, release=True)
+    failures, _ = package_app.check_program(str(folder), config)
     assert sum("licenses/" in f for f in failures) == 2
     shutil.make_archive(str(tmp_path / "Surasura_v3.0.0"), "zip", root_dir=str(tmp_path), base_dir="Surasura")
     assert len(package_app.check_zip_licences(str(tmp_path / "Surasura_v3.0.0.zip"))) == 2
@@ -306,7 +352,7 @@ def test_missing_qt_licences_fail_the_folder_and_the_zip(tmp_path):
 
 def test_a_program_without_qt_needs_no_qt_licences(tmp_path):
     folder, config = _program(tmp_path, qt=False)
-    assert package_app.check_program(str(folder), config, release=True)[0] == []
+    assert package_app.check_program(str(folder), config)[0] == []
 
 
 def test_the_build_stamp_is_canonical_json(tmp_path):

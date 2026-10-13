@@ -101,3 +101,60 @@ def test_the_guard_sees_a_new_file(tmp_path):
     made = conftest._folder_state(str(folder))
     (folder / "cli.log").write_text("2026-10-04 ログ\n", encoding="utf-8")
     assert conftest._folder_state(str(folder)) != made
+
+
+# --- the Houseki roaming root (S3.1): a test's read once made the real %APPDATA%\Houseki\Surasura -------------------
+
+def test_a_read_of_the_roaming_root_stays_in_the_test_root(tmp_path, monkeypatch):
+    # The パターン databases' path is read before anything is written (a Backfill lookup, a test reading the installed
+    # databases): under a test root it is the root's own, and nothing is made outside it.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))          # what the real one would be, here
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "Roaming"))
+    root = tmp_path / "テスト 根"
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
+    assert path_utils.get_persistent_user_data_path() == os.path.join(str(root), "persistent_root")
+    patterns_store = pytest.importorskip("modules.junban.patterns_store")
+    assert patterns_store.open_store(language="ja") is None             # no database: a read, nothing built
+    assert patterns_store.open_store(language="zh") is None
+    assert not os.path.exists(tmp_path / "Roaming")
+    assert sorted(os.listdir(tmp_path)) == ["テスト 根"] and os.listdir(root) == ["persistent_root"]
+    assert os.listdir(root / "persistent_root") == []
+
+
+def test_a_test_without_a_root_is_refused_the_real_roaming_root(tmp_path, monkeypatch):
+    # As the local root: the real one is never one bug away from a test run — and nothing is made before the refusal.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "Roaming"))
+    monkeypatch.delenv("SURASURA_TEST_ROOT", raising=False)
+    with pytest.raises(RuntimeError, match="SURASURA_TEST_ROOT"):
+        path_utils.get_persistent_user_data_path()
+    assert not os.path.exists(tmp_path / "Roaming")
+
+
+def test_the_guard_watches_the_houseki_roots_the_app_would_use(monkeypatch):
+    # conftest's guard looks at the real Houseki local and roaming roots before and after every test; they must be the
+    # very folders the app resolves outside a test (computed here without creating either).
+    _outside_pytest(monkeypatch)
+    monkeypatch.setattr(os, "makedirs", lambda *a, **k: None)
+    assert (path_utils.local_data_root(), path_utils.get_persistent_user_data_path()) == conftest._REAL_HOUSEKI_ROOTS
+
+
+def test_the_guard_sees_a_root_made_and_a_name_at_its_top(tmp_path):
+    root = tmp_path / "Houseki" / "Surasura"
+    missing = conftest._root_state(str(root))
+    root.mkdir(parents=True)
+    made = conftest._root_state(str(root))
+    assert made != missing
+    (root / "patterns_ja.db").write_bytes(b"")
+    assert conftest._root_state(str(root)) != made
+
+
+def test_the_guard_fails_a_test_that_makes_a_houseki_root(tmp_path, monkeypatch):
+    # The guard itself, run around a stand-in for a test that makes the root (pointed into tmp_path).
+    root = tmp_path / "Roaming" / "Houseki" / "Surasura"
+    monkeypatch.setattr(conftest, "_REAL_HOUSEKI_ROOTS", (str(root),))
+    guard = conftest._guard_real_local_data.__wrapped__()
+    next(guard)
+    root.mkdir(parents=True)
+    with pytest.raises(AssertionError, match="real Houseki root"):
+        next(guard)

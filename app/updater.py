@@ -48,12 +48,12 @@ _USER_AGENT = "Surasura-Readability-Analyzer"
 
 STAGING_DIRNAME = ".update_staging"       # 2.x's, beside the exe: `consume_result` reads 2.x's state there once
 BACKUP_DIRNAME = ".update_backup"
-MARKER_NAME = "pending_update.json"
+MARKER_NAME = path_utils.UPDATE_MARKER      # pending_update.json (library_store's status look names it too)
 ADDED_NAME = "pending_update_added.json"    # what the swap creates: the helper deletes the marker, so it is kept here
 RESULT_NAME = "last_update_result.json"
 REPORT_NAME = "update_report.txt"
 UPDATER_EXE_NAME = "updater.exe"
-UPDATE_DIRNAME = "update"                   # <Houseki local root>\update (S3.1 D9)
+UPDATE_DIRNAME = path_utils.UPDATE_DIRNAME  # <Houseki local root>\update (S3.1 D9)
 STAGE_PREFIX, DOWNLOAD_PREFIX, INSTALLER_PREFIX = "stage-", "download-", "installer-"
 PREVIOUS_DIRNAME, SWAPPER_DIRNAME = "previous", "swapper"
 FOLDER_FORMAT = 3                           # the 3.x swapper's marker (updater_helper.run_folder)

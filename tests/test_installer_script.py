@@ -346,11 +346,14 @@ def test_the_install_proof_points_the_swappers_recovery_entry_at_its_own_key_and
     assert key.startswith("Software\\SurasuraTests\\install-proof-") and key.endswith("\\RunOnce")
     assert key == proof.proof_key(profile) + "\\RunOnce", "the same key for every step run in that profile"
     assert proof.proof_key(profile) != proof.proof_key(str(tmp_path / "another"))
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as made:
-        winreg.SetValueEx(made, "SurasuraUpdateRecovery-test", 0, winreg.REG_SZ, "left by a cut-off swap")
-    assert proof.forget_proof_key(profile) is False
-    with pytest.raises(FileNotFoundError):
-        winreg.OpenKey(winreg.HKEY_CURRENT_USER, proof.proof_key(profile))
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as made:
+            winreg.SetValueEx(made, "SurasuraUpdateRecovery-test", 0, winreg.REG_SZ, "left by a cut-off swap")
+        assert proof.forget_proof_key(profile) is False
+        with pytest.raises(FileNotFoundError):
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, proof.proof_key(profile))
+    finally:
+        proof.forget_proof_key(profile)                                 # never left behind, whatever failed
 
 
 ISCC = package_app.find_iscc()

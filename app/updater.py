@@ -504,11 +504,33 @@ def _close_windows(pid):
     return len(windows)
 
 
-def stop_pid(pid, grace=None):
+CONNECT_ROW = "Surasura Connect — stops after this batch of cards"
+
+
+def connect_pid():
+    """The running Connect's process id (`surasura-cli connect`, from its lock's holder record), or None. The record is
+    trusted only while the `connect` lock is held: one a finished Connect left may name a process id Windows has since
+    given another program. A look of up to ~0.1 s (`locks.in_use`): the listing worker's, never the Tk thread's. Never
+    raises."""
+    try:
+        from app import locks
+        if not locks.in_use("connect"):
+            return None
+        return int((locks.read_holder("connect") or {}).get("pid")) or None
+    except Exception:
+        return None
+
+
+def stop_pid(pid, grace=None, connect=None):
     """*Stop it*: a program with a window is asked to close it, as its user would — a Content Manager mid-Graduate
     finishes the move and saves before it closes; one with no window (Generate, the パターン build), or still running
-    `STOP_GRACE` seconds later, is ended. Returns at once (the grace runs on a thread). Never raises."""
+    `STOP_GRACE` seconds later, is ended. Connect is never ended (P3.1 row 3.1.8, K99: a kill mid-batch orphans Anki
+    Miner): it stops by itself after its batch, the update staged — `connect`, its process id as the listing found it
+    (`connect_pid`, on the listing's worker: nothing is read again here, on the Tk thread). Returns at once (the grace
+    runs on a thread). Never raises."""
     try:
+        if connect is not None and int(pid) == int(connect):
+            return
         if sys.platform != "win32":
             import signal
             os.kill(int(pid), signal.SIGTERM)
@@ -559,8 +581,10 @@ def running_children(active_processes=(), images=None):
     パターン build, and any process running this install's Surasura.exe or surasura-cli.exe other than this one (the
     splicer and the importers' children, a command line hato started). Any other program running from this
     install's folder (an uninstaller, a helper a later version adds) is listed too, wait-only (`stop` None: never
-    ended from here). `images` overrides which programs count (a test, a source checkout; exactly those, no
-    folder). The auto-Generate guard does NOT ask this (Backfill's build goes behind a Generate)."""
+    ended from here). Connect (its lock's holder) is waited for and has no stop either: it stops by itself after its
+    batch of cards once the update is staged (P3.1 row 3.1.8). `images` overrides which programs count (a test, a
+    source checkout; exactly those, no folder). The auto-Generate guard does NOT ask this (Backfill's build goes
+    behind a Generate)."""
     found, seen = [], {os.getpid()}
     for process in list(active_processes or ()):
         try:
@@ -585,13 +609,17 @@ def running_children(active_processes=(), images=None):
     except Exception as e:
         print(f"Update: could not list running programs ({e})")
         others = {}
+    connect = connect_pid() if others else None
     for pid, image in sorted(others.items()):
         if pid in seen:
             continue
         seen.add(pid)
+        if pid == connect:
+            found.append({"pid": pid, "name": CONNECT_ROW, "stop": None})
+            continue
         cli = os.path.basename(image).lower() == CLI_EXE_NAME.lower()
         found.append({"pid": pid, "name": "Surasura's command line" if cli else "Another Surasura window",
-                      "stop": (lambda p=pid: stop_pid(p))})
+                      "stop": (lambda p=pid: stop_pid(p, connect=connect))})
     for pid, image in sorted(folder.items()):
         if pid not in seen:
             seen.add(pid)

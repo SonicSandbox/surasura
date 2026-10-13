@@ -1,5 +1,6 @@
-"""Connect's settings (P1.3's four, P2.1's switch and placing rules) and the dashboard's save: kept as the user set them, never written when they weren't
-(intent review #7 — preview off, settings.json stays as 2.5 leaves it), and read by no run (never in a signature)."""
+"""Connect's settings (P1.3's four, P2.1's switch and placing rules, P2.3's Open Anki for me) and the dashboard's save:
+kept as the user set them, never written when they weren't (intent review #7 — preview off, settings.json stays as 2.5
+leaves it), and read by no run (never in a signature)."""
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -8,7 +9,7 @@ from app import settings_manager
 from app.path_utils import get_user_file
 
 CONNECT = ("connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
-           "connect_enabled", "placing_rules")
+           "connect_enabled", "placing_rules", "connect_open_anki")
 
 
 def _write(values):
@@ -39,9 +40,24 @@ def test_a_dashboard_save_never_writes_connects_defaults():
 def test_a_dashboard_save_keeps_what_the_user_set():
     _write({"target_language": "ja", "connect_mine_words": "i1", "connect_send_grammar": False,
             "connect_anki_miner_path": os.path.join("D:\\", "ツール", "AnkiMiner", "AnkiMiner.exe"),
-            "connect_enabled": True, "placing_rules": {"hato": "top"}})
+            "connect_enabled": True, "placing_rules": {"hato": "top"}, "connect_open_anki": True})
     saved = _dashboard_save()
     assert saved["connect_enabled"] is True and saved["placing_rules"] == {"hato": "top"}
     assert saved["connect_mine_words"] == "i1" and saved["connect_send_grammar"] is False
+    assert saved["connect_open_anki"] is True, "Open Anki for me (P2.3), set by hand, survives the dashboard's save"
     assert saved["connect_anki_miner_path"].endswith("AnkiMiner.exe")
     assert "connect_anki_miner_profile" not in saved
+
+
+def test_a_dashboard_save_never_writes_junbans_preview_keys_and_keeps_them_once_set():
+    """P1.4-1's two keys show in 順 only while Connect's preview is on: a dashboard save never writes their defaults
+    into a settings.json without them (review P1.4-adversary #6), and keeps what the user set."""
+    import pytest
+    pytest.importorskip("modules.junban")
+    _write({"target_language": "ja", "enable_junban": True, "junban_deck": "TheBank"})
+    saved = _dashboard_save()
+    assert saved["junban_deck"] == "TheBank", "Junban's other keys are carried as before"
+    assert "junban_own_tag" not in saved and "junban_order_all" not in saved
+    _write({"target_language": "ja", "enable_junban": True, "junban_own_tag": "immersion", "junban_order_all": True})
+    saved = _dashboard_save()
+    assert saved["junban_own_tag"] == "immersion" and saved["junban_order_all"] is True

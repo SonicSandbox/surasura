@@ -25,7 +25,8 @@ into this one, at most 2 each side, with gaps up to 2 s.
 The card front (IS:233–236): a verb, adjective or helper verb by its dictionary form as written, anything else exactly
 as written; Surasura's `Word` goes as a second entry when it differs and no word in the episode is written that way
 (the homograph guard: 帰る's Word is 返る); never for a set phrase, whose front is the occurrence's own words with the
-last in its dictionary form (`phrases.spellings`).
+last in its dictionary form (`phrases.spellings`). An Anki Miner that makes a word from its line (3.7, Z-2) gets the
+card front alone, with `surface` and `front_reading` (`runfile.entries`, `runfile.word_requests`).
 
 Each word carries a predicted class (IS:247–255): why Anki Miner may not find it. A predicted miss is still sent: it
 costs nothing (no media is cut for a word his parse doesn't hold), and a later Anki Miner may find it.
@@ -84,13 +85,42 @@ def line_expansion(cues, at):
     return [before, after]
 
 
+def _by_lemma(token):
+    """A verb or adjective form UniDic reads as another word's (its lemma's reading isn't its own dictionary form's):
+    a potential, ra-nuki or classical form — 行ける, 辿り着ける, 来れる, 美しき. Anki Miner folds these to the lemma too
+    (`morphology.mining_base`), so the card is the lemma's (P1.3-AM37 review #3)."""
+    node = token.node
+    f = node.feature if node is not None else None
+    return (f is not None and f.pos1 in ("動詞", "形容詞") and bool(token.lemma) and bool(f.lForm)
+            and bool(f.kanaBase) and f.kanaBase != "*" and f.lForm != f.kanaBase)
+
+
 def card_front(token):
     """The word Anki Miner is named by (IS:234): a verb, adjective or helper verb by its dictionary form as the
-    occurrence writes it (orthBase); anything else exactly as written (伯父さん, not おじさん; クソ, not くそ)."""
+    occurrence writes it (orthBase) — by its lemma where that form is another word's (`_by_lemma`: 行ける → 行く);
+    anything else exactly as written (伯父さん, not おじさん; クソ, not くそ)."""
     node = token.node
     if node is not None and node.feature.pos1 in CONJUGATED:
-        return node.feature.orthBase or token.orth
+        return token.lemma if _by_lemma(token) else node.feature.orthBase or token.orth
     return token.written
+
+
+def front_reading(occurrence, key, language):
+    """The reading the card front is said with on this line, in hiragana as Anki Miner writes readings — or None (Anki
+    Miner then reads it itself). A set phrase: its row's reading (the dictionary's, キガツク); a word: its occurrence's
+    dictionary-form kana (UniDic's kanaBase, as Anki Miner reads a front it finds itself: やっぱ said so, never its
+    lemma's やはり; 言っ, いう), or the lemma's where the front is the lemma (行ける, いく); a joined word: the reading
+    the join gives it (日本人, にほんじん). Chinese keeps none."""
+    if language != "ja":
+        return None
+    from app import anki_match
+    node = occurrence.token.node
+    if not occurrence.phrase and node is None:
+        return None
+    by_lemma = occurrence.phrase or _by_lemma(occurrence.token)
+    reading = key[1] if by_lemma else getattr(node.feature, "kanaBase", None)
+    reading = reading if isinstance(reading, str) and reading not in ("", "*") else None
+    return anki_match.fold_kana(reading) if reading else None
 
 
 def predicted_class(token, phrase=False, neighbours=()):
@@ -263,6 +293,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             sent.append(key[0])     # Surasura's Word as well, where no word here is written so (IS:235)
         words.append({
             "word": key[0], "reading": key[1], "orth": best.orth, "surface": best.surface, "sent": sent,
+            "front_reading": front_reading(best, key, language),
             "kind": "phrase" if best.phrase else "word", "name": bool(name),
             "line_start": seconds(cue.start), "line_end": seconds(cue.end), "line_text": cue.text,
             "line_expansion": line_expansion(cues, best.cue),

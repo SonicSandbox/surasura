@@ -123,7 +123,8 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
 hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_gui', 'app.jiten_db_importer_gui',
                   'app.static_html_generator', 'app.migaku_converter', 'app.jiten_converter',
                   'app.content_importer_gui', 'app.frequency_list_gui', 'app.anki_db_importer_gui', 'app.indexer',
-                  'app.arrivals_worker', 'app.sentence_corpus', 'app.telemetry', 'app.main', 'app.qt.shell']
+                  'app.arrivals_worker', 'app.sentence_corpus', 'app.telemetry', 'app.main', 'app.qt.shell',
+                  'app.replan_preview']
 
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps

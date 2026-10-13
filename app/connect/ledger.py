@@ -5,18 +5,50 @@ lasts: lose it and Connect rebuilds what it needs from the store and Anki's tags
 P2.1 builds the jobs table the inbox fills (`queued`, `dropped`); the rest of a job's life (`waiting` → … → `done`,
 word outcomes, undo records) is P2.4's, on the same table. Short transactions, standard library `sqlite3`, like the
 store.
+
+P2.2 (SCHEMA 2, a SCHEMA 1 ledger upgraded in place): a job's `kind` — `mine` (an item's first cards) or `level` (the
+newly listed words of an item already mined, HC-N38) — and its `words` (a level job's `[[word, reading], …]`; None: the
+whole list); the list Connect last looked at (`listed`, with its run signature), so a level raise is told from the
+first look; and `resort_due`, a re-sort owed after the list moved (the runner's ordering step pays it, P2.4).
+
+P2.4 (SCHEMA 3, a SCHEMA 2 ledger upgraded in place by added columns and tables; one newer than this Surasura reads is
+refused, never used — `TooNew`, P2.2 adversary #12): the runner's whole job (02 §2): its states, each saved before and
+after its step (`set_state`; a job waiting mid-way keeps the step it resumes at, `resume`); the store it was queued
+from (`store_id`: a store set up again can't mine another item under the same id, P2.1 adversary #12); what its pick
+chose (`picked`, with the pairing's version and the Anki Miner profile it picked for); its batches (N5: the run folder,
+the attempt, the Anki Miner that ran it); each word's outcome (N6: word, spelling, reading, its line's start, end and
+sentence, the predicted class, the outcome, the note id — ✅ D1: the line stays here); the undo record (N9: the note ids
+a job made, `undo_record`); and what Connect needs you for (`needs`: each named once, P2.5 shows them).
+
+P2.5 (SCHEMA 4, a SCHEMA 3 ledger upgraded in place): *Needs you* as 03 §4 rules it — seen ≠ gone (`seen_at`: shown,
+no longer counted, still listed), `dismissed_at` (left the list), `fixed_at` (its cause went away: `fix`); one open
+entry per language + kind + item (open = not fixed), so a need raised again while open writes nothing (S19) and one
+raised after its fix is new and counts again. `undos`: each *Undo this batch* (N9, Q2-6), what it deleted and what it
+kept and why. `run:<lang>` in meta: when the run working on the language began (the status line's *i of n*).
 """
 import datetime
 import json
+import logging
 import os
 import sqlite3
+import time
+import uuid
 
-SCHEMA = 1
+_log = logging.getLogger("surasura-cli")
+SCHEMA = 4
 # A job's states (02 §2). Open = not finished one way or the other; not started = still droppable.
 OPEN = ("queued", "waiting", "picking", "fit-check", "mining", "filling", "ordering")
 NOT_STARTED = ("queued", "waiting")
+IN_FLIGHT = tuple(s for s in OPEN if s not in NOT_STARTED)
 DONE = "done"
 DROPPED = "dropped"
+FINISHED = (DONE, DROPPED, "failed", "undone", "skipped")
+STATES = OPEN + FINISHED
+# The steps a job waiting mid-way resumes at (`resume`): before mining it can still be dropped (02 §2: an item that
+# leaves the top 20 before mining; once mining has started, it finishes).
+BEFORE_MINING = (None, "picking", "fit-check")
+# A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined.
+MINE, LEVEL = "mine", "level"
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -29,7 +61,9 @@ _SCHEMA_SQL = (
       source TEXT,
       event_id INTEGER,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL)""",
+      updated_at TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'mine',
+      words TEXT)""",
     # One open job per item (N4): a re-read of the same events can never queue it twice
     "CREATE UNIQUE INDEX IF NOT EXISTS one_open_job ON jobs (language, item_id) WHERE state IN ({})".format(
         ", ".join(f"'{s}'" for s in OPEN)),
@@ -42,7 +76,87 @@ _SCHEMA_SQL = (
       until TEXT NOT NULL,
       items TEXT NOT NULL,
       noticed INTEGER NOT NULL DEFAULT 0)""",
+    # The list Connect last looked at (P2.2): its keys, the pick's identity (Word, Reading); its run signature is in
+    # meta (`listed:<lang>`). A level raise is the words listed now and not then.
+    """CREATE TABLE IF NOT EXISTS listed (
+      language TEXT NOT NULL,
+      word TEXT NOT NULL,
+      reading TEXT NOT NULL,
+      PRIMARY KEY (language, word, reading))""",
 )
+# SCHEMA 1 -> 2 -> 3: the columns P2.2 and P2.4 add to a ledger made before them (the table above has P2.2's).
+_ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
+                  ("store_id", "TEXT"), ("resume", "TEXT"), ("picked", "TEXT"),
+                  ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("failures", "INTEGER NOT NULL DEFAULT 0"),
+                  ("skipped", "TEXT"), ("tag_pending", "TEXT"))
+# P2.4's tables (made IF NOT EXISTS, like the rest)
+_RUNNER_SQL = (
+    # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
+    """CREATE TABLE IF NOT EXISTS batches (
+      job_id INTEGER NOT NULL,
+      attempt INTEGER NOT NULL,
+      run_dir TEXT NOT NULL,
+      anki_miner TEXT,
+      state TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      PRIMARY KEY (job_id, attempt))""",
+    # N6, one word's outcome (made · duplicate · not_found · no_definition · uncertain · …), its line kept here (D1)
+    """CREATE TABLE IF NOT EXISTS outcomes (
+      job_id INTEGER NOT NULL,
+      word TEXT NOT NULL,
+      reading TEXT NOT NULL,
+      orth TEXT,
+      line_start REAL,
+      line_end REAL,
+      sentence TEXT,
+      predicted TEXT,
+      outcome TEXT NOT NULL,
+      note_id INTEGER,
+      attempt INTEGER NOT NULL,
+      PRIMARY KEY (job_id, word, reading))""",
+    # What Connect needs you for (03 §4; P2.5's columns are added by `_needs_v4`): one open entry per kind + item
+    """CREATE TABLE IF NOT EXISTS needs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      language TEXT NOT NULL,
+      item_id INTEGER,
+      job_id INTEGER,
+      kind TEXT NOT NULL,
+      say TEXT NOT NULL,
+      at TEXT NOT NULL,
+      seen INTEGER NOT NULL DEFAULT 0)""",
+    # P2.5: each *Undo this batch*, written before Anki is (the notes it will delete), finished after (`finished_at`;
+    # `deleted`: the notes gone then; `kept`: [[note id, word, why], ...]) — one a kill left unfinished is finished
+    # by the next look (`undo.finish_pending`)
+    """CREATE TABLE IF NOT EXISTS undos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      language TEXT NOT NULL,
+      at TEXT NOT NULL,
+      deleted TEXT NOT NULL,
+      kept TEXT NOT NULL,
+      finished_at TEXT)""",
+)
+# SCHEMA 3 -> 4: *Needs you*'s own columns (P2.5)
+_NEEDS_COLUMNS = (("seen_at", "TEXT"), ("dismissed_at", "TEXT"), ("fixed_at", "TEXT"))
+# The language's own needs, fixed by a run whose sync, known-sync and Generate went through (03 §4: fixed by itself)
+PREPARE_KINDS = ("known-sync", "generate", "no-store", "no-profile")
+# Needs that are a standing state (it stays until its cause goes): raised again while open, nothing is written (S19).
+# Every other kind is a failure: one that happens again after you've seen it counts again, with its new words (03 §4)
+STANDING = ("not-timed", "no-profile", "no-store", "no-subtitle")
+# The columns `set_state` may write beside the state
+_STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id", "tag_pending"))
+# Anki Miner's outcomes that settle a word without a card (it turned it down): never sent again for the item
+_NOT_MADE = ("made", "uncertain", "not_attempted")
+
+
+class TooNew(Exception):
+    """The ledger was written by a newer Surasura (its schema above SCHEMA): refused, never read or written — Connect
+    says so in *Needs you* (P2.2 adversary #12)."""
+
+    def __init__(self, schema):
+        self.schema = schema
+        super().__init__(f"Connect's ledger (schema {schema}) is newer than this Surasura reads. Update Surasura.")
 
 
 def _now():
@@ -65,12 +179,63 @@ class Ledger:
         db_path = db_path or path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path, timeout=5.0, isolation_level=None)
-        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        for wait in (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, None):
+            try:            # two Connects opening a new ledger at once: switching it to WAL skips the busy handler
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as e:
+                if wait is None or "locked" not in str(e):
+                    self.conn.close()
+                    raise
+                time.sleep(wait)
+        self._uid = None
+        try:
+            self._refuse_newer()
+        except BaseException:
+            self.conn.close()
+            raise
         with self.transaction():
-            for sql in _SCHEMA_SQL:
+            for sql in _SCHEMA_SQL + _RUNNER_SQL:
                 self.conn.execute(sql)
+            have = {row[1] for row in self.conn.execute("PRAGMA table_info(jobs)")}
+            for name, decl in _ADDED_COLUMNS:
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+            self._needs_v4()
             self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (str(SCHEMA),))
+            # this ledger's own name in its jobs' tags: a ledger made again never reuses a lost one's tags
+            self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('uid', ?)", (uuid.uuid4().hex[:8],))
+            self.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema' AND CAST(value AS INTEGER) < ?",
+                              (str(SCHEMA), SCHEMA))
+
+    def _needs_v4(self):
+        """SCHEMA 4's *Needs you* (inside the opening transaction): its columns, and one open entry per language +
+        kind + item (SCHEMA 3's index counted only unseen ones; an older duplicate is closed as fixed first)."""
+        have = {row[1] for row in self.conn.execute("PRAGMA table_info(needs)")}
+        for name, decl in _NEEDS_COLUMNS:
+            if name not in have:
+                self.conn.execute(f"ALTER TABLE needs ADD COLUMN {name} {decl}")
+                if name == "seen_at" and "seen" in have:        # SCHEMA 3's shown ones stay shown
+                    self.conn.execute("UPDATE needs SET seen_at = at WHERE seen = 1")
+        if self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'one_open_need'").fetchone():
+            return
+        self.conn.execute("DROP INDEX IF EXISTS one_need")
+        self.conn.execute("UPDATE needs SET fixed_at = at WHERE fixed_at IS NULL AND id NOT IN (SELECT MAX(id) FROM "
+                          "needs WHERE fixed_at IS NULL GROUP BY language, kind, COALESCE(item_id, -1))")
+        self.conn.execute("CREATE UNIQUE INDEX one_open_need ON needs (language, kind, COALESCE(item_id, -1)) "
+                          "WHERE fixed_at IS NULL")
+
+    def _refuse_newer(self):
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone():
+            return
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        try:
+            schema = int(row[0]) if row else 0
+        except (TypeError, ValueError):
+            schema = SCHEMA + 1             # a schema that can't be read is no schema this Surasura knows
+        if schema > SCHEMA:
+            raise TooNew(row[0] if row else None)
 
     def __enter__(self):
         return self
@@ -89,7 +254,7 @@ class Ledger:
         cur = self.conn.execute("SELECT * FROM jobs WHERE language = ? AND item_id = ? ORDER BY id DESC LIMIT 1",
                                 (language, item_id))
         row = cur.fetchone()
-        return None if row is None else dict(zip([d[0] for d in cur.description], row))
+        return None if row is None else self._tagged(dict(zip([d[0] for d in cur.description], row)))
 
     def jobs(self, language=None, states=None):
         sql, params = "SELECT * FROM jobs WHERE 1 = 1", []
@@ -101,7 +266,19 @@ class Ledger:
             params += list(states)
         cur = self.conn.execute(sql + " ORDER BY id", params)
         names = [d[0] for d in cur.description]
-        return [dict(zip(names, r)) for r in cur.fetchall()]
+        return [self._tagged(dict(zip(names, r))) for r in cur.fetchall()]
+
+    def tag_id(self, job_id):
+        """The job's name in its Anki tag and run folder (`<ledger uid>-<job id>`): unique past a lost ledger
+        (adversary P2.4-A #14), so an old job's notes are never counted as a new one's."""
+        if self._uid is None:
+            row = self.conn.execute("SELECT value FROM meta WHERE key = 'uid'").fetchone()
+            self._uid = row[0] if row else "0"
+        return f"{self._uid}-{job_id}"
+
+    def _tagged(self, job):
+        job["tag"] = self.tag_id(job["id"])
+        return job
 
     def has_work(self, language, item_id):
         """An open job, or one already done (its receipt may not be written yet): never queue the item again."""
@@ -109,13 +286,15 @@ class Ledger:
         return self.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) "
                                  "LIMIT 1", (language, item_id) + OPEN + (DONE,)).fetchone() is not None
 
-    def queue(self, language, item_id, source, event_id):
-        """A `queued` job for the item -> its id, or None when it already has work."""
+    def queue(self, language, item_id, source, event_id, store_id=None):
+        """A `queued` job for the item -> its id, or None when it already has work. `store_id`: the store it was read
+        from (the runner refuses a job of another store)."""
         if self.has_work(language, item_id):
             return None
         now = _now()
-        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at) "
-                                "VALUES (?, ?, 'queued', ?, ?, ?, ?)", (language, item_id, source, event_id, now, now))
+        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
+                                "store_id) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
+                                (language, item_id, source, event_id, now, now, store_id))
         return cur.lastrowid
 
     def last_read(self, language):
@@ -142,14 +321,349 @@ class Ledger:
     def mark_noticed(self, ids):
         self.conn.executemany("UPDATE gaps SET noticed = 1 WHERE id = ?", [(i,) for i in ids])
 
+    # --- P2.2: the level raise (HC-N38 / N53) ---------------------------------------------------------------- #
+
+    def job_by_id(self, job_id):
+        """One job as a dict (its `words` read back as a list of (word, reading)), or None."""
+        cur = self.conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        out = self._tagged(dict(zip([d[0] for d in cur.description], row)))
+        out["words"] = _words(out.get("words"))
+        return out
+
+    def in_flight(self, language):
+        """Is a job of the language past its start (picking … ordering, or waiting mid-way)? Then the list it reads
+        may be the one just replaced: the level raise waits for it."""
+        marks = ",".join("?" * len(IN_FLIGHT))
+        return self.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND (state IN ({marks}) OR (state = 'waiting' "
+                                 "AND resume IS NOT NULL)) LIMIT 1", (language,) + IN_FLIGHT).fetchone() is not None
+
+    def _not_started(self, job_id):
+        """Queued, or waiting with nothing picked yet: it can still gain words or be dropped."""
+        row = self.conn.execute("SELECT state, resume FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return row is not None and (row[0] == "queued" or (row[0] == "waiting" and row[1] is None))
+
+    def mined(self, language, item_id):
+        """Has Connect finished mining the item (a `done` job)? The store's receipt says so too, once written."""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state = ? LIMIT 1",
+                                 (language, item_id, DONE)).fetchone() is not None
+
+    def queue_level(self, language, item_id, words, source="level", store_id=None):
+        """A `queued` job of kind `level` for an item already mined, naming only `words` ((word, reading) pairs) ->
+        its id. A level job still waiting gains the words (-> its id). Another open job of the item -> None: a first
+        mining not started picks from the list as it is now, so the new words are its already."""
+        words = sorted({(str(w), str(r)) for w, r in words or ()})
+        if not words:
+            return None
+        marks = ",".join("?" * len(OPEN))
+        row = self.conn.execute(f"SELECT id, kind, state, words FROM jobs WHERE language = ? AND item_id = ? AND "
+                                f"state IN ({marks}) ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
+        now = _now()
+        if row is not None:
+            job_id, kind, state, had = row
+            if kind != LEVEL or not self._not_started(job_id):
+                return None
+            merged = sorted(set(_words(had)) | set(words))
+            self.conn.execute("UPDATE jobs SET words = ?, updated_at = ? WHERE id = ?",
+                              (json.dumps(merged, ensure_ascii=False), now, job_id))
+            return job_id
+        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
+                                "kind, words, store_id) VALUES (?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?)",
+                                (language, item_id, source, now, now, LEVEL, json.dumps(words, ensure_ascii=False),
+                                 store_id))
+        return cur.lastrowid
+
+    def recorded_list(self, language):
+        """(the run signature of the list Connect last looked at, its keys as a set of (word, reading)), or
+        (None, None) before the first look."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"listed:{language}",)).fetchone()
+        if row is None:
+            return None, None
+        keys = {(w, r) for w, r in self.conn.execute("SELECT word, reading FROM listed WHERE language = ?",
+                                                     (language,))}
+        return row[0], keys
+
+    def record_list(self, language, signature, keys):
+        """The list as looked at now (inside the caller's transaction)."""
+        self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
+        self.conn.executemany("INSERT OR IGNORE INTO listed (language, word, reading) VALUES (?, ?, ?)",
+                              [(language, str(w), str(r)) for w, r in keys])
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"listed:{language}", signature))
+
+    def forget_list(self, language):
+        """Connect switched on again: the next look records the list and mines nothing (inside the caller's
+        transaction)."""
+        self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
+
+    def owe_resort(self, language):
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"resort_due:{language}", _now()))
+
+    def resort_owed(self, language):
+        """When a re-sort became owed (the list moved), or None: the runner's ordering step pays it (P2.4)."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"resort_due:{language}",)).fetchone()
+        return row[0] if row else None
+
+    def resort_paid(self, language):
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"resort_due:{language}",))
+
     def drop(self, language, item_id, reason):
         """The item's job, if it hasn't started (an item that left the top 20 before mining) -> dropped or not. Once
         mining has started, it finishes (02 §2)."""
-        marks = ",".join("?" * len(NOT_STARTED))
-        cur = self.conn.execute(f"UPDATE jobs SET state = 'dropped', reason = ?, updated_at = ? WHERE language = ? "
-                                f"AND item_id = ? AND state IN ({marks})",
-                                (reason, _now(), language, item_id) + NOT_STARTED)
+        marks = ",".join("?" * (len(BEFORE_MINING) - 1))
+        cur = self.conn.execute(f"UPDATE jobs SET state = 'dropped', reason = ?, resume = NULL, updated_at = ? "
+                                f"WHERE language = ? AND item_id = ? AND (state = 'queued' OR (state = 'waiting' AND "
+                                f"(resume IS NULL OR resume IN ({marks}))))",
+                                (reason, _now(), language, item_id) + BEFORE_MINING[1:])
+        if cur.rowcount > 0:                # its troubles went with it (03 §4: fixed by itself, IK P2.5 #3)
+            for row in self.fix(language, item_id=item_id):
+                _log.info("Connect: fixed by itself (%s, %s): %s", language, row["kind"], row["say"])
         return cur.rowcount > 0
+
+    # --- P2.4: the runner's job (02 §2, N5, N6, N9) ----------------------------------------------------------- #
+
+    def set_state(self, job_id, state, **columns):
+        """A job's state, saved now in its own short transaction (or the caller's), with any of `_STATE_COLUMNS`
+        (`picked` and `skipped` as JSON). Leaving `waiting` clears its resume step, and an open state its reason,
+        unless given."""
+        if state not in STATES:
+            raise ValueError(f"unknown state {state!r}")
+        unknown = set(columns) - _STATE_COLUMNS
+        if unknown:
+            raise ValueError(f"unknown columns {sorted(unknown)}")
+        if state != "waiting":
+            columns.setdefault("resume", None)
+            if state not in FINISHED:
+                columns.setdefault("reason", None)
+        for name in ("picked", "skipped"):
+            if columns.get(name) is not None and not isinstance(columns[name], str):
+                columns[name] = json.dumps(columns[name], ensure_ascii=False)
+        sets = "".join(f", {name} = ?" for name in columns)
+        sql = f"UPDATE jobs SET state = ?, updated_at = ?{sets} WHERE id = ?"
+        params = (state, _now()) + tuple(columns.values()) + (job_id,)
+        if self.conn.in_transaction:
+            self.conn.execute(sql, params)
+        else:
+            with self.transaction():
+                self.conn.execute(sql, params)
+
+    def picked(self, job_id):
+        """What the job's pick chose (a dict), or None."""
+        row = self.conn.execute("SELECT picked FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        try:
+            return json.loads(row[0]) if row and row[0] else None
+        except ValueError:
+            return None
+
+    def open_jobs(self, language):
+        """Every open job of the language (oldest first), each with its `words` read back."""
+        out = self.jobs(language, states=OPEN)
+        for job in out:
+            job["words"] = _words(job.get("words"))
+        return out
+
+    def start_batch(self, job_id, attempt, run_dir):
+        """A batch about to call Anki Miner (N5): `running` until `end_batch`. One left `running` after a kill is a
+        batch in doubt — its notes are found by the job's tag before anything is tried again (E25)."""
+        with self.transaction():
+            self.conn.execute("INSERT OR REPLACE INTO batches (job_id, attempt, run_dir, state, started_at) "
+                              "VALUES (?, ?, ?, 'running', ?)", (job_id, attempt, run_dir, _now()))
+            self.conn.execute("UPDATE jobs SET attempt = ?, updated_at = ? WHERE id = ?", (attempt, _now(), job_id))
+
+    def end_batch(self, job_id, attempt, state, outcomes=(), anki_miner=None):
+        """The batch's end and its words' outcomes, in one transaction (a kill leaves the batch running, or both)."""
+        with self.transaction():
+            self.record_outcomes(job_id, attempt, outcomes)
+            self.conn.execute("UPDATE batches SET state = ?, anki_miner = ?, ended_at = ? WHERE job_id = ? AND "
+                              "attempt = ?", (state, anki_miner, _now(), job_id, attempt))
+
+    def record_outcomes(self, job_id, attempt, outcomes):
+        """N6 rows, inside the caller's transaction: a later attempt's row replaces an earlier one's, never a word
+        already `made`."""
+        for o in outcomes:
+            had = self.conn.execute("SELECT outcome FROM outcomes WHERE job_id = ? AND word = ? AND reading = ?",
+                                    (job_id, o["word"], o["reading"])).fetchone()
+            if had and had[0] == "made" and o.get("outcome") != "made":
+                continue
+            self.conn.execute(
+                "INSERT OR REPLACE INTO outcomes (job_id, word, reading, orth, line_start, line_end, sentence, "
+                "predicted, outcome, note_id, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (job_id, o["word"], o["reading"], o.get("orth"), o.get("line_start"), o.get("line_end"),
+                 o.get("sentence"), o.get("predicted"), o["outcome"], o.get("note_id"), attempt))
+
+    def batches(self, job_id):
+        cur = self.conn.execute("SELECT * FROM batches WHERE job_id = ? ORDER BY attempt", (job_id,))
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def outcomes(self, job_id):
+        cur = self.conn.execute("SELECT * FROM outcomes WHERE job_id = ? ORDER BY rowid", (job_id,))
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def undo_record(self, job_id):
+        """N9: the note ids the job made (its `made` outcomes), for *Undo this batch* (P2.5)."""
+        return [r[0] for r in self.conn.execute("SELECT note_id FROM outcomes WHERE job_id = ? AND outcome = 'made' "
+                                                "AND note_id IS NOT NULL ORDER BY rowid", (job_id,))]
+
+    def declined(self, language, item_id):
+        """(word, reading) of every word Anki Miner turned down for the item, in any of its jobs (not found, no
+        definition …): a later pick never sends them again (adversary P2.4-A #19)."""
+        marks = ",".join("?" * len(_NOT_MADE))
+        return {(w, r) for w, r in self.conn.execute(
+            f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
+            f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
+
+    def skipped_for(self, language, reason):
+        """Is any job of the language `skipped` for `reason`?"""
+        return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND state = 'skipped' AND reason = ? LIMIT 1",
+                                 (language, reason)).fetchone() is not None
+
+    def reopen_skipped(self, language, item_ids, reason):
+        """Jobs `skipped` for `reason` (Anki Miner wasn't installed) of these items queued again, where the item has
+        no other open job -> how many (intent keeper P2.4-A #11: installed later, they're mined in turn)."""
+        marks = ",".join("?" * len(OPEN))
+        n = 0
+        for item_id in item_ids:
+            cur = self.conn.execute(
+                f"UPDATE jobs SET state = 'queued', reason = NULL, resume = NULL, skipped = NULL, updated_at = ? "
+                f"WHERE id = (SELECT MAX(id) FROM jobs WHERE language = ? AND item_id = ?) AND state = 'skipped' AND "
+                f"reason = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN "
+                f"({marks}))", (_now(), language, item_id, reason, language, item_id) + OPEN)
+            n += cur.rowcount
+        return n
+
+    def need(self, language, kind, say, item_id=None, job_id=None):
+        """Something Connect needs you for (`kind` + item) -> True when it counts (again) in the badge. Open already:
+        a standing state (`STANDING`) is left as it is, nothing written (S19); a failure you've seen happens again →
+        it counts again with its new words (03 §4); one not seen yet, or dismissed (it stays dismissed until its fix),
+        is left as it is. Fixed earlier → a new entry."""
+        cur = self.conn.execute("INSERT OR IGNORE INTO needs (language, item_id, job_id, kind, say, at) "
+                                "VALUES (?, ?, ?, ?, ?, ?)", (language, item_id, job_id, kind, say, _now()))
+        if cur.rowcount > 0:
+            return True
+        if kind in STANDING:
+            return False
+        cur = self.conn.execute("UPDATE needs SET seen_at = NULL, say = ?, at = ?, job_id = ? "
+                                "WHERE language = ? AND kind = ? AND COALESCE(item_id, -1) = COALESCE(?, -1) AND "
+                                "fixed_at IS NULL AND seen_at IS NOT NULL AND dismissed_at IS NULL",
+                                (say, _now(), job_id, language, kind, item_id))
+        return cur.rowcount > 0
+
+    def needs(self, language=None, unseen=False, listed=True):
+        """The open needs (not fixed), oldest first: `listed` — not dismissed either (what *Needs you* lists);
+        `unseen` — not seen yet either (the badge)."""
+        sql, params = "SELECT * FROM needs WHERE fixed_at IS NULL", []
+        if language:
+            sql += " AND language = ?"
+            params.append(language)
+        if listed:
+            sql += " AND dismissed_at IS NULL"
+        if unseen:
+            sql += " AND seen_at IS NULL"
+        cur = self.conn.execute(sql + " ORDER BY id", params)
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def mark_seen(self, ids):
+        """*Needs you* shown: these stop counting in the badge and stay listed -> how many changed (one seen already
+        is not written again)."""
+        ids = [int(i) for i in ids or ()]
+        if not ids:
+            return 0
+        with self.transaction():
+            now = _now()
+            return sum(self.conn.execute("UPDATE needs SET seen_at = ? WHERE id = ? AND seen_at IS NULL",
+                                         (now, i)).rowcount for i in ids)
+
+    def dismiss(self, need_id):
+        """*Dismiss*: the entry leaves the list. It stays open (raised again, it stays dismissed) until its cause goes
+        away; after that, the same trouble is a new entry -> True when it changed."""
+        with self.transaction():
+            now = _now()
+            return self.conn.execute("UPDATE needs SET dismissed_at = ?, seen_at = COALESCE(seen_at, ?) WHERE id = ? "
+                                     "AND dismissed_at IS NULL AND fixed_at IS NULL",
+                                     (now, now, int(need_id))).rowcount > 0
+
+    def fix(self, language, kinds=None, item_id=None, keep=()):
+        """Needs whose cause went away (03 §4: fixed by itself; nothing open → nothing written, no lock taken) -> the
+        fixed rows (the caller logs each): every open need of `item_id`, or the language's own needs (no item) of
+        `kinds`; never one whose words are in `keep` (a step the job ended without: its trouble stands). Nothing open →
+        nothing written."""
+        if item_id is not None:
+            where, params = "language = ? AND item_id = ?", [language, item_id]
+        elif kinds:
+            where = f"language = ? AND item_id IS NULL AND kind IN ({','.join('?' * len(kinds))})"
+            params = [language] + list(kinds)
+        else:
+            return []
+        cur = self.conn.execute(f"SELECT * FROM needs WHERE fixed_at IS NULL AND {where}", params)
+        names = [d[0] for d in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall() if r[names.index("say")] not in set(keep or ())]
+        if not rows:
+            return []
+        now = _now()
+        # exactly the rows read, with the words read: one raised again meanwhile (new words) is not fixed unread
+        update = "UPDATE needs SET fixed_at = ? WHERE id = ? AND fixed_at IS NULL AND say = ?"
+        if self.conn.in_transaction:
+            return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
+        with self.transaction():
+            return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
+
+    # --- P2.5: the run's start, the undos ------------------------------------------------------------------- #
+
+    def mark_run(self, language):
+        """A run began working on the language now (the status line counts its jobs from here)."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"run:{language}", _now()))
+
+    def run_started(self, language):
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"run:{language}",)).fetchone()
+        return row[0] if row else None
+
+    def start_undo(self, job_id, language, planned, kept):
+        """*Undo this batch* about to write Anki (its own transaction): the notes it will delete (`planned`) and those
+        it keeps ([[note id, word, why], ...]) -> its id. Written first, so a kill after Anki's delete is finished
+        by the next look, never read as cards you deleted (intent keeper P2.5 #4)."""
+        with self.transaction():
+            cur = self.conn.execute("INSERT INTO undos (job_id, language, at, deleted, kept) VALUES (?, ?, ?, ?, ?)",
+                                    (job_id, language, _now(), json.dumps(sorted(planned)),
+                                     json.dumps([list(k) for k in kept], ensure_ascii=False)))
+            return cur.lastrowid
+
+    def finish_undo(self, undo_id, deleted, kept):
+        """The undo done (inside the caller's transaction): the notes gone now, the ones kept."""
+        self.conn.execute("UPDATE undos SET deleted = ?, kept = ?, finished_at = ? WHERE id = ?",
+                          (json.dumps(sorted(deleted)), json.dumps([list(k) for k in kept], ensure_ascii=False),
+                           _now(), undo_id))
+
+    def pending_undos(self, language):
+        """Undos a kill left unfinished (Anki may have deleted their notes), oldest first."""
+        return self._undo_rows("language = ? AND finished_at IS NULL", (language,))
+
+    def undos(self, job_id):
+        return self._undo_rows("job_id = ?", (job_id,))
+
+    def _undo_rows(self, where, params):
+        cur = self.conn.execute(f"SELECT * FROM undos WHERE {where} ORDER BY id", params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for r in cur.fetchall():
+            row = dict(zip(names, r))
+            row["deleted"], row["kept"] = json.loads(row["deleted"]), json.loads(row["kept"])
+            out.append(row)
+        return out
+
+
+def _words(text):
+    """A job's `words` column -> [(word, reading)], or None (the whole list)."""
+    if text is None:
+        return None
+    try:
+        return [(str(w), str(r)) for w, r in json.loads(text)]
+    except (ValueError, TypeError):
+        return []
 
 
 def _gap_row(cur, row):

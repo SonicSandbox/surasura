@@ -139,3 +139,36 @@ def test_get_update_info_none_when_offline(monkeypatch):
         raise OSError("network unreachable")
     monkeypatch.setattr(uc, "_http_json", _boom)
     assert uc.get_update_info() is None
+
+
+# --- K99: an install older than 2.5 gets the full download (P3.1 row 3.1.8 (c)) ----------------------------------------
+def test_the_real_runtime_baseline_sends_pre_2_5_installs_to_the_full_download(tmp_path, monkeypatch):
+    """The first in-place updater that swaps surasura-cli.exe is 2.5's: an older install given the app package would
+    never get the command line. update.json is made here by the release build's own function, reading the real
+    packaging/runtime_baseline.txt, then read back as the app reads it: 2.4.0 -> FULL, 2.5.0 -> APP with the CLI."""
+    import os
+    import package_app
+    project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    monkeypatch.setattr(package_app, "RUNTIME_BASELINE_FILE",
+                        os.path.join(project, "packaging", "runtime_baseline.txt"))
+    final = tmp_path / "Surasura"
+    (final / "_internal" / "templates").mkdir(parents=True)
+    (final / "_internal" / "templates" / "web_app.html").write_text("<h1>語彙の旅</h1>\n", encoding="utf-8")
+    (final / "Surasura.exe").write_bytes(b"MZ\x90\x00surasura-2.6.0")
+    (final / "surasura-cli.exe").write_bytes(b"MZ\x90\x00surasura-cli-2.6.0")
+    (tmp_path / "dist").mkdir()
+    monkeypatch.chdir(tmp_path)
+    package_app._build_app_package(str(final), "2.6.0", full_update=False)
+    with open(tmp_path / "dist" / "update.json", encoding="utf-8") as f:
+        manifest_text = f.read()
+
+    release = {"tag_name": "v2.6.0", "html_url": "http://x/notes", "assets": [
+        {"name": "Surasura_v2.6.0.zip", "browser_download_url": "http://x/Surasura_v2.6.0.zip"},
+        {"name": "Surasura_app_v2.6.0.zip", "browser_download_url": "http://x/Surasura_app_v2.6.0.zip"},
+        {"name": "update.json", "browser_download_url": "http://x/update.json"}]}
+    _patch(monkeypatch, release, manifest_text)
+    info = uc.get_update_info()
+    assert info.runtime_baseline == "2.5"
+    assert classify_update("2.4.0", info) == "FULL", "2.4's updater can't bring surasura-cli.exe"
+    assert classify_update("2.5.0", info) == "APP"
+    assert "surasura-cli.exe" in [f["name"] for f in info.files]

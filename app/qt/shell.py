@@ -23,8 +23,8 @@ import os
 import sys
 import traceback
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontMetrics, QGuiApplication, QIcon, QLinearGradient, QPainter
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QLinearGradient, QPainter
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -283,28 +283,35 @@ class TabButton(QToolButton):
         top, side, bottom, f = self._pads()
         c = style.colours()
         lit = self.isChecked() or self.underMouse() or self.hasFocus()
-        fm = QFontMetrics(self.font())
+        fm = QFontMetricsF(self.font())
         mid = (top + self.height() - bottom - 2) / 2
+        dpr = self.devicePixelRatioF()
+        base = round((mid + (fm.ascent() - fm.descent()) / 2) * dpr) / dpr     # baselines on whole device pixels
         p.setFont(self.font())
         p.setPen(style.qcolor(c["ink" if lit else "ink-dim"]))
-        p.drawText(QPointF(side, mid + (fm.ascent() - fm.descent()) / 2), self.name)
+        p.drawText(QPointF(side, base), self.name)
         if self.count:
+            # The count is centred on the name's midline — half its capital height above its baseline — not on the
+            # tab's box: digits are capital-high, so a box-centred count or badge sat taller than the word (G2.3 note,
+            # 2026-10-09). The badge's figures are placed the same way, never by the badge box's own centre.
+            line = base - fm.capHeight() / 2
             x = side + fm.horizontalAdvance(self.name) + round(7 * f)
             font = self._count_font()
-            cm = QFontMetrics(font)
+            cm = QFontMetricsF(font)
             text = str(self.count)
+            figures = round((line + cm.capHeight() / 2) * dpr) / dpr
             p.setFont(font)
             if self.badge:
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 w, h = self._count_w(), round(18 * f)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(style.qcolor(c["warn"]))
-                p.drawRoundedRect(QRect(x, round(mid - h / 2), w, h), h / 2, h / 2)
+                p.drawRoundedRect(QRectF(x, round((line - h / 2) * dpr) / dpr, w, h), h / 2, h / 2)   # crisp edges
                 p.setPen(style.qcolor(theme.FIXED["on-accent"]))
-                p.drawText(QRect(x, round(mid - h / 2), w, h), Qt.AlignmentFlag.AlignCenter, text)
+                p.drawText(QPointF(x + (w - cm.horizontalAdvance(text)) / 2, figures), text)
             else:
                 p.setPen(style.qcolor(c["ink-faint"]))
-                p.drawText(QPointF(x, mid + (cm.ascent() - cm.descent()) / 2), text)
+                p.drawText(QPointF(x, figures), text)
         p.end()
 
 

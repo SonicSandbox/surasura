@@ -273,3 +273,19 @@ class TestTheUpdatesWaitBesideAWindow(_DashboardHarness):
         finally:
             done.set()
             thread.join(5)
+
+
+def test_a_writer_refused_by_an_update_does_not_wait_for_the_lock():
+    # An update that is already waiting means no new write may start: the new writer is refused at
+    # once, naming the update, and never queues behind the Backfill holder for its 2 s wait.
+    done, thread = _holder("Backfill")               # the lock is held first, so a wait would show
+    try:
+        updater.hold_children()
+        started = time.monotonic()
+        with pytest.raises(locks.Busy) as caught:
+            anki_connect.writer("順 reorder", wait=2.0)
+        assert caught.value.holder == {"verb": "an update"}
+        assert time.monotonic() - started < 0.5, "refused at once, not after the wait"
+    finally:
+        done.set()
+        thread.join(5)

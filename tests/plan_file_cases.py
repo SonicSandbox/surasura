@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(REPO, "tests", "Test Resources")
 SAMPLES = os.path.join(REPO, "samples")
@@ -116,12 +118,19 @@ SHIPPED = {"ja": ["Blacklist.txt", "IgnoreList.txt", "frequency_list_ja_global50
            "zh": ["Blacklist.txt", "IgnoreList.txt"]}
 
 
-def build(root, case, order=None):
+def build(root, case, order=None, preview=False):
     """A case's library under `root`, every file's mtime pinned. `order`: [(tier, name)] in place of the case's own
-    (the same files; RP-2's other orders)."""
+    (the same files; RP-2's other orders). `preview`: the fast re-plan's preview switched on in the root's
+    settings.json, for the case's language (E3.1: the switch is its language's); False (the 3.0 line's default)
+    leaves no settings.json, so a Generate runs on the defaults. On the 3.0 line every Generate writes the plan file
+    either way (E1.2-1: "every Generate from 3.0"); 2.x needs the switch on for it. A test that needs the preview
+    itself asks `needs_junban()`."""
     language, library, shipped, _args = ALL_CASES[case]
     for sub in ("results", "appdata", "localappdata"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
+    if preview:
+        with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"junban_replan_preview": True, "junban_replan_language": language}, f)
     shutil.copytree(os.path.join(REPO, "templates"), os.path.join(root, "templates"), dirs_exist_ok=True)
     data = os.path.join(root, "data", language)
     uf = os.path.join(root, "User Files", language)
@@ -153,6 +162,24 @@ def build(root, case, order=None):
         os.utime(path, (MTIME, MTIME))
 
 
+def write_plan_header(results_dir, run_signature):
+    """A plan file holding only its header, naming `run_signature`: what the up-to-date check reads
+    (`analyzer._plan_kept`, `plan_engine.read_header`). On the 3.0 line every Generate writes a plan, so a test that
+    seeds a finished Generate (its stamp, its outputs) seeds its plan too."""
+    import gzip
+    from app import analyzer, plan_engine
+    with gzip.open(os.path.join(results_dir, analyzer.PLAN_FILE), "wb") as f:
+        f.write((json.dumps({"format": plan_engine.FORMAT, "run_signature": run_signature}) + "\n").encode("utf-8"))
+
+
+def needs_junban():
+    """The fast re-plan's preview needs Junban installed (E3.1: `replan_preview.is_on`): a build without modules/
+    (the public CI) skips a test that needs the preview on. (2.x: the plan file too; 3.0 writes it either way.)"""
+    from app import replan_preview
+    if not replan_preview.junban_present():
+        pytest.skip("no Junban (a build without modules/): the preview is off")
+
+
 def _shipped(language, name):
     """A shipped list as committed (`git show HEAD:`): the working tree's copy is user data the app edits when run
     from source (the Ignore button). Without git, the file."""
@@ -179,15 +206,17 @@ def child_env(root):
     return env
 
 
-def generate(root, case, extra_env=None, extra_args=()):
+def generate(root, case, extra_env=None, extra_args=(), argv=None):
     """A full Generate of the case's library, as the dashboard runs it; the store's helper finished after. Returns
     the analyzer's output (stdout + stderr). `extra_args`: more analyzer arguments (a setting the dashboard passes on
-    the command line: --zh-script)."""
+    the command line: --zh-script). `argv`: the analyzer's arguments in place of the case's (the dashboard's own,
+    `run_args.analyzer_args(…, headless=True)[1:]`)."""
     language, _library, _shipped_lists, args = ALL_CASES[case]
     env = child_env(root)
     env.update(extra_env or {})
-    cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
-           "--no-open"] + args + list(extra_args)
+    cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py")] + (
+        list(argv) if argv is not None else
+        [f"--language={language}", "--static", "--no-open"] + args + list(extra_args))
     p = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     out = p.stdout + "\n--- stderr ---\n" + p.stderr
     if p.returncode != 0:
@@ -268,7 +297,7 @@ def record(base_dir):
     for case in CASES:
         root = os.path.join(base_dir, case)
         shutil.rmtree(root, ignore_errors=True)
-        build(root, case)
+        build(root, case, preview=False)
         generate(root, case)
         hashes[case] = output_hashes(root)
         print(case, len(hashes[case]), "files")

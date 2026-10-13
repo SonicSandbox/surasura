@@ -35,10 +35,31 @@ def _settled(watch, want=None, full=None, timeout=5.0):
     return seen, got_full
 
 
-def _watch(data_dir, **kw):
+def _watch(data_dir, armed=True, **kw):
     w = lw.TreeWatch(data_dir, settle=kw.pop("settle", 0.05), under=TIER_FOLDERS, **kw)
     assert w.start(), (w.state, w.error)
+    if armed:
+        _armed(w, data_dir)
     return w
+
+
+def _armed(w, data_dir, timeout=5.0):
+    """Wait until the watch's first read is in place. `start()` returns as its thread starts, and a change made before
+    the thread's first ReadDirectoryChangesW is never reported: on a loaded machine (GitHub's runner, 2026-10-12) a
+    file dropped at once went unseen. A file at the library's root, outside the tier folders, is written until the
+    thread counts a report: never a folder `take()` returns."""
+    path = os.path.join(data_dir, "~$armed.tmp")
+    deadline = time.monotonic() + timeout
+    try:
+        while w.reports == 0 and time.monotonic() < deadline:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(str(time.monotonic()))
+            w.wait(0.1)
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+    assert w.reports, "the watch never reported a change"
+    w.take()                                              # anything the arming left: nothing a test asked for
 
 
 # --- the pure rules --------------------------------------------------------------------------------------- #
@@ -217,7 +238,7 @@ def test_an_overflow_asks_for_one_full_look():
 @windows_only
 def test_close_ends_the_thread_and_an_idle_watch_never_wakes():
     data_dir, _u, _doc = library("zh")
-    w = _watch(data_dir)
+    w = _watch(data_dir, armed=False)
     time.sleep(0.5)
     assert w.reports == 0 and w.alive                     # nothing happened: the thread never woke
     w.close()

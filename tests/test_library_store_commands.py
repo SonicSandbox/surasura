@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -2018,5 +2019,302 @@ def test_a_listed_folder_that_vanishes_and_returns_is_reported_by_its_name(langu
         finally:
             os.rename(gone, path)
         assert poll.check() is True and folder in poll.changed, "a returning folder is not reported"
+    finally:
+        store.close()
+
+
+class _CountingLock:
+    """Stands in for the store's write lock and counts every take (a test's own proxy, restored in finally)."""
+
+    def __init__(self, lock):
+        self.lock, self.takes = lock, 0
+
+    def acquire(self, *args, **kwargs):
+        self.takes += 1
+        return self.lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self.lock.release()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_notes_gone_takes_the_notes_out_of_links_words_and_lines(language):
+    # Sonic, 2026-10-07: a note Anki no longer has loses its "in Anki" mark wherever it is read, while each made
+    # word keeps its row (never made again unless asked). Ids the store doesn't hold write nothing and take no lock.
+    store = migrated(language)
+    real_lock = store._wlock
+    try:
+        a, b = store.ids("now")[:2]
+        w1, w2 = names(language)[:2]
+        with store._writing():
+            store.conn.execute("CREATE TABLE IF NOT EXISTS made_lines (note_id INTEGER PRIMARY KEY, item_id INTEGER "
+                               "NOT NULL, start_ms INTEGER, end_ms INTEGER, line_fp TEXT, made_at TEXT)")
+            for sql in ls.ADDED_TABLES_SQL:
+                store.conn.execute(sql)
+            store.conn.executemany("INSERT INTO anki_links (item_id, note_id, source, linked_at) "
+                                   "VALUES (?, ?, ?, ?)",
+                                   [(a, 101, "anki_miner", "t"), (a, 102, "anki_miner", "t"),
+                                    (b, 103, "anki_miner", "t")])
+            store.conn.executemany("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) "
+                                   "VALUES (?, ?, ?, ?, ?)",
+                                   [(a, w1, json.dumps([201, 202]), "t", None), (b, w2, json.dumps([203]), "t", None)])
+            store.conn.executemany("INSERT INTO made_lines (note_id, item_id, start_ms, end_ms, line_fp, made_at) "
+                                   "VALUES (?, ?, ?, ?, ?, ?)",
+                                   [(201, a, 0, 1000, "fp1", "t"), (203, b, 0, 1000, "fp3", "t")])
+        v0 = store.versions()
+
+        assert store.notes_gone([101, 201, 203, 999]) == [101, 201, 203]
+        links = store.conn.execute("SELECT item_id, note_id FROM anki_links ORDER BY note_id").fetchall()
+        assert links == [(a, 102), (b, 103)]
+        words = {w: json.loads(n) for w, n in store.conn.execute(
+            "SELECT word, note_ids FROM made_words WHERE item_id IN (?, ?)", (a, b))}
+        assert words == {w1: [202], w2: []}, "each made word keeps its row, only the gone notes leave it"
+        assert store.conn.execute("SELECT note_id FROM made_lines").fetchall() == []
+        v1 = store.versions()
+        assert v1["state_version"] == v0["state_version"] + 1
+        assert v1["order_version"] == v0["order_version"]
+        assert store.export_due(), "a changed library is due an export"
+
+        # Nothing the store holds: no change, no version bump, and the write lock is never taken.
+        counter = _CountingLock(real_lock)
+        store._wlock = counter
+        assert store.notes_gone([101, 999]) == []
+        assert store.notes_gone([]) == []
+        assert counter.takes == 0, "a no-op must not take the write lock"
+        assert store.versions() == v1
+    finally:
+        store._wlock = real_lock
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_of_reset_takes_added_files_back_out_logged_as_not_explicit(language):
+    # Undo-Reset puts out the files Reset added; the removal is the store's own undo, never the user's explicit act,
+    # so the log must say explicit = 0 (not 1) for each of them.
+    store = migrated(language)
+    try:
+        store.register_reader("connect")
+        data_dir, _u = roots(language)
+        w = names(language)
+        rel = f"LowPriority/{w[78]}/{w[79]}.srt"
+        touch(data_dir, rel)
+        change = store.reset_order()
+        item = store.item_id(rel)
+        after = _last_log(store)
+        store.undo(change)
+        # The undo takes the added file back out of the library: its row is gone, not just logged.
+        assert store.item_id(rel) is None
+        events = _events(store, after)
+        assert (item, "removed", "undo", 0) in events
+        assert (item, "removed", "undo", 1) not in events
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_trash_restarts_the_purge_clock_of_the_trashed_file(language):
+    # Why: the 30-day purge counts from the moment of trashing, so a file trashed long after its last edit
+    # must not carry its old mtime into the trash and be purged at once.
+    data_dir, _u = roots(language)
+    w = names(language)
+    rel = f"LowPriority/{w[104]}/{w[105]}.srt"
+    full = touch(data_dir, rel)
+    old = time.time() - 60 * 86400
+    os.utime(full, (old, old))
+    trashed = ls.trash_file(data_dir, rel)
+    dst = os.path.join(data_dir, *trashed.split("/"))
+    assert os.path.getmtime(dst) > time.time() - 3600
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rename_no_overwrite_hard_link_moves_and_a_taken_name_raises_untouched(language, monkeypatch):
+    # Off Windows the move is a hard link then an unlink, so the source is gone after a move (I18), and a
+    # taken name raises FileExistsError while both files stay exactly as they were (I17: no swallow, no unlink).
+    data_dir, _u = roots(language)
+    w = names(language)
+    src = touch(data_dir, f"LowPriority/{w[106]}/a.srt", "源\n")
+    dst = os.path.join(os.path.dirname(src), "b.srt")
+    src2 = touch(data_dir, f"LowPriority/{w[106]}/c.srt", "別\n")
+    with monkeypatch.context() as m:
+        m.setattr(ls, "sys", types.SimpleNamespace(platform="linux"))   # the store module's view only
+        ls._rename_no_overwrite(src, dst)
+        with pytest.raises(FileExistsError):
+            ls._rename_no_overwrite(src2, dst)
+    assert not os.path.exists(src), "a hard-link move must leave no source behind"
+    assert open(dst, encoding="utf-8").read() == "源\n"
+    assert open(src2, encoding="utf-8").read() == "別\n", "a refused move must not delete the file it was moving"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_graduate_stamps_graduated_at_keeps_an_earlier_date_and_bumps_order_version(language):
+    # Graduate stamps the date on the items it moves and bumps order_version (an analysed tier lost
+    # them); an already-graduated id passed along keeps its first date; Promote never stamps a date.
+    store = migrated(language)
+    try:
+        soon = store.ids("soon")
+        a, b, c = soon[0], soon[1], soon[2]
+        store.set_tier([a], "graduated")
+        with store._writing():
+            store.conn.execute("UPDATE items SET graduated_at = ? WHERE id = ?", ("2026-01-01T00:00:00.000000Z", a))
+        v = store.versions()
+        store.set_tier([a, b], "graduated")
+        assert store.item(b)["graduated_at"] is not None, "a newly graduated item gets a date"
+        assert store.item(a)["graduated_at"] == "2026-01-01T00:00:00.000000Z", "an earlier date is kept"
+        assert store.versions()["order_version"] == v["order_version"] + 1, "graduating moves an analysed tier"
+        store.set_tier([c], "now")
+        assert store.item(c)["graduated_at"] is None, "promoting never stamps a date"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_adding_a_file_already_gone_from_disk_records_it_as_missing(language):
+    # A file the user deleted before the Add finished is still added; only its availability says so.
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        rel = f"HighPriority/{names(language)[96]}.txt"
+        path = os.path.join(data_dir, rel)
+        assert not os.path.exists(path)
+        change = store.insert([path], "now", entries=[ls.make_entry(rel, "Manual Import", "text")])
+        assert len(change.added) == 1
+        assert store.item(change.added[0])["availability"] == "missing"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_split_at_a_pieces_first_item_moves_nothing(language):
+    # Why: a split at the first item would leave the old piece empty, so the store refuses it: no new piece, no version.
+    store = migrated(language)
+    try:
+        ids = store.ids("now")
+        piece = store.item(ids[0])["piece_id"]
+        members = [i for i in ids if store.item(i)["piece_id"] == piece]
+        v = store.versions()
+        pieces = store.conn.execute("SELECT COUNT(*) FROM pieces").fetchone()[0]
+        assert store.split(piece, members[0]) is None
+        assert store.versions() == v
+        assert store.conn.execute("SELECT COUNT(*) FROM pieces").fetchone()[0] == pieces
+        assert {store.item(i)["piece_id"] for i in members} == {piece}
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_of_join_with_all_items_changed_since_changes_nothing(language):
+    # Why: no moved item can go back, so nothing is put back — and 3.0 brings back no emptied piece either (an empty
+    # piece is deleted, 05 §5.2 rule 7; `_undo_join`): the undo writes nothing. (2.x restored the empty piece as a
+    # recorded change; 3.0's L3.1 pieces rule supersedes it — take-in 2026-10-12.)
+    store = migrated(language)
+    try:
+        ids = store.ids("now")
+        piece = store.item(ids[0])["piece_id"]
+        members = [i for i in ids if store.item(i)["piece_id"] == piece]
+        store.split(piece, members[2])
+        p2 = store.item(members[2])["piece_id"]
+        join = store.join([piece, p2])
+        store.move(members[2:], "goal")
+        v = store.versions()
+        store.undo(join)
+        assert store.versions() == v, "an undo with nothing to put back writes nothing"
+        assert all(store.item(i)["tier"] == "goal" for i in members[2:]), "no item changed since is put back"
+    finally:
+        store.close()
+
+
+def test_keys_before_an_upper_bound_sit_a_full_step_apart_and_a_top_placement_moves_only_its_item():
+    # why: keys placed before an upper bound sit a full STEP apart, the last one a STEP below it (never on it),
+    # so a placement at a tier's top needs no renumbering of the other items
+    step = ls.STEP
+    assert ls._keys_between(None, step, 2) == [-step, 0.0]
+    assert ls._plan_ords(["x", "a", "b"], {"a": step, "b": 2 * step}, {"x"}) == {"x": 0.0}
+
+
+def test_a_respace_window_giving_exactly_one_per_slot_is_usable():
+    # why: a span of exactly 1.0 per slot (3.0 across two keys) is still usable; a span a hair short is not
+    assert ls._spread_ok(0.0, 3.0, 2) is True
+    assert ls._spread_ok(0.0, 2.9, 2) is False
+    assert ls._spread_ok(None, 5.0, 9) is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_beyond_never_returns_an_excluded_id(language):
+    # Why: a moving item is excluded from its own neighbours; an excluded id coming back would land a move beside itself.
+    store = migrated(language, shows=10, episodes=10)
+    try:
+        ids = store.ids("now")
+        assert [r[0] for r in store._beyond("now", None, {ids[0]}, 1, 2)] == ids[1:3]
+        k = store._key(ids[1])
+        assert [r[0] for r in store._beyond("now", k, {ids[2]}, 1, 1)] == [ids[3]]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_checked_item_removed_meanwhile_conflicts_and_changes_nothing(language):
+    """A command that checked two items, one of them removed by another window meanwhile, raises
+    StoreConflict: the removed item counts as changed, so the other item is not graduated."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    a, b = store.ids("soon")[:2]
+    check = store.check(ids=[a, b])
+    other = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        other.remove([a])
+    finally:
+        other.close()
+    try:
+        v = store.versions()
+        with pytest.raises(ls.StoreConflict):
+            store.set_tier([a, b], "graduated", check=check)
+        assert store.versions() == v, "a conflict must change nothing, not even the other item's row"
+        assert b in store.ids("soon"), "the second item was not graduated past the conflict"
+    finally:
+        store.close()
+
+
+# ================================================================================================ #
+# 11. Add's re-check of the files it saw held
+# ================================================================================================ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_add_refuses_a_file_whose_item_was_removed_after_the_check(language):
+    # the check saw the file held by an item; that item is removed meanwhile. The file is no longer
+    # in the library, so the Add must refuse (a conflict) rather than quietly add it as a new item.
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    item = store.ids("now")[0]
+    rel = store.item(item)["entry"]["physical_path"]
+    full = os.path.join(data_dir, *rel.split("/"))
+    other = None
+    try:
+        check = store.check(paths=[rel])
+        other = ls.open_store(language, data_dir, user_files_dir)
+        other.remove([item])
+        other.close()
+        other = None
+        with pytest.raises(ls.StoreConflict):
+            store.insert([full], "now", check=check)
+    finally:
+        if other is not None:
+            other.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_check_records_the_holder_so_an_unchanged_add_reports_it_as_existing(language):
+    # a check that records no holder would make the commit see the held file as changed meanwhile,
+    # so an Add of a file already in the library (nothing changed) must commit and list it as existing
+    store = migrated(language)
+    data_dir, _ = roots(language)
+    item = store.ids("now")[0]
+    rel = store.item(item)["entry"]["physical_path"]
+    full = os.path.join(data_dir, *rel.split("/"))
+    try:
+        check = store.check(paths=[rel])
+        assert check.keys[ls.path_key(rel)] == item
+        change = store.insert([full], "now", check=check)
+        assert change is not None and [e[1] for e in change.existing] == [item]
     finally:
         store.close()

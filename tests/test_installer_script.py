@@ -193,6 +193,16 @@ def test_the_uninstallers_last_message_names_the_kept_previous_version():
     assert "update\\previous the earlier version it kept for Go ' +\n'back)" in message
 
 
+def test_the_put_back_question_defaults_to_keeping_surasura_and_names_both_doors():
+    # FT C23 (A-N5): Enter (the default button) is No — the uninstall stops, the way back stays; and the box names
+    # both doors to Put Anki back: 順 and Settings -> Data & System.
+    code = "\n".join(_sections()["code"])
+    box = code[code.index("function InitializeUninstall"):]
+    box = box[:box.index("end;")]
+    assert "MB_YESNO or MB_DEFBUTTON2" in box
+    assert "#$9806" in box and "Settings" in box and "Data & System" in box
+
+
 # --- the packager's defines --------------------------------------------------------------------------------------------
 
 def test_the_scripts_defaults_are_the_real_programs():
@@ -382,3 +392,13 @@ def test_the_script_refuses_to_compile_without_a_version(tmp_path):
     result = subprocess.run([ISCC, "/Q", f"/O{tmp_path}", f"/DProgramDir={tmp_path}", ISS],
                             capture_output=True, text=True)
     assert result.returncode != 0 and not list(tmp_path.glob("*.exe"))
+
+def test_no_line_starts_with_a_hash_but_a_preprocessor_directive():
+    """Inno Setup's preprocessor reads any line that starts with # as its own directive — inside a { comment } and as
+    a code line's continuation (#13#10) too — and stops the compile. The compile test runs only where Inno Setup is
+    installed, so this one guards every run (FT's uninstaller question had two such lines)."""
+    directives = ("#define", "#ifndef", "#ifdef", "#if ", "#else", "#elif", "#endif", "#error", "#include", "#expr",
+                  "#pragma", "#undef", "#sub", "#endsub", "#for", "#emit")
+    stray = [(number, line) for number, line in enumerate(_text().splitlines(), 1)
+             if line.lstrip().startswith("#") and not line.lstrip().startswith(directives)]
+    assert stray == []

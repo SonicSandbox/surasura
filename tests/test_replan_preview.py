@@ -772,28 +772,281 @@ def test_d29_is_read_fresh_every_job_never_when_the_host_opens(lib):
     assert versions["planned_order_version"] == versions["order_version"]
 
 
-def test_on_3_0_the_hosts_job_writes_positions_only_with_every_action_and_the_unattended_suspend_on(lib, monkeypatch):
-    """Haya's G2b (W3.5 row 7): the actions ride only the jobs `auto.reorder` hands in. The host's job — a move, a
-    catch-up — never sets `actions`, so with `junban_auto_actions`, Connect's preview, the 3.0 line's unattended
-    suspend and all three not-on-the-list actions saved, it still writes positions only (E1.1 04 §1): two cards off
-    the list are neither tagged, flagged nor suspended, and today's baseline is the way back."""
+# --------------------------------------------------------------------------------------------------------------- #
+# 3.0: the host's re-order applies your 順 actions (Sonic, 2026-10-13: "it just works")
+# --------------------------------------------------------------------------------------------------------------- #
+
+OFF = ("須藤", "洗濯機")                             # two words the library's list never has
+ACTIONS = ("setSpecificValueOfCard", "multi", "suspend", "unsuspend")
+
+
+class MarkingCollection(SyncCollection):
+    """The fake collection, plus the mod times Anki moves when a note is tagged or a card flagged or (un)suspended —
+    so the next job's warm read (`CardMap`) sees what the last one did, as it would in Anki."""
+
+    def _tags(self, action, params):
+        for note_id in params.get("notes") or []:
+            if note_id in self.note_mods:
+                self.note_mods[note_id] = int(time.time())
+        return super()._tags(action, params)
+
+    def _suspend(self, action, card_ids):
+        for card_id in card_ids:
+            if card_id in self.cards:
+                self.cards[card_id]["mod"] = int(time.time())
+        return super()._suspend(action, card_ids)
+
+    def _multi(self, actions):
+        for entry in actions:
+            params = entry.get("params") or {}
+            if entry.get("action") == "setSpecificValueOfCard" and params.get("keys") == ["flags"]:
+                self.cards[params["card"]]["mod"] = int(time.time())
+        return super()._multi(actions)
+
+
+def _acting_deck(root, off=OFF, yours=()):
+    """40 of the list's words and the cards off it (`off`, then `yours` — suspended by the user), queued in the reverse
+    of the list's order, dense as 2.5 left it."""
+    listed = set(_list_words(root))
+    assert not [word for word in tuple(off) + tuple(yours) if word in listed], "the cards are off the library's list"
+    words = _list_words(root, 40) + list(off) + list(yours)
+    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    fake = MarkingCollection(cards, notes, actions=ACTIONS)
+    for card_id in _word_cards(fake, yours):
+        fake.cards[card_id]["queue"] = -1
+    return fake
+
+
+def _listed_deck(root):
+    """60 cards, every one a word of the list (`_deck`), the fake that moves mod times as Anki does."""
+    words = _list_words(root, 60)
+    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    return MarkingCollection(cards, notes, actions=ACTIONS)
+
+
+def _kinds(requests, off_ids=()):
+    """Each request as what it does: "position" (a multi of due writes), "flag" (a multi of flag writes), "re-check"
+    (a `cardsInfo` of exactly the cards off the list), else its action."""
+    out = []
+    for request in requests:
+        action, params = request["action"], request.get("params") or {}
+        keys = {tuple((entry.get("params") or {}).get("keys") or ()) for entry in params.get("actions") or ()
+                if action == "multi" and entry.get("action") == "setSpecificValueOfCard"}
+        if ("due",) in keys:
+            out.append("position")
+        elif ("flags",) in keys:
+            out.append("flag")
+        elif action == "cardsInfo" and off_ids and set(params.get("cards") or ()) == set(off_ids):
+            out.append("re-check")
+        else:
+            out.append(action)
+    return out
+
+
+def _warm_read(request):
+    """A request as compared across two worlds: a warm read's `multi` (`cardsInfo` / `notesInfo` of what changed) by
+    its actions alone — which ids it carries follows Anki's whole-second mod times (`CardMap`: anything modified within
+    a second of the last read is read again), so the clock, not the run; every other request as it is."""
+    entries = (request.get("params") or {}).get("actions") or ()
+    if request["action"] == "multi" and entries and all(
+            entry.get("action") in ("cardsInfo", "notesInfo") for entry in entries):
+        return ["multi"] + sorted({entry["action"] for entry in entries})
+    return request
+
+
+def _logged(fake, host, kind, force=False):
+    """One host job -> the requests it sent."""
+    start = len(fake.requests)
+    host._force = force or host._force
+    host._job(kind)
+    return fake.requests[start:]
+
+
+def _start_again(store, moved):
+    """A second world in the same library: the moves taken back (the newest first, each to 6+ Months' end, where it
+    came from), and Junban's snapshot, baseline and ladder and the sync rule's session gone."""
+    for item in reversed(moved):
+        store.move([item], "goal", after_id=_ids(store, "goal")[-1])
+    from app.path_utils import get_user_files_path
+    for name in (undo.FILENAMES["reorder"], undo.FILENAMES["baseline"], undo.LADDER_FILENAME):
+        path = os.path.join(get_user_files_path("ja"), name)
+        if os.path.exists(path):
+            os.remove(path)
+    if os.path.exists(anki_sync_rule._path()):
+        os.remove(anki_sync_rule._path())
+
+
+def _positions_only(over):
+    """The same settings with every action switched off: what today's host sends, `_POSITIONS_ONLY` laid over them."""
+    return dict(over, junban_auto_actions=False, junban_later_tag=False, junban_later_flag=False,
+                junban_later_suspend=False)
+
+
+def _three_jobs(root, store, fake_of, **settings):
+    """A catch-up (the ladder laid: every card once), then two moves (deltas) -> (each job's requests, the fake, the
+    items moved)."""
+    _settings_file(root, **settings)
+    fake = fake_of(root)
+    host, _ = _host()
+    logs, moved = [], []
+    with _patched(fake):
+        logs.append(_logged(fake, host, "catch-up", force=True))
+        for _ in range(2):
+            moved.append(_move_later_to_top(store))
+            logs.append(_logged(fake, host, "move"))
+    return logs, fake, moved
+
+
+@pytest.mark.parametrize("over,acted", [
+    (dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True),
+     ("addTags", "flag", "suspend")),
+    # Connect's preview on: unattended, as 順's automatic step decides it — the positions, and from 3.0 the suspend
+    # setting's say (a suspend tags too); no flag, no touch-up.
+    (dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True, junban_later_flag=True,
+          junban_later_suspend=True), ("addTags", "suspend")),
+], ids=["actions-on", "connect-unattended-suspend"])
+def test_on_3_0_the_hosts_job_applies_your_actions_after_its_positions_suspend_last(lib, monkeypatch, over, acted):
+    """2.x-dev keeps the host's job positions only; 3.0 (Sonic, 2026-10-13: "it just works"): the window's re-order
+    applies your 順 settings as 順's automatic step decides them — every position first, then the tag and the flag,
+    the suspend last — under the window's snapshot (one restore point: today's baseline is not kept beside it)."""
     from modules.junban import connect
     monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
     root, store = lib
-    _settings_file(root, junban_auto_actions=True, connect_enabled=True, junban_later_tag=True,
-                   junban_later_flag=True, junban_later_suspend=True)
-    words = _list_words(root, 40)
-    off = [word for word in ("須藤", "洗濯機") if word not in _list_words(root)]
-    assert off == ["須藤", "洗濯機"], "the two cards are off the library's list"
-    words += off
-    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
-    fake = SyncCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"))
+    _settings_file(root, **over)
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
     host, _ = _host()
     with _patched(fake):
         host._job("catch-up")
-    assert fake.write_requests, "the host still re-orders"
+    kinds = _kinds(fake.requests, off_ids)
+    assert "position" in kinds, "the host still re-orders"
+    last_position = max(index for index, kind in enumerate(kinds) if kind == "position")
+    assert not [kind for kind in kinds[:last_position] if kind in ("addTags", "flag", "suspend", "re-check")], kinds
+    after = [kind for kind in kinds[last_position + 1:] if kind in ("addTags", "flag", "suspend", "re-check")]
+    assert after[0] == "re-check" and after[-1] == "suspend", after         # read again first, suspend last
+    assert [kind for kind in dict.fromkeys(after[1:])] == list(acted), after
+    assert [ids for action, ids in fake.suspend_calls if action == "suspend"] == [sorted(off_ids)]
+    assert all(fake.cards[card_id]["queue"] == -1 for card_id in off_ids)
+    later = [sorted(notes) for _action, notes, tag in fake.tag_calls if tag == "Surasura::later"]
+    assert later == [sorted(fake.cards[card_id]["note"] for card_id in off_ids)]
+    assert sorted(card_id for card_id, _flag in fake.flag_writes) == (sorted(off_ids) if "flag" in acted else [])
+    assert ("Surasura" in {tag for _action, _notes, tag in fake.tag_calls}) is (not over.get("connect_enabled"))
+    saved = undo.load("ja")
+    assert saved and saved["complete"] is True and saved["suspended"] == sorted(off_ids), "the window's snapshot"
+    baseline = undo.load("ja", "baseline")
+    assert baseline is None or baseline.get("ended_at"), "one restore point: never also today's baseline"
+
+
+@pytest.mark.parametrize("deck_of,over", [
+    # The actions switched off (`junban_auto_actions` False, no Connect: no unattended suspend), cards off the list.
+    (_acting_deck, dict(junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True)),
+    # Connect's preview on with the suspend setting off: unattended, nothing to suspend — positions only.
+    (_acting_deck, dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True,
+                        junban_later_flag=True)),
+    # The actions on, every card on the list and no Surasura tag: nothing to act on.
+    (_listed_deck, dict(junban_auto_actions=True, junban_tag="", junban_later_tag=True, junban_later_flag=True,
+                        junban_later_suspend=True)),
+], ids=["actions-off", "connect-suspend-off", "nothing-to-act-on"])
+def test_on_3_0_a_host_run_with_nothing_to_act_on_sends_todays_positions_only_requests(lib, monkeypatch, deck_of, over):
+    """The move budget (E2.1): a catch-up that lays the ladder and two moves (deltas) send, request for request, what
+    today's positions-only host sends in the same library and deck — no re-check read, no action, today's baseline."""
+    from modules.junban import connect
+    monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
+    root, store = lib
+    today, _plain, moved = _three_jobs(root, store, deck_of, **_positions_only(over))
+    _start_again(store, moved)
+    acting, fake, _moved = _three_jobs(root, store, deck_of, **over)
+    assert [_kinds(log) for log in acting] == [_kinds(log) for log in today]
+    for job, (sent_log, today_log) in enumerate(zip(acting, today)):
+        for index, (sent, positions_only) in enumerate(zip(sent_log, today_log)):
+            if sent["action"] == "apiReflect" and over.get("junban_later_suspend") and not over.get("connect_enabled"):
+                # The one difference, and no write: with the suspend setting saved, the probe (the same request)
+                # also names `suspend` / `unsuspend`, asked before the plan knows there's nothing to suspend.
+                asked = sent["params"]["actions"]
+                assert [name for name in asked if name not in ("suspend", "unsuspend")] == \
+                    positions_only["params"]["actions"], asked
+                continue
+            assert _warm_read(sent) == _warm_read(positions_only), f"job {job}, request {index} differs"
     assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
-    assert undo.load("ja") is None and undo.load("ja", "baseline")
+    assert undo.load("ja") is None and undo.load("ja", "baseline"), "today's baseline alone"
+
+
+def test_on_3_0_a_move_after_the_actions_landed_sends_no_action_request_and_no_re_check(lib):
+    """A drag whose actions are unchanged adds no request: the plan asks only what differs from Anki now (a note
+    already tagged, a card already purple or suspended is no work), so after the catch-up acted, two moves send what
+    today's positions-only host sends for them — no action, no re-check read. (The tag and the flag alone here, so
+    both worlds keep the same cards in the queue.)"""
+    root, store = lib
+    over = dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True)
+    today, _fake, moved = _three_jobs(root, store, _acting_deck, **_positions_only(over))
+    _start_again(store, moved)
+    acting, fake, _moved = _three_jobs(root, store, _acting_deck, **over)
+    off_ids = _word_cards(fake, OFF)
+    first = _kinds(acting[0], off_ids)
+    assert "re-check" in first and "addTags" in first and "flag" in first, first
+    for job in (1, 2):
+        kinds = _kinds(acting[job], off_ids)
+        assert "position" in kinds, f"move {job} re-ordered nothing"
+        assert not {"addTags", "flag", "suspend", "re-check"} & set(kinds), kinds
+        assert kinds == _kinds(today[job], off_ids), f"move {job} sent other requests than today's"
+        # The same positions, request for request. A read may carry more ids — the notes the catch-up tagged and the
+        # cards it flagged, read again in the one request the move sends anyway (Anki moved their mod times).
+        assert [sent for sent, kind in zip(acting[job], kinds) if kind == "position"] == \
+            [sent for sent, kind in zip(today[job], kinds) if kind == "position"]
+    assert len(fake.flag_writes) == len(off_ids), "each card flagged once"
+
+
+def test_on_3_0_anki_stopping_during_the_hosts_re_check_means_no_action_and_the_positions_stand(lib):
+    """The re-check read fails (Anki stopped answering after the positions): nothing is known about the cards off the
+    list, so nothing is tagged, flagged or suspended this run — the Surasura tag neither; the positions stand, the
+    window's snapshot is complete (the next job may go) and the re-order is recorded as done."""
+    import urllib.error
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
+    failed = []
+
+    def anki_stops(ids):
+        if fake.write_requests and not failed and set(ids) == set(off_ids):
+            failed.append(sorted(ids))
+            raise urllib.error.URLError("[WinError 10061] No connection could be made")
+    fake.before_cards_info = anki_stops
+    before = fake.queue()
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert failed, "the re-check read went out after the positions"
+    assert fake.write_requests and fake.queue() != before, "the positions stand"
+    assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
+    saved = undo.load("ja")
+    assert saved["complete"] is True and not saved.get("suspended"), saved
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_on_3_0_restore_after_a_host_run_puts_positions_back_and_unsuspends_only_its_own_suspends(lib):
+    """One Restore after the host acted: every position back, the run's suspends unsuspended, its tags and flags
+    off — and 掃除機, which you suspended yourself, stays suspended (the run never touched it)."""
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root, yours=("掃除機",))
+    off_ids, yours = _word_cards(fake, OFF), _word_cards(fake, ("掃除機",))
+    before = {card_id: (card["due"], card["queue"]) for card_id, card in fake.cards.items()}
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        assert all(fake.cards[card_id]["queue"] == -1 for card_id in off_ids)
+        restored = reposition.restore(_junban_settings())
+    assert restored["ok"], restored["problems"]
+    assert {card_id: (card["due"], card["queue"]) for card_id, card in fake.cards.items()} == before
+    assert [ids for action, ids in fake.suspend_calls if action == "unsuspend"] == [sorted(off_ids)]
+    assert not [ids for _action, ids in fake.suspend_calls if set(ids) & set(yours)]
+    assert all("Surasura::later" not in (fake.notes[fake.cards[card_id]["note"]].get("tags") or [])
+               for card_id in off_ids)
+    assert all(not fake.cards[card_id].get("flags") for card_id in off_ids)
 
 
 def test_on_3_0_the_host_reorders_with_2x_box_off(lib):

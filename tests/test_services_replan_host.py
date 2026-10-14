@@ -195,6 +195,27 @@ def fired(monkeypatch):
     return Fired
 
 
+@pytest.fixture
+def landed(monkeypatch):
+    """Each finished Generate's plan read by the keeper, handed on or not (`_landed` ended, on its own thread):
+    `landed.count()`. A test waits until the count says its runs were looked at, never on a sleep."""
+    done = []
+    real = J.JourneyKeeper._landed
+
+    def land(keeper, previous):
+        try:
+            real(keeper, previous)
+        finally:
+            done.append(keeper)
+
+    class Landed:
+        @staticmethod
+        def count():
+            return len(done)
+    monkeypatch.setattr(J.JourneyKeeper, "_landed", land)
+    return Landed
+
+
 def _replan(settings=None, opener=None, language="ja", pending=lambda language: False, journey=lambda: True):
     registry = JobRegistry()
     controller = GenerateController(registry, settle=0)
@@ -344,7 +365,7 @@ def test_the_hosts_generate_ask_is_one_background_request(gate, fired):
     replan.finish(time.monotonic() + 1)
 
 
-def test_the_reorder_after_a_generate_comes_from_the_keeper_once_per_new_plan(gate, plans):
+def test_the_reorder_after_a_generate_comes_from_the_keeper_once_per_new_plan(gate, plans, landed):
     """The map's fix 2: `after_generate` only from the keeper's `on_done` — once per new plan (a run that left the same
     plan re-orders nothing) — and New arrivals' worker of this language re-baselined each time."""
     replan, _registry, controller, launches, opener = _replan()
@@ -352,14 +373,14 @@ def test_the_reorder_after_a_generate_comes_from_the_keeper_once_per_new_plan(ga
     _users_generate(controller, launches, "run-1", plans)
     assert h.until(lambda: arrivals.reloads == 1, seconds=5)
     _users_generate(controller, launches, "run-1", plans)      # the same plan again: nothing handed on
-    time.sleep(0.3)
+    assert h.until(lambda: landed.count() == 2, seconds=5), "the keeper never read the second run's plan"
     _quiet(replan)
     assert opener.hosts[0].calls == ["after_generate"] and arrivals.reloads == 1
     replan.finish(time.monotonic() + 1)
 
 
 # --- E2.2's overlap tests -------------------------------------------------------------------------------------------- #
-def test_two_new_plans_in_flight_make_one_reorder_and_one_after_it(gate, plans):
+def test_two_new_plans_in_flight_make_one_reorder_and_one_after_it(gate, plans, landed):
     """E2.2 RUNBOOK :58 (two corrections in flight): plan 1 lands → its re-order starts; plans 2 and 3 land while it
     writes → exactly one more re-order after it (the newest plan), never two at once, never a third."""
     held = _HeldJobs()
@@ -371,11 +392,13 @@ def test_two_new_plans_in_flight_make_one_reorder_and_one_after_it(gate, plans):
     assert held.running.wait(5)
     _users_generate(controller, launches, "run-2", plans)
     _users_generate(controller, launches, "run-3", plans)
-    time.sleep(0.4)                                         # both plans handed on while the first write runs
+    assert h.until(lambda: landed.count() == 3, seconds=5)   # both plans handed on while the first write runs …
+    _quiet(replan)                                          # … and on to the host
     assert held.kinds == ["generate"]
     held.gate.set()
     assert h.until(lambda: held.count() == 2 and not replan.host.busy(), seconds=5)
-    time.sleep(0.4)
+    _quiet(replan)                                          # nothing pending anywhere: no third job can start
+    assert not replan.host.busy()
     assert held.kinds == ["generate", "generate"]
     assert max(seen_live) == 1, "two re-orders ran at once"
     assert [v.state for v in _replans(registry)] == ["done", "done"]
@@ -392,10 +415,11 @@ def test_a_move_during_a_correction_makes_exactly_one_more_job(gate, plans, monk
     assert held.running.wait(5)
     replan.store_moved("ja", {"order_version": 7})
     replan.store_moved("ja", {"order_version": 8})
-    time.sleep(0.3)
+    _quiet(replan)                                          # both pokes reached the host while its first job writes
     held.gate.set()
     assert h.until(lambda: held.count() == 2 and not replan.host.busy(), seconds=5)
-    time.sleep(0.4)
+    _quiet(replan)                                          # nothing pending anywhere: no third job can start
+    assert not replan.host.busy()
     assert held.kinds == ["generate", "move"]
     replan.finish(time.monotonic() + 1)
 
@@ -451,7 +475,9 @@ def test_the_force_path_a_move_landing_mid_write_runs_exactly_one_more_job(gate,
             replan.host.after_generate()                    # the correction after a Generate
             ok = h.until(lambda: len(kinds) >= 2 and not replan.host.busy(), seconds=15)
             assert ok, kinds
-            time.sleep(0.5)
+            _quiet(replan)
+            # Nothing pending, no retry armed: no third job can start.
+            assert not replan.host.busy() and host._retry_at is None, (kinds, host._retry_kind)
         assert kinds == ["generate", "move"], kinds
         assert host._force is False and "move" not in host._want
         versions = store.versions()
@@ -529,11 +555,11 @@ def test_a_language_switch_leaves_no_write_to_the_old_deck(gate, monkeypatch):
     _quiet(replan)
     old_keeper, old_host = replan.keeper, held.hosts[0]
     replan.language_changed("zh")
-    time.sleep(0.6)                                      # past the old settle
+    old_host._thread.join(5)                             # the old host's worker ended: its settle can never run now
+    assert not old_host._thread.is_alive()
     replan.store_moved("ja", {"order_version": 5})
     replan.activated()
     _quiet(replan)
-    time.sleep(0.2)
     assert held.kinds == [], "a write reached the old deck after the switch"
     assert old_host._stop.is_set() and old_keeper._closed
     assert replan.keeper.language == "zh" and replan.host.language == "zh" and len(held.hosts) == 1

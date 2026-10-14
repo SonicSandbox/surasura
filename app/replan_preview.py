@@ -16,7 +16,7 @@ about a second later — tomorrow's cards first, then the rest — without a ful
 versions and order (one read), the guards (Junban's window, an update, Anki closed, a review), the plan file checked
 against the library as it stands (`plan_engine.check`, the signature's parts read here), `Engine.replan`, Junban's
 spaced delta with the engine's rows (`reposition.run(job=spaced.Job(automatic=True, …))`, under the Anki-write lock,
-positions only, one deck), then `record_planned` with the versions read with the order. When the plan can't serve the
+one deck — 2.x-dev: positions only; 3.0: your 順 actions after them, `_write`), then `record_planned` with the versions read with the order. When the plan can't serve the
 move the line says so, and the dashboard's host asks its window for an automatic Generate (04 §3–4; `generate`).
 
 **Off** (the default), another language, or Junban removed: `is_on` is False, no window makes a host, and nothing
@@ -557,7 +557,8 @@ class Host:
     def _may_write(self, settings, kind):
         """The guards a write needs (04 §4), asked before the library is read: 順's window open (waited for), an
         update waiting, Anki closed (the next sight of it catches up), a review (waited for). The probe is the run's
-        own (Junban's preflight, on a job's positions-only settings), kept for the job's run (E3.1-B2: asked once)."""
+        own (Junban's preflight, on the job's settings as `_write` decides them), kept for the job's run (E3.1-B2:
+        asked once)."""
         from app import anki_connect, anki_sync_rule
         from modules.junban import auto, reposition
         self._probe = None
@@ -574,7 +575,7 @@ class Host:
             self._tell(UPDATE)
             return False
         url = anki_connect.address(settings)
-        probe = reposition.probe_anki(dict(settings, **auto._POSITIONS_ONLY))
+        probe = reposition.probe_anki(auto.decide_actions(dict(settings)))     # what the job's run will need
         if not probe.get("ok") and probe.get("timed_out"):
             self._tell(NOT_ANSWERING)                # open but busy: never "closed" (review 3 R6: S3 stays pending)
             self._retry(kind)
@@ -682,10 +683,18 @@ class Host:
 
     def _write(self, settings, job, kind):
         """Junban's run for `job` and its bar lines -> the report, or None when nothing ran (the line said why;
-        `kind` runs again later when it's worth it)."""
+        `kind` runs again later when it's worth it).
+
+        2.x-dev keeps the host's job positions only (`auto._POSITIONS_ONLY` laid over the settings: E1.1 04 §1); 3.0
+        (Sonic, 2026-10-13: "it just works"): your 順 settings, decided as 順's automatic step decides them
+        (`auto.decide_actions`), ride every job — the positions first, then the touch-ups, tag, flag and suspend last,
+        under the window's snapshot (`reposition._run`). The plan asks only what differs from Anki now (a note
+        already tagged, a card already purple or suspended is no work), so a move with nothing new to act on sends
+        exactly a positions-only job's requests, with no re-check read."""
         from app import anki_connect
         from modules.junban import auto, reposition
-        settings.update(auto._POSITIONS_ONLY)
+        auto.decide_actions(settings)
+        job.actions = True
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
         try:

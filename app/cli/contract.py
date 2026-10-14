@@ -1,10 +1,11 @@
 """The rules every surasura-cli verb follows (docs/agent instructions/3.0/P0.3-cli-contract/02-contract.md).
 
 stdout carries only JSON lines — ASCII-escaped, one object a line, each flushed: any number of `progress` lines (with
---progress), then exactly one `result` or `error`. The exit code says how it went: 0 done, 1 failed, 2 wrong command
-or not set up, 3 busy, 4 needs a person. Nothing opens a dialog: an exception becomes an `error` line, a traceback in
-the log and exit 1. Diagnostics go to <local data>/logs/cli.log, never to stdout; every `error` is also kept in
-<local data>/logs/cli-events.jsonl (the newest 200) for the window to show.
+--progress), then exactly one `result` or `error`. The exit code says how it went: 0 done, 1 failed, 2 wrong command or
+not set up, 3 try later (busy, settings.json unreadable just now, an update staged), 4 needs a person. Nothing opens a
+dialog: an exception becomes an `error` line, a traceback in the log and exit 1. Diagnostics go to
+<local data>/logs/cli.log, never to stdout; every `error` is also kept in <local data>/logs/cli-events.jsonl (the newest
+200) for the window to show.
 
 Light by rule (02 §5): nothing here imports tkinter, Qt, pandas or requests.
 """
@@ -26,7 +27,7 @@ CONTRACT = 1
 EXIT_CODES = {
     "failed": 1, "partial": 1, "crashed-child": 1, "bad-data": 1,
     "usage": 2, "not-set-up": 2, "version-skew": 2,
-    "busy": 3, "anki-closed": 3, "anki-busy": 3, "anki-miner-busy": 3, "update-staged": 3,
+    "busy": 3, "anki-closed": 3, "anki-busy": 3, "anki-miner-busy": 3, "update-staged": 3, "settings-unreadable": 3,
     "needs-you": 4,
 }
 
@@ -147,6 +148,7 @@ def close_log():
             faulthandler.enable(sys.__stderr__, all_threads=True)
         _fault_file.close()
         _fault_file = None
+    log.propagate = True                        # its records passed on again, as before `open_log` (in-process calls)
     logging.raiseExceptions = _raise_exceptions
 
 

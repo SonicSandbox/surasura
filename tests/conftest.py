@@ -224,6 +224,16 @@ def _guard_real_local_data():
 
 
 @pytest.fixture(autouse=True)
+def _no_tools_entry_from_the_shell(monkeypatch):
+    """surasura.json (app/tools_entry.py) is written by a source checkout only when SURASURA_TOOLS_CLI is set, into
+    HOUSEKI_TOOLS_DIR when that is set: a developer's shell carrying either would have every window and CLI test write
+    it, possibly into the real shared tools folder. A test that wants them sets them itself; with SURASURA_TEST_ROOT
+    the entry lands in <test root>/houseki-tools, and with neither tools_dir() raises under pytest."""
+    monkeypatch.delenv("SURASURA_TOOLS_CLI", raising=False)
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_token_store(tmp_path_factory, monkeypatch):
     """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to
     the real %APPDATA% store (and tests never couple through a shared DB)."""
@@ -243,6 +253,18 @@ def _no_destroyed_default_root():
     but only when no other Tk was made in between: the core suite in shards met it (test_undo_logic after
     test_ignore_names). Before each test, a destroyed default root is cleared (before, not after: monkeypatch's own
     teardown, which puts it back, can run after any other fixture's)."""
+    _clear_destroyed_default_root()
+
+
+@pytest.fixture(autouse=True, scope="class")
+def _no_destroyed_default_root_for_a_class():
+    """The same before a test class's own set-up: a class that makes its root in `setUpClass` / `setup_class` (the
+    Content Manager's layer-A tests) builds before any test's fixtures run, so a destroyed default root left by the
+    file before it (test_connect_switch_gaps, in shards) failed all 23 of its tests "application has been destroyed"."""
+    _clear_destroyed_default_root()
+
+
+def _clear_destroyed_default_root():
     try:
         import tkinter
     except ImportError:

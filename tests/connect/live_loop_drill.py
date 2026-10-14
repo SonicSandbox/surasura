@@ -138,7 +138,7 @@ class Drill:
         with open(os.path.join(RESOURCES, "connect", "pairing_v1.json"), encoding="utf-8") as f:
             record = json.load(f)
         record.update({"schema": 1, "language": "ja", "library_path": path, "subtitle_sha256": sha, "verdict": "timed",
-                       "timing": {"outcome": "CONFIDENT", "offset_s": 0.0, "segments": 1, "reference": "subtitle"},
+                       "timing": {"outcome": "CONFIDENT", "offset_s": 0.0, "segments": 1, "reference": "text-track"},
                        "video_path": os.path.abspath(self.a.video), "video_size": os.path.getsize(self.a.video),
                        "content_key": "v1-" + hashlib.sha256(f"drill-{self.n}-{time.time()}".encode()).hexdigest()})
         store = library.open_store("ja")

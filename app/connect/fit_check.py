@@ -1,10 +1,12 @@
 """The fit-check gate (P2.4 row 2.4.5; K89; P1.5 06-edges E16, E17): Connect mines an episode only when its subtitle is
 known to be timed to its video — a card cut from a subtitle a few seconds off holds the wrong line's audio.
 
-- **hato's verdict** (its pairing record; 09-hato-layer *Connect's gate*): `schema` 1, `verdict` `timed`, the library
-  copy's sha256 = `subtitle_sha256` and `timing.segments` 1 → mine (hato's copy is already timed: no offset).
-- **Anything else** (hato's `extracted` / `untimed`, a `timed` record that doesn't hold all four, or no pairing: your
-  own placement): tsubasa's command line when
+- **hato's verdict** (its pairing record; 09-hato-layer v2 *Connect's gate*): `schema` 1, `verdict` `timed`, the
+  library copy's sha256 = `subtitle_sha256`, `timing.segments` 1 and `timing.reference` one of tsubasa's three kinds
+  (`REFERENCES`) → mine (hato's copy is already timed: no offset).
+- **Anything else** (hato's `extracted` / `untimed`, a `timed` record that doesn't hold all five — a `reference`
+  absent, `subtitle` (v1's, named no tsubasa reference) or unknown included — or no pairing: your own placement):
+  tsubasa's command line when
   it's installed (`tsubasa --pair VIDEO SUB --dry-run --json --no-results`, P0.2: about a second an episode, never a
   write): `CONFIDENT` with one segment → mine; anything else (`REFUSED`, `ERROR`, two segments or none, an answer it
   can't read) → not timed; no answer at all (it timed out, or couldn't start) → asked again at the runner's next look.
@@ -30,6 +32,7 @@ import sys
 TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
 CREATE_NO_WINDOW = 0x08000000
+REFERENCES = ("text-track", "picture-track", "speech-mask")     # what tsubasa timed against (09-hato-layer v2 P13)
 
 
 def version(pairing):
@@ -52,11 +55,13 @@ def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S):
 
 
 def hato_timed(pairing, subtitle):
-    """hato's own verdict holds (09-hato-layer *Connect's gate*): schema 1, `timed`, one segment, and the library copy
-    is the file hato timed (its sha256)."""
+    """hato's own verdict holds (09-hato-layer v2 *Connect's gate*): schema 1, `timed`, one segment, a reference
+    Surasura knows (`REFERENCES`), and the library copy is the file hato timed (its sha256)."""
     pairing = pairing or {}
     timing = pairing.get("timing") if isinstance(pairing.get("timing"), dict) else {}
     if pairing.get("schema") != 1 or pairing.get("verdict") != "timed" or timing.get("segments") != 1:
+        return False
+    if timing.get("reference") not in REFERENCES:   # an unknown one means "check it yourself"
         return False
     want = pairing.get("subtitle_sha256")
     if not isinstance(want, str) or not want or not subtitle:

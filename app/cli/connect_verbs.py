@@ -3,7 +3,8 @@ and `connect` (in P2.1: `--consume-only`, the inbox read once); P2.5's `undo` (a
 
 - `register` takes hato's pairing record v1 on stdin (`--pairing -`) or from a file — never on the command line, which
   is logged — and registers it in the library store. **With Connect's preview off it answers `skipped` and writes
-  nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5.
+  nothing** (master_manifest.json and the window's undo stack untouched): the preview off is 2.5. Its body after the
+  read is `register_record`, which hato's back-fill (`app/connect/hato.py`, P3.2) calls for each of hato's pairings.
 - `connect` (P2.4) runs Connect's loop (`app/connect/runner.py`) until no job is left; `--consume-only` reads the
   inbox once and exits (P2.1).
 - `place` and `finish` are a person's verbs, accepted from any program: each placement is logged with `--source`
@@ -188,13 +189,22 @@ def _sha256(path):
 
 def register(args):
     """hato's verb: the pairing record → the store (`library_store.register_headless`) → where the item is."""
-    record = _read_record(args.pairing)
+    return register_record(_read_record(args.pairing), args.lang, backfill=args.backfill, wait=args.wait)
+
+
+def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
+    """`register`'s body once the record is read (one code path: the verb and hato's back-fill, `app/connect/hato.py`)
+    -> the verb's answer, or `CliError`. `lang`: the caller's `--lang` (None: the record's). `loaded`: settings.json as
+    read, else read here, strictly — the back-fill hands None, so a switch turned off part-way stops it at the next
+    line. `backfill`: a pairing made before Connect was on, recorded with no placement event (never mined because of
+    it), never placed by a rule, never a kick."""
     _check_record(record)
-    if args.lang and args.lang != record["language"]:
-        raise CliError("usage", f"--lang {args.lang} but the record's language is {record['language']}.")
+    if lang and lang != record["language"]:
+        raise CliError("usage", f"--lang {lang} but the record's language is {record['language']}.")
     lang = record["language"]
     key = record["content_key"]
-    loaded = settings()
+    if loaded is None:
+        loaded = settings()
     if not loaded.get("connect_enabled"):
         return {"file_id": None, "landed": "skipped", "tier": None, "position": None, "pairing": None,
                 "content_key": key, "skipped": PREVIEW_OFF}
@@ -211,10 +221,10 @@ def register(args):
     from app import library_store
     from app.connect import library, rules
     # Connect's watermark set before the registration (a store this call builds too), so the drop is logged after it
-    reader = None if args.backfill else library.READER
-    done = _store_write(lambda: library_store.register_headless(lang, path, record, backfill=args.backfill,
+    reader = None if backfill else library.READER
+    done = _store_write(lambda: library_store.register_headless(lang, path, record, backfill=backfill,
                                                                   looks=library_store.PROBE_LOOKS, reader=reader),
-                        args.wait)
+                        wait)
     if done.code == library_store.EXIT_BUSY:
         if library_store.update_staged(looks=library_store.PROBE_LOOKS):
             raise CliError("update-staged", "Surasura is installing an update. Try again once it has restarted.")
@@ -229,7 +239,7 @@ def register(args):
 
     out = {"file_id": done.file_id, "landed": done.landed, "tier": done.tier, "position": done.position,
            "pairing": done.pairing, "content_key": key}
-    if args.backfill:
+    if backfill:
         return out
     work = False
     store = library.open_store(lang, role="register")
@@ -238,7 +248,7 @@ def register(args):
             if done.tier == "arrivals":
                 # Every call while the item waits, so a retry after a failed first try still places it
                 try:
-                    rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), args.wait)
+                    rule = _store_write(lambda: rules.apply(store, done.file_id, record, loaded), wait)
                 except ValueError:          # its anchor moved meanwhile: it waits, and hato's retry places it
                     contract.log.warning("a placing rule's anchor moved; item %s waits", done.file_id)
                     rule = None
@@ -436,14 +446,37 @@ def _loop(loaded, languages, looks=None):
         held = locks.take(kick.LOCK, "Connect", wait=1.0)
     except locks.Busy:
         return {"skipped": "already running"}
+    summary = None
     try:
-        with held:
-            summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
-    except TooNew as e:
-        raise CliError("needs-you", str(e), ask="Update Surasura") from None
-    if not summary.get("stopped") and any(_pending(lang) for lang in languages):
-        _kick(loaded)                   # logged after its last read: the next Connect reads it
-    return summary
+        try:
+            with held:
+                summary = batch_gc.without_cycle_collection(runner.run)(loaded, languages, looks=looks)
+        except TooNew as e:
+            raise CliError("needs-you", str(e), ask="Update Surasura") from None
+        if not summary.get("stopped") and any(_pending(lang) for lang in languages):
+            _kick(loaded)               # logged after its last read: the next Connect reads it
+        return summary
+    finally:
+        _release_finish(summary, runner)
+
+
+def _release_finish(summary, runner):
+    """P3.2-AMN: outside the lock, a check still running gets what is left of its wait (`am_release.finish`) — after
+    a run that ended or raised alike, never when the run stopped for an update or one is staged by now (looked at
+    `PROBE_LOOKS` times, as the command line does): the updater waits on this exit. Its attempt was saved before
+    GitHub was asked, so a check cut off still counts."""
+    try:
+        if summary is not None and summary.get("stopped") == runner.STOPPED_FOR_UPDATE:
+            return
+        from app.connect import am_release
+        if not am_release.running():
+            return                      # no check running: nothing to wait for, no look needed
+        from app import library_store
+        if library_store.update_staged(looks=library_store.PROBE_LOOKS):
+            return
+        am_release.finish()
+    except Exception:
+        pass                            # a courtesy: Connect's exit never fails on it
 
 
 def _level(store, lang, loaded):

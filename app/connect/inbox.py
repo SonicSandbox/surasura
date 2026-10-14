@@ -4,9 +4,12 @@
   the log's last id; nothing logged before it is ever read, so nothing placed before Connect was switched on is mined.
   Switching Connect on again later moves it to the log's end (`library.switch_on`: the preview's switch, P3.1).
 - **What makes a job:** an item that entered the top 20 (`entered_mine_line`: a person's drag, another program's
-  `place`, a hato drop landing at the top of NOW) and is still there, not mined (no receipt) and with no job yet →
-  a `queued` job, recording who placed it (the event's `by`, ✅ G1.3-5). A back-fill registration logs no event
-  (`register --backfill`), so it never makes one.
+  `place`, a hato drop its rule places there, or — New arrivals off, 2.x's way — one landing at the top of NOW) and
+  is still there, not mined (no receipt) and with no job yet → a `queued` job, recording who placed it (the event's
+  `by`, ✅ G1.3-5). On 3.0 (New arrivals on, the default, D30) a hato drop waits in New arrivals until its rule or a
+  person places it: landing there pushes nothing. A back-fill registration logs no event for the item it registers
+  (`register --backfill`), so it never makes one; with New arrivals off, items it pushes out of the top 20 log
+  `left_mine_line`.
 - **What drops one:** an item that left the top 20 (or was removed or finished) before its mining started.
 - **Crash-safe:** the jobs are committed first, then the reader advanced. A kill between the two re-reads the same
   events, and a re-read decides from the store as it is now: one open job per item, never two.

@@ -220,7 +220,7 @@ def test_a_test_builds_data_name_gives_it_roots_of_its_own(tmp_path, program, mo
     monkeypatch.setattr(path_utils, "_LIBRARY", {})
     assert path_utils.get_user_data_path() == str(tmp_path / "テスト")
     assert path_utils.get_settings_path().endswith(os.path.join("Houseki", "Surasura-test", "settings.json"))
-    # Legacy roots and Torii's place never carry it.
+    # Legacy roots and the shared tools folder never carry it.
     assert path_utils.legacy_local_root().endswith(os.path.join("SonicSandbox", "Surasura"))
     assert path_utils.tools_root() == os.path.join(path_utils._local_base(), "Houseki", "tools")
 
@@ -368,7 +368,8 @@ def test_macos_and_linux_roots(tmp_path, monkeypatch, bases):
     assert path_utils.legacy_persistent_root() == os.path.join(share, "SonicSandbox", "Surasura")
 
 
-def test_the_legacy_roots_and_tools_are_named_only_never_created(monkeypatch, bases):
+def test_path_utils_names_the_legacy_roots_and_tools_and_never_creates_them(monkeypatch, bases):
+    # The tools folder is made only by its writer (tools_entry, surasura.json: 09-hato-layer §3), never by naming it.
     _outside_pytest(monkeypatch)
     for path in (path_utils.legacy_local_root(), path_utils.legacy_persistent_root(), path_utils.tools_root()):
         assert not os.path.exists(path)

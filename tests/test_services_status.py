@@ -65,7 +65,7 @@ def test_poll_is_a_stat_within_4_ms():
     status.refresh()
     for _ in range(20):
         _, ms = h.timed(status.poll)
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
 
 
 def test_a_provider_that_fails_leaves_the_rest_of_the_snapshot():
@@ -460,7 +460,7 @@ def test_a_tick_runs_on_a_worker_never_on_the_pollers_thread():
     for _ in range(20):
         clock.now += 3
         _, ms = h.timed(status.poll)
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
         _settle(status)
 
 

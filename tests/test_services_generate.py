@@ -80,11 +80,11 @@ def test_a_request_while_another_program_holds_results_returns_at_once_waits_and
     waits = []
     with h.Holder("results", "Generate"):
         run, ms = h.timed(lambda: controller.request("ja", settings=_settings(), on_wait=waits.append))
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
         assert h.until(lambda: controller.state().message == "Waiting for Generate to finish", seconds=10)
         assert controller.state().state == G.QUEUED and waits and waits[0]["verb"] == "Generate"
         _, cancel_ms = h.timed(controller.cancel)
-        assert cancel_ms <= 4, cancel_ms
+        assert cancel_ms <= h.AT_ONCE_MS, cancel_ms
         assert _settled(controller, 10)
         assert run.proc is None, "nothing started"
         assert registry.snapshot()[-1].cancelled

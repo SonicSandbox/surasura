@@ -304,7 +304,7 @@ def test_the_check_and_its_listeners_run_off_the_callers_thread(world, monkeypat
     threads = []
     svc.subscribe(lambda s: threads.append(threading.current_thread()))
     ok, ms = h.timed(svc.check)
-    assert ok and ms <= 4, ms
+    assert ok and ms <= h.AT_ONCE_MS, ms
     assert svc.check() is False                              # one check at a time
     gate.set()
     assert h.until(lambda: threads, seconds=10)
@@ -426,7 +426,7 @@ def test_start_returns_at_once_and_never_twice(world, monkeypatch):
     registry = JobRegistry()
     svc = world.offered(world.service(registry=registry))
     ok, ms = h.timed(svc.start)
-    assert ok and ms <= 4, ms
+    assert ok and ms <= h.AT_ONCE_MS, ms
     assert svc.start() is False
     assert h.until(lambda: svc.state().state == U.DOWNLOADING, seconds=10)
     assert svc.start() is False

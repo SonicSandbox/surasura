@@ -176,19 +176,33 @@ class World:
         return svc
 
 
-@pytest.fixture
-def world(monkeypatch):
-    w = World(monkeypatch)
-    yield w
-    for svc in w.services:                       # nothing of a test's update outlives its fakes
+def _update_threads():
+    """The service's threads still running (`update-run`, `update-download`, `update-check` …)."""
+    return [t.name for t in threading.enumerate() if t.name.startswith("update-") and t.is_alive()]
+
+
+def _settle(w):
+    """`world`'s teardown: nothing of a test's update outlives its fakes — its threads included. An update that has
+    ended can still have a thread at work: a turn of the wait list mid-scan when Cancel landed. Left running, it goes on
+    after the test, its fakes and SURASURA_TEST_ROOT gone, and its real listing (`connect_pid` → `locks.in_use`) makes
+    the real local data folder in whichever test runs next (#71's run on GitHub, 2026-10-14)."""
+    for svc in w.services:
         svc.quit()
     w.stage.gate.set()
     w.installer.gate.set()
     assert h.until(lambda: all(svc._update is None or svc._update.handing for svc in w.services), seconds=20)
+    assert h.until(lambda: not _update_threads(), seconds=20), f"still running: {_update_threads()}"
     for held in w.locks:                         # a test that handed over leaves its lock held, as the app exits
         if not held.closed:
             updater.drop_update_lock(held)
     updater.release_children(start=False)
+
+
+@pytest.fixture
+def world(monkeypatch):
+    w = World(monkeypatch)
+    yield w
+    _settle(w)
 
 
 def _lock_is_free():
@@ -1171,3 +1185,29 @@ def test_the_windows_own_generate_is_listed_once_as_its_job_never_as_another_win
         for proc in procs:
             proc.kill()
             proc.wait(10)
+
+
+def test_the_teardown_waits_for_a_turn_of_the_wait_list_still_scanning_after_a_cancel(world, monkeypatch):
+    """The test harness, not the service (#71's flake, 2026-10-14): Cancel ends the update while a turn of the wait list
+    is still in its process scan, so `_update` is None at once and the old teardown returned — the thread ran on after
+    the test, its fakes and test root gone, and made the real local data folder. `_settle` returns only once it ended."""
+    world.children = [{"pid": 4242, "name": "Content Manager", "stop": None}]
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING, seconds=10)
+    scanning, release = threading.Event(), threading.Event()
+
+    def slow_scan(active=(), images=None):
+        scanning.set()
+        release.wait(10)
+        return list(world.children)
+    monkeypatch.setattr(updater, "running_children", slow_scan)
+    try:
+        assert scanning.wait(10)
+        assert svc.cancel() is True and svc._update is None
+        assert "update-run" in _update_threads()          # still in its scan, as on GitHub's runner
+        threading.Timer(0.2, release.set).start()
+        _settle(world)
+        assert _update_threads() == []
+    finally:
+        release.set()

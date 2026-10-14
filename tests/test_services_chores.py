@@ -355,6 +355,46 @@ def test_under_test_no_timer_and_no_warm_up(monkeypatch):
     chores.close()
 
 
+def test_the_window_start_writes_surasura_json_on_the_worker_connect_off(monkeypatch, tmp_path):
+    """09-hato-layer §3 (v2 P10): surasura.json is written whenever Surasura runs, Connect on or off. The 3.0 window
+    never runs surasura-cli, so its start is the only writer with Connect off: without it hato's automatic setting
+    reads Surasura as absent and hands nothing off. Under the suite's no-timers switch too (the Tk window's start
+    writes it always); on the worker, never the window's thread."""
+    import json
+    from app import path_utils, tools_entry
+    monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    tools = tmp_path / "道具"
+    monkeypatch.setenv("HOUSEKI_TOOLS_DIR", str(tools))
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", str(tmp_path / "スラスラ" / "surasura-cli.cmd"))
+    threads, real = [], tools_entry.refresh
+    monkeypatch.setattr(tools_entry, "refresh", lambda settings=None: threads.append(threading.get_ident())
+                        or real(settings))
+    chores, _r, _p = _make(_Settings(connect_enabled=False))
+    chores.started()
+    assert chores.worker.idle(5)
+    assert len(threads) == 1 and threads[0] != threading.get_ident()
+    entry = json.loads((tools / "surasura.json").read_text(encoding="utf-8"))
+    assert entry["cli"] == str(tmp_path / "スラスラ" / "surasura-cli.cmd") and entry["verbs"] == ["status"]
+    chores.close()
+
+
+def test_a_failing_surasura_json_refresh_is_only_printed_and_the_next_chore_runs(monkeypatch, capsys):
+    """The tools folder unwritable, settings unreadable, anything: the window opens as ever and Koe still starts."""
+    from app import path_utils, tools_entry
+    monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: None)
+    def boom(settings=None):
+        raise RuntimeError("the tools folder is a file")
+    monkeypatch.setattr(tools_entry, "refresh", boom)
+    calls = _koe(monkeypatch)
+    chores, _r, _p = _make(_Settings(enable_koe=True, source_display="off"))
+    chores.started()
+    assert chores.worker.idle(5)
+    assert calls == ["start"]
+    assert "surasura.json: the tools folder is a file" in capsys.readouterr().out
+    chores.close()
+
+
 class _Store:
     def __enter__(self):
         return self

@@ -31,10 +31,11 @@ def _check(answer=None, stdout=None, pairing=None):
 
 
 def _hato_record(subtitle_bytes, **over):
-    """hato's pairing record as 09-hato-layer writes it: schema 1, `timed`, one segment, the copy's sha256."""
+    """hato's pairing record as 09-hato-layer v2 writes it: schema 1, `timed`, one segment against a text track, the
+    copy's sha256."""
     import hashlib
     record = {"schema": 1, "verdict": "timed", "subtitle_sha256": hashlib.sha256(subtitle_bytes).hexdigest(),
-              "timing": {"outcome": "CONFIDENT", "offset_s": -1.24, "segments": 1}}
+              "timing": {"outcome": "CONFIDENT", "offset_s": -1.24, "segments": 1, "reference": "text-track"}}
     record.update(over)
     return record
 
@@ -70,6 +71,41 @@ def test_a_hato_timed_record_that_fails_the_gate_goes_to_tsubasa(tmp_path):
         got = fit_check.fit(record, VIDEO, str(subtitle), tsubasa="tsubasa", run=tsubasa)
         assert got == (fit_check.TIMED, "tsubasa", None, 1.24)      # tsubasa's one segment: its offset is cut by
     assert len(asked) == 4
+
+
+def _timed_by(reference, tmp_path):
+    """`fit` on a hato `timed` record whose timing names `reference` (None: no `reference` at all) -> (its answer, how
+    often tsubasa was asked)."""
+    body = "1\n00:00:01,000 --> 00:00:02,500\n上層部の決定だ\n".encode("utf-8")
+    subtitle = tmp_path / "上層部の話 01.srt"
+    subtitle.write_bytes(body)
+    timing = {"outcome": "CONFIDENT", "offset_s": -1.24, "segments": 1}
+    if reference is not None:
+        timing["reference"] = reference
+    asked = []
+
+    def tsubasa(command, **kw):
+        asked.append(command)
+        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [
+            {"start": 0.0, "end": 1420.5, "offset": 1.24}]}) + "\n").encode("utf-8"))
+
+    got = fit_check.fit(_hato_record(body, timing=timing), VIDEO, str(subtitle), tsubasa="tsubasa", run=tsubasa)
+    return got, len(asked)
+
+
+def test_each_of_tsubasas_three_references_is_hatos_word(tmp_path):
+    # 09-hato-layer v2 P13: hato times against a text track, a picture (bitmap) track or a speech mask — each is a
+    # real tsubasa check, so the record is mined on hato's word with no second run and no offset
+    assert fit_check.REFERENCES == ("text-track", "picture-track", "speech-mask")
+    for reference in fit_check.REFERENCES:
+        assert _timed_by(reference, tmp_path) == ((fit_check.TIMED, "hato", None, 0.0), 0), reference
+
+
+def test_a_reference_absent_v1s_subtitle_or_unknown_goes_to_tsubasa(tmp_path):
+    # v2: `subtitle` named no tsubasa reference and is dropped; a value this Surasura doesn't know (tsubasa's own
+    # spelling "bitmap track", or none at all) means "check it yourself" — never mined on hato's word
+    for reference in (None, "subtitle", "bitmap track"):
+        assert _timed_by(reference, tmp_path) == ((fit_check.TIMED, "tsubasa", None, 1.24), 1), reference
 
 
 def test_a_confident_answer_with_exactly_one_segment_is_timed():

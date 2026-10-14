@@ -1,8 +1,8 @@
 """The window's chores (W3.5 row 6), Qt-free: what the Tk dashboard does at start, on focus and at close besides the
 sync and Generate — Koe's speech helper (`apply_koe_state`), the indexer (`_maybe_launch_indexer`, `_index_needed`),
 the library store's helper (`_maybe_maintain`, `_schedule_maintain`, `maintain_at_close`), the Rarity tables' warm-up
-(`_prepare_preview`), the install note (`_write_install_note`, K100) and Connect's notices (`_arrivals_notice`,
-`notice.at_close`).
+(`_prepare_preview`), the install note (`_write_install_note`, K100), surasura.json (`_refresh_tools_entry`,
+09-hato-layer §3) and Connect's notices (`_arrivals_notice`, `notice.at_close`).
 
 - **The triggers are the window's calls** and return at once: `started()`, `activated()`, `language_changed(lang)`,
   `koe_changed()` (the switch moved), `index(force)` (the automation service's, when Anki brought words and no
@@ -136,9 +136,10 @@ class Chores:
 
     # --- the window's triggers (each returns at once) ------------------------------------------------------------ #
     def started(self):
-        """The window opened: the install note, Koe as the settings say, and — unless timers are off — the Rarity
-        tables' warm-up, the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on."""
+        """The window opened: the install note, surasura.json, Koe as the settings say, and — unless timers are off —
+        the Rarity tables' warm-up, the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on."""
         self.worker.put(self._install_note)
+        self.worker.put(self._tools_entry)
         self.worker.put(self._koe)
         if os.environ.get("SURASURA_NO_UI_TIMERS"):
             return
@@ -330,6 +331,15 @@ class Chores:
             path_utils.write_install_note()
         except Exception as e:
             print(f"Install note: {e}")
+
+    def _tools_entry(self):
+        """surasura.json in the shared tools folder (09-hato-layer §3): how hato finds Surasura, Connect on or off. A
+        failure is only printed (a source checkout writes it only with SURASURA_TOOLS_CLI)."""
+        try:
+            from app import tools_entry
+            tools_entry.refresh()
+        except Exception as e:
+            print(f"surasura.json: {e}")
 
     def _prepare_preview(self):
         try:

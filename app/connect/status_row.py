@@ -8,6 +8,9 @@ RUNBOOK-P2.5 *The status contract*), and the kick after a placement (row 3.1.9).
 - **Only what changed** (S19): every 3 s a worker takes `status.stamp()` (two stats and a look at Connect's lock);
   only a stamp that differs from the last one reads `status.read` and redraws. The Tk thread never calls either. No
   timer under `SURASURA_NO_UI_TIMERS` (the tests call `tick`).
+- **Anki Miner's update notice** (P3.2-AMN): a second short line under it, *Anki Miner 3.8 is out*, while the record's
+  `anki_miner_update` names one — a link to Anki Miner's releases page (`webbrowser.open`, as the settings panel's).
+  Packed only while there is one (it changes once a day at most), gone once Anki Miner is updated.
 - **A placement reaches Connect** (3.1.9): a Content Manager move into the top 20 doesn't start Connect by itself —
   the dashboard's session look kicks it only after a session's first sync — so when the stamp changed (the library
   file moved) and Connect isn't running, one read-only look at the placement log: an event Connect hasn't read →
@@ -21,6 +24,7 @@ import pathlib
 import sqlite3
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import ttk
 
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
@@ -60,9 +64,19 @@ def detail(rec):
     return "\n".join(lines) or (rec or {}).get("line") or ""
 
 
+def update_line(rec):
+    """P3.2-AMN: (the notice's words, its link) when a newer Anki Miner is out, else None."""
+    update = (rec or {}).get("anki_miner_update")
+    if not isinstance(update, dict) or not update.get("version"):
+        return None
+    from app.connect import am_release
+    return f"Anki Miner {update['version']} is out", update.get("url") or am_release.RELEASES
+
+
 def drawn(rec):
-    """What the row shows from a record (the line, the badge, the hover): the same → no redraw (S19)."""
-    return (rec or {}).get("line"), badge_state(rec), detail(rec)
+    """What the row shows from a record (the line, the badge, the hover, Anki Miner's notice): the same → no redraw
+    (S19)."""
+    return (rec or {}).get("line"), badge_state(rec), detail(rec), update_line(rec)
 
 
 def badge_state(rec):
@@ -77,11 +91,12 @@ class StatusRow:
     """U1 + U2. `parent`: the dashboard's root; `after`: the widget packed below it (the bottom bar);
     `language()`: the dashboard's language now; `on_open()`: opens the Connect window; `settings()`: the dashboard's
     settings now (the kick's); `post(job)`: runs `job` on the Tk thread (the dashboard's queue); `stamp` / `read` /
-    `kick` / `unread`: Connect's, handed in by the tests."""
+    `kick` / `unread`: Connect's, handed in by the tests; `open_url(url)`: the browser (`webbrowser.open`)."""
 
     def __init__(self, parent, language, tooltip, on_open, settings=None, below=None, stamp=None, read=None,
-                 kick=None, unread=None, post=None):
+                 kick=None, unread=None, post=None, open_url=None):
         self.language, self.on_open = language, on_open
+        self.open_url = open_url or webbrowser.open
         self.settings = settings or (lambda: {})
         self._stamp, self._read, self._kick, self._unread = stamp, read, kick, unread
         self._post_to = post
@@ -97,6 +112,7 @@ class StatusRow:
         style = ttk.Style(parent)
         style.configure("CS.TFrame", background=BG)
         style.configure("CS.TLabel", background=BG, foreground=SECONDARY, font=("Segoe UI", 9))
+        style.configure("CS.Link.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 9, "underline"))
         self.frame = ttk.Frame(parent, style="CS.TFrame", padding=(10, 2))
         if below is not None:
             self.frame.pack(side=tk.BOTTOM, fill=tk.X, after=below)
@@ -114,6 +130,11 @@ class StatusRow:
         tooltip(self.line, lambda: detail(self.record) + "\nClick: open Connect's window.")
         tooltip(self.badge, "Things only you can fix. Click to see them.")
         self.badge_shown = None
+        # P3.2-AMN: Anki Miner's update notice, a second line, packed only while there is one
+        self.update_label = ttk.Label(self.frame, text="", style="CS.Link.TLabel", cursor="hand2")
+        self.update_label.bind("<Button-1>", lambda _e: self._open_update())
+        tooltip(self.update_label, "Opens Anki Miner's releases page")
+        self.update_shown = None
 
     # -- the poll ---------------------------------------------------------------------------------------------- #
     def start(self):
@@ -163,7 +184,7 @@ class StatusRow:
                 else:
                     stamp = full.get("stamp", stamp)
                     self._last = (language, stamp)
-                    rec = full["languages"][language]
+                    rec = _status().language_record(full, language)
                     shown = drawn(rec)
                     if shown != self._shown:
                         self._shown = shown
@@ -224,6 +245,27 @@ class StatusRow:
         else:
             self.badge.config(text="Needs you", bg=BG, fg=ACCENT, highlightbackground=ACCENT, highlightcolor=ACCENT)
         self.badge_shown = state
+        self._draw_update(update_line(rec))
+
+    def _draw_update(self, update):
+        """The notice's line: packed (below the line, the full width) or gone, only when it changed."""
+        if update == self.update_shown:
+            return
+        if update is None:
+            self.update_label.pack_forget()
+        else:
+            self.update_label.config(text=update[0])
+            if self.update_shown is None:
+                self.update_label.pack(side=tk.BOTTOM, anchor=tk.W, before=self.line)
+        self.update_shown = update
+
+    def _open_update(self):
+        """A click on the notice: Anki Miner's releases page in the browser (never a download)."""
+        if self.update_shown is not None:
+            try:
+                self.open_url(self.update_shown[1])
+            except Exception as e:
+                print(f"Anki Miner's releases page wasn't opened: {e}")
 
     def refresh(self):
         """Read again at the next look (after the window marked needs seen, dismissed one, undid a batch); redrawn

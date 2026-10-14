@@ -205,8 +205,9 @@ def legacy_persistent_root():
     return _test_redirect("legacy_persistent_root") or os.path.join(_roaming_base(), LEGACY_VENDOR, "Surasura")
 
 def tools_root():
-    """%LOCALAPPDATA%\\Houseki\\tools (the system's local base elsewhere): reserved for Torii (3.1, D20). Named only:
-    nothing is installed there in 3.0 and it is never created."""
+    """%LOCALAPPDATA%\\Houseki\\tools (the system's local base elsewhere): the shared tools folder (D20; 09-hato-layer
+    §3): surasura.json is written there (`tools_entry`, which makes the folder), Torii's install later (3.1). Named
+    only here: path_utils never creates it."""
     return os.path.join(_local_base(), VENDOR, "tools")
 
 def local_data_root():

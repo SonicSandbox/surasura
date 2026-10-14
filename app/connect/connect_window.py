@@ -1,9 +1,10 @@
 """The Connect window (P3.1 row 3.1.6; P1.5 05-surface U3, 03-actors §4; RUNBOOK-P2.5 *The status contract*): one
 Toplevel opened from the dashboard's Connect line or its *Needs you* badge, with three tabs and the Logs box.
 
-- ***Needs you*** — each open need's sentence, its one action where its kind has one (*Show me how* · *How to check*;
-  an untimed drop has none in 2.x), its time and *Dismiss*; seen ones dimmed (*SEEN*), still listed. What is shown
-  is marked seen (`status.mark_seen`, on a worker): the badge stops counting it.
+- ***Needs you*** — each open need's sentence, its one action where its kind has one (*Show me how* · *How to check*
+  · *Ask hato again*: hato's pairings back-filled on a worker, `hato.backfill`, P3.2; an untimed drop has none in
+  2.x), its time and *Dismiss*; seen ones dimmed (*SEEN*), still listed. What is shown is marked seen
+  (`status.mark_seen`, on a worker): the badge stops counting it.
 - ***Batches*** — the finished batches with cards, newest first: title, cards made, not made by outcome, and ***Undo
   this batch***: the plan first (`undo.act`, nothing written), then Sonic's question — "Remove all of this episode's
   Anki cards that aren't studied?" with how many go, which stay and why, and the cards you had deleted yourself (they
@@ -12,6 +13,8 @@ Toplevel opened from the dashboard's Connect line or its *Needs you* badge, with
 - ***Shelf*** — each restore point (cards, words, why, when, how many back) with *Put back* (none without Junban: the
   plain line instead), and the cards Surasura brought back today.
 - **Logs** — *Open logs folder*, *Save logs to a file…*.
+- **Anki Miner's update notice** (P3.2-AMN): *Anki Miner 3.8 is out* above the tabs while the record's
+  `anki_miner_update` names one — a link to Anki Miner's releases page, as the dashboard's row shows it.
 
 Every Connect call runs on a worker, never the Tk thread (the contract: an undo waits for Anki's write lock); the
 window is only drawn from `after`. GUI_Design_Guidelines: the dark palette, ttk with this module's prefixed styles,
@@ -22,6 +25,7 @@ import datetime
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
@@ -32,8 +36,10 @@ RETRY_GAP_S = 1.0               # at least this long between two tries while ano
 QUESTION = "Remove all of this episode's Anki cards that aren't studied?"
 WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your undo goes on once it's done…"
 UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
+SETTINGS_UNREADABLE = "settings.json can't be read just now; try again."
 
-# Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; text is shown under the entry
+# Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; "hato" asks hato for its
+# pairings again (`ask_hato`); text is shown under the entry
 HOW = {
     "known-sync": ("Show me how", "Open Surasura's Anki window (the Anki button on the dashboard), choose the decks "
                                   "that hold the words you know, and press Sync now."),
@@ -46,6 +52,7 @@ HOW = {
     "repick": ("How to check", "logs"),
     "mine-failed": ("How to check", "logs"),
     "error": ("How to check", "logs"),
+    "no-pairing": ("Ask hato again", "hato"),
 }
 OUTCOMES = {"not_found": "not found", "no_definition": "no definition", "duplicate": "already a card",
             "uncertain": "not sure it was made", "media_failed": "media failed", "refused": "refused",
@@ -55,7 +62,7 @@ OUTCOMES = {"not_found": "not found", "no_definition": "no definition", "duplica
 def view(language):
     """The status record for `language` — read on a worker, never the Tk thread."""
     from app.connect import status
-    return status.read([language])["languages"][language]
+    return status.language_record(status.read([language]), language)
 
 
 def when(utc_text):
@@ -192,11 +199,11 @@ class ConnectWindow:
     confirm=)`: `undo.act`; `settings()`: settings.json as it is now (read on the worker); `writer_busy()`: is Anki's
     write lock held by a live program; `update_waits()`: is an update waiting to install; `confirm(title, text)`: the
     question; `on_change()`: the dashboard's line reads again; `post(job)`: runs `job` on the Tk thread (the
-    dashboard's queue). Tests hand fakes for all of them."""
+    dashboard's queue); `open_url(url)`: the browser. Tests hand fakes for all of them."""
 
     def __init__(self, parent, language, tooltip, record, act=None, settings=None, writer_busy=None, confirm=None,
                  junban=None, on_change=None, logs_folder=None, save_logs=None, ask_save=None, mark_seen=None,
-                 dismiss=None, post=None, update_waits=None):
+                 dismiss=None, post=None, update_waits=None, open_url=None):
         self.language, self.tooltip, self.record = language, tooltip, record or {}
         self._act, self._settings, self._writer_busy = act, settings, writer_busy
         self._update_waits = update_waits
@@ -206,6 +213,8 @@ class ConnectWindow:
         self._logs_folder, self._save_logs, self._mark_seen, self._dismiss = logs_folder, save_logs, mark_seen, dismiss
         self.ask_save = ask_save
         self._post = post
+        self.open_url = open_url or webbrowser.open
+        self.update_link = None     # P3.2-AMN: Anki Miner's notice, when there is one
         self.buttons = {}           # (tab, id, text) -> button: the tests press them
         self.notes = {}             # (tab, id) -> its note label
         win = self.win = tk.Toplevel(parent)
@@ -218,6 +227,7 @@ class ConnectWindow:
         frame.pack(fill=tk.BOTH, expand=True)
         ttk.Label(frame, text=self.record.get("line") or "Up to date", style="CW.Head.TLabel",
                   wraplength=WRAP).pack(anchor=tk.W, pady=(0, 8))
+        self._update_notice(frame)
         close = ttk.Button(frame, text="Close", style="CW.TButton", command=win.destroy)
         close.pack(side=tk.BOTTOM, anchor=tk.E, pady=(8, 0))      # the bottom first: the tabs take what's left
         tooltip(close, "Close this window (Esc).")
@@ -236,6 +246,27 @@ class ConnectWindow:
         self._seen()
 
     # -- plumbing ------------------------------------------------------------------------------------------------ #
+    def _update_notice(self, frame):
+        """P3.2-AMN: *Anki Miner 3.8 is out* above the tabs (above *Needs you*), a link to its releases page."""
+        from app.connect import status_row
+        update = status_row.update_line(self.record)
+        if update is None:
+            return
+        text, url = update
+        link = ttk.Label(frame, text=text, style="CW.Link.TLabel", cursor="hand2")
+        link.pack(anchor=tk.W, pady=(0, 8))
+        link.bind("<Button-1>", lambda _e: self._open_update(url))
+        self.tooltip(link, "Opens Anki Miner's releases page")
+        self.update_link = link
+
+    def _open_update(self, url):
+        """A click on the notice: the releases page in the browser; a browser that fails is printed, never raised into
+        Tk (as the dashboard row's)."""
+        try:
+            self.open_url(url)
+        except Exception as e:
+            print(f"Anki Miner's releases page wasn't opened: {e}")
+
     def _style(self):
         style = ttk.Style(self.win)
         style.configure("CW.TFrame", background=BG)
@@ -246,6 +277,7 @@ class ConnectWindow:
         style.configure("CW.Meta.TLabel", background=SURFACE, foreground=DIM, font=("Segoe UI", 8))
         style.configure("CW.Note.TLabel", background=SURFACE, foreground=SECONDARY)
         style.configure("CW.Head.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 11, "bold"))
+        style.configure("CW.Link.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 9, "underline"))
         style.configure("CW.TButton", background=SURFACE, foreground=TEXT)
         style.configure("CW.TLabelframe", background=BG, foreground=TEXT)
         style.configure("CW.TLabelframe.Label", background=BG, foreground=TEXT)
@@ -350,6 +382,10 @@ class ConnectWindow:
                 if text == "logs":
                     command, tip = (lambda n=note: self.open_logs(n)), "Open Connect's logs, where what went wrong " \
                                                                        "is written."
+                elif text == "hato":
+                    command, tip = (lambda n=need: self.ask_hato(n)), "Ask hato for its pairings again: each file " \
+                                                                      "it paired is matched to its video. The files " \
+                                                                      "still without one are named in the logs."
                 else:
                     command, tip = (lambda n=note, t=text: n.config(text=t)), "Show what fixes this."
                 self._button(buttons, ("needs", need["id"]), label, command, tip).pack(side=tk.LEFT)
@@ -398,6 +434,34 @@ class ConnectWindow:
             self.tabs.tab(0, text=self._needs_title())
             if not self._listed:
                 self._empty(self.tab_needs, "Nothing needs you.")
+            self.on_change()
+        self.worker(job, done)
+
+    def ask_hato(self, need):
+        """*Ask hato again* (P3.2): hato's pairings back-filled on a worker (`hato.backfill`), its words in the entry's
+        note. None left without a pairing: the entry is fixed, its button goes."""
+        key = ("needs", need["id"], "Ask hato again")
+        note = self.notes[("needs", need["id"])]
+        self.buttons[key].config(state=tk.DISABLED)
+        note.config(text="Asking hato for its pairings…")
+
+        def job():
+            # read strictly: a settings.json caught half-saved read leniently is the defaults — the preview off
+            settings = self._settings() if self._settings else _load_settings(strict=True)
+            from app.connect import hato
+            return hato.backfill(self.language, settings)
+
+        def done(out):
+            if isinstance(out, Exception):
+                note.config(text=f"hato's pairings weren't read: {_say(out)}")
+                self.buttons[key].config(state=tk.NORMAL)
+                return
+            from app.connect import hato
+            note.config(text=hato.say(out))
+            if out.get("need") == "fixed":
+                self._done(key)             # every file paired: nothing left to ask
+            else:
+                self.buttons[key].config(state=tk.NORMAL)
             self.on_change()
         self.worker(job, done)
 
@@ -568,9 +632,13 @@ class ConnectWindow:
                                                  else f"Saved {len(out)} files to {dest}"))
 
 
-def _load_settings():
+def _load_settings(strict=False):
+    """settings.json as the window reads it; `strict`: one that can't be read just now raises, in plain words."""
     from app import settings_manager
-    return settings_manager.load_settings() or {}
+    try:
+        return settings_manager.load_settings(strict=strict) or {}
+    except settings_manager.SettingsError:
+        raise RuntimeError(SETTINGS_UNREADABLE) from None
 
 
 def show(parent, language, tooltip, record, **kw):

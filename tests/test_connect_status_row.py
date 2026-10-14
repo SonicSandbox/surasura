@@ -202,3 +202,60 @@ def test_the_dashboard_with_the_preview_off_builds_no_row_and_imports_nothing(mo
     main.MasterDashboardApp._connect_row_start(window)
     assert window._connect_row is None
     assert not [m for m in sys.modules if m.startswith("app.connect")]
+
+
+# --------------------------------------------------------------------------- #
+# P3.2-AMN: Anki Miner's update notice, a second line
+# --------------------------------------------------------------------------- #
+RELEASE_PAGE = "https://github.com/0xzerolight/anki_miner/releases/tag/v3.8.0"
+
+
+class WithUpdate(Connect):
+    """`read` carries the record's top-level `anki_miner_update`, as `status.read` does."""
+
+    def __init__(self, record=None, update=None):
+        super().__init__(record)
+        self.update = update
+
+    def read(self, languages=None):
+        return dict(super().read(languages), anki_miner_update=self.update)
+
+
+def test_anki_miners_notice_appears_opens_its_page_and_goes_once_updated(root):
+    """A newer Anki Miner → *Anki Miner 3.8.0 is out*, a link with its tooltip; a click opens the releases page (the
+    browser stood in for); Anki Miner caught up → the line goes."""
+    connect, opened = WithUpdate(update={"version": "3.8.0", "url": RELEASE_PAGE}), []
+    row, pump, tips = _row(root, connect, open_url=opened.append)
+    _look(row, pump, root)
+    assert row.update_label.winfo_manager() == "pack" and row.update_label.cget("text") == "Anki Miner 3.8.0 is out"
+    assert ("Opens Anki Miner's releases page" in [t for w, t in tips if w is row.update_label])
+    row.update_label.event_generate("<Button-1>")
+    assert opened == [RELEASE_PAGE]
+    connect.stamp_value[0] += 1
+    connect.update = None
+    _look(row, pump, root)
+    assert row.update_label.winfo_manager() == "", "Anki Miner updated: the notice is gone"
+    row.update_label.event_generate("<Button-1>")
+    assert opened == [RELEASE_PAGE], "a hidden notice opens nothing"
+
+
+def test_no_notice_no_second_line(root):
+    connect = WithUpdate()
+    row, pump, _tips = _row(root, connect, open_url=lambda url: pytest.fail("opened"))
+    _look(row, pump, root)
+    assert row.redraws == 1 and row.update_label.winfo_manager() == ""
+
+
+def test_the_notice_unchanged_on_a_moved_stamp_redraws_nothing_and_a_new_one_redraws(root):
+    """S19: the same notice read again is no redraw; a newer release named is one."""
+    connect = WithUpdate(update={"version": "3.8.0", "url": RELEASE_PAGE})
+    row, pump, _tips = _row(root, connect, open_url=lambda url: None)
+    _look(row, pump, root)
+    _look(row, pump, root)
+    connect.stamp_value[0] += 1                 # the state file rewritten with the same release
+    _look(row, pump, root)
+    assert (connect.count("read"), row.redraws) == (2, 1)
+    connect.stamp_value[0] += 1
+    connect.update = {"version": "3.9.0", "url": RELEASE_PAGE}
+    _look(row, pump, root)
+    assert row.redraws == 2 and row.update_label.cget("text") == "Anki Miner 3.9.0 is out"

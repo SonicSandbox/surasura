@@ -53,3 +53,21 @@ def test_a_failing_shelf_look_still_leaves_the_deleted_notes_check_done_and_name
     assert "notes_gone" in calls, "the deleted-notes check runs even though the shelf look fails"
     assert calls.index("notes_gone") < calls.index("shelf_session"), "the check comes before the shelf look"
     assert s.said["ja"] == [runner.SHELF_NO_JUNBAN], "the shelf is named as off, once"
+
+
+def test_settings_that_cant_be_read_just_now_make_the_run_wait_never_needs_you(monkeypatch):
+    # why: 09-hato-layer v2 Q5 — a settings.json caught half-way through a save is exit 3 (`settings-unreadable`):
+    # a moment's state. Read as Needs you, one torn read would stop an episode until the learner clicked it.
+    from app.cli.contract import CliError
+    monkeypatch.setattr(verbs, "_results_language", lambda: None)
+    monkeypatch.setattr(anki_session, "begin", lambda url, loaded: None)
+
+    def torn(ns):
+        raise CliError("settings-unreadable", "Surasura's settings (settings.json) can't be read.")
+
+    for step in ("known_sync", "generate"):
+        monkeypatch.setattr(verbs, "known_sync", torn if step == "known_sync" else (lambda ns: None))
+        monkeypatch.setattr(verbs, "generate", torn)
+        with pytest.raises(runner.Wait):
+            runner.Steps({}).prepare("ja", None)
+    assert isinstance(runner._wait_or_needs(CliError("settings-unreadable", "x"), "mining"), runner.Wait)

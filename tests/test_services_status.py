@@ -489,3 +489,65 @@ def test_the_journey_dot_reads_the_stores_journey_pending(monkeypatch):
     assert provider() is False
     assert provider() is None
     assert opened == ["zh", "zh", "zh"]
+
+
+# --- W3.5 row 7: the review's fixes -------------------------------------------------------------- #
+def test_with_no_events_file_to_watch_a_poll_takes_the_ticks_never_a_full_refresh_every_500_ms(monkeypatch):
+    """The events file's path can't be worked out (no reader, ever) — the window's 500 ms poll used to read as
+    "the file changed" and refresh everything every time, the journey dot opening the store twice a second. Now the
+    poll asks only the ticking providers whose period is up, as with a reader whose file never changes."""
+    from app.cli import events
+
+    def no_path():
+        raise OSError("no logs folder can be worked out")
+    monkeypatch.setattr(events, "path", no_path)
+    clock = _Clock()
+    asked = {"journey": 0, "ankiweb": 0}
+
+    def journey():
+        asked["journey"] += 1
+        return True
+
+    def ankiweb():
+        asked["ankiweb"] += 1
+        return "AnkiWeb: synced 18:42"
+    status = StatusService(JobRegistry(), clock=clock, providers={"journey": journey, "ankiweb": ankiweb})
+    assert status._reader is None and status._events_path is None
+    for _ in range(4):
+        status.poll()
+        _settle(status)
+        clock.now += 0.5
+    assert asked["journey"] == 0, "a full refresh on a poll with nothing to watch"
+    assert asked["ankiweb"] == 2                          # its ticks only: at 0 s and 1 s
+    status.refresh_soon("journey")                        # asked by name, the dot is still read
+    _settle(status)
+    assert asked["journey"] == 1 and status.snapshot().journey is True
+
+
+def test_the_ankiweb_countdown_reads_its_file_only_when_it_changed_and_still_counts_down(monkeypatch):
+    """The AnkiWeb mark is asked every second; its state file is read again only when its stamp (mtime, size)
+    moved — between, the last read is worked out again for the time now, so the countdown still ticks."""
+    from app import anki_sync_rule
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    reads, real_read = [], anki_sync_rule.read_state
+
+    def counted():
+        reads.append(1)
+        return real_read()
+    monkeypatch.setattr(anki_sync_rule, "read_state", counted)
+    clock = [start]
+    provider = S.ankiweb_line(lambda: {}, now=lambda: clock[0])
+    wait = int(anki_sync_rule.delay_s({}))
+    said = []
+    for n in range(3):
+        clock[0] = start + n
+        said.append(provider())
+    assert said == [f"AnkiWeb: syncing in {wait - n} s" for n in range(3)]
+    assert len(reads) == 1, "the state file read on every tick"
+    anki_sync_rule._update(front_pending=False, sync="synced", synced_at=start)    # a sync landed: the file moved
+    reads.clear()
+    assert provider().startswith("AnkiWeb: synced ")
+    assert len(reads) == 1
+    provider()
+    assert len(reads) == 1

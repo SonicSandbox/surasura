@@ -528,6 +528,71 @@ def test_a_switch_to_a_language_with_its_deck_recorded_opens_that_languages_host
     replan.finish(time.monotonic() + 1)
 
 
+@pytest.mark.parametrize("automation", [True, False])
+def test_a_language_switch_runs_the_starts_journey_check_whatever_the_new_hosts_gate_says(gate, automation):
+    """The new language's store owes its sentences (`journey_pending`) and no deck is recorded for it (its host
+    stands aside): the switch still looks, on the worker, as the start does — `changed("start")`; D29 alone decides
+    whether that is a Generate (the keeper's `enabled`)."""
+    looked = []
+    settings = _Settings() if automation else _Settings(logic={"automation": False})
+    replan, _registry, _c, launches, opener = _replan(
+        settings, pending=lambda language: looked.append(language) or language == "zh")
+    replan.language_changed("zh")
+    _quiet(replan)
+    assert looked == ["zh"], "the switch never looked at the new language's journey"
+    assert opener.hosts == []                            # the deck is recorded for Japanese: no Chinese host
+    if automation:
+        assert h.until(lambda: launches.count() == 1, seconds=5)
+        assert launches.runs[0].language == "zh" and launches.runs[0].quiet
+    time.sleep(0.8)                                      # past the keeper's first look
+    assert launches.count() == (1 if automation else 0)
+    replan.finish(time.monotonic() + 1)
+
+
+# --- the bar's line when the host stands aside ------------------------------------------------------------ #
+def test_a_host_standing_aside_says_why_in_the_bar_and_the_users_own_choices_say_nothing(gate, monkeypatch):
+    """A 2.x upgrader who never ticked the preview's box has no (language, deck) pair recorded: with D29 on
+    and Junban on and present, the host stands aside — and the bar says why, in `stands_aside`'s words (the deck, or
+    D7's one deck), told once per new line (S19). D29 off, Junban off or absent are the user's own choices: no line.
+    Once the pair holds, the host opens and the reason goes."""
+    heard = []
+    registry = JobRegistry()
+    opener = _Opener()
+    settings = _Settings(junban_replan_language="", junban_replan_deck="")
+    replan = R.Replan(registry, GenerateController(registry, settle=0), settings, "ja", opener=opener,
+                      on_line=heard.append, pending=lambda language: False,
+                      keeper_options={"launcher": _Launches(), "pending": lambda: False})
+
+    def look():
+        replan.activated()
+        _quiet(replan)
+        return replan.line()
+    replan.start()
+    _quiet(replan)
+    deck = "順's deck Mining isn't recorded for Japanese — pick it in 順's window in Japanese"
+    assert replan.line() == deck and opener.hosts == []
+    assert look() == deck and heard == [deck]            # asked again: the same line, never told again
+    settings.values["junban_scope"] = "all"
+    one_deck = look()
+    assert one_deck == replan_preview.unavailable({"junban_scope": "all"}) and heard == [deck, one_deck]
+    settings.values["junban_scope"] = "deck"
+    settings.values["enable_junban"] = False
+    assert look() is None                                # 順 off: the user's choice
+    settings.values["enable_junban"] = True
+    settings.values["logic"] = {"automation": False}
+    assert look() is None                                # D29 off: the user's choice
+    settings.values["logic"] = {"automation": True}
+    present = replan_preview.junban_present
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: False)
+    assert look() is None                                # 順 not installed
+    monkeypatch.setattr(replan_preview, "junban_present", present)
+    assert look() == deck
+    settings.values.update(junban_replan_language="ja", junban_replan_deck="Mining")     # picked in 順: it holds
+    assert look() is None and len(opener.hosts) == 1 and opener.hosts[0].calls == ["catch_up"]
+    assert heard == [deck, one_deck, None, deck, None]
+    replan.finish(time.monotonic() + 1)
+
+
 # --- the update ---------------------------------------------------------------------------------------------------- #
 def test_the_updates_hold_stops_the_host_and_its_end_makes_it_again(gate):
     """*Update now* (the map's G6): the hold lets the host go (its helper would be a Surasura process the update waits

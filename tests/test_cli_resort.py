@@ -65,7 +65,13 @@ def test_on_3_0_spaced_while_the_re_plan_preview_is_off_exactly_as_junban_auto(d
         assert code == 0 and preview["numbering"] == "full" and fake.writes == [], preview
         code, line = h.call("resort")
     assert code == 0 and line["moves"] == preview["moves"] > 0 and line["numbering"] == "full" and line["undo"], line
-    assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
+    # 2.x-dev: positions only (`suspend_calls == []`); 3.0 (G1.3-8, W3.5 row 7, Haya's G2b): the run is unattended with
+    # the Connect preview on, so Junban's suspend setting is followed — the cards off the list (須藤, 図書館, 眼鏡)
+    # suspended and tagged `::later` after every position — and still no flag, no Surasura tag
+    off = sorted(card_id for card_id, card in fake.cards.items()
+                 if fake.notes[card["note"]]["fields"]["Expression"]["value"] in ("須藤", "図書館", "眼鏡"))
+    assert fake.suspend_calls == [("suspend", off)] and fake.flag_writes == []
+    assert {tag for _action, _notes, tag in fake.tag_calls} == {"Surasura::later"}
     resorted = _dues(fake)
     gaps = sorted(resorted.values())
     assert max(b - a for a, b in zip(gaps, gaps[1:])) > 1, "spaced, not a dense block"

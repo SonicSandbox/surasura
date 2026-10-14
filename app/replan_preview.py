@@ -616,10 +616,15 @@ class Host:
             return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):
-                # Nothing the plan holds moved: the host asks for no Generate. 2.x said the user's (NEW_CONTENT,
-                # PRESS_GENERATE: pass 4 #13); on 3.0 the journey keeper's runs first — the store's change, then
-                # `after_generate` (Haya's G4).
-                self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
+                # Nothing the plan holds moved: the host asks for no Generate. Where the store's order or pins moved
+                # since the plan (a placement), a Generate is coming on 3.0 — the window's hook makes it the journey
+                # keeper's, then `after_generate` (Haya's G4) — and the line says so. Elsewhere (new or changed files
+                # alone, a setting) none is: the keeper is never asked for those, so 2.x's words stand (pass 4 #13).
+                if (versions["order_version"] > versions["planned_order_version"]
+                        or versions["pins_version"] > versions["planned_pins_version"]):
+                    self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
+                else:
+                    self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE)
                 return False
             asked = self._ask_generate(f"generate-first: {verdict[1]}")
             self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False

@@ -146,13 +146,17 @@ BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {ba
 BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the rarest band whose list stays short, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
 # W3.5 row 7: the re-order's line (the host's own words, said whole in its tooltip), Connect's, AnkiWeb's, the dot.
-BAR_REPLAN_TIP = "{line}\n\nSurasura keeps Anki's new cards in your list's order, the words you'll meet soonest first"
+# The re-order's tip promises nothing: the line beside it may say it stands aside.
+BAR_REPLAN_TIP = "{line}\n\nAnki's new cards in your list's order: what Surasura is doing about it, or why it waits"
 BAR_CONNECT_TIP = "What Surasura Connect is doing with your cards in this language"
 BAR_ANKIWEB_TIP = "Surasura's own syncs of Anki with AnkiWeb: when the last one ran, or when the next one starts"
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
+# The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
 JOURNEY_DOT_TIP = ("Your journey's sentences are catching up with your newest list: a Generate brings them in by "
                    "itself. Your journey opens meanwhile, with the sentences it has")
+JOURNEY_DOT_TIP_PRESS = ("Your journey's sentences are catching up with your newest list: press Generate to bring them "
+                         "in. Your journey opens meanwhile, with the sentences it has")
 
 # The update: the bar's mark, the sheet, Needs you's cards.
 UPDATE_READY = "Update ready"

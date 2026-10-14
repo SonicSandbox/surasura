@@ -228,6 +228,9 @@ class Services:
         if self.replan is not None and not self.closing.is_set():
             self.replan.language_changed(self.language)   # the old keeper closed, the old host stopped, new ones
             self._provide_lines(self.language)
+            refresh = getattr(self.status, "refresh_soon", None)
+            if refresh is not None:
+                refresh("journey", "replan")              # the new language's dot and line at once
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -1008,8 +1011,7 @@ class ShellWindow(QMainWindow):
         self._status_mark(self.bar_ankiweb, snap.ankiweb, strings.BAR_ANKIWEB_TIP)
         self._status_mark(self.bar_connect, snap.connect, strings.BAR_CONNECT_TIP)
         if self.duties is not None:
-            self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if snap.journey else "",
-                              strings.JOURNEY_DOT_TIP)
+            self._paint_journey_dot()
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
@@ -1019,10 +1021,12 @@ class ShellWindow(QMainWindow):
 
     def _status_mark(self, label, text, tip):
         """One of row 7's statuses (the re-order's line, Connect's, AnkiWeb's, the journey dot): shown while it has a
-        value, repainted only when its own value changed (S19) — another field's change leaves it as it is."""
+        value, repainted only when its own value (or its tooltip) changed (S19) — another field's change leaves it as it
+        is."""
         text = text or ""
         eliding = isinstance(label, ElidingLabel)
-        if (label.full() if eliding else label.text()) == text and label.isHidden() != bool(text):
+        if ((label.full() if eliding else label.text()) == text and label.isHidden() != bool(text)
+                and label.toolTip() == (tip if text else "")):
             return
         if eliding:
             label.set_full(text)
@@ -1055,6 +1059,16 @@ class ShellWindow(QMainWindow):
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
         if self.duties is not None:
             self._duty_settings(keys)
+            if "logic.automation" in keys and self._status_snap is not None:
+                self._paint_journey_dot()               # its tooltip follows D29
+
+    def _paint_journey_dot(self):
+        """The journey dot from the bar's last snapshot; its tooltip promises a Generate by itself only while D29 is on
+        (the keeper runs one), else says to press Generate."""
+        settings = self.services.settings
+        on = settings.automation() if hasattr(settings, "automation") else True
+        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
+                          strings.JOURNEY_DOT_TIP if on else strings.JOURNEY_DOT_TIP_PRESS)
 
     def open_logs(self, folder=None):
         """*Open the logs folder*: `folder`, else — while the bar's failure is an update's with a report — the report's
@@ -1176,8 +1190,7 @@ class ShellWindow(QMainWindow):
         self._show_generate(s.controller.state())
         self._show_automation(s.automation.state())
         if self._status_snap is not None:                   # the dot the bar's last snapshot asked for
-            self._status_mark(d.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
-                              strings.JOURNEY_DOT_TIP)
+            self._paint_journey_dot()
 
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""

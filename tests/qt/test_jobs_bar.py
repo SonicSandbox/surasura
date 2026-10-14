@@ -692,6 +692,51 @@ def test_bar_replan_journey_dot_owed_before_the_duties_attach_shows_once_they_do
         services.shutdown(0.5)
 
 
+def test_bar_replan_journey_dot_promises_a_generate_by_itself_only_while_the_automation_is_on(world):
+    """The dot's tooltip says a Generate brings the sentences in by itself only while D29 is on (the
+    journey keeper runs one); off, it says in plain words to press Generate — and follows a D29 change made while the
+    dot shows (read through the settings service)."""
+    dot = world.d.journey_dot
+    _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: not dot.isHidden())
+    assert dot.toolTip() == strings.JOURNEY_DOT_TIP and "by itself" in dot.toolTip()
+    world.services.settings.set({"logic.automation": False}, now=True)
+    assert wait_until(lambda: "by itself" not in dot.toolTip()), dot.toolTip()
+    assert dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS and "press Generate" in dot.toolTip()
+    assert not dot.isHidden()
+    world.services.settings.set({"logic.automation": True}, now=True)
+    assert wait_until(lambda: dot.toolTip() == strings.JOURNEY_DOT_TIP)
+
+
+def test_bar_replan_journey_dot_made_with_the_automation_off_says_press_generate(qapp, tmp_path):
+    """The dot owed before the duties attach, D29 already off: its first tooltip is the plain one."""
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        w.services.settings.set({"logic.automation": False}, now=True)
+        w.win._poll.stop()
+        w.status.providers["journey"] = lambda: True
+        w.status.refresh_soon("journey")
+        assert wait_until(lambda: not w.d.journey_dot.isHidden())
+        assert w.d.journey_dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS
+    finally:
+        w.close()
+
+
+@pytest.mark.parametrize("line", ["順 is off — switch it on to re-order Anki as you move",
+                                  "順's deck Mining isn't recorded for Japanese — pick it in 順's window in Japanese",
+                                  "It needs one deck: choose it in 順's deck list (never All decks)."])
+def test_bar_replan_a_stand_aside_line_has_no_tip_saying_surasura_keeps_ankis_order(world, line):
+    """Beside a line saying the re-order stands aside, the tooltip never claims "Surasura keeps Anki's new
+    cards in your list's order" — it says what the line is about, neutrally, with the line whole."""
+    _provide(world, replan=line)
+    _ask(world, "replan")
+    label = world.win.bar_replan
+    assert wait_until(lambda: label.full() == line and not label.isHidden())
+    assert line in label.toolTip()
+    assert "keeps Anki" not in label.toolTip(), label.toolTip()
+
+
 def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_them(world):
     """S19: the bar's row-7 labels and the dot repaint only when their own value changed — a snapshot with only its
     time, or only a job's line, changed (the bar's status line moves) leaves every one of them as it was."""

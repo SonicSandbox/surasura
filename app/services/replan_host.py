@@ -8,17 +8,21 @@ dashboard's preview switch (`app/main.py` `_replan_start` … `_replan_finishing
   open host go when it says no. The host's Generate ask goes to the keeper (`generate`: one automatic Generate path);
   its writes are a `replan` job in the window's registry (`working(True/False)`: recorded — the registry sees the write
   and waits for it at quit, `on_quit="wait"`, and never holds the host's own machine-locked write back); its last line
-  is `line()` (None before any, and once the host is let go), each new one told through `on_line`. `hold()` (an update
-  waits: its helper is a Surasura process the update would wait for) lets the host go until `release()`; nothing opens
-  while an update holds its lock (the helper would see it and leave the jobs to the window's process): the next call
-  opens it. `close()` + `finish(deadline)` is the quit: a pending settle and the S3 sync run at once, `busy()` is waited
-  for until the deadline, then `stop()` (the helper finishes a write in hand by itself).
+  is `line()` (None before any, and once the host is let go), each new one told through `on_line`. While it stands
+  aside for a reason the user can fix — D7's one deck, the (language, deck) pair not recorded — `line()` is
+  `stands_aside`'s line, worked out beside the gate and told only when it changes; D29 off, Junban off or
+  absent are the user's choices: no line. `hold()` (an update waits: its helper is a Surasura process the update would
+  wait for) lets the host go until `release()`; nothing opens while an update holds its lock (the helper would see it
+  and leave the jobs to the window's process): the next call opens it. `close()` + `finish(deadline)` is the quit: a
+  pending settle and the S3 sync run at once, `busy()` is waited for until the deadline, then `stop()` (the helper
+  finishes a write in hand by itself).
 - **`Replan`** is one per window: the keeper and the host of the language open, made again on a language switch (the
   old host stopped — a settle still pending is dropped, so nothing more is written to the old deck; its next start
-  catches up through the store's versions — and the old keeper closed). The keeper (`journey.JourneyKeeper`) is always
-  made, D29 off too: its `on_done` re-baselines New arrivals' worker after a manual Generate (Haya G2c). `on_done` is
-  the only re-order after a Generate (`after_generate`: the keeper hands each new plan once), never the controller's
-  end. A store change (`store_moved`, from the library reader: any writer) → one poke + one `changed("store")`.
+  catches up through the store's versions — and the old keeper closed); the new language gets the start's catch-up
+  and journey look. The keeper (`journey.JourneyKeeper`) is always made, D29 off too: its `on_done`
+  re-baselines New arrivals' worker after a manual Generate (Haya G2c). `on_done` is the only re-order after a Generate
+  (`after_generate`: the keeper hands each new plan once), never the controller's end. A store change (`store_moved`,
+  from the library reader: any writer) → one poke + one `changed("store")`.
 
 Nothing here waits on the caller's thread but `finish` (the quit's worker): the rest queues on the host's worker, arms
 the keeper's timer, or lets a host go (`stop` never waits).
@@ -54,6 +58,21 @@ def _automation_on(settings, language):
         return False
 
 
+def _aside_line(settings, language):
+    """Why the host stands aside, for the bar: `stands_aside`'s line where the user can fix it — D7's one
+    deck, the (language, deck) pair not recorded — else None: D29 off, Junban off or absent are the user's own choices.
+    Asked on the host's worker, beside the gate."""
+    try:
+        from app import replan_preview
+        why = replan_preview.stands_aside(settings, language)
+        if why in (replan_preview.AUTOMATION_OFF, replan_preview.JUNBAN_OFF, replan_preview.JUNBAN_ABSENT):
+            return None
+        return why
+    except Exception as e:
+        print(f"Re-order: why it stands aside couldn't be read: {e}")
+        return None
+
+
 def _update_staged():
     from app import replan_preview
     return replan_preview._update_staged()
@@ -76,6 +95,7 @@ class ReplanHost:
         self._gen = 0                       # which host the callbacks are from: a host let go is never heard again
         self._job = None                    # the `replan` job of the write in hand
         self._line = None
+        self._aside = None                  # the stand-aside line `line()` gives while no host is open
         self._held = bool(held)
         self._closing = False               # the quit: nothing new opens, the host's close is sent
         self._closed = False
@@ -150,10 +170,12 @@ class ReplanHost:
             if self._closed or self._closing or self._held:
                 return
             host = self._host
-        if not _automation_on(self._settings(), self.language):
-            if host is not None:
-                self._let_go()              # switched off (D29, Junban, the deck): the helper goes
+        settings = self._settings()
+        if not _automation_on(settings, self.language):
+            # switched off (D29, Junban, the deck): the helper goes; the bar says why where the user can fix it
+            self._let_go(_aside_line(settings, self.language))
             return
+        self._unsay_aside()
         if host is None:
             if _update_staged():
                 return                      # an update holds its lock: the next call opens the host
@@ -201,13 +223,14 @@ class ReplanHost:
         if host is not None:
             host.close()
 
-    def _let_go(self):
+    def _let_go(self, aside=None):
+        """The host goes (if open); `line()` is `aside` from here (None: no line), told only when it changed (S19)."""
         with self._lock:
             host, self._host = self._host, None
             job, self._job = self._job, None
             self._gen += 1
-            said = self._line is not None
-            self._line = None
+            said = self._line != aside
+            self._line = self._aside = aside
         if host is not None:
             try:
                 host.stop()
@@ -215,6 +238,16 @@ class ReplanHost:
                 print(f"Re-order: its host couldn't be stopped: {e}")
         if job is not None and job is not True:
             job.finish(ok=True)             # the helper's own row stands for a write it still finishes (the update)
+        if said:
+            self._tell(aside)
+
+    def _unsay_aside(self):
+        """The host may run again: the stand-aside line goes (its own lines follow)."""
+        with self._lock:
+            aside, self._aside = self._aside, None
+            said = aside is not None and self._line == aside
+            if said:
+                self._line = None
         if said:
             self._tell(None)
 
@@ -322,7 +355,8 @@ class Replan:
             keeper.close()
             host.stop()
             return
-        host.catch_up()
+        host.started(keeper.changed, self._pending)     # the start's catch-up and journey look, whatever
+                                                        # the new host's gate says: D29 decides through the keeper
 
     def update_state(self, state):
         """The update service's state: while it holds the children the host is let go; when the hold ends, back."""

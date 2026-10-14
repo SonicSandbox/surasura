@@ -534,10 +534,15 @@ def test_a_new_file_alone_starts_nothing_but_a_move_with_it_asks_for_a_generate(
         dash._anki_looked = -1e9
         dash._job("catch-up")
         new_files_alone = list(asked)
+        said_alone = lines[-1] if lines else None
+        placed = store.versions()
         _move_later_to_top(store)
         dash._job("catch-up")
     assert new_files_alone == [], "a new file with no move owed started an automatic Generate"
-    # 2.x-dev keeps NEW_CONTENT in lines; 3.0 (G4): the keeper's Generate runs first, and the line says so.
+    # 2.x-dev keeps NEW_CONTENT in lines; 3.0 (G4): the new file is placed in the store (6+ Months' order
+    # moved since the plan), so the window's hook runs the keeper's Generate — and the line says it runs first.
+    assert placed["order_version"] > placed["planned_order_version"]
+    assert said_alone == replan_preview.GENERATE_FIRST, said_alone
     assert replan_preview.NEW_CONTENT not in lines and replan_preview.GENERATE_FIRST in lines
     assert asked and asked[0].startswith("generate-first"), asked
     assert lines[-1] == replan_preview.GENERATE_FIRST
@@ -765,6 +770,30 @@ def test_d29_is_read_fresh_every_job_never_when_the_host_opens(lib):
     assert fake.write_requests
     versions = store.versions()
     assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_on_3_0_the_hosts_job_writes_positions_only_with_every_action_and_the_unattended_suspend_on(lib, monkeypatch):
+    """Haya's G2b (W3.5 row 7): the actions ride only the jobs `auto.reorder` hands in. The host's job — a move, a
+    catch-up — never sets `actions`, so with `junban_auto_actions`, Connect's preview, the 3.0 line's unattended
+    suspend and all three not-on-the-list actions saved, it still writes positions only (E1.1 04 §1): two cards off
+    the list are neither tagged, flagged nor suspended, and today's baseline is the way back."""
+    from modules.junban import connect
+    monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, connect_enabled=True, junban_later_tag=True,
+                   junban_later_flag=True, junban_later_suspend=True)
+    words = _list_words(root, 40)
+    off = [word for word in ("須藤", "洗濯機") if word not in _list_words(root)]
+    assert off == ["須藤", "洗濯機"], "the two cards are off the library's list"
+    words += off
+    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    fake = SyncCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"))
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert fake.write_requests, "the host still re-orders"
+    assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
+    assert undo.load("ja") is None and undo.load("ja", "baseline")
 
 
 def test_on_3_0_the_host_reorders_with_2x_box_off(lib):
@@ -1237,26 +1266,39 @@ def test_a_sync_due_while_an_update_waits_is_looked_at_again_later_not_on_every_
 
 
 def test_with_nothing_moved_the_line_names_what_the_plan_waits_for(lib):
-    """Pass 4 #13: nothing the plan holds moved — new content says so; a setting (or an update) says press Generate."""
+    """Pass 4 #13, and on 3.0 (Haya's G4) two cases. Nothing the plan holds moved:
+      * and nothing in the store either since the plan (new or changed files alone, a setting) — no Generate is
+        coming (the journey keeper is asked on a start, a store move and the host's own ask, never on a file or a
+        setting): 2.x's words stand, new content says so, a setting says press Generate;
+      * but the store's order or pins moved since the plan (a placement) — the window's hook turns that into the
+        keeper's background Generate, then `after_generate`: the line says Generate runs first."""
     root, store = lib
     fake = _deck(root)
     host, lines = _host()
     with _patched(fake):
         host._job("catch-up")
     versions, order = replan_preview._snapshot(store)
+    assert versions["planned_order_version"] == versions["order_version"]
+    assert versions["planned_pins_version"] == versions["pins_version"]
     settings = host._settings()
-    assert host._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
-    # 2.x-dev keeps NEW_CONTENT ("press it when you've placed it") and PRESS_GENERATE here; 3.0 (Haya's G4): the
-    # journey keeper's Generate runs first (the store hook → the background Generate → after_generate), so both say so.
-    assert lines[-1] == replan_preview.GENERATE_FIRST_CM
-    assert host._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
-    assert lines[-1] == replan_preview.GENERATE_FIRST_CM
     asked = []
     dash, dash_lines = _host(generate=asked.append)
     dash._load_plan()                                        # the dashboard's host, its plan read (as after a job)
-    for why in ("files", "settings"):
-        assert dash._replan(settings, store, versions, order, ("generate-first", why), "catch-up") is False
-        assert dash_lines[-1] == replan_preview.GENERATE_FIRST
+    # Nothing in the store moved since the plan: no Generate is coming — 2.x's words, the CM's and the window's alike.
+    for who, said in ((host, lines), (dash, dash_lines)):
+        assert who._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
+        assert said[-1] == replan_preview.NEW_CONTENT
+        assert who._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
+        assert said[-1] == replan_preview.PRESS_GENERATE
+    # The store's order (a file placed) or its pins moved since the plan: the keeper's Generate is coming.
+    placed = dict(versions, order_version=versions["planned_order_version"] + 1)
+    pinned = dict(versions, pins_version=versions["planned_pins_version"] + 1)
+    for moved in (placed, pinned):
+        for why in ("files", "settings"):
+            assert host._replan(settings, store, moved, order, ("generate-first", why), "catch-up") is False
+            assert lines[-1] == replan_preview.GENERATE_FIRST_CM
+            assert dash._replan(settings, store, moved, order, ("generate-first", why), "catch-up") is False
+            assert dash_lines[-1] == replan_preview.GENERATE_FIRST
     assert asked == [], "nothing the plan holds moved: the host asks for no Generate (the keeper's own runs)"
 
 

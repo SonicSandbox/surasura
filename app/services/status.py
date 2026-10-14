@@ -31,6 +31,7 @@ The window's providers for Connect, AnkiWeb and the dot are the plain functions 
 `ankiweb_line`, `journey_pending`): they call the Tk-free rules (`connect.status`, `anki_sync_rule.status`,
 `library_store`), never copy them, and live here so the window registers them from the module it already imports.
 """
+import os
 import threading
 import time
 from collections import namedtuple
@@ -111,9 +112,11 @@ class StatusService:
 
     def poll(self):
         """A window's timer: a stat of the events file, a refresh on a worker when it changed; else the ticking
-        providers whose period is up, asked on a worker (G5). A clock compare, nothing read. -> the snapshot now."""
+        providers whose period is up, asked on a worker (G5). A clock compare, nothing read. With no events file to
+        watch (its path couldn't be worked out), the ticks alone (never a full refresh every poll). -> the
+        snapshot now."""
         reader = self._reader
-        if reader is None or reader.changed():
+        if (reader is None and self._events_path) or (reader is not None and reader.changed()):
             self.refresh_soon()
         else:
             due = self._due()
@@ -285,11 +288,28 @@ def connect_line(language, settings, stamp=None, read=None):
 
 def ankiweb_line(settings, now=None):
     """The AnkiWeb mark (gap 10, G1.5-7) -> a provider: `anki_sync_rule.status` (*AnkiWeb: syncing in 45 s*, *synced
-    18:42*, …), None before any. `settings()`: the settings now; `now()`: the wall clock (a test's stand-in)."""
+    18:42*, …), None before any. `settings()`: the settings now; `now()`: the wall clock (a test's stand-in). Asked
+    every second: its state file is read again only when its stamp (mtime, size) moved, else the last read is worked
+    out again for the time now — the countdown ticks, the disk is only stat'd. A worker's call, one at a
+    time (the service's refresh)."""
+    last = {"stamp": object(), "state": None}           # never a stamp: the first look reads
+
     def provider():
         from app import anki_sync_rule
-        return anki_sync_rule.status(settings() or {}, now=None if now is None else now()) or None
+        stamp = _stamp(anki_sync_rule._path())
+        if stamp is None or stamp != last["stamp"]:
+            last["state"] = anki_sync_rule.read_state()
+            last["stamp"] = stamp
+        return anki_sync_rule.status(settings() or {}, now=None if now is None else now(), state=last["state"]) or None
     return provider
+
+
+def _stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None                                     # none yet (or unreadable): read, as before
+    return st.st_mtime_ns, st.st_size
 
 
 def journey_pending(language):

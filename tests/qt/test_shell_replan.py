@@ -95,6 +95,22 @@ def test_the_bar_providers_are_registered_and_again_for_a_new_language(qapp):
     services.shutdown(0.05)
 
 
+def test_a_language_switch_asks_the_bar_for_the_new_languages_line_and_dot_at_once(qapp):
+    """After a switch the bar shows the new language's re-order line and journey dot straight away — the two
+    slots asked by name once their providers are the new language's (never left until the next full refresh)."""
+    replan = _Replan()
+    services, _log = _services(replan)
+    providers = services.status.providers
+    old = providers["journey"]
+    asked = []
+    services.status.refresh_soon = lambda *names: asked.append((set(names), providers["journey"]))
+    services.language_changed("zh")
+    assert asked, "nothing asked of the bar after the switch"
+    names, journey = asked[-1]
+    assert names == {"journey", "replan"} and journey is not old
+    services.shutdown(0.05)
+
+
 def test_the_updates_hold_and_its_end_reach_the_replan(qapp):
     replan = _Replan()
     services, _log = _services(replan)

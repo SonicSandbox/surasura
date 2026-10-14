@@ -120,8 +120,10 @@ DEFAULT_SETTINGS = {
     # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
     "known_from_anki": ["suspended"],
     "logic": {
-        # D29 (3.0): one switch for every automatic Anki write and sync and the background Generate (the re-order as
-        # you move, AutoJunban's re-order, the journey's Generate); off, only what the user presses runs. Read through
+        # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
+        # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
+        # 2.x opt-ins keep their own switches and still run while those are on: Backfill's automatic step
+        # (`junban_auto_backfill`) and the automatic Generate (`anki_auto_generate`) (Haya's G2c). Read through
         # `automation(settings)`. No run and no report reads it: _NON_ANALYSIS_LOGIC, placed "neither".
         "automation": True,
         "inline_completed_files": False,

@@ -123,6 +123,46 @@ def test_nothing_reaches_the_host_once_the_quit_began(gate):
     quitting.stop()
 
 
+def test_a_call_queued_before_the_quit_still_reaches_the_open_host_before_its_close(gate):
+    """`close()` closes the host after what is queued: a move's poke queued while the worker was still busy (the last
+    move before the quit) reaches the open host, then its close — the user's last move is never dropped."""
+    opener = _Opener()
+    host = _host(opener)
+    host.catch_up()
+    _quiet(host)
+    first = opener.hosts[0]
+    started, go = threading.Event(), threading.Event()
+
+    def slow_catch_up():
+        first.calls.append("catch_up")
+        started.set()
+        assert go.wait(5)
+    first.catch_up = slow_catch_up
+    host.catch_up()
+    assert started.wait(5)
+    host.poke()
+    host.close()
+    go.set()
+    _quiet(host)
+    assert first.calls == ["catch_up", "catch_up", "poke", "close"]
+    host.stop()
+
+
+def test_a_helper_still_starting_when_the_quit_begins_is_stopped_and_never_written_through(gate):
+    """The quit begins while the helper is still starting: it is stopped the moment it is there — no catch-up written
+    through it at the quit, no close asking it for a sync — and nothing opens again."""
+    opener = _Opener(blocking=True)
+    host = _host(opener)
+    host.catch_up()
+    assert opener.opening.wait(5)
+    host.close()
+    opener.go.set()
+    _quiet(host)
+    assert opener.hosts[0].calls == ["stop"], opener.hosts[0].calls
+    assert host.opened == 0 and len(opener.hosts) == 1
+    host.stop()
+
+
 def test_a_helper_still_starting_when_the_update_holds_is_stopped_as_it_arrives(gate):
     """The update holds the children (*Update now*) while the helper is still starting: it is stopped the moment it is
     there — never kept, never left running for the update to wait on — and the hold's end opens a fresh one."""

@@ -529,6 +529,10 @@ def test_a_japanese_failure_never_reads_in_the_chinese_bar_and_goes_on_a_switch_
     assert controller.failure("ja")
     from app import analyzer
     monkeypatch.setattr(analyzer, "journey_is_current", lambda args, language: True)
+    other = threading.Event()
+    controller.check(_settings("zh"), "zh", then=lambda answer: other.set())
+    assert other.wait(10)
+    assert controller.failure("ja"), "the Chinese journey being current cleared the Japanese failure"
     checked = threading.Event()
     controller.check(_settings(), "ja", then=lambda answer: checked.set())
     assert checked.wait(10)

@@ -624,6 +624,21 @@ def test_connects_tick_is_skipped_while_connect_is_off_and_comes_back_when_it_is
     assert len(reads) == 3                               # on: ticking again
 
 
+def test_the_ankiweb_countdown_comes_back_once_something_will_send_the_sync(monkeypatch):
+    """Nothing will send the sync (Connect off, no deck recorded): no countdown — said from a copy of the file's state,
+    never by changing the read the mark keeps, so once Connect turns on, the same file (unchanged) counts down."""
+    pytest.importorskip("modules.junban")
+    from app import anki_sync_rule
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    settings = {"enable_junban": True, "junban_deck": "Mining"}
+    line = S.ankiweb_line(lambda: settings, now=lambda: start)
+    assert line() is None
+    settings["connect_enabled"] = True
+    said = line()
+    assert said is not None and said.startswith("AnkiWeb: syncing in "), said
+
+
 @pytest.mark.parametrize("case, settings, countdown", [
     ("Connect on", {"connect_enabled": True}, True),
     ("the re-order host may run (the deck recorded)", {"enable_junban": True, "junban_deck": "Mining",

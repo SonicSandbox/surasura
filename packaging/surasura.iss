@@ -307,7 +307,8 @@ begin
 end;
 
 { FT K2: asked before anything is removed, only when that record exists - once Surasura is gone, nothing can put
-  Anki back. Yes goes on; No stops the uninstall. #$2026 is ..., #$9806 is Junban's mark. }
+  Anki back. Yes goes on; No (the default, C23: Enter keeps Surasura) stops the uninstall. Both doors are named (C23).
+  #$2026 is ..., #$9806 is Junban's mark, #$2192 is the arrow. }
 function InitializeUninstall: Boolean;
 begin
   Result := True;
@@ -315,8 +316,8 @@ begin
     Exit;
   Result := MsgBox('Surasura changed your Anki cards, and kept a record of how they were.' + #13#10#13#10 +
     'To put Anki back the way it was before Surasura, press No, open Surasura and press Put Anki back' + #$2026 +
-    ' in ' + #$9806 + ' (Anki must be open), then uninstall again.' + #13#10#13#10 +
-    'Remove Surasura now?', mbConfirmation, MB_YESNO) = IDYES;
+    ' in ' + #$9806 + ' or in Settings ' + #$2192 + ' Data & System (Anki must be open), then uninstall again.' +
+    #13#10#13#10 + 'Remove Surasura now?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

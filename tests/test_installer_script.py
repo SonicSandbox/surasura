@@ -193,6 +193,16 @@ def test_the_uninstallers_last_message_names_the_kept_previous_version():
     assert "update\\previous the earlier version it kept for Go ' +\n'back)" in message
 
 
+def test_the_put_back_question_defaults_to_keeping_surasura_and_names_both_doors():
+    # FT C23 (A-N5): Enter (the default button) is No — the uninstall stops, the way back stays; and the box names
+    # both doors to Put Anki back: 順 and Settings -> Data & System.
+    code = "\n".join(_sections()["code"])
+    box = code[code.index("function InitializeUninstall"):]
+    box = box[:box.index("end;")]
+    assert "MB_YESNO or MB_DEFBUTTON2" in box
+    assert "#$9806" in box and "Settings" in box and "Data & System" in box
+
+
 # --- the packager's defines --------------------------------------------------------------------------------------------
 
 def test_the_scripts_defaults_are_the_real_programs():

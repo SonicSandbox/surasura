@@ -1,8 +1,10 @@
 # Every pull request's tests: the core suite on Windows, once per push (opened, a new push, reopened, ready for review),
-# never on a label or an edit. A pull request that changes only docs (docs/, any *.md) runs no Windows job. Merging is
-# pr-merge.yml's: a pull request into 3.0-dev or 2.x-dev merges itself when the session adds the `reviewed` label after
-# its local review (the register is kept outside this repo), if these tests passed on its head commit. A new push takes
-# the label off: new commits need a new review. main takes only pull requests the owner merges.
+# never on a label or an edit, as four shards side by side (`run_tests.py --shard I/N`: one job had reached 25-28 of
+# GitHub's 30 minutes on 3.0-dev); the one `tests` job passes only if every shard passed, and it is the check the branch
+# requires and the job pr-merge.yml reads. A pull request that changes only docs (docs/, any *.md) runs no Windows job.
+# Merging is pr-merge.yml's: a pull request into 3.0-dev or 2.x-dev merges itself when the session adds the `reviewed`
+# label after its local review (the register is kept outside this repo), if these tests passed on its head commit. A new
+# push takes the label off: new commits need a new review. main takes only pull requests the owner merges.
 name: PR tests
 # pr-merge.yml finds this pull request's run by this name and the head commit.
 run-name: "PR #${{ github.event.pull_request.number }} tests (into ${{ github.base_ref }})"
@@ -48,11 +50,16 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
           fi
 
-  tests:
+  shards:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}     # a failed check of the files runs them
+    name: core ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45     # a backstop: a shard takes about a quarter of the suite
+    strategy:
+      fail-fast: false      # every shard runs to the end: one red shard still shows the others' results
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,7 +75,7 @@ jobs:
       - name: The folders the tests expect
         shell: bash
         run: mkdir -p data/ja data/zh "User Files"
-      - name: Core suite
+      - name: Core suite, one shard
         env:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}         # on the checkout's drive: one test takes a path relative to the repo
@@ -76,7 +83,19 @@ jobs:
         shell: bash
         # Never retried: the tests that open a Tk window are skipped on this runner (its Tk can't always start;
         # tests/tk_on_github.py) and run in the local `run_tests.py --all` before every pull request.
-        run: python run_tests.py
+        run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  tests:
+    # The one result of the core suite: passed only if every shard passed (a docs-only pull request skips both).
+    needs: [changes, shards]
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SHARDS: ${{ needs.shards.result }}
+        run: |
+          echo "shards: $SHARDS"
+          test "$SHARDS" = success
 
   unreview:
     # New commits after a review: the label comes off at once, so nothing unreviewed can merge.

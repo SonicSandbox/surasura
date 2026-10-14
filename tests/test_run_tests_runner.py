@@ -293,3 +293,76 @@ def test_a_shard_of_files_without_tests_passes(tmp_path, monkeypatch, pytest_cod
     monkeypatch.setattr(run_tests.subprocess, "run",
                         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, pytest_code, stdout=b"= no tests ran =\n"))
     assert run_tests._run_shard(str(tmp_path), "tests [1/2]", ["tests/test_support.py"], "t.json")[1] == code
+
+
+# --- One shard of the core suite (--shard I/N, GitHub's PR tests) ----------------------------------
+# pr.yml runs the core suite as N jobs side by side, each under the runner's 30-minute cap (3.0-dev's single run had
+# reached 25-28 min); the merge gate reads one "tests" job that passes only if every shard did. So the split must hold
+# every core file exactly once, the same on every job, and a shard's result must be pytest's.
+def test_the_shards_of_a_split_hold_every_core_file_exactly_once(tmp_path):
+    """No times recorded (a fresh GitHub checkout): packed by size, nested folders included, and the same split twice."""
+    root = str(tmp_path)
+    _core(root, {"test_store.py": 9000, "test_plan.py": 4000, "connect/test_inbox.py": 3000, "qt/test_window.py": 500,
+                 "test_kana.py": 200, "helpers.py": 50000})
+    shards = [run_tests._shard_of(root, f"{i}/3") for i in (1, 2, 3)]
+    assert sorted(sum(shards, [])) == run_tests._core_files(root), "every core file in exactly one shard"
+    assert all(shards) and all(shard == sorted(shard) for shard in shards)
+    assert shards == [run_tests._shard_of(root, f"{i}/3") for i in (1, 2, 3)], "every job packs it the same way"
+
+
+def test_this_checkout_splits_into_four_shards_holding_every_test_file():
+    """The real tests/ folder, as pr.yml splits it. pytest also collects *_test.py by default: none may exist here,
+    or the shards (test_*.py only) would skip it where `pytest tests` ran it."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    files = run_tests._core_files(root)
+    shards = [run_tests._shard_of(root, f"{i}/4") for i in (1, 2, 3, 4)]
+    assert sorted(sum(shards, [])) == files and all(shards)
+    stray = [os.path.join(d, n) for d, _, names in os.walk(os.path.join(root, "tests"))
+             for n in names if n.endswith("_test.py") and "__pycache__" not in d]
+    assert stray == []
+
+
+def test_more_shards_than_files_leaves_the_extra_shards_empty(tmp_path):
+    _core(str(tmp_path), {"test_a.py": 10, "test_b.py": 10})
+    assert [run_tests._shard_of(str(tmp_path), f"{i}/3") for i in (1, 2, 3)] == [
+        ["tests/test_a.py"], ["tests/test_b.py"], []]
+
+
+def test_an_empty_shard_passes_without_starting_pytest(tmp_path, monkeypatch):
+    """A job whose shard holds no files has nothing to fail: it passes, and starts no pytest (given no files, pytest
+    would collect the whole folder it starts in)."""
+    _core(str(tmp_path), {"test_a.py": 10})
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("no pytest for an empty shard"))
+    assert run_tests.run_shard(str(tmp_path), "2/2") == 0
+
+
+@pytest.mark.parametrize("pytest_code, code", [(0, 0), (1, 1), (5, 0)])
+def test_main_with_shard_runs_that_shards_files_verbose_from_the_root(monkeypatch, pytest_code, code):
+    """`--shard 2/4`: one pytest process over shard 2's files, from the project root (the paths are relative to it),
+    verbose like the default run, its exit code passed on; 5 (only helpers, no tests) is no failure."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["kwargs"] = cmd, kwargs
+        return subprocess.CompletedProcess(cmd, pytest_code)
+
+    monkeypatch.setattr(run_tests.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", "--shard", "2/4"])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert seen["cmd"] == [sys.executable, "-m", "pytest", *run_tests._shard_of(root, "2/4"), "-v", "-ra"]
+    assert seen["kwargs"]["cwd"] == root
+    assert exit_info.value.code == code
+
+
+@pytest.mark.parametrize("argv", [["--shard", "0/4"], ["--shard", "5/4"], ["--shard", "a/4"], ["--shard", "4"],
+                                  ["--shard", "1/2/3"], ["--shard"]])
+def test_a_bad_shard_runs_nothing_and_fails(monkeypatch, capsys, argv):
+    """A typo in the workflow must fail its job, never pass it by running no tests."""
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("no pytest for a bad shard"))
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        run_tests.main()
+    assert exit_info.value.code == 2
+    assert "--shard takes I/N" in capsys.readouterr().out

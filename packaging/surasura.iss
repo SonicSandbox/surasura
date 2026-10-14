@@ -283,6 +283,43 @@ begin
     Result := 0;
 end;
 
+{ FT K2: has Surasura kept a record of what it changed in Anki - an anki_first_touch folder in the library's
+  User Files\<language>\? }
+function KeptAnkiRecord: Boolean;
+var
+  Files: String;
+  Rec: TFindRec;
+begin
+  Result := False;
+  if NoteLibrary = '' then
+    Exit;
+  Files := AddBackslash(NoteLibrary) + 'User Files\';
+  if FindFirst(Files + '*', Rec) then begin
+    try
+      repeat
+        if ((Rec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and (Rec.Name <> '.') and (Rec.Name <> '..') then
+          Result := DirExists(Files + Rec.Name + '\anki_first_touch');
+      until Result or not FindNext(Rec);
+    finally
+      FindClose(Rec);
+    end;
+  end;
+end;
+
+{ FT K2: asked before anything is removed, only when that record exists - once Surasura is gone, nothing can put
+  Anki back. Yes goes on; No (the default, C23: Enter keeps Surasura) stops the uninstall. Both doors are named (C23).
+  Characters: $2026 is ..., $9806 is Junban's mark, $2192 is the arrow (a line here never starts with #: ISPP reads it). }
+function InitializeUninstall: Boolean;
+begin
+  Result := True;
+  if UninstallSilent or not KeptAnkiRecord then
+    Exit;
+  Result := MsgBox('Surasura changed your Anki cards, and kept a record of how they were.' + #13#10#13#10 +
+    'To put Anki back the way it was before Surasura, press No, open Surasura and press Put Anki back' + #$2026 +
+    ' in ' + #$9806 + ' or in Settings ' + #$2192 + ' Data & System (Anki must be open), then uninstall again.' + #13#10#13#10 +
+    'Remove Surasura now?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Lib: String;

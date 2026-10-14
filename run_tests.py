@@ -177,6 +177,39 @@ def _run_shard(project_root, label, files, times_path):
     return label, code, _decode(result.stdout), time.perf_counter() - started
 
 
+# --- --shard I/N: one shard of the core suite -------------------------------------------------- #
+# GitHub's PR tests (.github/workflows/pr.yml) run the core suite as N jobs side by side, each well under the runner's
+# time cap: job I runs `python run_tests.py --shard I/N`, the core files of shard I, packed as --all packs them. Every
+# job packs the same checkout the same way, so each file runs in exactly one job.
+
+def _shard_of(project_root, spec):
+    """The core files of shard `spec` ("I/N", 1 <= I <= N), in path order. ValueError for anything else."""
+    i, n = (int(part) for part in spec.split("/"))
+    if not 1 <= i <= n:
+        raise ValueError(spec)
+    shards = _shards(project_root, _core_files(project_root), n)
+    return shards[i - 1] if i <= len(shards) else []       # more shards than files: the extra ones are empty
+
+
+def run_shard(project_root, spec):
+    """`--shard I/N`: run that shard's files, verbose like the default run. Returns pytest's exit code, as the default
+    run does (5, nothing collected, fails); 2 for a bad I/N or a checkout with no core test files."""
+    try:
+        files = _shard_of(project_root, spec)
+    except ValueError:
+        print(f"--shard takes I/N with 1 <= I <= N, not {spec!r}")
+        return 2
+    if not _core_files(project_root):
+        print(f"No core test files under {os.path.join(project_root, 'tests')}")
+        return 2
+    print(f"Core suite, shard {spec}: {len(files)} files", flush=True)
+    if not files:                                          # more shards than files: nothing of the suite is lost
+        return 0
+    result = subprocess.run([sys.executable, "-m", "pytest", *files, "-v", "-ra"],
+                            cwd=project_root, env=os.environ.copy())
+    return result.returncode
+
+
 def _decode(raw):
     """A suite's captured output, decoded the way the child wrote it (it has our environment):
     PYTHONIOENCODING if set, else the locale's encoding. Display only, so it never raises."""
@@ -269,12 +302,23 @@ def main():
 
     `python run_tests.py`        runs the core suite (tests/), as it always has.
     `python run_tests.py --all`  runs the core suite AND every module suite at the same time.
+    `python run_tests.py --shard I/N`  runs shard I of the core suite split N ways (GitHub's PR tests).
     """
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
     if "--all" in sys.argv[1:]:
         try:
             sys.exit(run_all(project_root))
+        except KeyboardInterrupt:
+            print("\nTest run cancelled via KeyboardInterrupt.")
+            sys.exit(130)
+    args = sys.argv[1:]
+    joined = [a.split("=", 1)[1] for a in args if a.startswith("--shard=")]
+    if "--shard" in args or joined:
+        at = args.index("--shard") if "--shard" in args else None
+        spec = joined[0] if joined else (args[at + 1] if at + 1 < len(args) else "")
+        try:
+            sys.exit(run_shard(project_root, spec))
         except KeyboardInterrupt:
             print("\nTest run cancelled via KeyboardInterrupt.")
             sys.exit(130)

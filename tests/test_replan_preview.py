@@ -498,6 +498,19 @@ def test_the_junban_window_open_waits_for_it(lib):
     assert lines[-1] == replan_preview.BUSY and host._retry_at is not None
 
 
+def test_a_job_a_put_back_stood_aside_writes_nothing_and_says_why_without_retrying(monkeypatch):
+    """FT C1: the job waited for the Anki-write lock while a put-back cleared its deck; Junban's run, reading the
+    settings again, wrote nothing (`stands_aside`). The host shows that line and leaves it there — picking the deck
+    in 順 again is the user's — never a retry, never "Anki not re-ordered"."""
+    line = "順's deck TheBank isn't recorded for Japanese — pick it in 順's window in Japanese"
+    monkeypatch.setattr(reposition, "run", lambda *args, **kwargs: {"ok": False, "stands_aside": True,
+                                                                   "problems": [line], "written": []})
+    host, lines = _host()
+    assert host._write({"junban_deck": "TheBank", "target_language": "ja"}, spaced.Job(automatic=True),
+                       "move") is None
+    assert lines[-1] == line and host._retry_at is None
+
+
 def test_no_plan_file_asks_for_a_generate_first(lib):
     root, store = lib
     os.remove(os.path.join(root, "results", analyzer.PLAN_FILE))
@@ -969,6 +982,9 @@ def test_on_3_0_a_host_run_with_nothing_to_act_on_sends_todays_positions_only_re
                 # The one difference, and no write: with the suspend setting saved, the probe (the same request)
                 # also names `suspend` / `unsuspend`, asked before the plan knows there's nothing to suspend.
                 asked = sent["params"]["actions"]
+                # The probe is the run's own, on the job's settings as `_write` decides them (the actions on: they
+                # name the suspend), never positions-only's
+                assert not over.get("junban_auto_actions") or {"suspend", "unsuspend"} <= set(asked), asked
                 assert [name for name in asked if name not in ("suspend", "unsuspend")] == \
                     positions_only["params"]["actions"], asked
                 continue

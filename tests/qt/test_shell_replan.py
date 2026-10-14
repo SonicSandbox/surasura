@@ -214,6 +214,8 @@ def test_a_language_switch_forgets_the_last_languages_generate_failure(qapp):
     assert provider() == "Generate stopped (exit code 1)."
     services.language_changed("zh")
     assert provider() is None and services.controller.kept is None
+    services.controller.kept = ("Generate stopped (exit code 1).", "ja")     # a Japanese run's failure landing late
+    assert provider() is None, "the Chinese bar read a Japanese failure"
     services.shutdown(0.05)
 
 
@@ -248,6 +250,20 @@ def test_closing_with_a_move_settling_keeps_the_window_with_one_line_until_the_s
         assert win.bar_line.full() == strings.QUIT_FINISHING
         assert wait_until(lambda: not win.isVisible())
         assert "closing" in replan.calls and replan.looks < 0
+    finally:
+        services.shutdown(0.05)
+
+
+def test_the_quits_wait_for_the_reorder_host_ends_at_its_deadline(qapp, monkeypatch):
+    """A host still busy long after the quit began (Anki slow to answer its last write): the wait for it ends at what
+    is left of `QUIT_FINISH_WAIT` and says it didn't end, so the quit is never held past its cap."""
+    monkeypatch.setattr(shell, "QUIT_FINISH_WAIT", 0.3)
+    replan = _Settling(looks=200)                        # 200 looks of 50 ms: 10 s busy, far past the 0.3 s cap
+    services, _log = _services(replan)
+    try:
+        started = time.monotonic()
+        assert services.replan_wait() is False
+        assert time.monotonic() - started < 5 and replan.looks > 0
     finally:
         services.shutdown(0.05)
 

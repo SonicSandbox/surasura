@@ -713,6 +713,11 @@ class Host:
         finally:
             self._working(False)
         self._sync_at = self._due_sync(settings)
+        if report.get("stands_aside"):
+            # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
+            # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's.
+            self._tell((report.get("problems") or [""])[0])
+            return None
         if report.get("busy"):
             if not self._cancel.is_set():
                 problem = (report.get("problems") or [""])[0]

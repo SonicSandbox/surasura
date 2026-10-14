@@ -546,9 +546,8 @@ class GenerateController:
             self._after(run, STALE)
         elif returncode == 0:
             # A13: asked to stop too late (past *Writing your list*), it finished: a Generate that wrote everything, not
-            # a cancel — the flag the registry set when it was asked is taken back before its end keeps it.
-            run.job.cancelled = False
-            run.job.finish(ok=True)
+            # a cancel — the registry takes back the flag it set when it was asked.
+            run.job.finish(ok=True, completed=True)
             self._tell_end(run, "current")
             self._after(run, CURRENT)
         else:

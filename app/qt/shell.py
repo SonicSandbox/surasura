@@ -707,7 +707,7 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
-        self.sheet = self.cards = None
+        self.sheet = self.cards = self.journey_dot = None
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
@@ -926,6 +926,10 @@ class ShellWindow(QMainWindow):
         self.bar_line.setAccessibleName(strings.BAR_NAME)
         lead.addWidget(self.bar_line, 1)
         row.addLayout(lead, 1)
+        self.bar_replan = ElidingLabel(footer)            # W3.5 row 7: the re-order host's line, while it gives one
+        self.bar_replan.setObjectName("barline")
+        self.bar_replan.setVisible(False)
+        row.addWidget(self.bar_replan, 1)
         self.bar_failure = ElidingLabel(footer)
         self.bar_failure.setObjectName("barfailure")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
@@ -950,6 +954,7 @@ class ShellWindow(QMainWindow):
         self.bar_connect.setVisible(False)
         row.addWidget(self.bar_connect)
         self._logs_folder = None
+        self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
         return footer
 
     def _apply_sizes(self):
@@ -999,15 +1004,33 @@ class ShellWindow(QMainWindow):
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
         self.logs_button.setVisible(bool(failure) and bool(snap.logs))
-        for label, value in ((self.bar_ankiweb, snap.ankiweb), (self.bar_connect, snap.connect)):
-            label.setText(value or "")
-            label.setVisible(bool(value))
+        self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
+        self._status_mark(self.bar_ankiweb, snap.ankiweb, strings.BAR_ANKIWEB_TIP)
+        self._status_mark(self.bar_connect, snap.connect, strings.BAR_CONNECT_TIP)
+        if self.duties is not None:
+            self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if snap.journey else "",
+                              strings.JOURNEY_DOT_TIP)
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
+
+    def _status_mark(self, label, text, tip):
+        """One of row 7's statuses (the re-order's line, Connect's, AnkiWeb's, the journey dot): shown while it has a
+        value, repainted only when its own value changed (S19) — another field's change leaves it as it is."""
+        text = text or ""
+        eliding = isinstance(label, ElidingLabel)
+        if (label.full() if eliding else label.text()) == text and label.isHidden() != bool(text):
+            return
+        if eliding:
+            label.set_full(text)
+        else:
+            label.setText(text)
+        label.setToolTip(tip if text else "")
+        label.setVisible(bool(text))
+        self.status_paints[label] = self.status_paints.get(label, 0) + 1
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the
@@ -1101,8 +1124,14 @@ class ShellWindow(QMainWindow):
         menu = QMenu(d.help)
         menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
         d.help.setMenu(menu)
+        d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
+        d.journey_dot.setObjectName("journeydot")
+        d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
+        d.journey_dot.setAccessibleName(strings.JOURNEY_DOT_NAME)
+        d.journey_dot.setVisible(False)
         self.header.layout().addWidget(d.generate)
         d.generate.add_beside(d.journey)
+        d.generate.add_beside(d.journey_dot)
         d.generate.add_beside(d.help)
         # the bar: N known, the Anki mark, the level chip (statuses: W3.3 makes them open Settings), the update mark
         row = self.footer.layout()
@@ -1146,6 +1175,9 @@ class ShellWindow(QMainWindow):
         self._show_update(s.updates.state())
         self._show_generate(s.controller.state())
         self._show_automation(s.automation.state())
+        if self._status_snap is not None:                   # the dot the bar's last snapshot asked for
+            self._status_mark(d.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
+                              strings.JOURNEY_DOT_TIP)
 
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""

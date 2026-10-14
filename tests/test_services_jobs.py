@@ -151,6 +151,25 @@ def test_cancel_before_start_ends_it_and_while_running_asks_its_owner():
     assert not first.cancel(), "nothing left to cancel"
 
 
+def test_a_job_asked_to_stop_too_late_that_completes_is_recorded_done_not_cancelled():
+    """W3.5 row 7 (E3.2's A13): a Generate asked to stop once it writes your list can't stop there and finishes. Its
+    owner says so (`completed=True`), and the registry takes back the flag the ask set: the bar never calls a run
+    that wrote everything a cancel. A plain finish after the ask keeps the flag (the ask is still what ended it)."""
+    registry, asked = JobRegistry(), []
+    late = registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: asked.append(j.id))
+    assert late.cancel() and late.state == J.CANCELLING and late.cancelled
+    late.finish(ok=True, completed=True)
+    view = registry.snapshot()[-1]
+    assert (view.state, view.cancelled) == (J.DONE, False)
+    assert late.ended.is_set() and asked == [late.id]
+    stopped = registry.submit("generate", "Generating again", lambda j: None, cancel=lambda j: None)
+    stopped.cancel()
+    stopped.finish(ok=True)
+    assert (stopped.state, stopped.cancelled) == (J.DONE, True)
+    stopped.finish(ok=True, completed=True)              # ended already: a second finish changes nothing
+    assert stopped.cancelled
+
+
 def test_recorded_jobs_are_listed_but_never_hold_a_gated_job_back():
     """The Tk dashboard's children: recorded for the bar, started by their owner; they hold nothing back (today's
     behaviour: a pressed Generate starts while the indexer child runs)."""

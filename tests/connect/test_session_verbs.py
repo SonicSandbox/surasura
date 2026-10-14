@@ -86,7 +86,9 @@ def deck(monkeypatch):
     def setup(**over):
         cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険", "眼鏡", "老婆"])
         fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"))
-        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True), **over})
+        # 3.0: 順 has recorded its deck for Japanese — without the pair, every automatic Junban write stands aside
+        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True, junban_replan_deck="TheBank",
+                                        junban_replan_language="ja"), **over})
         saved.pop("junban_url", None)
         h.write_settings(**{**saved, "anki_connect_url": URL})
         wrapped = Session(fake)
@@ -145,6 +147,20 @@ def test_on_3_0_with_connect_off_junban_kicks_nothing_and_its_spaced_run_keeps_t
     assert code == 0 and line["moves"] > 0, line
     assert anki.syncs == 1 and anki.log.index("sync") < anki.first("setSpecificValueOfCard", "multi"), anki.log
     assert kicks == [] and anki_sync_rule.read_state().get("front_pending") is True
+
+
+def test_on_3_0_connects_order_step_with_no_pair_recorded_skips_naming_the_deck_and_writes_nothing(deck, kicks):
+    """2.x-dev keeps no guard: Connect's step (`Steps.order` → `verbs.junban --auto`) writes `junban_deck` as given.
+    3.0 (Haya's G3): with no deck recorded for the job's language, the step is a Skip naming the deck and its language
+    (the re-sort owed, as for 順 switched off) — no session sync, no position, no suspend, Connect not kicked."""
+    from app.connect import runner
+    anki, patched = deck(connect_enabled=True, junban_later_suspend=True, junban_replan_deck="",
+                         junban_replan_language="")
+    with patched:
+        with pytest.raises(runner.Skip) as skipped:
+            runner.Steps({"connect_enabled": True, "anki_connect_url": URL}).order("ja", {"id": 8, "item_id": 1})
+    assert "順's deck TheBank isn't recorded for Japanese" in str(skipped.value), skipped.value
+    assert anki.log == [] and anki.inner.writes == [] and anki.inner.suspend_calls == [] and kicks == []
 
 
 def test_off_the_verbs_never_import_the_session(monkeypatch):

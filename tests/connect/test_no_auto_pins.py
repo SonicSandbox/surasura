@@ -108,7 +108,8 @@ def test_a_re_sort_run_end_to_end_with_pins_on_pins_nothing(trapped, monkeypatch
     rep._results(h.root(), progressive=rep._JOURNEY, library=rep._LIBRARY, floor=11)
     cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険"])
     fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"))
-    saved = rep._settings(junban_order="content", enable_junban=True, connect_enabled=True)
+    saved = rep._settings(junban_order="content", enable_junban=True, connect_enabled=True,
+                          junban_replan_deck="TheBank", junban_replan_language="ja")    # 3.0: the recorded pair
     saved.pop("junban_url", None)
     h.write_settings(**{**saved, "anki_connect_url": "http://127.0.0.1:18765"})
     with rep._patched(fake):

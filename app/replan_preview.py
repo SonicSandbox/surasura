@@ -939,6 +939,7 @@ class Remote:
         self._sent = 0                            # calls sent (numbered) …
         self._seen = 0                            # … and the last the helper has taken in
         self._busy = False                        # the helper's host, as it last said
+        self._said_working = False                # the helper's last `working`: True while a write of its was under way
         self._waiting = []                        # calls made before the helper answered
         self._unseen = []                         # calls sent the helper hasn't said it took (a fallback replays them)
         self._local = None                        # the window's own Host, once the helper is out
@@ -1068,6 +1069,7 @@ class Remote:
             except Exception:
                 pass
         if "working" in message:
+            self._said_working = bool(message["working"])
             try:
                 self._working(bool(message["working"]))
             except Exception:
@@ -1140,8 +1142,14 @@ class Remote:
             # The calls the helper never took (sent, or still waiting), each kind once (pass 4 #6).
             waiting = [message["do"] for message in self._unseen + self._waiting]
             self._waiting, self._unseen = [], []
+            ended_busy, self._said_working = self._said_working, False
             self._local = Host(self.language, say=self._say, working=self._working, generate=self._generate)
             local = self._local
+        if ended_busy:                            # the helper died mid-write: its job never says it ended — say so
+            try:                                  # here; the window's own host says its own next write
+                self._working(False)
+            except Exception:
+                pass
         local.warm()
         local.catch_up()
         for do in dict.fromkeys(waiting):        # each kind once, in the order first asked

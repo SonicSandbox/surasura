@@ -31,8 +31,11 @@ def deck(monkeypatch):
         cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険", "眼鏡", "老婆"])
         fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"),
                                   **{k: over.pop(k) for k in ("reviewing", "offline") if k in over})
+        # 3.0: 順 has recorded its deck for Japanese (`junban_replan_deck` / `_language`, a deck picked in 順's window
+        # in Japanese) — without the pair, every automatic Junban write stands aside (Haya's G3)
         saved = rep._settings(**{**dict(junban_order="content", enable_junban=True, junban_later_tag=True,
-                                        junban_later_flag=True, junban_later_suspend=True), **over})
+                                        junban_later_flag=True, junban_later_suspend=True,
+                                        junban_replan_deck="TheBank", junban_replan_language="ja"), **over})
         saved.pop("junban_url", None)
         h.write_settings(**{**saved, "anki_connect_url": FAKE_URL})
         return fake, rep._patched(fake)
@@ -102,22 +105,56 @@ def test_spaced_while_the_re_plan_preview_is_on_and_a_second_run_writes_nothing(
 
 
 
-def test_on_3_0_spaced_while_the_re_plan_preview_is_on_for_the_other_language(deck):
+def test_on_3_0_a_japanese_run_on_a_deck_recorded_for_chinese_writes_nothing(deck):
     """2.x-dev keeps 2.5's dense block for a Japanese re-sort while the preview was turned on in 順 for Chinese
     (test_dense_while_the_re_plan_preview_is_on_for_the_other_language: `replan_preview.is_on(settings, language)`,
-    E3.1's rule); 3.0 (Haya's G2b): spaced whatever the language — every Junban writer numbers the one way, so none
-    renumbers another's deck. `junban --auto` writes the same, and the dry run says the same."""
+    E3.1's rule) — it writes. 3.0 (Haya's G3): 順's deck is recorded for Chinese, so a Japanese run of it — `resort`,
+    `junban --auto` and both dry runs — stands aside, naming the deck and the language it is recorded for; Anki is
+    never asked."""
     fake, patched = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
+    said = "順's deck TheBank is recorded for Chinese — pick your Japanese deck in 順's window in Japanese"
     with patched:
-        code, preview = h.call("resort", "--dry-run")
-        assert code == 0 and preview["numbering"] == "full" and fake.writes == [], preview
-        code, line = h.call("resort")
-    assert code == 0 and line["numbering"] == "full" and line["moves"] > 0, line
-    dense = _dues(fake)
-    twin, patched_twin = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
-    with patched_twin:
-        code, auto_line = h.call("junban", "--auto")
-    assert code == 0 and _dues(twin) == dense
+        for verb in (("resort", "--dry-run"), ("resort",), ("junban", "--dry-run"), ("junban", "--auto")):
+            code, line = h.call(*verb)
+            assert code == 0 and line["skipped"] == said and line["moves"] == 0, (verb, line)
+    assert fake.requests == [] and fake.writes == [] and fake.suspend_calls == []
+
+
+def test_on_3_0_junban_auto_with_no_pair_recorded_for_its_language_writes_nothing(deck):
+    """2.x-dev keeps no guard here: `junban --auto`, `resort` and Connect's step write `junban_deck` as given. 3.0
+    (Haya's G3, the (language, deck) guard on every automatic Junban write): until 順 has recorded its deck for this
+    language — a deck picked in 順's window in that language — the run and its dry run stand aside, a skip naming the
+    deck and the language, as for 順 switched off; Anki is never asked. What it would cost: with the actions on, a
+    Chinese run suspending and tagging every Japanese new card not on the Chinese list."""
+    fake, patched = deck(connect_enabled=True, junban_auto_actions=True, junban_replan_deck="",
+                         junban_replan_language="")
+    said = "順's deck TheBank isn't recorded for Japanese — pick it in 順's window in Japanese"
+    with patched:
+        for verb in (("junban", "--auto"), ("junban", "--dry-run"), ("resort",), ("resort", "--dry-run")):
+            code, line = h.call(*verb)
+            assert code == 0 and line["skipped"] == said and line["moves"] == 0, (verb, line)
+            assert line["undo"] is None, line
+    assert fake.requests == [] and fake.writes == [] and fake.suspend_calls == [] and fake.tag_calls == []
+
+
+def test_on_3_0_a_chinese_run_on_a_deck_recorded_for_japanese_writes_nothing_and_the_japanese_run_goes(deck):
+    """3.0 (Haya's G3): `junban_deck` is one key for both languages. 順's deck is recorded for Japanese, so a Chinese
+    `junban --auto` / `resort` stands aside — no position, no suspend, no tag — while the Japanese run on its recorded
+    pair goes exactly as before: spaced, and the cards off the list suspended as the setting says."""
+    fake, patched = deck(connect_enabled=True, junban_auto_actions=True)     # the pair: TheBank, Japanese
+    os.makedirs(os.path.join(h.root(), "User Files", "zh"), exist_ok=True)
+    said = "順's deck TheBank is recorded for Japanese — pick your Chinese deck in 順's window in Chinese"
+    with patched:
+        for verb in (("junban", "--auto", "--lang", "zh"), ("resort", "--lang", "zh"),
+                     ("resort", "--dry-run", "--lang", "zh")):
+            code, line = h.call(*verb)
+            assert code == 0 and line["skipped"] == said and line["moves"] == 0, (verb, line)
+        assert fake.requests == [] and fake.writes == [] and fake.suspend_calls == [] and fake.tag_calls == []
+        code, line = h.call("junban", "--auto")
+    assert code == 0 and line["moves"] > 0 and line["undo"], line
+    off = sorted(card_id for card_id, card in fake.cards.items()
+                 if fake.notes[card["note"]]["fields"]["Expression"]["value"] in ("須藤", "図書館", "眼鏡"))
+    assert fake.suspend_calls == [("suspend", off)]
 
 def test_a_dry_run_writes_nothing_and_previews_the_runs_moves(deck):
     fake, patched = deck(connect_enabled=True)

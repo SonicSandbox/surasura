@@ -1,18 +1,30 @@
-"""The order of one run's steps per language: `Steps.prepare` runs the session's known-sync, then Generate, then
-the deleted-notes check, then the shelf look, each once; a shelf look that fails (Junban missing) still leaves the
-deleted-notes check done and names the shelf as off (mutants P2.4-E14: Generate's call dropped; P2.4-E15: the check
-moved after the shelf look).
+"""The order of one run's steps per language: `Steps.prepare` runs the session's known-sync, then reads the plan's
+verdict (P3.3: `current`), then Generates **only when the plan can't serve the library as it stands** ("first": a new
+file, no plan) and reads the plan again, then the deleted-notes check, then the shelf look, each once; a move alone
+("no") Generates nothing; known words or the level moved ("after") Generate after mining (marked here, F11). A shelf
+look that fails (Junban missing) still leaves the deleted-notes check done and names the shelf as off (mutants
+P2.4-E14: Generate's call dropped; P2.4-E15: the check moved after the shelf look).
 
-What a wrong answer would cost: a list that is never regenerated before Connect mines from it (cards made from a
-stale list), a deleted card made again because the deleted-notes check ran too late, or a missing Junban that stops
-the whole run instead of naming the shelf as off.
+What a wrong answer would cost: a new episode's words never counted before Connect mines from the list (cards made
+from a stale list), a full Generate for every move holding the cards back (K78), a deleted card made again because
+the deleted-notes check ran too late, or a missing Junban that stops the whole run instead of naming the shelf as off.
 
 Anki is always a fake (the session, known-sync and Generate are replaced); no network, no sleeps.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from app.cli import verbs
 from app.connect import anki_session, runner
+
+
+def _plan(calls, generate="first", reason="files"):
+    """`Steps.current` replaced: logs "current" and answers the verdict `generate` ("first" · "after" · "no")."""
+    def current(lang, fresh=False):
+        calls.append("current")
+        return SimpleNamespace(generate=generate, reason=reason, result=None, listed=None)
+    return current
 
 
 @pytest.fixture
@@ -27,14 +39,31 @@ def run_order(monkeypatch):
 
 
 def test_prepare_runs_known_sync_then_generate_then_deleted_notes_then_shelf_once_each(run_order):
-    # why: Generate must run before anything reads the list, and the deleted-notes check before the shelf look
+    # why: when the plan can't serve the library (a new file), Generate must run before anything reads the list, the
+    # plan is read again from it, and the deleted-notes check runs before the shelf look
     calls = run_order
     s = runner.Steps({})
+    s.current = _plan(calls, "first")
     s.notes_gone = lambda lang: calls.append("notes_gone")
     s.shelf_session = lambda lang, ledger: calls.append("shelf_session")
     s.prepare("ja", None)
-    assert calls == ["known_sync", ("generate", "ja"), "notes_gone", "shelf_session"], \
+    assert calls == ["known_sync", "current", ("generate", "ja"), "current", "notes_gone", "shelf_session"], \
         "each step runs once, in this order: the list is current before the shelf and the deleted-notes check read it"
+    assert s._after == {}, "nothing owed after mining"
+
+
+@pytest.mark.parametrize("generate", ["no", "after"])
+def test_a_plan_that_serves_the_library_runs_no_generate_before_mining(run_order, generate):
+    # why (K78): a move ("no") is the re-plan's, and known words or the level ("after") are mined first — a Generate
+    # here would hold every card back for a whole analysis; "after" is marked for the Generate after mining (F11)
+    calls = run_order
+    s = runner.Steps({})
+    s.current = _plan(calls, generate, "known")
+    s.notes_gone = lambda lang: calls.append("notes_gone")
+    s.shelf_session = lambda lang, ledger: calls.append("shelf_session")
+    s.prepare("ja", None)
+    assert calls == ["known_sync", "current", "notes_gone", "shelf_session"], calls
+    assert s._after == ({"ja": "known"} if generate == "after" else {})
 
 
 def test_a_failing_shelf_look_still_leaves_the_deleted_notes_check_done_and_names_the_shelf_off(run_order):
@@ -42,6 +71,7 @@ def test_a_failing_shelf_look_still_leaves_the_deleted_notes_check_done_and_name
     # and the learner is told the shelf is off (SHELF_NO_JUNBAN) rather than the run failing
     calls = run_order
     s = runner.Steps({})
+    s.current = _plan(calls)
     s.notes_gone = lambda lang: calls.append("notes_gone")
 
     def no_junban(lang, ledger):
@@ -68,6 +98,8 @@ def test_settings_that_cant_be_read_just_now_make_the_run_wait_never_needs_you(m
     for step in ("known_sync", "generate"):
         monkeypatch.setattr(verbs, "known_sync", torn if step == "known_sync" else (lambda ns: None))
         monkeypatch.setattr(verbs, "generate", torn)
+        s = runner.Steps({})
+        s.current = _plan([])                   # the plan can't serve the library: Generate first
         with pytest.raises(runner.Wait):
-            runner.Steps({}).prepare("ja", None)
+            s.prepare("ja", None)
     assert isinstance(runner._wait_or_needs(CliError("settings-unreadable", "x"), "mining"), runner.Wait)

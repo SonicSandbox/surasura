@@ -667,7 +667,10 @@ def junban(args):
         if why is not None:
             return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}
         return _junban_dry_run(lang, junban_settings, reposition, job)[0]
-    return _junban_auto(args, lang, junban_settings, auto, job)[0]
+    # Connect's step (P3.3) hands in its plan (`current`) and asks for your 順 actions (HY-6: `positions_only` False);
+    # `junban --auto` itself has neither (no flag): positions only, from the list (P0.3 03)
+    return _junban_auto(args, lang, junban_settings, auto, job, current=getattr(args, "current", None),
+                        positions_only=getattr(args, "positions_only", True))[0]
 
 
 def numbering_job(junban_settings, lang):
@@ -725,8 +728,13 @@ def _reviewing(report):
     return bool(report.get("reviewing")) or anki_connect.REVIEWING in (report.get("problems") or [])
 
 
-def _junban_auto(args, lang, junban_settings, auto, job=None):
-    """The automatic reorder, headless -> (its answer, the run's stats or {})."""
+def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, positions_only=True):
+    """The automatic reorder, headless -> (its answer, the run's stats or {}). `current` (Connect's step, P3.3: a
+    `replan.Current`): with a re-plan, Junban ranks by the engine's rows (the store's order, served without a Generate)
+    and, after a clean run, the store records the order planned (`record_planned`, at the versions read with that
+    order: never a newer one) — the window's re-order host then owes nothing. `positions_only`: True for `junban
+    --auto` and `resort` (P0.3 03); Connect's step passes False — every automatic re-order applies your 順 actions
+    on 3.0 (HY-6)."""
     from app import analyzer, locks, run_args
     why = auto.blocked(junban_settings, window=False) or deck_aside(junban_settings, lang)
     if why is not None:
@@ -740,15 +748,23 @@ def _junban_auto(args, lang, junban_settings, auto, job=None):
                                       "The 順 window is open: Surasura leaves the order to you there. Try again once "
                                       "it's closed.")
         time.sleep(locks.POLL)
-    argv = run_args.analyzer_args(junban_settings, lang, headless=True)
+    planned = current is not None and current.result is not None
+    if planned:
+        # the re-plan IS the list for the store's order (parity with a full Generate on the plan columns, 05 §1)
+        from modules.junban import spaced
+        mode = str(junban_settings.get("junban_order") or "content").strip().lower()
+        job = spaced.Job(automatic=True, rows=current.rows(mode), places=current.places)
+        list_current = True
+    else:
+        list_current = analyzer.journey_is_current(run_args.analyzer_args(junban_settings, lang, headless=True), lang)
     # Connect's preview (P1.4 row 1.4.2): the run keeps a snapshot of its own, never the window's Restore point.
     from modules.junban import connect, reposition, undo
     run_id = undo.new_run_id("reorder", lang) if connect.preview_on(junban_settings) else None
     session, url = _session(junban_settings), reposition._url(junban_settings)
     if session is not None:
         session.begin(url, junban_settings)     # S1 before the run reads Anki (P2.3): the phone's reviews come first
-    done = auto.reorder(junban_settings, list_current=analyzer.journey_is_current(argv, lang), positions_only=True,
-                        run_id=run_id, job=job)
+    done = auto.reorder(junban_settings, list_current=list_current, positions_only=positions_only, run_id=run_id,
+                        job=job)
     outcome, report = done["outcome"], done.get("report") or {}
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
@@ -769,6 +785,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None):
     stats = report.get("stats") or {}
     written = report.get("written") or []
     snapshot = report.get("snapshot")
+    if planned and report.get("ok") and not report.get("left") and not report.get("failures"):
+        _record_planned(lang, current.versions)
     if session is not None and written:
         # S3's clock: a spaced run (a job) told the rule itself; a dense one is read here, by the re-plan's own test
         from app import anki_sync_rule
@@ -781,6 +799,21 @@ def _junban_auto(args, lang, junban_settings, auto, job=None):
         undo_id = os.path.basename(snapshot) if snapshot and written else None
     return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
              "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+
+
+def _record_planned(lang, versions):
+    """Anki holds the order the store had at `versions` (a clean run from its re-plan): recorded, so the window's
+    re-order host owes nothing for it. A store that can't be written now is only logged: the host re-orders once more,
+    never wrongly."""
+    try:
+        from app.connect import library
+        store = library.open_store(lang)
+        if store is None:
+            return
+        with store:
+            store.record_planned(versions["order_version"], versions["pins_version"])
+    except Exception as e:
+        contract.log.warning("the order Connect wrote wasn't recorded as planned: %s", e)
 
 
 # --------------------------------------------------------------------------- #
@@ -1123,7 +1156,10 @@ def pick(args):
     if args.video is not None and not os.path.isfile(args.video):
         raise CliError("bad-data", f"There's no video at {args.video}.")
     job = _job_id(args)
-    listed = _listed(args, lang)
+    # Connect's pick (P3.3) hands in the re-plan's ranks (`listed`, as `made`: never on the command line): no list read
+    listed = getattr(args, "listed", None)
+    if listed is None:
+        listed = _listed(args, lang)
     level_job = _level_job(args.job, lang)
     if level_job is not None:
         # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list

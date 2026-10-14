@@ -5,9 +5,13 @@ day's words first:
     sync → known-sync → generate → pick → fit check → mine → backfill → junban → sync
 
 - **Once a run, never per episode** (02 §4): the session's sync (`anki_session.begin`, P2.3: before Connect reads
-  what you studied), one known-sync, one Generate when the list isn't current (`generate`'s own "nothing changed";
-  a failed one → *Needs you* with its log, E29, and mining waits for a current list). Prepared per language, the
-  first time a language has work.
+  what you studied), one known-sync, then the plan's verdict (P3.3, K78: `replan.current`). A move or a placement of
+  counted items is **re-planned** — mined and ordered from the engine's re-plan, no Generate in the loop; known words
+  or the level moved → mined first (from the provisional re-plan, or the list as it is), then **one Generate after
+  mining** and a follow-up re-order from its plan, the level look on the new run (F11, `_after_mining`); a new file,
+  no plan, another engine → one Generate first, as before (`generate`'s own "nothing changed"; a failed one → *Needs
+  you* with its log, E29, and mining waits for a current list). Prepared per language, the first time a language has
+  work.
 - **One Anki Miner batch at a time** (E19), each job's words in one batch. **The carded set is read again for every
   pick** (P2.2 adversary #3: a word a higher job just carded is skipped — `pick.carded` asks Anki itself), together
   with every word Connect has ever made (the store's `made_words`, G1.3-4: a card you deleted is never made again).
@@ -75,6 +79,9 @@ NO_PROFILE = ("Connect doesn't know which Anki profile to make cards in, so it m
 WAIT_FOR_OTHER_LIST = True
 OTHER_LIST = "Waiting: your list is in {}. Cards are made once a Japanese list is current again."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
+
+# `Steps.order`'s answer when the plan can't serve the re-order now and the Generate after mining will (P3.3, F11)
+DEFERRED = "deferred"
 
 # Anki Miner's settled outcomes: a word with one of these is never sent again for the job
 UNSETTLED = (None, "uncertain", "not_attempted")
@@ -285,11 +292,15 @@ def _language(steps, ledger, lang, prepared, parked, out):
         return _waiting_all(ledger, lang, parked, out, wait.reason, wait.look)
     outside = False
     tried = set()
+    look = False                # the inbox and the level looked at again before the next job (after a job, or F11)
     while True:
-        if tried and _consume(steps, ledger, lang):
+        if look and _consume(steps, ledger, lang):
             outside = True
         jobs = _open_jobs(ledger, lang, parked, tried)
         if not jobs:
+            if _after_mining(steps, ledger, lang, out):
+                look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
+                continue
             break
         failed = None
         try:
@@ -304,6 +315,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             return _waiting_all(ledger, lang, parked, out, failed[0], failed[1]) or outside
         job = _ordered(jobs, line)[0]
         tried.add(job["id"])
+        look = True
         try:
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
@@ -325,6 +337,55 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if _stop(steps):
             break
     return outside
+
+
+def _after_mining(steps, ledger, lang, out):
+    """F11 (P3.3): this run mined from a plan that waits for a Generate (known words or the level moved since it) —
+    once the language's jobs have run this pass (done, or waiting): the Generate, the plan read again, one follow-up
+    re-order from it (the re-sort owed until it lands) -> True when the Generate went through (the loop's next look
+    is the level look on the new run). Never while stopped (an update staged, switched off); once a run (the mark is
+    the steps'). A Generate that waits or fails leaves the re-sort owed; mining is already done."""
+    after = getattr(steps, "generate_after", None)
+    if after is None or _stop(steps):
+        return False
+    try:
+        ran = after(lang, ledger)
+    except Wait as w:
+        log.info("Connect: the Generate after mining waits (%s): %s", lang, w.reason)
+        ran = None
+    except Needs as n:
+        if ledger.need(lang, n.kind, n.say):
+            out["needs"].append(n.say)
+        ran = None
+    except Exception:                       # mining is done: a fault here never ends the run (R15)
+        log.exception("Connect's Generate after mining stopped on an error (%s)", lang)
+        ran = None
+    if ran is False:
+        return False
+    with ledger.transaction():
+        ledger.owe_resort(lang)             # the follow-up re-order: owed until it lands (the next job's step pays it)
+    if ran is None:
+        return False
+    _follow_up(steps, lang, ledger)
+    return True
+
+
+def _follow_up(steps, lang, ledger):
+    """F11's one re-order from the Generate's new plan (a move made meanwhile is served at its time). Anki closed, a
+    review, a skip or a failure: the re-sort stays owed."""
+    try:
+        if _blocked(steps, lang, None) is not None:
+            return
+        deferred = steps.order(lang, None) == DEFERRED
+    except (Wait, Needs, Skip) as e:
+        log.info("Connect: the follow-up re-order waits (%s): %s", lang, e)
+        return
+    except Exception:
+        log.exception("Connect's follow-up re-order stopped on an error; the re-sort stays owed")
+        return
+    if not deferred:
+        with ledger.transaction():
+            ledger.resort_paid(lang)
 
 
 # A job that ended one of these ways took its item's needs with it (03 §4: fixed by itself); `failed` just named one
@@ -807,7 +868,7 @@ def _order(steps, ledger, lang, job):
     if wait is not None:
         raise wait
     try:
-        steps.order(lang, job)
+        deferred = steps.order(lang, job) == DEFERRED
     except Wait as w:
         raise Wait(w.reason, w.look, "ordering") from None
     except Skip as s:
@@ -818,7 +879,10 @@ def _order(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "ordering", n.say))
         return
     with ledger.transaction():
-        ledger.resort_paid(lang)
+        if deferred:
+            ledger.owe_resort(lang)         # the Generate after mining orders Anki from its new list (F11)
+        else:
+            ledger.resort_paid(lang)
 
 
 # --------------------------------------------------------------------------- #
@@ -832,6 +896,8 @@ class Steps:
         self.loaded = loaded
         from app import anki_connect
         self.url = anki_connect.address(loaded)
+        self._current = {}          # {lang: replan.Current}: the plan this run mines and orders from (P3.3)
+        self._after = {}            # {lang: why}: a Generate owed once this run's mining is done (F11)
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
@@ -844,10 +910,13 @@ class Steps:
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
-        a file that can't be read, stops the run."""
+        a file that can't be read, stops the run. 3.0 (P3.3 C1): D29's switch (`logic.automation`) off stops it too —
+        no automatic mining with the automation off."""
+        from app import settings_manager
         from app.cli import verbs
         try:
-            return bool(verbs.settings().get("connect_enabled"))
+            loaded = verbs.settings()
+            return bool(loaded.get("connect_enabled")) and settings_manager.automation(loaded)
         except Exception:
             return False
 
@@ -1028,7 +1097,10 @@ class Steps:
                 raise Wait(ANKI_CLOSED, resume="filling") from None
 
     def prepare(self, lang, ledger):
-        """Once a run, per language: the session's sync, one known-sync, one Generate when the list isn't current."""
+        """Once a run, per language: the session's sync, one known-sync, then the plan's verdict (P3.3,
+        `replan.current`): a Generate first only when the plan can't serve the library as it stands (a new file, no
+        plan, another engine: "first"); known words or the level moved ("after"): marked, the Generate runs once
+        mining is done (`generate_after`, F11); only the order moved ("no"): no Generate at all."""
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import anki_session
@@ -1043,13 +1115,14 @@ class Steps:
             if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
                 raise Wait(ANKI_CLOSED if e.code == "anki-closed" else e.message) from None
             raise Needs("known-sync", e.message) from None
-        try:
-            verbs.generate(ns)
-        except CliError as e:
-            if e.code in ("busy", "settings-unreadable"):     # exit 3: a moment's state, looked at again
-                raise Wait(e.message) from None
-            raise Needs("generate", f"Generate didn't finish, so Connect waits for a current list. {e.message}") \
-                from None
+        got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
+        if got.generate == "first":
+            self._generate(ns, "Generate didn't finish, so Connect waits for a current list.")
+            got = self.current(lang, fresh=True)
+        if got.generate == "after":
+            self._after[lang] = got.reason
+        else:
+            self._after.pop(lang, None)
         self._shelved = set()
         try:
             self.notes_gone(lang)
@@ -1058,6 +1131,61 @@ class Steps:
             self._say(lang, SHELF_NO_JUNBAN)
         except Exception:                   # never a reason not to mine: looked at again next run
             log.exception("Connect's shelf look or deleted-notes check didn't finish")
+
+    def _generate(self, ns, say):
+        """`surasura-cli generate` in this process: a moment's state (another Generate, settings.json caught
+        mid-save) is a Wait, anything else *Needs you* with its log (E29)."""
+        from app.cli import verbs
+        from app.cli.contract import CliError
+        try:
+            return verbs.generate(ns)
+        except CliError as e:
+            if e.code in ("busy", "settings-unreadable"):     # exit 3: a moment's state, looked at again
+                raise Wait(e.message) from None
+            raise Needs("generate", f"{say} {e.message}") from None
+
+    def _settings(self, lang):
+        """settings.json as it is now, for `lang` (the analyzer's argv is built from it), else this run's."""
+        from app.cli import verbs
+        try:
+            loaded = verbs.settings()
+        except Exception:
+            loaded = self.loaded
+        return dict(loaded, target_language=lang)
+
+    def current(self, lang, fresh=False):
+        """P3.3: the plan this run mines and orders from (`replan.current`), kept for the run and read again when
+        the store's order or pins, the plan file or the run stamp moved since (`replan.key`: a move mid-run is
+        re-planned before the next pick or re-order). A busy store is a Wait; none to read is Needs (`_open`)."""
+        from app.connect import replan
+        kept = self._current.get(lang)
+        with self._open(lang) as store:
+            if kept is not None and not fresh and replan.key(store) == kept.key:
+                return kept
+            got = replan.current(lang, self._settings(lang), store, previous=kept)
+        self._current[lang] = got
+        return got
+
+    def _plan_now(self, lang):
+        """`current`, or None when the store can't be read just now (the pick and the re-order then read the list
+        as today: never worse)."""
+        try:
+            return self.current(lang)
+        except (Wait, Needs):
+            return None
+
+    def generate_after(self, lang, ledger):
+        """F11: the Generate a plan marked "after" owes, once this run's mining is done -> True when it ran (the
+        plan read again from its new list), False when none was owed. Raises Wait / Needs (mining already done: only
+        the list's refresh waits)."""
+        why = self._after.pop(lang, None)
+        if why is None:
+            return False
+        log.info("Connect: Generate after mining (%s): %s", lang, why)
+        self._generate(SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False),
+                       "Generate didn't finish after Connect made its cards: your list catches up at the next one.")
+        self.current(lang, fresh=True)
+        return True
 
     # --- P2.4 Part B: the cap, the shelf, media names, deleted cards ------------------------------------------- #
     def _anki(self):
@@ -1089,9 +1217,13 @@ class Steps:
             raise Wait(ANKI_CLOSED, resume="mining") from None
 
     def _list_order(self, lang):
-        """{(Word, Reading): place} in the list's own order (Junban's), or None."""
+        """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan
+        serves the library as it stands, else the last Generate's list."""
         from app.cli import verbs
         from app.cli.contract import CliError
+        got = self._plan_now(lang)
+        if got is not None and got.listed is not None:
+            return got.listed
         try:
             return verbs._listed(SimpleNamespace(wait=WAIT_S), lang)
         except CliError:
@@ -1258,14 +1390,17 @@ class Steps:
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import library
-        with _held():                       # the store's two reads, one open; never around `verbs.pick` (Anki Miner)
+        with _held():                       # the store's reads, one open; never around `verbs.pick` (Anki Miner)
             subtitle = self.subtitle(lang, job)
             with self._open(lang) as store:      # every word Connect ever made, or no pick at all
                 made = library.made_words_all(store)
+            # P3.3: the re-plan's ranks (a move served), else the list's (None) — its look at the store's versions in
+            # the same open; a re-plan when something moved is the engine's (sub-second, no tokenizer, no Anki)
+            got = self._plan_now(lang)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, words=None, job=str(job["id"]), wait=WAIT_S,
-                             made=made)
+                             made=made, listed=got.listed if got is not None else None)
         try:
             out = verbs.pick(ns)
         except CliError as e:
@@ -1353,9 +1488,17 @@ class Steps:
             raise Skip(out["skipped"])
 
     def order(self, lang, job):
+        """Junban's automatic re-order (`junban --auto`'s body) — P3.3: from the engine's rows when the plan serves
+        the library as it stands (`record_planned` after a clean run), with your 順 actions as every automatic
+        re-order applies them on 3.0 (HY-6, C2: `positions_only` False). A plan that waits for the Generate after
+        mining with no re-plan to order from (the level moved) -> DEFERRED: that Generate's follow-up orders. `job`:
+        None for the follow-up."""
         from app.cli import verbs
         from app.cli.contract import CliError
-        ns = SimpleNamespace(lang=lang, wait=WAIT_S, auto=True, dry_run=False)
+        got = self._plan_now(lang)
+        if got is not None and got.result is None and lang in self._after:
+            return DEFERRED
+        ns = SimpleNamespace(lang=lang, wait=WAIT_S, auto=True, dry_run=False, current=got, positions_only=False)
         try:
             out = verbs.junban(ns)
         except CliError as e:

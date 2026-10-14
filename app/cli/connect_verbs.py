@@ -36,6 +36,7 @@ REQUIRED = ("schema", "content_key", "producer", "producer_version", "language",
 _TEXT = ("producer", "producer_version", "video_path", "subtitle_path", "library_path", "verdict", "picked_by",
          "paired_at")
 PREVIEW_OFF = "connect preview off"
+AUTOMATION_OFF = "automation off"           # D29's switch (`logic.automation`): Connect mines nothing by itself
 TIER_OF = {"now": "now", "soon": "soon", "later": "goal"}
 
 
@@ -386,6 +387,9 @@ def connect(args):
     loaded = settings()
     if not loaded.get("connect_enabled"):
         return {"skipped": PREVIEW_OFF}
+    from app import settings_manager
+    if not settings_manager.automation(loaded):        # 3.0 (P3.3 C1): D29 off is no automatic mining
+        return {"skipped": AUTOMATION_OFF}
     from app import locks
     from app.connect import inbox, kick, library
     from app.path_utils import get_user_files_path

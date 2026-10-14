@@ -66,7 +66,8 @@ class FakeSteps:
     `prepare_error` · `staged` · `store_busy` (the library busy: the top 20 can't be read) · `unknown_status` (a word
     Anki Miner answers with a status it doesn't know: uncertain, no crash, no card) · `fill_needs` (Backfill asks for
     you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
-    pick has run)."""
+    pick has run) · `generate_after` (P3.3: the plan marks a Generate after mining) · `generate_after_error` ·
+    `level_after` (level jobs the Generate's new run queues)."""
 
     def __init__(self, folder, plan=None, child=False):
         self.folder = folder
@@ -159,6 +160,33 @@ class FakeSteps:
             raise runner.Needs("known-sync", "Sync once from Surasura's Anki window first.")
         if error:
             raise runner.Wait(error)
+        if self.plan.get("generate_after"):         # P3.3: the plan waits for a Generate after mining (F11)
+            self.after = set(getattr(self, "after", set())) | {lang}
+
+    def current(self, lang, fresh=False):
+        """P3.3: the plan the run mines and orders from, shaped like `replan.Current` (its `generate`, `listed`)."""
+        from types import SimpleNamespace
+        self.log.append(("current", lang))
+        return SimpleNamespace(generate="after" if lang in getattr(self, "after", ()) else "no", reason="known",
+                               result=None, listed=None, versions={"order_version": 1, "pins_version": 0})
+
+    def generate_after(self, lang, ledger):
+        """F11, as `Steps.generate_after`: once, when `prepare` marked the language; `generate_after_error` "wait" /
+        "needs" fails it."""
+        if lang not in getattr(self, "after", ()):
+            return False
+        self.after.discard(lang)
+        self.log.append(("generate", lang))
+        error = self.plan.get("generate_after_error")
+        if error == "needs":
+            raise runner.Needs("generate", "Generate didn't finish after Connect made its cards.")
+        if error == "crash":
+            raise OSError("the Generate's log folder can't be written")
+        if error:
+            raise runner.Wait(error)
+        for lang_, item, words in self.plan.get("level_after") or []:      # the level look on the new run
+            self.plan.setdefault("level", []).append((lang_, item, words))
+        return True
 
     def run_dir(self, job):
         return os.path.join(self.folder, "runs", job["tag"])
@@ -252,7 +280,7 @@ class FakeSteps:
         self.log.append(("name_media", job["item_id"], len(lines)))
 
     def order(self, lang, job):
-        self.log.append(("order", job["item_id"]))
+        self.log.append(("order", job["item_id"] if job is not None else None))   # None: F11's follow-up
         self._kill("order")
         if "junban" in (self.plan.get("absent") or ()):
             raise runner.Skip("Junban isn't installed")

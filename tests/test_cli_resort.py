@@ -5,7 +5,8 @@ its own run snapshot while the Connect preview is on — with the user's *Study 
 numbered by the one rule every Junban writer follows: the spaced ladder (E2.1) while the fast re-plan's preview is on,
 2.5's dense block while it's off. What a wrong answer would cost: two writers numbering one deck two ways rewrite every
 card on every turn (each write syncs to the phone), and a re-sort that ran with the preview off would change a 2.5
-user's Anki behind their back.
+user's Anki behind their back. 2.x-dev keeps that rule; 3.0 (E1.1 04 §5, Haya's G2b): the spaced ladder always,
+whatever the preview's box, D29 or the language say.
 
 The Junban suite's fake collection (real Japanese words, a list in the results); never Anki.
 """
@@ -52,16 +53,23 @@ def test_with_the_connect_preview_off_it_writes_nothing(deck):
     assert fake.requests == [] and fake.writes == []
 
 
-def test_dense_while_the_re_plan_preview_is_off_exactly_as_junban_auto(deck):
-    """The re-plan preview off: 2.5's dense numbers, the same writes `junban --auto` makes on the same deck — and
-    positions only, with its own undo (Connect's run snapshot)."""
-    fake, patched = deck(connect_enabled=True, junban_auto_actions=True)
+@pytest.mark.parametrize("over", [{}, {"logic": {"automation": False}}], ids=["box-off", "d29-off"])
+def test_on_3_0_spaced_while_the_re_plan_preview_is_off_exactly_as_junban_auto(deck, over):
+    """2.x-dev keeps 2.5's dense numbers while the re-plan preview is off
+    (test_dense_while_the_re_plan_preview_is_off_exactly_as_junban_auto); 3.0 (E1.1 04 §5, Haya's G2b): spaced
+    always — the box off, D29 off too — and the dry run says so as well. Still the same writes `junban --auto` makes
+    on the same deck, positions only, with its own undo (Connect's run snapshot)."""
+    fake, patched = deck(connect_enabled=True, junban_auto_actions=True, **over)
     with patched:
+        code, preview = h.call("resort", "--dry-run")
+        assert code == 0 and preview["numbering"] == "full" and fake.writes == [], preview
         code, line = h.call("resort")
-    assert code == 0 and line["moves"] > 0 and line["numbering"] == "dense" and line["undo"], line
+    assert code == 0 and line["moves"] == preview["moves"] > 0 and line["numbering"] == "full" and line["undo"], line
     assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
     resorted = _dues(fake)
-    twin, patched_twin = deck(connect_enabled=True, junban_auto_actions=True)
+    gaps = sorted(resorted.values())
+    assert max(b - a for a, b in zip(gaps, gaps[1:])) > 1, "spaced, not a dense block"
+    twin, patched_twin = deck(connect_enabled=True, junban_auto_actions=True, **over)
     with patched_twin:
         code, auto_line = h.call("junban", "--auto")
     assert code == 0 and auto_line["moves"] == line["moves"]
@@ -88,14 +96,17 @@ def test_spaced_while_the_re_plan_preview_is_on_and_a_second_run_writes_nothing(
 
 
 
-def test_dense_while_the_re_plan_preview_is_on_for_the_other_language(deck):
-    """The re-plan preview was turned on in 順 for Chinese: a Japanese re-sort numbers 2.5's dense block, as
-    `junban --auto` does (`replan_preview.is_on(settings, language)`, E3.1's rule) — `junban_deck` is one key for both
-    languages, so the switch alone would space out the Japanese deck behind the window's back."""
+def test_on_3_0_spaced_while_the_re_plan_preview_is_on_for_the_other_language(deck):
+    """2.x-dev keeps 2.5's dense block for a Japanese re-sort while the preview was turned on in 順 for Chinese
+    (test_dense_while_the_re_plan_preview_is_on_for_the_other_language: `replan_preview.is_on(settings, language)`,
+    E3.1's rule); 3.0 (Haya's G2b): spaced whatever the language — every Junban writer numbers the one way, so none
+    renumbers another's deck. `junban --auto` writes the same, and the dry run says the same."""
     fake, patched = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
     with patched:
+        code, preview = h.call("resort", "--dry-run")
+        assert code == 0 and preview["numbering"] == "full" and fake.writes == [], preview
         code, line = h.call("resort")
-    assert code == 0 and line["numbering"] == "dense" and line["moves"] > 0, line
+    assert code == 0 and line["numbering"] == "full" and line["moves"] > 0, line
     dense = _dues(fake)
     twin, patched_twin = deck(connect_enabled=True, junban_replan_preview=True, junban_replan_language="zh")
     with patched_twin:

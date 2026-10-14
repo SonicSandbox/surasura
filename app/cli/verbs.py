@@ -667,13 +667,10 @@ def junban(args):
 
 def numbering_job(junban_settings, lang):
     """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
-    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
-    on for this language (`replan_preview.is_on`: its switch in 順, Junban on and present, the language it was turned
-    on in — E3.1's rule for `auto.reorder`); None — 2.5's dense block — otherwise, so the command line and the window
-    never renumber each other's deck."""
-    from app import replan_preview
-    if not replan_preview.is_on(junban_settings, lang):
-        return None
+    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline), so the command line and the window
+    never renumber each other's deck. 2.x-dev keeps it only while the fast re-plan's preview is on for this language
+    (`replan_preview.is_on`), 2.5's dense block (None) otherwise; 3.0 (E1.1 04 §5, Haya's G2b): always, whatever the
+    preview's box, D29 or the language say — the dry run and the run alike."""
     from modules.junban import spaced
     return spaced.Job(automatic=True)
 

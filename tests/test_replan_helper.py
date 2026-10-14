@@ -206,3 +206,31 @@ def test_the_in_process_fake_still_serves_a_local_host(lib, monkeypatch):
         host.catch_up()
         assert _wait(lambda: not host.busy(), 180) and fake.write_requests
         host.stop()
+
+
+@pytest.mark.parametrize("said,handed", [([True], [True, False]), ([True, False], [True, False]), ([], [])],
+                         ids=["busy-then-died", "idle-then-died", "never-said"])
+def test_a_helper_that_died_busy_hands_the_window_working_false_before_the_local_host_takes_over(
+        monkeypatch, said, handed):
+    """The helper said `working: True` (a write under way) and then died: the window's job would stay running — the
+    spinner never stops, and every close waits for it. So the fallback hands the window `working(False)` first; the
+    window's own host then says its own next write. A helper that last said it was idle, or said nothing, gets no
+    extra call. No helper process here: the pipe's message is handed in as the reader would."""
+    events = []
+
+    class LocalHost:
+        def __init__(self, language, say=None, working=None, generate=None):
+            pass
+
+        def warm(self):                          # its first job: it has taken over
+            events.append("local host")
+
+        def catch_up(self):
+            pass
+    monkeypatch.setattr(replan_preview.Remote, "_run", lambda self: None)       # no helper started
+    monkeypatch.setattr(replan_preview, "Host", LocalHost)
+    remote = replan_preview.Remote("ja", working=lambda on: events.append(on))
+    for on in said:
+        remote._receive({"working": on, "seen": 0})
+    remote._go_local()
+    assert events == handed + ["local host"], events

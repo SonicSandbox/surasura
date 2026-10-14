@@ -1043,7 +1043,9 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     try:
         settings = settings_manager.load_settings()
-        logic_settings = settings.get("logic", {})
+        # D29's switch (3.0, `logic.automation`) is no template's: kept out, so the report is what it was without it
+        # (placed "neither": in no render signature).
+        logic_settings = {k: v for k, v in settings.get("logic", {}).items() if k != "automation"}
         target_lang = settings.get("target_language", "ja")
         
         # If theme is 'default', try to load from settings and MAP it

@@ -4197,7 +4197,8 @@ def run_signature_parts(language, found_files, args):
         # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
         # which compute_render_signature holds instead (a re-render, never a re-analysis).
         _NON_ANALYSIS_LOGIC = {"gui", "importer",
-                               "inline_completed_files", "hide_audio_button", "chunk_size", "priority_markers"}
+                               "inline_completed_files", "hide_audio_button", "chunk_size", "priority_markers",
+                               "automation"}     # D29's switch (3.0): what runs by itself, never what a run reads
         _UNREAD_CONTEXT = {"search_range", "max_extra", "min_words"}   # no code reads them
         # Read by a Japanese run only (measured: flipping any of them leaves every output of a Chinese
         # run byte for byte the same; the one-character rule's --include-single-chars too, in the args).

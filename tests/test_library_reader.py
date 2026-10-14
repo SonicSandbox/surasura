@@ -525,3 +525,49 @@ def test_busy_looks_inside_cache_latest_s_write_no_cache_while_the_window_takes_
         _busy_commit(seed, n)
         reader._look()
     assert len(views) == 4 and not cache.exists()
+
+
+def test_an_order_or_pins_move_by_any_writer_is_told_once_and_new_files_alone_tell_nothing():
+    """W3.5 row 7 (the map's §3 fix 4): the re-order host and the journey keeper hear of a move through the reader —
+    whoever made it (the window, hato, the command line, the Tk Content Manager) — once per change of the order or the
+    pins. The first look only learns the versions (the start's catch-up covers what was owed before), a look that
+    finds nothing new tells nothing, and new files alone (availability) or a checkpoint start nothing (2.5's button)."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    moves = []
+    reader.subscribe_moves(lambda language, versions: moves.append((language, versions["order_version"],
+                                                                    versions["pins_version"])))
+    reader._look()
+    assert moves == []                                   # the first look: nothing moved since the window opened
+    seed.library.commit(order=True)                      # another program's move (a hato drop into NOW)
+    reader._look()
+    reader._look()                                       # the same versions again: not told twice
+    assert len(moves) == 1 and moves[0][0] == "ja"
+    seed.library.commit(pins=True)                       # a pin
+    reader._look()
+    assert len(moves) == 2 and moves[1][2] == moves[0][2] + 1
+    hero = next(r for r in seed.items if r["tier"] == "now")
+    new_id = max(r["id"] for r in seed.items) + 1
+    seed.library.commit(items=[dict(hero, id=new_id, tier="arrivals", rel_path="HighPriority/Hato/新しい話.srt",
+                                    title="新しい話.srt", piece_id=9998)], availability=True)
+    with seed.library._lock:
+        seed.library._data_version += 1                  # a checkpoint: no row, no version
+    reader._look()
+    reader._look()
+    assert len(moves) == 2
+
+
+def test_a_move_listener_that_raises_never_stops_the_reader():
+    seed = window_seed.build()
+    reader = _reader(seed)
+    heard = []
+
+    def broken(language, versions):
+        raise RuntimeError("a listener's fault")
+    reader.subscribe_moves(broken)
+    reader.subscribe_moves(lambda language, versions: heard.append(versions["order_version"]))
+    views, _ = _collect(reader)
+    reader._look()
+    seed.library.commit(order=True)
+    reader._look()
+    assert len(heard) == 1 and not views[-1][1].busy

@@ -26,6 +26,13 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   the journey reads `stale` and the next Generate runs it again. From *Writing your list* on, its job quits with
   `wait` (`Job.finishes_at_quit`, as soon as the line is read): closing the window waits for the run's end, capped, so
   the process's exit never cuts it between the list and the journey (E20: the last good journey kept).
+- **The bar's words** (W3.5 row 7): a run's job reads *Generating*, or *Generating (automatic)* when quiet; an asker
+  that wants its own words asks through `labelled(label)` — the journey keeper's background run reads *Journey:
+  updating sentences…* (`JOURNEY_LABEL`, G7). **A failure** stays the state even when another request waits (it then
+  runs), and a run dropped later falls back to it, never to an older `current`; `failure(language)` keeps its words, for
+  its run's language, until a run finishes cleanly or a check finds the journey current (HR-23: the bar's Generate
+  line); a language switch forgets them (`forget_failure`). A run that finished though it was asked to stop (past
+  *Writing your list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
 - Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
   environment from `path_utils.build_subprocess_env`. A window that starts the child its own way (the Tk dashboard:
   its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
@@ -50,6 +57,7 @@ IDLE, CURRENT, STALE, QUEUED, RUNNING, CANCELLING, FAILED = (
 STEPS = ("Reading your files", "Counting words", "Picking sentences", "Writing your list", "Writing the journey")
 LOG_NAME = "generate-window.log"
 PROGRESS_FLAG = "--progress-json"
+JOURNEY_LABEL = "Journey: updating sentences…"      # the keeper's background run in the bar (W1.2 02 §2.4)
 
 # `quiet`: the run asked for or running is an automatic one (IK-20: a click on it is the user's own request).
 State = namedtuple("State", "state step done total message log_path job_id seq quiet", defaults=(False,))
@@ -103,14 +111,30 @@ def command_line(argv):
         + list(argv[1:])
 
 
+class Labelled:
+    """The controller as one asker sees it: each `request` carries `label`, the bar's words for its run; everything
+    else is the controller's own. The journey keeper's (`JourneyKeeper(controller.labelled(JOURNEY_LABEL), …)`, G7)."""
+
+    def __init__(self, controller, label):
+        self._controller, self._label = controller, label
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("label", self._label)
+        return self._controller.request(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._controller, name)
+
+
 class Run:
     """One Generate on its way: its argv, its job, and what its launcher reports (`started`, `feed`, `ended`)."""
 
-    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline):
+    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None):
         self.controller = controller
         self.argv = argv
         self.language = language
         self.quiet = quiet
+        self.label = label                 # the bar's words for its job (None: the controller's)
         self.on_wait = on_wait
         self.cancel_event = threading.Event()
         self.external_cancel = cancel_event
@@ -206,6 +230,7 @@ class GenerateController:
         self._deliver = threading.RLock()  # one delivery at a time (a listener may ask for a run from inside one)
         self._state = State(IDLE, None, None, None, None, None, None, 0)
         self._settled = IDLE            # what a check (or the last run) found: the state to fall back to
+        self._failure = None            # the last failure (message, log path, language) until a run finishes cleanly
         self._run = None                # the run in flight (waiting, or its child running)
         self._pending = None            # the request that runs next
         self._timer = None
@@ -217,6 +242,26 @@ class GenerateController:
     def state(self):
         with self._lock:
             return self._state
+
+    def failure(self, language=None):
+        """The last run's failure in plain words, kept until a run finishes cleanly — even while another runs (the
+        bar's Generate line, HR-23) — or None. `language`: only a failure of that language's run (a Japanese failure
+        is never the Chinese bar's)."""
+        with self._lock:
+            failure = self._failure
+        if not failure or (language is not None and failure[2] != language):
+            return None
+        return failure[0]
+
+    def forget_failure(self):
+        """The window switched language: the last failure is no longer the bar's (its Generate line, Needs you keeps
+        it listed)."""
+        with self._lock:
+            self._failure = None
+
+    def labelled(self, label):
+        """This controller for an asker whose runs read `label` in the bar (`Labelled`)."""
+        return Labelled(self, label)
 
     def subscribe(self, callback):
         """`callback(State)` after every change, in order."""
@@ -258,8 +303,10 @@ class GenerateController:
                 answer = None
             with self._lock:
                 self._settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+                if answer is True and self._failure and self._failure[2] == language:
+                    self._failure = None    # current after all (another program generated cleanly): over
                 if self._run is None and self._pending is None:
-                    snap = self._assign(self._settled)
+                    snap = self._assign_settled()
                 else:
                     snap = None
             self._send(snap)
@@ -269,19 +316,20 @@ class GenerateController:
 
     # --- asking for a run --------------------------------------------------------------------------------------- #
     def request(self, language, settings=None, argv=None, quiet=False, restart=False, settle=None, launcher=None,
-                on_wait=None, cancel_event=None, inline=False):
+                on_wait=None, cancel_event=None, inline=False, label=None):
         """Ask for a Generate. `argv` (`['analyzer.py', …]`) or `settings` (settings.json's shape) say what to run;
         `quiet`: automatic, written not opened. `launcher(run)`: start the child another way (else this controller
         spawns and reads it). `on_wait(holder)`: once, if another program's Generate holds `results`.
         `cancel_event`: another Event that also drops the run while it waits (the window's closing). `inline`: take a
-        free `results` lock and launch on this thread (a test harness with no queue to drain). Returns at once."""
+        free `results` lock and launch on this thread (a test harness with no queue to drain). `label`: the bar's
+        words for its job (`labelled`). Returns at once."""
         if argv is None:
             from app import run_args
             argv = run_args.analyzer_args(settings or {}, language)
             argv = argv + [PROGRESS_FLAG] + (["--no-open"] if quiet else [])
         if not isinstance(cancel_event, threading.Event):
             cancel_event = self.closing if isinstance(self.closing, threading.Event) else None
-        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline)
+        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label)
         snap = None
         with self._lock:
             waiting = self._pending
@@ -322,7 +370,7 @@ class GenerateController:
             dropped, self._pending = self._pending, None
             run = self._run
             if run is None and dropped is not None:
-                snap = self._assign(self._settled)
+                snap = self._assign_settled()
         self._send(snap)
         if run is not None:
             self._cancel(run)
@@ -340,7 +388,7 @@ class GenerateController:
                     self._timer = None
                 self._pending = None
                 if self._run is None:
-                    snap = self._assign(self._settled)
+                    snap = self._assign_settled()
             in_flight = self._run is run
         self._send(snap)
         if in_flight:
@@ -362,7 +410,7 @@ class GenerateController:
                 return
             run, self._pending = self._pending, None
             self._run = run
-        label = "Generating (automatic)" if run.quiet else "Generating"
+        label = run.label or ("Generating (automatic)" if run.quiet else "Generating")
 
         def begin(job):
             run.job = job                   # the registry may start it inside submit(): the run knows its job first
@@ -510,7 +558,9 @@ class GenerateController:
             self._tell_end(run, "stale")
             self._after(run, STALE)
         elif returncode == 0:
-            run.job.finish(ok=True)
+            # A13: asked to stop too late (past *Writing your list*), it finished: a Generate that wrote everything, not
+            # a cancel — the registry takes back the flag it set when it was asked.
+            run.job.finish(ok=True, completed=True)
             self._tell_end(run, "current")
             self._after(run, CURRENT)
         else:
@@ -534,13 +584,19 @@ class GenerateController:
         with self._lock:
             if self._run is run:
                 self._run = None
-            if state in (CURRENT, STALE):
-                self._settled = state
+            if state in (CURRENT, STALE, FAILED):
+                self._settled = state       # a failure too: a run dropped later falls back to it, not an older current
+            if state == FAILED:
+                self._failure = (message, log_path, run.language)
+            elif state == CURRENT:
+                self._failure = None
             nxt = self._pending
-            if nxt is not None:
+            if nxt is not None and state != FAILED:
                 snap = self._assign(QUEUED, quiet=nxt.quiet)
-            else:
-                snap = self._assign(self._settled if state is None else state, message=message, log_path=log_path)
+            elif state is None:
+                snap = self._assign_settled()
+            else:                           # a failure is said even while another request waits (A12): it runs next
+                snap = self._assign(state, message=message, log_path=log_path)
         self._send(snap)
         if nxt is not None:
             self._launch_pending()
@@ -567,6 +623,12 @@ class GenerateController:
         with self._lock:
             snap = self._assign(state, step, done, total, message, log_path, job_id, quiet)
         self._send(snap)
+
+    def _assign_settled(self):
+        """(Inside `self._lock`.) Back to what the last check or run found — a failure with its words and log (A12)."""
+        if self._settled == FAILED and self._failure:
+            return self._assign(FAILED, message=self._failure[0], log_path=self._failure[1])
+        return self._assign(self._settled)
 
     def _assign(self, state, step=None, done=None, total=None, message=None, log_path=None, job_id=None,
                 quiet=False):

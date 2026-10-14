@@ -94,6 +94,12 @@ def until(condition, seconds=30.0, every=0.02):
         time.sleep(every)
 
 
+# A call the window's thread makes returns at once: within 4 ms in the timed run (SURASURA_STORE_BENCH=1, the machine
+# alone), within 50 ms otherwise. A shared runner or a machine running other suites stalls a thread for several ms (8.96 ms
+# on GitHub's runner, 2026-10-13); a call that waits on a lock, a child or a file takes far longer than either.
+AT_ONCE_MS = 4 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 50
+
+
 def timed(call):
     """(result, milliseconds) of one call on this thread."""
     start = time.perf_counter()

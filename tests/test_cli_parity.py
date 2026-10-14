@@ -84,7 +84,10 @@ def junban_backlog(monkeypatch):
     os.makedirs(os.path.join(h.root(), "User Files", "ja"), exist_ok=True)
     cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険"])
     fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi"))
-    saved = rep._settings(junban_order="content", enable_junban=True)
+    # 3.0: 順 has recorded its deck for Japanese — without the pair, every automatic Junban write stands aside
+    # (the command line's dry run is the automatic run's; the window's own preview asks no pair)
+    saved = rep._settings(junban_order="content", enable_junban=True, junban_replan_deck="TheBank",
+                          junban_replan_language="ja")
     saved.pop("junban_url", None)
     h.write_settings(**{**saved, "anki_connect_url": FAKE_URL})
     return SimpleNamespace(fake=fake, patched=rep._patched)

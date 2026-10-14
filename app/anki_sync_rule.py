@@ -246,10 +246,11 @@ def sync_if_due(url, settings, force=False, wait=None, cancel=None):
         return f"failed: {e}", None
 
 
-def status(settings, now=None):
+def status(settings, now=None, state=None):
     """The AnkiWeb indicator's words (E1.1 04 §3: Surasura's own requests only): "AnkiWeb: synced 18:42",
-    "AnkiWeb: syncing in 45 s", "AnkiWeb: not signed in", "AnkiWeb: sync failed" — or "" before any."""
-    state = read_state()
+    "AnkiWeb: syncing in 45 s", "AnkiWeb: not signed in", "AnkiWeb: sync failed" — or "" before any. `state`: the
+    state as last read (`read_state()`) by a caller that keeps it (3.0's bar, asked every second); None reads it."""
+    state = read_state() if state is None else state
     now = time.time() if now is None else now
     due = due_at(settings, state)
     if due is not None:

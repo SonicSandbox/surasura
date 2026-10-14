@@ -304,7 +304,7 @@ def test_the_check_and_its_listeners_run_off_the_callers_thread(world, monkeypat
     threads = []
     svc.subscribe(lambda s: threads.append(threading.current_thread()))
     ok, ms = h.timed(svc.check)
-    assert ok and ms <= 4, ms
+    assert ok and ms <= h.AT_ONCE_MS, ms
     assert svc.check() is False                              # one check at a time
     gate.set()
     assert h.until(lambda: threads, seconds=10)
@@ -426,7 +426,7 @@ def test_start_returns_at_once_and_never_twice(world, monkeypatch):
     registry = JobRegistry()
     svc = world.offered(world.service(registry=registry))
     ok, ms = h.timed(svc.start)
-    assert ok and ms <= 4, ms
+    assert ok and ms <= h.AT_ONCE_MS, ms
     assert svc.start() is False
     assert h.until(lambda: svc.state().state == U.DOWNLOADING, seconds=10)
     assert svc.start() is False
@@ -541,6 +541,58 @@ def test_the_library_helper_holding_its_lock_keeps_it_waiting(world):
 def test_the_wait_polls_at_the_tk_period():
     """_update_poll: `after(300, …)`."""
     assert U.POLL == 0.3
+
+
+# --- W3.5 row 7 (R7c): a running Connect on the update's wait list (P3.1 row 3.1.8, K99) ------------------------- #
+REAL_CAN_UPDATE_NOW = updater.can_update_now
+CONNECT_PID, WINDOW_PID = 7100, 7200
+
+
+def _connect_and_another_window(monkeypatch):
+    """S3.1's real listing (`running_children`, `can_update_now`) over a faked process table: this install's
+    Surasura.exe (another window) and its surasura-cli.exe running `connect` — the holder of Connect's lock, as
+    `connect_pid` reads it. Nothing is ever ended: `stop_pid` records, and a stopped window leaves the table."""
+    folder = os.path.join(h.root(), "install")
+    exe, cli = os.path.join(folder, updater.EXE_NAME), os.path.join(folder, updater.CLI_EXE_NAME)
+    procs, stopped = {WINDOW_PID: exe, CONNECT_PID: cli}, []
+
+    def stop_pid(pid, grace=None, connect=None):
+        stopped.append(pid)
+        if connect is None or int(pid) != int(connect):
+            procs.pop(pid, None)
+    monkeypatch.setattr(updater, "running_children", REAL_RUNNING_CHILDREN)
+    monkeypatch.setattr(updater, "can_update_now", REAL_CAN_UPDATE_NOW)
+    monkeypatch.setattr(updater, "_install_images", lambda: [exe, cli])
+    monkeypatch.setattr(updater, "_processes_running", lambda images: dict(procs))
+    monkeypatch.setattr(updater, "_processes_in", lambda where: dict(procs))
+    monkeypatch.setattr(updater, "connect_pid", lambda: CONNECT_PID if CONNECT_PID in procs else None)
+    monkeypatch.setattr(updater, "stop_pid", stop_pid)
+    return procs, stopped
+
+
+def test_a_running_connect_is_waited_for_never_stopped_and_stop_all_skips_it(world, monkeypatch):
+    """R7c: Connect mid-batch is listed by its own row (`CONNECT_ROW`, no Stop): ended, it would orphan Anki Miner. Its
+    row's Stop does nothing, *Stop all* stops the other window alone, and the update can't start (`can_update_now`
+    False) until Connect exits by itself — then it hands over, Connect never asked to stop."""
+    procs, stopped = _connect_and_another_window(monkeypatch)
+    assert updater.can_update_now() is False
+    svc = world.offered(world.service())
+    assert svc.start()
+    assert h.until(lambda: svc.state().state == U.WAITING and len(svc.state().programs) == 2, seconds=10)
+    programs = {p.key: p for p in svc.state().programs}
+    assert (programs[CONNECT_PID].name, programs[CONNECT_PID].can_stop) == (updater.CONNECT_ROW, False)
+    assert (programs[WINDOW_PID].name, programs[WINDOW_PID].can_stop) == ("Another Surasura window", True)
+    assert svc.stop(CONNECT_PID) is False
+    assert svc.stop() is True                                # Stop all
+    assert h.until(lambda: [p.key for p in svc.state().programs] == [CONNECT_PID], seconds=10)
+    assert stopped == [WINDOW_PID]
+    assert svc.stop() is False                               # nothing left that can be stopped
+    time.sleep(0.15)                                         # several turns of the wait (FAST)
+    assert world.quits == [] and updater.can_update_now() is False
+    procs.pop(CONNECT_PID)                                   # its batch done, Connect exits by itself
+    assert updater.can_update_now() is True
+    assert h.until(lambda: world.quits, seconds=10)
+    assert CONNECT_PID not in stopped
 
 
 # --- cancel -------------------------------------------------------------------------------------------------------- #

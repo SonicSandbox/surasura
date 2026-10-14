@@ -16,9 +16,23 @@ What it holds, refreshed off the window's thread:
   provider gives it (Generate failed until it runs cleanly again, the update's failure until looked at), then it goes
   — still listed (HR-23); a command line's stays the bar's until a newer one.
 
-`poll()` is safe on a window's thread (a stat, nothing read); it starts a refresh on a worker when the file changed.
-`subscribe(cb)` hears every new snapshot, on the thread that made it (a worker, or the registry's).
+- the re-order host's passing line (`replan`: *Anki: placing tomorrow's 20 cards…* → *Anki's order is up to date*,
+  *Generate first*) and the journey dot (`journey`, G10: True while the store's `journey_pending()` says the sentences
+  are owed), from providers the window registers (W3.5 row 7): `None` without one. The host says when its line moved
+  (`refresh_soon("replan")`); the dot is asked again with every refresh of everything.
+
+`poll()` is safe on a window's thread (a stat and a clock compare, nothing read); it starts a refresh on a worker when
+the file changed, and a look at the ticking providers when their period is up (G5): Connect's line every 3 s (the Tk
+`status_row.StatusRow`'s EVERY_MS) while Connect is on, the AnkiWeb mark every second while it counts down, else every
+3 s (S19: a look that can't change anything isn't taken every second). `refresh_soon(*names)` asks the providers
+named (none: everything). `subscribe(cb)` hears a snapshot only when something in it changed (S19: a tick that changes
+nothing delivers nothing), on the thread that made it (a worker, or the registry's).
+
+The window's providers for Connect, AnkiWeb and the dot are the plain functions at the end (`connect_line`,
+`ankiweb_line`, `journey_pending`): they call the Tk-free rules (`connect.status`, `anki_sync_rule.status`,
+`library_store`), never copy them, and live here so the window registers them from the module it already imports.
 """
+import os
 import threading
 import time
 from collections import namedtuple
@@ -26,9 +40,12 @@ from collections import namedtuple
 from app.services import jobs as jobs_module
 
 Entry = namedtuple("Entry", "text at seen")
-Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at")
+Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey",
+                      defaults=(None, None))
 NEEDS_YOU_KEPT = 50
-LINE_PROVIDERS = ("ankiweb", "connect")
+LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey")         # `journey`'s answer is True / False, not words
+TICKS = {"connect": 3.0, "ankiweb": 1.0}  # seconds between a ticking provider's looks (`poll`); a provider with an
+                                          # `every()` says its own now (None: not ticking now)
 FAILURE_PROVIDERS = ("update", "generate")
 LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their own service, with their actions
 
@@ -49,13 +66,16 @@ def job_line(view):
 
 class StatusService:
     """`registry`: the window's job registry; `reader`: a `cli.events.Reader` (made on first use when None);
-    `providers`: {"ankiweb": fn, "connect": fn, "update": fn, "generate": fn} -> a line or None, called on the worker
-    (`FAILURE_PROVIDERS`' lines are failures). A window may add providers later (`providers` is the dict asked)."""
+    `providers`: {"ankiweb": fn, "connect": fn, "replan": fn, "journey": fn, "update": fn, "generate": fn} -> a line
+    (or the dot) or None, called on the worker (`FAILURE_PROVIDERS`' lines are failures). A window may add providers
+    later (`providers` is the dict asked). `clock`: the ticks' (`time.monotonic`; a test's stand-in)."""
 
-    def __init__(self, registry, reader=None, providers=None, logs_folder=None):
+    def __init__(self, registry, reader=None, providers=None, logs_folder=None, clock=None):
         self.registry = registry
         self._reader = reader
         self.providers = dict(providers or {})
+        self._clock = clock or time.monotonic
+        self._ticked = {}                # each ticking provider's last look (the clock's), started by `poll`
         self._logs_folder = logs_folder
         self._lock = threading.Lock()
         self._deliver = threading.RLock()
@@ -63,10 +83,11 @@ class StatusService:
         self._failure = None
         self._failure_from = None        # the failure provider whose line the bar's failure is (None: a command line's)
         self._needs = []                 # Entry, newest first
-        self._extra = {"ankiweb": None, "connect": None}
+        self._extra = dict.fromkeys(LINE_PROVIDERS)
         self._provided = {}              # each failure provider's last line (a new one counts once)
         self._refreshing = False
-        self._again = False              # asked for while a refresh ran: it runs once more
+        self._wanted = set()             # asked for while a refresh ran (it runs once more): the providers named,
+        self._wanted_all = False         # ... or everything
         self._subscribers = []
         self._logs_path = self._logs()
         # The events file's path, settled now (on the window's start): a refresh later never works one out again.
@@ -78,6 +99,7 @@ class StatusService:
             except Exception:
                 self._events_path = None
         self._snapshot = self._make()
+        self._heard = _content(self._snapshot)     # what the subscribers last heard (S19: the same again is not news)
         registry.subscribe(self._jobs_changed)
         self._jobs_changed(registry.snapshot())
 
@@ -91,18 +113,29 @@ class StatusService:
             self._subscribers.append(callback)
 
     def poll(self):
-        """A window's timer: a stat of the events file; a refresh on a worker when it changed. -> the snapshot now."""
+        """A window's timer: a stat of the events file, a refresh on a worker when it changed; else the ticking
+        providers whose period is up, asked on a worker (G5). A clock compare, nothing read. With no events file to
+        watch (its path couldn't be worked out), the ticks alone (never a full refresh every poll). -> the
+        snapshot now."""
         reader = self._reader
-        if reader is None or reader.changed():
+        if (reader is None and self._events_path) or (reader is not None and reader.changed()):
             self.refresh_soon()
+        else:
+            due = self._due()
+            if due:
+                self.refresh_soon(*due)
         return self.snapshot()
 
-    def refresh_soon(self):
-        """A refresh on a worker; asked for while one runs (which may have asked its providers already), it runs once
-        more after it — a request is never dropped."""
+    def refresh_soon(self, *names):
+        """A refresh on a worker: of the providers `names`, or (none named) the events file and every provider. Asked
+        for while one runs (which may have asked its providers already), it runs once more after it — a request is
+        never dropped."""
         with self._lock:
+            if names:
+                self._wanted.update(names)
+            else:
+                self._wanted_all = True
             if self._refreshing:
-                self._again = True
                 return
             self._refreshing = True
         threading.Thread(target=self._refresh_while_asked, name="status-refresh", daemon=True).start()
@@ -118,26 +151,53 @@ class StatusService:
 
     def _refresh_while_asked(self):
         while True:
+            with self._lock:
+                names = None if self._wanted_all else tuple(self._wanted)
+                self._wanted_all, self._wanted = False, set()
             try:
-                self.refresh()
+                self.refresh(names)
             except Exception as e:                      # a fault of this refresh never drops the next one asked for
                 print(f"Status: the refresh failed: {e}")
             with self._lock:                            # the loop owns the flag: no second refresh starts between two
-                if not self._again:
+                if not (self._wanted_all or self._wanted):
                     self._refreshing = False
                     return
-                self._again = False
+
+    def _due(self):
+        """The registered ticking providers whose period is up, each counted as looked at now."""
+        now = self._clock()
+        due = []
+        with self._lock:
+            for name, every in TICKS.items():
+                provider = self.providers.get(name)
+                if provider is None:
+                    continue
+                period = getattr(provider, "every", None)
+                if period is not None:
+                    every = period()                    # the provider's own, from its last look (no read)
+                    if every is None:
+                        continue                        # not ticking now (Connect off): asked by name when it moves
+                last = self._ticked.get(name)
+                if last is None or now - last >= every:
+                    self._ticked[name] = now
+                    due.append(name)
+        return due
 
     # --- the worker's side -------------------------------------------------------------------------------------- #
-    def refresh(self):
-        """Read new command-line failures and ask the providers (files and calls: a worker's)."""
+    def refresh(self, names=None):
+        """Read new command-line failures and ask the providers (files and calls: a worker's). `names`: those providers
+        alone (a tick, the host's new line), the others' answers kept; None: the events file and every provider."""
         try:
             from app.cli import events
-            if self._reader is None and self._events_path:
-                self._reader = events.Reader(events_path=self._events_path)
-            newest = self._reader.newest_to_show() if self._reader is not None else None
+            newest = None
+            if names is None:
+                if self._reader is None and self._events_path:
+                    self._reader = events.Reader(events_path=self._events_path)
+                newest = self._reader.newest_to_show() if self._reader is not None else None
             extra = {}
             for name in LINE_PROVIDERS + FAILURE_PROVIDERS:
+                if names is not None and name not in names:
+                    continue
                 provider = self.providers.get(name)
                 try:
                     extra[name] = provider() if provider is not None else None
@@ -149,6 +209,8 @@ class StatusService:
                     self._failure, self._failure_from = events.plain(newest), None
                     self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
                 for name in FAILURE_PROVIDERS:
+                    if name not in extra:
+                        continue                                            # not asked this time
                     line = extra.pop(name)
                     if line and line != self._provided.get(name):
                         self._failure, self._failure_from = line, name      # the newest failure is the bar's
@@ -158,7 +220,7 @@ class StatusService:
                         self._failure, self._failure_from = None, None      # over, or looked at: off the bar
                     self._provided[name] = line
                 del self._needs[NEEDS_YOU_KEPT:]
-                self._extra = extra
+                self._extra.update(extra)
         finally:
             self._publish()
 
@@ -182,20 +244,107 @@ class StatusService:
 
     def _make(self):
         return Snapshot(self._lines, self._failure, tuple(self._needs), self._extra.get("ankiweb"),
-                        self._extra.get("connect"), self._logs_path, time.time())
+                        self._extra.get("connect"), self._logs_path, time.time(), self._extra.get("replan"),
+                        self._extra.get("journey"))
 
     def _publish(self):
-        """A new snapshot, delivered one at a time and only while it is the newest (never an older one last)."""
+        """A new snapshot, delivered one at a time and only while it is the newest (never an older one last), and only
+        when something in it changed since the subscribers last heard one (S19)."""
         with self._lock:
             self._snapshot = self._make()
             snap = self._snapshot
         with self._deliver:
             with self._lock:
-                if snap is not self._snapshot:
+                if snap is not self._snapshot or _content(snap) == self._heard:
                     return
+                self._heard = _content(snap)
                 subscribers = list(self._subscribers)
             for callback in subscribers:
                 try:
                     callback(snap)
                 except Exception as e:
                     print(f"Status: a listener failed: {e}")
+
+
+def _content(snap):
+    """What a snapshot says, its time aside: two that say the same are one to a subscriber."""
+    return snap._replace(taken_at=None)
+
+
+# --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
+def connect_line(language, settings, stamp=None, read=None):
+    """Connect's line for `language` (gap 9; the Tk `status_row.StatusRow`'s look) -> a provider. `settings()`: the
+    settings now (the settings service's `get`). None while Connect is off (`connect_enabled`, today's switch). Each
+    look takes Connect's `stamp` (two stats and a look at its lock) and reads the record only when the stamp moved —
+    keyed on the stamp the read itself took — so an unchanged Connect reads nothing (S19). `stamp` / `read`: Connect's
+    `status.stamp` / `status.read` (a test's stand-ins). A worker's call, one at a time (the service's refresh).
+    `provider.every()`: its tick, 3 s — none once a look found Connect off (the window asks for it by name when the
+    switch lands; any full refresh asks it too)."""
+    last = {"stamp": None, "line": None, "on": True}
+
+    def provider():
+        if not (settings() or {}).get("connect_enabled"):
+            last["stamp"] = None                        # switched on again: its first look reads
+            last["on"] = False
+            return None
+        last["on"] = True
+        from app.connect import status as connect_status
+        now = (stamp or connect_status.stamp)(languages=[language])
+        if now != last["stamp"]:
+            record = (read or connect_status.read)(languages=[language]) or {}
+            last["line"] = ((record.get("languages") or {}).get(language) or {}).get("line")
+            last["stamp"] = record.get("stamp", now)
+        return last["line"]
+    provider.every = lambda: TICKS["connect"] if last["on"] else None
+    return provider
+
+
+def ankiweb_line(settings, now=None):
+    """The AnkiWeb mark (gap 10, G1.5-7) -> a provider: `anki_sync_rule.status` (*AnkiWeb: syncing in 45 s*, *synced
+    18:42*, …), None before any. `settings()`: the settings now; `now()`: the wall clock (a test's stand-in). Asked
+    every second: its state file is read again only when its stamp (mtime, size) moved, else the last read is worked
+    out again for the time now — the countdown ticks, the disk is only stat'd. A worker's call, one at a
+    time (the service's refresh). A sync is counted down only while something will send it (`replan_host.sync_sent`:
+    Connect on, or the re-order host of a language whose gate holds); else the mark says what it would without it —
+    never *syncing in 0 s* for an hour. `provider.every()`: 1 s while it counts down, else Connect's 3 s."""
+    last = {"stamp": object(), "state": None, "due": True}      # never a stamp: the first look reads
+
+    def provider():
+        from app import anki_sync_rule
+        stamp = _stamp(anki_sync_rule._path())
+        if stamp is None or stamp != last["stamp"]:
+            last["state"] = anki_sync_rule.read_state()
+            last["stamp"] = stamp
+        values, state = settings() or {}, last["state"] or {}
+        if state.get("front_pending"):
+            from app.services import replan_host
+            if not replan_host.sync_sent(values):
+                state = dict(state, front_pending=False)        # nothing will send it: no countdown
+        last["due"] = anki_sync_rule.due_at(values, state) is not None
+        return anki_sync_rule.status(values, now=None if now is None else now(), state=state) or None
+    provider.every = lambda: TICKS["ankiweb"] if last["due"] else TICKS["connect"]
+    return provider
+
+
+def _stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None                                     # none yet (or unreadable): read, as before
+    return st.st_mtime_ns, st.st_size
+
+
+def journey_pending(language):
+    """The journey dot (G10) -> a provider: the store's `journey_pending()` for `language` (the sentences owed a
+    Generate), through a handle opened and closed on the worker (never kept: it would hold Repair's rename back); None
+    while no store is ready."""
+    def provider():
+        from app import library_store
+        from app.path_utils import get_data_path, get_user_files_path
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="window", busy_wait=0.0)
+        if store is None:
+            return None
+        with store:
+            return bool(store.journey_pending())
+    return provider

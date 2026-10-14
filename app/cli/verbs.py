@@ -663,21 +663,37 @@ def junban(args):
                 "skipped": "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)"}
     job = numbering_job(junban_settings, lang)
     if args.dry_run:
+        why = deck_aside(junban_settings, lang)
+        if why is not None:
+            return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}
         return _junban_dry_run(lang, junban_settings, reposition, job)[0]
     return _junban_auto(args, lang, junban_settings, auto, job)[0]
 
 
 def numbering_job(junban_settings, lang):
     """E2.1's one numbering rule, for every Junban writer the command line runs (`junban`, `resort`, Connect's step):
-    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline) while the fast re-plan's preview is
-    on for this language (`replan_preview.is_on`: its switch in 順, Junban on and present, the language it was turned
-    on in — E3.1's rule for `auto.reorder`); None — 2.5's dense block — otherwise, so the command line and the window
-    never renumber each other's deck."""
-    from app import replan_preview
-    if not replan_preview.is_on(junban_settings, lang):
-        return None
+    the spaced ladder (`spaced.Job`, automatic: positions only, today's baseline), so the command line and the window
+    never renumber each other's deck. 2.x-dev keeps it only while the fast re-plan's preview is on for this language
+    (`replan_preview.is_on`), 2.5's dense block (None) otherwise; 3.0 (E1.1 04 §5, Haya's G2b): always, whatever the
+    preview's box, D29 or the language say — the dry run and the run alike."""
     from modules.junban import spaced
     return spaced.Job(automatic=True)
+
+
+def deck_aside(junban_settings, lang):
+    """Why an automatic Junban write must stand aside for this language's deck, or None. 2.x-dev keeps no guard here
+    (`junban_deck` written as given); 3.0 (Haya's G3: the same guard on every automatic Junban write — `junban
+    --auto`, `resort`, Connect's step, and their dry runs): one deck chosen in 順 and the (language, deck) pair 順
+    recorded (`replan_preview.recorded_deck`), else the host's own line, naming the deck and its language. `junban_deck`
+    is one key for both languages: without it a Chinese run would re-order, and suspend in, the Japanese deck. No deck
+    chosen (or All decks) is left to the run's own answer (`needs-deck`)."""
+    from app import replan_preview
+    scope = str(junban_settings.get("junban_scope") or "deck").strip().lower()
+    if scope != "deck" or not str(junban_settings.get("junban_deck") or "").strip():
+        return None
+    if replan_preview.recorded_deck(junban_settings, lang) is not None:
+        return None
+    return replan_preview._deck_line(junban_settings, lang)
 
 
 def _numbering(stats, job):
@@ -712,7 +728,7 @@ def _reviewing(report):
 def _junban_auto(args, lang, junban_settings, auto, job=None):
     """The automatic reorder, headless -> (its answer, the run's stats or {})."""
     from app import analyzer, locks, run_args
-    why = auto.blocked(junban_settings, window=False)
+    why = auto.blocked(junban_settings, window=False) or deck_aside(junban_settings, lang)
     if why is not None:
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None, "skipped": why}, {}
     # The 順 window holds `junban-window` while open: looked at (never held, so a window opened meanwhile still takes
@@ -800,7 +816,7 @@ def resort(args):
     job = numbering_job(junban_settings, lang)
     if args.dry_run:
         # What the run would do, no more: its guards and its list check first, then planned as that unattended run
-        why = auto.blocked(junban_settings, window=False)
+        why = auto.blocked(junban_settings, window=False) or deck_aside(junban_settings, lang)
         if why is not None:
             return dict(idle, skipped=why)
         from app import analyzer, run_args

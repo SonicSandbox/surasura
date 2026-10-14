@@ -120,6 +120,10 @@ DEFAULT_SETTINGS = {
     # preview is on (2.x). Never in a signature: what it adds is in KnownWord.json.
     "known_from_anki": ["suspended"],
     "logic": {
+        # D29 (3.0): one switch for every automatic Anki write and sync and the background Generate (the re-order as
+        # you move, AutoJunban's re-order, the journey's Generate); off, only what the user presses runs. Read through
+        # `automation(settings)`. No run and no report reads it: _NON_ANALYSIS_LOGIC, placed "neither".
+        "automation": True,
         "inline_completed_files": False,
         # Kana in ( ) right after kanji in a Japanese book (.txt / .md) — 山田太郎(やまだ・たろう), 窮鼠（きゅうそ）:
         # "hiragana" reads a hiragana group as that kanji's reading and drops it, as Aozora's 《ruby》 is dropped;
@@ -609,6 +613,13 @@ class SettingsWriter:
                     self.on_saved(settings)
                 except Exception:
                     pass
+
+
+def automation(settings) -> bool:
+    """D29's switch (`logic.automation`): on unless the logic block says False — a missing or malformed block reads
+    on. Takes a settings dict or a window's frozen copy of one."""
+    logic = settings.get("logic") if hasattr(settings, "get") else None
+    return not (hasattr(logic, "get") and logic.get("automation") is False)
 
 
 def get_default_settings() -> Dict[str, Any]:

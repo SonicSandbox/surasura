@@ -139,6 +139,10 @@ class SettingsService:
             self._frozen = None
         return self.get()
 
+    def automation(self):
+        """D29's switch (`logic.automation`) in the settings now, pending changes included: True unless it is off."""
+        return settings_manager.automation(self.get())
+
     @staticmethod
     def kind(key, language):
         """`analysis` · `report` · `neither` for a change of `key` in `language` (app/settings_placement.py)."""

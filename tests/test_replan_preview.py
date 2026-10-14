@@ -58,7 +58,10 @@ class SyncCollection(ModCollection):
 # --------------------------------------------------------------------------------------------------------------- #
 
 def _settings_file(root, **over):
+    # 3.0: the host runs when 順 recorded the (language, deck) pair (its deck save does: W3.5 row 7) — the box is
+    # 2.x's and kept on here only so the 2.x tests read the same.
     settings = {"junban_replan_preview": True, "junban_deck": DECK, "junban_scope": "deck",
+                "junban_replan_language": "ja", "junban_replan_deck": DECK,
                 "junban_order": "content", "anki_connect_url": URL, "target_language": "ja"}
     settings.update(over)
     with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
@@ -165,6 +168,122 @@ def test_without_junban_the_preview_is_off_whatever_settings_json_says(monkeypat
     """Junban removed (RD-S10): `is_on` asks for the package without importing it, and says no."""
     monkeypatch.setattr(replan_preview, "junban_present", lambda: False)
     assert not replan_preview.is_on({"junban_replan_preview": True, "enable_junban": True})
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# 3.0's gate (W3.5 row 7; Haya's G2a / G3): D29, Junban, D7, and the recorded (language, deck) pair
+# --------------------------------------------------------------------------------------------------------------- #
+
+ON_3_0 = {"enable_junban": True, "junban_scope": "deck", "junban_deck": DECK,
+          "junban_replan_language": "ja", "junban_replan_deck": DECK}
+
+
+def test_on_3_0_the_host_runs_with_d29_on_junban_on_one_deck_and_the_pair_recorded():
+    """Every condition holds: the host may run, and the deck it may write to is the recorded one."""
+    assert replan_preview.stands_aside(ON_3_0, "ja") is None
+    assert replan_preview.automation_on(ON_3_0, "ja") is True
+    assert replan_preview.recorded_deck(ON_3_0, "ja") == DECK
+
+
+def test_on_3_0_the_previews_box_is_never_read():
+    """2.x-dev keeps `is_on` False with 順's box off (test_the_switch_is_on_only_with_junban_on_and_it_names_why_it_cant_run);
+    3.0: D29 is the one switch, so the box — on, off or never written — changes nothing (W3.4 removes it)."""
+    for box in (True, False, None, "true"):
+        settings = dict(ON_3_0, junban_replan_preview=box)
+        assert replan_preview.automation_on(settings, "ja") is True, box
+
+
+@pytest.mark.parametrize("logic,on", [
+    ({"automation": False}, False),
+    ({}, True),                                       # absent: on (the default)
+    ({"automation": True}, True),
+    (None, True),                                     # a malformed block never turns it off
+])
+def test_d29_off_stands_the_host_aside_and_says_automation_is_off(logic, on):
+    """D29 (`logic.automation`): only False stands the host aside; read through `settings_manager.automation`."""
+    settings = dict(ON_3_0, logic=logic)
+    assert replan_preview.automation_on(settings, "ja") is on
+    assert replan_preview.stands_aside(settings, "ja") == (None if on else replan_preview.AUTOMATION_OFF)
+
+
+def test_junban_off_or_absent_stands_the_host_aside(monkeypatch):
+    """Junban switched off (or the key missing: `enable_junban is True` only), or removed (RD-S10)."""
+    for value in (False, None, "true"):
+        settings = dict(ON_3_0, enable_junban=value)
+        assert replan_preview.stands_aside(settings, "ja") == replan_preview.JUNBAN_OFF, value
+    settings = dict(ON_3_0)
+    del settings["enable_junban"]
+    assert not replan_preview.automation_on(settings, "ja")
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: False)
+    assert replan_preview.stands_aside(ON_3_0, "ja") == replan_preview.JUNBAN_ABSENT
+    assert not replan_preview.automation_on(ON_3_0, "ja")
+
+
+def test_what_d7_rules_out_is_said_in_its_own_words():
+    """All decks, Coverage, Only i+1: `unavailable`'s reasons, returned as they are."""
+    for change, words in (({"junban_scope": "all"}, "one deck"), ({"strategy": "coverage"}, "Coverage"),
+                          ({"only_i_plus_one": True}, "i+1")):
+        settings = dict(ON_3_0, **change)
+        assert replan_preview.stands_aside(settings, "ja") == replan_preview.unavailable(settings)
+        assert words in replan_preview.stands_aside(settings, "ja")
+        assert not replan_preview.automation_on(settings, "ja")
+
+
+def test_with_no_pair_recorded_the_host_stands_aside_and_names_the_deck_and_language():
+    """G3: never `preview_language`'s "" → "ja" default. With nothing recorded, `junban_deck` can be a Chinese deck
+    last picked in a Chinese 順 window, and a Japanese host would re-order it by the Japanese plan."""
+    for missing in ("junban_replan_language", "junban_replan_deck"):
+        settings = dict(ON_3_0)
+        del settings[missing]
+        assert replan_preview.recorded_deck(settings, "ja") is None, missing
+        line = replan_preview.stands_aside(settings, "ja")
+        assert DECK in line and "isn't recorded for Japanese" in line and "順's window in Japanese" in line, line
+    blank = dict(ON_3_0, junban_replan_language=" ", junban_replan_deck="")
+    assert replan_preview.recorded_deck(blank, "ja") is None
+
+
+def test_a_pair_recorded_for_chinese_never_lets_a_japanese_host_reorder_that_deck():
+    """The hazard (2.x review 3 R3/R4): 順's deck was picked in its Chinese window; the Japanese window stands aside and
+    says the deck is Chinese's, while the Chinese window's host may run."""
+    zh = dict(ON_3_0, junban_deck="中文", junban_replan_language="zh", junban_replan_deck="中文")
+    assert replan_preview.recorded_deck(zh, "ja") is None
+    line = replan_preview.stands_aside(zh, "ja")
+    assert "中文" in line and "recorded for Chinese" in line and "順's window in Japanese" in line, line
+    assert replan_preview.stands_aside(zh, "zh") is None
+    assert replan_preview.recorded_deck(zh, "zh") == "中文"
+
+
+def test_a_recorded_deck_that_isnt_juns_deck_now_stands_aside():
+    """順's deck changed since the pair was recorded (a hand edit, another program): the deck written to must be the
+    recorded one, so the host stands aside and names 順's deck now."""
+    settings = dict(ON_3_0, junban_deck="中文")
+    assert replan_preview.recorded_deck(settings, "ja") is None
+    line = replan_preview.stands_aside(settings, "ja")
+    assert "中文" in line and "isn't recorded for Japanese" in line, line
+    assert not replan_preview.automation_on(settings, "ja")
+
+
+def test_the_pair_is_read_with_case_and_spaces_forgiven_and_from_a_frozen_copy():
+    """The recorded language normalised, the decks stripped; the settings service's frozen mapping reads the same."""
+    from types import MappingProxyType
+    settings = dict(ON_3_0, junban_replan_language=" JA ", junban_replan_deck=f" {DECK} ", junban_deck=f"{DECK} ")
+    assert replan_preview.recorded_deck(settings, "ja") == DECK
+    frozen = MappingProxyType(dict(ON_3_0, logic=MappingProxyType({"automation": False})))
+    assert replan_preview.stands_aside(frozen, "ja") == replan_preview.AUTOMATION_OFF
+    assert replan_preview.automation_on(MappingProxyType(dict(ON_3_0)), "ja") is True
+
+
+def test_the_reasons_come_in_order_d29_junban_d7_then_the_deck(monkeypatch):
+    """One line, the first that holds: D29 off → Junban off → D7 → the pair."""
+    everything = dict(ON_3_0, logic={"automation": False}, enable_junban=False, junban_scope="all",
+                      junban_replan_language="zh")
+    assert replan_preview.stands_aside(everything, "ja") == replan_preview.AUTOMATION_OFF
+    everything["logic"] = {}
+    assert replan_preview.stands_aside(everything, "ja") == replan_preview.JUNBAN_OFF
+    everything["enable_junban"] = True
+    assert "one deck" in replan_preview.stands_aside(everything, "ja")
+    everything["junban_scope"] = "deck"
+    assert "recorded for Chinese" in replan_preview.stands_aside(everything, "ja")
 
 
 # --------------------------------------------------------------------------------------------------------------- #
@@ -418,7 +537,8 @@ def test_a_new_file_alone_starts_nothing_but_a_move_with_it_asks_for_a_generate(
         _move_later_to_top(store)
         dash._job("catch-up")
     assert new_files_alone == [], "a new file with no move owed started an automatic Generate"
-    assert replan_preview.NEW_CONTENT in lines
+    # 2.x-dev keeps NEW_CONTENT in lines; 3.0 (G4): the keeper's Generate runs first, and the line says so.
+    assert replan_preview.NEW_CONTENT not in lines and replan_preview.GENERATE_FIRST in lines
     assert asked and asked[0].startswith("generate-first"), asked
     assert lines[-1] == replan_preview.GENERATE_FIRST
 
@@ -579,7 +699,9 @@ def test_the_preview_runs_only_for_the_language_it_was_switched_on_in():
     assert replan_preview.is_on(zh)                          # no language asked: the switch alone
 
 
-def test_another_languages_host_never_touches_the_deck(lib):
+def test_another_languages_host_never_touches_the_deck_and_says_why_once(lib):
+    """2.x-dev keeps `lines == []` here (is_on False: the host silent); 3.0: the host stands aside on the recorded pair
+    (Haya's G3) and its line names the deck and the language it is recorded for — once per reason, never per job."""
     root, store = lib
     _settings_file(root, junban_replan_language="zh")
     fake = _deck(root)
@@ -587,7 +709,97 @@ def test_another_languages_host_never_touches_the_deck(lib):
     with _patched(fake):
         _move_later_to_top(store)
         host._job("move")
-    assert not fake.requests and lines == []
+        host._job("move")
+        host._job("catch-up")
+        host._warm()
+    assert not fake.requests
+    assert lines == [replan_preview.stands_aside(host._settings(), "ja")], lines
+    assert "recorded for Chinese" in lines[0] and DECK in lines[0]
+    assert host._engine is None, "a host standing aside warmed the engine"
+
+
+def test_with_d29_off_the_host_writes_nothing_warms_nothing_and_never_syncs(lib, monkeypatch):
+    """D29 off (Haya's G2a: "every automatic Anki write and sync"): all three gates — `_warm`, `_job`, `_sync_step` —
+    stand aside, on the in-process host with Junban's fake Anki, even with 2.x's box on and a sync armed by 順's run."""
+    root, store = lib
+    _settings_file(root, logic={"automation": False})
+    fake = _deck(root)
+    monkeypatch.setenv(replan_preview.IN_PROCESS_ENV, "1")
+    lines = []
+    host = replan_preview.open_host("ja", say=lines.append)
+    assert isinstance(host, replan_preview.Host)
+    with _patched(fake):
+        host._warm()
+        host._job("catch-up")
+        _move_later_to_top(store)
+        host._job("move")
+        host._job("generate")
+        anki_sync_rule.wrote(True, {"anki_sync_delay_min": 1})     # 順's own run armed S3
+        host._sync_at = time.time() - 1
+        host._sync_step()
+        host._sync_at = time.time() - 1
+        host._sync_step(force=True)                              # the window closing
+    assert not fake.requests, [r["action"] for r in fake.requests]
+    assert fake.syncs == 0 and host._sync_at is None
+    assert host._engine is None
+    versions = store.versions()
+    assert versions["planned_order_version"] < versions["order_version"], "nothing recorded as planned"
+    assert lines == [], "D29 off is the user's own choice: the host says nothing about it"
+
+
+def test_d29_is_read_fresh_every_job_never_when_the_host_opens(lib):
+    """Never cached at `open_host`: switched off between two jobs, the next writes nothing; on again, it writes."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        assert fake.write_requests, "D29 on, the pair recorded: the first job lays the ladder"
+        _settings_file(root, logic={"automation": False})
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert not fake.write_requests
+        _settings_file(root, logic={"automation": True})
+        host._job("move")
+    assert fake.write_requests
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_on_3_0_the_host_reorders_with_2x_box_off(lib):
+    """2.x-dev keeps the box as the switch (a box-off host never writes: test_the_switch_is_on_only_with_junban_on_and_
+    it_names_why_it_cant_run); 3.0: D29 on and the pair recorded is enough — the host never reads
+    `junban_replan_preview`."""
+    root, store = lib
+    _settings_file(root, junban_replan_preview=False)
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert fake.write_requests
+    assert store.versions()["planned_order_version"] == store.versions()["order_version"]
+
+
+def test_a_new_deck_reason_is_said_once_more_and_d29_off_says_nothing(lib):
+    """The stand-aside line once per distinct reason: the pair's deck changed → its own line once; D29 off then → no
+    line; the host running again and standing aside again → the reason is news again."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        _settings_file(root, junban_replan_deck="中文")
+        host._job("catch-up")
+        host._job("catch-up")
+        _settings_file(root, junban_replan_deck="中文", logic={"automation": False})
+        host._job("catch-up")
+        assert len(lines) == 1 and "isn't recorded for Japanese" in lines[0], lines
+        _settings_file(root)
+        host._job("catch-up")                                 # runs: the ladder laid
+        ran = len(lines)
+        _settings_file(root, junban_replan_deck="中文")
+        host._job("catch-up")
+    assert lines[ran:] == [lines[0]], lines
 
 
 def test_tomorrows_cards_are_anki_first_once_the_first_request_lands(lib):
@@ -1034,9 +1246,18 @@ def test_with_nothing_moved_the_line_names_what_the_plan_waits_for(lib):
     versions, order = replan_preview._snapshot(store)
     settings = host._settings()
     assert host._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
-    assert lines[-1] == replan_preview.NEW_CONTENT
+    # 2.x-dev keeps NEW_CONTENT ("press it when you've placed it") and PRESS_GENERATE here; 3.0 (Haya's G4): the
+    # journey keeper's Generate runs first (the store hook → the background Generate → after_generate), so both say so.
+    assert lines[-1] == replan_preview.GENERATE_FIRST_CM
     assert host._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
-    assert lines[-1] == replan_preview.PRESS_GENERATE
+    assert lines[-1] == replan_preview.GENERATE_FIRST_CM
+    asked = []
+    dash, dash_lines = _host(generate=asked.append)
+    dash._load_plan()                                        # the dashboard's host, its plan read (as after a job)
+    for why in ("files", "settings"):
+        assert dash._replan(settings, store, versions, order, ("generate-first", why), "catch-up") is False
+        assert dash_lines[-1] == replan_preview.GENERATE_FIRST
+    assert asked == [], "nothing the plan holds moved: the host asks for no Generate (the keeper's own runs)"
 
 
 def test_a_probe_that_times_out_is_anki_busy_not_closed(lib, monkeypatch):

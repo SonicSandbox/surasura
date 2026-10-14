@@ -2474,7 +2474,8 @@ class MasterDashboardApp:
             saved = None
             if not failed:
                 try:
-                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True)
+                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True,
+                                                       wait=settings_manager.LOCK_WAIT)    # read next: on disk first
                 except Exception as e:
                     failed = f"the switch wasn't saved: {e}"
             if failed:
@@ -2635,7 +2636,8 @@ class MasterDashboardApp:
                 self.gui_queue.put(lambda: self._connect_ask_off_anyway(failed))
                 return
         try:
-            saved = settings_manager.save_keys({"connect_enabled": False}, strict=True)
+            saved = settings_manager.save_keys({"connect_enabled": False}, strict=True,
+                                               wait=settings_manager.LOCK_WAIT)
         except Exception as e:
             self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try again.")
             self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
@@ -3740,8 +3742,14 @@ class MasterDashboardApp:
                 writer.submit(build)            # written on its worker; the journey check follows (_on_settings_saved)
                 self._current_settings = {**cur, **settings}
             else:
-                built = build()
-                settings_manager.save_settings(built)
+                # Built inside the lock, as the writer does: a key another thread saved while this one waited is kept
+                held = settings_manager._settings_lock(settings_manager.LOCK_WAIT)
+                try:
+                    built = build()
+                    settings_manager.save_settings(built)
+                finally:
+                    if held is not None:
+                        held.release()
                 self._current_settings = built
                 # An analysis setting may have changed what Generate would compute — re-check the button.
                 self._schedule_journey_state()

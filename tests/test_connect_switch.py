@@ -11,6 +11,7 @@ subtitles in the library."""
 import json
 import os
 import sys
+import threading
 import time
 import types
 from unittest.mock import patch
@@ -41,6 +42,33 @@ def test_a_dashboard_save_of_a_file_without_the_switch_never_gains_it():
     assert "connect_enabled" not in _dashboard_saved()
     _write({"target_language": "ja", "connect_enabled": True})
     assert _dashboard_saved()["connect_enabled"] is True
+
+
+def test_a_switch_saved_while_the_dashboard_builds_its_save_is_kept():
+    """The full run's flake, its second half: the dashboard's save written at once (under test; no writer) read the
+    file, the switch's save landed, then the dashboard wrote what it had read — the switch gone. Built inside the lock,
+    as the window's writer builds it, the switch's save waits its turn and lands after."""
+    from unittest.mock import MagicMock
+    from app import main, settings_manager
+    from tests.test_settings_signatures import _write
+    _write({"target_language": "ja"})
+    real_carry, real_save = main.carry_as_written, settings_manager.save_settings
+
+    def carry(out, keys):                   # the file read; the switch's worker saves before the dashboard writes
+        result = real_carry(out, keys)
+        worker = threading.Thread(target=settings_manager.save_keys, args=({"connect_enabled": True},))
+        worker.start()
+        worker.join(10)
+        return result
+    loaded = settings_manager.load_settings()
+    app = MagicMock()                       # the window stood in for: its widgets' values are written as null
+    app._current_settings, app.logic_settings, app._iv = loaded, loaded["logic"], lambda var, fallback: fallback
+    with patch.object(main, "carry_as_written", carry), patch.object(
+            settings_manager, "save_settings",
+            lambda s, **k: real_save(json.loads(json.dumps(s, default=lambda _o: None)), **k)):
+        main.MasterDashboardApp.save_settings(app, skip_ui=True)
+    assert settings_manager.flush_keys(timeout=10)
+    assert read_settings()["connect_enabled"] is True
 
 
 def _pump(root, until, timeout=10.0):
@@ -753,6 +781,51 @@ def test_a_tools_entry_that_cant_be_written_changes_nothing_of_the_switch(dashbo
     assert read_settings()["connect_enabled"] is True and app.var_connect_enabled.get() is True
     _switch(app, False)
     assert read_settings()["connect_enabled"] is False and lines[-1] == "Connect is off."
+
+
+def _settings_held():
+    """Another saver holding the `settings` lock (the dashboard's own band save, another window's, another program's)
+    until the test lets go: taken for an owner of its own, so the Tk thread's saves wait on it like anyone's."""
+    from app import locks
+    return locks.take("settings", "another save", owner=object())
+
+
+def test_a_switch_on_meeting_another_save_waits_for_it_so_the_file_says_on_before_anything_reads_it(
+        dashboard, monkeypatch):
+    """The full run's flake, made certain: the dashboard's band save (armed by its load, 250 ms on) held the `settings`
+    lock as the switch saved, so the save was only queued — the switch showed on and hato's back-fill read a file still
+    saying off (its register refuses then). The switch's worker waits for the lock: shown on, the file says on."""
+    from app.connect import hato
+    seen = []
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, wait=10, run=None: (
+        seen.append(read_settings().get("connect_enabled")), _summary(lang))[1])
+    c.library()
+    app, _lines = _settings_open(dashboard, monkeypatch)
+    held = _settings_held()
+    threading.Timer(0.5, held.release).start()
+    try:
+        _switch(app, True)
+        assert read_settings().get("connect_enabled") is True and app.var_connect_enabled.get() is True
+        assert _pump(app.root, lambda: seen) and seen == [True], "the back-fill reads the switch on"
+    finally:
+        held.release()
+
+
+def test_a_switch_on_whose_save_stays_held_goes_back_off_and_queues_nothing(dashboard, monkeypatch):
+    """The lock still held when the wait runs out: the switch goes back off and says why, and no queued write turns
+    Connect on behind it later."""
+    from app import settings_manager
+    monkeypatch.setattr(settings_manager, "LOCK_WAIT", 0.3)
+    c.library()
+    app, lines = _settings_open(dashboard, monkeypatch)
+    held = _settings_held()
+    try:
+        _switch(app, True)
+        assert app.var_connect_enabled.get() is False and "connect_enabled" not in read_settings()
+        assert any(x.startswith("Connect wasn't switched on: the switch wasn't saved") for x in lines), lines
+    finally:
+        held.release()
+    assert settings_manager.flush_keys(timeout=5) and "connect_enabled" not in read_settings()
 
 
 def test_one_shelved_card_is_named_in_the_singular():

@@ -128,3 +128,17 @@ def test_a_copy_the_disk_refuses_fails_the_import_saying_so(tmp_path, roaming, m
     assert result["status"] == "failed" and "access denied" in result["message"]
     note = import_2x.read_import_note()
     assert note["complete"] is False and note["status"] == "failed"
+
+
+def test_a_settings_file_holding_a_list_is_copied_as_is_never_read_as_settings(tmp_path, roaming):
+    # A 2.x settings.json whose JSON is a list (a hand edit that kept only the deck names) is valid JSON but no
+    # settings: it is "copied as is", byte for byte, and the import record says so. Taken as settings it would be
+    # reported as "copied" — the record telling the user their settings came across — and handed to the settings
+    # conversion, which reads it as a dict.
+    old = _old_install(tmp_path, store=False, languages=("ja",), settings=False)
+    raw = '["冒険::映画", "日本語::文"]'.encode("utf-8")
+    _write(os.path.join(old, "settings.json"), raw)
+    result = import_2x.run_import(old, _root())
+    assert result["status"] == "done" and result["settings"] == "copied as is"
+    assert _sha(path_utils.get_settings_path()) == _sha(os.path.join(old, "settings.json"))
+    assert import_2x.read_import_note()["settings"] == "copied as is"

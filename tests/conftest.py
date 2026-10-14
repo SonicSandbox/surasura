@@ -253,6 +253,18 @@ def _no_destroyed_default_root():
     but only when no other Tk was made in between: the core suite in shards met it (test_undo_logic after
     test_ignore_names). Before each test, a destroyed default root is cleared (before, not after: monkeypatch's own
     teardown, which puts it back, can run after any other fixture's)."""
+    _clear_destroyed_default_root()
+
+
+@pytest.fixture(autouse=True, scope="class")
+def _no_destroyed_default_root_for_a_class():
+    """The same before a test class's own set-up: a class that makes its root in `setUpClass` / `setup_class` (the
+    Content Manager's layer-A tests) builds before any test's fixtures run, so a destroyed default root left by the
+    file before it (test_connect_switch_gaps, in shards) failed all 23 of its tests "application has been destroyed"."""
+    _clear_destroyed_default_root()
+
+
+def _clear_destroyed_default_root():
     try:
         import tkinter
     except ImportError:

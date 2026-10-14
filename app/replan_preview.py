@@ -72,6 +72,9 @@ NOT_ANSWERING = "Anki isn't answering just now — trying again shortly"
 BUSY = "順 is busy — re-ordering when it's done"
 UPDATE = "An update is waiting — re-ordering after it"
 UP_TO_DATE = "Anki's order is up to date"
+# A reorder you started (or one of Connect's) didn't finish: only its Restore goes on from there (I3) — in 順 until
+# the new window has its own.
+RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Restore previous order"
 NEW_CONTENT = "New content: Generate puts its words in Anki's order (press it when you've placed it)"
 GENERATE_FIRST = "New content or settings: Generate runs first, then Anki is re-ordered"
 GENERATE_FIRST_CM = "New content or settings: Generate runs first (when you close the Content Manager), then Anki is re-ordered"
@@ -713,6 +716,9 @@ class Host:
         if report.get("reviewing"):
             self._tell(REVIEWING)
             self._retry(kind)
+            return report
+        if report.get("restore_first"):
+            self._tell(RESTORE_FIRST)                # only you can clear it: said, not retried
             return report
         if not report.get("ok"):
             written = len(report.get("written") or [])

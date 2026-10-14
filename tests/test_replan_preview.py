@@ -826,7 +826,7 @@ def _listed_deck(root):
 
 def _kinds(requests, off_ids=()):
     """Each request as what it does: "position" (a multi of due writes), "flag" (a multi of flag writes), "re-check"
-    (a `cardsInfo` of exactly the cards off the list), else its action."""
+    (a `cardsInfo` of exactly the cards off the list, alone or in a `multi`), else its action."""
     out = []
     for request in requests:
         action, params = request["action"], request.get("params") or {}
@@ -838,6 +838,10 @@ def _kinds(requests, off_ids=()):
             out.append("flag")
         elif action == "cardsInfo" and off_ids and set(params.get("cards") or ()) == set(off_ids):
             out.append("re-check")
+        elif action == "multi" and off_ids and [
+                set((entry.get("params") or {}).get("cards") or ()) for entry in params.get("actions") or ()
+                if entry.get("action") == "cardsInfo"] == [set(off_ids)]:
+            out.append("re-check")                  # with `guiReviewActive` in the same request (04 §6)
         else:
             out.append(action)
     return out
@@ -1047,6 +1051,70 @@ def test_on_3_0_restore_after_a_host_run_puts_positions_back_and_unsuspends_only
     assert all("Surasura::later" not in (fake.notes[fake.cards[card_id]["note"]].get("tags") or [])
                for card_id in off_ids)
     assert all(not fake.cards[card_id].get("flags") for card_id in off_ids)
+
+
+def test_on_3_0_after_an_acting_host_run_cut_by_anki_closing_the_next_move_goes_on(lib):
+    """2.x-dev keeps I3 for every run; 3.0: a run nobody started never stops the automation it belongs to. The host's
+    acting run is cut by Anki closing after its first position request: its window snapshot, marked as an automatic
+    run's, stays unfinished. The next move still re-orders and acts — no "did not finish", no Restore asked of you —
+    and its snapshot takes the cut one over, complete."""
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True, junban_chunk_size=5)      # several position requests
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
+    fake.on_write = lambda: setattr(fake, "offline", True)     # Anki closes as the first position request lands
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    cut = undo.load("ja")
+    assert cut["complete"] is False and cut["automatic"] is True, cut
+    assert fake.suspend_calls == []
+
+    fake.offline = False
+    _move_later_to_top(store)
+    start = len(lines)
+    with _patched(fake):
+        host._job("move")
+    assert not [line for line in lines[start:] if "did not finish" in line or "Restore" in line], lines[start:]
+    assert [ids for action, ids in fake.suspend_calls if action == "suspend"] == [sorted(off_ids)]
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["cards"] == {**saved["cards"], **cut["cards"]}, "taken over"
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_a_cut_manual_juns_run_still_refuses_every_automatic_job_and_the_bar_says_where_restore_is(lib):
+    """I3 is kept wherever you started the run: 順's own run, cut by Anki closing, leaves the only way back to how
+    your cards were. Every automatic job then refuses — the host's, AutoJunban's and Connect's — writing nothing, and
+    the host's line tells you where the Restore is (順, until the new window has its own), said once, not retried."""
+    from modules.junban import auto
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root)
+    fake.on_write = lambda: setattr(fake, "offline", True)
+    with _patched(fake):
+        manual = reposition.run(_junban_settings(), refresh=False)
+    assert not manual["ok"] and undo.load("ja")["complete"] is False
+    assert "automatic" not in undo.load("ja"), "順's own run carries no automatic mark"
+    fake.offline = False
+    written = list(fake.writes)
+
+    host, lines = _host()
+    _move_later_to_top(store)
+    with _patched(fake):
+        host._job("move")
+        autojunban = auto.reorder(_junban_settings(), list_current=True)
+        connects = auto.reorder(dict(_junban_settings(), connect_enabled=True), list_current=True, positions_only=True,
+                                run_id=undo.new_run_id("reorder"), job=spaced.Job(automatic=True))
+    assert lines[-1] == replan_preview.RESTORE_FIRST, lines
+    assert "Open 順 and press Restore previous order" in replan_preview.RESTORE_FIRST
+    assert host._retry_at is None, "only you can clear it: said once, not retried"
+    for done in (autojunban, connects):
+        assert done["outcome"] == "refused" and "did not finish" in done["report"]["problems"][0], done
+    assert fake.writes == written and fake.suspend_calls == [] and fake.tag_calls == []
+    assert undo.load("ja")["complete"] is False
 
 
 def test_on_3_0_the_host_reorders_with_2x_box_off(lib):

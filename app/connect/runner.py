@@ -123,6 +123,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded)
     steps.lower_priority()
+    _release_check(loaded)
     own = ledger is None
     ledger = ledger or Ledger()
     summary = {"languages": {lang: _empty() for lang in languages}, "looks": 0}
@@ -171,6 +172,18 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
             steps.settle()                  # a pending sync is sent before Connect exits (P2.3)
         except Exception:
             log.exception("Connect's pending sync wasn't sent")
+
+
+def _release_check(loaded):
+    """P3.2-AMN: Anki Miner's once-a-day release check (`am_release`): its attempt saved here, then GitHub asked on a
+    daemon thread: mining never waits on it (Connect's exit gives it what is left of 5 s + 1 s, `connect_verbs._loop`).
+    Preview off, not due → no thread. -> the thread or None."""
+    try:
+        from app.connect import am_release
+        return am_release.start(loaded)
+    except Exception:
+        log.exception("Anki Miner's release check wasn't started")
+        return None
 
 
 def _said(steps, lang, out):

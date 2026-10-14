@@ -9,6 +9,7 @@ What a wrong answer would cost:
   * a stutter — the window's poll must be a stat, never a read.
 """
 import os
+import threading
 
 from app.cli import contract
 from app.services import jobs as J
@@ -114,3 +115,134 @@ def test_poll_never_reads_the_events_file_on_the_callers_thread():
     status.poll()
     assert h.until(lambda: reads, seconds=10)
     assert caller not in reads
+
+
+def test_the_duties_failures_reach_the_bar_once_and_generates_is_listed_in_needs_you():
+    """W3.5 (E10, IK-7): Generate's failure and the update's are the bar's failure line, each new one once; Generate's
+    is a Needs you entry, the update's is not (the window lists those with their own actions); a provider that goes
+    quiet and fails again with the same words counts again."""
+    lines = {"generate": None, "update": None}
+    status = StatusService(JobRegistry(), providers={"generate": lambda: lines["generate"],
+                                                     "update": lambda: lines["update"]})
+    status.refresh()
+    assert status.snapshot().failure is None and status.snapshot().needs_you == ()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    status.refresh()                                      # asked again: the same failure, not a second entry
+    snap = status.snapshot()
+    assert snap.failure == "Generate stopped (exit code 1)."
+    assert [e.text for e in snap.needs_you] == ["Generate stopped (exit code 1)."]
+    lines["update"] = "The automatic update didn't finish."
+    status.refresh()
+    snap = status.snapshot()
+    assert snap.failure == "The automatic update didn't finish."
+    assert [e.text for e in snap.needs_you] == ["Generate stopped (exit code 1)."]
+    assert snap.ankiweb is None and snap.connect is None   # the failure providers never become marks
+    lines["generate"] = None
+    status.refresh()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    assert len(status.snapshot().needs_you) == 2
+
+
+def test_a_duty_failure_leaves_the_bar_once_it_is_over_and_a_command_lines_stays():
+    """HR-23 (E10: `failed` in the bar while it is): a duty's failure line is the bar's while its provider gives it —
+    Generate failed until it runs cleanly again, the update's failure until it is looked at — then the bar's line goes
+    (still listed in Needs you); a command line's failure stays the bar's until a newer one (W1.3), and a duty going
+    quiet never takes away a command line's line that came after it."""
+    lines = {"generate": None, "update": None}
+    status = StatusService(JobRegistry(), providers={"generate": lambda: lines["generate"],
+                                                     "update": lambda: lines["update"]})
+    status.refresh()
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh()
+    assert status.snapshot().failure == "Generate stopped (exit code 1)."
+    lines["generate"] = None                              # it ran again, cleanly
+    status.refresh()
+    assert status.snapshot().failure is None
+    assert [e.text for e in status.snapshot().needs_you] == ["Generate stopped (exit code 1)."]
+    lines["update"] = "The automatic update didn't finish."
+    status.refresh()
+    assert status.snapshot().failure == "The automatic update didn't finish."
+    _failure()                                            # a command line's failure after it
+    status.refresh()
+    assert status.snapshot().failure.startswith("Command line (status)")
+    lines["update"] = None                                # looked at: it stops counting
+    status.refresh()
+    assert status.snapshot().failure.startswith("Command line (status)")
+
+
+def test_a_refresh_asked_for_while_one_runs_runs_once_more():
+    """The window asks for one refresh per Generate transition; a request that comes while a refresh runs (one started
+    by a command line's event, which already asked the `generate` provider) is not dropped: the refresh runs once more,
+    so Generate's failure reaches the bar and Needs you."""
+    asked, entered, release = [], threading.Event(), threading.Event()
+    lines = {"generate": None}
+
+    def generate():
+        asked.append(lines["generate"])
+        if len(asked) == 1:
+            entered.set()
+            assert release.wait(10)
+        return lines["generate"]
+    status = StatusService(JobRegistry(), providers={"generate": generate})
+    status.refresh_soon()                                 # the first refresh, already past its provider
+    assert entered.wait(5)
+    lines["generate"] = "Generate stopped (exit code 1)."
+    status.refresh_soon()                                 # Generate failed meanwhile
+    release.set()
+    assert h.until(lambda: status.snapshot().failure == "Generate stopped (exit code 1).", seconds=5)
+    assert [e.text for e in status.snapshot().needs_you] == ["Generate stopped (exit code 1)."]
+    assert len(asked) == 2
+
+
+
+def test_a_refresh_asked_for_as_one_ends_never_runs_beside_the_next():
+    """Two refreshes at once read the events file and the providers twice over (a failure could be listed twice): a
+    request that comes as a refresh publishes, while the one asked for during it is still to run, waits its turn."""
+    calls, running, overlap, entered, release = [], [0], [], threading.Event(), threading.Event()
+    lock = threading.Lock()
+
+    def generate():
+        with lock:
+            running[0] += 1
+            overlap.append(running[0])
+            calls.append(1)
+        try:
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(10)
+            else:
+                threading.Event().wait(0.2)        # long enough for a second refresh to meet this one
+        finally:
+            with lock:
+                running[0] -= 1
+        return None
+    status = StatusService(JobRegistry(), providers={"generate": generate})
+    publish, asked_once = status._publish, []
+
+    def publish_and_ask():                          # a window's request landing just as the first refresh publishes
+        if not asked_once:
+            asked_once.append(1)
+            status.refresh_soon()
+        publish()
+    status._publish = publish_and_ask
+    status.refresh_soon()
+    assert entered.wait(5)
+    status.refresh_soon()                           # asked for during the first: it runs once more
+    release.set()
+    assert h.until(lambda: len(calls) >= 2 and running[0] == 0, seconds=5)
+    threading.Event().wait(0.3)
+    assert max(overlap) == 1
+    assert len(calls) == 2                          # the late request is the one still to run, not a third
+
+def test_marking_needs_you_seen_with_nothing_unseen_says_nothing():
+    """S19: opening Needs you again with every entry looked at sends no new snapshot."""
+    status = StatusService(JobRegistry(), providers={"generate": lambda: "Generate stopped (exit code 1)."})
+    status.refresh()
+    heard = []
+    status.subscribe(heard.append)
+    status.mark_seen()
+    assert len(heard) == 1 and all(e.seen for e in heard[0].needs_you)
+    status.mark_seen()
+    assert len(heard) == 1

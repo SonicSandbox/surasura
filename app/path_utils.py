@@ -8,6 +8,9 @@ import shutil
 import threading
 import time
 
+# The online guide: one link both windows open (the Tk dashboard's Help › Tutorial; the 3.0 window's ? › Online guide).
+GUIDE_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/Tutorial.md"
+
 def is_frozen():
     """Check if the application is running in a frozen (packaged) environment."""
     return getattr(sys, 'frozen', False)

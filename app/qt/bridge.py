@@ -22,6 +22,13 @@ class Bridge(QObject):
     jobs_changed = pyqtSignal(object)            # tuple of job views (the registry's snapshot)
     status_changed = pyqtSignal(object)          # the status service's Snapshot
     library_changed = pyqtSignal(object)         # the library reader's View (W2.2)
+    # --- W3.5: the dashboard's duties
+    update_changed = pyqtSignal(object)          # the update service's State
+    generate_changed = pyqtSignal(object)        # the Generate controller's State
+    automation_changed = pyqtSignal(object)      # automatic sync / Generate / 順's State
+    chores_changed = pyqtSignal(object)          # the chores' State (Connect's line, Koe's port)
+    indexed = pyqtSignal(object)                 # the indexer ran (its language)
+    quit_asked = pyqtSignal(object)              # the update hands over: the window closes
 
     def __init__(self, settings=None, registry=None, status=None, library=None, parent=None):
         super().__init__(parent)
@@ -35,6 +42,28 @@ class Bridge(QObject):
         if library is not None:
             library.subscribe(lambda view: self._emit("library_changed", view))
         self.destroyed.connect(self._gone)
+
+    def attach(self, updates=None, controller=None, automation=None, chores=None):
+        """W3.5: the duties' callbacks as signals (each service calls back on its own workers)."""
+        if updates is not None:
+            updates.subscribe(lambda state: self._emit("update_changed", state))
+        if controller is not None:
+            controller.subscribe(lambda state: self._emit("generate_changed", state))
+        if automation is not None:
+            automation.subscribe(lambda state: self._emit("automation_changed", state))
+        if chores is not None:
+            chores.subscribe(lambda state: self._emit("chores_changed", state))
+            chores.on_indexed(lambda language: self._emit("indexed", language))
+
+    def ask_quit(self):
+        """(Any thread.) The update service's `on_quit`: the window closes on its own thread."""
+        self._emit("quit_asked", None)
+
+    def stop(self):
+        """The window closed: no service's callback reaches a slot from here on. The quit runs on the window's thread
+        after its loop ended, where a signal would reach its slot at once (a Generate dropped at quit would start a
+        journey look and a token-store read as the process exits)."""
+        self._alive = False
 
     def _gone(self, *_):
         self._alive = False

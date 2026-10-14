@@ -217,6 +217,29 @@ def test_a_run_past_writing_your_list_finishes_and_the_journey_is_current():
     assert controller.state().state == G.CURRENT
 
 
+def test_a_run_past_its_cancel_point_is_waited_for_when_the_window_closes():
+    """E20 ("Generate is cancelled cleanly (the last good journey kept)"): before *Writing your list* closing the window
+    cancels the run; from there it can't stop, so its job quits with `wait`, as an Anki write — said as soon as the
+    line is read (never held back with the coalesced progress) and before the bar hears the step."""
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    holder, launcher = _scripted(controller, h.root())
+    controller.request("ja", argv=FLAGGED, launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    run = holder["run"]
+    run.feed(_line("Picking sentences"))
+    assert run.job.on_quit == "cancel" and J.waits_at_quit(registry.snapshot()) == ()
+    heard = []
+    registry.subscribe(lambda views: heard.append([(v.on_quit, v.progress) for v in views if v.kind == "generate"]))
+    run.feed(_line("Writing your list"))
+    assert [v.id for v in J.waits_at_quit(registry.snapshot())] == [run.job.id]
+    assert all(on_quit == "wait" for seen in heard for on_quit, progress in seen
+               if progress is not None and progress.step == "Writing your list")
+    run.feed(RESULT)
+    run.ended(0)
+    assert controller.state().state == G.CURRENT
+
+
 def test_a_run_started_without_the_flag_is_never_asked_and_a_cancel_waits_for_its_end():
     """The Tk dashboard's runs (their argv is pinned): no cancel file, no kill; the bar says it finishes."""
     controller = GenerateController(JobRegistry(), settle=0)

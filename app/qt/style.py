@@ -185,6 +185,16 @@ QLabel#toasttext {{ color: {c['ink']}; {font('body')} }}
 QPushButton[size="sm"] {{ min-height: {px(24)}; padding: 0 {px(10)}; border-radius: 7px; {font('button-sm')} }}
 QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 """
+    # --- W3.5: Generate's states, the update sheet's text, Needs you's update cards (looks to re-skin: duties.py)
+    rules += f"""
+QPushButton#generate[look="stale"] {{ border: 1px solid {c['generate-stale-glow']}; background: {c['generate-hover']}; }}
+QPushButton#generate[look="failed"] {{ border: 1px solid {c['warn']}; }}
+QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
+QLabel#sheetheading {{ color: {c['ink']}; {font('sheet-heading')} }}
+QLabel#sheetline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QWidget#needscard {{ background: {c['surface']}; border: 1px solid {c['line']}; border-radius: {theme.RADII['r']}px; }}
+QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
+"""
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

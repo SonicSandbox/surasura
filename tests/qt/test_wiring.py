@@ -123,3 +123,28 @@ def test_the_window_never_names_the_2x_folders():
     with open(os.path.join(ROOT, "app", "qt", "strings.py"), encoding="utf-8") as f:
         source = f.read()
     assert not re.search(r"HighPriority|LowPriority|GoalContent", source)
+
+
+def test_with_the_duties_and_the_update_sheet_open_every_control_is_wired_tipped_and_named(qapp):
+    # W3.5: the header's Generate and journey, the bar's update mark, the sheet open while an update waits (its Stop it
+    # buttons made as the list comes), Needs you's update cards — each wired, tipped and named, an overlay open.
+    from app.services import updates as U
+    from tests.qt.test_jobs_bar import World, _offer
+    w = World(qapp, logs_folder=os.path.join(os.environ["SURASURA_TEST_ROOT"], "logs"))
+    try:
+        found, before = problems(w.win)
+        assert found == []
+        _offer(w)
+        w.updates.push(state=U.WAITING, programs=(U.Program(7, "Content Manager", True),
+                                                  U.Program("sync", "Anki sync", False)))
+        from tests.qt.conftest import wait_until
+        assert wait_until(lambda: w.win.duties.update_state.state == U.WAITING)
+        w.win.open_update_sheet()
+        failure = U.Failure("The automatic update didn't finish.", 0.0, False, "99.0", None)
+        w.updates.push(state=U.WAITING, needs_you=(failure,))
+        assert wait_until(lambda: w.win.duties.sheet.isVisible() and w.win.duties.cards.cards)
+        found, walked = problems(w.win)
+        assert walked > before
+        assert found == []
+    finally:
+        w.close()

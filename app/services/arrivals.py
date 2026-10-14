@@ -167,6 +167,7 @@ class ArrivalsWorker:
         with self._lock:
             self._proc = proc
             stop = self._closed or job.cancelled
+        job.started_process(getattr(proc, "pid", None))     # the update's wait list: this job's row alone
         if stop:
             _end_soon(proc)
         sent, sent_at, done, stuck = set(), {}, threading.Event(), False

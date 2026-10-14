@@ -8,7 +8,13 @@ What it holds, refreshed off the window's thread:
 - *Needs you*'s entries from the same failures (Sonic's 3.0 addition: a failure once looked at no longer counts, but
   stays listed; the logs folder is one more row);
 - the AnkiWeb mark (G1.5-7) and Connect's line, from providers the window registers once their specs exist (the
-  window's spec 04 §4.4 gaps 10 and 9): `None` until then. A provider that fails leaves the rest of the snapshot.
+  window's spec 04 §4.4 gaps 10 and 9): `None` until then. A provider that fails leaves the rest of the snapshot;
+- the failures of the window's own duties (W3.5, E10, IK-7), from providers too — `update` (the update service's
+  newest failure not looked at yet) and `generate` (Generate's, while it reads `failed`): each new one is the bar's
+  failure line, as a command-line one is, and (but the update's: Needs you lists those itself, with their actions)
+  a *Needs you* entry. Their service says when to look again (`refresh_soon`). A duty's line is the bar's while its
+  provider gives it (Generate failed until it runs cleanly again, the update's failure until looked at), then it goes
+  — still listed (HR-23); a command line's stays the bar's until a newer one.
 
 `poll()` is safe on a window's thread (a stat, nothing read); it starts a refresh on a worker when the file changed.
 `subscribe(cb)` hears every new snapshot, on the thread that made it (a worker, or the registry's).
@@ -22,6 +28,9 @@ from app.services import jobs as jobs_module
 Entry = namedtuple("Entry", "text at seen")
 Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at")
 NEEDS_YOU_KEPT = 50
+LINE_PROVIDERS = ("ankiweb", "connect")
+FAILURE_PROVIDERS = ("update", "generate")
+LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their own service, with their actions
 
 
 def job_line(view):
@@ -40,7 +49,8 @@ def job_line(view):
 
 class StatusService:
     """`registry`: the window's job registry; `reader`: a `cli.events.Reader` (made on first use when None);
-    `providers`: {"ankiweb": fn, "connect": fn} -> a line or None, called on the worker."""
+    `providers`: {"ankiweb": fn, "connect": fn, "update": fn, "generate": fn} -> a line or None, called on the worker
+    (`FAILURE_PROVIDERS`' lines are failures). A window may add providers later (`providers` is the dict asked)."""
 
     def __init__(self, registry, reader=None, providers=None, logs_folder=None):
         self.registry = registry
@@ -51,9 +61,12 @@ class StatusService:
         self._deliver = threading.RLock()
         self._lines = ()
         self._failure = None
+        self._failure_from = None        # the failure provider whose line the bar's failure is (None: a command line's)
         self._needs = []                 # Entry, newest first
         self._extra = {"ankiweb": None, "connect": None}
+        self._provided = {}              # each failure provider's last line (a new one counts once)
         self._refreshing = False
+        self._again = False              # asked for while a refresh ran: it runs once more
         self._subscribers = []
         self._logs_path = self._logs()
         # The events file's path, settled now (on the window's start): a refresh later never works one out again.
@@ -85,17 +98,35 @@ class StatusService:
         return self.snapshot()
 
     def refresh_soon(self):
+        """A refresh on a worker; asked for while one runs (which may have asked its providers already), it runs once
+        more after it — a request is never dropped."""
         with self._lock:
             if self._refreshing:
+                self._again = True
                 return
             self._refreshing = True
-        threading.Thread(target=self.refresh, name="status-refresh", daemon=True).start()
+        threading.Thread(target=self._refresh_while_asked, name="status-refresh", daemon=True).start()
 
     def mark_seen(self):
-        """The user looked at *Needs you*: its entries stop counting, and stay listed."""
+        """The user looked at *Needs you*: its entries stop counting, and stay listed. Nothing unseen: no new snapshot
+        (S19)."""
         with self._lock:
+            if all(e.seen for e in self._needs):
+                return
             self._needs = [e._replace(seen=True) for e in self._needs]
         self._publish()
+
+    def _refresh_while_asked(self):
+        while True:
+            try:
+                self.refresh()
+            except Exception as e:                      # a fault of this refresh never drops the next one asked for
+                print(f"Status: the refresh failed: {e}")
+            with self._lock:                            # the loop owns the flag: no second refresh starts between two
+                if not self._again:
+                    self._refreshing = False
+                    return
+                self._again = False
 
     # --- the worker's side -------------------------------------------------------------------------------------- #
     def refresh(self):
@@ -106,7 +137,7 @@ class StatusService:
                 self._reader = events.Reader(events_path=self._events_path)
             newest = self._reader.newest_to_show() if self._reader is not None else None
             extra = {}
-            for name in ("ankiweb", "connect"):
+            for name in LINE_PROVIDERS + FAILURE_PROVIDERS:
                 provider = self.providers.get(name)
                 try:
                     extra[name] = provider() if provider is not None else None
@@ -115,14 +146,21 @@ class StatusService:
                     extra[name] = None
             with self._lock:
                 if newest is not None:
-                    self._failure = events.plain(newest)
+                    self._failure, self._failure_from = events.plain(newest), None
                     self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
-                    del self._needs[NEEDS_YOU_KEPT:]
+                for name in FAILURE_PROVIDERS:
+                    line = extra.pop(name)
+                    if line and line != self._provided.get(name):
+                        self._failure, self._failure_from = line, name      # the newest failure is the bar's
+                        if name not in LISTED_BY_THE_WINDOW:
+                            self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False))
+                    elif not line and self._failure_from == name:
+                        self._failure, self._failure_from = None, None      # over, or looked at: off the bar
+                    self._provided[name] = line
+                del self._needs[NEEDS_YOU_KEPT:]
                 self._extra = extra
         finally:
-            with self._lock:
-                self._refreshing = False
-        self._publish()
+            self._publish()
 
     def _jobs_changed(self, views):
         lines = tuple(job_line(v) for v in views if v.state in (jobs_module.RUNNING, jobs_module.CANCELLING,

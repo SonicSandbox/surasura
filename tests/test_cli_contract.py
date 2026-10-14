@@ -100,6 +100,8 @@ def test_help_is_plain_text_and_exit_0(root):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert proc.returncode == 0
     assert b"--version" in proc.stdout and not proc.stdout.startswith(b"{")
+    # exit 3 is "try later" (busy, Anki, settings.json being saved, an update waiting: EXIT_CODES), never only "busy"
+    assert b"3 try later:" in b" ".join(proc.stdout.split())
 
 
 def test_ok_echoes_japanese_escaped(root, ja_resources_dir):
@@ -149,6 +151,7 @@ def test_every_error_code_has_its_exit_code():
         "failed": 1, "partial": 1, "crashed-child": 1, "bad-data": 1,
         "usage": 2, "not-set-up": 2, "version-skew": 2,
         "busy": 3, "anki-closed": 3, "anki-busy": 3, "anki-miner-busy": 3, "update-staged": 3,
+        "settings-unreadable": 3,       # 09-hato-layer v2 Q5: a half-written settings.json is "try again later"
         "needs-you": 4}
 
 
@@ -257,6 +260,19 @@ def test_an_event_is_never_lost_when_the_file_is_held_open(root):
     assert code == 1
     assert [e.get("code") for e in _events(root)] == [None, "failed"]
     assert [n for n in os.listdir(_logs(root)) if n.endswith(".tmp")] == []
+
+
+def test_an_in_process_call_hands_the_loggers_back_as_it_found_them(caplog):
+    """After an in-process call (a window's or a test's), the command line's loggers pass their records on again, as
+    before the call: only while the call runs do they go to cli.log alone."""
+    # why: `open_log` stops `surasura-cli` passing records on and `close_log` never undid it, so every later record of
+    # its children (surasura.json's refusals, hato's back-fill) reached no one but cli.log: in one test session, a
+    # test reading them through caplog failed whenever an in-process call ran before it
+    import logging
+    assert cli.main(["--version"], out=io.StringIO()) == 0
+    with caplog.at_level(logging.WARNING):
+        logging.getLogger("surasura-cli.tools").warning("surasura.json not written: a check")
+    assert "surasura.json not written: a check" in caplog.text
 
 
 def test_a_stray_print_goes_to_the_log_not_stdout(monkeypatch, tmp_path):

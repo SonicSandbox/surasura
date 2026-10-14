@@ -616,6 +616,10 @@ class MasterDashboardApp:
         # window's thread, and a failure is only logged (write_install_note never raises).
         threading.Thread(target=self._write_install_note, daemon=True).start()
 
+        # surasura.json in the shared tools folder: how hato finds Surasura (09-hato-layer §3). Off the window's
+        # thread; a failure is only printed to the log (a source checkout writes it only with SURASURA_TOOLS_CLI).
+        threading.Thread(target=self._refresh_tools_entry, daemon=True).start()
+
         # Initial UI update for language
         self.update_ui_for_language()
         
@@ -2444,12 +2448,14 @@ class MasterDashboardApp:
         """The switch touched; the rest on a worker, the switch greyed meanwhile. **On:** each language's watermark
         first (✅ G1.1-2: nothing placed while it was off is ever mined; the list it last looked at forgotten, so a
         level raise while off mines nothing), then — only once every language's succeeded — `connect_enabled` saved
-        alone (`save_keys`: a file the switch never touched never gains it), then its controls, the line and a session
-        look; no session look or kick before. A failure: the switch goes back off, nothing saved, the reason in the
-        Processing Log. **Off:** with cards on the shelf, asked once whether to put them back (before the save: the
-        put-back needs the preview on; one not put back: still on, and asked whether to turn it off anyway), then
-        saved off (a running Connect stops at its next boundary), then the controls and the line go and the readers
-        are dropped where the store can. A failed save: back on."""
+        alone (`save_keys`: a file the switch never touched never gains it), then surasura.json refreshed, its
+        controls, the line and a session look, then hato's pairings back-filled on the same worker (P3.2; its summary
+        in the Processing Log, a failure never turning the switch back); no session look or kick before the save. A
+        failure: the switch goes back off, nothing saved, the reason in the Processing Log. **Off:** with cards on the
+        shelf, asked once whether to put them back (before the save: the put-back needs the preview on; one not put
+        back: still on, and asked whether to turn it off anyway), then saved off (a running Connect stops at its next
+        boundary) and surasura.json refreshed, then the controls and the line go and the readers are dropped where the
+        store can. A failed save: back on."""
         on = bool(self.var_connect_enabled.get())
         was_on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
         self._connect_switch_enabled(False)
@@ -2468,16 +2474,18 @@ class MasterDashboardApp:
             saved = None
             if not failed:
                 try:
-                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True)
+                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True,
+                                                       wait=settings_manager.LOCK_WAIT)    # read next: on disk first
                 except Exception as e:
                     failed = f"the switch wasn't saved: {e}"
             if failed:
                 self.log_to_terminal(f"Connect wasn't switched on: {failed}. Nothing changed; try again.")
                 self.gui_queue.put(lambda: self._connect_switch_done(False))
                 return
-            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards. "
-                                 "The back-fill is skipped: hato's pairings come later.")
+            self._refresh_tools_entry(saved)        # surasura.json lists `register` now (hato registers its drops)
+            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards.")
             self.gui_queue.put(lambda: self._connect_switch_done(True, saved=saved))
+            self._connect_backfill(saved)
             return
         shelved = self._connect_shelved() if was_on else {}
         if shelved:                     # asked on the Tk thread; the rest on another worker
@@ -2514,6 +2522,35 @@ class MasterDashboardApp:
         return "; ".join(failed) or None
 
     LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
+
+    def _connect_backfill(self, saved):
+        """On the switch-on's worker, after the save (P3.2 row 3.2.4; 09-hato-layer v2 §4): hato's pairings back-filled
+        for each language Surasura is set up for (`hato.backfill`: none mined because of it). With hato's entry in the
+        shared tools folder (hato.json), the Processing Log says hato is being asked (it may take up to a minute a
+        language), then each language's summary; without one (no hato here), nothing of it is said there — Connect's
+        log has why. A failure is only said: the switch stays on."""
+        try:
+            from app.connect import hato
+            shown = hato.connected()
+        except Exception:
+            shown = False
+        if shown:
+            self.log_to_terminal("Asking hato for its pairings…")
+        for lang in self.CONNECT_LANGUAGES:
+            name = self.LANGUAGE_NAMES.get(lang, lang)
+            try:
+                from app.connect import hato
+                from app.path_utils import get_user_files_path
+                if not os.path.isdir(get_user_files_path(lang)):
+                    continue
+                line = hato.say(hato.backfill(lang, saved))
+            except Exception as e:
+                line = (f"hato's pairings ({name}) weren't read: {e}. Connect stays on; ask again from its window "
+                        "when Needs you lists the files.")
+            if shown:
+                self.log_to_terminal(line)
+            else:
+                print(line)
 
     def _connect_shelved(self):
         """{lang: (cards on the shelf, [its restore points with cards still on it])}, from the status record — only
@@ -2599,11 +2636,13 @@ class MasterDashboardApp:
                 self.gui_queue.put(lambda: self._connect_ask_off_anyway(failed))
                 return
         try:
-            settings_manager.save_keys({"connect_enabled": False}, strict=True)
+            saved = settings_manager.save_keys({"connect_enabled": False}, strict=True,
+                                               wait=settings_manager.LOCK_WAIT)
         except Exception as e:
             self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try again.")
             self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
             return
+        self._refresh_tools_entry(saved)            # surasura.json no longer lists `register`
         try:
             from app import library_store
             if hasattr(library_store.Store, "unregister_reader"):
@@ -2708,6 +2747,16 @@ class MasterDashboardApp:
             path_utils.write_install_note()
         except Exception as e:
             print(f"Install note: {e}")
+
+    @staticmethod
+    def _refresh_tools_entry(settings=None):
+        """surasura.json rewritten when a field differs (`tools_entry.refresh`): at start, and after the Connect
+        switch's save, on and off (`settings`: the file as saved). A failure is only printed to the log."""
+        try:
+            from app import tools_entry
+            tools_entry.refresh(settings)
+        except Exception as e:
+            print(f"Shared tools file (surasura.json): {e}")
 
     def check_updates_thread(self):
         """Background thread: check GitHub, classify, and surface a non-blocking indicator.
@@ -3693,8 +3742,14 @@ class MasterDashboardApp:
                 writer.submit(build)            # written on its worker; the journey check follows (_on_settings_saved)
                 self._current_settings = {**cur, **settings}
             else:
-                built = build()
-                settings_manager.save_settings(built)
+                # Built inside the lock, as the writer does: a key another thread saved while this one waited is kept
+                held = settings_manager._settings_lock(settings_manager.LOCK_WAIT)
+                try:
+                    built = build()
+                    settings_manager.save_settings(built)
+                finally:
+                    if held is not None:
+                        held.release()
                 self._current_settings = built
                 # An analysis setting may have changed what Generate would compute — re-check the button.
                 self._schedule_journey_state()

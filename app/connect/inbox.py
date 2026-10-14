@@ -5,8 +5,9 @@
   Switching Connect on again later moves it to the log's end (`library.switch_on`: the preview's switch, P3.1).
 - **What makes a job:** an item that entered the top 20 (`entered_mine_line`: a person's drag, another program's
   `place`, a hato drop landing at the top of NOW) and is still there, not mined (no receipt) and with no job yet →
-  a `queued` job, recording who placed it (the event's `by`, ✅ G1.3-5). A back-fill registration logs no event
-  (`register --backfill`), so it never makes one.
+  a `queued` job, recording who placed it (the event's `by`, ✅ G1.3-5). A back-fill registration logs no event for
+  the item it registers (`register --backfill`), so it never makes one; items it pushes out of the top 20 log
+  `left_mine_line`.
 - **What drops one:** an item that left the top 20 (or was removed or finished) before its mining started.
 - **Crash-safe:** the jobs are committed first, then the reader advanced. A kill between the two re-reads the same
   events, and a re-read decides from the store as it is now: one open job per item, never two.

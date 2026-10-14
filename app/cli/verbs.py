@@ -47,13 +47,15 @@ def add_wait(parser):
 
 
 def settings():
-    """settings.json as the window reads it, strictly: unreadable -> `bad-data` (a fallback to the defaults would be
-    a silent lie, and a later save would write it back)."""
+    """settings.json as the window reads it, strictly: unreadable -> `settings-unreadable`, exit 3 (a fallback to the
+    defaults would be a silent lie, and a later save would write it back; a half-written file is a moment's state for
+    every caller, so it is "try again later", 09-hato-layer v2 Q5)."""
     from app import settings_manager
     try:
         return settings_manager.load_settings(strict=True)
     except settings_manager.SettingsError as e:
-        raise CliError("bad-data", "Surasura's settings (settings.json) can't be read. Open Surasura, or fix the file.",
+        raise CliError("settings-unreadable",
+                       "Surasura's settings (settings.json) can't be read. Open Surasura, or fix the file.",
                        detail=str(e)) from None
 
 

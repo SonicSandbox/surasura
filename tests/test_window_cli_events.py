@@ -23,10 +23,9 @@ from tests.test_settings_signatures import start_dashboard  # noqa: F401  (fixtu
 
 
 def _fail_a_call():
-    """A real failing call: settings.json cut short -> `bad-data`, exit 1 (an event)."""
-    with open(os.path.join(h.root(), "settings.json"), "w", encoding="utf-8") as f:
-        f.write('{"target_language": "ja",')
-    code, lines = h.run_cli("status")
+    """A real failing call: a subtitle that isn't there -> `bad-data`, exit 1 (an event). (A torn settings.json is
+    `settings-unreadable`, exit 3 since 09-hato-layer v2: "try again later", not shown.)"""
+    code, lines = h.run_cli("list", "--file", os.path.join(h.root(), "ない.srt"), "--order", "encounter")
     assert code == 1 and h.answer(lines)["code"] == "bad-data"
 
 
@@ -37,8 +36,8 @@ def test_a_failing_call_lands_in_the_events_file_and_a_reader_started_before_see
     assert reader.changed()
     _fail_a_call()
     event = reader.newest_to_show()
-    assert event["code"] == "bad-data" and event["verb"] == "status" and event["exit"] == 1
-    assert cli_events.plain(event).startswith("Command line (status): Surasura's settings")
+    assert event["code"] == "bad-data" and event["verb"] == "list" and event["exit"] == 1
+    assert cli_events.plain(event).startswith("Command line (list): There's no subtitle at")
     assert reader.newest_to_show() is None and not reader.changed(), "shown once"
 
 
@@ -50,6 +49,9 @@ def test_busy_and_wrong_commands_are_not_shown():
     h.write_settings()
     with Holder("results", "Generate"):
         assert h.run_cli("list")[0] == 3
+    with open(os.path.join(h.root(), "settings.json"), "w", encoding="utf-8") as f:
+        f.write('{"target_language": "ja",')                # a save caught half-way: the next call reads it whole
+    assert h.run_cli("status")[0] == 3
     assert reader.newest_to_show() is None
 
 
@@ -85,7 +87,7 @@ def test_the_dashboards_bottom_bar_shows_the_failure_without_a_box(start_dashboa
             app.gui_queue.get(timeout=0.1)()
         except Exception:
             pass
-    assert app.status_var.get().startswith("Command line (status): Surasura's settings (settings.json) can't be read")
+    assert app.status_var.get().startswith("Command line (list): There's no subtitle at")
     assert boxes == []
     assert app.root.winfo_exists(), "the window is still up"
 

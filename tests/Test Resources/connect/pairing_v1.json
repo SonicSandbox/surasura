@@ -2,7 +2,7 @@
   "schema": 1,
   "content_key": "v1-0000000000000000000000000000000000000000000000000000000000000000",
   "producer": "hato",
-  "producer_version": "1.0.10",
+  "producer_version": "1.1.0",
   "language": "ja",
   "video_path": "D:\\Shows\\Example Show\\Example Show - 05.mkv",
   "video_size": 1473922811,

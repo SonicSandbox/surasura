@@ -1,9 +1,10 @@
 """The Connect window (P3.1 row 3.1.6; P1.5 05-surface U3, 03-actors §4; RUNBOOK-P2.5 *The status contract*): one
 Toplevel opened from the dashboard's Connect line or its *Needs you* badge, with three tabs and the Logs box.
 
-- ***Needs you*** — each open need's sentence, its one action where its kind has one (*Show me how* · *How to check*;
-  an untimed drop has none in 2.x), its time and *Dismiss*; seen ones dimmed (*SEEN*), still listed. What is shown
-  is marked seen (`status.mark_seen`, on a worker): the badge stops counting it.
+- ***Needs you*** — each open need's sentence, its one action where its kind has one (*Show me how* · *How to check*
+  · *Ask hato again*: hato's pairings back-filled on a worker, `hato.backfill`, P3.2; an untimed drop has none in
+  2.x), its time and *Dismiss*; seen ones dimmed (*SEEN*), still listed. What is shown is marked seen
+  (`status.mark_seen`, on a worker): the badge stops counting it.
 - ***Batches*** — the finished batches with cards, newest first: title, cards made, not made by outcome, and ***Undo
   this batch***: the plan first (`undo.act`, nothing written), then Sonic's question — "Remove all of this episode's
   Anki cards that aren't studied?" with how many go, which stay and why, and the cards you had deleted yourself (they
@@ -32,8 +33,10 @@ RETRY_GAP_S = 1.0               # at least this long between two tries while ano
 QUESTION = "Remove all of this episode's Anki cards that aren't studied?"
 WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your undo goes on once it's done…"
 UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
+SETTINGS_UNREADABLE = "settings.json can't be read just now; try again."
 
-# Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; text is shown under the entry
+# Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; "hato" asks hato for its
+# pairings again (`ask_hato`); text is shown under the entry
 HOW = {
     "known-sync": ("Show me how", "Open Surasura's Anki window (the Anki button on the dashboard), choose the decks "
                                   "that hold the words you know, and press Sync now."),
@@ -46,6 +49,7 @@ HOW = {
     "repick": ("How to check", "logs"),
     "mine-failed": ("How to check", "logs"),
     "error": ("How to check", "logs"),
+    "no-pairing": ("Ask hato again", "hato"),
 }
 OUTCOMES = {"not_found": "not found", "no_definition": "no definition", "duplicate": "already a card",
             "uncertain": "not sure it was made", "media_failed": "media failed", "refused": "refused",
@@ -350,6 +354,10 @@ class ConnectWindow:
                 if text == "logs":
                     command, tip = (lambda n=note: self.open_logs(n)), "Open Connect's logs, where what went wrong " \
                                                                        "is written."
+                elif text == "hato":
+                    command, tip = (lambda n=need: self.ask_hato(n)), "Ask hato for its pairings again: each file " \
+                                                                      "it paired is matched to its video. The files " \
+                                                                      "still without one are named in the logs."
                 else:
                     command, tip = (lambda n=note, t=text: n.config(text=t)), "Show what fixes this."
                 self._button(buttons, ("needs", need["id"]), label, command, tip).pack(side=tk.LEFT)
@@ -398,6 +406,34 @@ class ConnectWindow:
             self.tabs.tab(0, text=self._needs_title())
             if not self._listed:
                 self._empty(self.tab_needs, "Nothing needs you.")
+            self.on_change()
+        self.worker(job, done)
+
+    def ask_hato(self, need):
+        """*Ask hato again* (P3.2): hato's pairings back-filled on a worker (`hato.backfill`), its words in the entry's
+        note. None left without a pairing: the entry is fixed, its button goes."""
+        key = ("needs", need["id"], "Ask hato again")
+        note = self.notes[("needs", need["id"])]
+        self.buttons[key].config(state=tk.DISABLED)
+        note.config(text="Asking hato for its pairings…")
+
+        def job():
+            # read strictly: a settings.json caught half-saved read leniently is the defaults — the preview off
+            settings = self._settings() if self._settings else _load_settings(strict=True)
+            from app.connect import hato
+            return hato.backfill(self.language, settings)
+
+        def done(out):
+            if isinstance(out, Exception):
+                note.config(text=f"hato's pairings weren't read: {_say(out)}")
+                self.buttons[key].config(state=tk.NORMAL)
+                return
+            from app.connect import hato
+            note.config(text=hato.say(out))
+            if out.get("need") == "fixed":
+                self._done(key)             # every file paired: nothing left to ask
+            else:
+                self.buttons[key].config(state=tk.NORMAL)
             self.on_change()
         self.worker(job, done)
 
@@ -568,9 +604,13 @@ class ConnectWindow:
                                                  else f"Saved {len(out)} files to {dest}"))
 
 
-def _load_settings():
+def _load_settings(strict=False):
+    """settings.json as the window reads it; `strict`: one that can't be read just now raises, in plain words."""
     from app import settings_manager
-    return settings_manager.load_settings() or {}
+    try:
+        return settings_manager.load_settings(strict=strict) or {}
+    except settings_manager.SettingsError:
+        raise RuntimeError(SETTINGS_UNREADABLE) from None
 
 
 def show(parent, language, tooltip, record, **kw):

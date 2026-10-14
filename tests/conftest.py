@@ -189,6 +189,16 @@ def _guard_real_local_data():
 
 
 @pytest.fixture(autouse=True)
+def _no_tools_entry_from_the_shell(monkeypatch):
+    """surasura.json (app/tools_entry.py) is written by a source checkout only when SURASURA_TOOLS_CLI is set, into
+    HOUSEKI_TOOLS_DIR when that is set: a developer's shell carrying either would have every window and CLI test write
+    it, possibly into the real shared tools folder. A test that wants them sets them itself; with SURASURA_TEST_ROOT
+    the entry lands in <test root>/houseki-tools, and with neither tools_dir() raises under pytest."""
+    monkeypatch.delenv("SURASURA_TOOLS_CLI", raising=False)
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_token_store(tmp_path_factory, monkeypatch):
     """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to
     the real %APPDATA% store (and tests never couple through a shared DB)."""

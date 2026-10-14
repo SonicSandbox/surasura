@@ -257,7 +257,7 @@ class SettingsError(Exception):
 def load_settings(strict: bool = False) -> Dict[str, Any]:
     """Loads settings from disk and merges with defaults (plus any present optional modules).
     `strict`: a settings.json that exists but can't be read raises `SettingsError` instead of falling back to the
-    defaults (the command line's `bad-data`: a fallback a later save would write back, P0.3 05 §1)."""
+    defaults (the command line's `settings-unreadable`: a fallback a later save would write back, P0.3 05 §1)."""
     settings_path = get_settings_path()
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     # Optional modules contribute their own defaults, but only when importable.
@@ -436,7 +436,7 @@ def _read_file_as_is() -> Dict[str, Any]:
 
 
 def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callable] = None,
-              strict: bool = False) -> Dict[str, Any]:
+              strict: bool = False, wait: float = 0.0) -> Dict[str, Any]:
     """Saves a window's own keys (`changes`) onto settings.json AS IT IS ON DISK, every other key as the file holds it,
     and returns what was saved. Not onto `load_settings()`: that carries every default and every installed module's,
     so a window saving it put back a retired key the dashboard had dropped (a full Generate after each click) and wrote
@@ -448,11 +448,16 @@ def save_keys(changes: Optional[Dict[str, Any]] = None, update: Optional[Callabl
     waits on the caller's thread (every window calls this from its own): the lock free, the file is written now; held
     by another program, the change is queued and written by a worker once it is free — retried, never dropped, in the
     order the windows saved (`flush_keys` waits for them; the process writes them before it ends). `strict`: a write
-    that failed raises OSError (a control that must not show an unsaved value: Connect's, P3.1); a queued one doesn't."""
+    that failed raises OSError (a control that must not show an unsaved value: Connect's, P3.1); a queued one doesn't.
+    `wait` (a worker only, never a window's thread): up to `wait` seconds for the lock; with `strict`, a lock still held
+    then raises OSError and nothing is queued — what follows the save reads the file (Connect's switch: its back-fill,
+    its session look), so it must hold the keys when this returns."""
     entry = (dict(changes or {}), update)
     try:
-        held = locks.take("settings", "saving settings") if not locks.held_here("settings") else None
+        held = locks.take("settings", "saving settings", wait=wait) if not locks.held_here("settings") else None
     except locks.Busy:
+        if strict and wait:
+            raise OSError("your settings file is being saved by another window or program just now")
         with _QUEUED_LOCK:
             _QUEUED.append(entry)
         _queued_writer().submit(_build_queued)

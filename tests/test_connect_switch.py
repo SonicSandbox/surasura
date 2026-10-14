@@ -8,7 +8,10 @@ says "on" with one language's watermark missing; a switch that shows on while th
 strands the shelved cards (nothing can show or put them back once the preview is off); a Settings window that imports
 Connect with the preview off (2.5 byte for byte). The real dashboard on a hidden root, the test's own root; real
 subtitles in the library."""
+import json
+import os
 import sys
+import threading
 import time
 import types
 from unittest.mock import patch
@@ -39,6 +42,33 @@ def test_a_dashboard_save_of_a_file_without_the_switch_never_gains_it():
     assert "connect_enabled" not in _dashboard_saved()
     _write({"target_language": "ja", "connect_enabled": True})
     assert _dashboard_saved()["connect_enabled"] is True
+
+
+def test_a_switch_saved_while_the_dashboard_builds_its_save_is_kept():
+    """The full run's flake, its second half: the dashboard's save written at once (under test; no writer) read the
+    file, the switch's save landed, then the dashboard wrote what it had read — the switch gone. Built inside the lock,
+    as the window's writer builds it, the switch's save waits its turn and lands after."""
+    from unittest.mock import MagicMock
+    from app import main, settings_manager
+    from tests.test_settings_signatures import _write
+    _write({"target_language": "ja"})
+    real_carry, real_save = main.carry_as_written, settings_manager.save_settings
+
+    def carry(out, keys):                   # the file read; the switch's worker saves before the dashboard writes
+        result = real_carry(out, keys)
+        worker = threading.Thread(target=settings_manager.save_keys, args=({"connect_enabled": True},))
+        worker.start()
+        worker.join(10)
+        return result
+    loaded = settings_manager.load_settings()
+    app = MagicMock()                       # the window stood in for: its widgets' values are written as null
+    app._current_settings, app.logic_settings, app._iv = loaded, loaded["logic"], lambda var, fallback: fallback
+    with patch.object(main, "carry_as_written", carry), patch.object(
+            settings_manager, "save_settings",
+            lambda s, **k: real_save(json.loads(json.dumps(s, default=lambda _o: None)), **k)):
+        main.MasterDashboardApp.save_settings(app, skip_ui=True)
+    assert settings_manager.flush_keys(timeout=10)
+    assert read_settings()["connect_enabled"] is True
 
 
 def _pump(root, until, timeout=10.0):
@@ -119,7 +149,7 @@ def test_switching_on_sets_the_watermark_so_an_item_placed_before_is_never_queue
     _switch(app, True)
     with c.store() as s, Ledger() as ledger:
         assert inbox.consume(s, "ja", ledger)["queued"] == [], "nothing placed before the switch-on is mined"
-    assert any("back-fill is skipped" in line for line in lines)
+    assert "Connect is on: what you place in your top 20 from now on gets cards." in lines
     assert _pump(app.root, lambda: app._connect_panel is not None and app._connect_row is not None), \
         "then the controls and the line"
 
@@ -602,6 +632,201 @@ def test_a_cancelled_update_with_connect_off_imports_nothing_of_connect(dashboar
     app._cancel_update(job)
     _pump(app.root, lambda: False, timeout=0.3)
     assert not [m for m in sys.modules if m.startswith("app.connect")]
+
+
+# --- P3.2: hato's back-fill and surasura.json at the switch (RUNBOOK-P3.2 row 3.2.4) ---------------------------------
+
+def _summary(lang, **more):
+    from app.connect import hato
+    out = {"language": lang, "hato": hato.ASKED, "new": 3, "same": 0, "replaced": 0, "refused": [], "unpaired": [],
+           "stopped": None, "skipped": None, "need": None}
+    out.update(more)
+    return out
+
+
+def _hato_connected(tmp_path):
+    """hato's entry in the shared tools folder (hato.json), as hato 1.1.0 writes it while it connects to Surasura."""
+    cli = tmp_path / "hato" / "hato-cli.exe"
+    cli.parent.mkdir(exist_ok=True)
+    cli.write_bytes(b"MZ")
+    c.FakeHato(str(cli.parent), str(cli)).entry()
+
+
+def test_switching_on_back_fills_each_set_up_language_on_the_worker_and_logs_its_summary(dashboard, monkeypatch,
+                                                                                          tmp_path):
+    """09-hato-layer v2 §4: once the switch is saved on, hato's pairings are back-filled on the switch's worker (never
+    the Tk thread), once per language Surasura is set up for, each summary in the Processing Log in place of 2.5's
+    "the back-fill is skipped"."""
+    from app.connect import hato
+    _hato_connected(tmp_path)
+    c.library()
+    os.makedirs(os.path.join(h.root(), "User Files", "zh"), exist_ok=True)       # Chinese set up too
+    calls = []
+
+    def backfill(lang, settings, wait=10, run=None):
+        calls.append((lang, settings.get("connect_enabled"), read_settings()["connect_enabled"], on_main()))
+        return _summary(lang)
+    monkeypatch.setattr(hato, "backfill", backfill)
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: len([x for x in lines if x.startswith("hato's pairings")]) == 2)
+    assert calls == [("ja", True, True, False), ("zh", True, True, False)], "after the save, on the worker, each once"
+    assert "hato's pairings (Japanese): 3 new, 0 already there." in lines
+    assert "hato's pairings (Chinese): 3 new, 0 already there." in lines
+    assert not any("back-fill is skipped" in x for x in lines)
+
+
+def test_a_language_not_set_up_isnt_back_filled(dashboard, monkeypatch, tmp_path):
+    from app.connect import hato
+    _hato_connected(tmp_path)
+    c.library()                                                     # Japanese only
+    calls = []
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, **k: (calls.append(lang), _summary(lang))[1])
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: any(x.startswith("hato's pairings (Japanese)") for x in lines))
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert calls == ["ja"]
+
+
+def test_a_back_fill_that_fails_leaves_the_switch_on_and_says_so(dashboard, monkeypatch, tmp_path):
+    """A back-fill that fails (hato's answer, the ledger, anything) is said in the Processing Log; Connect stays on,
+    saved on, with its controls and line — never turned back off by it."""
+    from app.connect import hato
+    _hato_connected(tmp_path)
+    c.library()
+
+    def backfill(lang, settings, wait=10, run=None):
+        raise OSError("the ledger is locked")
+    monkeypatch.setattr(hato, "backfill", backfill)
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: any(x.startswith("hato's pairings (Japanese) weren't read: the ledger is locked")
+                                       for x in lines))
+    assert read_settings()["connect_enabled"] is True and app.var_connect_enabled.get() is True
+    assert app._current_settings["connect_enabled"] is True and "disabled" not in app.chk_connect.state()
+    assert _pump(app.root, lambda: app._connect_panel is not None and app._connect_row is not None)
+    assert not any(x.startswith("Connect wasn't switched on") for x in lines)
+
+
+def test_switching_on_with_hato_connected_says_it_is_asking_hato_before_the_answers(dashboard, monkeypatch, tmp_path):
+    """hato's entry in the shared tools folder: a line says hato is being asked as the back-fill starts, then each
+    language's summary once it has answered."""
+    # why: hato is given up to a minute a language; with no line until it ends, the Processing Log said nothing of it
+    from app.connect import hato
+    _hato_connected(tmp_path)
+    c.library()
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, **k: _summary(lang))
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: "hato's pairings (Japanese): 3 new, 0 already there." in lines)
+    assert "Asking hato for its pairings…" in lines
+    assert lines.index("Asking hato for its pairings…") < lines.index(
+        "hato's pairings (Japanese): 3 new, 0 already there."), "said as it starts, before the answer"
+
+
+def test_switching_on_without_hato_says_nothing_of_hato_in_the_processing_log(dashboard, monkeypatch):
+    """No hato.json in the shared tools folder (hato isn't installed, or never connected): the switch-on still runs
+    the back-fill, whose reason goes to Connect's own log, and the Processing Log says nothing of hato."""
+    # why: every switch-on for a learner without hato logged "hato couldn't be asked for its pairings" per language
+    from app.connect import hato
+    c.library()
+    calls = []
+
+    def backfill(lang, settings, wait=10, run=None):
+        calls.append(lang)
+        return _summary(lang, hato="hato isn't connected to Surasura (it has no entry in the shared tools folder)")
+    monkeypatch.setattr(hato, "backfill", backfill)
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert _pump(app.root, lambda: calls == ["ja"])
+    _pump(app.root, lambda: False, timeout=0.3)
+    assert [x for x in lines if "hato" in x] == [], lines
+
+
+def test_the_switch_refreshes_surasura_json_on_and_off(dashboard, monkeypatch, tmp_path):
+    """09-hato-layer v2 §3: surasura.json lists `register` only while the preview is on — rewritten after the switch's
+    save, on and off, on the switch's worker, so hato registers its drops from then on (and stops when it's off)."""
+    from app import tools_entry
+    cli = tmp_path / "surasura-cli.exe"
+    cli.write_bytes(b"MZ")
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", str(cli))
+    monkeypatch.setenv("HOUSEKI_TOOLS_DIR", str(tmp_path / "tools"))
+    entry = tmp_path / "tools" / "surasura.json"
+    c.library(connect=False)            # off from the start: the window's own start-up write lists no `register`
+    app, _lines = _settings_open(dashboard, monkeypatch)
+    assert _pump(app.root, lambda: entry.exists()), "written at the window's start"
+    real, refreshes = tools_entry.refresh, []
+    monkeypatch.setattr(tools_entry, "refresh", lambda settings=None: (
+        refreshes.append(((settings or {}).get("connect_enabled"), on_main())), real(settings))[1])
+    assert json.loads(entry.read_text(encoding="utf-8"))["verbs"] == ["status"]
+    _switch(app, True)
+    assert refreshes == [(True, False)] and json.loads(entry.read_text(encoding="utf-8"))["verbs"] == \
+        ["status", "register"]
+    _switch(app, False)
+    assert refreshes == [(True, False), (False, False)]
+    assert json.loads(entry.read_text(encoding="utf-8"))["verbs"] == ["status"]
+
+
+def test_a_tools_entry_that_cant_be_written_changes_nothing_of_the_switch(dashboard, monkeypatch):
+    """A failure is only logged: the switch saves and shows on, then off, as it would."""
+    from app import tools_entry
+
+    def refuses(settings=None):
+        raise OSError("the shared tools folder is read-only")
+    monkeypatch.setattr(tools_entry, "refresh", refuses)
+    c.library()
+    app, lines = _settings_open(dashboard, monkeypatch)
+    _switch(app, True)
+    assert read_settings()["connect_enabled"] is True and app.var_connect_enabled.get() is True
+    _switch(app, False)
+    assert read_settings()["connect_enabled"] is False and lines[-1] == "Connect is off."
+
+
+def _settings_held():
+    """Another saver holding the `settings` lock (the dashboard's own band save, another window's, another program's)
+    until the test lets go: taken for an owner of its own, so the Tk thread's saves wait on it like anyone's."""
+    from app import locks
+    return locks.take("settings", "another save", owner=object())
+
+
+def test_a_switch_on_meeting_another_save_waits_for_it_so_the_file_says_on_before_anything_reads_it(
+        dashboard, monkeypatch):
+    """The full run's flake, made certain: the dashboard's band save (armed by its load, 250 ms on) held the `settings`
+    lock as the switch saved, so the save was only queued — the switch showed on and hato's back-fill read a file still
+    saying off (its register refuses then). The switch's worker waits for the lock: shown on, the file says on."""
+    from app.connect import hato
+    seen = []
+    monkeypatch.setattr(hato, "backfill", lambda lang, settings, wait=10, run=None: (
+        seen.append(read_settings().get("connect_enabled")), _summary(lang))[1])
+    c.library()
+    app, _lines = _settings_open(dashboard, monkeypatch)
+    held = _settings_held()
+    threading.Timer(0.5, held.release).start()
+    try:
+        _switch(app, True)
+        assert read_settings().get("connect_enabled") is True and app.var_connect_enabled.get() is True
+        assert _pump(app.root, lambda: seen) and seen == [True], "the back-fill reads the switch on"
+    finally:
+        held.release()
+
+
+def test_a_switch_on_whose_save_stays_held_goes_back_off_and_queues_nothing(dashboard, monkeypatch):
+    """The lock still held when the wait runs out: the switch goes back off and says why, and no queued write turns
+    Connect on behind it later."""
+    from app import settings_manager
+    monkeypatch.setattr(settings_manager, "LOCK_WAIT", 0.3)
+    c.library()
+    app, lines = _settings_open(dashboard, monkeypatch)
+    held = _settings_held()
+    try:
+        _switch(app, True)
+        assert app.var_connect_enabled.get() is False and "connect_enabled" not in read_settings()
+        assert any(x.startswith("Connect wasn't switched on: the switch wasn't saved") for x in lines), lines
+    finally:
+        held.release()
+    assert settings_manager.flush_keys(timeout=5) and "connect_enabled" not in read_settings()
+
 
 def test_one_shelved_card_is_named_in_the_singular():
     """The drill found "Put the 1 shelved cards back": the switch-off question and its answer count one card as one."""

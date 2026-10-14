@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 
+from app import tools_entry
 from app.cli import connect_verbs, contract, verbs
 
 
@@ -78,7 +79,8 @@ def _parser():
     common.add_argument("--root", default=argparse.SUPPRESS, help=argparse.SUPPRESS)    # tests only (02 §6)
     parser = _Parser(prog="surasura-cli", parents=[common],
                      description="Surasura's command line: one JSON line on stdout, and an exit code "
-                                 "(0 done, 1 failed, 2 wrong command, 3 busy, 4 needs you).")
+                                 "(0 done, 1 failed, 2 wrong command, 3 try later: busy, Anki closed, settings.json "
+                                 "being saved or an update waiting, 4 needs you).")
     parser.add_argument("--version", action="store_true", help="the versions of the app, its engine and its stores")
     shown = [name for name, (_add, _run, public) in VERBS.items() if public]
     verbs = parser.add_subparsers(dest="verb", metavar="<verb>", parser_class=_Parser,
@@ -97,6 +99,16 @@ def _root_option(argv):
     return None
 
 
+def _refresh_tools_entry():
+    """surasura.json in the shared tools folder, at every call (09-hato-layer §3): after --root, before the verb. A
+    failure is only logged: it never changes a verb's answer or exit code. A source checkout without
+    SURASURA_TOOLS_CLI returns before reading anything."""
+    try:
+        tools_entry.refresh()
+    except Exception:
+        contract.log.exception("surasura.json (the shared tools file) wasn't refreshed")
+
+
 def main(argv=None, out=None):
     """Run one call; returns its exit code. `out` replaces stdout (tests)."""
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -112,6 +124,7 @@ def main(argv=None, out=None):
             args, usage = None, e
         contract.open_log()
         sys.stdout = sys.stderr = contract._ToLog()
+        _refresh_tools_entry()
 
         if usage is None and not args.version and not args.verb:
             usage = contract.CliError("usage", "Say what to do: a command, or --version. Run surasura-cli --help.")

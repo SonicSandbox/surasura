@@ -155,7 +155,7 @@ def status(args):
     if loaded.get("connect_enabled"):           # P2.5: Connect's record (read-only; no ledger → Up to date)
         from app.connect import status as connect_status
         record = connect_status.read([lang], words=getattr(args, "words", False))
-        out["connect"] = dict(record["languages"][lang], running=record["running"])
+        out["connect"] = dict(connect_status.language_record(record, lang), running=record["running"])
     return out
 
 

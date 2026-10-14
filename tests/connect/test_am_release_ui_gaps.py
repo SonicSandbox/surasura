@@ -5,6 +5,7 @@ What a wrong answer would cost: the dashboard hands no browser in, so a row or w
 `open_url` opens nothing for the user; a browser failing with `webbrowser.Error` (not an OSError) raises into Tk's
 callback instead of being printed. The browser is always stood in for: nothing opens.
 """
+import gc
 import webbrowser
 
 import pytest
@@ -26,6 +27,8 @@ def root():
         yield r
     finally:
         r.destroy()
+        r = None
+        gc.collect()        # freed here on the Tk thread, never by a collection on a worker (test_connect_window.py's fix)
 
 
 def _row(root, **kw):

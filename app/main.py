@@ -2282,6 +2282,17 @@ class MasterDashboardApp:
         btn_sentence_dictionary.pack(fill=tk.X)
         ToolTip(btn_sentence_dictionary, "A Yomitan dictionary of up to 8 of the best sentences for every word in your library — hover a word in your browser to see them.")
 
+        # FT (D8): the way back from what Surasura did to this language's Anki cards — the flow 順 opens too. Junban
+        # holds it: Junban absent, no button. Shown whether or not reordering is switched on (the way back stays).
+        try:
+            from modules.junban import first_touch_gui
+        except Exception:
+            first_touch_gui = None
+        if first_touch_gui is not None:
+            self.btn_put_back = ttk.Button(group_data, text=first_touch_gui.BUTTON_TEXT, command=self.open_put_back)
+            self.btn_put_back.pack(fill=tk.X, pady=(5, 0))
+            ToolTip(self.btn_put_back, first_touch_gui.BUTTON_TIP)
+
         # Credits: hover to read every data source Surasura ships or is built from, with its licence (DATA_CREDITS).
         self.lbl_credits = ttk.Label(group_data, text="ⓘ Data credits", cursor="question_arrow")
         self.lbl_credits.pack(anchor=tk.W, pady=(8, 0))
@@ -3433,6 +3444,18 @@ class MasterDashboardApp:
         except (ImportError, ModuleNotFoundError):
             return
         open_junban(self)
+
+    def open_put_back(self):
+        """Settings' "Put Anki back the way it was before Surasura…" (FT D8): the module's window and flow."""
+        try:
+            from modules.junban import first_touch_gui
+        except Exception:
+            return
+        try:
+            first_touch_gui.open_put_back(self)
+        except Exception as e:
+            print(f"Error opening Put Anki back: {e}")
+            messagebox.showerror("Error", f"Could not open Put Anki back:\n{e}")
 
     def update_junban_visibility(self):
         """Shows the 順 button only if enabled in settings AND the module is available.

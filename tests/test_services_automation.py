@@ -816,8 +816,11 @@ def test_junbans_own_guards_hold(live, monkeypatch, guard):
                         if action == "guiReviewActive" else None)
     monkeypatch.setattr(reposition, "run", lambda settings, **k: writes.append(settings.get("junban_deck")) or
                         {"ok": True, "written": 3, "message": "3 cards moved"})
+    # W3.5 row 7: 順's own re-order runs only where the re-order host can't (Coverage) and to the deck recorded for
+    # this language (Haya G3) — so both are set, and every guard below is still Junban's own.
     settings = _settings(anki_sync_auto=False, enable_junban=True, junban_auto_reorder=True,
-                         junban_scope="all" if guard == "all-decks" else "deck", junban_deck="Mining")
+                         junban_scope="all" if guard == "all-decks" else "deck", junban_deck="Mining",
+                         strategy="coverage", **RECORDED_JA)
     auto, registry, _c, _l = _make(settings, journey=lambda s, l: guard != "list-stale")
     if guard == "panel-open":
         with h.Holder("junban-window", "順"):
@@ -1029,4 +1032,59 @@ def test_words_a_sync_brought_count_for_its_own_language_after_a_switch(live, mo
     _settle(auto, registry)
     assert auto.generate.pending == "ja"
     assert launches.count() == 0 and not registry.live("generate") and indexes == [1]
+    auto.close()
+
+
+# --- W3.5 row 7: 順's automatic reorder beside the re-order host (D29, Haya G3) ------------------------------------ #
+def _junban_settings_seen(monkeypatch):
+    """The fake `modules.junban.auto` with its real `enabled` rule (a step switched on); `run_quietly` keeps the
+    settings it was given — which steps it would run."""
+    seen = []
+    fake = types.ModuleType("modules.junban.auto")
+    fake.enabled = lambda settings: settings.get("enable_junban") is True and (
+        settings.get("junban_auto_reorder") is True or settings.get("junban_auto_backfill") is True)
+    fake.blocked = lambda settings, window=True: None
+    fake.window_open = lambda: False
+    fake.run_quietly = lambda settings, list_current=None, job=None: seen.append(dict(settings)) or ""
+    monkeypatch.setitem(sys.modules, "modules.junban.auto", fake)
+    return seen
+
+
+RECORDED_JA = {"junban_replan_language": "ja", "junban_replan_deck": "Mining"}
+
+
+@pytest.mark.parametrize("case, extra, reorders", [
+    ("automation off (D29)", dict(RECORDED_JA, logic={"automation": False}, strategy="coverage"), False),
+    ("the host re-orders this language", dict(RECORDED_JA), False),
+    ("the deck is recorded for Chinese", {"junban_replan_language": "zh", "junban_replan_deck": "Mining",
+                                          "strategy": "coverage"}, False),
+    ("no deck recorded", {"strategy": "coverage"}, False),
+    ("the host can't run here (Coverage), the deck recorded", dict(RECORDED_JA, strategy="coverage"), True),
+])
+def test_junbans_automatic_reorder_steps_aside_but_its_backfill_runs(live, monkeypatch, case, extra, reorders):
+    """The map's fix 3 (W3.5 row 7): 2.5's automatic reorder never writes beside the re-order host (one re-order per
+    Generate, as the Tk `_maybe_junban_auto` at main.py ~4171), never with automation off (D29: every automatic Anki
+    write), and never to a deck recorded for another language, or none (Haya G3) — its Backfill runs all the same."""
+    seen = _junban_settings_seen(monkeypatch)
+    settings = _settings(anki_sync_auto=False, enable_junban=True, junban_auto_reorder=True, junban_auto_backfill=True,
+                         junban_scope="deck", junban_deck="Mining", **extra)
+    auto, registry, _c, _l = _make(settings)
+    auto.worker.put(auto.junban.maybe, True)
+    _settle(auto, registry)
+    assert len(seen) == 1, case
+    assert seen[0]["junban_auto_reorder"] is reorders, case
+    assert seen[0]["junban_auto_backfill"] is True, case
+    assert settings.values["junban_auto_reorder"] is True, "the user's own setting was changed"
+    auto.close()
+
+
+def test_with_its_reorder_set_aside_and_no_backfill_junban_starts_no_job(live, monkeypatch):
+    """Nothing left to run (the host re-orders, Backfill off): no `junban` job at all — no empty write in the bar."""
+    seen = _junban_settings_seen(monkeypatch)
+    settings = _settings(anki_sync_auto=False, enable_junban=True, junban_auto_reorder=True, junban_scope="deck",
+                         junban_deck="Mining", **RECORDED_JA)
+    auto, registry, _c, _l = _make(settings)
+    assert auto.junban.maybe(force=True) == "off"
+    _settle(auto, registry)
+    assert seen == [] and not [v for v in registry.snapshot() if v.kind == "junban"]
     auto.close()

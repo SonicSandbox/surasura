@@ -54,6 +54,12 @@ QUIT_FINISH_WAIT = 8.0
 # without it: the store stays the truth, the copy is exported at the next trigger (a temp file left is cleared, §6.7).
 QUIT_CLOSE_WAIT = 6.0
 QUIT_STORE_WAIT = 60.0
+# W3.5 row 7: the re-order host is stopped this long before the duties' close cap, so `stop()` is sent before the quit
+# gives the close up. Its `CLOSE_WAIT_S` (15 s, the Tk wait) is not waited here: a write running at the close is waited
+# for with the window up (E20's `QUIT_FINISH_WAIT`: its `replan` job is a `wait` job), then what is left — a pending
+# settle, the S3 sync — inside `QUIT_CLOSE_WAIT`: ≤ 14 s in all, under `CLOSE_WAIT_S` and the update's 20 s grace; past
+# it the helper finishes a write in hand by itself.
+REPLAN_MARGIN = 0.25
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
@@ -69,13 +75,17 @@ class Services:
     then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
 
     def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
-                 automation=None, chores=None):
+                 automation=None, chores=None, replan=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
         # --- W3.5: the duties
         self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
+        # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
+        # duties (given: a test's); never one of `has_duties`' four
+        self.replan = replan
+        self._replan_wired = False
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -106,21 +116,74 @@ class Services:
             self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
                                                            self.language, index=lambda: chores.index(force=True))
             chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+        if self.replan is None:
+            from app.services import replan_host as replan_module
+            self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
+                                               on_line=self._replan_line)
         self._provide()
         return self
 
     def _provide(self):
-        """The duties' failures to the bar and Needs you (E10, IK-7): `StatusService` providers."""
+        """The duties' failures to the bar and Needs you (E10, IK-7): `StatusService` providers; row 7's wiring."""
+        providers = getattr(self.status, "providers", None)
+        if providers is not None:
+            controller, updates = self.controller, self.updates
+
+            def generate_failure():
+                failure = getattr(controller, "failure", None)
+                if failure is not None:
+                    return failure()        # kept while another run starts at once (A12): never the state's `queued`
+                from app.services import generate as generate_module
+                state = controller.state()
+                return state.message if state.state == generate_module.FAILED else None
+            providers.update(update=updates.failure, generate=generate_failure)
+        self._wire_replan()
+
+    # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
+    def _wire_replan(self):
+        """Once: the bar's row-7 providers, the update's hold (its states) and the library reader's moves."""
+        if self.replan is None or self._replan_wired:
+            return
+        self._replan_wired = True
+        self._provide_lines(self.language)
+        subscribe = getattr(self.updates, "subscribe", None)
+        if subscribe is not None:
+            subscribe(self._update_state)
+        moves = getattr(self.library, "subscribe_moves", None)
+        if moves is not None:
+            moves(self._store_moved)
+
+    def _provide_lines(self, language):
+        """Worker B's providers (W3.5 row 7): the host's line, Connect's line, the AnkiWeb mark, the journey dot —
+        again on a language switch (Connect's line and the dot are the language's)."""
         providers = getattr(self.status, "providers", None)
         if providers is None:
             return
-        controller, updates = self.controller, self.updates
+        replan, get = self.replan, self.settings.get
+        providers.update(replan=replan.line, connect=status_service.connect_line(language, get),
+                         ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language))
 
-        def generate_failure():
-            from app.services import generate as generate_module
-            state = controller.state()
-            return state.message if state.state == generate_module.FAILED else None
-        providers.update(update=updates.failure, generate=generate_failure)
+    def _replan_line(self, _line):
+        """The host said a new line (its worker): the bar asks for it alone."""
+        refresh = getattr(self.status, "refresh_soon", None)
+        if refresh is not None:
+            refresh("replan")
+
+    def _store_moved(self, language, versions):
+        """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;
+        the journey dot asked again."""
+        if self.closing.is_set() or self.replan is None:
+            return
+        self.replan.store_moved(language, versions)
+        refresh = getattr(self.status, "refresh_soon", None)
+        if refresh is not None:
+            refresh("journey")
+
+    def _update_state(self, state):
+        """(The update service's worker.) *Update now* holds the children: the host goes; the hold's end makes it
+        again (the map's G6) — never once the quit began (the quit's own cancel is no hold's end)."""
+        if not self.closing.is_set() and self.replan is not None:
+            self.replan.update_state(state.state)
 
     def _ask_quit(self):
         hook = self.quit_hook
@@ -143,6 +206,8 @@ class Services:
             self.updates.begin()
             self.automation.started()
             self.chores.started()
+            if self.replan is not None:
+                self.replan.start()       # the catch-up once; the journey when the store says it is pending
         return True
 
     def activated(self):
@@ -151,6 +216,8 @@ class Services:
         if self.started and not self.closing.is_set():
             self.automation.activated()
             self.chores.activated()
+            if self.replan is not None:
+                self.replan.activated()
 
     def language_changed(self, language):
         """(A worker.) Another language is open (D31: nothing assumes one)."""
@@ -158,6 +225,9 @@ class Services:
         if self.started and not self.closing.is_set():
             self.automation.language_changed(self.language)
             self.chores.language_changed(self.language)
+        if self.replan is not None and not self.closing.is_set():
+            self.replan.language_changed(self.language)   # the old keeper closed, the old host stopped, new ones
+            self._provide_lines(self.language)
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -206,7 +276,10 @@ class Services:
 
     def _close_duties(self):
         """The duties' close but the store's trigger (`_close_store`): their timers and workers, Koe, Connect's
-        `at_close`."""
+        `at_close` — then the re-order host's finish (row 7: its close was sent at the quit's start; `busy()` waited
+        for until `REPLAN_MARGIN` before this thread's cap, then `stop()`: the helper finishes a write in hand by
+        itself)."""
+        began = time.monotonic()
         for name in ("automation", "chores"):
             duty = getattr(self, name)
             if duty is None or (name == "chores" and not self.started):
@@ -218,6 +291,12 @@ class Services:
                     duty.close()
             except Exception as e:
                 applog.log("shell", f"{name} at quit: {e}")
+        if self.replan is not None:
+            try:
+                if not self.replan.finish(began + QUIT_CLOSE_WAIT - REPLAN_MARGIN):
+                    applog.log("shell", "the re-order in Anki still ran at quit: its helper finishes it")
+            except Exception as e:
+                applog.log("shell", f"the re-order host at quit: {e}")
 
     def _close_store(self):
         try:
@@ -260,6 +339,11 @@ class Services:
                     self.chores.halt()            # its start-up timers taken back: nothing spawned for a closing one
                 except Exception as e:
                     applog.log("shell", f"chores at quit: {e}")
+            if self.replan is not None:
+                try:
+                    self.replan.closing()         # the keeper closed; the host's close sent (a pending settle runs now)
+                except Exception as e:
+                    applog.log("shell", f"the re-order host at quit: {e}")
         return True
 
     @staticmethod

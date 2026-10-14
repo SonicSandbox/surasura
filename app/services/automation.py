@@ -416,8 +416,23 @@ class AutoGenerate:
             self._owner.worker.put(self.maybe)
 
 
+def reorders(settings, language):
+    """Whether 順's automatic step may re-order Anki here (W3.5 row 7): never with automation off (D29: every
+    automatic Anki write), never while the re-order host runs for this language (`replan_preview.automation_on`: one
+    re-order per Generate, the host's — as the Tk `_maybe_junban_auto`), and only to the deck recorded for this language
+    (`recorded_deck`, Haya G3). An answer that can't be had is no. A worker's call."""
+    try:
+        from app import replan_preview, settings_manager
+        return (settings_manager.automation(settings) and not replan_preview.automation_on(settings, language)
+                and replan_preview.recorded_deck(settings, language) is not None)
+    except Exception as e:
+        print(f"順 (automatic): its re-order's switch couldn't be read: {e}")
+        return False
+
+
 class AutoJunban:
-    """順's automatic reorder (`_maybe_junban_auto`; a test option, `junban_auto_reorder` in settings.json)."""
+    """順's automatic reorder (`_maybe_junban_auto`; a test option, `junban_auto_reorder` in settings.json) and its
+    Backfill step. The reorder only where `reorders` says (W3.5 row 7); the Backfill always as switched on."""
 
     def __init__(self, owner):
         self._owner = owner
@@ -435,6 +450,8 @@ class AutoJunban:
             return "absent"             # the module isn't installed: the window runs without it
         settings = _thaw(o.settings_now())
         settings["target_language"] = o.language
+        if not reorders(settings, o.language):
+            settings["junban_auto_reorder"] = False     # the re-order host's, or none: the Backfill step stays
         if not auto.enabled(settings) or auto.blocked(settings, window=False):
             return "off"
         if o.update_staged():

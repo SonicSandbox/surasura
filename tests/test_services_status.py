@@ -11,6 +11,8 @@ What a wrong answer would cost:
 import os
 import threading
 
+import pytest
+
 from app.cli import contract
 from app.services import jobs as J
 from app.services.jobs import JobRegistry
@@ -254,6 +256,9 @@ import time                                                             # noqa: 
 from app.services import status as S                                   # noqa: E402
 
 
+SENT = {"connect_enabled": True}         # something sends a pending AnkiWeb sync (Connect, on): its countdown shows
+
+
 class _Clock:
     """The ticks' clock, moved by the test: a tick's period is waited for by a number, never by a sleep."""
 
@@ -397,7 +402,7 @@ def test_the_ankiweb_countdown_ticks_every_second():
     clock = _Clock()
     start = time.time()
     anki_sync_rule.wrote(True, now=start)
-    provider = S.ankiweb_line(lambda: {}, now=lambda: start + (clock.now - 1000.0))
+    provider = S.ankiweb_line(lambda: SENT, now=lambda: start + (clock.now - 1000.0))
     status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"ankiweb": provider}, clock=clock)
     heard = _heard(status)
     wait = int(anki_sync_rule.delay_s({}))
@@ -537,7 +542,7 @@ def test_the_ankiweb_countdown_reads_its_file_only_when_it_changed_and_still_cou
         return real_read()
     monkeypatch.setattr(anki_sync_rule, "read_state", counted)
     clock = [start]
-    provider = S.ankiweb_line(lambda: {}, now=lambda: clock[0])
+    provider = S.ankiweb_line(lambda: SENT, now=lambda: clock[0])
     wait = int(anki_sync_rule.delay_s({}))
     said = []
     for n in range(3):
@@ -551,3 +556,93 @@ def test_the_ankiweb_countdown_reads_its_file_only_when_it_changed_and_still_cou
     assert len(reads) == 1
     provider()
     assert len(reads) == 1
+
+
+# --- W3.5 row 7: the last review round's fixes ------------------------------------------------------------- #
+def _countdowns(monkeypatch):
+    """`anki_sync_rule.status` counted: one per look the AnkiWeb mark's provider takes."""
+    from app import anki_sync_rule
+    looks, real = [], anki_sync_rule.status
+    monkeypatch.setattr(anki_sync_rule, "status", lambda *a, **k: looks.append(1) or real(*a, **k))
+    return looks
+
+
+def test_the_ankiweb_mark_looks_every_second_only_while_it_counts_down_else_every_3_s(monkeypatch):
+    """S19: with no countdown (*synced 18:42*, or no file at all) a look every second starts a thread and stats a
+    file for nothing. The mark is looked at every second only while its last state had a sync due; else at Connect's
+    3 s cadence — the file's stamp still read at each look, so a new pending sync is seen within 3 s."""
+    from app import anki_sync_rule
+    looks = _countdowns(monkeypatch)
+    clock = _Clock()
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    provider = S.ankiweb_line(lambda: SENT, now=lambda: start + (clock.now - 1000.0))
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"ankiweb": provider}, clock=clock)
+    for _ in range(3):                                   # counting down: a look every second
+        status.poll()
+        _settle(status)
+        clock.now += 1
+    assert len(looks) == 3 and status.snapshot().ankiweb.startswith("AnkiWeb: syncing in ")
+    anki_sync_rule._update(front_pending=False, sync="synced", synced_at=start)     # the sync went
+    status.poll()                                        # the look that sees it
+    _settle(status)
+    assert len(looks) == 4 and status.snapshot().ankiweb.startswith("AnkiWeb: synced ")
+    for _ in range(2):                                   # no countdown: 1 s and 2 s on, no look
+        clock.now += 1
+        status.poll()
+        _settle(status)
+    assert len(looks) == 4, "the mark was looked at every second with nothing counting down"
+    clock.now += 1
+    status.poll()                                        # 3 s on: a look
+    _settle(status)
+    assert len(looks) == 5
+
+
+def test_connects_tick_is_skipped_while_connect_is_off_and_comes_back_when_it_is_asked_for(monkeypatch):
+    """Connect off (`connect_enabled`): its first look learns it, then the 3 s tick asks nothing of it — no settings
+    read, no worker started. Switched on (the window asks `refresh_soon("connect")` when the setting lands), its
+    ticks run again."""
+    clock = _Clock()
+    settings = {"connect_enabled": False}
+    reads = []
+    provider = S.connect_line("ja", lambda: reads.append(1) or settings, stamp=lambda languages=None: ["a"],
+                              read=lambda languages=None: {"stamp": ["a"],
+                                                           "languages": {"ja": {"line": "Connect: 第3話 · up to date"}}})
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"connect": provider}, clock=clock)
+    for _ in range(4):
+        status.poll()
+        _settle(status)
+        clock.now += 3
+    assert len(reads) == 1, "Connect's tick ran while it was off"
+    assert status.snapshot().connect is None
+    settings["connect_enabled"] = True
+    status.refresh_soon("connect")                       # the window, as the switch lands
+    _settle(status)
+    assert status.snapshot().connect == "Connect: 第3話 · up to date"
+    status.poll()
+    _settle(status)
+    assert len(reads) == 3                               # on: ticking again
+
+
+@pytest.mark.parametrize("case, settings, countdown", [
+    ("Connect on", {"connect_enabled": True}, True),
+    ("the re-order host may run (the deck recorded)", {"enable_junban": True, "junban_deck": "Mining",
+                                                       "junban_replan_language": "ja",
+                                                       "junban_replan_deck": "Mining"}, True),
+    ("automation off, Connect off", {"logic": {"automation": False}, "enable_junban": True, "junban_deck": "Mining",
+                                     "junban_replan_language": "ja", "junban_replan_deck": "Mining"}, False),
+    ("no deck recorded, Connect off", {"enable_junban": True, "junban_deck": "Mining"}, False),
+])
+def test_the_ankiweb_mark_counts_down_only_when_something_will_send_the_sync(monkeypatch, case, settings, countdown):
+    """A spaced 順 run arms the AnkiWeb sync; only the re-order host (its gate holding, any language) or Connect
+    sends it. With neither, *syncing in N s* would count down to 0 and stay there for an hour: a promise nobody keeps.
+    Then the mark says what it said before the write (here: nothing)."""
+    pytest.importorskip("modules.junban")
+    from app import anki_sync_rule
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    said = S.ankiweb_line(lambda: settings, now=lambda: start)()
+    if countdown:
+        assert said is not None and said.startswith("AnkiWeb: syncing in "), case
+    else:
+        assert said is None, case

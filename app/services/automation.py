@@ -448,7 +448,7 @@ class AutoJunban:
             auto = importlib.import_module("modules.junban.auto")
         except Exception:
             return "absent"             # the module isn't installed: the window runs without it
-        settings = _thaw(o.settings_now())
+        settings = _thaw(o.settings_fresh())    # the file now: 順's deck pick (its own save) is seen at once
         settings["target_language"] = o.language
         if not reorders(settings, o.language):
             settings["junban_auto_reorder"] = False     # the re-order host's, or none: the Backfill step stays
@@ -595,6 +595,12 @@ class Automation:
     # --- shared inside ------------------------------------------------------------------------------------------ #
     def settings_now(self):
         return self._settings.get()
+
+    def settings_fresh(self):
+        """The settings read from the file now, the window's changes not yet written laid over them (the settings
+        service's `fresh`; a stand-in without it: `get`). A worker's call."""
+        fresh = getattr(self._settings, "fresh", None)
+        return fresh() if fresh is not None else self._settings.get()
 
     def flush(self):
         try:

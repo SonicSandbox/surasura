@@ -323,3 +323,23 @@ def test_the_automation_switch_is_placed_neither_in_both_languages():
     assert settings_placement.PLACED["logic.automation"] == "neither"
     assert SettingsService.kind("logic.automation", "ja") == "neither"
     assert SettingsService.kind("logic.automation", "zh") == "neither"
+
+
+def test_fresh_reads_the_file_now_with_the_windows_unwritten_changes_laid_over_it():
+    """`get()` is the window's copy, read again only after its own writes; another program's save (順's `save_keys`)
+    is unseen there. `fresh()` (a worker's call) reads settings.json now — and still lays the window's changes not yet
+    written over it, so a switch just flipped in the window is never read back the old way."""
+    h.write_settings({"target_language": "ja", "junban_deck": "Mining"})
+    class Held:                                          # the writer holds the window's change: it stays pending
+        on_saved = None
+
+        def submit(self, build):
+            pass
+    service = SettingsService(writer=Held())
+    service.set({"logic.automation": False})
+    h.write_settings(dict(h.read_settings(), junban_replan_language="ja", junban_replan_deck="Mining"))
+    assert not service.get().get("junban_replan_deck")
+    fresh = service.fresh()
+    assert fresh["junban_replan_deck"] == "Mining" and fresh["junban_replan_language"] == "ja"
+    assert fresh["logic"]["automation"] is False and isinstance(fresh, dict)
+    assert not service.get().get("junban_replan_deck"), "fresh() changed the window's copy"

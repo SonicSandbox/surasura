@@ -723,6 +723,34 @@ def test_bar_replan_journey_dot_made_with_the_automation_off_says_press_generate
         w.close()
 
 
+def test_bar_replan_journey_dot_never_reads_the_settings_on_the_window_thread(world, monkeypatch):
+    """Every snapshot (each second while the AnkiWeb mark counts down) repainted the dot after asking the settings
+    service for D29 on the window's thread — its lock, and a deep copy after any change. D29 is read on a worker when a
+    write lands (and at attach); the dot repaints from what that read."""
+    settings = world.services.settings
+    readers, real = [], settings.automation
+    monkeypatch.setattr(settings, "automation", lambda: readers.append(threading.current_thread()) or real())
+    dot = world.d.journey_dot
+    _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: not dot.isHidden())
+    snap = world.status.snapshot()
+    for n in range(5):
+        world.win.show_status(snap._replace(ankiweb=f"AnkiWeb: syncing in {40 - n} s"))
+    settings.set({"logic.automation": False}, now=True)
+    assert wait_until(lambda: dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS)
+    assert readers and threading.main_thread() not in readers, "D29 read on the window's thread"
+
+
+def test_bar_replan_connect_switched_on_asks_the_bar_for_its_line_at_once(world):
+    """Connect's tick is skipped while it is off; switched on in the window, the setting's landing asks the bar for
+    Connect's line straight away."""
+    asked = []
+    world.status.refresh_soon = lambda *names: asked.append(names)
+    world.services.settings.set({"connect_enabled": True}, now=True)
+    assert wait_until(lambda: ("connect",) in asked)
+
+
 @pytest.mark.parametrize("line", ["順 is off — switch it on to re-order Anki as you move",
                                   "順's deck Mining isn't recorded for Japanese — pick it in 順's window in Japanese",
                                   "It needs one deck: choose it in 順's deck list (never All decks)."])

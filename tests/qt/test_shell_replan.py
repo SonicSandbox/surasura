@@ -8,12 +8,13 @@ other duties are the bar suite's stand-ins.
 import threading
 import time
 
-from app.qt import shell
+from app.qt import shell, strings
 from app.services import generate as G
 from app.services import replan_host as R
 from app.services import updates as U
 from app.services.jobs import JobRegistry
 from app.services.status import StatusService
+from tests.qt.conftest import wait_until
 from tests.qt.test_jobs_bar import FakeAutomation, FakeChores, FakeController, FakeUpdates, QuietReader
 
 
@@ -171,9 +172,93 @@ def test_the_generate_failure_provider_reads_the_controllers_kept_failure(qapp):
     log = []
 
     class Failing(FakeController):
-        def failure(self):
+        def failure(self, language=None):
             return "Generate stopped (exit code 1)."
     services, _log = _services(controller=Failing(log))
     assert services.controller.state().state != G.FAILED
     assert services.status.providers["generate"]() == "Generate stopped (exit code 1)."
     services.shutdown(0.05)
+
+
+# --- the last review round -------------------------------------------------------------------------------------- #
+def test_a_focus_asks_the_bar_for_the_journey_dot(qapp):
+    """A focus runs the start's journey look (another program may have placed an item: the dot may be owed now), so
+    the bar asks for the dot too — not only at the next full refresh."""
+    replan = _Replan()
+    services, _log = _services(replan)
+    asked = []
+    services.status.refresh_soon = lambda *names: asked.append(names)
+    services.start()
+    asked.clear()
+    services.activated()
+    assert replan.calls[-1] == "activated" and ("journey",) in asked
+    services.shutdown(0.05)
+
+
+def test_a_language_switch_forgets_the_last_languages_generate_failure(qapp):
+    """A Japanese Generate failed; the window switches to Chinese: the bar's Generate line is asked for the language
+    open (a Japanese failure is never the Chinese bar's), and the switch forgets it."""
+    log = []
+
+    class Failing(FakeController):
+        kept = ("Generate stopped (exit code 1).", "ja")
+
+        def failure(self, language=None):
+            kept = self.kept
+            return kept[0] if kept and language in (None, kept[1]) else None
+
+        def forget_failure(self):
+            self.kept = None
+    services, _log = _services(_Replan(), controller=Failing(log))
+    provider = services.status.providers["generate"]
+    assert provider() == "Generate stopped (exit code 1)."
+    services.language_changed("zh")
+    assert provider() is None and services.controller.kept is None
+    services.shutdown(0.05)
+
+
+class _Settling(_Replan):
+    """A move's settle pending as the window closes: `settling()` says so (no lock); `busy()` is True for `looks`
+    more looks (the settle running at the host's close), then False."""
+
+    def __init__(self, settling=True, looks=3):
+        super().__init__()
+        self._settling, self.looks = settling, looks
+
+    def settling(self):
+        return self._settling
+
+    def busy(self):
+        self.looks -= 1
+        return self.looks >= 0
+
+
+def test_closing_with_a_move_settling_keeps_the_window_with_one_line_until_the_settle_ran(qapp):
+    """A move under 0.8 s old as the user closes: no write job yet, so the window hid at once while the settle and the
+    AnkiWeb sync ran windowless for seconds (the claim held). E20's wait now covers it: the window stays with its one
+    line, the host's close is sent (the settle runs at once), and the window closes itself once the host is idle."""
+    replan = _Settling()
+    services, _log = _services(replan)
+    win = shell.open_window(qapp, services)
+    win.show()
+    try:
+        win.show_status(services.status.snapshot())
+        win.close()
+        assert win.isVisible() and win._quit == "waiting"
+        assert win.bar_line.full() == strings.QUIT_FINISHING
+        assert wait_until(lambda: not win.isVisible())
+        assert "closing" in replan.calls and replan.looks < 0
+    finally:
+        services.shutdown(0.05)
+
+
+def test_closing_with_no_settle_pending_closes_at_once(qapp):
+    replan = _Settling(settling=False)
+    services, _log = _services(replan)
+    win = shell.open_window(qapp, services)
+    win.show()
+    try:
+        win.close()
+        assert not win.isVisible() and win._quit is None
+    finally:
+        services.shutdown(0.05)

@@ -64,28 +64,29 @@ def gate(monkeypatch):
 
 
 class _Host:
-    """A host recording every call; `busy_for(s)` keeps it busy that long; its window's callbacks kept."""
+    """A host recording every call; `busy_for(n)` keeps it busy for its next n looks (`busy()` answering True, each
+    one recorded as "busy" among the calls) — never a wall clock; its window's callbacks kept."""
 
     def __init__(self, language, say, working, generate):
         self.language, self.say, self.working, self.generate = language, say, working, generate
         self.calls = []
-        self.busy_until = 0.0
-        self.stopped_at = None
+        self.looks = 0
 
     def poke(self): self.calls.append("poke")
     def catch_up(self): self.calls.append("catch_up")
     def after_generate(self): self.calls.append("after_generate")
     def close(self): self.calls.append("close")
-
-    def stop(self):
-        self.calls.append("stop")
-        self.stopped_at = time.monotonic()
+    def stop(self): self.calls.append("stop")
 
     def busy(self):
-        return time.monotonic() < self.busy_until
+        if self.looks <= 0:
+            return False
+        self.looks -= 1
+        self.calls.append("busy")
+        return True
 
-    def busy_for(self, seconds):
-        self.busy_until = time.monotonic() + seconds
+    def busy_for(self, looks):
+        self.looks = looks
 
 
 class _Opener:
@@ -173,6 +174,27 @@ class _Arrivals:
         self.reloads += 1
 
 
+@pytest.fixture
+def fired(monkeypatch):
+    """Each keeper's timer that fired and ended (not re-armed): `fired.done(keeper)` — its newest arming has fired, so
+    its `asked` counter is final for now. A test asserts on the counter after that, never after a sleep."""
+    done = []
+    real = J.JourneyKeeper._fire
+
+    def fire(keeper, armed):
+        try:
+            real(keeper, armed)
+        finally:
+            done.append((keeper, armed))
+
+    class Fired:
+        @staticmethod
+        def done(keeper, seconds=10):
+            return h.until(lambda: (keeper, keeper._armed) in done, seconds=seconds)
+    monkeypatch.setattr(J.JourneyKeeper, "_fire", fire)
+    return Fired
+
+
 def _replan(settings=None, opener=None, language="ja", pending=lambda language: False, journey=lambda: True):
     registry = JobRegistry()
     controller = GenerateController(registry, settle=0)
@@ -213,7 +235,7 @@ def _users_generate(controller, launches, signature, plans):
 
 
 # --- D29 off: nothing --------------------------------------------------------------------------------------------- #
-def test_automation_off_makes_no_host_asks_no_generate_and_writes_nothing_but_still_rebaselines(gate, plans):
+def test_automation_off_makes_no_host_asks_no_generate_and_writes_nothing_but_still_rebaselines(gate, plans, fired):
     """D29 off (Haya G2c): no host is opened by the start, focus, a store change or a Generate's end; the keeper asks
     for no Generate; nothing is recorded as writing — and the keeper still re-baselines New arrivals after the user's
     own Generate."""
@@ -224,8 +246,8 @@ def test_automation_off_makes_no_host_asks_no_generate_and_writes_nothing_but_st
     replan.activated()
     replan.store_moved("ja", {"order_version": 9})
     _quiet(replan)
-    time.sleep(0.8)                                       # past the keeper's first look (0.5 s)
-    assert launches.count() == 0, "a background Generate with automation off"
+    assert fired.done(replan.keeper)                      # the keeper's look after the moves ran to its end
+    assert replan.keeper.asked == 0 and launches.count() == 0, "a background Generate with automation off"
     _users_generate(controller, launches, "run-1", plans)
     assert h.until(lambda: arrivals.reloads == 1, seconds=5)
     _quiet(replan)
@@ -255,7 +277,8 @@ def test_the_switch_is_read_every_time_and_turning_it_off_lets_the_host_go(gate)
 
 # --- the start --------------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("pending", [True, False])
-def test_the_start_catches_up_once_and_asks_for_the_journey_only_when_the_store_says_it_is_pending(gate, pending):
+def test_the_start_catches_up_once_and_asks_for_the_journey_only_when_the_store_says_it_is_pending(gate, pending,
+                                                                                                    fired):
     """The map's fix 5: `catch_up` always (the host checks the versions and new cards itself), and `changed("start")`
     only when the store's `journey_pending()` — so one start is one catch-up and at most one background Generate."""
     looked = []
@@ -267,7 +290,8 @@ def test_the_start_catches_up_once_and_asks_for_the_journey_only_when_the_store_
     assert len(opener.hosts) == 1 and opener.hosts[0].calls == ["catch_up"]
     if pending:
         assert h.until(lambda: launches.count() == 1, seconds=5)
-    time.sleep(0.8)
+        assert fired.done(replan.keeper)
+    assert replan.keeper.asked == (1 if pending else 0)
     assert launches.count() == (1 if pending else 0)
     assert all(run.quiet for run in launches.runs)
     replan.finish(time.monotonic() + 1)
@@ -302,7 +326,7 @@ def test_one_store_change_through_the_reader_is_one_poke_and_one_keeper_change(g
 
 
 # --- the host asks for a Generate ------------------------------------------------------------------------------------ #
-def test_the_hosts_generate_ask_is_one_background_request(gate):
+def test_the_hosts_generate_ask_is_one_background_request(gate, fired):
     """The map's fix 1: one automatic Generate path — the host's ask goes to the keeper (`changed("replan: …")`), which
     settles and asks the controller once, quietly."""
     replan, _registry, _c, launches, opener = _replan()
@@ -312,8 +336,8 @@ def test_the_hosts_generate_ask_is_one_background_request(gate):
     host.generate("generate-first: files")
     host.generate("generate-first: files")
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    time.sleep(0.8)
-    assert launches.count() == 1 and launches.runs[0].quiet
+    assert fired.done(replan.keeper)
+    assert replan.keeper.asked == 1 and launches.count() == 1 and launches.runs[0].quiet
     # G7 (worker B's stand-in): the keeper's run reads *Journey: updating sentences…* in the bar
     from app.services import generate as G
     assert [v.label for v in _registry.snapshot() if v.kind == "generate"] == [G.JOURNEY_LABEL]
@@ -529,7 +553,7 @@ def test_a_switch_to_a_language_with_its_deck_recorded_opens_that_languages_host
 
 
 @pytest.mark.parametrize("automation", [True, False])
-def test_a_language_switch_runs_the_starts_journey_check_whatever_the_new_hosts_gate_says(gate, automation):
+def test_a_language_switch_runs_the_starts_journey_check_whatever_the_new_hosts_gate_says(gate, automation, fired):
     """The new language's store owes its sentences (`journey_pending`) and no deck is recorded for it (its host
     stands aside): the switch still looks, on the worker, as the start does — `changed("start")`; D29 alone decides
     whether that is a Generate (the keeper's `enabled`)."""
@@ -544,7 +568,8 @@ def test_a_language_switch_runs_the_starts_journey_check_whatever_the_new_hosts_
     if automation:
         assert h.until(lambda: launches.count() == 1, seconds=5)
         assert launches.runs[0].language == "zh" and launches.runs[0].quiet
-    time.sleep(0.8)                                      # past the keeper's first look
+    assert fired.done(replan.keeper)                     # the new keeper's look ran to its end
+    assert replan.keeper.asked == (1 if automation else 0)
     assert launches.count() == (1 if automation else 0)
     replan.finish(time.monotonic() + 1)
 
@@ -639,21 +664,20 @@ def test_a_switch_while_the_update_holds_makes_the_new_host_held(gate):
 # --- quit ---------------------------------------------------------------------------------------------------------- #
 def test_quit_mid_run_closes_waits_while_busy_then_stops(gate):
     """The quit (the map's §4): the keeper closed, the host's `close()` (a pending settle and the S3 sync run at once),
-    `busy()` waited for, then `stop()` — after the write ended, well inside the deadline."""
+    `busy()` waited for, then `stop()` — only once the host said it was no longer busy, inside the deadline."""
     replan, _registry, _c, launches, opener = _replan()
     replan.activated()
     _quiet(replan)
     host = opener.hosts[0]
-    host.busy_for(0.4)
-    t0 = time.monotonic()
-    assert replan.finish(t0 + 3.0) is True
-    assert host.calls == ["catch_up", "close", "stop"]
-    assert host.stopped_at - t0 >= 0.35 and host.stopped_at - t0 < 1.5
-    assert replan.keeper._closed
-    replan.store_moved("ja", {"order_version": 9})        # after the quit: nothing
+    host.busy_for(3)
+    assert replan.finish(time.monotonic() + 30) is True
+    assert host.calls == ["catch_up", "close", "busy", "busy", "busy", "stop"]
+    assert replan.keeper._closed and replan.host.worker._closed
+    replan.store_moved("ja", {"order_version": 9})        # after the quit: nothing — refused where it is asked
     replan.activated()
-    time.sleep(0.6)
-    assert host.calls == ["catch_up", "close", "stop"] and launches.count() == 0
+    assert replan.host.worker.idle(5)
+    assert host.calls[-1] == "stop" and host.calls.count("catch_up") == 1
+    assert replan.keeper.reasons == [] and replan.keeper._timer is None and launches.count() == 0
 
 
 def test_quit_never_waits_past_its_deadline_for_a_host_that_stays_busy(gate):
@@ -661,10 +685,9 @@ def test_quit_never_waits_past_its_deadline_for_a_host_that_stays_busy(gate):
     replan.activated()
     _quiet(replan)
     host = opener.hosts[0]
-    host.busy_for(60)
-    t0 = time.monotonic()
-    assert replan.finish(t0 + 0.3) is False
-    assert host.calls[-1] == "stop" and time.monotonic() - t0 < 1.0
+    host.busy_for(10 ** 9)                                # busy for good: only the deadline ends the wait
+    assert replan.finish(time.monotonic() + 0.3) is False
+    assert host.calls[-1] == "stop" and host.looks > 0
 
 
 def test_closing_twice_sends_the_hosts_close_once(gate):
@@ -680,17 +703,135 @@ def test_closing_twice_sends_the_hosts_close_once(gate):
 
 def test_the_calls_return_at_once_and_read_nothing_on_the_callers_thread(gate, monkeypatch):
     """The GUI thread may call `poke` / `catch_up` / `after_generate` / `changed`: each queues, never reads the
-    settings or the store on the caller's thread."""
+    settings or the store on the caller's thread. Proved with the host's worker held: every call returns while it
+    can't run anything (a call that waited for it would never return), and nothing was read meanwhile."""
     replan, _registry, _c, _l, _opener = _replan()
     me = threading.get_ident()
     readers = []
     real = replan.host._settings
     replan.host._settings = lambda: readers.append(threading.get_ident()) or real()
-    t0 = time.perf_counter()
+    held, holding = threading.Event(), threading.Event()
+    replan.host.worker.put(lambda: holding.set() or held.wait(30))
+    assert holding.wait(5)
     for _ in range(20):
         replan.activated()
         replan.store_moved("ja", {"order_version": 2})
-    assert time.perf_counter() - t0 < 0.05
+    assert readers == [], "the settings were read on the caller's thread"
+    held.set()
     _quiet(replan)
     assert readers and me not in readers
+    replan.finish(time.monotonic() + 1)
+
+
+# --- the last review round ------------------------------------------------------------------------------------------- #
+def test_a_deck_picked_in_juns_own_window_reaches_the_gate_at_the_next_catch_up(gate):
+    """順 records the (language, deck) pair with its own `save_keys` — straight to settings.json, behind the window's
+    settings service, whose copy is read again only after the window's own writes. The gate reads the file on the
+    host's worker every time, so the next catch-up (a focus) opens the host and the bar's stand-aside line goes."""
+    from app.services import settings as settings_service
+    h.write_settings({"target_language": "ja", "journey_settle_s": 0, "enable_junban": True, "junban_deck": "Mining"})
+    service = settings_service.SettingsService()
+    heard = []
+    registry = JobRegistry()
+    opener = _Opener()
+    replan = R.Replan(registry, GenerateController(registry, settle=0), service, "ja", opener=opener,
+                      on_line=heard.append, pending=lambda language: False,
+                      keeper_options={"launcher": _Launches(), "pending": lambda: False})
+    replan.activated()
+    _quiet(replan)
+    deck = "順's deck Mining isn't recorded for Japanese — pick it in 順's window in Japanese"
+    assert replan.line() == deck and opener.hosts == []
+    h.write_settings(dict(h.read_settings(), junban_replan_language="ja", junban_replan_deck="Mining"))  # 順's save
+    assert not service.get().get("junban_replan_deck")   # the window's own copy hasn't seen it
+    replan.activated()
+    _quiet(replan)
+    assert len(opener.hosts) == 1 and opener.hosts[0].calls == ["catch_up"]
+    assert replan.line() is None and heard == [deck, None]
+    replan.finish(time.monotonic() + 1)
+
+
+@pytest.mark.parametrize("case, values, dropped", [
+    ("automation off", {"logic": {"automation": False}}, True),
+    ("no deck recorded", {"junban_replan_language": "", "junban_replan_deck": ""}, True),
+    ("automation off, Connect on (Connect sends it)", {"logic": {"automation": False}, "connect_enabled": True}, False),
+    ("the deck recorded for Chinese (a Chinese host may send it)", {"junban_replan_language": "zh"}, False),
+])
+def test_with_no_host_to_send_it_and_connect_off_a_pending_anki_sync_is_let_go(gate, case, values, dropped):
+    """A spaced 順 run arms the AnkiWeb sync (S3); only the re-order host — its gate holding, in any language — or
+    Connect sends it. With neither, the Tk dashboard's rule (`_replan_start`): the pending sync is let go (Anki's own
+    sync on close carries the order), on the host's worker, as the host stands aside."""
+    from app import anki_sync_rule
+    anki_sync_rule.wrote(True)
+    assert anki_sync_rule.read_state().get("front_pending") is True
+    replan, _registry, _c, _l, opener = _replan(_Settings(**values))
+    replan.activated()
+    _quiet(replan)
+    assert opener.hosts == []
+    assert (anki_sync_rule.read_state().get("front_pending") is not True) is dropped, case
+    replan.finish(time.monotonic() + 1)
+
+
+def test_the_hosts_generate_ask_never_withdraws_a_keeper_run_in_flight(gate, fired):
+    """A store move → the keeper's background Generate starts; a focus's catch-up then asks for a Generate for the same
+    moves (`_journey`'s "moves", or a generate-first ask landing late): routed to the keeper as a move, it withdrew the
+    run in flight and started one from scratch — one change, two Generates. With a Generate running or queued the ask
+    is left to it (the keeper's `on_done` re-orders after it)."""
+    replan, _registry, _c, launches, opener = _replan()
+    replan.activated()
+    _quiet(replan)
+    replan.store_moved("ja", {"order_version": 3})
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert fired.done(replan.keeper)
+    run, armed = launches.runs[0], replan.keeper._armed
+    opener.hosts[0].generate("moves")
+    opener.hosts[0].generate("generate-first: files")
+    assert not run.cancel_event.is_set(), "the keeper's run in flight was withdrawn"
+    assert replan.keeper._armed == armed and replan.keeper._timer is None      # no second settle armed
+    assert replan.keeper.asked == 1 and launches.count() == 1
+    run.ended(0)
+    replan.finish(time.monotonic() + 1)
+
+
+def test_a_focus_after_an_outside_placement_asks_for_one_generate(gate, fired):
+    """An item placed by another program (the Tk Content Manager, the command line) while this window is open, with no
+    library reader to tell it: the store's order moved, nothing else did. A focus runs the start's journey look too:
+    the store says the journey is pending → one background Generate; a second focus while it runs asks nothing more."""
+    looked = []
+    replan, _registry, _c, launches, _opener = _replan(pending=lambda language: looked.append(language) or True)
+    replan.activated()
+    _quiet(replan)
+    assert looked == ["ja"]
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert fired.done(replan.keeper)
+    replan.activated()                                   # focus again while that Generate runs
+    _quiet(replan)
+    assert looked == ["ja", "ja"] and not launches.runs[0].cancel_event.is_set()
+    assert replan.keeper.asked == 1 and replan.keeper._timer is None
+    replan.finish(time.monotonic() + 1)
+
+
+def test_a_catch_up_queued_before_the_quit_never_opens_a_helper_during_it(gate):
+    """The quit's close is queued behind what the host's worker holds: a focus's catch-up queued just before it opened
+    (spawned) a helper during the quit. The close refuses every later open as it is called, not when its turn comes."""
+    replan, _registry, _c, _l, opener = _replan()
+    held, holding = threading.Event(), threading.Event()
+    replan.host.worker.put(lambda: holding.set() or held.wait(30))
+    assert holding.wait(5)
+    replan.activated()                                   # queued behind the held call
+    replan.closing()                                     # the quit begins
+    held.set()
+    _quiet(replan)
+    assert opener.hosts == [] and replan.host.opened == 0
+    replan.finish(time.monotonic() + 1)
+
+
+@pytest.mark.parametrize("settle, settling", [(0.8, True), (0.0, False)])
+def test_a_move_just_told_marks_a_settle_maybe_pending_read_with_no_lock(gate, monkeypatch, settle, settling):
+    """The window's close asks on its own thread whether a move's settle may still be pending (E20 then keeps the
+    window up while it runs): a mark set as the move is told — read with no lock and no wait — for the settle's time."""
+    monkeypatch.setattr(replan_preview, "SETTLE_S", settle)
+    replan, _registry, _c, _l, _opener = _replan()
+    assert replan.settling() is False
+    replan.store_moved("ja", {"order_version": 3})
+    assert replan.settling() is settling
     replan.finish(time.monotonic() + 1)

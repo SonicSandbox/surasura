@@ -29,9 +29,10 @@ requests to settle, for a job it can't run beside, or for another program's Gene
 - **The bar's words** (W3.5 row 7): a run's job reads *Generating*, or *Generating (automatic)* when quiet; an asker
   that wants its own words asks through `labelled(label)` — the journey keeper's background run reads *Journey:
   updating sentences…* (`JOURNEY_LABEL`, G7). **A failure** stays the state even when another request waits (it then
-  runs), and a run dropped later falls back to it, never to an older `current`; `failure()` keeps its words until a run
-  finishes cleanly (HR-23: the bar's Generate line). A run that finished though it was asked to stop (past *Writing your
-  list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
+  runs), and a run dropped later falls back to it, never to an older `current`; `failure(language)` keeps its words, for
+  its run's language, until a run finishes cleanly or a check finds the journey current (HR-23: the bar's Generate
+  line); a language switch forgets them (`forget_failure`). A run that finished though it was asked to stop (past
+  *Writing your list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
 - Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
   environment from `path_utils.build_subprocess_env`. A window that starts the child its own way (the Tk dashboard:
   its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
@@ -229,7 +230,7 @@ class GenerateController:
         self._deliver = threading.RLock()  # one delivery at a time (a listener may ask for a run from inside one)
         self._state = State(IDLE, None, None, None, None, None, None, 0)
         self._settled = IDLE            # what a check (or the last run) found: the state to fall back to
-        self._failure = None            # the last failure (message, log path) until a run finishes cleanly
+        self._failure = None            # the last failure (message, log path, language) until a run finishes cleanly
         self._run = None                # the run in flight (waiting, or its child running)
         self._pending = None            # the request that runs next
         self._timer = None
@@ -242,11 +243,21 @@ class GenerateController:
         with self._lock:
             return self._state
 
-    def failure(self):
+    def failure(self, language=None):
         """The last run's failure in plain words, kept until a run finishes cleanly — even while another runs (the
-        bar's Generate line, HR-23) — or None."""
+        bar's Generate line, HR-23) — or None. `language`: only a failure of that language's run (a Japanese failure
+        is never the Chinese bar's)."""
         with self._lock:
-            return self._failure[0] if self._failure else None
+            failure = self._failure
+        if not failure or (language is not None and failure[2] != language):
+            return None
+        return failure[0]
+
+    def forget_failure(self):
+        """The window switched language: the last failure is no longer the bar's (its Generate line, Needs you keeps
+        it listed)."""
+        with self._lock:
+            self._failure = None
 
     def labelled(self, label):
         """This controller for an asker whose runs read `label` in the bar (`Labelled`)."""
@@ -292,6 +303,8 @@ class GenerateController:
                 answer = None
             with self._lock:
                 self._settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+                if answer is True and self._failure and self._failure[2] == language:
+                    self._failure = None    # current after all (another program generated cleanly): over
                 if self._run is None and self._pending is None:
                     snap = self._assign_settled()
                 else:
@@ -574,7 +587,7 @@ class GenerateController:
             if state in (CURRENT, STALE, FAILED):
                 self._settled = state       # a failure too: a run dropped later falls back to it, not an older current
             if state == FAILED:
-                self._failure = (message, log_path)
+                self._failure = (message, log_path, run.language)
             elif state == CURRENT:
                 self._failure = None
             nxt = self._pending

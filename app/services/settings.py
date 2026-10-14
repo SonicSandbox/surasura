@@ -139,6 +139,18 @@ class SettingsService:
             self._frozen = None
         return self.get()
 
+    def fresh(self):
+        """settings.json read now (a plain dict), with the changes not yet written laid over it — never the copy in
+        memory, so another program's save (順's `save_keys`) is seen at once. Reads the file: a worker's. The copy
+        `get()` gives is left as it is."""
+        with self._lock:
+            pending = {key: _copy(value) for key, (value, _seq) in self._pending.items()}
+        # Taken before the read: a change that lands meanwhile is in the file read after it, or still pending here.
+        settings = settings_manager.load_settings()
+        for key, value in pending.items():
+            put(settings, key, value)
+        return settings
+
     def automation(self):
         """D29's switch (`logic.automation`) in the settings now, pending changes included: True unless it is off."""
         return settings_manager.automation(self.get())

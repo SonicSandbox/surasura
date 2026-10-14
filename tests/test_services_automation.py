@@ -1088,3 +1088,26 @@ def test_with_its_reorder_set_aside_and_no_backfill_junban_starts_no_job(live, m
     _settle(auto, registry)
     assert seen == [] and not [v for v in registry.snapshot() if v.kind == "junban"]
     auto.close()
+
+
+def test_junbans_reorder_reads_the_deck_juns_own_window_recorded_behind_the_windows_settings(live, monkeypatch):
+    """順 records the (language, deck) pair with its own `save_keys` — to settings.json, behind the window's settings
+    service (its copy is read again only after the window's own writes). `reorders` reads the file on the worker, so
+    the next automatic run sees the pick: before it, the re-order stands aside (no deck recorded); after it, with the
+    host unable to run here (Coverage), 順's own re-order runs to that deck."""
+    from app.services import settings as settings_service
+    seen = _junban_settings_seen(monkeypatch)
+    h.write_settings({"target_language": "ja", "anki_sync_auto": False, "enable_junban": True,
+                      "junban_auto_reorder": True, "junban_auto_backfill": True, "junban_scope": "deck",
+                      "junban_deck": "Mining", "strategy": "coverage"})
+    service = settings_service.SettingsService()
+    auto, registry, _c, _l = _make(service)
+    auto.worker.put(auto.junban.maybe, True)
+    _settle(auto, registry)
+    assert seen[-1]["junban_auto_reorder"] is False                         # no deck recorded yet
+    h.write_settings(dict(h.read_settings(), **RECORDED_JA))                # 順's own save, behind the service
+    assert not service.get().get("junban_replan_deck")
+    auto.worker.put(auto.junban.maybe, True)
+    _settle(auto, registry)
+    assert len(seen) == 2 and seen[-1]["junban_auto_reorder"] is True and seen[-1]["junban_replan_deck"] == "Mining"
+    auto.close()

@@ -23,7 +23,8 @@ What it holds, refreshed off the window's thread:
 
 `poll()` is safe on a window's thread (a stat and a clock compare, nothing read); it starts a refresh on a worker when
 the file changed, and a look at the ticking providers when their period is up (G5): Connect's line every 3 s (the Tk
-`status_row.StatusRow`'s EVERY_MS), the AnkiWeb countdown every second. `refresh_soon(*names)` asks the providers
+`status_row.StatusRow`'s EVERY_MS) while Connect is on, the AnkiWeb mark every second while it counts down, else every
+3 s (S19: a look that can't change anything isn't taken every second). `refresh_soon(*names)` asks the providers
 named (none: everything). `subscribe(cb)` hears a snapshot only when something in it changed (S19: a tick that changes
 nothing delivers nothing), on the thread that made it (a worker, or the registry's).
 
@@ -43,7 +44,8 @@ Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs 
                       defaults=(None, None))
 NEEDS_YOU_KEPT = 50
 LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey")         # `journey`'s answer is True / False, not words
-TICKS = {"connect": 3.0, "ankiweb": 1.0}  # seconds between a ticking provider's looks (`poll`)
+TICKS = {"connect": 3.0, "ankiweb": 1.0}  # seconds between a ticking provider's looks (`poll`); a provider with an
+                                          # `every()` says its own now (None: not ticking now)
 FAILURE_PROVIDERS = ("update", "generate")
 LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their own service, with their actions
 
@@ -167,8 +169,14 @@ class StatusService:
         due = []
         with self._lock:
             for name, every in TICKS.items():
-                if self.providers.get(name) is None:
+                provider = self.providers.get(name)
+                if provider is None:
                     continue
+                period = getattr(provider, "every", None)
+                if period is not None:
+                    every = period()                    # the provider's own, from its last look (no read)
+                    if every is None:
+                        continue                        # not ticking now (Connect off): asked by name when it moves
                 last = self._ticked.get(name)
                 if last is None or now - last >= every:
                     self._ticked[name] = now
@@ -269,13 +277,17 @@ def connect_line(language, settings, stamp=None, read=None):
     settings now (the settings service's `get`). None while Connect is off (`connect_enabled`, today's switch). Each
     look takes Connect's `stamp` (two stats and a look at its lock) and reads the record only when the stamp moved —
     keyed on the stamp the read itself took — so an unchanged Connect reads nothing (S19). `stamp` / `read`: Connect's
-    `status.stamp` / `status.read` (a test's stand-ins). A worker's call, one at a time (the service's refresh)."""
-    last = {"stamp": None, "line": None}
+    `status.stamp` / `status.read` (a test's stand-ins). A worker's call, one at a time (the service's refresh).
+    `provider.every()`: its tick, 3 s — none once a look found Connect off (the window asks for it by name when the
+    switch lands; any full refresh asks it too)."""
+    last = {"stamp": None, "line": None, "on": True}
 
     def provider():
         if not (settings() or {}).get("connect_enabled"):
             last["stamp"] = None                        # switched on again: its first look reads
+            last["on"] = False
             return None
+        last["on"] = True
         from app.connect import status as connect_status
         now = (stamp or connect_status.stamp)(languages=[language])
         if now != last["stamp"]:
@@ -283,6 +295,7 @@ def connect_line(language, settings, stamp=None, read=None):
             last["line"] = ((record.get("languages") or {}).get(language) or {}).get("line")
             last["stamp"] = record.get("stamp", now)
         return last["line"]
+    provider.every = lambda: TICKS["connect"] if last["on"] else None
     return provider
 
 
@@ -291,8 +304,10 @@ def ankiweb_line(settings, now=None):
     18:42*, …), None before any. `settings()`: the settings now; `now()`: the wall clock (a test's stand-in). Asked
     every second: its state file is read again only when its stamp (mtime, size) moved, else the last read is worked
     out again for the time now — the countdown ticks, the disk is only stat'd. A worker's call, one at a
-    time (the service's refresh)."""
-    last = {"stamp": object(), "state": None}           # never a stamp: the first look reads
+    time (the service's refresh). A sync is counted down only while something will send it (`replan_host.sync_sent`:
+    Connect on, or the re-order host of a language whose gate holds); else the mark says what it would without it —
+    never *syncing in 0 s* for an hour. `provider.every()`: 1 s while it counts down, else Connect's 3 s."""
+    last = {"stamp": object(), "state": None, "due": True}      # never a stamp: the first look reads
 
     def provider():
         from app import anki_sync_rule
@@ -300,7 +315,14 @@ def ankiweb_line(settings, now=None):
         if stamp is None or stamp != last["stamp"]:
             last["state"] = anki_sync_rule.read_state()
             last["stamp"] = stamp
-        return anki_sync_rule.status(settings() or {}, now=None if now is None else now(), state=last["state"]) or None
+        values, state = settings() or {}, last["state"] or {}
+        if state.get("front_pending"):
+            from app.services import replan_host
+            if not replan_host.sync_sent(values):
+                state = dict(state, front_pending=False)        # nothing will send it: no countdown
+        last["due"] = anki_sync_rule.due_at(values, state) is not None
+        return anki_sync_rule.status(values, now=None if now is None else now(), state=state) or None
+    provider.every = lambda: TICKS["ankiweb"] if last["due"] else TICKS["connect"]
     return provider
 
 

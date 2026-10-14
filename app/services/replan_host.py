@@ -15,14 +15,22 @@ dashboard's preview switch (`app/main.py` `_replan_start` … `_replan_finishing
   wait for) lets the host go until `release()`; nothing opens while an update holds its lock (the helper would see it
   and leave the jobs to the window's process): the next call opens it. `close()` + `finish(deadline)` is the quit: a
   pending settle and the S3 sync run at once, `busy()` is waited for until the deadline, then `stop()` (the helper
-  finishes a write in hand by itself).
+  finishes a write in hand by itself); from the moment `close()` is called nothing opens a host (a catch-up queued
+  before it never spawns a helper during the quit). `settling()` (no lock, any thread): a move was told less than a
+  settle ago — the window's close then waits for `busy()` with the window up (E20). The settings are read from the file
+  on the worker (`settings()`: the settings service's `fresh`), so 順's own deck pick is seen at the next call. With no
+  host to send it — none may run in any language — and Connect off, a pending AnkiWeb sync is let go there (the Tk
+  `_replan_start`'s rule: Anki's own sync on close carries the order).
 - **`Replan`** is one per window: the keeper and the host of the language open, made again on a language switch (the
   old host stopped — a settle still pending is dropped, so nothing more is written to the old deck; its next start
   catches up through the store's versions — and the old keeper closed); the new language gets the start's catch-up
-  and journey look. The keeper (`journey.JourneyKeeper`) is always made, D29 off too: its `on_done`
+  and journey look — and so does a focus (`activated`: another program may have placed an item while no reader
+  watched). The keeper (`journey.JourneyKeeper`) is always made, D29 off too: its `on_done`
   re-baselines New arrivals' worker after a manual Generate (Haya G2c). `on_done` is the only re-order after a Generate
   (`after_generate`: the keeper hands each new plan once), never the controller's end. A store change (`store_moved`,
-  from the library reader: any writer) → one poke + one `changed("store")`.
+  from the library reader: any writer) → one poke + one `changed("store")`. The host's own Generate asks and the
+  journey look go to the keeper only while no Generate runs or waits (`_asker`): a move withdraws the keeper's run in
+  flight, and the run going already serves the ask (its `on_done` re-orders after it).
 
 Nothing here waits on the caller's thread but `finish` (the quit's worker): the rest queues on the host's worker, arms
 the keeper's timer, or lets a host go (`stop` never waits).
@@ -73,6 +81,24 @@ def _aside_line(settings, language):
         return None
 
 
+def sync_sent(settings):
+    """Whether anything will send a pending AnkiWeb sync (S3): Connect while it is on, else the re-order host of a
+    language whose gate holds (only a host sends it, `Host._sync_step`; another window's may be another language's).
+    A worker's call."""
+    if (settings or {}).get("connect_enabled"):
+        return True
+    from app import replan_preview
+    return any(_automation_on(settings, language) for language in replan_preview.LANGUAGE_NAMES)
+
+
+def _drop_pending():
+    try:
+        from app import anki_sync_rule
+        anki_sync_rule.drop_pending()
+    except Exception as e:
+        print(f"Re-order: the pending AnkiWeb sync couldn't be let go: {e}")
+
+
 def _update_staged():
     from app import replan_preview
     return replan_preview._update_staged()
@@ -97,13 +123,17 @@ class ReplanHost:
         self._line = None
         self._aside = None                  # the stand-aside line `line()` gives while no host is open
         self._held = bool(held)
-        self._closing = False               # the quit: nothing new opens, the host's close is sent
+        self._closing = False               # the quit: the host's close is sent (once)
+        self._quitting = False              # the quit was asked (`close()`, at the call): nothing opens from here
         self._closed = False
+        self._settle_until = 0.0            # monotonic: a move told until then may still be settling (`settling`)
         self.worker = Worker("replan-host")
         self.opened = 0                     # hosts opened (tests)
 
     # --- the window's calls (any thread; each returns at once) ----------------------------------------------------- #
     def poke(self):
+        from app import replan_preview
+        self._settle_until = time.monotonic() + replan_preview.SETTLE_S     # a plain float: read with no lock
         self.worker.put(self._forward, "poke")
 
     def catch_up(self):
@@ -120,6 +150,11 @@ class ReplanHost:
 
     def line(self):
         return self._line
+
+    def settling(self):
+        """A move was told less than a settle ago: its re-order may still be pending. No lock, no wait (the window's
+        close asks it on its own thread)."""
+        return time.monotonic() < self._settle_until
 
     def busy(self):
         with self._lock:
@@ -143,7 +178,9 @@ class ReplanHost:
 
     def close(self):
         """The quit begins: after what is queued, the host's own close (a pending settle and the S3 sync run at once);
-        nothing opens from here on."""
+        nothing opens from here on — refused from this call, so a catch-up queued before it opens nothing."""
+        with self._lock:
+            self._quitting = True
         self.worker.put(self._close_host)
 
     def finish(self, deadline):
@@ -170,10 +207,14 @@ class ReplanHost:
             if self._closed or self._closing or self._held:
                 return
             host = self._host
+            if host is None and self._quitting:
+                return                      # the quit was asked: no helper is spawned now
         settings = self._settings()
         if not _automation_on(settings, self.language):
             # switched off (D29, Junban, the deck): the helper goes; the bar says why where the user can fix it
             self._let_go(_aside_line(settings, self.language))
+            if not sync_sent(settings):
+                _drop_pending()             # nothing will send a pending AnkiWeb sync (the Tk `_replan_start`)
             return
         self._unsay_aside()
         if host is None:
@@ -195,7 +236,7 @@ class ReplanHost:
                       working=lambda on: self._working(gen, on),
                       generate=(lambda reason: self._asked(gen, reason)) if self._generate is not None else None)
         with self._lock:
-            late = self._closed or self._closing or self._held or self._gen + 1 != gen
+            late = self._closed or self._closing or self._quitting or self._held or self._gen + 1 != gen
             if not late:
                 self._gen, self._host = gen, host
                 self.opened += 1
@@ -323,10 +364,13 @@ class Replan:
     # --- the window's calls (each returns at once) ------------------------------------------------------------------ #
     def start(self):
         keeper, host = self._pair()
-        host.started(keeper.changed, self._pending)
+        host.started(self._asker(keeper), self._pending)
 
     def activated(self):
-        self._pair()[1].catch_up()
+        """A focus: the catch-up and the start's journey look (another program may have placed an item while no
+        library reader watched: the store says the journey is pending)."""
+        keeper, host = self._pair()
+        host.started(self._asker(keeper), self._pending)
 
     def store_moved(self, language, _versions=None):
         """The library reader saw the order or the pins move (any writer): one poke, one `changed`."""
@@ -355,7 +399,7 @@ class Replan:
             keeper.close()
             host.stop()
             return
-        host.started(keeper.changed, self._pending)     # the start's catch-up and journey look, whatever
+        host.started(self._asker(keeper), self._pending)    # the start's catch-up and journey look, whatever
                                                         # the new host's gate says: D29 decides through the keeper
 
     def update_state(self, state):
@@ -373,6 +417,14 @@ class Replan:
 
     def line(self):
         return self._pair()[1].line()
+
+    def settling(self):
+        """A move's settle may still be pending (no lock: the window's close asks on its own thread)."""
+        return self.host.settling()
+
+    def busy(self):
+        """The host works or has work pending (a worker's look: the window's close waits on it, E20)."""
+        return self._pair()[1].busy()
 
     def closing(self):
         """The quit begins: the keeper closed (nothing asked from here), the host's close sent. Returns at once."""
@@ -399,6 +451,28 @@ class Replan:
         from app.services.settings import thaw
         return thaw(self._settings.get())
 
+    def _settings_fresh(self):
+        """The host's gate reads the file now (the settings service's `fresh`, on the host's worker): 順 records its
+        deck with its own save, behind the window's copy. A stand-in without `fresh`: its `get`."""
+        fresh = getattr(self._settings, "fresh", None)
+        return fresh() if fresh is not None else self._settings_now()
+
+    def _generating(self):
+        """A Generate runs or waits (any asker's): its end re-orders through the keeper's `on_done`."""
+        try:
+            from app.services import generate as generate_module
+            return self.controller.state().state in (generate_module.QUEUED, generate_module.RUNNING)
+        except Exception:
+            return False
+
+    def _asker(self, keeper):
+        """`keeper.changed` for the host's Generate asks and the journey look: skipped while a Generate runs or waits —
+        a move would withdraw the keeper's run in flight and start one from scratch (one change, two Generates)."""
+        def ask(reason):
+            if not self._generating():
+                keeper.changed(reason)
+        return ask
+
     def _automation(self):
         automation = getattr(self._settings, "automation", None)
         if automation is not None:
@@ -412,8 +486,8 @@ class Replan:
 
         def generate(reason):
             for keeper in keepers:
-                keeper.changed("replan: " + reason)
-        host = ReplanHost(self.registry, self._settings_now, language, generate=generate, on_line=self._on_line,
+                self._asker(keeper)("replan: " + reason)
+        host = ReplanHost(self.registry, self._settings_fresh, language, generate=generate, on_line=self._on_line,
                           opener=self._opener, held=self._held)
 
         def on_done(_plan_path):

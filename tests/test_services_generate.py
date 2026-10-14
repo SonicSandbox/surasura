@@ -508,6 +508,33 @@ def test_a_withdrawn_run_that_finishes_anyway_is_recorded_done_not_cancelled():
     assert controller.state().state == G.CURRENT and ends == ["current"]
 
 
+def test_a_japanese_failure_never_reads_in_the_chinese_bar_and_goes_on_a_switch_or_a_current_check(monkeypatch):
+    """The bar's Generate line (`failure()`) is kept per controller, so a Japanese run that failed stayed on the bar
+    after a switch to Chinese — a failure the Chinese journey never had. Asked for a language, `failure(language)`
+    gives only that language's run's failure; a language switch forgets it (`forget_failure`); and a journey check that
+    finds the journey current (another program generated cleanly) clears it too."""
+    controller = GenerateController(JobRegistry(), settle=0, log_folder=os.path.join(h.root(), "logs"))
+    holder, launcher = _scripted(controller)
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder.pop("run").ended(1)
+    assert controller.failure("ja").startswith("Generate stopped (exit code 1).")
+    assert controller.failure("zh") is None, "the Chinese bar read the Japanese failure"
+    controller.forget_failure()                                  # the window switched to Chinese
+    assert controller.failure() is None and controller.failure("ja") is None
+    # a failure again; then another program's clean Generate makes the check say current
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder.pop("run").ended(1)
+    assert controller.failure("ja")
+    from app import analyzer
+    monkeypatch.setattr(analyzer, "journey_is_current", lambda args, language: True)
+    checked = threading.Event()
+    controller.check(_settings(), "ja", then=lambda answer: checked.set())
+    assert checked.wait(10)
+    assert controller.failure("ja") is None and controller.state().state == G.CURRENT
+
+
 # --- the Tk dashboard on the controller ------------------------------------------------------------------------- #
 def test_the_dashboards_generate_is_the_controllers_job_and_its_end_reaches_it():
     """The dashboard (2.x's window until W3.5) starts the child itself, through the controller: its run is the

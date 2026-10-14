@@ -246,3 +246,246 @@ def test_marking_needs_you_seen_with_nothing_unseen_says_nothing():
     assert len(heard) == 1 and all(e.seen for e in heard[0].needs_you)
     status.mark_seen()
     assert len(heard) == 1
+
+
+# --- W3.5 row 7 (R7b): the re-order host's line, the journey dot, and the providers' ticks (G5, G10, gaps 9, 10) -- #
+import time                                                             # noqa: E402
+
+from app.services import status as S                                   # noqa: E402
+
+
+class _Clock:
+    """The ticks' clock, moved by the test: a tick's period is waited for by a number, never by a sleep."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class _QuietReader:
+    """An events file that never changes: a poll's only work is the ticks."""
+
+    def changed(self):
+        return False
+
+    def newest_to_show(self):
+        return None
+
+
+def _heard(status):
+    heard = []
+    status.subscribe(heard.append)
+    return heard
+
+
+def _settle(status):
+    """The refresh a poll started has ended (its worker is gone)."""
+    assert h.until(lambda: not status._refreshing, seconds=5)
+
+
+def test_without_providers_the_replan_line_and_the_journey_dot_are_none_and_old_snapshots_still_build():
+    """The two new slots are None until the window registers their providers; a snapshot made the old way (seven
+    fields, as the window's tests make one) still builds, so no caller breaks."""
+    status = StatusService(JobRegistry())
+    status.refresh()
+    snap = status.snapshot()
+    assert snap.replan is None and snap.journey is None
+    old = S.Snapshot((), None, (), None, None, None, 0.0)
+    assert old.replan is None and old.journey is None
+
+
+def test_the_replan_line_and_the_journey_dot_come_from_their_providers_asked_on_demand():
+    """The re-order host says a new line (*Anki: placing tomorrow's 20 cards…* → *Anki's order is up to date*): the
+    window asks `refresh_soon("replan")`, which asks that provider alone — not Connect's, not the events file. The
+    journey dot is True while the store's `journey_pending()` says the sentences are owed."""
+    asked = []
+    lines = {"replan": "Anki: placing tomorrow's 20 cards…"}
+
+    def replan():
+        asked.append("replan")
+        return lines["replan"]
+
+    def connect():
+        asked.append("connect")
+        return "Connect: mining 12 words"
+    status = StatusService(JobRegistry(), providers={"replan": replan, "connect": connect, "journey": lambda: True})
+    status.refresh()
+    snap = status.snapshot()
+    assert (snap.replan, snap.journey, snap.connect) == ("Anki: placing tomorrow's 20 cards…", True,
+                                                         "Connect: mining 12 words")
+    asked.clear()
+    heard = _heard(status)
+    lines["replan"] = "Anki's order is up to date"
+    status.refresh_soon("replan")
+    assert h.until(lambda: heard and heard[-1].replan == "Anki's order is up to date", seconds=5)
+    _settle(status)
+    assert asked == ["replan"]
+    assert status.snapshot().connect == "Connect: mining 12 words"      # the others' values kept, not emptied
+
+
+def test_a_refresh_that_changes_nothing_delivers_nothing():
+    """S19: a subscriber hears a snapshot only when something in it changed; the same answers again send nothing."""
+    status = StatusService(JobRegistry(), providers={"replan": lambda: "Generate first"})
+    status.refresh()
+    heard = _heard(status)
+    status.refresh()
+    status.refresh()
+    assert heard == []
+
+
+def test_connects_line_ticks_every_3_s_and_is_read_only_when_its_stamp_moves():
+    """Gap 9, the Tk `status_row.StatusRow` (EVERY_MS 3000): the window's poll starts a look every 3 s; each look is
+    Connect's `stamp` (two stats and a look at its lock), and only a stamp that moved reads the record — and only a
+    line that changed reaches the bar (S19). The language asked is the window's."""
+    clock = _Clock()
+    stamps, reads, looks = [["a"]], [], []
+
+    def stamp(languages=None):
+        assert languages == ["zh"]
+        looks.append(1)
+        return list(stamps[-1])
+
+    def read(languages=None):
+        reads.append(list(languages))
+        return {"stamp": list(stamps[-1]),
+                "languages": {"zh": {"line": f"Connect: 第{len(reads)}集 · choosing words"}}}
+    provider = S.connect_line("zh", lambda: {"connect_enabled": True}, stamp=stamp, read=read)
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"connect": provider}, clock=clock)
+    heard = _heard(status)
+    status.poll()
+    _settle(status)
+    assert reads == [["zh"]] and [s.connect for s in heard] == ["Connect: 第1集 · choosing words"]
+    clock.now += 2.9
+    status.poll()                                        # not yet 3 s: no look at all
+    _settle(status)
+    assert len(looks) == 1
+    clock.now += 0.2
+    status.poll()                                        # a look: the same stamp, no read, nothing delivered
+    _settle(status)
+    assert len(looks) == 2 and len(reads) == 1 and len(heard) == 1
+    stamps.append(["b"])
+    clock.now += 3
+    status.poll()
+    _settle(status)
+    assert len(reads) == 2 and [s.connect for s in heard][-1] == "Connect: 第2集 · choosing words"
+
+
+def test_connects_line_is_none_while_connect_is_off_and_asks_nothing_of_it():
+    """Today's switch (`connect_enabled`, Michi's): off, the bar shows no Connect line and its files aren't looked at."""
+    looked = []
+    settings = {"connect_enabled": False}
+    provider = S.connect_line("ja", lambda: settings, stamp=lambda languages=None: looked.append(1) or ["a"],
+                              read=lambda languages=None: {"languages": {"ja": {"line": "Up to date"}}})
+    assert provider() is None and looked == []
+    settings["connect_enabled"] = True
+    assert provider() == "Up to date"
+
+
+def test_connects_real_record_with_no_ledger_reads_up_to_date():
+    """The provider calls Connect's own `status.stamp` / `read` (not a copy): with Connect on and no ledger yet (a
+    fresh install), its line is the record's *Up to date*."""
+    provider = S.connect_line("ja", lambda: {"connect_enabled": True})
+    assert provider() == "Up to date"
+
+
+def test_the_ankiweb_countdown_ticks_every_second():
+    """Gap 10: `anki_sync_rule.status` (the Tk-free rule) gives *AnkiWeb: syncing in N s* while a sync is pending; the
+    window's poll asks it every second, so the count goes down one a tick, and the bar hears each new number once."""
+    from app import anki_sync_rule
+    clock = _Clock()
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    provider = S.ankiweb_line(lambda: {}, now=lambda: start + (clock.now - 1000.0))
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"ankiweb": provider}, clock=clock)
+    heard = _heard(status)
+    wait = int(anki_sync_rule.delay_s({}))
+    for _ in range(3):
+        status.poll()
+        _settle(status)
+        clock.now += 0.5
+        status.poll()                                     # half a second on: not due
+        _settle(status)
+        clock.now += 0.5
+    assert [s.ankiweb for s in heard] == [f"AnkiWeb: syncing in {wait - n} s" for n in range(3)]
+
+
+def test_a_tick_that_changes_nothing_delivers_nothing():
+    """S19 for the ticks: the AnkiWeb mark asked every second while it says *synced 18:42* sends one snapshot, once."""
+    clock = _Clock()
+    asked = []
+    status = StatusService(JobRegistry(), reader=_QuietReader(), clock=clock,
+                           providers={"ankiweb": lambda: asked.append(1) or "AnkiWeb: synced 18:42"})
+    heard = _heard(status)
+    for _ in range(4):
+        status.poll()
+        _settle(status)
+        clock.now += 1
+    assert len(asked) == 4 and len(heard) == 1
+
+
+def test_a_ticking_provider_that_raises_leaves_the_rest():
+    """One provider's fault (Connect's ledger locked, say) never empties the bar: AnkiWeb's mark and the host's line
+    stay, and the faulty one reads None."""
+    clock = _Clock()
+
+    def broken():
+        raise OSError("the ledger can't be read")
+    status = StatusService(JobRegistry(), reader=_QuietReader(), clock=clock,
+                           providers={"connect": broken, "ankiweb": lambda: "AnkiWeb: syncing in 45 s",
+                                      "replan": lambda: "Anki's order is up to date"})
+    status.refresh()
+    status.poll()
+    _settle(status)
+    snap = status.snapshot()
+    assert snap.connect is None and snap.ankiweb == "AnkiWeb: syncing in 45 s"
+    assert snap.replan == "Anki's order is up to date"
+
+
+def test_a_tick_runs_on_a_worker_never_on_the_pollers_thread():
+    """`poll()` stays safe on a window's thread: a clock compare and a worker start, the provider called elsewhere."""
+    clock = _Clock()
+    where = []
+    status = StatusService(JobRegistry(), reader=_QuietReader(), clock=clock,
+                           providers={"connect": lambda: where.append(threading.current_thread()) or "Up to date"})
+    status.poll()
+    assert h.until(lambda: where, seconds=5)
+    assert threading.current_thread() not in where
+    for _ in range(20):
+        clock.now += 3
+        _, ms = h.timed(status.poll)
+        assert ms <= 4, ms
+        _settle(status)
+
+
+def test_the_journey_dot_reads_the_stores_journey_pending(monkeypatch):
+    """G10: the dot is the store's `journey_pending()` for the window's language, read on the worker through a handle
+    opened and closed there (never kept: Repair's rename); no store yet → None (no dot)."""
+    from app import library_store
+    opened = []
+
+    class Store:
+        def __init__(self, pending):
+            self.pending, self.closed = pending, False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.closed = True
+
+        def journey_pending(self):
+            return self.pending
+    stores = [Store(True), Store(False), None]
+    first = stores[0]
+
+    def open_store(language, data_dir, user_files_dir, role="window", busy_wait=None):
+        opened.append(language)
+        return stores.pop(0)
+    monkeypatch.setattr(library_store, "open_store", open_store)
+    provider = S.journey_pending("zh")
+    assert provider() is True and first.closed
+    assert provider() is False
+    assert provider() is None
+    assert opened == ["zh", "zh", "zh"]

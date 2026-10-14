@@ -403,6 +403,111 @@ def test_a_job_absorbed_by_another_submitter_tells_the_controller():
     holder["run"].ended(0)
 
 
+# --- W3.5 row 7: the journey's label (G7) and the controller's two points from E3.2's review (G8: A12, A13) ------ #
+def test_a_generate_the_journey_keeper_starts_reads_journey_updating_sentences_in_the_bar():
+    """G7 (W1.2 02-state-model: *Plan current, sentences catching up*): the keeper's background Generate is the bar's
+    *Journey: updating sentences…*, not *Generating (automatic)*. The window hands the keeper the controller as
+    `labelled(JOURNEY_LABEL)` (journey.py untouched); every other quiet request (AutoGenerate's) keeps its label, and
+    the keeper's withdraw and close reach the controller through it."""
+    from app.services.journey import JourneyKeeper
+    from app.services.status import StatusService
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    status = StatusService(registry)
+    holder, launcher = _scripted(controller, h.root())
+    keeper = JourneyKeeper(controller.labelled(G.JOURNEY_LABEL), "ja", settings=lambda: {"journey_settle_s": 0},
+                           pending=lambda: True, battery=lambda: False, launcher=launcher,
+                           plan_path=os.path.join(h.root(), "no-plan.bin"))
+    try:
+        keeper.changed("move")
+        assert h.until(lambda: "run" in holder, seconds=10)
+        view = registry.snapshot()[-1]
+        assert view.kind == "generate" and view.automatic and view.label == "Journey: updating sentences…"
+        assert status.snapshot().lines == ("Journey: updating sentences…",)
+        keeper.changed("move")                          # a second burst withdraws it through the labelled controller
+        assert os.path.exists(holder["run"].cancel_file)
+        holder["run"].feed(CANCELLED)
+        holder["run"].ended(76)
+        assert h.until(lambda: holder["launches"] == 2, seconds=10)
+        holder["run"].ended(0)
+    finally:
+        keeper.close()
+    assert keeper._ended not in controller._end_listeners, "close unsubscribed through the labelled controller"
+    holder2, launcher2 = _scripted(controller)
+    controller.request("ja", argv=["analyzer.py", "--no-open"], quiet=True, launcher=launcher2)
+    assert h.until(lambda: "run" in holder2, seconds=10)
+    assert registry.snapshot()[-1].label == "Generating (automatic)"
+    holder2["run"].ended(0)
+
+
+def test_a_run_that_fails_while_another_waits_reads_failed_and_its_failure_stays_for_the_bar():
+    """A12: the user's run fails while the keeper's quiet run waits behind it. The state said `queued` at once, so the
+    failure's message and log never reached the window. Now it reads `failed` first; and `failure()` — what the bar's
+    Generate line reads — keeps it while the next run runs, until a run finishes cleanly (HR-23)."""
+    controller = GenerateController(JobRegistry(), settle=0, log_folder=os.path.join(h.root(), "logs"))
+    seen = _record(controller)
+    holder, launcher = _scripted(controller)
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    first = holder.pop("run")
+    controller.request("ja", argv=["analyzer.py", "--no-open"], quiet=True, launcher=launcher)
+    seen.clear()
+    first.ended(1)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    assert seen[0].state == G.FAILED and seen[0].message.startswith("Generate stopped (exit code 1).")
+    assert seen[0].log_path == controller.log_path()
+    assert controller.state().state == G.RUNNING
+    assert controller.failure().startswith("Generate stopped (exit code 1).")
+    holder["run"].ended(0)
+    assert controller.state().state == G.CURRENT and controller.failure() is None
+
+
+def test_a_run_dropped_after_a_failure_never_falls_back_to_an_older_current():
+    """A12's second half: a clean run (current), then one that fails while the keeper's waits; the keeper's is dropped
+    before it starts (withdrawn while another program holds `results`). The state goes back to the failure, never to
+    the `current` from before it — the window would take that for a landing."""
+    controller = GenerateController(JobRegistry(), settle=0)
+    holder, launcher = _scripted(controller)
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder.pop("run").ended(0)
+    assert controller.state().state == G.CURRENT
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    failing = holder.pop("run")
+    with h.Holder("results", "Generate"):
+        keepers = controller.request("ja", argv=["analyzer.py", "--no-open"], quiet=True, launcher=launcher)
+        failing.ended(1)
+        assert h.until(lambda: controller.state().message == "Waiting for Generate to finish", seconds=10)
+        controller.withdraw(keepers)
+        assert _settled(controller, 10)
+    assert "run" not in holder, "the keeper's run never started"
+    state = controller.state()
+    assert state.state == G.FAILED and state.message.startswith("Generate stopped (exit code 1).")
+
+
+def test_a_withdrawn_run_that_finishes_anyway_is_recorded_done_not_cancelled():
+    """A13: the keeper withdraws its run once it is writing your list; the run can't stop there and finishes, writing
+    the lists and the plan. It is a finished Generate — the journey `current`, its end told as "current" — and the
+    registry records it done, not cancelled (it was: `_cancel_job` set the flag at running → cancelling and the end
+    kept it), so the bar never calls a Generate that wrote everything a cancel."""
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    ends = []
+    controller.on_end(lambda run, outcome: ends.append(outcome))
+    holder, launcher = _scripted(controller, h.root())
+    run = controller.request("ja", argv=FLAGGED + ["--no-open"], quiet=True, launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    holder["run"].feed(_line("Writing your list"))
+    controller.withdraw(run)
+    assert registry.snapshot()[-1].state == J.CANCELLING
+    holder["run"].feed(RESULT)
+    holder["run"].ended(0)
+    view = registry.snapshot()[-1]
+    assert (view.state, view.cancelled) == (J.DONE, False)
+    assert controller.state().state == G.CURRENT and ends == ["current"]
+
+
 # --- the Tk dashboard on the controller ------------------------------------------------------------------------- #
 def test_the_dashboards_generate_is_the_controllers_job_and_its_end_reaches_it():
     """The dashboard (2.x's window until W3.5) starts the child itself, through the controller: its run is the

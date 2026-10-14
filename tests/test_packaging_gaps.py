@@ -41,3 +41,22 @@ def test_a_licence_folder_left_empty_holds_no_licence_notice(tmp_path):
                                                                             encoding="utf-8")
     failures, _facts = package_app.check_program(str(folder), config)
     assert failures == ["_internal/licenses/PyQt6 holds no licence notice"]
+
+
+def test_an_unsigned_rebuild_into_a_signed_releases_folder_leaves_no_signature_behind(tmp_path, monkeypatch):
+    # A release built signed, then built again into the same folder with no key named (a test build, or the key
+    # forgotten): the new update.json is unsigned, so the old update.json.sig must go. Left there it would sit beside
+    # a manifest it never signed — the folder looks signed, and uploaded as it is, every 3.x install meets a
+    # release whose signature fails.
+    out = tmp_path / "release"
+    out.mkdir()
+    (tmp_path / "key.hex").write_text(SEED.hex() + "\n", encoding="ascii")
+    monkeypatch.setenv(package_app.SIGNING_KEY_ENV, str(tmp_path / "key.hex"))
+    _program(tmp_path / "signed")
+    config = package_app.load_build_config()
+    package_app._build_release(str(tmp_path / "signed" / "Surasura"), "3.0.1", config, out_dir=str(out))
+    assert (out / "update.json.sig").is_file()
+    monkeypatch.delenv(package_app.SIGNING_KEY_ENV)
+    _program(tmp_path / "unsigned")
+    assert package_app._build_release(str(tmp_path / "unsigned" / "Surasura"), "3.0.2", config, out_dir=str(out))
+    assert (out / "update.json").is_file() and not (out / "update.json.sig").exists()

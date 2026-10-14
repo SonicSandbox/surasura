@@ -227,14 +227,20 @@ def anki_connect_reviewing(job):
 def _snapshot(store):
     """The store's versions and its analysed tiers' order, read in one transaction: {path_key: (rank, place, tier)},
     rank the tier's place in NOW, Soon, 6+ Months — sorting the values gives the study order."""
-    from app import library_store
     schedule, versions = store.schedule(with_versions=True)
+    return versions, _order(schedule)
+
+
+def _order(schedule):
+    """`_snapshot`'s order from a schedule already read (`store.schedule()`): Connect's re-plan reads the schedule once
+    for the order and the run signature's files (P3.3)."""
+    from app import library_store
     order = {}
     for rank, tier in enumerate(TIERS):
         phase = library_store.TIERS[tier][0]
         for place, entry in enumerate(schedule.get(phase) or []):
             order[library_store.path_key(entry["physical_path"])] = (rank, place, tier)
-    return versions, order
+    return order
 
 
 class Host:

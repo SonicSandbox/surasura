@@ -13,10 +13,14 @@ recipe: `replan_preview`'s `_snapshot`, `plan_path`, `places`) decides —
   * `None` (only the order or the pins moved): re-plan; mine and order from it; **no Generate** ("no");
   * `replan-now` (known words, word lists, items left): re-plan now — provisional (E2.2-1 (b)) — and Generate after
     mining ("after");
-  * `generate-first` for a setting that re-cuts the list (the level, the band and their kin, `RECUT`): no re-plan —
-    mine from the list as it is — and Generate after mining ("after");
+  * `generate-first` for a **level raise proven** (`_level_raised`): the band alone moved,
+    to a rarer one (more words: later in `word_selection.BANDS_ORDER`) — with Automatic rarity on, the band it
+    remembers — and nothing else moved but the known words or the word lists: no re-plan — mine from the list as it
+    is (its words keep their places; the raise only adds words) — and Generate after mining ("after");
   * anything else (no plan, another language or engine, a run that didn't finish, a new or changed file, the store
-    set up again) and `stand-aside`: today's path, Generate first ("first").
+    set up again, a level lowered — its Generate drops words the old list would have mined — another setting, the
+    args, a frequency list, the band with any of them, a band not found) and `stand-aside`: today's path, Generate
+    first ("first").
 
 Any error reading it is "first" (logged): never worse than today. Read-only: nothing here writes the store, the plan
 or Anki. Light: no Qt, Tk or pandas (the analyzer's signature, the engine and the store are the command line's own).
@@ -26,9 +30,9 @@ import os
 
 log = logging.getLogger("surasura-cli")
 
-# `generate-first` reasons the engine can't serve but mining from the list as it is serves (a level or band change
-# and their kin: the words already listed keep their places until the Generate re-cuts it)
-RECUT = ("settings", "auto_band", "args", "freq")
+# What may move with a level raise and still be mined from the list as it is: the known words and the word lists (the
+# Generate after mining counts them); anything else — a file, the args, a frequency list, the engine — Generates first
+WITH_THE_LEVEL = ("known", "lists")
 
 
 class Current:
@@ -36,7 +40,8 @@ class Current:
     read), `generate` ("no" · "after" · "first"), `reason` (plain words for the log and the mark), `result` (the
     engine's `Result`, or None), `plan` and `ids` (the plan and each plan file's item id), `versions` (the store's,
     read with the order), `listed` ({(Word, Reading): place} in the result's priority order, or None), `places`
-    (RP-10, or None) and `key` (what it was read at: `key`)."""
+    (RP-10, or None), `key` (what it was read at: `key`) and `plan_key` (the plan file's (mtime, size) when it was
+    loaded: the next read keeps the loaded plan while it is the same)."""
 
     __slots__ = ("verdict", "generate", "reason", "result", "plan", "ids", "versions", "listed", "places", "key",
                  "plan_key")
@@ -93,27 +98,37 @@ def current(language, settings, store, previous=None):
 def _current(language, settings, store, previous):
     from app import analyzer, library_store, plan_engine, replan_preview, run_args
     from app.path_utils import get_user_file
-    versions, order = replan_preview._snapshot(store)
     path = replan_preview.plan_path()
     plan_key = _stat(path)
+    if plan_key is None:                    # no plan: nothing else to read
+        versions = store.versions()
+        return Current(("generate-first", "no-plan"), "first", "no plan yet", versions=versions,
+                       key=key(store, versions))
+    # One read of the store: the order, the files the run signature counts and the versions, in one transaction
+    schedule, versions = store.schedule(with_versions=True)
+    order = replan_preview._order(schedule)
     at = key(store, versions)
-    if plan_key is None:
-        return Current(("generate-first", "no-plan"), "first", "no plan yet", versions=versions, key=at)
     if previous is not None and previous.plan is not None and previous.plan_key == plan_key:
         plan = previous.plan
     else:
         try:
             plan = plan_engine.load(path)
         except plan_engine.PlanError as e:
+            log.warning("Connect couldn't read its plan (%s); it Generates first: %s", language, e)
             return Current(("generate-first", "plan"), "first", f"plan: {e}", versions=versions, key=at)
     # The run signature's parts for the library as it stands (`Host._parts`): a missing item keeps its place
-    found = analyzer.resolve_found_files(language, verbose=False, schedule=store.schedule(), missing=True)
+    found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
     args = analyzer.parse_analysis_args(run_args.analyzer_args(settings, language)[1:])
     parts = analyzer.run_signature_parts(language, found, args)
     verdict = plan_engine.check(plan, language, analyzer.engine_id(), analyzer.read_run_stamp(get_user_file("results")),
-                                parts, store.versions().get("epoch"))
-    if verdict is not None and verdict[0] == "generate-first" and verdict[1] in RECUT:
-        return Current(verdict, "after", verdict[1], plan=plan, versions=versions, key=at, plan_key=plan_key)
+                                parts, versions.get("epoch"))
+    if verdict is not None and verdict[0] == "generate-first" and verdict[1] in ("settings", "auto_band"):
+        raised = _level_raised(plan, parts, language)
+        if raised is not None:
+            return Current(verdict, "after", f"the level raised ({raised[0]} -> {raised[1]})", plan=plan,
+                           versions=versions, key=at, plan_key=plan_key)
+        log.info("Connect (%s): %s moved since the plan, and not the level raised alone: it Generates first",
+                 language, verdict[1])
     if verdict is not None and verdict[0] != "replan-now":
         return Current(verdict, "first", verdict[1], plan=plan, versions=versions, key=at, plan_key=plan_key)
     # The re-plan to the store's order (`Host._replan`): each plan file's item, ranked NOW, Soon, 6+ Months as the
@@ -127,3 +142,48 @@ def _current(language, settings, store, previous):
     if verdict is None:
         return Current(None, "no", "only the order moved", result, plan, ids, versions, at, plan_key)
     return Current(verdict, "after", ",".join(verdict[1]), result, plan, ids, versions, at, plan_key)
+
+
+def _level_raised(plan, parts, language):
+    """(the plan's band, the band now) when the level alone was raised since the plan — the
+    band in force moved to a rarer one (more words: later in `word_selection.BANDS_ORDER`) and nothing else moved but
+    the known words or the word lists — else None (Generate first: a lowering, the band with another setting, a file
+    or the args, a band that can't be told).
+
+    The band in force is the analyzer's: `logic.selection.band`, or with Automatic rarity on (the signature's
+    `auto_band` part is there) the band the store remembers. The plan's is found by putting each other band back —
+    into the settings (`analyzer.settings_signature`), or as the `auto_band` part — and digesting it as
+    `plan_rules.part_digests` digests that part: the one whose digest is the plan's."""
+    from app import analyzer, plan_rules, settings_manager, word_selection
+    kept = plan.header.get("order_free_parts")
+    if not isinstance(kept, dict):
+        return None
+    now = plan_rules.part_digests(parts)
+    moved = {name for name in set(kept) | set(now) if kept.get(name) != now.get(name)}
+    part = "auto_band" if "auto_band" in parts else "settings"
+    if part not in moved or moved - {part, *WITH_THE_LEVEL}:
+        return None
+    bands = word_selection.BANDS_ORDER
+    if part == "auto_band":
+        band, candidates = parts["auto_band"], [*bands, None]
+
+        def digest(value):
+            return plan_rules.part_digests({"files": [], "auto_band": value})["auto_band"]
+    else:
+        loaded = settings_manager.load_settings()
+        if analyzer.settings_signature(loaded, language) != parts["settings"]:
+            return None                     # settings.json changed since the parts were read: not ours to guess
+        logic = loaded.get("logic") or {}
+        selection = logic.get("selection") or {}
+        band, candidates = selection.get("band", "occasional"), bands     # the analyzer's own default
+
+        def digest(value):
+            put_back = dict(loaded, logic=dict(logic, selection=dict(selection, band=value)))
+            return plan_rules.part_digests({"files": [], "settings": analyzer.settings_signature(put_back,
+                                                                                                language)})["settings"]
+    if band not in bands:
+        return None
+    was = next((value for value in candidates if value != band and digest(value) == kept.get(part)), None)
+    if was not in bands or bands.index(was) >= bands.index(band):
+        return None                         # a lowering, or a band the plan wasn't cut at that can be named
+    return was, band

@@ -4127,6 +4127,89 @@ _SIGNATURE_ENCODER = plan_rules.SIGNATURE_ENCODER
 signature_digest = plan_rules.signature_digest
 
 
+def settings_signature(settings, language):
+    """The run signature's `settings` part (`run_signature_parts`) for `settings` (settings.json as the run reads
+    it: `settings_manager.load_settings()`): every key a run reads, as one JSON string. Pure (the dict handed in is
+    never changed), so a caller can sign a settings dict that differs from the file by one key (Connect's level
+    look, P3.3: which band the plan was cut at)."""
+    _NON_ANALYSIS_SETTINGS = {
+        "theme", "open_app_mode", "zen_limit",
+        "words_per_day", "show_words_per_day",
+        "open_count", "skipped_version", "failed_update_version",
+        "source_display",   # badge rendering only — re-renders (see compute_render_signature)
+        "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
+        "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
+        "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
+        "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
+        "app_motion",                   # the 3.0 window's motion (M2.1): no run or report reads it
+        "journey_settle_s", "journey_settle_battery_s",   # when the background Generate starts (E3.2)
+        # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
+        "connect_enabled", "placing_rules",
+        # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
+        # and field picks themselves must not force a re-analysis on every click.
+        "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
+        "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
+        # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
+        "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
+        "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
+        "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
+        "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
+        "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
+        # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
+        "anki_sync_delay_min",
+        # Optional-module switches that change what the app SHOWS, never what a run computes.
+        # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
+        # library_frequency.json it used to switch on.)
+        "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
+        "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
+        # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
+        # EPUB importer's part size, the Content Manager's "Add Words on 'Graduate'". No run reads them.
+        "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length",
+        "add_graduated_words",
+        # Rarity or coverage: a run reads neither key, only the --target-coverage the dashboard
+        # passes in coverage mode — in the args below.
+        "strategy", "target_coverage",
+        # Retired: ChineseTokenizer ignores it. A window that saved every default kept writing it
+        # back, and each such save cost a full re-analysis.
+        "reinforce_segmentation",
+    }
+    # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
+    # on every change, and hashing them made each of those clicks cost a full re-analysis.
+    _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
+    # The logic keys no run reads: the tooltip delay and the EPUB importer's split; and the report's
+    # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
+    # which compute_render_signature holds instead (a re-render, never a re-analysis).
+    _NON_ANALYSIS_LOGIC = {"gui", "importer",
+                           "inline_completed_files", "hide_audio_button", "chunk_size", "priority_markers",
+                           "automation"}     # D29's switch (3.0): what runs by itself, never what a run reads
+    _UNREAD_CONTEXT = {"search_range", "max_extra", "min_words"}   # no code reads them
+    # Read by a Japanese run only (measured: flipping any of them leaves every output of a Chinese
+    # run byte for byte the same; the one-character rule's --include-single-chars too, in the args).
+    _JAPANESE_ONLY_LOGIC = {"paren_readings", "names_katakana", "names_recurring", "names_kanji",
+                            "names_work_terms", "phrases_and_titles", "pronoun_bases", "phrase_rows",
+                            "ignore_names"}
+    _sj = dict(settings)
+    for _k in _NON_ANALYSIS_SETTINGS:
+        _sj.pop(_k, None)
+    for _k in [k for k in _sj if k.startswith(_NON_ANALYSIS_PREFIXES)]:
+        _sj.pop(_k, None)
+    _logic = {k: v for k, v in _sj.get("logic", {}).items() if k not in _NON_ANALYSIS_LOGIC}
+    if isinstance(_logic.get("context"), dict):
+        _logic["context"] = {k: v for k, v in _logic["context"].items() if k not in _UNREAD_CONTEXT}
+    # Each language's own: its sentence ends, never the other's; the Chinese script only for
+    # Chinese (a Japanese run's args carry no script), the Japanese-only switches only for Japanese.
+    if isinstance(_logic.get("sentence_boundaries"), dict):
+        _logic["sentence_boundaries"] = {language: _logic["sentence_boundaries"].get(language)}
+    if language == "zh":
+        _sj.pop("exclude_single", None)
+        for _k in _JAPANESE_ONLY_LOGIC:
+            _logic.pop(_k, None)
+    else:
+        _sj.pop("zh_script", None)
+    _sj["logic"] = _logic
+    return json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
+
+
 def run_signature_parts(language, found_files, args):
     """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read."""
     try:
@@ -4149,88 +4232,13 @@ def run_signature_parts(language, found_files, args):
             except OSError:
                 return None
 
-        _NON_ANALYSIS_SETTINGS = {
-            "theme", "open_app_mode", "zen_limit",
-            "words_per_day", "show_words_per_day",
-            "open_count", "skipped_version", "failed_update_version",
-            "source_display",   # badge rendering only — re-renders (see compute_render_signature)
-            "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
-            "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
-            "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
-            "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
-            "app_motion",                   # the 3.0 window's motion (M2.1): no run or report reads it
-            "journey_settle_s", "journey_settle_battery_s",   # when the background Generate starts (E3.2)
-            # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
-            "connect_enabled", "placing_rules",
-            # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
-            # and field picks themselves must not force a re-analysis on every click.
-            "anki_connect_url", "anki_sync_auto", "anki_sync_decks", "anki_sync_fields",
-            "anki_sync_include_suspended", "anki_backlog_on_generate", "anki_auto_generate",
-            # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
-            "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
-            "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
-            "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
-            "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
-            "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
-            # The sync rule's minute (E1.1 04 §3, S4; shared with Connect): when Anki is asked to sync, never a run
-            "anki_sync_delay_min",
-            # Optional-module switches that change what the app SHOWS, never what a run computes.
-            # (`enable_youtube_preview` joined them at ENGINE_REVISION 11: every run now writes the
-            # library_frequency.json it used to switch on.)
-            "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
-            "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
-            # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
-            # EPUB importer's part size, the Content Manager's "Add Words on 'Graduate'". No run reads them.
-            "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length",
-            "add_graduated_words",
-            # Rarity or coverage: a run reads neither key, only the --target-coverage the dashboard
-            # passes in coverage mode — in the args below.
-            "strategy", "target_coverage",
-            # Retired: ChineseTokenizer ignores it. A window that saved every default kept writing it
-            # back, and each such save cost a full re-analysis.
-            "reinforce_segmentation",
-        }
-        # The optional modules' own tunables. The Junban panel saves its deck, order and touch-ups
-        # on every change, and hashing them made each of those clicks cost a full re-analysis.
-        _NON_ANALYSIS_PREFIXES = ("junban_", "koe_", "reels_")
-        # The logic keys no run reads: the tooltip delay and the EPUB importer's split; and the report's
-        # own — "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds —
-        # which compute_render_signature holds instead (a re-render, never a re-analysis).
-        _NON_ANALYSIS_LOGIC = {"gui", "importer",
-                               "inline_completed_files", "hide_audio_button", "chunk_size", "priority_markers",
-                               "automation"}     # D29's switch (3.0): what runs by itself, never what a run reads
-        _UNREAD_CONTEXT = {"search_range", "max_extra", "min_words"}   # no code reads them
-        # Read by a Japanese run only (measured: flipping any of them leaves every output of a Chinese
-        # run byte for byte the same; the one-character rule's --include-single-chars too, in the args).
-        _JAPANESE_ONLY_LOGIC = {"paren_readings", "names_katakana", "names_recurring", "names_kanji",
-                                "names_work_terms", "phrases_and_titles", "pronoun_bases", "phrase_rows",
-                                "ignore_names"}
         _settings_for_sig = ""
         try:
             # The settings as the run reads them (load_settings: the defaults filled in, a saved value
             # always winning). A key written at its default and one left out are then the same
             # settings, as they are to the run: an update's first start, which writes the new defaults
             # into the file, and a window that saves every default re-analyze nothing.
-            _sj = settings_manager.load_settings()
-            for _k in _NON_ANALYSIS_SETTINGS:
-                _sj.pop(_k, None)
-            for _k in [k for k in _sj if k.startswith(_NON_ANALYSIS_PREFIXES)]:
-                _sj.pop(_k, None)
-            _logic = {k: v for k, v in _sj.get("logic", {}).items() if k not in _NON_ANALYSIS_LOGIC}
-            if isinstance(_logic.get("context"), dict):
-                _logic["context"] = {k: v for k, v in _logic["context"].items() if k not in _UNREAD_CONTEXT}
-            # Each language's own: its sentence ends, never the other's; the Chinese script only for
-            # Chinese (a Japanese run's args carry no script), the Japanese-only switches only for Japanese.
-            if isinstance(_logic.get("sentence_boundaries"), dict):
-                _logic["sentence_boundaries"] = {language: _logic["sentence_boundaries"].get(language)}
-            if language == "zh":
-                _sj.pop("exclude_single", None)
-                for _k in _JAPANESE_ONLY_LOGIC:
-                    _logic.pop(_k, None)
-            else:
-                _sj.pop("zh_script", None)
-            _sj["logic"] = _logic
-            _settings_for_sig = json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
+            _settings_for_sig = settings_signature(settings_manager.load_settings(), language)
         except Exception:
             pass
 

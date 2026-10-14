@@ -786,7 +786,13 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     written = report.get("written") or []
     snapshot = report.get("snapshot")
     if planned and report.get("ok") and not report.get("left") and not report.get("failures"):
-        _record_planned(lang, current.versions)
+        after = _record_planned(lang, current.versions)
+        written_at = current.versions["order_version"]
+        if after is not None and (after["order_version"] > written_at or after["planned_order_version"] > written_at):
+            # A newer order was planned (the window's host wrote it while this run waited for `anki-writer`) or you
+            # moved meanwhile: this write may have landed over it. Connect's step re-plans and orders once more (the
+            # host's own rule, `Host._replan`; review M1) — told on the namespace, as `current` came in on it
+            args.newer = True
     if session is not None and written:
         # S3's clock: a spaced run (a job) told the rule itself; a dense one is read here, by the re-plan's own test
         from app import anki_sync_rule
@@ -803,17 +809,24 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
 
 def _record_planned(lang, versions):
     """Anki holds the order the store had at `versions` (a clean run from its re-plan): recorded, so the window's
-    re-order host owes nothing for it. A store that can't be written now is only logged: the host re-orders once more,
-    never wrongly."""
+    re-order host owes nothing for it -> the store's versions after (None: no store, or it couldn't be read). Read
+    first: the write lock is taken only when the record raises a value (review H3). A store that can't be written now
+    is only logged: the host re-orders once more, never wrongly."""
     try:
         from app.connect import library
         store = library.open_store(lang)
         if store is None:
-            return
+            return None
         with store:
-            store.record_planned(versions["order_version"], versions["pins_version"])
+            now = store.versions()
+            if (now["planned_order_version"] < versions["order_version"]
+                    or now["planned_pins_version"] < versions["pins_version"]):
+                store.record_planned(versions["order_version"], versions["pins_version"])
+                now = store.versions()
+            return now
     except Exception as e:
         contract.log.warning("the order Connect wrote wasn't recorded as planned: %s", e)
+        return None
 
 
 # --------------------------------------------------------------------------- #

@@ -2,7 +2,8 @@
 
 When the list gains words — the level raised by hand, or automatic rarity moving it — Connect mines **only the newly
 listed words**, skipping the words already mined, for the episodes it has already mined, **the top 20 first**. In 2.x
-only the top 20 (the rest of the already-mined content waits for 3.0, HC-N53's "the rest in the background", P3.3);
+only the top 20 (the rest of the already-mined content waits for 3.0's Connect ↔ window step (P4.1), HC-N53's "the
+rest in the background");
 lowering the level mines nothing (N38: the words that left keep their cards, at the back); either way the deck is
 re-sorted (`resort_due`, paid by the runner's ordering step, P2.4).
 

@@ -1,5 +1,5 @@
-"""P3.3 row 3.3.5 (F11): the Generate after mining and its follow-up re-order. When known words or the level moved
-since the plan, Connect mines first — from the provisional re-plan, or the list as it is — and only then, once the
+"""P3.3 row 3.3.5 (F11): the Generate after mining and its follow-up re-order. When known words moved or the level was
+raised since the plan, Connect mines first — from the provisional re-plan, or the list as it is — and only then, once the
 language's jobs have run this pass, Generates; then reads the plan again, re-orders Anki once from it (the re-sort
 owed until that lands) and looks at the level on the new run, whose jobs it mines in the same run. Never while
 stopped; once a run.
@@ -94,6 +94,17 @@ def test_switched_off_mid_run_starts_no_generate(tmp_path):
     assert ("generate", "ja") not in steps.log
 
 
+@pytest.mark.parametrize("stop", [{"switch_off_after": "generate"},      # you switched Connect off meanwhile
+                                  {"staged_after": "generate"}])         # an update was staged meanwhile
+def test_stopped_during_the_generate_after_mining_writes_nothing_to_anki_and_owes_the_re_sort(tmp_path, stop):
+    # why (S16, D29, E26): the Generate takes seconds to minutes — the off switch and a staged update
+    # are looked at again before the follow-up re-order writes Anki
+    steps, _summary, owed, _needs = _run(tmp_path, dict({"generate_after": True}, **stop))
+    assert ("generate", "ja") in steps.log, "the Generate itself ran (mining was done before the stop)"
+    assert ("order", None) not in steps.log, "no follow-up write after the stop"
+    assert owed is not None, "the re-sort stays owed"
+
+
 def test_once_a_run_however_many_looks(tmp_path):
     steps, _summary, _owed, _needs = _run(tmp_path, {"generate_after": True, "blocked": None}, looks=3)
     assert steps.log.count(("generate", "ja")) == 1
@@ -135,9 +146,33 @@ def test_the_steps_generate_failing_is_a_wait_or_needs_you_and_clears_the_mark(m
 
 
 def test_the_step_defers_the_re_order_while_the_level_waits_for_its_generate(monkeypatch):
-    # no re-plan to order from (the band moved): the Generate after mining's follow-up orders, never the stale list
+    # no re-plan to order from (the level raised): the Generate after mining's follow-up orders, never the stale list
     steps = runner.Steps({})
     steps._after["ja"] = "settings"
     steps.current = lambda lang, fresh=False: SimpleNamespace(generate="after", result=None, listed=None)
     monkeypatch.setattr(verbs, "junban", lambda ns: pytest.fail("no re-order from the list as it is"))
     assert steps.order("ja", {"id": 8, "item_id": 1}) == runner.DEFERRED
+
+
+def test_a_wait_reading_the_plan_after_a_generate_that_went_through_still_follows_up(monkeypatch, tmp_path):
+    # why (review H5): the Generate's success is what counts — a busy store at the re-read skipped the follow-up
+    # re-order and the level look; the follow-up reads its own plan
+    steps, seen = _real(monkeypatch, lambda ns: {"ran": True})
+
+    def busy(lang, fresh=False):
+        seen.append(("current", fresh))
+        raise runner.Wait(runner.LIBRARY_BUSY)
+    steps.current = busy
+    steps._after["ja"] = "known"
+    assert steps.generate_after("ja", None) is True
+    assert seen == ["ja", ("current", True)]
+    # through the loop's own step: the follow-up re-order runs and pays the re-sort
+    steps._after["ja"] = "known"
+    steps.update_staged = lambda: False
+    steps.enabled = lambda: True
+    steps.blocked = lambda lang: None
+    steps.order = lambda lang, job: seen.append(("order", job))
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        assert runner._after_mining(steps, ledger, "ja", {"needs": []}) is True
+        assert ledger.resort_owed("ja") is None, "the follow-up landed"
+    assert seen[-1] == ("order", None)

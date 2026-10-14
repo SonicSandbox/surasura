@@ -7,8 +7,10 @@ Months), generated once per test. What these prove:
   - its own order → "no" Generate, and the pick's ranks are the list's own (the CSV's places);
   - a move → "no" Generate, and the re-plan IS a full Generate of the new order on the plan columns (05 §1, the
     journey's referee `_differs`) — the parity that lets Connect skip the Generate — in Japanese and Chinese;
-  - known words changed → re-plan now, Generate "after" mining; the band changed → "after", no re-plan (mine from the
-    list as it is); a new file → Generate "first" (its words aren't counted yet);
+  - known words changed → re-plan now, Generate "after" mining; the level raised alone (the band, or Automatic
+    rarity's band, to a rarer one) → "after", no re-plan (mine from the list as it is); a lowering, the band with
+    another setting or a new file → Generate "first"; a new file → "first" (its words aren't
+    counted yet);
   - no plan, a damaged plan, a plan the engine stands aside from (Coverage) → "first": today's path.
 
 What a wrong answer would cost: cards picked by the last Generate's ranks after you moved an episode up (the words you
@@ -137,14 +139,66 @@ def test_known_words_changed_re_plans_now_and_generates_after_mining(lib):
     assert got.reason == "known" and got.result is not None and got.listed, "mined from the provisional re-plan"
 
 
-def test_the_band_changed_mines_from_the_list_as_it_is_and_generates_after(lib):
-    # why: the engine can't re-cut the list for another level (E3.2 D3), but the words already listed are right to
-    # mine from now — a Generate first would hold every card back for a whole analysis
+def test_the_level_raised_mines_from_the_list_as_it_is_and_generates_after(lib):
+    # why: the engine can't re-cut the list for another level (E3.2 D3), but a raise only adds words — the ones
+    # already listed are right to mine from now; a Generate first would hold every card back for a whole analysis
     root, store = lib
-    _settings_file(root, "ja", logic={"selection": {"band": "common"}})
+    _settings_file(root, "ja", logic={"selection": {"band": "uncommon"}})         # occasional -> uncommon: rarer
     got = _current(store)
     assert got.verdict == ("generate-first", "settings") and got.generate == "after", got.verdict
+    assert got.reason == "the level raised (occasional -> uncommon)", got.reason
     assert got.result is None and got.listed is None, "no re-plan: the pick reads the list as it is"
+
+
+def test_the_level_lowered_generates_first(lib):
+    # why: a lowering drops words — mined from the old list, they'd be cards for words the
+    # Generate then takes off your list (P2.2: a lowering mines nothing)
+    root, store = lib
+    _settings_file(root, "ja", logic={"selection": {"band": "common"}})           # occasional -> common: commoner
+    got = _current(store)
+    assert got.verdict == ("generate-first", "settings") and got.generate == "first", got.verdict
+
+
+@pytest.mark.parametrize("context", [{"max_chars": 120},              # a setting alone (the settings part)
+                                     {"preferred_max_chars": 40}])    # the args too (--context-max)
+def test_the_level_raised_with_a_sentence_length_change_generates_first(lib, context):
+    # why: only the band put back can be the plan's — another setting with it re-cuts what the old list can't tell
+    root, store = lib
+    _settings_file(root, "ja", logic={"selection": {"band": "uncommon"}, "context": context})
+    got = _current(store)
+    assert got.verdict[0] == "generate-first" and got.generate == "first", got.verdict
+
+
+def test_the_level_raised_with_a_new_file_generates_first(lib):
+    # why: a new episode's words are counted by no list yet — the old list would mine around them
+    root, store = lib
+    from app.path_utils import get_data_path
+    with open(os.path.join(get_data_path("ja"), "GoalContent", "new_episode.txt"), "w", encoding="utf-8") as f:
+        f.write("新しい話が始まった。今日は学校で友達に会った。\n")
+    library_store.sync_for_window(store)
+    _settings_file(root, "ja", logic={"selection": {"band": "uncommon"}})
+    got = _current(store)
+    assert got.verdict == ("generate-first", "files") and got.generate == "first", got.verdict
+
+
+def test_automatic_raritys_band_moving_rarer_mines_first_and_commoner_generates_first(lib):
+    # Automatic rarity: the band in force is the one the store remembers (the signature's `auto_band` part), so a
+    # raise there is a raise; a step back to a commoner band is a lowering
+    root, store = lib
+    from app.path_utils import get_data_path, get_user_files_path
+    from app.word_selection import BANDS_ORDER as bands
+    # RP-2's bands: Core lists 1 word, every rarer band the same 162 — so Automatic takes Core under 162 words (a
+    # rarer band is there to move to) and Native at 850 (a commoner one is)
+    for max_words, step, generate in ((100, +1, "after"), (850, -1, "first")):
+        _settings_file(root, "ja", logic={"selection": {"auto": True, "auto_max_words": max_words}})
+        _generate(root, "rp2-ja", "ja")
+        chosen = library_store.read_auto_band("ja", get_data_path("ja"))
+        assert chosen == (bands[0] if step > 0 else bands[-1]), chosen
+        assert _current(store).generate == "no", "the Generate's own band: nothing moved"
+        band = bands[bands.index(chosen) + step]
+        assert library_store.record_auto_band("ja", get_data_path("ja"), get_user_files_path("ja"), band, 100)
+        got = _current(store)
+        assert got.verdict == ("generate-first", "auto_band") and got.generate == generate, (band, got.verdict)
 
 
 def test_a_new_file_generates_first(lib):

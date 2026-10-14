@@ -66,8 +66,9 @@ class FakeSteps:
     `prepare_error` · `staged` · `store_busy` (the library busy: the top 20 can't be read) · `unknown_status` (a word
     Anki Miner answers with a status it doesn't know: uncertain, no crash, no card) · `fill_needs` (Backfill asks for
     you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
-    pick has run) · `generate_after` (P3.3: the plan marks a Generate after mining) · `generate_after_error` ·
-    `level_after` (level jobs the Generate's new run queues)."""
+    pick has run) · `staged_after` (an update staged once that step ran: "generate") · `generate_after` (P3.3: the
+    plan marks a Generate after mining) · `generate_after_error` · `level_after` (level jobs the Generate's new run
+    queues)."""
 
     def __init__(self, folder, plan=None, child=False):
         self.folder = folder
@@ -89,8 +90,8 @@ class FakeSteps:
         self.log.append(("lower",))
 
     def update_staged(self):
-        return bool(self.plan.get("staged")) or (bool(self.plan.get("staged_after_pick"))
-                                                  and any(e[0] == "pick" for e in self.log))
+        after = self.plan.get("staged_after") or ("pick" if self.plan.get("staged_after_pick") else None)
+        return bool(self.plan.get("staged")) or bool(after and any(e[0] == after for e in self.log))
 
     def settle(self):
         self.log.append(("settle",))

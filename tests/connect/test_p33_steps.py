@@ -224,3 +224,69 @@ def test_junban_auto_itself_stays_positions_only_with_your_actions_and_connect_o
         out = verbs.junban(SimpleNamespace(lang="ja", wait=0.0, auto=True, dry_run=False))
     assert out.get("moves", 0) > 0 and not out.get("skipped"), out
     assert fake.flag_writes == [] and fake.tag_calls == [] and fake.suspend_calls == []
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# The first review's fixes: a busy store, a key that can't be read, record_planned's read first
+# --------------------------------------------------------------------------------------------------------------- #
+
+def test_the_ordering_step_with_the_store_busy_waits_and_writes_nothing(lib, no_session, monkeypatch):
+    # why (review H8 + H12): a busy store is a Wait — the step waits and looks again, as every busy-store read does;
+    # swallowed, it fell back to the list and named a misleading "the list is out of date" skip
+    root, store = lib
+    _settings_file(root, connect_enabled=True)
+    fake = _deck(root)
+    from app import library_store
+    from app.connect import library
+    _move_later_to_top(store)
+    monkeypatch.setattr(library, "open_store", lambda lang, role="connect": None)
+    monkeypatch.setattr(library_store, "check_mode", lambda *a, **k: ("store", "busy"))
+    with _patched(fake):
+        with pytest.raises(runner.Wait) as got:
+            _steps().order("ja", {"id": 8, "item_id": 1})
+    assert got.value.reason == runner.LIBRARY_BUSY
+    assert not fake.writes, "nothing written while the store was busy"
+
+
+def test_a_key_that_cant_be_read_counts_as_moved_and_the_guarded_read_answers(lib, monkeypatch):
+    # why (review H9): `replan.key` ran outside `replan.current`'s guard — a store error there ended the pick or the
+    # re-order as a job error instead of being read again
+    root, store = lib
+    from app.connect import library
+    steps = _steps()
+    first = steps.current("ja")
+    real = library.open_store
+
+    def failing_versions(lang, role="connect"):
+        opened = real(lang, role)
+
+        def versions():
+            raise RuntimeError("the store's versions can't be read")
+        opened.versions = versions
+        return opened
+    monkeypatch.setattr(library, "open_store", failing_versions)
+    again = steps.current("ja")
+    assert again is not first and again.generate == "no" and again.listed == first.listed
+
+
+def test_record_planned_takes_no_write_when_the_planned_versions_already_cover_it(lib, monkeypatch):
+    # why (review H3): every clean run took the store's write lock even when the order was already recorded planned
+    root, store = lib
+    from app import library_store
+    writes = []
+    real = library_store.Store._writing
+
+    def counted(self, *args, **kwargs):
+        writes.append(1)
+        return real(self, *args, **kwargs)
+    versions = store.versions()
+    store.record_planned(versions["order_version"], versions["pins_version"])
+    monkeypatch.setattr(library_store.Store, "_writing", counted)
+    after = verbs._record_planned("ja", versions)
+    assert writes == [], "covered: read, never written"
+    assert after["planned_order_version"] == versions["order_version"]
+    _move_later_to_top(store)                        # a newer order: the record raises a value
+    newer = store.versions()
+    writes.clear()
+    after = verbs._record_planned("ja", newer)
+    assert writes and after["planned_order_version"] == newer["order_version"]

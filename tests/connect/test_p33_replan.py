@@ -11,7 +11,11 @@ sits (the video, the fit check, the batch, Backfill) a stand-in that makes one n
       its plan writes nothing;
   (c) E2.2-1 (b)'s overlaps: a move made during the Generate after mining is served by the follow-up at its time, and
       Anki ends where a full Generate of the final order puts it; a Generate landing between Connect's re-plan and its
-      write → `record_planned` never claims the newer order, the next look re-orders, Anki ends at the final order.
+      write → `record_planned` never claims the newer order, the step orders once more from the newer plan, Anki ends
+      at the final order;
+  (d) the first review's M1: a newer order the window's host planned and wrote while Connect waited for the writer
+      lock → Connect re-plans and orders once more — once, never a loop — and Anki ends at the newest order's
+      Generate; one recipe: the window's re-order host and Connect re-plan by one recipe (the same rows and places).
 
 What a wrong answer would cost: a full Generate for every move holding the cards back; cards made or ordered by ranks
 no list ever had; an order recorded as planned that Anki doesn't hold (the window's host then never fixes it).
@@ -248,14 +252,17 @@ def test_a_generate_landing_between_the_re_plan_and_its_write_is_never_recorded_
             _generate(root)
         return real(settings, **kwargs)
     monkeypatch.setattr(auto, "reorder", window_meanwhile)
+    recorded = []
+    real_record = verbs._record_planned
+    monkeypatch.setattr(verbs, "_record_planned", lambda lang, versions: recorded.append(versions["order_version"])
+                        or real_record(lang, versions))
     with _patched(fake):
         first = steps.current("ja")
-        steps.order("ja", None)
+        steps.order("ja", None)                      # the store moved while it wrote: re-planned, ordered once more
         versions = store.versions()
         assert versions["order_version"] > first.versions["order_version"]
-        assert versions["planned_order_version"] == first.versions["order_version"], \
-            "recorded at the order it wrote, never the newer one"
-        steps.order("ja", None)                      # the next look: the store moved, the plan is new — re-planned
+        assert recorded == [first.versions["order_version"], versions["order_version"]], \
+            "each write recorded at the order it wrote, never a newer one"
         again = steps.current("ja")
         assert again is not first and again.versions["order_version"] == versions["order_version"]
         versions = store.versions()
@@ -269,3 +276,84 @@ def test_a_generate_landing_between_the_re_plan_and_its_write_is_never_recorded_
     with _patched(fake):
         assert _anki_holds(final.rows("content"))
     assert journey._differs(again.result, journey._lists()) == ""
+
+
+def _newer_meanwhile(store, monkeypatch, times=1):
+    """The window's re-order host while Connect waits for `anki-writer`: you move, it plans and writes that newer order
+    (recorded planned) — during the first `times` of Connect's writes. Returns the jobs Connect's writes ran."""
+    real = auto.reorder
+    jobs = []
+
+    def host_meanwhile(settings, **kwargs):
+        jobs.append(kwargs.get("job"))
+        if len(jobs) <= times:
+            store.move([store.ids("now")[-1]], "now", before_id=store.ids("now")[0])
+            versions = store.versions()
+            store.record_planned(versions["order_version"], versions["pins_version"])
+        return real(settings, **kwargs)
+    monkeypatch.setattr(auto, "reorder", host_meanwhile)
+    return jobs
+
+
+def test_a_newer_order_the_window_wrote_while_connect_waited_is_ordered_once_more(connect, monkeypatch):
+    # why (review M1): `record_planned` keeps the larger value, so the store said "planned" at the host's newer order
+    # while Anki held Connect's older one — and nobody re-ordered until the next move
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    steps = AnkiMinerStandIn(_loaded(), [])
+    _move_later_to_top(store)
+    jobs = _newer_meanwhile(store, monkeypatch)
+    with _patched(fake):
+        first = steps.current("ja")
+        steps.order("ja", None)
+        final = steps.current("ja")
+        assert len(jobs) == 2, "ordered once more, from the newer plan"
+        assert jobs[1].rows == final.rows("content") != first.rows("content")
+        assert final.versions["order_version"] == store.versions()["order_version"] > first.versions["order_version"]
+        assert _anki_holds(final.rows("content")), "Anki holds the newest order"
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+    store.close()
+    _generate(root)                                  # the newest order's full Generate: Anki holds its order
+    from app.connect import library, replan
+    with library.open_store("ja") as fresh:
+        newest = replan.current("ja", dict(_loaded(), target_language="ja"), fresh)
+    assert newest.generate == "no"
+    with _patched(fake):
+        assert _anki_holds(newest.rows("content"))
+
+
+def test_ordering_once_more_is_once_never_a_loop(connect, monkeypatch):
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    steps = AnkiMinerStandIn(_loaded(), [])
+    _move_later_to_top(store)
+    jobs = _newer_meanwhile(store, monkeypatch, times=5)     # the host writes a newer order during every write
+    with _patched(fake):
+        assert steps.order("ja", None) is None
+    assert len(jobs) == 2, "once more, then it's the next look's"
+
+
+def test_the_window_and_connect_re_plan_by_one_recipe(lib):
+    # why (S5 / S11): were Connect's ranking to drift from the window's re-order host's, each would undo
+    # the other's order in Anki on every move
+    root, store = lib
+    fake = _deck(root)
+    from tests.test_replan_preview import _host
+    _burst(store)
+    host, _lines = _host()
+    jobs = []
+    real_write = host._write
+
+    def write(settings, job, kind):
+        jobs.append(job)
+        return real_write(settings, job, kind)
+    host._write = write
+    with _patched(fake):
+        host._job("catch-up")
+    from app.connect import library, replan
+    with library.open_store("ja") as fresh:
+        got = replan.current("ja", dict(_loaded(), target_language="ja"), fresh)
+    assert jobs and got.generate == "no", got.reason
+    assert jobs[-1].rows == got.rows("content"), "the same Junban rows"
+    assert jobs[-1].places == got.places, "the same RP-10 places"

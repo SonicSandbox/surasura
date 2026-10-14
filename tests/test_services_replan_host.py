@@ -48,7 +48,7 @@ class _Settings:
 
 @pytest.fixture
 def gate(monkeypatch):
-    """`automation_on`'s shape (D29 on, Junban on, the (language, deck) pair recorded and holding) and the update's lock
+    """`automation_on`'s shape (D29 on, Junban on and installed, the (language, deck) pair recorded and holding) and the update's lock
     (`staged["now"]`). The real predicate is worker K's, tested with replan_preview."""
     staged = {"now": False}
 
@@ -60,6 +60,8 @@ def gate(monkeypatch):
                 and settings.get("junban_replan_deck") == settings.get("junban_deck"))
     monkeypatch.setattr(replan_preview, "automation_on", automation_on, raising=False)
     monkeypatch.setattr(replan_preview, "_update_staged", lambda: staged["now"])
+    # Junban installed, whatever this checkout holds (GitHub's has no `modules/`): the bar's stand-aside line needs it
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: True)
     return staged
 
 

@@ -416,6 +416,7 @@ def test_the_freeze_runs_inside_the_release_flag(tmp_path, monkeypatch, release)
     (tmp_path / "app" / "build_info.py").write_bytes(original)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(package_app, "get_version", lambda: "2.5.0")
+    monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 4))   # a release refuses an older Python
     frozen = []
 
     def pyinstaller(cmd, **kwargs):

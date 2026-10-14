@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 from app import locks
-from app.path_utils import get_user_file, read_text
+from app.path_utils import get_settings_path, read_text
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
@@ -258,7 +258,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
     """Loads settings from disk and merges with defaults (plus any present optional modules).
     `strict`: a settings.json that exists but can't be read raises `SettingsError` instead of falling back to the
     defaults (the command line's `bad-data`: a fallback a later save would write back, P0.3 05 §1)."""
-    settings_path = get_user_file("settings.json")
+    settings_path = get_settings_path()
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     # Optional modules contribute their own defaults, but only when importable.
     settings.update(_optional_module_defaults())
@@ -388,7 +388,7 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait:
     If clean_for_build is True, or if the module is missing, 'hide_satoru' is stripped.
     Returns True once written; False when it could not be (the reason printed), the file untouched.
     """
-    settings_path = get_user_file("settings.json")
+    settings_path = get_settings_path()
 
     # 1. Start with a copy to avoid mutating the app's state
     # Ensure settings is a dict before calling copy
@@ -427,7 +427,7 @@ def save_settings(settings: Dict[str, Any], clean_for_build: bool = False, wait:
 
 def _read_file_as_is() -> Dict[str, Any]:
     try:
-        settings = json.loads(read_text(get_user_file("settings.json")))   # a BOM too, as load_settings
+        settings = json.loads(read_text(get_settings_path()))   # a BOM too, as load_settings
         if not isinstance(settings, dict):
             raise ValueError("settings.json is not an object")
     except (OSError, ValueError):

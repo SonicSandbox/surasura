@@ -205,7 +205,7 @@ def _outside_pytest(monkeypatch):
 def test_windows_root_is_local_appdata(tmp_path, monkeypatch):
     _outside_pytest(monkeypatch)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
-    assert path_utils.local_data_root() == os.path.join(str(tmp_path / "Local"), "SonicSandbox", "Surasura")
+    assert path_utils.local_data_root() == os.path.join(str(tmp_path / "Local"), "Houseki", "Surasura")
 
 
 def test_macos_and_linux_roots(tmp_path, monkeypatch):
@@ -213,13 +213,13 @@ def test_macos_and_linux_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path / "home")))
     monkeypatch.setattr(sys, "platform", "darwin")
     assert path_utils.local_data_root() == os.path.join(
-        str(tmp_path / "home"), "Library", "Application Support", "SonicSandbox", "Surasura")
+        str(tmp_path / "home"), "Library", "Application Support", "Houseki", "Surasura")
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    assert path_utils.local_data_root() == os.path.join(str(tmp_path / "data"), "SonicSandbox", "Surasura")
+    assert path_utils.local_data_root() == os.path.join(str(tmp_path / "data"), "Houseki", "Surasura")
     monkeypatch.delenv("XDG_DATA_HOME")
     assert path_utils.local_data_root() == os.path.join(
-        str(tmp_path / "home"), ".local", "share", "SonicSandbox", "Surasura")
+        str(tmp_path / "home"), ".local", "share", "Houseki", "Surasura")
 
 
 def test_the_per_install_folder_is_built_on_the_root(tmp_path, monkeypatch):

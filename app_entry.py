@@ -33,6 +33,34 @@ if sys.platform == "win32":
 import multiprocessing
 
 
+def _error_box(title, text):
+    """The app's one error route before any window exists: a Tk message box (never on a headless call)."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, text)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _start_checks(headless):
+    """The frozen program's checks at start (S3.1 D18): hold `<data name>.Running` for the process's life (Inno
+    Setup's AppMutex), and refuse to run when this program and its `_internal` folder are different builds (their build
+    stamp): logged, shown unless headless, exit 2 (`version-skew`). -> None to go on, else the exit code."""
+    from app import build_info
+    build_info.hold_running_mutex()
+    skew = build_info.stamp_skew()
+    if not skew:
+        return None
+    log_error(f"version-skew: this program {skew['program']}, its folder {skew['folder']}")
+    if not headless:
+        _error_box("Surasura", build_info.skew_text(skew))
+    return 2
+
+
 def _qt_window():
     """The 3.0 window's module (app/qt/shell.py), or None when PyQt6 isn't installed: then the Tk dashboard opens and
     the log says why (a build or a checkout without the 3.0 line's dependency). Imported here, inside a function, so
@@ -73,6 +101,9 @@ def main():
             if bundle_dir not in sys.path:
                 sys.path.insert(0, bundle_dir)
             log_error(f"Frozen mode. Bundle dir: {bundle_dir}")
+            code = _start_checks(headless)
+            if code:
+                sys.exit(code)
         else:
             log_error("Source mode.")
 
@@ -232,15 +263,7 @@ def main():
         if headless:
             sys.exit(1)
         # Also try to show a message box if possible
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("Critical Error", err_msg)
-            root.destroy()
-        except:
-            pass
+        _error_box("Critical Error", err_msg)
         sys.exit(1)
 
 if __name__ == "__main__":

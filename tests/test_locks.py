@@ -234,7 +234,10 @@ def test_a_record_that_cannot_be_written_never_fails_the_take(monkeypatch):
 
 
 def test_every_lock_lives_under_the_test_root(root):
-    # The shared name goes to the per-user folder, a plain one to the per-install folder: both moved.
+    # The shared name goes to both per-user folders (Houseki's, then 2.x's SonicSandbox one: S3.1 D14), a plain one
+    # to the per-install folder: all moved.
+    assert locks.folders("anki-writer") == [os.path.join(path_utils.local_data_root(), "locks"),
+                                            os.path.join(path_utils.legacy_local_root(), "locks")]
     assert locks.folder("anki-writer") == os.path.join(path_utils.local_data_root(), "locks")
     assert locks.folder("results") == os.path.join(path_utils.get_local_data_path(), "locks")
     for name in ("anki-writer", "results"):
@@ -243,7 +246,7 @@ def test_every_lock_lives_under_the_test_root(root):
     written = [os.path.join(where, entry) for where, _dirs, files in os.walk(root) for entry in files
                if os.path.basename(where) == "locks"]       # the root also holds the copied samples
     assert all(os.path.commonpath([root, path]) == root for path in written)
-    assert sorted(os.path.basename(path) for path in written) == ["anki-writer.lock", "results.lock"]
+    assert sorted(os.path.basename(path) for path in written) == ["anki-writer.lock", "anki-writer.lock", "results.lock"]
 
 
 def test_take_and_release_uncontended_take_under_five_milliseconds():

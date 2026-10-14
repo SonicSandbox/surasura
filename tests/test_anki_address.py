@@ -127,6 +127,7 @@ _ALLOWED = {
     os.path.join("app", "analyzer.py"): 1,
     os.path.join("app", "settings_placement.py"): 1,
     os.path.join("app", "main.py"): 2,
+    os.path.join("app", "import_2x.py"): 5,     # 3.0's import converts a 2.x file: `address()`'s answer, one key
 }
 _KEY = re.compile(r"""["'](anki_connect_url|junban_url)["']""")
 

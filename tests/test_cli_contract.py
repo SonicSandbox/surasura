@@ -292,20 +292,37 @@ def test_a_native_crash_leaves_a_trace_in_the_log(root):
 # --------------------------------------------------------------------------- #
 # Checks at start
 # --------------------------------------------------------------------------- #
-def test_the_update_marker_is_the_updaters():
-    assert os.path.basename(library_store.update_staged_path()) == updater.MARKER_NAME
+def _staged_marker(root):
+    """Where the updater arms its marker under the test root `root` (<root>/local_root/update/, S3.1 D9) -> the path,
+    its folder made."""
+    marker = root / "local_root" / updater.UPDATE_DIRNAME / updater.MARKER_NAME
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    return marker
+
+
+def test_the_update_marker_is_the_updaters_and_a_look_makes_no_folder(root, monkeypatch):
+    # The marker left the user data for <Houseki local root>\update (S3.1 D9): the status look must find it there,
+    # and work the path out without making the update folder (only the updater makes it).
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
+    path = library_store.update_staged_path()
+    assert library_store.update_staged() is False
+    assert not os.path.exists(os.path.dirname(path)), "a status look made the update folder"
+    assert path == updater.marker_path() == str(_staged_marker(root))
 
 
 def test_a_staged_update_answers_update_staged_exit_3(root):
-    (root / updater.MARKER_NAME).write_text("{}", encoding="utf-8")
-    for args in (("--version",), ("_selftest", "ok")):
-        code, lines, _raw, _err = run_cli(root, *args)
-        assert code == 3 and lines[0]["code"] == "update-staged"
+    _staged_marker(root).write_text("{}", encoding="utf-8")
+    code, lines, _raw, _err = run_cli(root, "_selftest", "ok")
+    assert code == 3 and lines[0]["code"] == "update-staged"
+    # --version answers all the same: the swapper proves a swap by the new CLI's --version while its own marker still
+    # exists (S3.1 D9), and --version writes nothing and reads no store. Refused, every real update rolled back.
+    code, lines, _raw, _err = run_cli(root, "--version")
+    assert code == 0 and lines[0]["type"] == "result" and lines[0]["app"]
 
 
 def test_a_marker_over_an_hour_old_is_a_crashed_update_and_blocks_nothing(root):
     # The store's rule (S1.1): a helper that died leaves its marker behind; the command line must not refuse forever.
-    marker = root / updater.MARKER_NAME
+    marker = _staged_marker(root)
     marker.write_text("{}", encoding="utf-8")
     two_hours_ago = time.time() - 7200
     os.utime(marker, (two_hours_ago, two_hours_ago))

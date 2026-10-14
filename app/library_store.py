@@ -247,10 +247,12 @@ def library_db_path(language, data_dir):
 
 
 def update_staged_path():
-    """The updater's own marker, `pending_update.json` beside the app (S1.1): written at the hand-over,
-    deleted by its helper once the files are swapped. The store adds no second marker."""
-    from app.path_utils import get_user_data_path
-    return os.path.join(get_user_data_path(), "pending_update.json")
+    """The updater's own marker, `pending_update.json` in `<Houseki local root>\\update\\` (S3.1 D9:
+    `updater.marker_path()`, worked out here without importing the updater or making its folder — a status look
+    creates nothing): written at the hand-over, deleted by its swapper once the program is swapped. The store adds
+    no second marker."""
+    from app.path_utils import UPDATE_DIRNAME, UPDATE_MARKER, local_data_root
+    return os.path.join(local_data_root(), UPDATE_DIRNAME, UPDATE_MARKER)
 
 
 def update_lock_path():

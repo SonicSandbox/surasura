@@ -4,7 +4,7 @@ The packaged app has no console, so an update failure's reason only ever existed
 the failed-download dialog never appeared at all: its callback read `e` after the except block had
 ended, when Python has already deleted it, so the UI thread raised NameError and the user saw the
 status line quietly return to "Ready". These tests pin the three failure paths (the download,
-starting updater.exe, the install itself) and the report behind them: debug/update_report.txt,
+starting updater.exe, the install itself) and the report behind them: update_report.txt in the update folder,
 appended so no failure is lost, and never able to stop the dialog when it can't be written.
 
 Headless: the dashboard is built with __new__ (no Tk), like tests/test_band_slider_debounce.py,
@@ -196,7 +196,8 @@ def test_nothing_pending_writes_no_report(install_root):
 def test_report_records_versions_system_and_the_install_folder(install_root):
     path = updater.write_report("download", "<urlopen error timed out>", to_version="2.3")
 
-    assert path == os.path.join(install_root, "debug", "update_report.txt")
+    # S3.1 D9: the report lives in the update folder (<Houseki local root>/update), never the program folder.
+    assert path == os.path.join(path_utils.local_data_root(), "update", "update_report.txt")
     text = _read(path)
     assert f"From version: {__version__}" in text, "defaults to the running version"
     assert "To version: 2.3" in text
@@ -222,8 +223,7 @@ def test_report_appends_so_an_earlier_failure_is_kept(install_root):
 
 def test_dialog_still_shows_when_the_report_cannot_be_saved(install_root, monkeypatch):
     """A folder the app can't write to must not cost the user the explanation."""
-    with open(os.path.join(install_root, "debug"), "w", encoding="utf-8") as f:
-        f.write("")                               # a FILE where the debug folder should be
+    os.makedirs(updater.report_path())           # a FOLDER where the report file should be
     assert updater.write_report("download", "timed out") is None
 
     shown = _download_fails_with(monkeypatch, "timed out")

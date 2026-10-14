@@ -45,7 +45,7 @@ def test_a_saved_settings_file_cannot_drop_a_required_boundary(tmp_path):
     stale.write_text(
         '{"logic": {"sentence_boundaries": {"ja": "\\u3002\\uff01\\uff1f!?\\n"}}}',
         encoding="utf-8")
-    with patch("app.settings_manager.get_user_file", return_value=str(stale)):
+    with patch("app.settings_manager.get_settings_path", return_value=str(stale)):
         merged = load_settings()
     assert "｡" in merged["logic"]["sentence_boundaries"]["ja"]
 
@@ -60,7 +60,7 @@ def test_the_full_width_full_stop_reaches_a_saved_settings_file(tmp_path):
     stale.write_text(
         '{"logic": {"sentence_boundaries": {"ja": "\\u3002\\uff01\\uff1f!?\\n\\uff61"}}}',
         encoding="utf-8")
-    with patch("app.settings_manager.get_user_file", return_value=str(stale)):
+    with patch("app.settings_manager.get_settings_path", return_value=str(stale)):
         merged = load_settings()
     assert "．" in merged["logic"]["sentence_boundaries"]["ja"]
 
@@ -70,7 +70,7 @@ def test_a_custom_boundary_is_preserved(tmp_path):
     custom = tmp_path / "settings.json"
     custom.write_text('{"logic": {"sentence_boundaries": {"ja": "\\u3002\\u2026"}}}',
                       encoding="utf-8")
-    with patch("app.settings_manager.get_user_file", return_value=str(custom)):
+    with patch("app.settings_manager.get_settings_path", return_value=str(custom)):
         merged = load_settings()
     ja = merged["logic"]["sentence_boundaries"]["ja"]
     assert "…" in ja, "the user's own boundary survives"
@@ -410,7 +410,7 @@ OLD_ZH = "\\u3002\\uff01\\uff1f!?\\n\\uff1b;\\u2026\\u2026"          # the Chine
 def _load(tmp_path, body, bom=False):
     path = tmp_path / "settings.json"
     path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + body.encode("utf-8"))
-    with patch("app.settings_manager.get_user_file", return_value=str(path)):
+    with patch("app.settings_manager.get_settings_path", return_value=str(path)):
         return load_settings()
 
 
@@ -450,7 +450,7 @@ def test_a_save_and_load_round_trip_never_brings_the_semicolon_back(tmp_path):
     from app.settings_manager import save_settings
     path = tmp_path / "settings.json"
     path.write_text('{"logic": {"sentence_boundaries": {"zh": "%s"}}}' % OLD_ZH, encoding="utf-8")
-    with patch("app.settings_manager.get_user_file", return_value=str(path)):
+    with patch("app.settings_manager.get_settings_path", return_value=str(path)):
         save_settings(load_settings())
         again = load_settings()
     assert again["logic"]["sentence_boundaries"]["zh"] == DEFAULT_SETTINGS["logic"]["sentence_boundaries"]["zh"]

@@ -712,10 +712,13 @@ def test_an_upgrade_leaves_a_backup(language, monkeypatch):
 # --- 11. 2.4.0's runtime ------------------------------------------------------------------------- #
 
 def _internal_240():
+    """A frozen 2.x `_internal` (2.4.0's runtime: no build stamp). A 3.0 build in `dist\\` (its `build_stamp.json`,
+    S3.1) is another runtime, never this test's."""
     for candidate in (os.environ.get("SURASURA_240_INTERNAL"),
                       os.path.join(REPO, "dist", "Surasura", "_internal"),
                       os.path.join(REPO, "..", "..", "surasura", "dist", "Surasura", "_internal")):
-        if candidate and os.path.isfile(os.path.join(candidate, "_sqlite3.pyd")):
+        if (candidate and os.path.isfile(os.path.join(candidate, "_sqlite3.pyd"))
+                and not os.path.isfile(os.path.join(candidate, "build_stamp.json"))):
             return os.path.abspath(candidate)
     return None
 

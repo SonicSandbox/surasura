@@ -36,24 +36,26 @@ print(f"Building {BUILD_NAME}...")
 # BUILD SETTINGS (Conditionality)
 # -----------------------------------------------------------------------------
 import json
-settings_path = os.path.join(project_root, 'settings.json')
-enable_youtube = False
-enable_preview = False  # default so a missing/corrupt settings.json can't NameError below
-enable_reels = False
-enable_junban = False
+# S3.1 D15: what ships comes from packaging/build_config.json, one file in the repo — never the build machine's
+# settings.json. A missing or unreadable config bundles no optional module (package_app.py refuses to build first).
+config_path = os.path.join(project_root, 'packaging', 'build_config.json')
+build_config = {}
+modules = {}
 # Default excludes
 excluded_modules = ['pandas.tests']
 
-if os.path.exists(settings_path):
-    try:
-        with open(settings_path, 'r', encoding='utf-8') as f:
-            settings = json.load(f)
-            enable_youtube = settings.get("enable_youtube_transcripts", False)
-            enable_preview = settings.get("enable_youtube_preview", False)
-            enable_reels = settings.get("enable_reels", False)
-            enable_junban = settings.get("enable_junban", False)
-    except Exception as e:
-        print(f"Warning: Could not read settings.json for build configuration: {e}")
+try:
+    with open(config_path, 'r', encoding='utf-8') as f:
+        build_config = json.load(f)
+    modules = build_config.get("modules") or {}
+except Exception as e:
+    print(f"Warning: Could not read packaging/build_config.json: {e}")
+if not isinstance(modules, dict):
+    modules = {}
+enable_youtube = modules.get("youtube_downloader") is True
+enable_koe = modules.get("koe") is True
+enable_reels = modules.get("reels") is True
+enable_junban = modules.get("junban") is True
 
 # The Immersion Architect (悟) is deprecated (RD-D9) and out of every build from 2.5 on: kept on disk with
 # its own suite, dormant. The dashboard's button hides itself when the import fails. Revival steps:
@@ -61,34 +63,31 @@ if os.path.exists(settings_path):
 print("BUILD CONFIG: Excluding Immersion Architect module (sunset, RD-D9)")
 excluded_modules.append('modules.immersion_architect')
 
-# YouTube Downloader is opt-in: bundled when EITHER the transcript downloader or the
-# preview feature is enabled at build time (both live in modules.youtube_downloader).
-if not (enable_youtube or enable_preview):
-    print("BUILD CONFIG: Excluding YouTube Downloader module (transcripts & preview both off)")
+# YouTube Downloader (transcripts and the preview both live in modules.youtube_downloader): bundled when the build
+# config names it; its runtime toggles still hide it from a user who hasn't turned it on.
+if not enable_youtube:
+    print("BUILD CONFIG: Excluding YouTube Downloader module (build_config: youtube_downloader off)")
     excluded_modules.append('modules.youtube_downloader')
 
-# Speech (Koe) ships WITH the app rather than being toggled in at build time — it is hidden at
-# RUNTIME instead, appearing only for a user who adds "enable_koe" to their settings.json. So the
-# only question here is whether the folder exists at all (it is untracked, so an open-source
-# checkout simply doesn't have it).
-if os.path.isdir(os.path.join(project_root, 'modules', 'koe')):
-    print("BUILD CONFIG: Bundling Speech module (hidden unless enable_koe is added to settings.json)")
+# Speech (Koe) ships WITH the app when the build config names it — it is hidden at RUNTIME instead, appearing only
+# for a user who adds "enable_koe" to their settings.json — and when its folder exists (it is untracked, so an
+# open-source checkout simply doesn't have it).
+if enable_koe and os.path.isdir(os.path.join(project_root, 'modules', 'koe')):
+    print("BUILD CONFIG: Bundling Speech module (hidden at runtime unless the user adds enable_koe)")
 else:
-    print("BUILD CONFIG: Speech module not present - excluding")
+    print("BUILD CONFIG: Speech module off or not present - excluding")
     excluded_modules.append('modules.koe')
 
-# Reels is opt-in and gated the same way YouTube is: the toggle that shows the button also decides
-# whether the module is bundled. It carries a vendored copy of SubsMatcher, so excluding it keeps
-# that out of a build nobody asked it into.
+# Reels (sunset 2026-09-22): bundled only if the build config ever names it again. It carries a vendored copy of
+# SubsMatcher, so excluding it keeps that out of a build nobody asked it into.
 if not enable_reels:
-    print("BUILD CONFIG: Excluding Reels module (enable_reels=False)")
+    print("BUILD CONFIG: Excluding Reels module (build_config: reels off)")
     excluded_modules.append('modules.reels')
 
-# Junban (Anki reordering) is opt-in the same way: the toggle that shows the 順 button also decides
-# whether the module is bundled. It talks to AnkiConnect over localhost and needs no hiddenimports —
-# everything it uses is reached through ordinary imports from modules.junban.
+# Junban (Anki reordering): bundled when the build config names it; the runtime toggle shows its 順 button. It talks
+# to AnkiConnect over localhost; its one hidden import is its own `junban_patterns` command, inside the gate below.
 if not enable_junban:
-    print("BUILD CONFIG: Excluding Junban module (enable_junban=False)")
+    print("BUILD CONFIG: Excluding Junban module (build_config: junban off)")
     excluded_modules.append('modules.junban')
 
 
@@ -101,7 +100,7 @@ datas = [
     (os.path.join(project_root, 'scripts'), 'scripts'),
     (os.path.join(project_root, 'app', 'assets'), 'app/assets'),
     # Bundle sample content as a RESOURCE (get_resource('samples')) so 'Test with samples' can seed
-    # it on demand. The data/ tiers themselves ship EMPTY (see package_app.py) -> empty-state shows.
+    # it on demand. The program folder ships no library (S3.1 D15): the library's data/ tiers start empty.
     (os.path.join(project_root, 'samples'), 'samples'),
     (os.path.join(project_root, '.env'), '.')
 ]
@@ -119,6 +118,52 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
                  'app.jmdict_data', 'app.phrases', 'app.phrase_data', 'app.one_kanji_data']
+# Every command app_entry.py dispatches to (S3.1 D17; tests/test_packaging_config.py reads app_entry.py and fails while
+# one is missing here): the window, the dashboard and each helper subcommand the programs start.
+hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_gui', 'app.jiten_db_importer_gui',
+                  'app.static_html_generator', 'app.migaku_converter', 'app.jiten_converter',
+                  'app.content_importer_gui', 'app.frequency_list_gui', 'app.anki_db_importer_gui', 'app.indexer',
+                  'app.arrivals_worker', 'app.sentence_corpus', 'app.telemetry', 'app.main', 'app.qt.shell',
+                  'app.replan_preview']
+# The 2.x -> 3.0 import and the GraduatedList merge (S3.1 D11-D13): the window's first-run page imports them inside a
+# function, so nothing at the top of the import graph names them (row 3.1.9b found both missing from a build).
+hiddenimports += ['app.import_2x', 'app.graduated_merge']
+
+# --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
+# The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps
+# it in the build. Every other PyQt6 extension module the installed wheel carries (WebEngine, Qml, Multimedia, 3D, …)
+# is excluded, so neither it nor the Qt DLLs it alone needs ship. PyQt6's and Qt's licence notices ride in
+# _internal\licenses\<distribution>\ (PyQt6 GPL v3, Qt LGPL v3, PyQt6-sip).
+import importlib.util
+qt_modules = build_config.get("qt_modules") if isinstance(build_config, dict) else None
+if not isinstance(qt_modules, list) or not qt_modules:
+    qt_modules = ['QtCore', 'QtGui', 'QtWidgets', 'QtNetwork', 'QtSvg']
+qt_excludes = []
+qt_spec = importlib.util.find_spec('PyQt6')
+if qt_spec is not None and qt_spec.submodule_search_locations:
+    qt_folder = list(qt_spec.submodule_search_locations)[0]
+    for qt_name in sorted(os.listdir(qt_folder)):
+        qt_module = qt_name.split('.')[0]
+        if qt_name.endswith('.pyd') and qt_module.startswith('Q') and qt_module not in qt_modules:
+            qt_excludes.append('PyQt6.' + qt_module)
+    qt_excludes += ['PyQt6.uic', 'PyQt6.lupdate']
+    for qt_root, _qt_dirs, qt_files in os.walk(os.path.join(project_root, 'app', 'qt')):
+        for qt_file in sorted(qt_files):
+            if qt_file.endswith('.py'):
+                rel = os.path.relpath(os.path.join(qt_root, qt_file[:-3]), project_root)
+                hiddenimports.append(rel.replace(os.sep, '.').replace('.__init__', ''))
+    hiddenimports += ['PyQt6.sip'] + ['PyQt6.' + m for m in qt_modules]
+    from importlib import metadata as qt_metadata
+    for qt_dist in ('PyQt6', 'PyQt6-Qt6', 'PyQt6-sip'):
+        try:
+            dist = qt_metadata.distribution(qt_dist)
+        except qt_metadata.PackageNotFoundError:
+            continue
+        for dist_file in dist.files or []:
+            if os.path.basename(str(dist_file)).upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')):
+                datas.append((str(dist.locate_file(dist_file)), 'licenses/' + qt_dist))
+else:
+    print("BUILD CONFIG: PyQt6 is not installed - the window falls back to the Tk dashboard")
 
 # --- Optional-module payloads: only when that module is actually being bundled ---------------
 # Both entries below MUST stay inside their gate. Naming a module in hiddenimports while it is
@@ -131,6 +176,10 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
 # survives a refactor of the dispatcher.
 if enable_reels:
     hiddenimports.append('modules.reels.vendor.subsync')
+
+# Junban's own subcommand (`junban_patterns`, app_entry.py): the Anki Backfill window's library build.
+if enable_junban:
+    hiddenimports.append('modules.junban.patterns_build')
 
 tmp_ret = collect_all('unidic_lite')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -145,13 +194,15 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=excluded_modules,
+    excludes=excluded_modules + qt_excludes,
     noarchive=False,
     optimize=0,
 )
 
 pyz = PYZ(a.pure)
 
+# UPX is off everywhere (S3.1 D15, E12): it can corrupt Qt's DLLs and feeds antivirus false positives;
+# every EXE / COLLECT says upx=False (PyInstaller refuses --noupx beside a .spec file).
 exe = EXE(
     pyz,
     a.scripts,
@@ -161,7 +212,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -218,7 +269,7 @@ coll = COLLECT(
     cli_a.binaries,
     cli_a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name=BUILD_NAME,
 )

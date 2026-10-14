@@ -156,7 +156,7 @@ def test_the_switch_is_in_the_store_build_signature_only_when_off(monkeypatch, t
     """Flipping it re-reads every file (the cached tokens hold the joins); on, the default, adds nothing — a store
     built as shipped keeps its signature."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     assert settings_manager.DEFAULT_SETTINGS["logic"]["names_katakana"] is True
     assert ti.build_signature("ja") == "ja|reinforce=False"
     settings.write_text('{"logic": {"names_katakana": false}}', encoding="utf-8")
@@ -305,7 +305,7 @@ def test_the_known_words_cache_follows_the_tables_and_the_switches(tmp_path, mon
     """A known name is one word only with the tables: a new table, or a switch flipped in settings.json, reads the
     known words again (the switches read fresh, as the dashboard's check and the indexer it launches both see them)."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     store, _paths = _library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK})
     try:
         sig = ti.known_signature(str(tmp_path / "KnownWord.json"))
@@ -800,7 +800,7 @@ def test_the_work_terms_switch_off(tmp_path, tokenizer, monkeypatch):
     pieces — and needs no re-reading of any file (not in the cache's signature); the known words are read again. Before
     the first index there is no table: nothing joins."""
     settings = tmp_path / "settings.json"
-    monkeypatch.setattr(settings_manager, "get_user_file", lambda name: str(settings))
+    monkeypatch.setattr(settings_manager, "get_settings_path", lambda: str(settings))
     store, paths = _library(tmp_path / "lib", {"a.txt": HOMURA, "b.txt": JIN})
     try:
         assert "焔魄陣" in _cached_surfaces(store, paths[0])

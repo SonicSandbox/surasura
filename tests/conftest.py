@@ -171,6 +171,27 @@ def _real_local_data_folder():
 _REAL_LOCAL_DATA = _real_local_data_folder()
 
 
+def _real_houseki_roots():
+    """The REAL Houseki roots a source run uses — path_utils.local_data_root() and get_persistent_user_data_path() with
+    no test root: %LOCALAPPDATA%\\Houseki\\Surasura and %APPDATA%\\Houseki\\Surasura — computed once, here, before any
+    test can point the environment or path_utils elsewhere."""
+    from app import path_utils
+    return tuple(os.path.join(base, path_utils.VENDOR, path_utils.DATA_NAME)
+                 for base in (path_utils._local_base(), path_utils._roaming_base()))
+
+
+_REAL_HOUSEKI_ROOTS = _real_houseki_roots()
+
+
+def _root_state(root):
+    """Whether `root` exists, and the names at its top. Not deeper: other sessions' own source runs write inside it
+    (their token stores, their per-install folders); a test reaching it makes it, or a name at its top."""
+    try:
+        return True, sorted(os.listdir(root))
+    except OSError:
+        return os.path.isdir(root), []
+
+
 def _folder_state(folder):
     """Every file under `folder` with its size and mtime; (False, []) when the folder doesn't exist."""
     files = []
@@ -190,11 +211,16 @@ def _guard_real_local_data():
     """Fail any test that writes the real local data folder (the command line's logs, locks and events, P0.3
     02-contract §6). get_local_data_path() already refuses under pytest without SURASURA_TEST_ROOT; this catches a
     path built some other way, and a subprocess started without the test root. (Running this checkout's own app or
-    `python -m app.cli` by hand during a test run writes that folder too, and fails whichever test is running.)"""
+    `python -m app.cli` by hand during a test run writes that folder too, and fails whichever test is running.)
+    The real Houseki local and roaming roots too (S3.1): a test that makes either, or a name at its top, fails — a
+    read of the roaming root once made the real %APPDATA%\\Houseki\\Surasura."""
     before = _folder_state(_REAL_LOCAL_DATA)
+    roots = [_root_state(root) for root in _REAL_HOUSEKI_ROOTS]
     yield
     assert _folder_state(_REAL_LOCAL_DATA) == before, \
         f"a test wrote the real local data folder {_REAL_LOCAL_DATA}: use the test root"
+    for root, was in zip(_REAL_HOUSEKI_ROOTS, roots):
+        assert _root_state(root) == was, f"a test made or wrote the real Houseki root {root}: use the test root"
 
 
 @pytest.fixture(autouse=True)

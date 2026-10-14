@@ -817,6 +817,18 @@ class Host:
 
 # --- the helper process (E3.1-B1) -------------------------------------------------------------------------------- #
 
+_HELPERS = []                   # every helper this process started (`helper_processes`: those still running)
+_HELPERS_LOCK = threading.Lock()
+
+
+def helper_processes():
+    """The helpers this process started that still run -> [Popen]. An update waits for them, wait-only
+    (`updater.running_children`): the window stops its host first, and a helper ends after the job in hand."""
+    with _HELPERS_LOCK:
+        _HELPERS[:] = [p for p in _HELPERS if p.poll() is None]
+        return list(_HELPERS)
+
+
 def open_host(language, say=None, working=None, generate=None):
     """The window's host: `Remote` — the jobs in a helper process of its own — or, with IN_PROCESS_ENV ("1": the
     suites' fake Anki lives in their own process), the `Host` in the window's process. Same calls either way."""
@@ -1013,6 +1025,8 @@ class Remote:
                                           env=_helper_env(listener.address, key), creationflags=flags,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL)
+            with _HELPERS_LOCK:
+                _HELPERS.append(self._proc)
 
             def watch():                          # a helper that ended or never calls: wake `accept` with a call
                 deadline = time.monotonic() + HELPER_START_S

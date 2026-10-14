@@ -47,7 +47,7 @@ def _run(env, extra_args, clear=True):
     # settings.json is the one the run reads (settings_manager.load_settings) — and so the one its run
     # signature hashes, which reads the settings as the run does.
     with patch("app.analyzer.get_user_file", side_effect=env["guf"]), \
-         patch("app.settings_manager.get_user_file", side_effect=env["guf"]), \
+         patch("app.settings_manager.get_settings_path", side_effect=lambda: env["guf"]("settings.json")), \
          patch("app.analyzer.get_data_path", side_effect=env["gdp"]), \
          patch("app.analyzer.get_user_files_path", side_effect=env["gufp"]), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \

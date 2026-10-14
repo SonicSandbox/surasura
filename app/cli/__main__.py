@@ -65,9 +65,10 @@ VERBS = {
     "logs": (connect_verbs.logs_args, connect_verbs.logs, True),               # P2.5
 }
 
-# The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`). Every other
+# The verbs that answer while an update is staged: `status` writes nothing and says so (`update_staged`); `--version`
+# writes nothing and reads no store, and the swapper proves a swap by it while its marker exists (S3.1 D9). Every other
 # verb answers `update-staged` (02 §7).
-ANSWER_WHILE_UPDATING = {"status", "logs"}
+ANSWER_WHILE_UPDATING = {"status", "logs", "--version"}
 
 
 def _parser():
@@ -121,6 +122,7 @@ def main(argv=None, out=None):
                 raise usage
             if verb not in ANSWER_WHILE_UPDATING:
                 contract.check_update()
+            contract.check_build(store=not args.version)    # a mixed program folder is refused, --version too
             if args.version:
                 return _version(args)
             contract.check_token_stores()
@@ -133,4 +135,6 @@ def main(argv=None, out=None):
 
 
 if __name__ == "__main__":
+    from app import build_info
+    build_info.hold_running_mutex()     # frozen: <data name>.Running while it runs (the installer waits for it)
     sys.exit(main())

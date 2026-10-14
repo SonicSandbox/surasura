@@ -46,6 +46,10 @@ KNOWN_FILE = "KnownWord.json"
 STATE_FILE = "anki_sync_state.json"
 STATE_VERSION = 1
 SOURCE = "AnkiConnect"
+# The source of the words GraduatedList.txt held, merged once into KnownWord.json (app/graduated_merge.py): Replace
+# keeps them.
+GRADUATED_SOURCE = "GraduatedList"
+GRADUATED_MARK = "graduated"        # an entry the merge raised to KNOWN: kept_graduated keeps it known too
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
 BACKLOG_FILE = "anki_backlog.json"
@@ -733,7 +737,8 @@ def _backup_current(language):
 
 
 def replace(language, url, decks, fields, include_suspended=False, dry_run=False):
-    """Rebuild KnownWord.json from Anki only. Backs up the current file first and verifies it.
+    """Rebuild KnownWord.json from Anki only — and the words the old GraduatedList.txt gave it (`kept_graduated`).
+    Backs up the current file first and verifies it.
     Offline, an empty result, or a failed backup => nothing written. `dry_run` writes nothing and
     returns the numbers the confirmation dialog shows."""
     with _LOCK:
@@ -790,6 +795,7 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
         result.error = f"Nothing was replaced: your current list could not be backed up ({e})."
         result.total_known = count_known(language)
         return result
+    words = words + kept_graduated(known_path, language, words)
     try:
         _atomic_write_json(known_path, _fresh_file(words))
         state = load_state(language)
@@ -803,6 +809,42 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
         result.error = f"Replace failed: {e}"
     result.total_known = count_known(language)
     return result
+
+
+def kept_graduated(path, language, words):
+    """The old GraduatedList.txt's words (merged once, app/graduated_merge.py: entries of `source: "GraduatedList"`,
+    or raised and marked GRADUATED_MARK) in the KnownWord.json at `path`, kept known by every import that replaces
+    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add;
+    and an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too). A file that is
+    missing or can't be read keeps none (the replacer's backup holds them)."""
+    try:
+        data = json.loads(read_text(path, language, errors="strict"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return []
+    current = data.get("words") if isinstance(data, dict) else data
+    if not isinstance(current, list):
+        return []
+    graduated = {}
+    for entry in current:
+        if isinstance(entry, dict) and (entry.get("source") == GRADUATED_SOURCE or entry.get(GRADUATED_MARK) is True):
+            key = _norm(entry.get("dictForm"))
+            if key:
+                graduated.setdefault(key, entry)
+    taken = set()
+    for w in words:
+        if isinstance(w, dict):
+            key = _norm(w.get("dictForm"))
+            taken.add(key)
+            if key in graduated and w.get("knownStatus") in ("UNKNOWN", "LEARNING"):
+                w["previousStatus"] = w["knownStatus"]
+                w["knownStatus"] = "KNOWN"
+                w[GRADUATED_MARK] = True
+    kept = []
+    for key, entry in graduated.items():
+        if key not in taken:
+            taken.add(key)
+            kept.append(entry)
+    return kept
 
 
 def restore_previous(language):

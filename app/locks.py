@@ -15,9 +15,13 @@ told `Busy` like another process; the same thread asking again is a programming 
 never a wait on itself.
 
 Where: per install, `<local data>/locks/` (`path_utils.get_local_data_path()`, beside S1.1's
-`update.lock`). A name in `SHARED` lives per user, `path_utils.local_data_root()/locks/`: one Windows user
-has one Anki, so two installs (a 2.x and a 3.0 side by side, an installed copy and a source checkout)
-must not write it together. Sharedness belongs to the name, never the call.
+`update.lock`). A name in `SHARED` lives per user: one Windows user has one Anki, so two installs (a 2.x and
+a 3.0 side by side, an installed copy and a source checkout) must not write it together. It is taken in
+BOTH per-user roots, always in the same order — the Houseki root (`path_utils.local_data_root()/locks/`),
+then 2.x's SonicSandbox root (`path_utils.legacy_local_root()/locks/`) — so a 2.x, which knows only the
+second, and a 3.0 never write Anki at once (S3.1 D14). Each look is non-blocking and a take that gets the
+first but not the second lets the first go, so two takers never wait on each other. Sharedness belongs to
+the name, never the call.
 
 Standard library only, no Tk: `on_wait` and the wait itself run on the waiting worker, so a window
 passes a callback that only posts to its own queue.
@@ -68,16 +72,29 @@ def _check(name):
         raise ValueError(f"A lock name is lowercase letters, digits and '-': {name!r}")
 
 
-def folder(name):
-    """The folder `name`'s lock lives in: per user for a shared name, else per install."""
+def folders(name):
+    """The folders `name`'s lock lives in, in the order it is taken: a shared name's two per-user roots (Houseki,
+    then SonicSandbox), else the per-install folder alone."""
     _check(name)
-    root = path_utils.local_data_root() if name in SHARED else path_utils.get_local_data_path()
-    return os.path.join(root, "locks")
+    if name in SHARED:
+        return [os.path.join(path_utils.local_data_root(), "locks"),
+                os.path.join(path_utils.legacy_local_root(), "locks")]
+    return [os.path.join(path_utils.get_local_data_path(), "locks")]
+
+
+def folder(name):
+    """The folder `name`'s lock lives in first: per user (Houseki) for a shared name, else per install."""
+    return folders(name)[0]
+
+
+def _all_paths(name):
+    """(lock file, holder record) in each of `folders(name)`, in taking order."""
+    return [(os.path.join(where, name + ".lock"), os.path.join(where, name + ".holder.json"))
+            for where in folders(name)]
 
 
 def _paths(name):
-    where = folder(name)
-    return os.path.join(where, name + ".lock"), os.path.join(where, name + ".holder.json")
+    return _all_paths(name)[0]
 
 
 def _program():
@@ -90,13 +107,15 @@ def unopenable(name):
     else None. `take` reads such a file as held by a program it can't name (`Busy(None)`), failing closed; a caller
     asks this to say so in plain words instead of "busy" (P1.2, E1.4's review #11). Never raises."""
     try:
-        path = _paths(name)[0]
-        with open(path, "a+b"):
-            return None
-    except PermissionError:
-        return path
+        for path, _record in _all_paths(name):
+            try:
+                with open(path, "a+b"):
+                    pass
+            except PermissionError:
+                return path
     except (OSError, ValueError, RuntimeError):
         return None
+    return None
 
 
 def in_use(name, looks=6, gap=0.02):
@@ -107,18 +126,22 @@ def in_use(name, looks=6, gap=0.02):
     if held_in_process(name):
         return True
     try:
-        path = _paths(name)[0]
-        if not os.path.exists(path):
-            return False
-        for look in range(looks):
-            handle = path_utils.try_lock(path)
-            if handle is not None:
-                path_utils.release_lock(handle)
-                return False
-            if look < looks - 1:
-                time.sleep(gap)
+        return any(_held_at(path, looks, gap) for path, _record in _all_paths(name))
     except (OSError, ValueError, RuntimeError):
         return False
+
+
+def _held_at(path, looks, gap):
+    """Is the OS lock on `path` held at every one of `looks` looks? A missing lock file is free."""
+    if not os.path.exists(path):
+        return False
+    for look in range(looks):
+        handle = path_utils.try_lock(path)
+        if handle is not None:
+            path_utils.release_lock(handle)
+            return False
+        if look < looks - 1:
+            time.sleep(gap)
     return True
 
 
@@ -153,13 +176,21 @@ def holder_alive(holder):
 
 
 def read_holder(name):
-    """The holder record of `name`, or None when there is none or it can't be read. Never raises."""
+    """The holder record of `name` — a shared name's first record found, Houseki's then SonicSandbox's (a 2.x
+    holder writes only the second) — or None when there is none or it can't be read. Never raises."""
     try:
-        with open(_paths(name)[1], "r", encoding="utf-8") as handle:
-            record = json.load(handle)
-    except (OSError, ValueError):
+        records = [record for _lock, record in _all_paths(name)]
+    except (OSError, ValueError, RuntimeError):
         return None
-    return record if isinstance(record, dict) else None
+    for path in records:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                record = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict):
+            return record
+    return None
 
 
 def _retried(step):
@@ -192,25 +223,26 @@ class Held:
     """A held lock. A context manager; `release()` is safe to call twice. `waited` is True when the
     take had to wait for another holder first (a writer checks again after a wait)."""
 
-    def __init__(self, name, verb, handle, record_path, waited):
+    def __init__(self, name, verb, handles, record_paths, waited):
         self.name = name
         self.verb = verb
         self.waited = waited
-        self._handle = handle
-        self._record_path = record_path
+        self._handle = handles              # the OS locks, in taking order (two for a shared name)
+        self._record_paths = record_paths
         self._lock = threading.Lock()
 
     def release(self):
         with self._lock:
-            handle, self._handle = self._handle, None
-        if handle is None:
+            handles, self._handle = self._handle, None
+        if handles is None:
             return
-        try:
-            _retried(lambda: os.remove(self._record_path))  # before the unlock: the next holder's record survives
-        except OSError:
-            pass
+        for record_path in self._record_paths:
+            try:
+                _retried(lambda: os.remove(record_path))    # before the unlock: the next holder's record survives
+            except OSError:
+                pass
         with _registry_lock:
-            path_utils.release_lock(handle)
+            _release_all(handles)
             _registry.pop(self.name, None)
 
     @property
@@ -238,18 +270,30 @@ def held_in_process(name):
         return (_registry.get(name) or (None, None))[1]
 
 
-def _try(name, verb, lock_path, me):
-    """One attempt: the OS lock, registered to this thread -> the open file, or None when held."""
+def _release_all(handles):
+    """Let go of OS locks taken in order, newest first."""
+    for handle in reversed(handles):
+        path_utils.release_lock(handle)
+
+
+def _try(name, verb, lock_paths, me):
+    """One attempt: every OS lock in `lock_paths`, in order, registered to this thread -> the open files, or None
+    when any is held (those already taken let go at once)."""
     with _registry_lock:
         owner = (_registry.get(name) or (None,))[0]
         if owner == me:
             raise RuntimeError(f"'{name}' is already held by this owner: a nested take is a programming error.")
         if owner is not None:
             return None
-        handle = path_utils.try_lock(lock_path)
-        if handle is not None:
-            _registry[name] = (me, verb)
-        return handle
+        handles = []
+        for lock_path in lock_paths:
+            handle = path_utils.try_lock(lock_path)
+            if handle is None:
+                _release_all(handles)
+                return None
+            handles.append(handle)
+        _registry[name] = (me, verb)
+        return handles
 
 
 def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
@@ -264,13 +308,14 @@ def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
     the lock on a worker that ends, and lets go through its `Held`): the registry keeps the owner, and the nested-take
     check and `held_here` compare owners, so a later thread that reuses the ident is never mistaken for the holder.
     """
-    lock_path, record_path = _paths(name)
+    paths = _all_paths(name)
+    lock_paths, record_paths = [lock for lock, _ in paths], [record for _, record in paths]
     me = threading.get_ident() if owner is None else owner
     deadline = None if wait is None else time.monotonic() + max(0.0, float(wait))
     waited = False
     while True:
-        handle = _try(name, verb, lock_path, me)
-        if handle is not None:
+        handles = _try(name, verb, lock_paths, me)
+        if handles is not None:
             break
         holder = read_holder(name)
         if cancel is not None and cancel.is_set():
@@ -291,11 +336,12 @@ def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
     try:
         record = {"program": _program(), "pid": os.getpid(),
                   "started": datetime.datetime.now().isoformat(timespec="seconds"), "verb": verb}
-        _write_holder(record_path, record)
-        return Held(name, verb, handle, record_path, waited)
+        for record_path in record_paths:       # each root's: a 2.x waiting on its own root can say who holds it
+            _write_holder(record_path, record)
+        return Held(name, verb, handles, record_paths, waited)
     except BaseException:
         # Taken but not handed over (an interrupt, say): let go, or the name stays held until restart.
         with _registry_lock:
-            path_utils.release_lock(handle)
+            _release_all(handles)
             _registry.pop(name, None)
         raise

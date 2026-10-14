@@ -3,9 +3,10 @@ the verbs it offers them and the folders their files land in (docs/agent instruc
 §3, v2).
 
 Written by Surasura alone, at the window's start, at every surasura-cli call and when Connect's switch turns on or off;
-rewritten only when a field other than `updated` differs. A frozen install writes it; a source checkout only when
-SURASURA_TOOLS_CLI names the command line to advertise, so a developer's tree never takes Sonic's entry. A failure is
-logged, never shown, and never fails the window or the verb.
+rewritten only when a field other than `updated` differs. The installed 3.0 writes it; a portable or test build
+(frozen, not installed, or another data name) and a source checkout only when SURASURA_TOOLS_CLI names the command line
+to advertise, so a developer's tree or a dist build never takes Sonic's entry. A failure is logged, never shown, and
+never fails the window or the verb.
 
 Light by rule (the command line imports it at every call): the standard library only at the top; app modules are
 imported inside the functions, after the gate.
@@ -35,8 +36,8 @@ _refreshing = threading.Lock()
 
 def tools_dir():
     """The shared tools folder: HOUSEKI_TOOLS_DIR, else <test root>/houseki-tools under SURASURA_TEST_ROOT, else
-    %LOCALAPPDATA%\\Houseki\\tools (macOS ~/Library/Application Support/Houseki/tools, Linux $XDG_STATE_HOME, else
-    ~/.local/state, /houseki/tools). A test that reaches the real one raises (as path_utils.local_data_root)."""
+    `path_utils.tools_root()` (%LOCALAPPDATA%\\Houseki\\tools; S3.1 D20). A test that reaches the real one raises (as
+    path_utils.local_data_root)."""
     override = os.environ.get("HOUSEKI_TOOLS_DIR")
     if override:
         return override
@@ -45,21 +46,18 @@ def tools_dir():
         return os.path.join(root, "houseki-tools")
     if "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("a test reached the real shared tools folder: set SURASURA_TEST_ROOT or HOUSEKI_TOOLS_DIR")
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-        return os.path.join(base, "Houseki", "tools")
-    if sys.platform == "darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Houseki", "tools")
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(base, "houseki", "tools")
+    from app import path_utils
+    return path_utils.tools_root()
 
 
 def _advertised():
-    """(cli, app) this process advertises, or None when it writes no entry: frozen → surasura-cli.exe and Surasura.exe
-    in the running exe's folder (no .exe off Windows, as `connect.kick` names them; app null when absent); source →
-    SURASURA_TOOLS_CLI, app null; else None."""
+    """(cli, app) this process advertises, or None when it writes no entry: the installed 3.0 (frozen, library.json
+    naming its library, the data name Surasura) → surasura-cli.exe and Surasura.exe in the running exe's folder (no
+    .exe off Windows, as `connect.kick` names them; app null when absent); otherwise — a portable or test build (S3.1
+    D3), a source checkout — SURASURA_TOOLS_CLI, app null; else None."""
     from app import path_utils
-    if path_utils.is_frozen():
+    if (path_utils.is_frozen() and path_utils.installed_library() is not None
+            and path_utils.data_name() == path_utils.DATA_NAME):
         folder = os.path.dirname(os.path.abspath(sys.executable))
         ext = ".exe" if sys.platform == "win32" else ""
         app = os.path.join(folder, "Surasura" + ext)
@@ -82,8 +80,8 @@ def _drop_folders():
 
 
 def entry(settings):
-    """Surasura's entry as a dict, or None when this process writes none (a source checkout without
-    SURASURA_TOOLS_CLI). `register` is offered to other tools only while Connect's preview is on."""
+    """Surasura's entry as a dict, or None when this process writes none (a portable or test build, or a source
+    checkout, without SURASURA_TOOLS_CLI). `register` is offered to other tools only while Connect's preview is on."""
     advertised = _advertised()
     if advertised is None:
         return None

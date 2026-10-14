@@ -433,6 +433,43 @@ def test_a_chinese_line_lands_in_chinese_store(tmp_path):
     assert hato.say(out) == "hato's pairings (Chinese): 2 new, 0 already there."
 
 
+@pytest.mark.parametrize("lang, show", [("ja", "Example Show"), ("zh", "示例节目")])
+def test_on_3_0s_default_new_drops_wait_in_new_arrivals_unplaced_with_no_event_and_no_job(tmp_path, lang, show):
+    """3.0 builds every library with New arrivals on (D30), and the user may have a placing rule for hato set. Drops
+    the window hasn't synced, back-filled, wait at the end of New arrivals: never placed by the rule (a back-fill
+    places by no rule), NOW untouched — so not even a `left_mine_line` — no event at all, no job. Asked again (hato
+    marking each line registered), every line answers `same` and nothing is written. Why: the other back-fill tests
+    build their libraries the 2.x way (New arrivals off); a rule applied here would mine old episodes at switch-on."""
+    old = [c.drop(f"{show} - 01.{lang}.srt", lang)]
+    c.library(lang, arrivals=True, placing_rules={"hato": "top"})
+    _switched_on(lang)
+    with c.store(lang) as s:
+        now = s.conn.execute("SELECT id, ord FROM items WHERE tier = 'now' ORDER BY ord, id").fetchall()
+        arrivals = s.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'arrivals'").fetchone()[0]
+    new = [c.drop(f"{show} - {n:02d}.{lang}.srt", lang) for n in (2, 3)]   # copied while Surasura was closed
+    lines = _lines(old + new, lang=lang, title=show)
+    fake = c.fake_hato(tmp_path, lines, c.result_line(3, None))
+    out = hato.backfill(lang, _settings())
+    assert (out["hato"], out["new"], out["refused"], out["stopped"]) == (hato.ASKED, 3, [], None), out
+    paired = _pairings(lang)
+    assert sorted(paired) == sorted(old + new)
+    with c.store(lang) as s:
+        assert [s.place_of(paired[p]) for p in new] == [("arrivals", arrivals + 1), ("arrivals", arrivals + 2)], \
+            "at the end of New arrivals, never placed by hato's rule"
+        assert s.conn.execute("SELECT id, ord FROM items WHERE tier = 'now' ORDER BY ord, id").fetchall() == now
+        rows, gap = s.read_events(library.READER)
+        assert not gap and rows == [], "no event at all: nothing pushed out of the top 20, nothing mined"
+    with c.store(lang) as s, Ledger() as ledger:
+        assert inbox.consume(s, lang, ledger)["queued"] == [] and ledger.jobs(lang) == [], "no job queued"
+    again = [dict(line, registered={"file_id": paired[line["library_path"]], "at": "2026-10-12T09:00:00Z"})
+             for line in lines]
+    fake.plan(again, c.result_line(3, _since()))
+    before, stored = c.snapshot(), c.store_state(lang)
+    out = hato.backfill(lang, _settings())
+    assert (out["new"], out["same"], out["replaced"], out["refused"]) == (0, 3, 0, []), out
+    assert c.snapshot() == before and c.store_state(lang) == stored, "nothing written: the store, its copy, every file"
+
+
 # --- the review's rows (P3.2 fixer) -----------------------------------------------------------------------------------
 
 def _answer(lines, result):

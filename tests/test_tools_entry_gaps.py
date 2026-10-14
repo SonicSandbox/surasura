@@ -32,12 +32,16 @@ def tools(tmp_path, monkeypatch):
 
 @pytest.fixture
 def frozen(tmp_path, monkeypatch):
-    """A frozen install: Surasura.exe and surasura-cli.exe side by side, the window's exe running."""
+    """A frozen install: Surasura.exe and surasura-cli.exe side by side, the window's exe running, library.json naming
+    its library (`installed_library`: on 3.0 only the installed program advertises itself)."""
     install = tmp_path / "スラスラ 安装"
     install.mkdir()
     (install / "Surasura.exe").write_bytes(b"MZ")
     (install / "surasura-cli.exe").write_bytes(b"MZ")
+    library = tmp_path / "ライブラリ"
+    library.mkdir()
     monkeypatch.setattr(path_utils, "is_frozen", lambda: True)
+    monkeypatch.setattr(path_utils, "installed_library", lambda: str(library))
     monkeypatch.setattr(sys, "executable", str(install / "Surasura.exe"))
     return install
 

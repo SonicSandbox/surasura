@@ -10,8 +10,10 @@ pairing it has made (`hato-cli pairings --json --lang <lang>`) and registers eac
   and nothing is registered.
 - **Registered**, every line (09-hato-layer v2, the back-fill): the record without its `type` and `registered`, through
   `connect_verbs.register_record(..., backfill=True)` — one already in the store answers `same` and writes nothing,
-  and no registration logs a placement event for the item it registers (items it pushes out of the top 20 log
-  `left_mine_line`), so nothing is mined because of it and no job is queued. A line Surasura refuses (`bad-data`,
+  and no registration logs a placement event for the item it registers, so nothing is mined because of it and no job
+  is queued. On 3.0, New arrivals on (the default, D30): a drop the store doesn't hold yet waits at the end of New
+  arrivals, placed by no rule, and nothing is pushed; New arrivals off (2.x's way), it lands at the top of NOW and the
+  items it pushes out of the top 20 log `left_mine_line`. A line Surasura refuses (`bad-data`,
   `version-skew`, `usage`, or its own copy or record that can't be read: `unreadable`) is logged and counted, and the
   rest go on; the library or the settings not available (`busy`, `settings-unreadable`, `update-staged`, `needs-you`,
   `failed`, `not-set-up`) or any other fault stops it there: what was registered stays, the next back-fill takes the

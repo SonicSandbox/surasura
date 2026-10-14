@@ -46,27 +46,34 @@ def test_a_dashboard_save_of_a_file_without_the_switch_never_gains_it():
 
 def test_a_switch_saved_while_the_dashboard_builds_its_save_is_kept():
     """The full run's flake, its second half: the dashboard's save written at once (under test; no writer) read the
-    file, the switch's save landed, then the dashboard wrote what it had read — the switch gone. Built inside the lock,
-    as the window's writer builds it, the switch's save waits its turn and lands after."""
+    file, the switch's save landed, then the dashboard wrote what it had read — the switch gone. On the 3.0 line the
+    dashboard's save is its own keys through the settings service, read and written inside the `settings` lock: the
+    switch's save, made between the read and the write, waits its turn and lands after (2.x's version patched the
+    2.x dashboard's `carry_as_written`, which the 3.0 save no longer calls)."""
     from unittest.mock import MagicMock
     from app import main, settings_manager
+    from app.services import settings as settings_service
     from tests.test_settings_signatures import _write
     _write({"target_language": "ja"})
-    real_carry, real_save = main.carry_as_written, settings_manager.save_settings
+    real_read, real_save = settings_service.file_as_is, settings_manager.save_settings
+    switched = []
 
-    def carry(out, keys):                   # the file read; the switch's worker saves before the dashboard writes
-        result = real_carry(out, keys)
-        worker = threading.Thread(target=settings_manager.save_keys, args=({"connect_enabled": True},))
-        worker.start()
-        worker.join(10)
+    def read():                             # the file read; the switch's worker saves before the dashboard writes
+        result = real_read()
+        if not switched:
+            switched.append(True)
+            worker = threading.Thread(target=settings_manager.save_keys, args=({"connect_enabled": True},))
+            worker.start()
+            worker.join(10)
         return result
     loaded = settings_manager.load_settings()
     app = MagicMock()                       # the window stood in for: its widgets' values are written as null
     app._current_settings, app.logic_settings, app._iv = loaded, loaded["logic"], lambda var, fallback: fallback
-    with patch.object(main, "carry_as_written", carry), patch.object(
+    with patch.object(settings_service, "file_as_is", read), patch.object(
             settings_manager, "save_settings",
             lambda s, **k: real_save(json.loads(json.dumps(s, default=lambda _o: None)), **k)):
         main.MasterDashboardApp.save_settings(app, skip_ui=True)
+    assert switched                         # the switch's save really came between the read and the write
     assert settings_manager.flush_keys(timeout=10)
     assert read_settings()["connect_enabled"] is True
 

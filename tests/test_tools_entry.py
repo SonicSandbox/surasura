@@ -4,7 +4,8 @@ another tool's entry is read, the pytest guard, and the hooks in the command lin
 
 Every test runs in its own test root (SURASURA_TEST_ROOT) with its own tools folder (HOUSEKI_TOOLS_DIR, or the root's
 houseki-tools); the real shared tools folder is never touched. Installs and data roots carry Japanese / Chinese names,
-as users' install paths routinely do. A frozen build is faked by `path_utils.is_frozen` and `sys.executable`."""
+as users' install paths routinely do. A frozen build is faked by `path_utils.is_frozen` and `sys.executable`, an
+installed one by `path_utils.installed_library` too (on 3.0 only the installed program advertises itself)."""
 import io
 import json
 import os
@@ -38,14 +39,26 @@ def tools(tmp_path, monkeypatch):
 
 @pytest.fixture
 def frozen(tmp_path, monkeypatch):
-    """A frozen install: Surasura.exe and surasura-cli.exe side by side, the window's exe running."""
+    """A frozen install: Surasura.exe and surasura-cli.exe side by side, the window's exe running, library.json naming
+    its library (`installed_library`; settings.json then in the roaming root, under the test root)."""
     install = tmp_path / "スラスラ 安装"
     install.mkdir()
     (install / "Surasura.exe").write_bytes(b"MZ")
     (install / "surasura-cli.exe").write_bytes(b"MZ")
+    library = tmp_path / "ライブラリ"
+    library.mkdir()
     monkeypatch.setattr(path_utils, "is_frozen", lambda: True)
+    monkeypatch.setattr(path_utils, "installed_library", lambda: str(library))
     monkeypatch.setattr(sys, "executable", str(install / "Surasura.exe"))
     return install
+
+
+def _write_settings(text):
+    """settings.json where the program reads it (`get_settings_path`: an installed one's, in the roaming root)."""
+    path = path_utils.get_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def _file(tools):
@@ -115,6 +128,30 @@ def test_no_language_set_up_gives_empty_drop_folders(root, tools, frozen):
     assert tools_entry.entry({})["drop_folders"] == {}
 
 
+@pytest.mark.parametrize("build", ["portable", "another-data-name"])
+def test_a_frozen_build_that_isnt_the_installed_3_0_writes_nothing(root, tools, frozen, monkeypatch, build):
+    """On 3.0 a frozen program that isn't installed is portable — a test build, dist\\Surasura, cli_smoke (S3.1 D3) —
+    and one whose data name isn't Surasura is a test install. Run on the real profile, either would point Sonic's
+    surasura.json (hato's way in) at itself: `cli` at dist, `drop_folders` at dist's data or `{}` (09 §3: a
+    developer's tree never steals Sonic's entry)."""
+    if build == "portable":
+        monkeypatch.setattr(path_utils, "installed_library", lambda: None)
+    else:
+        monkeypatch.setattr(path_utils, "data_name", lambda: "Surasura-test")
+    assert tools_entry.entry({"connect_enabled": True}) is None
+    assert tools_entry.refresh({"connect_enabled": True}) is False
+    assert not tools.exists()
+
+
+def test_a_portable_frozen_build_advertises_only_SURASURA_TOOLS_CLI_as_from_source(root, tools, frozen, monkeypatch,
+                                                                                   tmp_path):
+    monkeypatch.setattr(path_utils, "installed_library", lambda: None)
+    cli_path = tmp_path / "開発" / "surasura-cli.cmd"
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", str(cli_path))
+    got = tools_entry.entry({})
+    assert got["cli"] == str(cli_path) and got["app"] is None
+
+
 def test_source_checkout_advertises_SURASURA_TOOLS_CLI_with_no_window(root, tools, monkeypatch, tmp_path):
     cli_path = tmp_path / "開発" / "surasura-cli.cmd"
     monkeypatch.setenv("SURASURA_TOOLS_CLI", str(cli_path))
@@ -162,14 +199,14 @@ def test_source_without_SURASURA_TOOLS_CLI_reads_and_writes_nothing(root, tools,
 
 
 def test_refresh_reads_settings_itself_when_none_are_given(root, tools, frozen):
-    (root / "settings.json").write_text(json.dumps({"connect_enabled": True}), encoding="utf-8")
+    _write_settings(json.dumps({"connect_enabled": True}))
     assert tools_entry.refresh() is True
     assert _load(tools)["verbs"] == ["status", "register"]
 
 
 def test_unreadable_settings_skip_the_refresh_quietly(root, tools, frozen, caplog):
     """A half-written settings.json: no entry from a guess at the switch (a fallback could drop `register`)."""
-    (root / "settings.json").write_text('{"connect_enabled": tr', encoding="utf-8")
+    _write_settings('{"connect_enabled": tr')
     assert tools_entry.refresh() is False
     assert not _file(tools).exists()
     assert "settings.json can't be read" in caplog.text
@@ -231,7 +268,7 @@ def test_two_refreshes_at_once_never_share_a_tmp_and_the_switchs_settings_win(ro
     # why: both threads wrote surasura.json.<pid>.tmp, so the second os.replace found it gone (FileNotFoundError, not
     # the PermissionError the retry knows); and a start-up refresh holding the settings from before the switch could
     # replace the entry last, so hato saw no `register` while Connect was on
-    (root / "settings.json").write_text(json.dumps({"connect_enabled": False}), encoding="utf-8")
+    _write_settings(json.dumps({"connect_enabled": False}))
     real, inside, release, sources, errors = os.replace, threading.Event(), threading.Event(), [], []
 
     def replace(src, dst):
@@ -251,7 +288,7 @@ def test_two_refreshes_at_once_never_share_a_tmp_and_the_switchs_settings_win(ro
     start_up.start()
     assert inside.wait(5)
     saved = {"connect_enabled": True}           # the switch saved on, then refreshes with what it saved
-    (root / "settings.json").write_text(json.dumps(saved), encoding="utf-8")
+    _write_settings(json.dumps(saved))
     switch = threading.Thread(target=refresh, args=(saved,), name="switch")
     switch.start()
     switch.join(0.5)
@@ -401,6 +438,25 @@ def test_the_real_folder_is_local_appdata_houseki_tools(monkeypatch, tmp_path):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     assert tools_entry.tools_dir() == os.path.join(str(tmp_path / "Local"), "Houseki", "tools")
+    assert not (tmp_path / "Local").exists()
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_the_real_folder_off_windows_is_path_utils_tools_root(monkeypatch, tmp_path, platform):
+    """One folder, one definition (S3.1 D20, 09 §3): `path_utils.tools_root()` — Linux $XDG_DATA_HOME/Houseki/tools,
+    macOS ~/Library/Application Support/Houseki/tools. Why: tools_entry once worked out its own Linux folder
+    ($XDG_STATE_HOME/houseki/tools), so Surasura would write where Torii and hato never look."""
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+    monkeypatch.delenv("SURASURA_TEST_ROOT", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    home = str(tmp_path / "家")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "共有"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "状態"))
+    monkeypatch.setattr(os.path, "expanduser", lambda p: home + p[1:] if p.startswith("~") else p)
+    monkeypatch.setattr(sys, "platform", platform)
+    expected = (os.path.join(str(tmp_path / "共有"), "Houseki", "tools") if platform == "linux" else
+                os.path.join(home, "Library", "Application Support", "Houseki", "tools"))
+    assert tools_entry.tools_dir() == path_utils.tools_root() == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +479,53 @@ def test_a_cli_call_under_root_writes_its_entry_there(tmp_path, monkeypatch):
     got = json.loads((r / "houseki-tools" / "surasura.json").read_text(encoding="utf-8"))
     assert got["drop_folders"] == {"zh": _hato_folder(r, "zh")}
     assert not (tmp_path / "閉" / "houseki-tools").exists()      # the closed gate wrote nothing
+
+
+def _stage_update(r):
+    """The updater's marker armed under the test root `r` (<root>/local_root/update/, S3.1 D9) -> its path."""
+    marker = r / "local_root" / path_utils.UPDATE_DIRNAME / path_utils.UPDATE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+    return marker
+
+
+@pytest.mark.parametrize("argv", [["--version"], ["status", "--lang", "ja"]], ids=["--version", "status"])
+def test_a_staged_update_leaves_the_entry_alone_for_the_verbs_that_answer_then(tmp_path, monkeypatch, argv):
+    """02 §7: `status`, `logs` and `--version` write nothing while an update is staged, and the swapper proves a swap
+    by the new program's --version while its marker exists (S3.1 D9). Refreshed then, surasura.json would name the
+    new version mid-update: hato's "retry once `version` changes" (09 §2) fires while the update is still staged, and
+    a swap undone after that proof leaves the entry naming a version that isn't there. Never written: still absent;
+    written: untouched to the byte; the verb's answer as with the gate closed. The marker gone, the same call writes."""
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+    r = tmp_path / "根"
+    (r / "User Files" / "ja").mkdir(parents=True)
+    marker = _stage_update(r)
+    closed = _call(["--root", str(r)] + argv)
+    assert closed[0] == 0, closed           # both answer while staged (status says so: `update_staged`)
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", str(tmp_path / "スラスラ" / "surasura-cli.cmd"))
+    entry_file = r / "houseki-tools" / "surasura.json"
+    assert _call(["--root", str(r)] + argv) == closed
+    assert not entry_file.exists()
+    entry_file.parent.mkdir()
+    old = json.dumps({"schema": 1, "tool": "surasura", "version": "2.5.0", "cli": "旧"}, ensure_ascii=False)
+    entry_file.write_bytes(old.encode("utf-8"))
+    assert _call(["--root", str(r)] + argv) == closed
+    assert entry_file.read_bytes() == old.encode("utf-8")
+    marker.unlink()
+    _call(["--root", str(r)] + argv)
+    assert _load(entry_file.parent)["version"] == __version__
+
+
+def test_a_staged_update_refused_verb_writes_no_entry(tmp_path, monkeypatch):
+    """Every other verb answers `update-staged` while an update is staged, and refreshes nothing: the refresh comes
+    after the update check."""
+    monkeypatch.delenv("HOUSEKI_TOOLS_DIR", raising=False)
+    r = tmp_path / "根"
+    _stage_update(r)
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", str(tmp_path / "surasura-cli.cmd"))
+    code, out = _call(["--root", str(r), "_selftest", "ok", "--echo", "日本語"])
+    assert code == 3 and '"update-staged"' in out
+    assert not (r / "houseki-tools").exists()
 
 
 @pytest.mark.parametrize("outcome, code", [("ok", 0), ("fail", 1)])

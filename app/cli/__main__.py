@@ -99,11 +99,17 @@ def _root_option(argv):
     return None
 
 
-def _refresh_tools_entry():
-    """surasura.json in the shared tools folder, at every call (09-hato-layer §3): after --root, before the verb. A
-    failure is only logged: it never changes a verb's answer or exit code. A source checkout without
-    SURASURA_TOOLS_CLI returns before reading anything."""
+def _refresh_tools_entry(verb):
+    """surasura.json in the shared tools folder, at every call (09-hato-layer §3): after the update and build checks,
+    before the verb — except while an update is staged, when `status`, `logs` and `--version` answer but write nothing
+    (02 §7; the swapper proves a swap by --version, and hato retries once the entry's `version` changes). A failure is
+    only logged: it never changes a verb's answer or exit code. A source checkout without SURASURA_TOOLS_CLI returns
+    before reading anything."""
     try:
+        if verb in ANSWER_WHILE_UPDATING:
+            from app.library_store import PROBE_LOOKS, update_staged
+            if update_staged(looks=PROBE_LOOKS):
+                return
         tools_entry.refresh()
     except Exception:
         contract.log.exception("surasura.json (the shared tools file) wasn't refreshed")
@@ -124,7 +130,6 @@ def main(argv=None, out=None):
             args, usage = None, e
         contract.open_log()
         sys.stdout = sys.stderr = contract._ToLog()
-        _refresh_tools_entry()
 
         if usage is None and not args.version and not args.verb:
             usage = contract.CliError("usage", "Say what to do: a command, or --version. Run surasura-cli --help.")
@@ -136,6 +141,7 @@ def main(argv=None, out=None):
             if verb not in ANSWER_WHILE_UPDATING:
                 contract.check_update()
             contract.check_build(store=not args.version)    # a mixed program folder is refused, --version too
+            _refresh_tools_entry(verb)
             if args.version:
                 return _version(args)
             contract.check_token_stores()

@@ -219,3 +219,27 @@ def test_a_dry_run_says_what_the_run_would_do_no_more(deck, monkeypatch):
         code, line = h.call("resort", "--dry-run")
     assert code == 0 and line["skipped"] == "the list is out of date: Generate first", line
     assert fake.requests == []
+
+
+def test_on_3_0_the_deck_guard_leaves_all_decks_and_no_deck_to_the_runs_own_answer():
+    """Haya's G3 guards one chosen deck: with All decks, or no deck chosen, `deck_aside` says nothing and the run's
+    own answer speaks (every deck, or `needs-deck`), never "順's deck  isn't recorded" for a deck the user never
+    picked, nor a guard on a leftover `junban_deck` while All decks is chosen (the planted-bug pass, row 7b)."""
+    from app.cli import verbs
+    unrecorded = {"junban_deck": "TheBank", "junban_replan_deck": "", "junban_replan_language": ""}
+    assert verbs.deck_aside({**unrecorded, "junban_scope": "all"}, "ja") is None
+    assert verbs.deck_aside({**unrecorded, "junban_scope": "deck", "junban_deck": "  "}, "ja") is None
+    assert verbs.deck_aside({"junban_scope": "deck"}, "zh") is None
+    assert verbs.deck_aside({**unrecorded, "junban_scope": "deck"}, "ja") == (
+        "順's deck TheBank isn't recorded for Japanese — pick it in 順's window in Japanese")
+
+
+def test_on_3_0_a_switched_off_junban_is_the_reason_before_the_deck(deck):
+    """Both stand aside: 順 switched off and its deck not recorded for this language. The run names 順 switched off,
+    the reason to fix first (turning 順 on is what lets its window record the deck); Anki is never asked."""
+    fake, patched = deck(connect_enabled=True, enable_junban=False, junban_replan_deck="", junban_replan_language="")
+    with patched:
+        for verb in (("junban", "--auto"), ("resort",)):
+            code, line = h.call(*verb)
+            assert code == 0 and line["skipped"] == "順 is switched off" and line["moves"] == 0, (verb, line)
+    assert fake.requests == [] and fake.writes == []

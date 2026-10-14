@@ -80,11 +80,11 @@ def test_a_request_while_another_program_holds_results_returns_at_once_waits_and
     waits = []
     with h.Holder("results", "Generate"):
         run, ms = h.timed(lambda: controller.request("ja", settings=_settings(), on_wait=waits.append))
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
         assert h.until(lambda: controller.state().message == "Waiting for Generate to finish", seconds=10)
         assert controller.state().state == G.QUEUED and waits and waits[0]["verb"] == "Generate"
         _, cancel_ms = h.timed(controller.cancel)
-        assert cancel_ms <= 4, cancel_ms
+        assert cancel_ms <= h.AT_ONCE_MS, cancel_ms
         assert _settled(controller, 10)
         assert run.proc is None, "nothing started"
         assert registry.snapshot()[-1].cancelled
@@ -529,6 +529,10 @@ def test_a_japanese_failure_never_reads_in_the_chinese_bar_and_goes_on_a_switch_
     assert controller.failure("ja")
     from app import analyzer
     monkeypatch.setattr(analyzer, "journey_is_current", lambda args, language: True)
+    other = threading.Event()
+    controller.check(_settings("zh"), "zh", then=lambda answer: other.set())
+    assert other.wait(10)
+    assert controller.failure("ja"), "the Chinese journey being current cleared the Japanese failure"
     checked = threading.Event()
     controller.check(_settings(), "ja", then=lambda answer: checked.set())
     assert checked.wait(10)

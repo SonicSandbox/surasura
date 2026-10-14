@@ -48,7 +48,7 @@ class _Settings:
 
 @pytest.fixture
 def gate(monkeypatch):
-    """`automation_on`'s shape (D29 on, Junban on, the (language, deck) pair recorded and holding) and the update's lock
+    """`automation_on`'s shape (D29 on, Junban on and installed, the (language, deck) pair recorded and holding) and the update's lock
     (`staged["now"]`). The real predicate is worker K's, tested with replan_preview."""
     staged = {"now": False}
 
@@ -60,6 +60,8 @@ def gate(monkeypatch):
                 and settings.get("junban_replan_deck") == settings.get("junban_deck"))
     monkeypatch.setattr(replan_preview, "automation_on", automation_on, raising=False)
     monkeypatch.setattr(replan_preview, "_update_staged", lambda: staged["now"])
+    # Junban installed, whatever this checkout holds (GitHub's has no `modules/`): the bar's stand-aside line needs it
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: True)
     return staged
 
 
@@ -315,6 +317,25 @@ def test_the_start_catches_up_once_and_asks_for_the_journey_only_when_the_store_
     assert replan.keeper.asked == (1 if pending else 0)
     assert launches.count() == (1 if pending else 0)
     assert all(run.quiet for run in launches.runs)
+    replan.finish(time.monotonic() + 1)
+
+
+@pytest.mark.parametrize("state", ["QUEUED", "RUNNING"])
+def test_the_starts_journey_look_asks_nothing_while_a_generate_runs_or_waits(gate, monkeypatch, state):
+    """The start and a language switch look at the journey (`changed("start")` when the store says it is pending), but
+    never while a Generate runs or waits its turn: the keeper's `on_done` re-orders after it, and an ask now would
+    withdraw that run and start one from scratch (one change, two Generates)."""
+    from types import SimpleNamespace
+    from app.services import generate as G
+    replan, _registry, controller, launches, opener = _replan(pending=lambda language: True)
+    monkeypatch.setattr(controller, "state", lambda: SimpleNamespace(state=getattr(G, state)))
+    replan.start()
+    _quiet(replan)
+    assert opener.hosts[0].calls == ["catch_up"]
+    assert replan.keeper.reasons == [] and launches.count() == 0
+    replan.language_changed("zh")
+    _quiet(replan)
+    assert replan.keeper.reasons == [] and launches.count() == 0
     replan.finish(time.monotonic() + 1)
 
 
@@ -714,6 +735,20 @@ def test_quit_never_waits_past_its_deadline_for_a_host_that_stays_busy(gate):
     host.busy_for(10 ** 9)                                # busy for good: only the deadline ends the wait
     assert replan.finish(time.monotonic() + 0.3) is False
     assert host.calls[-1] == "stop" and host.looks > 0
+
+
+def test_the_windows_close_sees_the_host_still_writing(gate):
+    """`Replan.busy()` is what the window's close waits on (the shell's `replan_wait`, E20): it answers for the open
+    host — True while the host still works, False once it ended."""
+    replan, _registry, _c, _l, opener = _replan()
+    replan.activated()
+    _quiet(replan)
+    host = opener.hosts[0]
+    assert replan.busy() is False
+    host.busy_for(2)
+    assert replan.busy() is True and replan.busy() is True
+    assert replan.busy() is False
+    replan.finish(time.monotonic() + 1)
 
 
 def test_closing_twice_sends_the_hosts_close_once(gate):

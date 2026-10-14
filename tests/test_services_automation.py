@@ -1047,6 +1047,9 @@ def _junban_settings_seen(monkeypatch):
     fake.window_open = lambda: False
     fake.run_quietly = lambda settings, list_current=None, job=None: seen.append(dict(settings)) or ""
     monkeypatch.setitem(sys.modules, "modules.junban.auto", fake)
+    from app import replan_preview
+    # Junban installed, whatever this checkout holds (GitHub's has no `modules/`): the host's gate asks for it
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: True)
     return seen
 
 

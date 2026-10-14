@@ -76,7 +76,7 @@ def test_get_after_the_load_is_a_copy_in_memory_within_4_ms():
     _, ms = h.timed(service.get)
     service.set({"theme": "Zen Mode"})
     got, ms_after_set = h.timed(service.get)
-    assert ms <= 4 and ms_after_set <= 4, (ms, ms_after_set)
+    assert ms <= h.AT_ONCE_MS and ms_after_set <= h.AT_ONCE_MS, (ms, ms_after_set)
     assert got["theme"] == "Zen Mode"
     assert service.flush(10)
 
@@ -158,7 +158,7 @@ def test_set_returns_within_4_ms_while_another_program_holds_the_settings_lock()
     with h.Holder("settings"):
         _, ms = h.timed(lambda: service.set({"theme": "Zen Mode"}))
         _, get_ms = h.timed(service.get)
-        assert ms <= 4 and get_ms <= 4, (ms, get_ms)
+        assert ms <= h.AT_ONCE_MS and get_ms <= h.AT_ONCE_MS, (ms, get_ms)
         time.sleep(0.3)
         assert h.read_settings().get("theme") is None          # held: not written yet
     assert service.flush(15)

@@ -65,7 +65,7 @@ def test_poll_is_a_stat_within_4_ms():
     status.refresh()
     for _ in range(20):
         _, ms = h.timed(status.poll)
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
 
 
 def test_a_provider_that_fails_leaves_the_rest_of_the_snapshot():
@@ -460,7 +460,7 @@ def test_a_tick_runs_on_a_worker_never_on_the_pollers_thread():
     for _ in range(20):
         clock.now += 3
         _, ms = h.timed(status.poll)
-        assert ms <= 4, ms
+        assert ms <= h.AT_ONCE_MS, ms
         _settle(status)
 
 
@@ -622,6 +622,21 @@ def test_connects_tick_is_skipped_while_connect_is_off_and_comes_back_when_it_is
     status.poll()
     _settle(status)
     assert len(reads) == 3                               # on: ticking again
+
+
+def test_the_ankiweb_countdown_comes_back_once_something_will_send_the_sync(monkeypatch):
+    """Nothing will send the sync (Connect off, no deck recorded): no countdown — said from a copy of the file's state,
+    never by changing the read the mark keeps, so once Connect turns on, the same file (unchanged) counts down."""
+    pytest.importorskip("modules.junban")
+    from app import anki_sync_rule
+    start = time.time()
+    anki_sync_rule.wrote(True, now=start)
+    settings = {"enable_junban": True, "junban_deck": "Mining"}
+    line = S.ankiweb_line(lambda: settings, now=lambda: start)
+    assert line() is None
+    settings["connect_enabled"] = True
+    said = line()
+    assert said is not None and said.startswith("AnkiWeb: syncing in "), said
 
 
 @pytest.mark.parametrize("case, settings, countdown", [

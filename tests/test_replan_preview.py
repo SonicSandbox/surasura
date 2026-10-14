@@ -980,6 +980,9 @@ def test_on_3_0_a_host_run_with_nothing_to_act_on_sends_todays_positions_only_re
                 # The one difference, and no write: with the suspend setting saved, the probe (the same request)
                 # also names `suspend` / `unsuspend`, asked before the plan knows there's nothing to suspend.
                 asked = sent["params"]["actions"]
+                # The probe is the run's own, on the job's settings as `_write` decides them (the actions on: they
+                # name the suspend), never positions-only's
+                assert not over.get("junban_auto_actions") or {"suspend", "unsuspend"} <= set(asked), asked
                 assert [name for name in asked if name not in ("suspend", "unsuspend")] == \
                     positions_only["params"]["actions"], asked
                 continue

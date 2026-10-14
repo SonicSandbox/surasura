@@ -723,6 +723,32 @@ def test_bar_replan_journey_dot_made_with_the_automation_off_says_press_generate
         w.close()
 
 
+def test_bar_replan_journey_dot_reads_the_automation_switch_as_the_duties_attach(qapp, tmp_path):
+    """D29 already off in the settings file as the window opens, and never changed after: the duties' attach reads it
+    (on a worker), so the dot's tooltip is the plain one from the start."""
+    h.write_settings({"target_language": "ja", "logic": {"automation": False}})
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        assert wait_until(lambda: w.win._d29 is False)
+        w.win._poll.stop()
+        w.status.providers["journey"] = lambda: True
+        w.status.refresh_soon("journey")
+        assert wait_until(lambda: not w.d.journey_dot.isHidden())
+        assert w.d.journey_dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS
+    finally:
+        w.close()
+
+
+def test_bar_replan_an_older_automation_read_never_overwrites_a_newer_one(world):
+    """Two reads of D29 in flight (two changes in a row): the older answer, arriving last, is dropped — the dot's
+    tooltip follows the newest read."""
+    win = world.win
+    newest = win._d29_asked + 2
+    win._d29_asked, win._d29 = newest, False             # the newest read said off
+    win._d29_read((newest - 1, True))                    # the older read's answer lands after it
+    assert win._d29 is False
+
+
 def test_bar_replan_journey_dot_never_reads_the_settings_on_the_window_thread(world, monkeypatch):
     """Every snapshot (each second while the AnkiWeb mark counts down) repainted the dot after asking the settings
     service for D29 on the window's thread — its lock, and a deep copy after any change. D29 is read on a worker when a

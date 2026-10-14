@@ -1206,8 +1206,10 @@ def test_the_teardown_waits_for_a_turn_of_the_wait_list_still_scanning_after_a_c
         assert scanning.wait(10)
         assert svc.cancel() is True and svc._update is None
         assert "update-run" in _update_threads()          # still in its scan, as on GitHub's runner
-        threading.Timer(0.2, release.set).start()
-        _settle(world)
-        assert _update_threads() == []
+        settled = threading.Event()
+        threading.Thread(target=lambda: (_settle(world), settled.set()), name="settle", daemon=True).start()
+        assert not settled.wait(0.3), "the teardown returned while the wait list was still in its scan"
+        release.set()
+        assert settled.wait(30) and _update_threads() == []
     finally:
         release.set()

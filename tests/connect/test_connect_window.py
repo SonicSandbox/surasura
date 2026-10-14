@@ -7,6 +7,7 @@ Anki's write lock — and one that gives up at once says "busy" where it should 
 Junban fails on click; *Dismiss* that doesn't reach the ledger brings the entry back; a window Esc doesn't close traps
 the keyboard. Every Connect call is stood in for (`undo.act`, `status`'s two writes), each recording its thread;
 real Japanese words, synthetic titles."""
+import gc
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -61,6 +62,11 @@ def root():
         yield r
     finally:
         r.destroy()
+        r = None
+        # why: each test makes its own Tk root; one left to the cycle collector can be freed on the next test's worker
+        # thread (a `job` that happens to start a collection), and Tcl aborts the whole run (Windows fatal 0x80000003).
+        # The app has one root for its whole life, so this is the tests' own: free it here, on the Tk thread.
+        gc.collect()
 
 
 def _window(root, act=None, confirm=True, junban=True, **kw):

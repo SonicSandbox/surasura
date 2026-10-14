@@ -192,19 +192,22 @@ def _shard_of(project_root, spec):
 
 
 def run_shard(project_root, spec):
-    """`--shard I/N`: run that shard's files, verbose like the default run. Returns pytest's exit code (5, no tests
-    in these files, is no failure; 2 for a bad I/N)."""
+    """`--shard I/N`: run that shard's files, verbose like the default run. Returns pytest's exit code, as the default
+    run does (5, nothing collected, fails); 2 for a bad I/N or a checkout with no core test files."""
     try:
         files = _shard_of(project_root, spec)
     except ValueError:
         print(f"--shard takes I/N with 1 <= I <= N, not {spec!r}")
         return 2
+    if not _core_files(project_root):
+        print(f"No core test files under {os.path.join(project_root, 'tests')}")
+        return 2
     print(f"Core suite, shard {spec}: {len(files)} files", flush=True)
-    if not files:
+    if not files:                                          # more shards than files: nothing of the suite is lost
         return 0
     result = subprocess.run([sys.executable, "-m", "pytest", *files, "-v", "-ra"],
                             cwd=project_root, env=os.environ.copy())
-    return 0 if result.returncode == 5 else result.returncode
+    return result.returncode
 
 
 def _decode(raw):
@@ -309,9 +312,11 @@ def main():
         except KeyboardInterrupt:
             print("\nTest run cancelled via KeyboardInterrupt.")
             sys.exit(130)
-    if "--shard" in sys.argv[1:]:
-        args = sys.argv[1:]
-        spec = args[args.index("--shard") + 1] if args.index("--shard") + 1 < len(args) else ""
+    args = sys.argv[1:]
+    joined = [a.split("=", 1)[1] for a in args if a.startswith("--shard=")]
+    if "--shard" in args or joined:
+        at = args.index("--shard") if "--shard" in args else None
+        spec = joined[0] if joined else (args[at + 1] if at + 1 < len(args) else "")
         try:
             sys.exit(run_shard(project_root, spec))
         except KeyboardInterrupt:

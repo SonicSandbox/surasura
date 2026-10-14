@@ -87,8 +87,9 @@ jobs:
 
   tests:
     # The one result of the core suite: passed only if every shard passed (a docs-only pull request skips both).
+    # always(), not !cancelled(): a run cancelled mid-shards must fail this check, never skip it (skipped reads green).
     needs: [changes, shards]
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - env:

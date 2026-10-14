@@ -336,10 +336,11 @@ def test_an_empty_shard_passes_without_starting_pytest(tmp_path, monkeypatch):
     assert run_tests.run_shard(str(tmp_path), "2/2") == 0
 
 
-@pytest.mark.parametrize("pytest_code, code", [(0, 0), (1, 1), (5, 0)])
-def test_main_with_shard_runs_that_shards_files_verbose_from_the_root(monkeypatch, pytest_code, code):
+@pytest.mark.parametrize("pytest_code, code", [(0, 0), (1, 1), (5, 5)])
+@pytest.mark.parametrize("flag", [["--shard", "2/4"], ["--shard=2/4"]])
+def test_main_with_shard_runs_that_shards_files_verbose_from_the_root(monkeypatch, pytest_code, code, flag):
     """`--shard 2/4`: one pytest process over shard 2's files, from the project root (the paths are relative to it),
-    verbose like the default run, its exit code passed on; 5 (only helpers, no tests) is no failure."""
+    verbose like the default run, its exit code passed on — 5 (nothing collected) fails, as `pytest tests` did."""
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     seen = {}
 
@@ -348,7 +349,7 @@ def test_main_with_shard_runs_that_shards_files_verbose_from_the_root(monkeypatc
         return subprocess.CompletedProcess(cmd, pytest_code)
 
     monkeypatch.setattr(run_tests.subprocess, "run", fake_run)
-    monkeypatch.setattr(sys, "argv", ["run_tests.py", "--shard", "2/4"])
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", *flag])
     with pytest.raises(SystemExit) as exit_info:
         run_tests.main()
     assert seen["cmd"] == [sys.executable, "-m", "pytest", *run_tests._shard_of(root, "2/4"), "-v", "-ra"]
@@ -366,3 +367,33 @@ def test_a_bad_shard_runs_nothing_and_fails(monkeypatch, capsys, argv):
         run_tests.main()
     assert exit_info.value.code == 2
     assert "--shard takes I/N" in capsys.readouterr().out
+
+
+def test_a_checkout_with_no_core_test_files_fails_every_shard(tmp_path, monkeypatch, capsys):
+    """A wrong root or an empty checkout must not pass four green shards: `pytest tests` failed there too."""
+    os.makedirs(os.path.join(str(tmp_path), "tests"))
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: pytest.fail("nothing to run"))
+    assert run_tests.run_shard(str(tmp_path), "1/4") == 2
+    assert "No core test files" in capsys.readouterr().out
+
+
+def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
+    """pr.yml's matrix is one list, 1..N in order, and each job passes `<its shard>/<the job count>`: a repeated or
+    missing number, or a second matrix dimension (job-total would double), would drop files and still pass. The
+    `tests` job (the branch's required check, the job pr-merge.yml reads) runs after the shards even when the run is
+    cancelled (always()), so a cancelled run is never a skipped, green `tests`. Read as text: no YAML parser here."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
+        text = f.read()
+    shards = text.split("\n  shards:\n", 1)[1].split("\n  tests:\n", 1)[0]
+    matrix = shards.split("matrix:\n", 1)[1].split("\n    steps:", 1)[0]
+    lines = [line.strip() for line in matrix.splitlines() if line.strip() and not line.strip().startswith("#")]
+    assert len(lines) == 1 and lines[0].startswith("shard: ["), "one matrix dimension: the shard"
+    numbers = [int(n) for n in lines[0].split("[", 1)[1].split("]", 1)[0].split(",")]
+    assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) >= 2
+    assert "run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}" in shards
+    assert "fail-fast: false" in shards
+    tests = text.split("\n  tests:\n", 1)[1].split("\n  unreview:\n", 1)[0]
+    assert "needs: [changes, shards]" in tests
+    assert "if: ${{ always() && needs.changes.outputs.code != 'false' }}" in tests
+    assert 'test "$SHARDS" = success' in tests and "SHARDS: ${{ needs.shards.result }}" in tests

@@ -364,8 +364,11 @@ def _after_mining(steps, ledger, lang, out):
         ran = None
     if ran is False:
         return False
-    with ledger.transaction():
-        ledger.owe_resort(lang)             # the follow-up re-order: owed until it lands (the next job's step pays it)
+    try:
+        with ledger.transaction():
+            ledger.owe_resort(lang)         # the follow-up re-order: owed until it lands (the next job's step pays it)
+    except Exception:                       # R15: a ledger fault here never ends the run (final adversary #3)
+        log.exception("Connect couldn't mark the re-sort owed after its Generate (%s)", lang)
     if ran is None:
         return False
     if _stop(steps):                        # switched off or an update staged during the Generate: no Anki write
@@ -388,8 +391,11 @@ def _follow_up(steps, lang, ledger):
         log.exception("Connect's follow-up re-order stopped on an error; the re-sort stays owed")
         return
     if not deferred:
-        with ledger.transaction():
-            ledger.resort_paid(lang)
+        try:
+            with ledger.transaction():
+                ledger.resort_paid(lang)
+        except Exception:                   # R15: logged, the run goes on; the re-sort stays owed (#3)
+            log.exception("Connect couldn't mark the re-sort paid (%s); it stays owed", lang)
 
 
 # A job that ended one of these ways took its item's needs with it (03 §4: fixed by itself); `failed` just named one
@@ -902,6 +908,8 @@ class Steps:
         self.url = anki_connect.address(loaded)
         self._current = {}          # {lang: replan.Current}: the plan this run mines and orders from (P3.3)
         self._after = {}            # {lang: why}: a Generate owed once this run's mining is done (F11)
+        self._served = set()        # the languages whose run plan the engine serves (prepare's, the Generate after
+                                    # mining's): a plan read since that it can't serve defers the re-order (#4)
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
@@ -1127,6 +1135,7 @@ class Steps:
             self._after[lang] = got.reason
         else:
             self._after.pop(lang, None)
+        self._serves(lang, got)
         self._shelved = set()
         try:
             self.notes_gone(lang)
@@ -1160,19 +1169,23 @@ class Steps:
     def current(self, lang, fresh=False):
         """P3.3: the plan this run mines and orders from (`replan.current`), kept for the run and read again when
         the store's order or pins, the plan file or the run stamp moved since (`replan.key`: a move mid-run is
-        re-planned before the next pick or re-order). A busy store is a Wait; none to read is Needs (`_open`). A key
-        that can't be read counts as moved: `replan.current`'s guarded read answers (review H9)."""
+        re-planned before the next pick or re-order), or the settings the verdict reads (`replan.settings_key`: the
+        band lowered with the window closed is read again, never ordered from the old plan: #4, H10). A busy store is
+        a Wait; none to read is Needs (`_open`). A key that can't be read counts as moved: `replan.current`'s guarded
+        read answers (review H9)."""
         from app.connect import replan
         kept = self._current.get(lang)
+        settings = self._settings(lang)
         with self._open(lang) as store:
             if kept is not None and not fresh:
                 try:
-                    same = replan.key(store) == kept.key
+                    same = (replan.key(store) == kept.key
+                            and replan.settings_key(settings, lang) == kept.settings_key)
                 except Exception:
                     same = False
                 if same:
                     return kept
-            got = replan.current(lang, self._settings(lang), store, previous=kept)
+            got = replan.current(lang, settings, store, previous=kept)
         self._current[lang] = got
         return got
 
@@ -1197,10 +1210,18 @@ class Steps:
         self._generate(SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False),
                        "Generate didn't finish after Connect made its cards: your list catches up at the next one.")
         try:
-            self.current(lang, fresh=True)
+            self._serves(lang, self.current(lang, fresh=True))
         except (Wait, Needs) as e:
             log.info("Connect: the plan after the Generate is read at the follow-up (%s): %s", lang, e)
         return True
+
+    def _serves(self, lang, got):
+        """The run's plan, read fresh (prepare's, the Generate after mining's): does the engine serve it (`_served`;
+        #4)? None of it -> the re-order reads the list as today (stand-aside, coverage)."""
+        if got is not None and got.result is not None:
+            self._served.add(lang)
+        else:
+            self._served.discard(lang)
 
     # --- P2.4 Part B: the cap, the shelf, media names, deleted cards ------------------------------------------- #
     def _anki(self):
@@ -1510,13 +1531,20 @@ class Steps:
         None for the follow-up.
 
         A newer order planned or made while this one was written (the window's host wrote one while Connect waited
-        for `anki-writer`, or you moved: `_junban_auto` tells it, review M1) -> re-planned and ordered once more —
-        once, never a loop (`Host._replan`'s own rule). Here, not in `_junban_auto`: the step holds the run's plan
-        (`current`, read fresh); a newer order the engine can't serve -> DEFERRED (the re-sort stays owed)."""
+        for `anki-writer`, or you moved), or a Generate that landed meanwhile without a move (known words, the band:
+        `_junban_auto` tells it, review M1 and the final adversary's #2) -> re-planned and, when the re-plan's
+        verdict is "no", ordered once more — once, never a loop (`Host._replan`'s own rule); any other verdict, or a
+        newer one again after that second write -> DEFERRED (the re-sort stays owed: the next look re-orders, #1).
+        Here, not in `_junban_auto`: the step holds the run's plan (`current`, read fresh).
+
+        A plan read since the run's own that the engine can't serve (the settings, or a file, moved mid-run: `current`
+        reads it again) -> DEFERRED: never the old plan's rows written and recorded planned (#4, H10)."""
         from app.cli import verbs
         from app.cli.contract import CliError
         got = self._plan_now(lang)
         if lang in self._after and (got is None or got.result is None):
+            return DEFERRED
+        if lang in self._served and got is not None and got.result is None:
             return DEFERRED
         for again in (False, True):
             ns = SimpleNamespace(lang=lang, wait=WAIT_S, auto=True, dry_run=False, current=got, positions_only=False)
@@ -1528,11 +1556,14 @@ class Steps:
                 raise Skip("Junban isn't installed")
             if out.get("skipped"):          # 順 off, an update waiting, the list out of date: named, the re-sort owed
                 raise Skip(str(out["skipped"]))
-            if again or not getattr(ns, "newer", False):
+            if not getattr(ns, "newer", False):
                 return None
+            if again:                       # newer again during the second write: owed, never a third (#1)
+                log.info("Connect: a newer order again while it wrote Anki's (%s): the re-sort stays owed", lang)
+                return DEFERRED
             log.info("Connect: a newer order was planned while it wrote Anki's (%s): ordering once more", lang)
             got = self.current(lang, fresh=True)
-            if got.result is None:
+            if got.generate != "no":        # the re-plan's verdict decides (#2): only one the engine serves as is
                 return DEFERRED
 
 

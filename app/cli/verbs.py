@@ -788,10 +788,13 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if planned and report.get("ok") and not report.get("left") and not report.get("failures"):
         after = _record_planned(lang, current.versions)
         written_at = current.versions["order_version"]
-        if after is not None and (after["order_version"] > written_at or after["planned_order_version"] > written_at):
-            # A newer order was planned (the window's host wrote it while this run waited for `anki-writer`) or you
-            # moved meanwhile: this write may have landed over it. Connect's step re-plans and orders once more (the
-            # host's own rule, `Host._replan`; review M1) — told on the namespace, as `current` came in on it
+        if after is not None and (after["order_version"] > written_at or after["planned_order_version"] > written_at
+                                  or _plan_moved(current, after)):
+            # A newer order was planned (the window's host wrote it while this run waited for `anki-writer`), you
+            # moved, or a Generate landed without a move (known words, the band: the plan file or the run stamp moved)
+            # meanwhile: this write may have landed over it, from rows that are no longer the list's. Connect's step
+            # re-plans and, as its verdict says, orders once more (the host's own rule, `Host._replan`; review M1, the
+            # final adversary's #2) — told on the namespace, as `current` came in on it
             args.newer = True
     if session is not None and written:
         # S3's clock: a spaced run (a job) told the rule itself; a dense one is read here, by the re-plan's own test
@@ -805,6 +808,17 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
         undo_id = os.path.basename(snapshot) if snapshot and written else None
     return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
              "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+
+
+def _plan_moved(current, versions):
+    """Did the plan Connect wrote from move since it was read (`replan.key` at `versions`, the store's read after the
+    write: the plan file or the run stamp, the store's epoch, its order or pins)? The planned versions are no part of
+    the key, so Connect's own `record_planned` never counts. A key that can't be read counts as moved."""
+    from app.connect import replan
+    try:
+        return replan.key(None, versions) != current.key
+    except Exception:
+        return True
 
 
 def _record_planned(lang, versions):

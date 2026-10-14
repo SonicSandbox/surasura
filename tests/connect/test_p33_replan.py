@@ -15,7 +15,11 @@ sits (the video, the fit check, the batch, Backfill) a stand-in that makes one n
       at the final order;
   (d) the first review's M1: a newer order the window's host planned and wrote while Connect waited for the writer
       lock → Connect re-plans and orders once more — once, never a loop — and Anki ends at the newest order's
-      Generate; one recipe: the window's re-order host and Connect re-plan by one recipe (the same rows and places).
+      Generate; one recipe: the window's re-order host and Connect re-plan by one recipe (the same rows and places);
+  (e) the final adversary's #1, #2, #4: a newer order again during that second write → the re-sort stays owed and the
+      next look re-orders; a Generate landing without a move between the plan read and the write → ordered once
+      more from its plan (or owed, when its re-plan isn't served as is); the band lowered between two jobs → the
+      second order step writes nothing from the old plan and owes the re-sort.
 
 What a wrong answer would cost: a full Generate for every move holding the cards back; cards made or ordered by ranks
 no list ever had; an order recorded as planned that Anki doesn't hold (the window's host then never fixes it).
@@ -330,8 +334,128 @@ def test_ordering_once_more_is_once_never_a_loop(connect, monkeypatch):
     _move_later_to_top(store)
     jobs = _newer_meanwhile(store, monkeypatch, times=5)     # the host writes a newer order during every write
     with _patched(fake):
-        assert steps.order("ja", None) is None
+        assert steps.order("ja", None) == runner.DEFERRED, "a newer order again: the re-sort stays owed (#1)"
     assert len(jobs) == 2, "once more, then it's the next look's"
+
+
+def test_a_newer_order_again_during_the_second_write_stays_owed_and_the_next_look_re_orders(connect, monkeypatch):
+    # why (final adversary #1): the once-more write answered "done" though the host's newer order landed under it —
+    # the re-sort marked paid, the store saying "planned" at an order Anki doesn't hold, and nobody re-ordering
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    steps = AnkiMinerStandIn(_loaded(), [])
+    _move_later_to_top(store)
+    items = _episodes(store)
+    jobs = _newer_meanwhile(store, monkeypatch, times=2)     # the host writes a newer order during both of Connect's
+    with _patched(fake), Ledger(ledger_path) as ledger:
+        first, second = (ledger.queue("ja", item, "user", None) for item in items[:2])
+        with ledger.transaction():
+            ledger.owe_resort("ja")                          # the list moved: this job's step pays the re-sort
+        runner._order(steps, ledger, "ja", ledger.job_by_id(first))
+        assert len(jobs) == 2 and ledger.resort_owed("ja") is not None, "owed: Anki may hold an older order"
+        runner._order(steps, ledger, "ja", ledger.job_by_id(second))     # the next job's look
+        final = steps.current("ja")
+        assert len(jobs) == 3 and jobs[2].rows == final.rows("content"), "re-ordered from the newest order"
+        assert ledger.resort_owed("ja") is None, "paid once Anki holds it"
+        assert _anki_holds(final.rows("content")), "Anki holds the newest order"
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"] == final.versions["order_version"]
+
+
+def _known_words_added(root, n=5):
+    """The window's Anki sync: the list's first `n` words now known — the next Generate drops them, no move made."""
+    import csv
+    with open(os.path.join(root, "results", "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))[:n]
+    known = os.path.join(root, "User Files", "ja", "KnownWord.json")
+    with open(known, encoding="utf-8") as f:
+        data = json.load(f)
+    data["words"].extend({"dictForm": row["Word"], "secondary": "", "partOfSpeech": "", "language": "ja",
+                          "knownStatus": "KNOWN", "hasCard": 1} for row in rows)
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.utime(known, (time.time() + 5, time.time() + 5))
+
+
+def _generate_meanwhile(root, monkeypatch, after=None):
+    """The window's keeper while Connect waits for `anki-writer`: known words came in and its Generate landed — no move
+    (the order versions stay) — before Connect's first write; `after` then (a change the new plan doesn't hold yet).
+    Returns the jobs Connect's writes ran."""
+    real = auto.reorder
+    jobs = []
+
+    def window_meanwhile(settings, **kwargs):
+        jobs.append(kwargs.get("job"))
+        if len(jobs) == 1:
+            _known_words_added(root)
+            _generate(root)
+            if after is not None:
+                after(root)
+        return real(settings, **kwargs)
+    monkeypatch.setattr(auto, "reorder", window_meanwhile)
+    return jobs
+
+
+def test_a_generate_landing_without_a_move_before_the_write_is_ordered_once_more_from_its_plan(connect, monkeypatch):
+    # why (final adversary #2): only the order versions were compared after the write — a Generate that moved
+    # neither (known words, the band) let Connect's stale rows stand over the new list and the re-sort be paid
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    steps = AnkiMinerStandIn(_loaded(), [])
+    jobs = _generate_meanwhile(root, monkeypatch)
+    with _patched(fake):
+        first = steps.current("ja")
+        before = store.versions()
+        assert steps.order("ja", None) is None
+        final = steps.current("ja")
+        assert store.versions()["order_version"] == before["order_version"], "no move: only the Generate landed"
+        assert final.generate == "no" and final.rows("content") != first.rows("content"), "the new list's rows"
+        assert len(jobs) == 2 and jobs[1].rows == final.rows("content"), "ordered once more, from the new plan"
+        assert _anki_holds(final.rows("content")), "Anki holds the new list's order, never the stale rows"
+
+
+def test_a_generate_landing_without_a_move_whose_re_plan_isnt_served_as_is_owes_the_re_sort(connect, monkeypatch):
+    # the re-plan's verdict decides: known words changed again after that Generate ("after": provisional) -> no
+    # once-more write here, the re-sort stays owed (the Generate after mining's follow-up, or the next look, orders)
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    steps = AnkiMinerStandIn(_loaded(), [])
+    jobs = _generate_meanwhile(root, monkeypatch, after=_known_changed)
+    with _patched(fake):
+        steps.current("ja")
+        assert steps.order("ja", None) == runner.DEFERRED
+        assert steps.current("ja").generate == "after"
+    assert len(jobs) == 1, "no second write from a plan that isn't served as is"
+
+
+def test_a_band_lowered_between_two_jobs_writes_nothing_from_the_old_plan_and_owes_the_re_sort(connect, monkeypatch):
+    # why (final adversary #4, H10): the plan's key held no settings — the band lowered with the window closed (so no
+    # Generate) left the old plan "current": the next order step wrote its rows and recorded them planned. Before
+    # P3.3 the step's own check refused a list cut at other settings; now the verdict is read again and the step
+    # defers (the next run Generates first, then orders)
+    root, store, generates, ledger_path = connect
+    fake = _deck(root)
+    items = _episodes(store)[:2]
+    steps = AnkiMinerStandIn(_loaded(), items)
+    answers, writes = [], []
+    real_reorder = auto.reorder
+    monkeypatch.setattr(auto, "reorder", lambda settings, **kwargs: (writes.append(len(answers)),
+                                                                     real_reorder(settings, **kwargs))[1])
+    real_order = steps.order
+
+    def order(lang, job):
+        answers.append(real_order(lang, job))
+        if len(answers) == 1:                        # occasional -> common: lowered, the window closed
+            _settings_file(root, connect_enabled=True, logic={"selection": {"band": "common"}})
+        return answers[-1]
+    steps.order = order
+    with _patched(fake):
+        summary, owed = _run(steps, ledger_path)
+    assert sorted(summary["languages"]["ja"]["done"]) == sorted(items), summary
+    assert answers == [None, runner.DEFERRED], answers
+    assert writes == [0], "no Junban run from the old plan after the band was lowered"
+    assert owed is not None, "the re-sort stays owed"
+    assert generates == [], "no Generate in the loop: the next run's verdict Generates first"
 
 
 def test_the_window_and_connect_re_plan_by_one_recipe(lib):

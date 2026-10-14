@@ -40,18 +40,19 @@ class Current:
     read), `generate` ("no" · "after" · "first"), `reason` (plain words for the log and the mark), `result` (the
     engine's `Result`, or None), `plan` and `ids` (the plan and each plan file's item id), `versions` (the store's,
     read with the order), `listed` ({(Word, Reading): place} in the result's priority order, or None), `places`
-    (RP-10, or None), `key` (what it was read at: `key`) and `plan_key` (the plan file's (mtime, size) when it was
-    loaded: the next read keeps the loaded plan while it is the same)."""
+    (RP-10, or None), `key` (what it was read at: `key`), `plan_key` (the plan file's (mtime, size) when it was
+    loaded: the next read keeps the loaded plan while it is the same) and `settings_key` (the settings it was read
+    with: `settings_key`, set by `current`; None: read again next time)."""
 
     __slots__ = ("verdict", "generate", "reason", "result", "plan", "ids", "versions", "listed", "places", "key",
-                 "plan_key")
+                 "plan_key", "settings_key")
 
     def __init__(self, verdict, generate, reason, result=None, plan=None, ids=None, versions=None, key=None,
                  plan_key=None):
         self.verdict, self.generate, self.reason = verdict, generate, reason
         self.result, self.plan, self.ids, self.versions = result, plan, ids, versions
         self.key, self.plan_key = key, plan_key
-        self.listed = self.places = None
+        self.listed = self.places = self.settings_key = None
         if result is not None:
             listed = {}
             for row in result.priority:
@@ -85,14 +86,27 @@ def key(store, versions=None):
             analyzer.read_run_stamp(get_user_file("results")))
 
 
+def settings_key(settings, language):
+    """What the verdict reads of `settings` (the run signature's settings part, `analyzer.settings_signature`, and
+    the analyzer's args, `run_args.analyzer_args`): another one -> the verdict read again (a band lowered mid-run
+    with the window closed moves neither the store nor the plan: the final adversary's #4, H10)."""
+    from app import analyzer, run_args
+    return analyzer.settings_signature(settings, language), tuple(run_args.analyzer_args(settings, language))
+
+
 def current(language, settings, store, previous=None):
     """The plan for the library as it stands -> a `Current` (see the module docstring). `previous`: the last one read,
     whose loaded plan is kept while the plan file is the same (the window's host keeps it the same way)."""
     try:
-        return _current(language, settings, store, previous)
+        got = _current(language, settings, store, previous)
     except Exception as e:                  # never worse than today: the Generate runs first
         log.warning("Connect couldn't read its plan (%s); it Generates first: %s", language, e)
-        return Current(("generate-first", "error"), "first", f"the plan couldn't be read: {e}")
+        got = Current(("generate-first", "error"), "first", f"the plan couldn't be read: {e}")
+    try:
+        got.settings_key = settings_key(settings, language)
+    except Exception as e:                  # None: never the same as a key read later, so read again then
+        log.warning("Connect couldn't sign the settings it read its plan with (%s): %s", language, e)
+    return got
 
 
 def _current(language, settings, store, previous):

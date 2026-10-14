@@ -11,6 +11,7 @@ whose new words wait for another start; a Generate started while an update waits
 Against `FakeSteps` (real Japanese words, a real ledger) for the loop, and the real `Steps` with its verbs replaced
 for the step itself; never a live Anki, no sleeps.
 """
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -103,6 +104,45 @@ def test_stopped_during_the_generate_after_mining_writes_nothing_to_anki_and_owe
     assert ("generate", "ja") in steps.log, "the Generate itself ran (mining was done before the stop)"
     assert ("order", None) not in steps.log, "no follow-up write after the stop"
     assert owed is not None, "the re-sort stays owed"
+
+
+class _FailingLedger(Ledger):
+    """A real ledger whose re-sort marks fail once `failing` names them (a full disk, an sqlite I/O error)."""
+    failing = ()
+
+    def owe_resort(self, language):
+        if "owe" in self.failing:
+            raise sqlite3.OperationalError("disk I/O error")
+        return super().owe_resort(language)
+
+    def resort_paid(self, language):
+        if "paid" in self.failing:
+            raise sqlite3.OperationalError("disk I/O error")
+        return super().resort_paid(language)
+
+
+@pytest.mark.parametrize("failing", ["owe", "paid"])
+def test_a_ledger_write_failing_after_the_generate_never_ends_the_run(tmp_path, failing):
+    # why (final adversary #3, R15): the re-sort marks after the Generate sat outside every guard — a ledger error
+    # there ended the whole run, not one step; logged, the run goes on, and a re-sort that can't be marked paid stays
+    # owed
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "words": WORDS,
+                                      "generate_after": True})
+    real = steps.generate_after
+
+    def generate_after(lang, ledger):
+        ran = real(lang, ledger)
+        ledger.failing = (failing,)                 # the ledger fails from the Generate on
+        return ran
+    steps.generate_after = generate_after
+    with _FailingLedger(str(tmp_path / "ledger.sqlite")) as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+        ledger.failing = ()
+        owed = ledger.resort_owed("ja")
+    assert summary["languages"]["ja"]["done"] == [1, 2] and not summary.get("stopped"), summary
+    assert ("order", None) in steps.log, "the follow-up re-order still ran"
+    if failing == "paid":
+        assert owed is not None, "a re-sort that can't be marked paid stays owed"
 
 
 def test_once_a_run_however_many_looks(tmp_path):

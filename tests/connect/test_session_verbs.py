@@ -2,7 +2,8 @@
 preview on, `known-sync`, `junban --auto`, `resort` and `backfill` ask for the session's one sync before they read or
 write Anki — your phone's reviews come in first — and never again inside the session; a writer that leaves an S3 sync
 pending kicks Connect, whose run sends it before it exits (`connect` → `settle`). Off, no sync is asked and nothing of
-the session is looked at: every request as before. A dry run never syncs (it changes nothing, and a sync would).
+the session is looked at: every request as before (2.x-dev; on 3.0 a Junban run numbers spaced always and carries
+the sync rule itself, Connect or not). A dry run never syncs (it changes nothing, and a sync would).
 
 What a wrong answer would cost: a position or a field written over a card studied on the phone (the desktop's write
 wins the next sync and the review is lost); a sync per verb call (AnkiWeb's "sync too often", the phone's battery);
@@ -85,7 +86,9 @@ def deck(monkeypatch):
     def setup(**over):
         cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険", "眼鏡", "老婆"])
         fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"))
-        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True), **over})
+        # 3.0: 順 has recorded its deck for Japanese — without the pair, every automatic Junban write stands aside
+        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True, junban_replan_deck="TheBank",
+                                        junban_replan_language="ja"), **over})
         saved.pop("junban_url", None)
         h.write_settings(**{**saved, "anki_connect_url": URL})
         wrapped = Session(fake)
@@ -104,13 +107,22 @@ def test_resort_syncs_once_before_it_reads_anki_and_never_again_in_the_session(d
     assert code == 0 and anki.syncs == 1, "inside a session nothing re-syncs (Q4-4)"
 
 
-def test_a_dense_run_that_changed_tomorrows_cards_kicks_connect_to_send_the_sync(deck, kicks):
-    # The re-plan preview off: 2.5's dense block, whose front the verb reads itself (`front_changed`); the S3 sync is
-    # left pending for Connect's run, never waited for here
-    anki, patched = deck(connect_enabled=True)
+def test_on_3_0_junban_auto_with_the_re_plan_preview_off_is_spaced_and_kicks_connect_to_send_the_sync(
+        deck, kicks, monkeypatch):
+    # 2.x-dev keeps 2.5's dense block here, the preview off, whose front the verb reads itself (`front_changed`:
+    # test_a_dense_run_that_changed_tomorrows_cards_kicks_connect_to_send_the_sync); 3.0 (Haya's G2b): spaced always,
+    # so the run tells the sync rule itself and the verb never reads the front. Either way the S3 sync is left
+    # pending for Connect's run, never waited for here
+    from app.connect import anki_session
+    read_front = []
+    monkeypatch.setattr(anki_session, "front_changed", lambda *a, **k: read_front.append(a) or True)
+    anki, patched = deck(connect_enabled=True, junban_replan_preview=False)
     with patched:
         code, line = h.call("junban", "--auto")
     assert code == 0 and line["moves"] > 0, line
+    assert read_front == [], "a spaced run tells the rule itself"
+    gaps = sorted(card["due"] for card in anki.inner.cards.values())
+    assert max(b - a for a, b in zip(gaps, gaps[1:])) > 1, "spaced, not a dense block"
     assert anki_sync_rule.read_state().get("front_pending") is True
     assert kicks == [True] and anki.syncs == 1, "only the session's sync: S3's waits for its minute"
 
@@ -123,13 +135,32 @@ def test_a_spaced_run_tells_the_rule_itself_and_the_verb_kicks_connect_for_it(de
     assert anki.syncs == 1 and anki_sync_rule.read_state().get("front_pending") is True and kicks == [True]
 
 
-def test_with_connect_off_junban_asks_no_sync_and_nothing_of_the_session(deck, kicks):
+def test_on_3_0_with_connect_off_junban_kicks_nothing_and_its_spaced_run_keeps_the_one_sync_rule(deck, kicks):
+    # 2.x-dev keeps "no sync asked, nothing of the session looked at" here, the re-plan preview off
+    # (test_with_connect_off_junban_asks_no_sync_and_nothing_of_the_session: 2.5's dense run, request for request);
+    # 3.0 (Haya's G2b): `junban --auto` numbers spaced always, and a spaced run carries E1.1 04 §3's one sync rule
+    # itself (`reposition.run`: S1 once, just before its first write; then S3's clock), as the 順 window's own run and
+    # AutoJunban's do. Connect is still never kicked
     anki, patched = deck(connect_enabled=False)
     with patched:
         code, line = h.call("junban", "--auto")
     assert code == 0 and line["moves"] > 0, line
-    assert "sync" not in anki.log and "getActiveProfile" not in anki.log, anki.log
-    assert kicks == [] and anki_sync_rule.read_state() == {}
+    assert anki.syncs == 1 and anki.log.index("sync") < anki.first("setSpecificValueOfCard", "multi"), anki.log
+    assert kicks == [] and anki_sync_rule.read_state().get("front_pending") is True
+
+
+def test_on_3_0_connects_order_step_with_no_pair_recorded_skips_naming_the_deck_and_writes_nothing(deck, kicks):
+    """2.x-dev keeps no guard: Connect's step (`Steps.order` → `verbs.junban --auto`) writes `junban_deck` as given.
+    3.0 (Haya's G3): with no deck recorded for the job's language, the step is a Skip naming the deck and its language
+    (the re-sort owed, as for 順 switched off) — no session sync, no position, no suspend, Connect not kicked."""
+    from app.connect import runner
+    anki, patched = deck(connect_enabled=True, junban_later_suspend=True, junban_replan_deck="",
+                         junban_replan_language="")
+    with patched:
+        with pytest.raises(runner.Skip) as skipped:
+            runner.Steps({"connect_enabled": True, "anki_connect_url": URL}).order("ja", {"id": 8, "item_id": 1})
+    assert "順's deck TheBank isn't recorded for Japanese" in str(skipped.value), skipped.value
+    assert anki.log == [] and anki.inner.writes == [] and anki.inner.suspend_calls == [] and kicks == []
 
 
 def test_off_the_verbs_never_import_the_session(monkeypatch):

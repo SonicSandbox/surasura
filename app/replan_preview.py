@@ -3,6 +3,8 @@ about a second later — tomorrow's cards first, then the rest — without a ful
 
     replan_preview.is_on(settings, language)    # 順's option "Re-order Anki as I move content (preview)", for the
                                                 # language it was switched on in, Junban on and present
+    replan_preview.stands_aside(settings, language)   # 3.0: why the host does nothing now (D29, Junban, D7, the
+    replan_preview.automation_on(settings, language)  # recorded deck), or None; what every job asks (W3.5 row 7)
     replan_preview.unavailable(settings)        # why the option can't be used now (D7), or None
     host = replan_preview.open_host(language, say=…, working=…, generate=…)   # one per window (a helper process)
     host.poke()                                 # a store change: the 0.8 s settle restarts; one job when it ends
@@ -14,11 +16,15 @@ about a second later — tomorrow's cards first, then the rest — without a ful
 versions and order (one read), the guards (Junban's window, an update, Anki closed, a review), the plan file checked
 against the library as it stands (`plan_engine.check`, the signature's parts read here), `Engine.replan`, Junban's
 spaced delta with the engine's rows (`reposition.run(job=spaced.Job(automatic=True, …))`, under the Anki-write lock,
-positions only, one deck), then `record_planned` with the versions read with the order. When the plan can't serve the
+one deck — 2.x-dev: positions only; 3.0: your 順 actions after them, `_write`), then `record_planned` with the versions read with the order. When the plan can't serve the
 move the line says so, and the dashboard's host asks its window for an automatic Generate (04 §3–4; `generate`).
 
 **Off** (the default), another language, or Junban removed: `is_on` is False, no window makes a host, and nothing
 here imports Junban, the engine or the analyzer — 2.5, byte for byte (rule 1).
+
+**The 3.0 line** (W3.5 row 7; Haya's G2–G4): inside the host every job asks `automation_on` instead — D29's one switch
+(`logic.automation`), Junban on and present, D7, and the (language, deck) pair 順's deck save records — read fresh each
+job, never the 2.x box; a window still asks `is_on` whether to make a host until W3.4.
 
 Light by rule: no Tk. `say(line)`, `working(bool)` and `generate(reason)` are the window's, called from the worker:
 each must only post to that window's own queue. Everything heavy (the store, the engine, the analyzer's signature,
@@ -66,12 +72,20 @@ NOT_ANSWERING = "Anki isn't answering just now — trying again shortly"
 BUSY = "順 is busy — re-ordering when it's done"
 UPDATE = "An update is waiting — re-ordering after it"
 UP_TO_DATE = "Anki's order is up to date"
+# A reorder you started (or one of Connect's) didn't finish: only its Restore goes on from there (I3) — in 順 until
+# the new window has its own.
+RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Restore previous order"
 NEW_CONTENT = "New content: Generate puts its words in Anki's order (press it when you've placed it)"
 GENERATE_FIRST = "New content or settings: Generate runs first, then Anki is re-ordered"
 GENERATE_FIRST_CM = "New content or settings: Generate runs first (when you close the Content Manager), then Anki is re-ordered"
 PRESS_GENERATE = "New content or settings: press Generate, then Anki is re-ordered"
 REPLAN_THEN_GENERATE = "Anki re-ordered · refreshing your list (Generate)…"
 REPLAN_THEN_GENERATE_CM = "Anki re-ordered · your list refreshes (Generate) when you close the Content Manager"
+# 3.0's gate (`stands_aside`): why the host does nothing now.
+AUTOMATION_OFF = "Automation is off — Anki is re-ordered only when you run 順 yourself"
+JUNBAN_OFF = "順 is off — switch it on to re-order Anki as you move"
+JUNBAN_ABSENT = "順 isn't installed — Anki isn't re-ordered as you move"
+LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 STAND_ASIDE = {
     "shared-phrase": "This list holds a row two set phrases share — Generate re-orders Anki this time",
     "weights": "Your tier weights aren't whole numbers — Generate re-orders Anki",
@@ -95,8 +109,8 @@ def preview_language(settings):
 
 def is_on(settings, language=None):
     """The preview's switch: on, Junban switched on and present — and, given a `language`, that language's (a
-    Chinese Generate never re-orders the Japanese deck: `junban_deck` is one key for both). Everything the preview
-    does asks this first."""
+    Chinese Generate never re-orders the Japanese deck: `junban_deck` is one key for both). 2.x's gate; on 3.0 the
+    Tk windows still ask it whether to make a host (until W3.4), and the host itself asks `automation_on`."""
     settings = settings or {}
     if settings.get(SWITCH) is not True or settings.get("enable_junban") is not True:
         return False
@@ -131,6 +145,63 @@ def deck_set_aside(settings):
     else None. 順 never greys its box for it: ticking it again is how the preview moves to the deck shown."""
     deck = str((settings or {}).get(DECK) or "").strip()
     return deck if deck and deck != str((settings or {}).get("junban_deck") or "").strip() else None
+
+
+def _language(code):
+    return str(code or "").strip().lower()
+
+
+def recorded_deck(settings, language):
+    """3.0 (Haya's G3): the deck the host may re-order for `language` — when 順 recorded the pair, its language
+    (`junban_replan_language`) this one and its deck (`junban_replan_deck`) 順's deck now — else None. Never
+    `preview_language`'s "" → "ja": with nothing recorded, `junban_deck` can be a Chinese deck picked in a Chinese 順
+    window. The one place the 3.0 gate reads the deck (W3.3's per-language deck, D31's profiles: change it here)."""
+    settings = settings or {}
+    deck = str(settings.get(DECK) or "").strip()
+    if not deck or _language(settings.get(LANGUAGE)) != _language(language):
+        return None
+    return deck if deck == str(settings.get("junban_deck") or "").strip() else None
+
+
+def _deck_line(settings, language):
+    """The deck's reason (`recorded_deck` said None): 順's deck, and the language it is recorded for, if another."""
+    deck = str(settings.get("junban_deck") or "").strip()
+    name = LANGUAGE_NAMES.get(_language(language), language)
+    recorded = _language(settings.get(LANGUAGE))
+    if recorded and recorded != _language(language) and str(settings.get(DECK) or "").strip() == deck:
+        return (f"順's deck {deck} is recorded for {LANGUAGE_NAMES.get(recorded, recorded)} — pick your {name} deck in "
+                f"順's window in {name}")
+    return f"順's deck {deck} isn't recorded for {name} — pick it in 順's window in {name}"
+
+
+def _stand_aside(settings, language):
+    """-> (why, the deck's reason?) — `stands_aside`, and whether its line is the deck's (the host says that one)."""
+    from app import settings_manager
+    settings = settings or {}
+    if not settings_manager.automation(settings):
+        return AUTOMATION_OFF, False
+    if settings.get("enable_junban") is not True:
+        return JUNBAN_OFF, False
+    if not junban_present():
+        return JUNBAN_ABSENT, False
+    why = unavailable(dict(settings, **{DECK: ""}))     # D7; 2.x's deck record is the pair's, below, on 3.0
+    if why is not None:
+        return why, False
+    if recorded_deck(settings, language) is None:
+        return _deck_line(settings, language), True
+    return None, False
+
+
+def stands_aside(settings, language):
+    """3.0 (W3.5 row 7; Haya's G2a): None when the re-order host may run for `language`, else one plain line saying
+    why — D29 off, Junban off or absent, D7 (`unavailable`), the (language, deck) pair not recorded — in that order.
+    `junban_replan_preview` (2.x's box) is never read: on 3.0, D29 is the one switch."""
+    return _stand_aside(settings, language)[0]
+
+
+def automation_on(settings, language):
+    """3.0's predicate: may the host run for `language` now? Asked fresh on the host's worker every job."""
+    return stands_aside(settings, language) is None
 
 
 def plan_path():
@@ -191,6 +262,7 @@ class Host:
         self._anki_looked = -CHECK_ANKI_S
         self._done_at = None
         self._asked = None                        # the last automatic Generate asked for: (reason, the run stamp)
+        self._aside = None                        # the stand-aside line last said (once per distinct reason)
         self._seen = None                         # the catch-up's last look with nothing owed (store, plan, run)
         self._plan = self._plan_key = self._engine = self._ids = None
         self._cards = None
@@ -384,7 +456,7 @@ class Host:
         """04 §2.1: the plan and the engine (never for a plan the engine stands aside from); Junban warms on the
         first job (its tables build while Anki answers)."""
         settings = self._settings()
-        if not is_on(settings, self.language) or unavailable(settings):
+        if not automation_on(settings, self.language):      # 3.0's gate (W3.5 row 7), never 2.x's box
             return
         self._sync_at = self._due_sync(settings)
         plan, _why = self._load_plan()
@@ -407,8 +479,13 @@ class Host:
         """One job (04 §2.3): "move" (the CM's settle), "catch-up" (start, focus, the CM's open) or "generate"
         (after a full Generate)."""
         settings = self._settings()
-        if not is_on(settings, self.language) or unavailable(settings):
+        why, deck = _stand_aside(settings, self.language)    # 3.0's gate, read fresh every job (W3.5 row 7)
+        if why is not None:
+            if deck and why != self._aside:
+                self._aside = why
+                self._tell(why)                      # the deck's reason, once per reason: the user can fix it in 順
             return
+        self._aside = None
         self._sync_at = self._due_sync(settings)      # a write elsewhere (順's own run, a closed window) armed one
         store = self._open_store()
         if store is None:
@@ -483,7 +560,8 @@ class Host:
     def _may_write(self, settings, kind):
         """The guards a write needs (04 §4), asked before the library is read: 順's window open (waited for), an
         update waiting, Anki closed (the next sight of it catches up), a review (waited for). The probe is the run's
-        own (Junban's preflight, on a job's positions-only settings), kept for the job's run (E3.1-B2: asked once)."""
+        own (Junban's preflight, on the job's settings as `_write` decides them), kept for the job's run (E3.1-B2:
+        asked once)."""
         from app import anki_connect, anki_sync_rule
         from modules.junban import auto, reposition
         self._probe = None
@@ -500,7 +578,7 @@ class Host:
             self._tell(UPDATE)
             return False
         url = anki_connect.address(settings)
-        probe = reposition.probe_anki(dict(settings, **auto._POSITIONS_ONLY))
+        probe = reposition.probe_anki(auto.decide_actions(dict(settings)))     # what the job's run will need
         if not probe.get("ok") and probe.get("timed_out"):
             self._tell(NOT_ANSWERING)                # open but busy: never "closed" (review 3 R6: S3 stays pending)
             self._retry(kind)
@@ -542,10 +620,15 @@ class Host:
             return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):
-                # Nothing the plan holds moved: never run on its own — new (or changed) content is the user's to place
-                # first (2.4's rule for the automatic Generate); anything else (a setting, an update) waits for the
-                # user's Generate, and the line says which (pass 4 #13).
-                self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE)
+                # Nothing the plan holds moved: the host asks for no Generate. Where the store's order or pins moved
+                # since the plan (a placement), a Generate is coming on 3.0 — the window's hook makes it the journey
+                # keeper's, then `after_generate` (Haya's G4) — and the line says so. Elsewhere (new or changed files
+                # alone, a setting) none is: the keeper is never asked for those, so 2.x's words stand (pass 4 #13).
+                if (versions["order_version"] > versions["planned_order_version"]
+                        or versions["pins_version"] > versions["planned_pins_version"]):
+                    self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
+                else:
+                    self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE)
                 return False
             asked = self._ask_generate(f"generate-first: {verdict[1]}")
             self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False
@@ -603,10 +686,18 @@ class Host:
 
     def _write(self, settings, job, kind):
         """Junban's run for `job` and its bar lines -> the report, or None when nothing ran (the line said why;
-        `kind` runs again later when it's worth it)."""
+        `kind` runs again later when it's worth it).
+
+        2.x-dev keeps the host's job positions only (`auto._POSITIONS_ONLY` laid over the settings: E1.1 04 §1); 3.0
+        (Sonic, 2026-10-13: "it just works"): your 順 settings, decided as 順's automatic step decides them
+        (`auto.decide_actions`), ride every job — the positions first, then the touch-ups, tag, flag and suspend last,
+        under the window's snapshot (`reposition._run`). The plan asks only what differs from Anki now (a note
+        already tagged, a card already purple or suspended is no work), so a move with nothing new to act on sends
+        exactly a positions-only job's requests, with no re-check read."""
         from app import anki_connect
         from modules.junban import auto, reposition
-        settings.update(auto._POSITIONS_ONLY)
+        auto.decide_actions(settings)
+        job.actions = True
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
         try:
@@ -625,6 +716,9 @@ class Host:
         if report.get("reviewing"):
             self._tell(REVIEWING)
             self._retry(kind)
+            return report
+        if report.get("restore_first"):
+            self._tell(RESTORE_FIRST)                # only you can clear it: said, not retried
             return report
         if not report.get("ok"):
             written = len(report.get("written") or [])
@@ -771,7 +865,7 @@ class Host:
                 return
             from app import anki_connect, anki_sync_rule
             settings = self._settings()
-            if not is_on(settings, self.language):
+            if not automation_on(settings, self.language):     # D29 off stops S3 too (Haya's G2a)
                 self._sync_at = None
                 return
             if _update_staged():
@@ -860,6 +954,7 @@ class Remote:
         self._sent = 0                            # calls sent (numbered) …
         self._seen = 0                            # … and the last the helper has taken in
         self._busy = False                        # the helper's host, as it last said
+        self._said_working = False                # the helper's last `working`: True while a write of its was under way
         self._waiting = []                        # calls made before the helper answered
         self._unseen = []                         # calls sent the helper hasn't said it took (a fallback replays them)
         self._local = None                        # the window's own Host, once the helper is out
@@ -989,6 +1084,7 @@ class Remote:
             except Exception:
                 pass
         if "working" in message:
+            self._said_working = bool(message["working"])
             try:
                 self._working(bool(message["working"]))
             except Exception:
@@ -1061,8 +1157,14 @@ class Remote:
             # The calls the helper never took (sent, or still waiting), each kind once (pass 4 #6).
             waiting = [message["do"] for message in self._unseen + self._waiting]
             self._waiting, self._unseen = [], []
+            ended_busy, self._said_working = self._said_working, False
             self._local = Host(self.language, say=self._say, working=self._working, generate=self._generate)
             local = self._local
+        if ended_busy:                            # the helper died mid-write: its job never says it ended — say so
+            try:                                  # here; the window's own host says its own next write
+                self._working(False)
+            except Exception:
+                pass
         local.warm()
         local.catch_up()
         for do in dict.fromkeys(waiting):        # each kind once, in the order first asked

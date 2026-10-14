@@ -54,6 +54,12 @@ QUIT_FINISH_WAIT = 8.0
 # without it: the store stays the truth, the copy is exported at the next trigger (a temp file left is cleared, §6.7).
 QUIT_CLOSE_WAIT = 6.0
 QUIT_STORE_WAIT = 60.0
+# W3.5 row 7: the re-order host is stopped this long before the duties' close cap, so `stop()` is sent before the quit
+# gives the close up. Its `CLOSE_WAIT_S` (15 s, the Tk wait) is not waited here: a write running at the close is waited
+# for with the window up (E20's `QUIT_FINISH_WAIT`: its `replan` job is a `wait` job), then what is left — a pending
+# settle, the S3 sync — inside `QUIT_CLOSE_WAIT`: ≤ 14 s in all, under `CLOSE_WAIT_S` and the update's 20 s grace; past
+# it the helper finishes a write in hand by itself.
+REPLAN_MARGIN = 0.25
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
@@ -69,13 +75,17 @@ class Services:
     then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
 
     def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
-                 automation=None, chores=None):
+                 automation=None, chores=None, replan=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
         # --- W3.5: the duties
         self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
+        # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
+        # duties (given: a test's); never one of `has_duties`' four
+        self.replan = replan
+        self._replan_wired = False
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -106,21 +116,74 @@ class Services:
             self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
                                                            self.language, index=lambda: chores.index(force=True))
             chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+        if self.replan is None:
+            from app.services import replan_host as replan_module
+            self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
+                                               on_line=self._replan_line)
         self._provide()
         return self
 
     def _provide(self):
-        """The duties' failures to the bar and Needs you (E10, IK-7): `StatusService` providers."""
+        """The duties' failures to the bar and Needs you (E10, IK-7): `StatusService` providers; row 7's wiring."""
+        providers = getattr(self.status, "providers", None)
+        if providers is not None:
+            controller, updates = self.controller, self.updates
+
+            def generate_failure():
+                failure = getattr(controller, "failure", None)
+                if failure is not None:     # kept while another run starts at once (A12): never the state's `queued`
+                    return failure(self.language)           # the language open's: never another's
+                from app.services import generate as generate_module
+                state = controller.state()
+                return state.message if state.state == generate_module.FAILED else None
+            providers.update(update=updates.failure, generate=generate_failure)
+        self._wire_replan()
+
+    # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
+    def _wire_replan(self):
+        """Once: the bar's row-7 providers, the update's hold (its states) and the library reader's moves."""
+        if self.replan is None or self._replan_wired:
+            return
+        self._replan_wired = True
+        self._provide_lines(self.language)
+        subscribe = getattr(self.updates, "subscribe", None)
+        if subscribe is not None:
+            subscribe(self._update_state)
+        moves = getattr(self.library, "subscribe_moves", None)
+        if moves is not None:
+            moves(self._store_moved)
+
+    def _provide_lines(self, language):
+        """Worker B's providers (W3.5 row 7): the host's line, Connect's line, the AnkiWeb mark, the journey dot —
+        again on a language switch (Connect's line and the dot are the language's)."""
         providers = getattr(self.status, "providers", None)
         if providers is None:
             return
-        controller, updates = self.controller, self.updates
+        replan, get = self.replan, self.settings.get
+        providers.update(replan=replan.line, connect=status_service.connect_line(language, get),
+                         ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language))
 
-        def generate_failure():
-            from app.services import generate as generate_module
-            state = controller.state()
-            return state.message if state.state == generate_module.FAILED else None
-        providers.update(update=updates.failure, generate=generate_failure)
+    def _replan_line(self, _line):
+        """The host said a new line (its worker): the bar asks for it alone."""
+        refresh = getattr(self.status, "refresh_soon", None)
+        if refresh is not None:
+            refresh("replan")
+
+    def _store_moved(self, language, versions):
+        """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;
+        the journey dot asked again."""
+        if self.closing.is_set() or self.replan is None:
+            return
+        self.replan.store_moved(language, versions)
+        refresh = getattr(self.status, "refresh_soon", None)
+        if refresh is not None:
+            refresh("journey")
+
+    def _update_state(self, state):
+        """(The update service's worker.) *Update now* holds the children: the host goes; the hold's end makes it
+        again (the map's G6) — never once the quit began (the quit's own cancel is no hold's end)."""
+        if not self.closing.is_set() and self.replan is not None:
+            self.replan.update_state(state.state)
 
     def _ask_quit(self):
         hook = self.quit_hook
@@ -143,6 +206,8 @@ class Services:
             self.updates.begin()
             self.automation.started()
             self.chores.started()
+            if self.replan is not None:
+                self.replan.start()       # the catch-up once; the journey when the store says it is pending
         return True
 
     def activated(self):
@@ -151,13 +216,27 @@ class Services:
         if self.started and not self.closing.is_set():
             self.automation.activated()
             self.chores.activated()
+            if self.replan is not None:
+                self.replan.activated()               # the catch-up and the start's journey look (an outside placement)
+                refresh = getattr(self.status, "refresh_soon", None)
+                if refresh is not None:
+                    refresh("journey")                # the dot, which that look may have found owed
 
     def language_changed(self, language):
         """(A worker.) Another language is open (D31: nothing assumes one)."""
         self.language = language or "ja"
+        forget = getattr(self.controller, "forget_failure", None)
+        if forget is not None:
+            forget()                                      # the last language's Generate failure leaves the bar
         if self.started and not self.closing.is_set():
             self.automation.language_changed(self.language)
             self.chores.language_changed(self.language)
+        if self.replan is not None and not self.closing.is_set():
+            self.replan.language_changed(self.language)   # the old keeper closed, the old host stopped, new ones
+            self._provide_lines(self.language)
+            refresh = getattr(self.status, "refresh_soon", None)
+            if refresh is not None:
+                refresh("journey", "replan")              # the new language's dot and line at once
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -206,7 +285,10 @@ class Services:
 
     def _close_duties(self):
         """The duties' close but the store's trigger (`_close_store`): their timers and workers, Koe, Connect's
-        `at_close`."""
+        `at_close` — then the re-order host's finish (row 7: its close was sent at the quit's start; `busy()` waited
+        for until `REPLAN_MARGIN` before this thread's cap, then `stop()`: the helper finishes a write in hand by
+        itself)."""
+        began = time.monotonic()
         for name in ("automation", "chores"):
             duty = getattr(self, name)
             if duty is None or (name == "chores" and not self.started):
@@ -218,6 +300,12 @@ class Services:
                     duty.close()
             except Exception as e:
                 applog.log("shell", f"{name} at quit: {e}")
+        if self.replan is not None:
+            try:
+                if not self.replan.finish(began + QUIT_CLOSE_WAIT - REPLAN_MARGIN):
+                    applog.log("shell", "the re-order in Anki still ran at quit: its helper finishes it")
+            except Exception as e:
+                applog.log("shell", f"the re-order host at quit: {e}")
 
     def _close_store(self):
         try:
@@ -260,11 +348,40 @@ class Services:
                     self.chores.halt()            # its start-up timers taken back: nothing spawned for a closing one
                 except Exception as e:
                     applog.log("shell", f"chores at quit: {e}")
+            if self.replan is not None:
+                try:
+                    self.replan.closing()         # the keeper closed; the host's close sent (a pending settle runs now)
+                except Exception as e:
+                    applog.log("shell", f"the re-order host at quit: {e}")
         return True
 
     @staticmethod
     def _closing_gate(_kind):
         return strings.QUIT_HELD
+
+    def replan_settling(self):
+        """(Any thread: no lock, no wait.) A move's re-order may still be settling: the close then waits like E20's."""
+        settling = getattr(self.replan, "settling", None)
+        try:
+            return bool(settling()) if settling is not None else False
+        except Exception:
+            return False
+
+    def replan_wait(self):
+        """(A worker; E20.) While the re-order host still works — the settle its close ran at once, the AnkiWeb sync —
+        wait, for what is left of `QUIT_FINISH_WAIT`. -> True when it ended."""
+        busy = getattr(self.replan, "busy", None)
+        if busy is None:
+            return True
+        from app.services.replan_host import BUSY_LOOK
+        deadline = time.monotonic() + self._finish_wait_left()
+        try:
+            while busy() and time.monotonic() < deadline:
+                time.sleep(BUSY_LOOK)
+            return not busy()
+        except Exception as e:
+            applog.log("shell", f"the re-order host at the close: {e}")
+            return True
 
     def _finish_wait_left(self):
         """What is left of `QUIT_FINISH_WAIT` since the quit began (the window's wait counts: never the cap twice)."""
@@ -623,7 +740,7 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
-        self.sheet = self.cards = None
+        self.sheet = self.cards = self.journey_dot = None
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
@@ -682,6 +799,9 @@ class ShellWindow(QMainWindow):
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self._library_needs = 0
         self._status_snap = None
+        self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
+        self._d29 = True                                  # D29 for the journey dot's tooltip, read on a worker
+        self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
         self.show_status(services.status.snapshot())
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
@@ -842,6 +962,10 @@ class ShellWindow(QMainWindow):
         self.bar_line.setAccessibleName(strings.BAR_NAME)
         lead.addWidget(self.bar_line, 1)
         row.addLayout(lead, 1)
+        self.bar_replan = ElidingLabel(footer)            # W3.5 row 7: the re-order host's line, while it gives one
+        self.bar_replan.setObjectName("barline")
+        self.bar_replan.setVisible(False)
+        row.addWidget(self.bar_replan, 1)
         self.bar_failure = ElidingLabel(footer)
         self.bar_failure.setObjectName("barfailure")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
@@ -866,6 +990,7 @@ class ShellWindow(QMainWindow):
         self.bar_connect.setVisible(False)
         row.addWidget(self.bar_connect)
         self._logs_folder = None
+        self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
         return footer
 
     def _apply_sizes(self):
@@ -915,15 +1040,34 @@ class ShellWindow(QMainWindow):
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
         self.logs_button.setVisible(bool(failure) and bool(snap.logs))
-        for label, value in ((self.bar_ankiweb, snap.ankiweb), (self.bar_connect, snap.connect)):
-            label.setText(value or "")
-            label.setVisible(bool(value))
+        self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
+        self._status_mark(self.bar_ankiweb, snap.ankiweb, strings.BAR_ANKIWEB_TIP)
+        self._status_mark(self.bar_connect, snap.connect, strings.BAR_CONNECT_TIP)
+        if self.duties is not None:
+            self._paint_journey_dot()
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
+
+    def _status_mark(self, label, text, tip):
+        """One of row 7's statuses (the re-order's line, Connect's, AnkiWeb's, the journey dot): shown while it has a
+        value, repainted only when its own value (or its tooltip) changed (S19) — another field's change leaves it as it
+        is."""
+        text = text or ""
+        eliding = isinstance(label, ElidingLabel)
+        if ((label.full() if eliding else label.text()) == text and label.isHidden() != bool(text)
+                and label.toolTip() == (tip if text else "")):
+            return
+        if eliding:
+            label.set_full(text)
+        else:
+            label.setText(text)
+        label.setToolTip(tip if text else "")
+        label.setVisible(bool(text))
+        self.status_paints[label] = self.status_paints.get(label, 0) + 1
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the
@@ -946,8 +1090,38 @@ class ShellWindow(QMainWindow):
     def _settings_written(self, keys):
         if "app_motion" in keys:
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
+        if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
+            refresh = getattr(self.services.status, "refresh_soon", None)
+            if refresh is not None:
+                refresh("connect")
         if self.duties is not None:
             self._duty_settings(keys)
+            if "logic.automation" in keys:
+                self._read_d29()                        # the dot's tooltip follows D29
+
+    def _read_d29(self):
+        """D29 for the dot, read on a worker (the settings service's lock and copy stay off this thread); the dot
+        repaints from it when it comes."""
+        self._d29_asked += 1
+        asked = self._d29_asked
+        settings = self.services.settings
+        read = settings.automation if hasattr(settings, "automation") else (lambda: True)
+        bridge.run_in_worker(lambda: (asked, read()), then=self._d29_read,       # (a slot: none once the window is gone)
+                             failed=lambda info: applog.log("shell", f"the automation switch: {info[1]}"))
+
+    def _d29_read(self, answer):
+        asked, on = answer
+        if asked != self._d29_asked:
+            return                                      # a newer read is on its way
+        self._d29 = bool(on)
+        if self.duties is not None and self._status_snap is not None:
+            self._paint_journey_dot()
+
+    def _paint_journey_dot(self):
+        """The journey dot from the bar's last snapshot; its tooltip promises a Generate by itself only while D29 is on
+        (the keeper runs one), else says to press Generate — D29 as last read on a worker (`_read_d29`)."""
+        self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
+                          strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
 
     def open_logs(self, folder=None):
         """*Open the logs folder*: `folder`, else — while the bar's failure is an update's with a report — the report's
@@ -1017,8 +1191,14 @@ class ShellWindow(QMainWindow):
         menu = QMenu(d.help)
         menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
         d.help.setMenu(menu)
+        d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
+        d.journey_dot.setObjectName("journeydot")
+        d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
+        d.journey_dot.setAccessibleName(strings.JOURNEY_DOT_NAME)
+        d.journey_dot.setVisible(False)
         self.header.layout().addWidget(d.generate)
         d.generate.add_beside(d.journey)
+        d.generate.add_beside(d.journey_dot)
         d.generate.add_beside(d.help)
         # the bar: N known, the Anki mark, the level chip (statuses: W3.3 makes them open Settings), the update mark
         row = self.footer.layout()
@@ -1062,6 +1242,9 @@ class ShellWindow(QMainWindow):
         self._show_update(s.updates.state())
         self._show_generate(s.controller.state())
         self._show_automation(s.automation.state())
+        if self._status_snap is not None:                   # the dot the bar's last snapshot asked for
+            self._paint_journey_dot()
+        self._read_d29()                                    # its tooltip's D29, read on a worker
 
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""
@@ -1397,10 +1580,22 @@ class ShellWindow(QMainWindow):
             self.show_status(self._status_snap)
         bridge.run_in_worker(self.services.begin_quit,
                              failed=lambda info: applog.log("shell", f"the quit's start: {info[1]}"))
+        wait = getattr(self.services, "replan_wait", None)
+        if wait is not None:                              # a move's settle, run at once by the host's close (row 7)
+            self._replan_waited = False
+            bridge.run_in_worker(wait, then=self._replan_idle, failed=self._replan_idle)
+
+    def _replan_idle(self, _ended):
+        self._replan_waited = True
+        self._jobs_changed(self._jobs)
+
+    def _replan_settling(self):
+        settling = getattr(self.services, "replan_settling", None)
+        return settling is not None and settling()
 
     def _jobs_changed(self, views):
         self._jobs = views
-        if self._quit == "waiting" and not jobs_module.waits_at_quit(views):
+        if self._quit == "waiting" and self._replan_waited and not jobs_module.waits_at_quit(views):
             self._close_now()
 
     def _close_now(self):
@@ -1411,7 +1606,8 @@ class ShellWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
-        if self._quit == "waiting" or (self._quit is None and jobs_module.waits_at_quit(self._jobs)):
+        if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
+                                                               or self._replan_settling())):
             event.ignore()                                # E20: what can't stop part-way ends first
             self._finish_first()
             return

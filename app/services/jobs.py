@@ -111,10 +111,11 @@ class Job:
         """Where the running job is: a step in the user's words, and how far through it."""
         self._registry._change(self, progress=Progress(step, done, total))
 
-    def finish(self, ok=True, message=None, cancelled=False):
+    def finish(self, ok=True, message=None, cancelled=False, completed=False):
         """The job ended: `done`, or `failed` with its message (plain words; a log's path where there is one);
-        `cancelled` when it stopped because it was asked to."""
-        self._registry._end(self, DONE if ok else FAILED, message, cancelled)
+        `cancelled` when it stopped because it was asked to; `completed` when it was asked too late (past the point it
+        can stop at) and ran to its end: not cancelled — the flag the ask set is taken back (E3.2's A13)."""
+        self._registry._end(self, DONE if ok else FAILED, message, cancelled, completed)
 
     def cancel(self):
         """Stop it: a job not started yet ends now (`done`, cancelled — its owner's cancel callback is told); a running
@@ -300,12 +301,12 @@ class JobRegistry:
             job.progress_now = progress
         self._notify()
 
-    def _end(self, job, state, message, cancelled=False):
+    def _end(self, job, state, message, cancelled=False, completed=False):
         with self._lock:
             if job.state in (DONE, FAILED):
                 return
             job.state, job.message, job.ended_at = state, message, time.time()
-            job.cancelled = job.cancelled or cancelled
+            job.cancelled = (job.cancelled or cancelled) and not completed
             self._trim()
         job.ended.set()
         self._schedule()

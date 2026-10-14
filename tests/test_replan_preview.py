@@ -58,7 +58,10 @@ class SyncCollection(ModCollection):
 # --------------------------------------------------------------------------------------------------------------- #
 
 def _settings_file(root, **over):
+    # 3.0: the host runs when 順 recorded the (language, deck) pair (its deck save does: W3.5 row 7) — the box is
+    # 2.x's and kept on here only so the 2.x tests read the same.
     settings = {"junban_replan_preview": True, "junban_deck": DECK, "junban_scope": "deck",
+                "junban_replan_language": "ja", "junban_replan_deck": DECK,
                 "junban_order": "content", "anki_connect_url": URL, "target_language": "ja"}
     settings.update(over)
     with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
@@ -165,6 +168,122 @@ def test_without_junban_the_preview_is_off_whatever_settings_json_says(monkeypat
     """Junban removed (RD-S10): `is_on` asks for the package without importing it, and says no."""
     monkeypatch.setattr(replan_preview, "junban_present", lambda: False)
     assert not replan_preview.is_on({"junban_replan_preview": True, "enable_junban": True})
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# 3.0's gate (W3.5 row 7; Haya's G2a / G3): D29, Junban, D7, and the recorded (language, deck) pair
+# --------------------------------------------------------------------------------------------------------------- #
+
+ON_3_0 = {"enable_junban": True, "junban_scope": "deck", "junban_deck": DECK,
+          "junban_replan_language": "ja", "junban_replan_deck": DECK}
+
+
+def test_on_3_0_the_host_runs_with_d29_on_junban_on_one_deck_and_the_pair_recorded():
+    """Every condition holds: the host may run, and the deck it may write to is the recorded one."""
+    assert replan_preview.stands_aside(ON_3_0, "ja") is None
+    assert replan_preview.automation_on(ON_3_0, "ja") is True
+    assert replan_preview.recorded_deck(ON_3_0, "ja") == DECK
+
+
+def test_on_3_0_the_previews_box_is_never_read():
+    """2.x-dev keeps `is_on` False with 順's box off (test_the_switch_is_on_only_with_junban_on_and_it_names_why_it_cant_run);
+    3.0: D29 is the one switch, so the box — on, off or never written — changes nothing (W3.4 removes it)."""
+    for box in (True, False, None, "true"):
+        settings = dict(ON_3_0, junban_replan_preview=box)
+        assert replan_preview.automation_on(settings, "ja") is True, box
+
+
+@pytest.mark.parametrize("logic,on", [
+    ({"automation": False}, False),
+    ({}, True),                                       # absent: on (the default)
+    ({"automation": True}, True),
+    (None, True),                                     # a malformed block never turns it off
+])
+def test_d29_off_stands_the_host_aside_and_says_automation_is_off(logic, on):
+    """D29 (`logic.automation`): only False stands the host aside; read through `settings_manager.automation`."""
+    settings = dict(ON_3_0, logic=logic)
+    assert replan_preview.automation_on(settings, "ja") is on
+    assert replan_preview.stands_aside(settings, "ja") == (None if on else replan_preview.AUTOMATION_OFF)
+
+
+def test_junban_off_or_absent_stands_the_host_aside(monkeypatch):
+    """Junban switched off (or the key missing: `enable_junban is True` only), or removed (RD-S10)."""
+    for value in (False, None, "true"):
+        settings = dict(ON_3_0, enable_junban=value)
+        assert replan_preview.stands_aside(settings, "ja") == replan_preview.JUNBAN_OFF, value
+    settings = dict(ON_3_0)
+    del settings["enable_junban"]
+    assert not replan_preview.automation_on(settings, "ja")
+    monkeypatch.setattr(replan_preview, "junban_present", lambda: False)
+    assert replan_preview.stands_aside(ON_3_0, "ja") == replan_preview.JUNBAN_ABSENT
+    assert not replan_preview.automation_on(ON_3_0, "ja")
+
+
+def test_what_d7_rules_out_is_said_in_its_own_words():
+    """All decks, Coverage, Only i+1: `unavailable`'s reasons, returned as they are."""
+    for change, words in (({"junban_scope": "all"}, "one deck"), ({"strategy": "coverage"}, "Coverage"),
+                          ({"only_i_plus_one": True}, "i+1")):
+        settings = dict(ON_3_0, **change)
+        assert replan_preview.stands_aside(settings, "ja") == replan_preview.unavailable(settings)
+        assert words in replan_preview.stands_aside(settings, "ja")
+        assert not replan_preview.automation_on(settings, "ja")
+
+
+def test_with_no_pair_recorded_the_host_stands_aside_and_names_the_deck_and_language():
+    """G3: never `preview_language`'s "" → "ja" default. With nothing recorded, `junban_deck` can be a Chinese deck
+    last picked in a Chinese 順 window, and a Japanese host would re-order it by the Japanese plan."""
+    for missing in ("junban_replan_language", "junban_replan_deck"):
+        settings = dict(ON_3_0)
+        del settings[missing]
+        assert replan_preview.recorded_deck(settings, "ja") is None, missing
+        line = replan_preview.stands_aside(settings, "ja")
+        assert DECK in line and "isn't recorded for Japanese" in line and "順's window in Japanese" in line, line
+    blank = dict(ON_3_0, junban_replan_language=" ", junban_replan_deck="")
+    assert replan_preview.recorded_deck(blank, "ja") is None
+
+
+def test_a_pair_recorded_for_chinese_never_lets_a_japanese_host_reorder_that_deck():
+    """The hazard (2.x review 3 R3/R4): 順's deck was picked in its Chinese window; the Japanese window stands aside and
+    says the deck is Chinese's, while the Chinese window's host may run."""
+    zh = dict(ON_3_0, junban_deck="中文", junban_replan_language="zh", junban_replan_deck="中文")
+    assert replan_preview.recorded_deck(zh, "ja") is None
+    line = replan_preview.stands_aside(zh, "ja")
+    assert "中文" in line and "recorded for Chinese" in line and "順's window in Japanese" in line, line
+    assert replan_preview.stands_aside(zh, "zh") is None
+    assert replan_preview.recorded_deck(zh, "zh") == "中文"
+
+
+def test_a_recorded_deck_that_isnt_juns_deck_now_stands_aside():
+    """順's deck changed since the pair was recorded (a hand edit, another program): the deck written to must be the
+    recorded one, so the host stands aside and names 順's deck now."""
+    settings = dict(ON_3_0, junban_deck="中文")
+    assert replan_preview.recorded_deck(settings, "ja") is None
+    line = replan_preview.stands_aside(settings, "ja")
+    assert "中文" in line and "isn't recorded for Japanese" in line, line
+    assert not replan_preview.automation_on(settings, "ja")
+
+
+def test_the_pair_is_read_with_case_and_spaces_forgiven_and_from_a_frozen_copy():
+    """The recorded language normalised, the decks stripped; the settings service's frozen mapping reads the same."""
+    from types import MappingProxyType
+    settings = dict(ON_3_0, junban_replan_language=" JA ", junban_replan_deck=f" {DECK} ", junban_deck=f"{DECK} ")
+    assert replan_preview.recorded_deck(settings, "ja") == DECK
+    frozen = MappingProxyType(dict(ON_3_0, logic=MappingProxyType({"automation": False})))
+    assert replan_preview.stands_aside(frozen, "ja") == replan_preview.AUTOMATION_OFF
+    assert replan_preview.automation_on(MappingProxyType(dict(ON_3_0)), "ja") is True
+
+
+def test_the_reasons_come_in_order_d29_junban_d7_then_the_deck(monkeypatch):
+    """One line, the first that holds: D29 off → Junban off → D7 → the pair."""
+    everything = dict(ON_3_0, logic={"automation": False}, enable_junban=False, junban_scope="all",
+                      junban_replan_language="zh")
+    assert replan_preview.stands_aside(everything, "ja") == replan_preview.AUTOMATION_OFF
+    everything["logic"] = {}
+    assert replan_preview.stands_aside(everything, "ja") == replan_preview.JUNBAN_OFF
+    everything["enable_junban"] = True
+    assert "one deck" in replan_preview.stands_aside(everything, "ja")
+    everything["junban_scope"] = "deck"
+    assert "recorded for Chinese" in replan_preview.stands_aside(everything, "ja")
 
 
 # --------------------------------------------------------------------------------------------------------------- #
@@ -415,10 +534,16 @@ def test_a_new_file_alone_starts_nothing_but_a_move_with_it_asks_for_a_generate(
         dash._anki_looked = -1e9
         dash._job("catch-up")
         new_files_alone = list(asked)
+        said_alone = lines[-1] if lines else None
+        placed = store.versions()
         _move_later_to_top(store)
         dash._job("catch-up")
     assert new_files_alone == [], "a new file with no move owed started an automatic Generate"
-    assert replan_preview.NEW_CONTENT in lines
+    # 2.x-dev keeps NEW_CONTENT in lines; 3.0 (G4): the new file is placed in the store (6+ Months' order
+    # moved since the plan), so the window's hook runs the keeper's Generate — and the line says it runs first.
+    assert placed["order_version"] > placed["planned_order_version"]
+    assert said_alone == replan_preview.GENERATE_FIRST, said_alone
+    assert replan_preview.NEW_CONTENT not in lines and replan_preview.GENERATE_FIRST in lines
     assert asked and asked[0].startswith("generate-first"), asked
     assert lines[-1] == replan_preview.GENERATE_FIRST
 
@@ -579,7 +704,9 @@ def test_the_preview_runs_only_for_the_language_it_was_switched_on_in():
     assert replan_preview.is_on(zh)                          # no language asked: the switch alone
 
 
-def test_another_languages_host_never_touches_the_deck(lib):
+def test_another_languages_host_never_touches_the_deck_and_says_why_once(lib):
+    """2.x-dev keeps `lines == []` here (is_on False: the host silent); 3.0: the host stands aside on the recorded pair
+    (Haya's G3) and its line names the deck and the language it is recorded for — once per reason, never per job."""
     root, store = lib
     _settings_file(root, junban_replan_language="zh")
     fake = _deck(root)
@@ -587,7 +714,445 @@ def test_another_languages_host_never_touches_the_deck(lib):
     with _patched(fake):
         _move_later_to_top(store)
         host._job("move")
-    assert not fake.requests and lines == []
+        host._job("move")
+        host._job("catch-up")
+        host._warm()
+    assert not fake.requests
+    assert lines == [replan_preview.stands_aside(host._settings(), "ja")], lines
+    assert "recorded for Chinese" in lines[0] and DECK in lines[0]
+    assert host._engine is None, "a host standing aside warmed the engine"
+
+
+def test_with_d29_off_the_host_writes_nothing_warms_nothing_and_never_syncs(lib, monkeypatch):
+    """D29 off (Haya's G2a: "every automatic Anki write and sync"): all three gates — `_warm`, `_job`, `_sync_step` —
+    stand aside, on the in-process host with Junban's fake Anki, even with 2.x's box on and a sync armed by 順's run."""
+    root, store = lib
+    _settings_file(root, logic={"automation": False})
+    fake = _deck(root)
+    monkeypatch.setenv(replan_preview.IN_PROCESS_ENV, "1")
+    lines = []
+    host = replan_preview.open_host("ja", say=lines.append)
+    assert isinstance(host, replan_preview.Host)
+    with _patched(fake):
+        host._warm()
+        host._job("catch-up")
+        _move_later_to_top(store)
+        host._job("move")
+        host._job("generate")
+        anki_sync_rule.wrote(True, {"anki_sync_delay_min": 1})     # 順's own run armed S3
+        host._sync_at = time.time() - 1
+        host._sync_step()
+        host._sync_at = time.time() - 1
+        host._sync_step(force=True)                              # the window closing
+    assert not fake.requests, [r["action"] for r in fake.requests]
+    assert fake.syncs == 0 and host._sync_at is None
+    assert host._engine is None
+    versions = store.versions()
+    assert versions["planned_order_version"] < versions["order_version"], "nothing recorded as planned"
+    assert lines == [], "D29 off is the user's own choice: the host says nothing about it"
+
+
+def test_d29_is_read_fresh_every_job_never_when_the_host_opens(lib):
+    """Never cached at `open_host`: switched off between two jobs, the next writes nothing; on again, it writes."""
+    root, store = lib
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        assert fake.write_requests, "D29 on, the pair recorded: the first job lays the ladder"
+        _settings_file(root, logic={"automation": False})
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert not fake.write_requests
+        _settings_file(root, logic={"automation": True})
+        host._job("move")
+    assert fake.write_requests
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# 3.0: the host's re-order applies your 順 actions (Sonic, 2026-10-13: "it just works")
+# --------------------------------------------------------------------------------------------------------------- #
+
+OFF = ("須藤", "洗濯機")                             # two words the library's list never has
+ACTIONS = ("setSpecificValueOfCard", "multi", "suspend", "unsuspend")
+
+
+class MarkingCollection(SyncCollection):
+    """The fake collection, plus the mod times Anki moves when a note is tagged or a card flagged or (un)suspended —
+    so the next job's warm read (`CardMap`) sees what the last one did, as it would in Anki."""
+
+    def _tags(self, action, params):
+        for note_id in params.get("notes") or []:
+            if note_id in self.note_mods:
+                self.note_mods[note_id] = int(time.time())
+        return super()._tags(action, params)
+
+    def _suspend(self, action, card_ids):
+        for card_id in card_ids:
+            if card_id in self.cards:
+                self.cards[card_id]["mod"] = int(time.time())
+        return super()._suspend(action, card_ids)
+
+    def _multi(self, actions):
+        for entry in actions:
+            params = entry.get("params") or {}
+            if entry.get("action") == "setSpecificValueOfCard" and params.get("keys") == ["flags"]:
+                self.cards[params["card"]]["mod"] = int(time.time())
+        return super()._multi(actions)
+
+
+def _acting_deck(root, off=OFF, yours=()):
+    """40 of the list's words and the cards off it (`off`, then `yours` — suspended by the user), queued in the reverse
+    of the list's order, dense as 2.5 left it."""
+    listed = set(_list_words(root))
+    assert not [word for word in tuple(off) + tuple(yours) if word in listed], "the cards are off the library's list"
+    words = _list_words(root, 40) + list(off) + list(yours)
+    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    fake = MarkingCollection(cards, notes, actions=ACTIONS)
+    for card_id in _word_cards(fake, yours):
+        fake.cards[card_id]["queue"] = -1
+    return fake
+
+
+def _listed_deck(root):
+    """60 cards, every one a word of the list (`_deck`), the fake that moves mod times as Anki does."""
+    words = _list_words(root, 60)
+    cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
+    return MarkingCollection(cards, notes, actions=ACTIONS)
+
+
+def _kinds(requests, off_ids=()):
+    """Each request as what it does: "position" (a multi of due writes), "flag" (a multi of flag writes), "re-check"
+    (a `cardsInfo` of exactly the cards off the list, alone or in a `multi`), else its action."""
+    out = []
+    for request in requests:
+        action, params = request["action"], request.get("params") or {}
+        keys = {tuple((entry.get("params") or {}).get("keys") or ()) for entry in params.get("actions") or ()
+                if action == "multi" and entry.get("action") == "setSpecificValueOfCard"}
+        if ("due",) in keys:
+            out.append("position")
+        elif ("flags",) in keys:
+            out.append("flag")
+        elif action == "cardsInfo" and off_ids and set(params.get("cards") or ()) == set(off_ids):
+            out.append("re-check")
+        elif action == "multi" and off_ids and [
+                set((entry.get("params") or {}).get("cards") or ()) for entry in params.get("actions") or ()
+                if entry.get("action") == "cardsInfo"] == [set(off_ids)]:
+            out.append("re-check")                  # with `guiReviewActive` in the same request (04 §6)
+        else:
+            out.append(action)
+    return out
+
+
+def _warm_read(request):
+    """A request as compared across two worlds: a warm read's `multi` (`cardsInfo` / `notesInfo` of what changed) by
+    its actions alone — which ids it carries follows Anki's whole-second mod times (`CardMap`: anything modified within
+    a second of the last read is read again), so the clock, not the run; every other request as it is."""
+    entries = (request.get("params") or {}).get("actions") or ()
+    if request["action"] == "multi" and entries and all(
+            entry.get("action") in ("cardsInfo", "notesInfo") for entry in entries):
+        return ["multi"] + sorted({entry["action"] for entry in entries})
+    return request
+
+
+def _logged(fake, host, kind, force=False):
+    """One host job -> the requests it sent."""
+    start = len(fake.requests)
+    host._force = force or host._force
+    host._job(kind)
+    return fake.requests[start:]
+
+
+def _start_again(store, moved):
+    """A second world in the same library: the moves taken back (the newest first, each to 6+ Months' end, where it
+    came from), and Junban's snapshot, baseline and ladder and the sync rule's session gone."""
+    for item in reversed(moved):
+        store.move([item], "goal", after_id=_ids(store, "goal")[-1])
+    from app.path_utils import get_user_files_path
+    for name in (undo.FILENAMES["reorder"], undo.FILENAMES["baseline"], undo.LADDER_FILENAME):
+        path = os.path.join(get_user_files_path("ja"), name)
+        if os.path.exists(path):
+            os.remove(path)
+    if os.path.exists(anki_sync_rule._path()):
+        os.remove(anki_sync_rule._path())
+
+
+def _positions_only(over):
+    """The same settings with every action switched off: what today's host sends, `_POSITIONS_ONLY` laid over them."""
+    return dict(over, junban_auto_actions=False, junban_later_tag=False, junban_later_flag=False,
+                junban_later_suspend=False)
+
+
+def _three_jobs(root, store, fake_of, **settings):
+    """A catch-up (the ladder laid: every card once), then two moves (deltas) -> (each job's requests, the fake, the
+    items moved)."""
+    _settings_file(root, **settings)
+    fake = fake_of(root)
+    host, _ = _host()
+    logs, moved = [], []
+    with _patched(fake):
+        logs.append(_logged(fake, host, "catch-up", force=True))
+        for _ in range(2):
+            moved.append(_move_later_to_top(store))
+            logs.append(_logged(fake, host, "move"))
+    return logs, fake, moved
+
+
+@pytest.mark.parametrize("over,acted", [
+    (dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True),
+     ("addTags", "flag", "suspend")),
+    # Connect's preview on: unattended, as 順's automatic step decides it — the positions, and from 3.0 the suspend
+    # setting's say (a suspend tags too); no flag, no touch-up.
+    (dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True, junban_later_flag=True,
+          junban_later_suspend=True), ("addTags", "suspend")),
+], ids=["actions-on", "connect-unattended-suspend"])
+def test_on_3_0_the_hosts_job_applies_your_actions_after_its_positions_suspend_last(lib, monkeypatch, over, acted):
+    """2.x-dev keeps the host's job positions only; 3.0 (Sonic, 2026-10-13: "it just works"): the window's re-order
+    applies your 順 settings as 順's automatic step decides them — every position first, then the tag and the flag,
+    the suspend last — under the window's snapshot (one restore point: today's baseline is not kept beside it)."""
+    from modules.junban import connect
+    monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
+    root, store = lib
+    _settings_file(root, **over)
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    kinds = _kinds(fake.requests, off_ids)
+    assert "position" in kinds, "the host still re-orders"
+    last_position = max(index for index, kind in enumerate(kinds) if kind == "position")
+    assert not [kind for kind in kinds[:last_position] if kind in ("addTags", "flag", "suspend", "re-check")], kinds
+    after = [kind for kind in kinds[last_position + 1:] if kind in ("addTags", "flag", "suspend", "re-check")]
+    assert after[0] == "re-check" and after[-1] == "suspend", after         # read again first, suspend last
+    assert [kind for kind in dict.fromkeys(after[1:])] == list(acted), after
+    assert [ids for action, ids in fake.suspend_calls if action == "suspend"] == [sorted(off_ids)]
+    assert all(fake.cards[card_id]["queue"] == -1 for card_id in off_ids)
+    later = [sorted(notes) for _action, notes, tag in fake.tag_calls if tag == "Surasura::later"]
+    assert later == [sorted(fake.cards[card_id]["note"] for card_id in off_ids)]
+    assert sorted(card_id for card_id, _flag in fake.flag_writes) == (sorted(off_ids) if "flag" in acted else [])
+    assert ("Surasura" in {tag for _action, _notes, tag in fake.tag_calls}) is (not over.get("connect_enabled"))
+    saved = undo.load("ja")
+    assert saved and saved["complete"] is True and saved["suspended"] == sorted(off_ids), "the window's snapshot"
+    baseline = undo.load("ja", "baseline")
+    assert baseline is None or baseline.get("ended_at"), "one restore point: never also today's baseline"
+
+
+@pytest.mark.parametrize("deck_of,over", [
+    # The actions switched off (`junban_auto_actions` False, no Connect: no unattended suspend), cards off the list.
+    (_acting_deck, dict(junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True)),
+    # Connect's preview on with the suspend setting off: unattended, nothing to suspend — positions only.
+    (_acting_deck, dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True,
+                        junban_later_flag=True)),
+    # The actions on, every card on the list and no Surasura tag: nothing to act on.
+    (_listed_deck, dict(junban_auto_actions=True, junban_tag="", junban_later_tag=True, junban_later_flag=True,
+                        junban_later_suspend=True)),
+], ids=["actions-off", "connect-suspend-off", "nothing-to-act-on"])
+def test_on_3_0_a_host_run_with_nothing_to_act_on_sends_todays_positions_only_requests(lib, monkeypatch, deck_of, over):
+    """The move budget (E2.1): a catch-up that lays the ladder and two moves (deltas) send, request for request, what
+    today's positions-only host sends in the same library and deck — no re-check read, no action, today's baseline."""
+    from modules.junban import connect
+    monkeypatch.setattr(connect, "UNATTENDED_SUSPEND", True)
+    root, store = lib
+    today, _plain, moved = _three_jobs(root, store, deck_of, **_positions_only(over))
+    _start_again(store, moved)
+    acting, fake, _moved = _three_jobs(root, store, deck_of, **over)
+    assert [_kinds(log) for log in acting] == [_kinds(log) for log in today]
+    for job, (sent_log, today_log) in enumerate(zip(acting, today)):
+        for index, (sent, positions_only) in enumerate(zip(sent_log, today_log)):
+            if sent["action"] == "apiReflect" and over.get("junban_later_suspend") and not over.get("connect_enabled"):
+                # The one difference, and no write: with the suspend setting saved, the probe (the same request)
+                # also names `suspend` / `unsuspend`, asked before the plan knows there's nothing to suspend.
+                asked = sent["params"]["actions"]
+                # The probe is the run's own, on the job's settings as `_write` decides them (the actions on: they
+                # name the suspend), never positions-only's
+                assert not over.get("junban_auto_actions") or {"suspend", "unsuspend"} <= set(asked), asked
+                assert [name for name in asked if name not in ("suspend", "unsuspend")] == \
+                    positions_only["params"]["actions"], asked
+                continue
+            assert _warm_read(sent) == _warm_read(positions_only), f"job {job}, request {index} differs"
+    assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
+    assert undo.load("ja") is None and undo.load("ja", "baseline"), "today's baseline alone"
+
+
+def test_on_3_0_a_move_after_the_actions_landed_sends_no_action_request_and_no_re_check(lib):
+    """A drag whose actions are unchanged adds no request: the plan asks only what differs from Anki now (a note
+    already tagged, a card already purple or suspended is no work), so after the catch-up acted, two moves send what
+    today's positions-only host sends for them — no action, no re-check read. (The tag and the flag alone here, so
+    both worlds keep the same cards in the queue.)"""
+    root, store = lib
+    over = dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True)
+    today, _fake, moved = _three_jobs(root, store, _acting_deck, **_positions_only(over))
+    _start_again(store, moved)
+    acting, fake, _moved = _three_jobs(root, store, _acting_deck, **over)
+    off_ids = _word_cards(fake, OFF)
+    first = _kinds(acting[0], off_ids)
+    assert "re-check" in first and "addTags" in first and "flag" in first, first
+    for job in (1, 2):
+        kinds = _kinds(acting[job], off_ids)
+        assert "position" in kinds, f"move {job} re-ordered nothing"
+        assert not {"addTags", "flag", "suspend", "re-check"} & set(kinds), kinds
+        assert kinds == _kinds(today[job], off_ids), f"move {job} sent other requests than today's"
+        # The same positions, request for request. A read may carry more ids — the notes the catch-up tagged and the
+        # cards it flagged, read again in the one request the move sends anyway (Anki moved their mod times).
+        assert [sent for sent, kind in zip(acting[job], kinds) if kind == "position"] == \
+            [sent for sent, kind in zip(today[job], kinds) if kind == "position"]
+    assert len(fake.flag_writes) == len(off_ids), "each card flagged once"
+
+
+def test_on_3_0_anki_stopping_during_the_hosts_re_check_means_no_action_and_the_positions_stand(lib):
+    """The re-check read fails (Anki stopped answering after the positions): nothing is known about the cards off the
+    list, so nothing is tagged, flagged or suspended this run — the Surasura tag neither; the positions stand, the
+    window's snapshot is complete (the next job may go) and the re-order is recorded as done."""
+    import urllib.error
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
+    failed = []
+
+    def anki_stops(ids):
+        if fake.write_requests and not failed and set(ids) == set(off_ids):
+            failed.append(sorted(ids))
+            raise urllib.error.URLError("[WinError 10061] No connection could be made")
+    fake.before_cards_info = anki_stops
+    before = fake.queue()
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert failed, "the re-check read went out after the positions"
+    assert fake.write_requests and fake.queue() != before, "the positions stand"
+    assert fake.suspend_calls == [] and fake.flag_writes == [] and fake.tag_calls == []
+    saved = undo.load("ja")
+    assert saved["complete"] is True and not saved.get("suspended"), saved
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_on_3_0_restore_after_a_host_run_puts_positions_back_and_unsuspends_only_its_own_suspends(lib):
+    """One Restore after the host acted: every position back, the run's suspends unsuspended, its tags and flags
+    off — and 掃除機, which you suspended yourself, stays suspended (the run never touched it)."""
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root, yours=("掃除機",))
+    off_ids, yours = _word_cards(fake, OFF), _word_cards(fake, ("掃除機",))
+    before = {card_id: (card["due"], card["queue"]) for card_id, card in fake.cards.items()}
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        assert all(fake.cards[card_id]["queue"] == -1 for card_id in off_ids)
+        restored = reposition.restore(_junban_settings())
+    assert restored["ok"], restored["problems"]
+    assert {card_id: (card["due"], card["queue"]) for card_id, card in fake.cards.items()} == before
+    assert [ids for action, ids in fake.suspend_calls if action == "unsuspend"] == [sorted(off_ids)]
+    assert not [ids for _action, ids in fake.suspend_calls if set(ids) & set(yours)]
+    assert all("Surasura::later" not in (fake.notes[fake.cards[card_id]["note"]].get("tags") or [])
+               for card_id in off_ids)
+    assert all(not fake.cards[card_id].get("flags") for card_id in off_ids)
+
+
+def test_on_3_0_after_an_acting_host_run_cut_by_anki_closing_the_next_move_goes_on(lib):
+    """2.x-dev keeps I3 for every run; 3.0: a run nobody started never stops the automation it belongs to. The host's
+    acting run is cut by Anki closing after its first position request: its window snapshot, marked as an automatic
+    run's, stays unfinished. The next move still re-orders and acts — no "did not finish", no Restore asked of you —
+    and its snapshot takes the cut one over, complete."""
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True, junban_chunk_size=5)      # several position requests
+    fake = _acting_deck(root)
+    off_ids = _word_cards(fake, OFF)
+    fake.on_write = lambda: setattr(fake, "offline", True)     # Anki closes as the first position request lands
+    host, lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    cut = undo.load("ja")
+    assert cut["complete"] is False and cut["automatic"] is True, cut
+    assert fake.suspend_calls == []
+
+    fake.offline = False
+    _move_later_to_top(store)
+    start = len(lines)
+    with _patched(fake):
+        host._job("move")
+    assert not [line for line in lines[start:] if "did not finish" in line or "Restore" in line], lines[start:]
+    assert [ids for action, ids in fake.suspend_calls if action == "suspend"] == [sorted(off_ids)]
+    saved = undo.load("ja")
+    assert saved["complete"] is True and saved["cards"] == {**saved["cards"], **cut["cards"]}, "taken over"
+    versions = store.versions()
+    assert versions["planned_order_version"] == versions["order_version"]
+
+
+def test_a_cut_manual_juns_run_still_refuses_every_automatic_job_and_the_bar_says_where_restore_is(lib):
+    """I3 is kept wherever you started the run: 順's own run, cut by Anki closing, leaves the only way back to how
+    your cards were. Every automatic job then refuses — the host's, AutoJunban's and Connect's — writing nothing, and
+    the host's line tells you where the Restore is (順, until the new window has its own), said once, not retried."""
+    from modules.junban import auto
+    root, store = lib
+    _settings_file(root, junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True,
+                   junban_later_suspend=True)
+    fake = _acting_deck(root)
+    fake.on_write = lambda: setattr(fake, "offline", True)
+    with _patched(fake):
+        manual = reposition.run(_junban_settings(), refresh=False)
+    assert not manual["ok"] and undo.load("ja")["complete"] is False
+    assert "automatic" not in undo.load("ja"), "順's own run carries no automatic mark"
+    fake.offline = False
+    written = list(fake.writes)
+
+    host, lines = _host()
+    _move_later_to_top(store)
+    with _patched(fake):
+        host._job("move")
+        autojunban = auto.reorder(_junban_settings(), list_current=True)
+        connects = auto.reorder(dict(_junban_settings(), connect_enabled=True), list_current=True, positions_only=True,
+                                run_id=undo.new_run_id("reorder"), job=spaced.Job(automatic=True))
+    assert lines[-1] == replan_preview.RESTORE_FIRST, lines
+    assert "Open 順 and press Restore previous order" in replan_preview.RESTORE_FIRST
+    assert host._retry_at is None, "only you can clear it: said once, not retried"
+    for done in (autojunban, connects):
+        assert done["outcome"] == "refused" and "did not finish" in done["report"]["problems"][0], done
+    assert fake.writes == written and fake.suspend_calls == [] and fake.tag_calls == []
+    assert undo.load("ja")["complete"] is False
+
+
+def test_on_3_0_the_host_reorders_with_2x_box_off(lib):
+    """2.x-dev keeps the box as the switch (a box-off host never writes: test_the_switch_is_on_only_with_junban_on_and_
+    it_names_why_it_cant_run); 3.0: D29 on and the pair recorded is enough — the host never reads
+    `junban_replan_preview`."""
+    root, store = lib
+    _settings_file(root, junban_replan_preview=False)
+    fake = _deck(root)
+    host, _ = _host()
+    with _patched(fake):
+        host._job("catch-up")
+    assert fake.write_requests
+    assert store.versions()["planned_order_version"] == store.versions()["order_version"]
+
+
+def test_a_new_deck_reason_is_said_once_more_and_d29_off_says_nothing(lib):
+    """The stand-aside line once per distinct reason: the pair's deck changed → its own line once; D29 off then → no
+    line; the host running again and standing aside again → the reason is news again."""
+    root, store = lib
+    fake = _deck(root)
+    host, lines = _host()
+    with _patched(fake):
+        _settings_file(root, junban_replan_deck="中文")
+        host._job("catch-up")
+        host._job("catch-up")
+        _settings_file(root, junban_replan_deck="中文", logic={"automation": False})
+        host._job("catch-up")
+        assert len(lines) == 1 and "isn't recorded for Japanese" in lines[0], lines
+        _settings_file(root)
+        host._job("catch-up")                                 # runs: the ladder laid
+        ran = len(lines)
+        _settings_file(root, junban_replan_deck="中文")
+        host._job("catch-up")
+    assert lines[ran:] == [lines[0]], lines
 
 
 def test_tomorrows_cards_are_anki_first_once_the_first_request_lands(lib):
@@ -1025,18 +1590,40 @@ def test_a_sync_due_while_an_update_waits_is_looked_at_again_later_not_on_every_
 
 
 def test_with_nothing_moved_the_line_names_what_the_plan_waits_for(lib):
-    """Pass 4 #13: nothing the plan holds moved — new content says so; a setting (or an update) says press Generate."""
+    """Pass 4 #13, and on 3.0 (Haya's G4) two cases. Nothing the plan holds moved:
+      * and nothing in the store either since the plan (new or changed files alone, a setting) — no Generate is
+        coming (the journey keeper is asked on a start, a store move and the host's own ask, never on a file or a
+        setting): 2.x's words stand, new content says so, a setting says press Generate;
+      * but the store's order or pins moved since the plan (a placement) — the window's hook turns that into the
+        keeper's background Generate, then `after_generate`: the line says Generate runs first."""
     root, store = lib
     fake = _deck(root)
     host, lines = _host()
     with _patched(fake):
         host._job("catch-up")
     versions, order = replan_preview._snapshot(store)
+    assert versions["planned_order_version"] == versions["order_version"]
+    assert versions["planned_pins_version"] == versions["pins_version"]
     settings = host._settings()
-    assert host._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
-    assert lines[-1] == replan_preview.NEW_CONTENT
-    assert host._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
-    assert lines[-1] == replan_preview.PRESS_GENERATE
+    asked = []
+    dash, dash_lines = _host(generate=asked.append)
+    dash._load_plan()                                        # the dashboard's host, its plan read (as after a job)
+    # Nothing in the store moved since the plan: no Generate is coming — 2.x's words, the CM's and the window's alike.
+    for who, said in ((host, lines), (dash, dash_lines)):
+        assert who._replan(settings, store, versions, order, ("generate-first", "files"), "catch-up") is False
+        assert said[-1] == replan_preview.NEW_CONTENT
+        assert who._replan(settings, store, versions, order, ("generate-first", "settings"), "catch-up") is False
+        assert said[-1] == replan_preview.PRESS_GENERATE
+    # The store's order (a file placed) or its pins moved since the plan: the keeper's Generate is coming.
+    placed = dict(versions, order_version=versions["planned_order_version"] + 1)
+    pinned = dict(versions, pins_version=versions["planned_pins_version"] + 1)
+    for moved in (placed, pinned):
+        for why in ("files", "settings"):
+            assert host._replan(settings, store, moved, order, ("generate-first", why), "catch-up") is False
+            assert lines[-1] == replan_preview.GENERATE_FIRST_CM
+            assert dash._replan(settings, store, moved, order, ("generate-first", why), "catch-up") is False
+            assert dash_lines[-1] == replan_preview.GENERATE_FIRST
+    assert asked == [], "nothing the plan holds moved: the host asks for no Generate (the keeper's own runs)"
 
 
 def test_a_probe_that_times_out_is_anki_busy_not_closed(lib, monkeypatch):

@@ -70,6 +70,7 @@ class LibraryReader:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._subscribers = []
+        self._move_subscribers = []
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
@@ -92,6 +93,7 @@ class LibraryReader:
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
+        self._order_key = None             # (epoch, order_version, pins_version) the last read found
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
@@ -100,6 +102,11 @@ class LibraryReader:
     def subscribe(self, callback):
         with self._lock:
             self._subscribers.append(callback)
+
+    def subscribe_moves(self, callback):
+        """`callback(language, versions)` once per move of the order or the pins (any writer), on the reader's thread."""
+        with self._lock:
+            self._move_subscribers.append(callback)
 
     def view(self):
         with self._lock:
@@ -189,6 +196,7 @@ class LibraryReader:
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
+        self._moved(h)
         if self._store_id is None and hasattr(h, "meta"):
             self._store_id = h.meta().get("store_id")
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
@@ -207,6 +215,27 @@ class LibraryReader:
             self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
             if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
+
+    def _moved(self, h):
+        """The order or the pins moved since the last read: told once (`subscribe_moves`). Read only after
+        `data_version` moved; a version read that fails tells nothing (the next change is told)."""
+        with self._lock:
+            subscribers = list(self._move_subscribers)
+        if not subscribers or not hasattr(h, "versions"):
+            return
+        try:
+            versions = h.versions()
+        except Exception:
+            return
+        key = (versions.get("epoch"), versions.get("order_version"), versions.get("pins_version"))
+        before, self._order_key = self._order_key, key
+        if before is None or key == before:
+            return
+        for cb in subscribers:
+            try:
+                cb(self.language, versions)
+            except Exception:
+                pass                                # a listener's fault never stops the reader
 
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't

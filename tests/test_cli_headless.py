@@ -217,8 +217,10 @@ def junban(monkeypatch):
         cards, notes, _ = rep._collection(["須藤", "散歩", "図書館", "冒険"])
         fake = rep.FakeCollection(cards, notes, actions=("setSpecificValueOfCard", "multi", "suspend", "unsuspend"),
                                   **{k: over.pop(k) for k in ("reviewing", "offline") if k in over})
-        saved = rep._settings(junban_order="content", enable_junban=True, junban_later_tag=True,
-                              junban_later_flag=True, junban_later_suspend=True, **over)
+        # 3.0: 順 has recorded its deck for Japanese — without the pair, every automatic Junban write stands aside
+        saved = rep._settings(**{**dict(junban_order="content", enable_junban=True, junban_later_tag=True,
+                                        junban_later_flag=True, junban_later_suspend=True,
+                                        junban_replan_deck="TheBank", junban_replan_language="ja"), **over})
         saved.pop("junban_url", None)
         h.write_settings(**{**saved, "anki_connect_url": FAKE_URL})
         return fake, rep._patched(fake)

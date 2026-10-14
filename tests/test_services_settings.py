@@ -76,7 +76,7 @@ def test_get_after_the_load_is_a_copy_in_memory_within_4_ms():
     _, ms = h.timed(service.get)
     service.set({"theme": "Zen Mode"})
     got, ms_after_set = h.timed(service.get)
-    assert ms <= 4 and ms_after_set <= 4, (ms, ms_after_set)
+    assert ms <= h.AT_ONCE_MS and ms_after_set <= h.AT_ONCE_MS, (ms, ms_after_set)
     assert got["theme"] == "Zen Mode"
     assert service.flush(10)
 
@@ -158,7 +158,7 @@ def test_set_returns_within_4_ms_while_another_program_holds_the_settings_lock()
     with h.Holder("settings"):
         _, ms = h.timed(lambda: service.set({"theme": "Zen Mode"}))
         _, get_ms = h.timed(service.get)
-        assert ms <= 4 and get_ms <= 4, (ms, get_ms)
+        assert ms <= h.AT_ONCE_MS and get_ms <= h.AT_ONCE_MS, (ms, get_ms)
         time.sleep(0.3)
         assert h.read_settings().get("theme") is None          # held: not written yet
     assert service.flush(15)
@@ -273,3 +273,73 @@ def test_a_save_now_holds_the_settings_lock_for_its_read_and_write():
     finally:
         settings_manager.save_settings = real_save
     assert seen == [True] and h.read_settings()["theme"] == "Zen Mode"
+
+
+# --- D29's one switch, `logic.automation` (W3.5 row 7, G1) -------------------------------------------------------- #
+@pytest.mark.parametrize("settings,expected", [
+    (None, True),                                         # nothing read yet: on, the default
+    ({}, True),
+    ({"logic": {}}, True),                                # a file from before the key: on
+    ({"logic": None}, True),                              # a malformed logic block never turns automation off
+    ({"logic": "automation"}, True),
+    ({"logic": ["automation"]}, True),
+    ({"logic": {"automation": True}}, True),
+    ({"logic": {"automation": "false"}}, True),           # a hand edit that isn't false: on (False only turns it off)
+    ({"logic": {"automation": 0}}, True),
+    ({"logic": {"automation": False}}, False),
+    ({"automation": False}, True),                        # a top-level key of that name is not D29's
+])
+def test_automation_is_on_unless_the_logic_block_says_false(settings, expected):
+    """D29: one switch for every automatic Anki write, sync and background Generate. A missing or malformed block must
+    read as on — off by accident would silently stop the re-order a user never turned off."""
+    assert settings_manager.automation(settings) is expected
+
+
+def test_automation_defaults_on_and_is_read_from_a_frozen_copy():
+    """The default lives in DEFAULT_SETTINGS (load_settings fills it in) and the reader takes the service's frozen
+    mapping as readily as a dict (a window hands it `get()`)."""
+    assert settings_manager.DEFAULT_SETTINGS["logic"]["automation"] is True
+    h.write_settings({"target_language": "ja"})
+    assert settings_manager.load_settings()["logic"]["automation"] is True
+    h.write_settings({"target_language": "ja", "logic": {"automation": False}})
+    service = SettingsService(delay=5.0)
+    assert settings_manager.automation(service.get()) is False
+
+
+def test_the_settings_service_reads_automation_from_its_current_settings():
+    """`automation()` answers from `get()` — the file as last read with every pending change laid over it — so a window
+    flipping D29 sees its own change at once, before it is written."""
+    h.write_settings({"target_language": "ja", "logic": {"automation": False}})
+    service = SettingsService(delay=5.0)
+    assert service.automation() is False
+    service.set({"logic.automation": True})
+    assert service.automation() is True
+    assert service.flush(10)
+    assert h.read_settings()["logic"]["automation"] is True
+
+
+def test_the_automation_switch_is_placed_neither_in_both_languages():
+    """No run and no report reads D29: flipping it never makes the journey stale (else every flip a full Generate)."""
+    assert settings_placement.PLACED["logic.automation"] == "neither"
+    assert SettingsService.kind("logic.automation", "ja") == "neither"
+    assert SettingsService.kind("logic.automation", "zh") == "neither"
+
+
+def test_fresh_reads_the_file_now_with_the_windows_unwritten_changes_laid_over_it():
+    """`get()` is the window's copy, read again only after its own writes; another program's save (順's `save_keys`)
+    is unseen there. `fresh()` (a worker's call) reads settings.json now — and still lays the window's changes not yet
+    written over it, so a switch just flipped in the window is never read back the old way."""
+    h.write_settings({"target_language": "ja", "junban_deck": "Mining"})
+    class Held:                                          # the writer holds the window's change: it stays pending
+        on_saved = None
+
+        def submit(self, build):
+            pass
+    service = SettingsService(writer=Held())
+    service.set({"logic.automation": False})
+    h.write_settings(dict(h.read_settings(), junban_replan_language="ja", junban_replan_deck="Mining"))
+    assert not service.get().get("junban_replan_deck")
+    fresh = service.fresh()
+    assert fresh["junban_replan_deck"] == "Mining" and fresh["junban_replan_language"] == "ja"
+    assert fresh["logic"]["automation"] is False and isinstance(fresh, dict)
+    assert not service.get().get("junban_replan_deck"), "fresh() changed the window's copy"

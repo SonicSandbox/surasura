@@ -386,6 +386,7 @@ def test_the_dashboards_save_writes_only_its_own_keys_and_keeps_a_logic_key_writ
     on_disk["logic"]["weights"] = {"high": 7, "low": 2, "goal": 1}
     on_disk["logic"]["selection"]["bands_ppm"] = {"very_rare": 3}
     on_disk["a_key_from_a_later_version"] = {"x": 1}
+    on_disk["logic"]["automation"] = False          # D29's switch (3.0): not the dashboard's, so never written back on
     _write(on_disk)
     app.var_zen_limit.set(77)
     app.save_settings()
@@ -394,6 +395,7 @@ def test_the_dashboards_save_writes_only_its_own_keys_and_keeps_a_logic_key_writ
     assert after["logic"]["weights"] == {"high": 7, "low": 2, "goal": 1}
     assert after["logic"]["selection"]["bands_ppm"] == {"very_rare": 3}
     assert after["a_key_from_a_later_version"] == {"x": 1}
+    assert after["logic"]["automation"] is False
     changed = {k for k in set(after) | set(on_disk) if after.get(k) != on_disk.get(k)}
     assert changed <= {"zen_limit", "logic", "anki_connect_url"}, changed
 
@@ -568,6 +570,19 @@ def test_app_and_importer_settings_never_change_the_run_signature(library, path,
     before = {lang: _signatures(lang) for lang in LANGUAGES}
     _write(_with(path, value))
     assert {lang: _signatures(lang) for lang in LANGUAGES} == before
+
+
+def test_the_automation_switch_never_moves_a_signature(library):
+    """D29's one switch (`logic.automation`, W3.5 row 7) gates the automatic Anki writes, the sync and the background
+    Generate — no run and no report reads it. Absent, on and off are the same run and the same report in both
+    languages, or every flip would cost every user a full Generate."""
+    for lang in LANGUAGES:
+        _write({"target_language": "ja"})
+        absent = _signatures(lang)
+        _write(_with("logic.automation", True))
+        assert _signatures(lang) == absent, f"{lang}: automation written on is the default"
+        _write(_with("logic.automation", False))
+        assert _signatures(lang) == absent, f"{lang}: automation off is no new analysis and no new report"
 
 
 def test_comments_never_change_the_run_signature(library):

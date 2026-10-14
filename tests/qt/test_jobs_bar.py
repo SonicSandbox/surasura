@@ -547,6 +547,267 @@ def test_bar_a_status_change_takes_under_4_ms_on_the_window_thread(world):
     assert took[int(len(took) * 0.9)] < 4.0, took[-5:]
 
 
+# --- W3.5 row 7: the re-order host's line, Connect's line, the AnkiWeb mark, the journey dot ----------------------- #
+def _provide(world, **values):
+    """The window's row-7 providers as stand-ins: each answers what `values` holds now (a test changes it), and the
+    poll timer is stopped so only the test asks (a tick would ask Connect / AnkiWeb on the real clock)."""
+    world.win._poll.stop()
+    for name in values:
+        world.status.providers[name] = (lambda n=name: values[n])
+    return values
+
+
+def _ask(world, *names):
+    world.status.refresh_soon(*names)
+
+
+def test_bar_replan_line_shows_the_hosts_lines_in_order_then_up_to_date_then_goes(world):
+    """R7b: the host's passing line is the bar's while the host gives it — *placing tomorrow's 20 cards…*, then *up to
+    date* — and gone once it gives none (the host let go: D29 off, a language switch). Each new line one repaint."""
+    from app import replan_preview as rp
+    label = world.win.bar_replan
+    assert label.isHidden()                                             # no provider yet: nothing in the bar
+    values = _provide(world, replan=None)
+    shown = []
+    for line in ("Anki: placing tomorrow's 20 cards…", rp.UP_TO_DATE):
+        values["replan"] = line
+        _ask(world, "replan")
+        assert wait_until(lambda: label.full() == line and not label.isHidden())
+        shown.append(label.full())
+        assert line in label.toolTip() and strings.BAR_REPLAN_TIP.splitlines()[-1] in label.toolTip()
+    assert shown == ["Anki: placing tomorrow's 20 cards…", rp.UP_TO_DATE]
+    assert world.win.status_paints[label] == 2
+    values["replan"] = None
+    _ask(world, "replan")
+    assert wait_until(lambda: label.isHidden())
+    assert label.full() == "" and world.win.status_paints[label] == 3
+
+
+@pytest.mark.parametrize("line", ["New content or settings: Generate runs first, then Anki is re-ordered",
+                                  "順 is off — switch it on to re-order Anki as you move"])
+def test_bar_replan_generate_first_and_stand_aside_lines_are_shown_as_the_host_says_them(world, line):
+    """The plan is stale (Generate runs first), or the host stands aside (順 off): the line is said in the bar, whole
+    in its tooltip and accessible description however narrow the bar is."""
+    from app import replan_preview as rp
+    assert line in (rp.GENERATE_FIRST, rp.JUNBAN_OFF)
+    _provide(world, replan=line)
+    _ask(world, "replan")
+    label = world.win.bar_replan
+    assert wait_until(lambda: label.full() == line and not label.isHidden())
+    assert line in label.toolTip() and label.accessibleDescription() == line
+
+
+def test_bar_replan_connects_line_repaints_only_on_a_new_stamp(world):
+    """Gap 9 through B's provider (`status.connect_line`): Connect's record is read only when its stamp moved, and the
+    bar's label repaints only when the line moved — a snapshot where only the AnkiWeb mark changed leaves it alone."""
+    from app.services import status as status_service
+    world.win._poll.stop()
+    stamp, reads = ["s1"], []
+    making = "Making cards 2 of 5 — ぼっち・ざ・ろっく！ 第3話 (audio)"
+
+    def read(languages):
+        reads.append(stamp[0])
+        line = {"s1": "Up to date · 12 cards made today", "s2": making, "s3": making}[stamp[0]]
+        return {"stamp": stamp[0], "languages": {"ja": {"line": line}}}
+    world.status.providers["connect"] = status_service.connect_line(
+        "ja", lambda: {"connect_enabled": True}, stamp=lambda languages: stamp[0], read=read)
+    values = _provide(world, ankiweb="AnkiWeb: synced 18:42")
+    label, paints = world.win.bar_connect, world.win.status_paints
+    _ask(world)
+    assert wait_until(lambda: label.text() == "Up to date · 12 cards made today" and not label.isHidden())
+    assert label.toolTip() == strings.BAR_CONNECT_TIP
+    assert paints[label] == 1 and reads == ["s1"]
+    values["ankiweb"] = "AnkiWeb: syncing in 45 s"                    # another mark moves; Connect's stamp doesn't
+    _ask(world, "connect", "ankiweb")
+    assert wait_until(lambda: world.win.bar_ankiweb.text() == "AnkiWeb: syncing in 45 s")
+    assert paints[label] == 1 and reads == ["s1"]
+    stamp[0] = "s2"
+    _ask(world, "connect")
+    assert wait_until(lambda: label.text() == making)
+    assert paints[label] == 2 and reads == ["s1", "s2"]
+    stamp[0] = "s3"                                                     # a new stamp, the same words: read, not repainted
+    values["ankiweb"] = "AnkiWeb: syncing in 44 s"
+    _ask(world, "connect", "ankiweb")
+    assert wait_until(lambda: world.win.bar_ankiweb.text() == "AnkiWeb: syncing in 44 s")
+    assert reads == ["s1", "s2", "s3"] and paints[label] == 2
+
+
+def test_bar_replan_ankiweb_countdown_counts_down_and_says_when_it_synced(world, monkeypatch):
+    """Gap 10 through B's provider (`status.ankiweb_line` over `anki_sync_rule.status`): the countdown moves each
+    second it is asked, then *synced HH:MM*; off the bar before any sync."""
+    from app import anki_sync_rule
+    from app.services import status as status_service
+    world.win._poll.stop()
+    clock, state, due = [1000.0], {}, [1045.0]
+    monkeypatch.setattr(anki_sync_rule, "read_state", lambda: dict(state))
+    monkeypatch.setattr(anki_sync_rule, "due_at", lambda settings, st=None: due[0])
+    world.status.providers["ankiweb"] = status_service.ankiweb_line(lambda: {}, now=lambda: clock[0])
+    label = world.win.bar_ankiweb
+    for now, words in ((1000.0, "AnkiWeb: syncing in 45 s"), (1001.0, "AnkiWeb: syncing in 44 s")):
+        clock[0] = now
+        _ask(world, "ankiweb")
+        assert wait_until(lambda: label.text() == words and not label.isHidden())
+        assert label.toolTip() == strings.BAR_ANKIWEB_TIP
+    due[0], state["synced_at"] = None, time.mktime((2026, 10, 13, 18, 42, 0, 0, 0, -1))
+    _ask(world, "ankiweb")
+    assert wait_until(lambda: label.text() == "AnkiWeb: synced 18:42")
+    state.clear()
+    _ask(world, "ankiweb")
+    assert wait_until(lambda: label.isHidden())
+
+
+def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tooltip(world):
+    """02-state-model *Plan current, sentences catching up*: *Your journey ↗* shows a small dot, its tooltip in plain
+    words; the store saying nothing is owed (False), or no store yet (None), shows none. *Your journey ↗* itself is
+    untouched (it still opens the journey as it is: nothing waits for the sentences)."""
+    win = world.win
+    dot, journey = world.d.journey_dot, world.d.journey
+    assert dot.isHidden()
+    values = _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: not dot.isHidden())
+    assert dot.toolTip() == strings.JOURNEY_DOT_TIP and dot.accessibleName() == strings.JOURNEY_DOT_NAME
+    assert journey.text() == strings.JOURNEY
+    for value in (False, True, None):
+        values["journey"] = value
+        _ask(world, "journey")
+        assert wait_until(lambda: dot.isHidden() != bool(value))
+    assert win.status_paints[dot] == 4
+
+
+def test_bar_replan_journey_dot_owed_before_the_duties_attach_shows_once_they_do(qapp):
+    """The snapshot can say the sentences are owed before the header's controls exist (the duties attach after the
+    first paint in the real window): the dot shows as they attach, not only at the next snapshot."""
+    log, registry = [], JobRegistry()
+    status = StatusService(registry, reader=QuietReader(), providers={"journey": lambda: True})
+    status.refresh()
+    services = shell.Services(registry=registry, status=status, controller=FakeController(log),
+                              updates=FakeUpdates(log), automation=FakeAutomation(log), chores=FakeChores(log))
+    win = shell.open_window(qapp, services)
+    try:
+        assert status.snapshot().journey is True
+        assert not win.duties.journey_dot.isHidden() and win.duties.journey_dot.text() == strings.JOURNEY_DOT
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_bar_replan_journey_dot_promises_a_generate_by_itself_only_while_the_automation_is_on(world):
+    """The dot's tooltip says a Generate brings the sentences in by itself only while D29 is on (the
+    journey keeper runs one); off, it says in plain words to press Generate — and follows a D29 change made while the
+    dot shows (read through the settings service)."""
+    dot = world.d.journey_dot
+    _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: not dot.isHidden())
+    assert dot.toolTip() == strings.JOURNEY_DOT_TIP and "by itself" in dot.toolTip()
+    world.services.settings.set({"logic.automation": False}, now=True)
+    assert wait_until(lambda: "by itself" not in dot.toolTip()), dot.toolTip()
+    assert dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS and "press Generate" in dot.toolTip()
+    assert not dot.isHidden()
+    world.services.settings.set({"logic.automation": True}, now=True)
+    assert wait_until(lambda: dot.toolTip() == strings.JOURNEY_DOT_TIP)
+
+
+def test_bar_replan_journey_dot_made_with_the_automation_off_says_press_generate(qapp, tmp_path):
+    """The dot owed before the duties attach, D29 already off: its first tooltip is the plain one."""
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        w.services.settings.set({"logic.automation": False}, now=True)
+        w.win._poll.stop()
+        w.status.providers["journey"] = lambda: True
+        w.status.refresh_soon("journey")
+        assert wait_until(lambda: not w.d.journey_dot.isHidden())
+        assert w.d.journey_dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS
+    finally:
+        w.close()
+
+
+def test_bar_replan_journey_dot_reads_the_automation_switch_as_the_duties_attach(qapp, tmp_path):
+    """D29 already off in the settings file as the window opens, and never changed after: the duties' attach reads it
+    (on a worker), so the dot's tooltip is the plain one from the start."""
+    h.write_settings({"target_language": "ja", "logic": {"automation": False}})
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        assert wait_until(lambda: w.win._d29 is False)
+        w.win._poll.stop()
+        w.status.providers["journey"] = lambda: True
+        w.status.refresh_soon("journey")
+        assert wait_until(lambda: not w.d.journey_dot.isHidden())
+        assert w.d.journey_dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS
+    finally:
+        w.close()
+
+
+def test_bar_replan_an_older_automation_read_never_overwrites_a_newer_one(world):
+    """Two reads of D29 in flight (two changes in a row): the older answer, arriving last, is dropped — the dot's
+    tooltip follows the newest read."""
+    win = world.win
+    newest = win._d29_asked + 2
+    win._d29_asked, win._d29 = newest, False             # the newest read said off
+    win._d29_read((newest - 1, True))                    # the older read's answer lands after it
+    assert win._d29 is False
+
+
+def test_bar_replan_journey_dot_never_reads_the_settings_on_the_window_thread(world, monkeypatch):
+    """Every snapshot (each second while the AnkiWeb mark counts down) repainted the dot after asking the settings
+    service for D29 on the window's thread — its lock, and a deep copy after any change. D29 is read on a worker when a
+    write lands (and at attach); the dot repaints from what that read."""
+    settings = world.services.settings
+    readers, real = [], settings.automation
+    monkeypatch.setattr(settings, "automation", lambda: readers.append(threading.current_thread()) or real())
+    dot = world.d.journey_dot
+    _provide(world, journey=True)
+    _ask(world, "journey")
+    assert wait_until(lambda: not dot.isHidden())
+    snap = world.status.snapshot()
+    for n in range(5):
+        world.win.show_status(snap._replace(ankiweb=f"AnkiWeb: syncing in {40 - n} s"))
+    settings.set({"logic.automation": False}, now=True)
+    assert wait_until(lambda: dot.toolTip() == strings.JOURNEY_DOT_TIP_PRESS)
+    assert readers and threading.main_thread() not in readers, "D29 read on the window's thread"
+
+
+def test_bar_replan_connect_switched_on_asks_the_bar_for_its_line_at_once(world):
+    """Connect's tick is skipped while it is off; switched on in the window, the setting's landing asks the bar for
+    Connect's line straight away."""
+    asked = []
+    world.status.refresh_soon = lambda *names: asked.append(names)
+    world.services.settings.set({"connect_enabled": True}, now=True)
+    assert wait_until(lambda: ("connect",) in asked)
+
+
+@pytest.mark.parametrize("line", ["順 is off — switch it on to re-order Anki as you move",
+                                  "順's deck Mining isn't recorded for Japanese — pick it in 順's window in Japanese",
+                                  "It needs one deck: choose it in 順's deck list (never All decks)."])
+def test_bar_replan_a_stand_aside_line_has_no_tip_saying_surasura_keeps_ankis_order(world, line):
+    """Beside a line saying the re-order stands aside, the tooltip never claims "Surasura keeps Anki's new
+    cards in your list's order" — it says what the line is about, neutrally, with the line whole."""
+    _provide(world, replan=line)
+    _ask(world, "replan")
+    label = world.win.bar_replan
+    assert wait_until(lambda: label.full() == line and not label.isHidden())
+    assert line in label.toolTip()
+    assert "keeps Anki" not in label.toolTip(), label.toolTip()
+
+
+def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_them(world):
+    """S19: the bar's row-7 labels and the dot repaint only when their own value changed — a snapshot with only its
+    time, or only a job's line, changed (the bar's status line moves) leaves every one of them as it was."""
+    win = world.win
+    _provide(world, replan="Anki: placing tomorrow's 20 cards…", connect="Up to date", ankiweb="AnkiWeb: synced 18:42",
+             journey=True)
+    _ask(world)
+    marks = (win.bar_replan, win.bar_connect, win.bar_ankiweb, world.d.journey_dot)
+    assert wait_until(lambda: all(not m.isHidden() for m in marks))
+    painted = {m: win.status_paints[m] for m in marks}
+    snap = world.status.snapshot()
+    win.show_status(snap._replace(taken_at=snap.taken_at + 1))
+    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",)))
+    assert win.bar_line.full() == "Generating · Counting words 1 / 2"
+    assert {m: win.status_paints[m] for m in marks} == painted
+
+
 # --- the duties' wiring: activation, settings, quit --------------------------------------------------------------- #
 def test_chores_koe_switch_and_activation_reach_the_duties(world, monkeypatch):
     world.start()

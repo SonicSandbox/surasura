@@ -839,11 +839,14 @@ def test_a_replace_whose_numbers_moved_ends_its_job_saying_nothing_was_replaced(
     w.btn_replace.click()
     assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
     anki.add(WORDS[3], deck="TheBank")
-    w.question.yes.click()
+    first = w.question
+    first.yes.click()
     assert wait_until(lambda: any(v.label == strings.ANKI_JOB_REPLACE and v.state == "done"
                                   for v in main.services.registry.snapshot()), 10)
     view = next(v for v in main.services.registry.snapshot() if v.label == strings.ANKI_JOB_REPLACE)
     assert view.message == strings.ANKI_REPLACE_MOVED_JOB
+    # The job reads "done" before its result reaches the window, which then asks again: answer the new question
+    assert wait_until(lambda: w.question is not first and w.question.isVisible(), 10)
     w.question.no.click()
     assert wait_until(lambda: not w.busy())
 

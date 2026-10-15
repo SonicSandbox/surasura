@@ -38,9 +38,11 @@ Every byte from the network goes through ONE function, `_fetch`. Standard librar
 """
 import fnmatch
 import hashlib
+import json
 import os
 import shutil
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,12 +60,16 @@ ASSET_PATTERN = "*-Windows-x86_64-Setup.exe"
 HOSTS = frozenset({"api.github.com", "github.com", "objects.githubusercontent.com",
                    "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"})
 SIZE_CAP = 400 * 1024 * 1024    # 3.6.0's installer is 179.6 MB: about twice that, and no more
+JSON_CAP = 1024 * 1024          # GitHub's release answer: 1 MB, far above a release's, and no more
+# The installer's link: Anki Miner's own release downloads (owner and repository compared as GitHub does, by case)
+DOWNLOAD_PATH = f"/{am_release.REPO}/releases/download/".lower()
 TIMEOUT_S = 30                  # urllib's per-socket wait
 CHUNK = 1 << 16
 STAGING = "anki-miner-install"  # under local data; emptied before, after and on every failure
 MINER_EXE = "AnkiMiner.exe"
 
 OPENED_RELEASES, INSTALLER_CLOSED, BUSY, DECLINED = "opened-releases", "installer-closed", "busy", "declined"
+CANCELLED = "cancelled"         # the learner's own Cancel: nothing more opens (no releases page: IK-13, W AD-6)
 
 # What the page shows (the wizard's strings module may word them again; the states are these)
 DOT_NAMES = ("Anki", "AnkiWeb", "Anki Miner", "Its setup")
@@ -76,6 +82,7 @@ _RANK = {OK: 0, OFF: 1, WARN: 2}
 _MINER_CHECKS = ("anki_miner", "anki_miner_version", "anki_miner_profile", "anki_miner_setup")
 
 open_url = None                 # the browser: webbrowser.open, looked up when used (a test hands in its own)
+_ONE_INSTALL = threading.Lock()  # held for an install's whole route: one at a time, and the look never cleans under it
 
 
 class _Refused(Exception):
@@ -120,7 +127,13 @@ def _off(settings):
 
 
 def look(settings, language):
-    """The page's state, its four dots and its one fix (module docstring). Never raises."""
+    """The page's state, its four dots and its one fix (module docstring). Never raises. First, an installer left in
+    staging by a quit while it was open (AD-8: its `_clean` never ran) is emptied — never while an install runs."""
+    if _ONE_INSTALL.acquire(blocking=False):
+        try:
+            _clean()
+        finally:
+            _ONE_INSTALL.release()
     try:
         from app.connect import anki_miner, setup
         result = setup.checks(settings, language, keep=False)
@@ -168,6 +181,18 @@ def _github(url):
         and parts.port in (None, 443)
 
 
+def _own_release(url):
+    """Is `url` a download from Anki Miner's own releases (`https://github.com/0xzerolight/anki_miner/releases/
+    download/…`)? A GitHub host alone is not enough (AD-7): another account's release, a fork, a dot segment out of
+    the path are never fetched. Its redirects to GitHub's asset hosts stay `_GitHubOnly`'s."""
+    if not _github(url):
+        return False
+    parts = urllib.parse.urlsplit(str(url))
+    path = urllib.parse.unquote(parts.path)
+    return (parts.hostname or "").lower() == "github.com" and path.lower().startswith(DOWNLOAD_PATH) \
+        and "\\" not in path and not any(segment in (".", "..") for segment in path.split("/"))
+
+
 class _GitHubOnly(urllib.request.HTTPRedirectHandler):
     """Follows a redirect only to another of GitHub's hosts."""
 
@@ -178,19 +203,29 @@ class _GitHubOnly(urllib.request.HTTPRedirectHandler):
 
 
 def _fetch(url, as_json=False):
-    """THE network function: every byte of this route comes through here. `as_json`: GitHub's release answer (a
-    dict, or None) through Surasura's own helper (`update_checker._http_json`); else the open response (a context
-    manager: `read(n)`, `geturl()`, `headers`), redirects followed only within GitHub's hosts."""
+    """THE network function: every byte of this route comes through here, redirects followed only within GitHub's
+    hosts. `as_json`: GitHub's release answer (the dict) — it names the installer and its sha256, so it is the trust
+    anchor and comes the download's way too (AD-6): its final address checked, read up to `JSON_CAP`; else the open
+    response (a context manager: `read(n)`, `geturl()`, `headers`)."""
     if not DOWNLOAD_ENABLED:
         raise _Refused("the download isn't enabled")
     if not _github(url):
         raise _Refused(f"not one of GitHub's hosts: {url}")
     from app import update_checker
+    headers = {"User-Agent": update_checker._USER_AGENT}
     if as_json:
-        return update_checker._http_json(url, timeout=TIMEOUT_S)
+        headers["Accept"] = "application/vnd.github+json"
     opener = urllib.request.build_opener(_GitHubOnly())
-    return opener.open(urllib.request.Request(url, headers={"User-Agent": update_checker._USER_AGENT}),
-                       timeout=TIMEOUT_S)
+    response = opener.open(urllib.request.Request(url, headers=headers), timeout=TIMEOUT_S)
+    if not as_json:
+        return response
+    with response:
+        if not _github(response.geturl()):
+            raise _Refused(f"the release answer came from outside GitHub's hosts: {response.geturl()}")
+        body = response.read(JSON_CAP + 1)
+    if len(body) > JSON_CAP:
+        raise _Refused("the release answer is larger than any release's")
+    return json.loads(body.decode("utf-8"))
 
 
 def staging_folder():
@@ -242,8 +277,8 @@ def _asset(release):
         str(asset.get("digest") or "")
     if os.path.basename(name.replace("\\", "/")) != name or name in (".", ".."):
         raise _Refused(f"an installer name that isn't a plain file name: {name!r}")
-    if not _github(url):
-        raise _Refused(f"the installer isn't on GitHub's hosts: {url}")
+    if not _own_release(url):
+        raise _Refused(f"the installer isn't one of Anki Miner's own release downloads: {url}")
     if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= SIZE_CAP:
         raise _Refused(f"the installer's size is {size!r}")
     algorithm, _, hexdigest = digest.partition(":")
@@ -287,6 +322,14 @@ def _download(url, path, size, sha256, on_progress, cancel):
         raise _Refused("the installer's sha256 doesn't match GitHub's")
 
 
+def _sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _launch(path):
     """His installer, opened as he made it (Surasura's own installer hand-off): the started process."""
     from app import updater
@@ -320,23 +363,33 @@ def _route(on_progress, cancel, confirm):
         if _busy():                 # Anki Miner or Connect started while it downloaded
             _clean()
             return BUSY
+        if _sha256_of(path) != sha256:      # the file opened is the file checked (AD-9), not only the stream
+            raise _Refused("the installer on disk changed after its check")
         process = _launch(path)
         process.wait()              # his installer's own window; its Finish page starts his setup wizard
         _clean()
         return INSTALLER_CLOSED
     except Exception:               # _Refused, the network, the disk, Windows blocking the file (WinError 225)
         _clean()
+        if _stopped(cancel):        # the learner stopped it: the page says so, no browser opens behind the window
+            return CANCELLED
         return _releases()
 
 
 def install(on_progress, cancel, on_end, confirm=None):
     """The in-Surasura install route (module docstring) -> "opened-releases" · "installer-closed" · "busy" ·
-    "declined". Blocking: run it on a worker. `on_end(result)` is told once, at the end. Never raises."""
-    try:
-        result = _route(on_progress, cancel, confirm)
-    except Exception:
-        _clean()
-        result = _releases()
+    "declined" · "cancelled". Blocking: run it on a worker. `on_end(result)` is told once, at the end. Never raises. One at a time
+    in the process (AD-9: the wizard closed mid-install, then *Set up again*): a second one is `"busy"`."""
+    if not _ONE_INSTALL.acquire(blocking=False):
+        result = BUSY
+    else:
+        try:
+            result = _route(on_progress, cancel, confirm)
+        except Exception:
+            _clean()
+            result = _releases()
+        finally:
+            _ONE_INSTALL.release()
     if on_end:
         try:
             on_end(result)

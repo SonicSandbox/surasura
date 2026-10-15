@@ -52,8 +52,14 @@ def host(shell, api=None, miner=None):
 
 
 def open_again(shell, api=None, miner=None):
-    """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not). -> the wizard."""
-    return _open(shell, api, miner)
+    """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not). -> the wizard, or
+    None (never raises into Settings' click: a wizard that can't open leaves the window as it is, and says why in the
+    log)."""
+    try:
+        return _open(shell, api, miner)
+    except Exception as e:
+        applog.log("wizard", f"the setup wizard didn't open again: {e}")
+        return None
 
 
 def _open(shell, api, miner):

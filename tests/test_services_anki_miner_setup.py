@@ -455,16 +455,20 @@ def test_two_windows_installers_or_none_mean_the_releases_page(route):
     assert route.launcher.started == []
 
 
-def test_cancel_mid_way_opens_the_releases_page_and_leaves_no_half_file(route):
+def test_cancel_mid_way_stops_quietly_and_leaves_no_half_file(route):
+    # The learner's own Cancel: "cancelled", and no releases page opens behind the window (IK-13, W AD-6)
     stop = threading.Event()
     result = M.install(lambda done, total: (route.progress.append(done), stop.set()), stop, route.ends.append,
                        lambda: True)
-    assert result == "opened-releases"
+    assert result == "cancelled"
+    assert route.ends == ["cancelled"]
+    assert route.opened == []
     assert len(route.progress) == 1                          # stopped at the next chunk
     assert route.launcher.started == []
     assert _staging_empty()
     # A callable cancel is honoured too
-    assert route.run(cancel=lambda: True) == "opened-releases"
+    assert route.run(cancel=lambda: True) == "cancelled"
+    assert route.opened == []
     assert _staging_empty()
 
 
@@ -571,3 +575,107 @@ def test_on_end_raising_never_breaks_install(monkeypatch):
     def end(_result):
         raise RuntimeError("the page is gone")
     assert M.install(None, None, end) == "opened-releases"
+
+
+# ---------------------------------------------------------------------------
+# The review's rows (W3.5-wiz-SM adversary AD-6 … AD-9)
+# ---------------------------------------------------------------------------
+class Opener:
+    """`urllib.request.build_opener`'s stand-in: the handlers it was built with, and one answer per open."""
+
+    def __init__(self, body, final=M.LATEST_API):
+        self.body, self.final, self.handlers, self.opened = body, final, [], []
+
+    def __call__(self, *handlers):
+        self.handlers.extend(handlers)
+        return self
+
+    def open(self, request, timeout=None):
+        self.opened.append(request.full_url)
+        return Response(self.body, self.final)
+
+
+def _json(release):
+    import json
+    return json.dumps(release, ensure_ascii=False).encode("utf-8")
+
+
+def test_the_release_answer_follows_githubs_hosts_only_and_is_capped(monkeypatch):
+    """AD-6: the release answer names the installer and its sha256 — the trust anchor — so it comes the way the
+    download does: redirects only within GitHub's hosts, the final address checked, the answer read up to a cap.
+    Never urllib's default opener (no host check per hop)."""
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("the default opener was used"))
+    opener = Opener(_json(_release()))
+    monkeypatch.setattr(urllib.request, "build_opener", opener)
+    assert M._fetch(M.LATEST_API, as_json=True) == _release()
+    assert any(isinstance(h, M._GitHubOnly) for h in opener.handlers)
+    assert opener.opened == [M.LATEST_API]
+
+    monkeypatch.setattr(urllib.request, "build_opener", Opener(_json(_release()), final="https://api.example.net/x"))
+    with pytest.raises(M._Refused):
+        M._fetch(M.LATEST_API, as_json=True)
+    monkeypatch.setattr(urllib.request, "build_opener", Opener(b"{" + b" " * M.JSON_CAP + b"}"))
+    with pytest.raises(M._Refused):
+        M._fetch(M.LATEST_API, as_json=True)
+
+
+@pytest.mark.parametrize("url", [
+    f"https://github.com/someone-else/anki_miner/releases/download/v3.7.0/{ASSET}",      # another account's release
+    f"https://github.com/0xzerolight/anki_miner_fork/releases/download/v3.7.0/{ASSET}",
+    f"https://github.com/0xzerolight/anki_miner/releases/download/../../../evil/x/releases/download/{ASSET}",
+    f"https://objects.githubusercontent.com/0xzerolight/anki_miner/releases/download/v3.7.0/{ASSET}",
+])
+def test_an_installer_link_outside_anki_miners_own_releases_is_never_fetched(route, url):
+    """AD-7: a GitHub host is not enough: the link must be 0xzerolight/anki_miner's own release download."""
+    route.net.release = _release(url=url)
+    assert route.run() == "opened-releases"
+    assert route.net.calls == [(M.LATEST_API, True)]
+    assert route.launcher.started == [] and _staging_empty()
+
+
+def test_anki_miners_own_link_is_matched_without_regard_to_case(route):
+    """GitHub's owner and repository names are case-insensitive."""
+    route.net.release = _release(url=DOWNLOAD.replace("0xzerolight/anki_miner", "0xZeroLight/Anki_Miner"))
+    assert route.run() == "installer-closed"
+
+
+def test_an_installer_left_by_a_quit_is_emptied_at_the_next_look_but_never_during_an_install(monkeypatch):
+    """AD-8: Surasura quit while his installer was open: the ~180 MB file stays in staging. The page's next look
+    empties it — unless an install of this process is running now."""
+    def broken(*a, **k):
+        raise RuntimeError("Anki Miner's --api failed")
+    monkeypatch.setattr(setup, "checks", broken)
+    monkeypatch.setattr(anki_miner, "find", lambda settings: None)
+    folder = M.staging_folder()
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, ASSET), "wb") as f:
+        f.write(BODY)
+    with M._ONE_INSTALL:
+        M.look({}, "ja")
+        assert os.listdir(folder) == [ASSET], "an install running now keeps its file"
+    M.look({}, "ja")
+    assert _staging_empty()
+
+
+def test_one_install_at_a_time(route):
+    """AD-9: a second Install while one runs (the wizard closed mid-install, then *Set up again*) is busy: nothing
+    fetched, nothing opened, the first one's file untouched."""
+    with M._ONE_INSTALL:
+        assert route.run() == "busy"
+    assert route.net.calls == [] and route.opened == [] and route.launcher.started == []
+    assert route.run() == "installer-closed", "free again once it ended"
+
+
+def test_the_installer_on_disk_is_checked_again_just_before_it_is_opened(route, monkeypatch):
+    """AD-9: the sha256 is of the stream; the file opened is hashed again, so bytes changed on disk in between are
+    never run."""
+    download = M._download
+
+    def then_changed(url, path, *rest):
+        download(url, path, *rest)
+        with open(path, "r+b") as f:
+            f.write(b"XX")
+    monkeypatch.setattr(M, "_download", then_changed)
+    assert route.run() == "opened-releases"
+    assert route.launcher.started == [] and _staging_empty()

@@ -19,7 +19,12 @@ GUI thread never waits.
   does). Page 6's **Generate** saves the level, writes `onboarding_completed` (`finish`), asks the window's Generate and
   closes onto Current when that run ends; its *Skip* finishes without Generate. *Finish later* writes nothing more.
 - **Keys:** Tab between groups; ← → within a choice channel (one Tab stop each) and on the level; Space toggles a switch;
-  Enter is *Next* / **Generate** (on a page that can't go on — Anki not open on *Card order* — Enter is *Skip*). **Esc
+  Enter is *Next* / **Generate** (on a page that can't go on — Anki not open on *Card order* — Enter is *Skip*), by the
+  wizard's own key handling: no button is a default one, and Enter on another button (*Skip*, *Back*, *Finish later*,
+  *Check again*…) does nothing — those act on Space or a click, as themselves. **One action per press:** a held key's
+  repeats are no presses, and *Next* / *Skip* take a press only once the page shown was painted and a double click's
+  time has gone since it came up (`settled`), so a double click or a quick second Enter never saves a page unseen —
+  page 4's consent among them. **Esc
   does nothing here** (WZ-6): the wizard registers no overlay, so the shell's `EscapeRouter` hands Esc on and the main
   window is never closed; the mouse's Back button is the router's too.
 - **Looks:** every colour from `app/theme.py` through `style` (no literal); the pictures are painted. Each painted part
@@ -29,6 +34,7 @@ GUI thread never waits.
 """
 import math
 import threading
+import time
 from functools import lru_cache
 
 from PyQt6 import sip
@@ -37,15 +43,16 @@ from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, Q
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QHBoxLayout, QLabel, QLayout, QProgressBar,
                              QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from app import path_utils, theme
+from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
 from app.qt import wizard_strings as S
 
 PAGES = ("language", "known", "shows", "order", "cards", "level")      # the contract's ids, in order
 BUSY = ("queued", "running", "cancelling")      # a Generate under way (`generate.QUEUED` / `RUNNING` / `CANCELLING`)
 ROWS_SHOWN = 6                                  # page 3's rows; the rest are "and N more"
-COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…*
-ASK_WAIT_S = 600                                # the install's question waits this long for an answer, then is No
+COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
+COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
+ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
 GLYPH_GEM = {"ja": "sapphire", "zh": "ruby"}    # page 1's wash under each glyph
 # The wizard's type sizes, as multiples of the theme's roles (theme.TYPE has no wizard roles yet: the notes carry the
 # theme.py patch that names them). The title is `first-run-heading` × 1.3; the glyphs and the big numbers are larger.
@@ -244,9 +251,14 @@ class NextButton(QPushButton):
         self.setObjectName("wiznext")
         self.setProperty("kind", "primary")
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAutoDefault(False)                        # Enter is the wizard's own (`SetupWizard.keyPressEvent`)
+        self.setDefault(False)
         self.key = QLabel(S.KEY_ENTER, self)
         self.key.setObjectName("wizkey")
         self.key.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def mouseDoubleClickEvent(self, event):
+        event.accept()                                    # a double click's second press is no press (AD-3)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -543,6 +555,8 @@ def _button(text, tip, slot, parent=None, name=None, kind=None):
     b.setAccessibleName(text)
     b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setAutoDefault(False)                               # never Enter's: a button acts on Space or a click (AD-1)
+    b.setDefault(False)
     if name:
         b.setObjectName(name)
     if kind:
@@ -1044,8 +1058,16 @@ class _Page(QWidget):
         self.line.setVisible(bool(line))
         self.box.addWidget(self.line)
 
+    def paintEvent(self, event):
+        self.wiz.page_painted(self)                       # the page was seen: it may take a press (`settled`)
+        super().paintEvent(event)
+
     def answers(self):
         return {}
+
+    def kept(self):
+        """What the page keeps over a language switch (its `answers`, as `load` takes them)."""
+        return self.answers()
 
     def load(self, answers):
         """Show `answers` (a page's preselects, or what the user chose)."""
@@ -1186,7 +1208,9 @@ class KnownPage(_Page):
         self.channel.choose(how)
         self.sentence.set_language(self.wiz.language)
         _show(self.decks_part, how == "anki" and is_open)
-        _show(self.closed_part, how == "anki" and look is not None and not is_open)
+        # Anki not open: *Anki isn't open* + *Check again*, also while *Import a list* stands in for it untouched (the
+        # draft; the intent keeper's IK-17) — gone once the learner picked another way themselves
+        _show(self.closed_part, look is not None and not is_open and (how == "anki" or not self._touched))
         _show(self.import_part, how == "import")
         if is_open:
             self._render_decks(look)
@@ -1282,6 +1306,11 @@ class ShowsPage(_Page):
         _show(self.btn_youtube, self.wiz.door("youtube-downloader") is not None)
         self.wiz.read_rows()
 
+    def content_open(self, on):
+        """The Content Manager is open (`on`): *Add content…* and the samples wait for it (one at a time, AD-13)."""
+        for b in (self.btn_add, self.btn_samples):
+            _enable(b, not on)
+
     def show_rows(self, rows):
         rows = list(rows or [])
         key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("kind")) for r in rows)
@@ -1364,12 +1393,20 @@ class OrderPage(_Page):
         closed.addWidget(self.btn_check)
         closed.addStretch(1)
         self.box.addWidget(self.closed_part)
+        # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
+        self.off_line = _label("wizclosed", S.ORDER_OFF, self)
+        self.off_line.setVisible(False)
+        self.box.addWidget(self.off_line)
         self.controls = QWidget(self)
         rows = QVBoxLayout(self.controls)
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(_px(8))
         self.keep = SwitchRow(S.KEEP_ORDER, S.KEEP_ORDER_LINE, S.KEEP_ORDER_TIP, self.controls, recommended=True)
         rows.addWidget(self.keep)
+        # D29's switch off: the consent is kept, and the page says it waits for it (IK-20)
+        self.automation_line = _label("wizsub", S.ORDER_AUTOMATION_OFF, self.controls, wrap=True)
+        self.automation_line.setVisible(False)
+        rows.addWidget(self.automation_line)
         rows.addWidget(style.separator(self.controls))
         deck = QHBoxLayout()
         deck.setSpacing(_px(14))
@@ -1418,9 +1455,13 @@ class OrderPage(_Page):
 
     def _show(self):
         look = self.wiz.anki
-        is_open = bool(look and look.get("open"))
-        _show(self.closed_part, look is not None and not is_open)
+        off = self.wiz.junban_off()
+        _set_text(self.off_line, off or "")
+        _show(self.off_line, bool(off))
+        is_open = bool(look and look.get("open")) and not off
+        _show(self.closed_part, not off and look is not None and not is_open)
         _show(self.controls, is_open)
+        _show(self.automation_line, is_open and not settings_manager.automation(self.wiz._settings()))
         self.picture.set_language(self.wiz.language)
         decks = self._decks()
         if is_open and tuple(decks) != self._deck_key:
@@ -1445,10 +1486,10 @@ class OrderPage(_Page):
 
     def next_offered(self):
         look = self.wiz.anki
-        return bool(look and look.get("open"))
+        return bool(look and look.get("open")) and not self.wiz.junban_off()
 
     def entered(self):
-        if self.wiz.anki is None or not self.wiz.anki.get("open"):
+        if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
             self.wiz.look_anki()
         self._show()
 
@@ -1543,14 +1584,18 @@ class CardsPage(_Page):
         """The switch's answer; None while it isn't shown (a False would turn Connect off on *Set up again*)."""
         return {"make_cards": self.make.isChecked() if self.ready() else None}
 
+    def kept(self):
+        return {"make_cards": self.make.isChecked()}      # the switch as left, shown or not (a language switch)
+
     def show_progress(self, done, total):
-        """The download's progress with *Cancel* (None, None: it ended). Repainted only when a tenth of a percent
-        moved."""
+        """The download's progress with *Cancel* (None, None: it ended; *Cancel* leaves once every byte is in: his
+        installer opens then, and the route no longer looks at it). Repainted only when a tenth of a percent moved."""
         running = done is not None
         _show(self.loading, running)
         _enable(self.btn_install, not running and self.wiz.installing is None)
         if not running:
             return
+        _show(self.btn_cancel, not total or done < total)
         value = round(1000 * done / total) if total else 0
         if self.progress.value() != value:
             self.progress.setValue(value)
@@ -1591,13 +1636,11 @@ class CardsPage(_Page):
         _show(self.btn_star, look is not None and not ready)
         _show(self.star_quiet, ready)                     # the star line stays, quieter, once it's ready
         _show(self.btn_install, state in ("missing", "too-old"))
-        if state == "too-old":
-            _set_text(self.btn_install, S.UPDATE_MINER)
-            self.btn_install.setToolTip(S.UPDATE_MINER_TIP)
-        else:
-            _set_text(self.btn_install, S.INSTALL)
-            self.btn_install.setToolTip(S.INSTALL_TIP)
-        self.btn_install.setAccessibleName(self.btn_install.text())
+        text, tip = (S.UPDATE_MINER, S.UPDATE_MINER_TIP) if state == "too-old" else (S.INSTALL, S.INSTALL_TIP)
+        if self.btn_install.text() != text or self.btn_install.toolTip() != tip:      # only what changed (S19)
+            self.btn_install.setText(text)
+            self.btn_install.setToolTip(tip)
+            self.btn_install.setAccessibleName(text)
         _show(self.btn_check, look is not None and not ready and (state != "missing" or self.wiz.install_opened))
         dots = (look or {}).get("dots") or []
         for i, d in enumerate(self.dots):
@@ -1669,7 +1712,7 @@ class LevelPage(_Page):
         return {"automatic": automatic, "band": band}
 
     def entered(self):
-        self.wiz.read_numbers()
+        self.wiz.read_numbers(fresh=True)
 
     def show_numbers(self, numbers):
         self.numbers = numbers
@@ -1774,6 +1817,12 @@ class SetupWizard(QWidget):
         self.generating = False
         self._saw_busy = False
         self._gone = False
+        self._stopped = False               # the window's quit began: no question is asked from here on
+        self._shown_at, self._painted = 0.0, False      # the page shown: when it came up, whether it was painted
+        self._fresh = {}                    # Next / Skip: was its press taken on a settled page (`settled`)
+        self._synced = None                 # (language, decks) of the first sync started (one per change, AD-10)
+        self._count_wait = COUNT_AGAIN_MS   # page 6's next ask while it counts (twice as long each time)
+        self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
         self.saves = []                     # (page, answers) as each *Next* saved them (what the wizard asked)
         answers = self._preselect(self.language)
         self._build()
@@ -1781,11 +1830,29 @@ class SetupWizard(QWidget):
             page.load(answers.get(page.id) or {})
         self.setStyleSheet(sheet(style.current()[1]))
         windows.follow_doors(self)          # the doors (YouTube) shown once the modules were looked for
+        bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
+                             failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
+        closing = getattr(shell, "closing", None)
+        if closing is not None:             # the quit began: a question still open answers No, a download stops
+            closing.connect(self._shell_closing)
+        heard = getattr(shell, "bridge", None)
+        if heard is not None and hasattr(heard, "indexed"):
+            heard.indexed.connect(self._indexed)
         self._go(0)
 
     # --- reading the settings ------------------------------------------------------------------------------------ #
     def _settings(self):
         return self.services.settings.get()
+
+    def junban_off(self):
+        """Why page 4 offers no control (順 switched off, or not in this Surasura), else None."""
+        if self._settings().get("enable_junban") is False:
+            return S.ORDER_OFF
+        return S.ORDER_ABSENT if self._junban_found is False else None
+
+    def _junban_looked(self, found):
+        self._junban_found = bool(found)
+        self.pages[3]._show()
 
     def _preselect(self, language):
         try:
@@ -1841,20 +1908,45 @@ class SetupWizard(QWidget):
         self.say_line = _label("wizsay", "", foot)
         self.say_line.setVisible(False)
         row.addWidget(self.say_line)
-        self.btn_skip = _button(S.SKIP, S.SKIP_TIP, self.skip, foot, name="wizquiet")
+        self.btn_skip = _button(S.SKIP, S.SKIP_TIP, lambda: self._pressed_through(self.btn_skip, self.skip), foot,
+                                name="wizquiet")
         row.addWidget(self.btn_skip)
         self.btn_next = NextButton(foot)
-        self.btn_next.clicked.connect(lambda _c=False: self.next())
+        self.btn_next.clicked.connect(lambda _c=False: self._pressed_through(self.btn_next, self.next))
         row.addWidget(self.btn_next)
+        for b in (self.btn_skip, self.btn_next):          # a press (mouse, Space, a reader's click) on a settled page
+            b.pressed.connect(lambda b=b: self._fresh.__setitem__(b, self.settled()))
         root.addWidget(foot)
         self.footer = foot
 
     def keyPressEvent(self, event):
-        """Enter (from anywhere in the wizard: no control here takes it) is *Next*; Esc is left alone (WZ-6)."""
+        """Enter is *Next* (the wizard's own: no button here is a default one) — a held key's repeats and a page not
+        settled yet take nothing, and on another button Enter does nothing (that button acts on Space or a click, as
+        itself). Esc is left alone (WZ-6)."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.accept()
+            focus = self.focusWidget()
+            if event.isAutoRepeat() or not self.settled() or (isinstance(focus, QPushButton)
+                                                               and focus is not self.btn_next):
+                return
             self.enter()
             return
         super().keyPressEvent(event)
+
+    # --- one action per press (AD-1 … AD-3) -------------------------------------------------------------------- #
+    def settled(self):
+        """Does the page shown take a press? Once it was painted and a double click's time has gone since it came up:
+        the second click of a double click, or a quick second Enter, never lands on a page the learner hasn't seen."""
+        return self._painted and (time.monotonic() - self._shown_at) * 1000 >= QApplication.doubleClickInterval()
+
+    def page_painted(self, page):
+        if page is self.stack.currentWidget():
+            self._painted = True
+
+    def _pressed_through(self, button, act):
+        """A click on *Next* / *Skip*: `act` only when its press came on a settled page."""
+        if self._fresh.pop(button, False):
+            act()
 
     # --- the footer --------------------------------------------------------------------------------------------- #
     @property
@@ -1887,6 +1979,10 @@ class SetupWizard(QWidget):
     # --- moving between pages ------------------------------------------------------------------------------------- #
     def _go(self, index):
         self.index = max(0, min(len(PAGES) - 1, index))
+        self._shown_at, self._painted = time.monotonic(), False        # a press waits until it was seen (`settled`)
+        self._fresh.clear()
+        if self.say_line.text() == S.CONTENT_OPEN:
+            self.say("")                                  # the Content Manager's line is page 3's (AD-12)
         self.stack.setCurrentIndex(self.index)              # instant: no page light-up to borrow (module docstring)
         self.steps.set_state(self.index, self.passed)
         self.page.entered()
@@ -1924,7 +2020,10 @@ class SetupWizard(QWidget):
         if page.id == "language" and answers.get("language") != self.language:
             self._language_changed(answers["language"])
         if page.id == "known" and answers.get("how") == "anki" and answers.get("decks"):
-            self._first_sync(list(answers["decks"]))
+            synced = (self.language, tuple(answers["decks"]))
+            if synced != self._synced:                    # Back and Next again over the same decks: no second sync
+                self._synced = synced
+                self._first_sync(list(answers["decks"]))
         self._advance()
 
     def _advance(self):
@@ -1957,6 +2056,7 @@ class SetupWizard(QWidget):
         except Exception as e:
             applog.log("wizard", f"saving {page_id}: {e}")
             windows.say_in_bar(self.shell, str(e))
+            self.say(str(e))                              # the bar is under the wizard (AD-11)
 
     def _finish(self):
         try:
@@ -1968,16 +2068,31 @@ class SetupWizard(QWidget):
         if self._gone:
             return
         self._gone = True
-        self.cancel_install()                             # a download under way stops (nothing is left half-made)
-        for ask in self.findChildren(_AskFromWorker):
-            ask.answer_now(False)                         # a worker waiting for the question's answer: No
-            if ask.card is not None and not sip.isdeleted(ask.card):
-                ask.card.drop()                           # and the question leaves the window with the wizard
-        try:
-            self.shell.bridge.generate_changed.disconnect(self._generate_state)
-        except (TypeError, RuntimeError, AttributeError):
-            pass
+        self._stop_workers()
+        heard = getattr(self.shell, "bridge", None)
+        for signal, slot in ((getattr(heard, "generate_changed", None), self._generate_state),
+                             (getattr(heard, "indexed", None), self._indexed),
+                             (getattr(self.shell, "closing", None), self._shell_closing)):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError, AttributeError):
+                pass
         self.finished.emit(how)
+
+    def _stop_workers(self):
+        """No worker left waiting on the wizard: a download under way stops (nothing is left half-made) and a question
+        still open is answered No at once, its card gone with it."""
+        self._stopped = True
+        self.cancel_install()
+        for ask in self.findChildren(_AskFromWorker):
+            ask.answer_now(False)
+            if ask.card is not None and not sip.isdeleted(ask.card):
+                ask.card.drop()
+
+    def _shell_closing(self):
+        """(`shell.closing`) The window's quit began — ✕, or the update's hand-over — with the wizard up (AD-4)."""
+        if not self._gone and not sip.isdeleted(self):
+            self._stop_workers()
 
     def alive(self, fn):
         """`fn`, dropped once the wizard closed or was deleted: a worker's late answer is never painted."""
@@ -1989,15 +2104,21 @@ class SetupWizard(QWidget):
 
     # --- the language ------------------------------------------------------------------------------------------- #
     def _language_changed(self, language):
-        """Page 1 picked another language: the later pages start again from that language's preselects."""
+        """Page 1 picked another language: the pages that hang on it — the decks of *What you know* and *Card order* —
+        start again from that language's preselects (their ✓ gone: not passed for this language yet); the others keep
+        what was chosen and saved (AD-9) and only read again what they show for it."""
         self.language = language
         self.anki = None
         self._anki_seq += 1
         self._anki_looking = False
         answers = self._preselect(language)
         for page in self.pages[1:]:
+            again = page.id in ("known", "order")
+            kept = None if again else page.kept()
             page.language_changed(language)
-            page.load(answers.get(page.id) or {})
+            page.load((answers.get(page.id) or {}) if again else kept)
+            if again:
+                self.passed.discard(self.pages.index(page))
 
     # --- Anki (pages 2 and 4) ------------------------------------------------------------------------------------- #
     def look_anki(self):
@@ -2038,24 +2159,27 @@ class SetupWizard(QWidget):
             line = sync_line(result)
             if line:
                 windows.say_in_bar(self.shell, line)
-            if not self._gone and not sip.isdeleted(self) and self.say_line.text() == S.SYNC_STARTED:
-                self.say(line)                            # its outcome, or nothing more to say
+            if not self._gone and not sip.isdeleted(self) and (line or self.say_line.text() == S.SYNC_STARTED):
+                self.say(line)                            # its outcome (over any line since), or nothing more to say
         relay.said.connect(ended)
 
         def start():
             return self.api.first_sync(services.registry, settings, language, decks, relay.call,
                                        automation=lambda: getattr(services, "automation", None))
 
+        def not_started(why):
+            self._synced = None                           # Next again may try again
+            if not sip.isdeleted(relay):
+                relay.deleteLater()
+            windows.say_in_bar(self.shell, why)
+            if not self._gone and not sip.isdeleted(self):
+                self.say(why)                             # the bar is under the wizard (AD-11)
+
         def started(job):
             if job is None:
-                if not sip.isdeleted(relay):
-                    relay.deleteLater()
-                windows.say_in_bar(self.shell, strings.ANKI_UPDATE_WAITS)
-                if not self._gone:
-                    self.say(strings.ANKI_UPDATE_WAITS)
+                not_started(strings.ANKI_UPDATE_WAITS)
         self.say(S.SYNC_STARTED)
-        bridge.run_in_worker(start, then=started,
-                             failed=lambda info: windows.say_in_bar(self.shell, str(info[0])))
+        bridge.run_in_worker(start, then=started, failed=lambda info: not_started(str(info[0])))
 
     # --- the doors and the library (page 2's importers, page 3) ------------------------------------------------------ #
     def door(self, name):
@@ -2065,9 +2189,20 @@ class SetupWizard(QWidget):
         return op
 
     def open_door(self, name):
+        """An importer's (or YouTube's) window, through the window's own `windows.launch`; a door that can't open is
+        said in the wizard too, as the bar says it (the bar is under the wizard, AD-11)."""
         op = self.door(name)
-        if op is not None:
-            windows.launch(self.shell, op)
+        if op is None:
+            return
+
+        def opening(shell, _open=op.open):
+            try:
+                return _open(shell)
+            except Exception as e:
+                if not self._gone and not sip.isdeleted(self):
+                    self.say(strings.OPEN_FAILED.format(name=op.label, why=e))
+                raise                                     # `launch` logs it and says it in the bar
+        windows.launch(self.shell, op._replace(open=opening))
 
     def refresh(self):
         """(`windows.follow_doors`) The modules were looked for: the doors shown again."""
@@ -2079,15 +2214,24 @@ class SetupWizard(QWidget):
             self.page.anki_changed()
 
     def open_content(self):
-        """*Add content…* / *Try it with samples first*: the Content Manager as a child job; the rows read again when
-        it ends."""
+        """*Add content…* / *Try it with samples first*: the Content Manager as a child job (one at a time: both wait
+        while it is open, AD-13); when it ends its line leaves and the rows read again (AD-12)."""
+        page = self.pages[2]
         relay = bridge.Relay(self)
-        relay.said.connect(lambda _r: (relay.deleteLater(), self.alive(self.read_rows)()))
+        page.content_open(True)
+
+        def ended(_code=None):
+            if not sip.isdeleted(relay):
+                relay.deleteLater()
+            page.content_open(False)
+            if self.say_line.text() == S.CONTENT_OPEN:
+                self.say("")
+            self.read_rows()
+        relay.said.connect(self.alive(ended))
         services, language = self.services, self.language
         bridge.run_in_worker(lambda: self.api.open_content_manager(services.registry, language, relay.call),
-                             then=self.alive(lambda job: self.say(S.CONTENT_OPEN if job is not None
-                                                                  else strings.ANKI_UPDATE_WAITS)),
-                             failed=self.alive(lambda info: self.say(str(info[0]))))
+                             then=self.alive(lambda _job: self.say(S.CONTENT_OPEN)),      # (a Job, always: `tools.run`)
+                             failed=self.alive(lambda info: (ended(), self.say(str(info[0])))))
 
     def read_rows(self):
         self._rows_seq += 1
@@ -2111,7 +2255,7 @@ class SetupWizard(QWidget):
         release). Before any byte the worker asks here, in the window (`confirm.ask`: *Download* · *Not now*), and waits
         for the answer on its own thread; the download shows its progress with *Cancel* on the page; when the route
         ends the page looks again (`installer-closed`, `busy`) or offers *Check again* (`opened-releases`)."""
-        if self.installing is not None:
+        if self.installing is not None or self._stopped:
             return
         page = self.pages[4]
         cancel = threading.Event()
@@ -2128,7 +2272,9 @@ class SetupWizard(QWidget):
             page.show_progress(None, None)
             self.install_opened = self.install_opened or answer == "opened-releases"
             page.show_busy(answer == "busy")
-            self.say({"opened-releases": S.INSTALL_OPENED}.get(answer, ""))
+            # `cancelled`: the learner's own Cancel, no browser (the route's result once M's route returns it: the
+            # W-fix notes, For the lead)
+            self.say({"opened-releases": S.INSTALL_OPENED, "cancelled": S.INSTALL_STOPPED}.get(answer, ""))
             if answer != "declined":
                 self.look_miner()
 
@@ -2148,7 +2294,10 @@ class SetupWizard(QWidget):
         windows.open_url(self.miner.STAR_URL)
 
     # --- the level and Generate (page 6) ----------------------------------------------------------------------------- #
-    def read_numbers(self):
+    def read_numbers(self, fresh=False):
+        """`level_numbers` on a worker; `fresh` (the page shown): its asking-again starts at its shortest wait."""
+        if fresh:
+            self._count_wait = COUNT_AGAIN_MS
         self._numbers_seq += 1
         seq, language = self._numbers_seq, self.language
         bridge.run_in_worker(self.api.level_numbers, thaw(self._settings()), language,
@@ -2159,9 +2308,30 @@ class SetupWizard(QWidget):
         if seq != self._numbers_seq or language != self.language:
             return
         self.pages[5].show_numbers(numbers)
-        if numbers is None:                               # still counting (or no shows yet): asked again while shown
-            QTimer.singleShot(COUNT_AGAIN_MS, self.alive(
-                lambda: self.page.id == "level" and seq == self._numbers_seq and self.read_numbers()))
+        if numbers is None:                               # still counting (or no shows yet): asked again while shown,
+            self._count_later(seq)                        # each time twice as long after, and when the indexer ran
+
+    def later(self, ms, fn):
+        QTimer.singleShot(ms, fn)
+
+    def _count_later(self, seq):
+        wait = self._count_wait
+        self._count_wait = min(COUNT_MOST_MS, wait * 2)
+        self.later(wait, self.alive(lambda: self._count_tick(seq)))
+
+    def _count_tick(self, seq):
+        if self.page.id != "level" or seq != self._numbers_seq:
+            return                                        # the page left, or asked again since
+        if self.window().isMinimized():
+            self.later(self._count_wait, self.alive(lambda: self._count_tick(seq)))      # nothing asked while away
+            return
+        self.read_numbers()
+
+    def _indexed(self, language):
+        """(`bridge.indexed`) The indexer ran: page 6, still counting for that language, asks at once (IK-18)."""
+        if (not self._gone and not sip.isdeleted(self) and self.page.id == "level" and language == self.language
+                and self.pages[5].numbers is None):
+            self.read_numbers()
 
     def _generate(self, answers):
         """**Generate**: the level saved, setup finished (`onboarding_completed`), the window's Generate asked; the
@@ -2186,8 +2356,8 @@ class SetupWizard(QWidget):
 
     def _generate_state(self, state):
         """The window's Generate, heard as the header hears it (`bridge.generate_changed`)."""
-        if self._gone or not self.generating:
-            return
+        if self._gone or not self.generating or getattr(state, "quiet", False):
+            return                                        # an automatic run's states are never the learner's (AD-7)
         name = getattr(state, "state", None)
         if name in BUSY:
             self._saw_busy = True
@@ -2226,14 +2396,19 @@ class _AskFromWorker(QObject):
         return self._answer
 
     def _ask(self):
-        if sip.isdeleted(self.wiz) or self.wiz._gone:
+        if sip.isdeleted(self.wiz) or self.wiz._gone or self.wiz._stopped:
             self.answer_now(False)
             return
         self.card = confirm.ask(self.wiz, S.INSTALL_ASK_TITLE, S.INSTALL_ASK_BODY, S.INSTALL_ASK_YES,
                                 S.INSTALL_ASK_YES_TIP, no=S.INSTALL_ASK_NO, no_tip=S.INSTALL_ASK_NO_TIP,
                                 on_answer=self.answer_now)
+        # a card dropped with its window (✕, a hide) answers nothing: its end is the No (AD-4) — after a yes, nothing
+        self.card.destroyed.connect(lambda *_a: self.answer_now(False))
 
     def answer_now(self, yes):
+        """The answer, the first one only (a card's end after *Download* never turns it to No)."""
+        if self._event.is_set():
+            return
         self._answer = bool(yes)
         self._event.set()
 

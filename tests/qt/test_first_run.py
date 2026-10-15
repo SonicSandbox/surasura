@@ -121,3 +121,13 @@ def test_generate_closes_onto_current_when_the_windows_generate_ends(window):
     QApplication.processEvents()
     assert first_run.opened(window) is None and window.current_tab() == "current"
     assert window.services.settings.get().get("onboarding_completed") is True
+
+
+def test_set_up_again_that_cant_build_the_wizard_leaves_the_window_as_it_is(window, monkeypatch):
+    # (the adversary's AD-17) Settings' click never gets the error: logged, None, the window's parts given back
+    def broken(*_a, **_k):
+        raise OSError("the wizard's strings couldn't be read")
+    monkeypatch.setattr(W, "SetupWizard", broken)
+    assert first_run.open_again(window, api=FakeApi(), miner=FakeMiner(miner_look("missing"))) is None
+    assert first_run.opened(window) is None
+    assert window.header.isEnabled() and window.pages.isEnabled() and window.footer.isEnabled()

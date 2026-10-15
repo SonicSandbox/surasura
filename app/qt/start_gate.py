@@ -7,21 +7,25 @@ window of its own and runs the application's loop until it is safe to go on (Tru
 
   * *Bringing your library over from Surasura 2…* — the stage and a hairline progress, *Cancel* (between files: the
     import's note says unfinished and the next screen offers *Try again*).
-  * The refusals — the library folder not there (never made again, D3), an unfinished import (never used half, D11),
-    the write check refused (Controlled Folder Access, D12: its steps), an import that stopped — each with its one
-    sentence, *Try again* and *Quit*.
-  * The folder ask (2.x used here, no note naming its folder): *Choose the old folder…*, *Start fresh*, *Quit*.
+  * The refusals — the library folder not there (never made by itself, D3: *Try again*, or the user's own *Start with
+    a new, empty library here*), a library folder holding a program, an unfinished import (never used half, D11; its
+    old folder gone: *Choose the old folder again…* or *Start fresh, keeping what was brought over*), the write check
+    refused (Controlled Folder Access, D12: its steps), an import that stopped — each with its one sentence, *Try
+    again* and *Quit*.
+  * The folder ask (several 2.x installs, each named — the user picks, D11; an import made into another library; 2.x
+    used here with no note naming its folder): a button per install, *Choose the old folder…*, *Start fresh*, *Quit*.
 
-An everyday start that has quiet work (a new library's write check, a GraduatedList to merge, the library recorded for
-the first time) runs it on a worker with no window; the window shows only if that work is refused. All work runs on
-`bridge.run_in_worker`; the gate's thread only paints. Esc does nothing (the gate is the start, not an overlay); ✕ is
-*Quit*. Its strings are here (`strings.py` is another agent's file); the look is the application's (`style.apply`).
+An everyday start that has quiet work (a GraduatedList to merge, the library recorded for the first time) runs it on a
+worker with no window; the window shows only if that work is refused, or after QUIET_SHOW s (the merge can wait on the
+known-words lock). All work runs on `bridge.run_in_worker`; the gate's thread only paints. Esc does nothing (the gate
+is the start, not an overlay); ✕ is *Quit*. Its strings are here (`strings.py` is another agent's file); the look is
+the application's (`style.apply`).
 """
 import os
 import threading
 import time
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, \
     QWidget
 
@@ -40,27 +44,55 @@ STAGES = {"files": "Copying your shows and books", "settings": "Bringing your se
 STAGE_COUNT = "{stage} · {done:,} of {total:,}"
 MISSING_HEADING = "Your library isn't there"
 MISSING_LINE = "Surasura can't find {folder}. Connect its drive or go online, then try again."
+NEW_HEADING = "Make your library here?"
+NEW_LINE = ("Surasura will keep your shows, books and known words in {folder}. Is your library already there, on a "
+            "drive or online? Connect it, then try again.")
+PROGRAM_HEADING = "Your library folder holds a Surasura program"
+PROGRAM_LINE = ("Move the program out of {folder}, or run Setup again to choose another folder for your library. Then "
+                "try again.")
 UNFINISHED_HEADING = "Bringing your library over didn't finish"
 UNFINISHED_LINE = "Try again to pick up where it stopped. Your old Surasura is unchanged."
+LOST_HEADING = "Your old Surasura isn't where it was"
+LOST_LINE = ("Bringing your library over from {folder} didn't finish, and it isn't there now. Connect its drive and "
+             "try again, choose where it is now, or start fresh.")
 BLOCKED_HEADING = "Surasura can't save to your library folder"
 STOPPED_HEADING = "Bringing your library over stopped"
+READY_STOPPED_HEADING = "Surasura couldn't get your library ready"
+SET_ASIDE_FAILED = ("Surasura couldn't move what was brought over into a folder of its own ({error}). Close anything "
+                    "using your library folder, then try again.")
 CHECK_HEADING = "Surasura couldn't look at your library"
 ASK_HEADING = "Bring your library over from Surasura 2?"
 ASK_LINE = "Choose the folder your old Surasura is in, or start fresh."
+ASK_SEVERAL_LINE = "You have more than one Surasura 2. Choose the one to bring over, or start fresh."
+ELSEWHERE_LINE = "Your library was brought over to {folder} on {when}. Bring it over here too, or start fresh."
 ASK_PICK = "Your old Surasura folder"
+INSTALL_LABEL = "{folder}  ·  Surasura {version}  ·  last used {when}"
+INSTALL_TIP = "Bring your shows, books and known words over from this Surasura."
 LOOKING = "Looking…"
 CANCEL = "Cancel"
 CANCEL_TIP = "Stop bringing your library over.\n• Your old Surasura stays as it is; finish next time."
 TRY_AGAIN = "Try again"
 TRY_AGAIN_TIP = "Look again and carry on."
+BLOCKED_TRY_TIP = "Look again once Surasura is allowed.\n• No need to restart."
 QUIT = "Quit"
 QUIT_TIP = "Close Surasura for now.\n• Nothing is lost."
 CHOOSE = "Choose the old folder…"
 CHOOSE_TIP = "Bring your shows, books and known words from Surasura 2.\n• Pick the folder Surasura.exe is in."
+CHOOSE_OTHER = "Choose another folder…"
+CHOOSE_AGAIN = "Choose the old folder again…"
+CHOOSE_AGAIN_TIP = "Pick where your old Surasura is now.\n• Bringing your library over finishes from there."
 FRESH = "Start fresh"
 FRESH_TIP = "Begin with an empty library.\n• You won't be asked again."
+FRESH_KEEP = "Start fresh, keeping what was brought over"
+FRESH_KEEP_TIP = ("Begin with an empty library.\n"
+                  "• What was brought over so far is kept in a folder of its own inside it.")
+NEW_HERE = "Start with a new, empty library here"
+NEW_HERE_TIP = ("Make an empty library in this folder.\n"
+                "• Library on a drive that's away? Connect it and try again instead.")
+MISSING_NEW_TIP = "Make an empty library in this folder.\n• Only if your old library is gone for good."
 
 PROGRESS_EVERY = 0.05          # s: the import's progress reaches the window at most this often (a stage change always)
+QUIET_SHOW = 0.3               # s: quiet work still running after this shows *Getting your library ready…*
 
 
 def _throttled(call):
@@ -88,9 +120,12 @@ class Gate(QWidget):
         self.ended = False
         self.looping = False                      # inside `gate`'s run of the application's loop
         self.working = False
+        self.importing = False                    # the last run was an import (the stopped screen's heading)
         self.quit_after = False
         self._cancel = threading.Event()
+        self._runs = 0
         self.screen = None
+        self.pick_buttons = []
         style.apply(app)                          # the shell applies the user's look again when its window opens
         self.setObjectName("startgate")
         self.setWindowTitle(TITLE)
@@ -102,6 +137,9 @@ class Gate(QWidget):
         self.heading = self._label("windowheading", root)
         self.line = self._label("windowline", root)
         self.line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.picks = QVBoxLayout()                # the ask's one button per 2.x install (D11: the user picks)
+        self.picks.setSpacing(round(6 * f))
+        root.addLayout(self.picks)
         self.stage = self._label("windowstatus", root)
         self.bar = QProgressBar(self)
         self.bar.setTextVisible(False)
@@ -152,20 +190,61 @@ class Gate(QWidget):
             label.setText(text)
         label.setVisible(bool(text))
 
+    def _word(self, b, text, tip, kind=None):
+        """A button's words for this screen (the fresh and choose buttons say what they do here)."""
+        if b.text() != text:
+            b.setText(text)
+            b.setAccessibleName(text)
+        b.setToolTip(tip)
+        if b.property("kind") != kind:
+            b.setProperty("kind", kind)
+            b.style().unpolish(b)
+            b.style().polish(b)
+
+    def _picks(self, installs):
+        for b in self.pick_buttons:
+            self.picks.removeWidget(b)
+            b.deleteLater()
+        self.pick_buttons = []
+        for entry in installs:
+            folder = str(entry.get("data_root") or "")
+            label = INSTALL_LABEL.format(folder=folder, version=entry.get("version") or "2",
+                                         when=str(entry.get("last_run") or "")[:10])
+            b = self._button(label, INSTALL_TIP, lambda f=folder: self.pick(f), self.picks)
+            b.setVisible(True)
+            self.pick_buttons.append(b)
+
+    def _ask_line(self, message):
+        st = self.st or {}
+        elsewhere = st.get("elsewhere")
+        if message:
+            return message
+        if elsewhere:
+            return ELSEWHERE_LINE.format(folder=elsewhere.get("to") or "",
+                                         when=str(elsewhere.get("finished") or "")[:10])
+        return ASK_SEVERAL_LINE if len(st.get("installs") or []) > 1 else ASK_LINE
+
     def show_screen(self, name, message=None):
-        """One of: working, missing, unfinished, blocked, stopped, check, ask — its words and its buttons."""
+        """One of: working, preparing, missing, new, program, unfinished, lost, blocked, stopped, check, ask — its
+        words and its buttons."""
         self.screen = name
-        library = (self.st or {}).get("library") or ""
+        st = self.st or {}
+        library = st.get("library") or ""
         heading, line = {
             "working": (BRINGING, None),
             "preparing": (GETTING_READY, None),
             "missing": (MISSING_HEADING, MISSING_LINE.format(folder=library)),
+            "new": (NEW_HEADING, NEW_LINE.format(folder=library)),
+            "program": (PROGRAM_HEADING, PROGRAM_LINE.format(folder=library)),
             "unfinished": (UNFINISHED_HEADING, UNFINISHED_LINE),
+            "lost": (LOST_HEADING, message or LOST_LINE.format(folder=st.get("source") or "")),
             "blocked": (BLOCKED_HEADING, message),
-            "stopped": (STOPPED_HEADING, message),
+            "stopped": (STOPPED_HEADING if self.importing else READY_STOPPED_HEADING, message),
             "check": (CHECK_HEADING, message),
-            "ask": (ASK_HEADING, message or ASK_LINE),
+            "ask": (ASK_HEADING, None),
         }[name]
+        if name == "ask":
+            line = self._ask_line(message)
         self._set(self.heading, heading)
         self._set(self.line, line)
         busy = name in ("working", "preparing")
@@ -173,8 +252,20 @@ class Gate(QWidget):
         self.bar.setVisible(busy)
         if busy:
             self.bar.setRange(0, 0)
+        installs = (st.get("installs") or []) if name == "ask" else []
+        self._picks(installs)
+        self._word(self.choose_button, CHOOSE_AGAIN if name == "lost" else CHOOSE_OTHER if installs else CHOOSE,
+                   CHOOSE_AGAIN_TIP if name == "lost" else CHOOSE_TIP, "primary")
+        self._word(self.fresh_button, *{"new": (NEW_HERE, NEW_HERE_TIP, "primary"),
+                                        "missing": (NEW_HERE, MISSING_NEW_TIP, None),
+                                        "lost": (FRESH_KEEP, FRESH_KEEP_TIP, None)}.get(name, (FRESH, FRESH_TIP, None)))
+        self._word(self.try_button, TRY_AGAIN, BLOCKED_TRY_TIP if name == "blocked" else TRY_AGAIN_TIP,
+                   None if name == "new" else "primary")
         shown = {"working": (self.cancel_button,), "preparing": (),
-                 "ask": (self.choose_button, self.fresh_button, self.quit_button)}.get(
+                 "ask": (self.choose_button, self.fresh_button, self.quit_button),
+                 "missing": (self.try_button, self.fresh_button, self.quit_button),
+                 "new": (self.fresh_button, self.try_button, self.quit_button),
+                 "lost": (self.choose_button, self.fresh_button, self.try_button, self.quit_button)}.get(
             name, (self.try_button, self.quit_button))
         for b in (self.choose_button, self.fresh_button, self.try_button, self.cancel_button, self.quit_button):
             b.setVisible(b in shown)
@@ -203,8 +294,12 @@ class Gate(QWidget):
         kind = self.st["state"]
         if kind == first_run.LIBRARY_MISSING:
             self.show_screen("missing")
+        elif kind == first_run.HOLDS_PROGRAM:
+            self.show_screen("program")
+        elif kind == first_run.LIBRARY_NEW:
+            self.show_screen("new")
         elif kind == first_run.IMPORT_UNFINISHED:
-            self.show_screen("unfinished")
+            self.show_screen("lost" if self.st.get("lost") else "unfinished")
         elif kind == first_run.ASK_FOLDER:
             self.show_screen("ask")
         elif kind == first_run.IMPORT:
@@ -215,11 +310,20 @@ class Gate(QWidget):
     def _run(self, source=None, fresh=False, quiet=False):
         self.working = True
         self._cancel = threading.Event()
+        self._runs += 1
+        self.importing = bool(self.st["state"] in (first_run.IMPORT, first_run.IMPORT_UNFINISHED) or source) and \
+            not fresh
         if not quiet or self.isVisible():         # (quiet work after Try again: the shown window says it works)
-            importing = self.st["state"] in (first_run.IMPORT, first_run.IMPORT_UNFINISHED) or source
-            self.show_screen("working" if importing and not fresh else "preparing")
+            self.show_screen("working" if self.importing else "preparing")
+        else:
+            QTimer.singleShot(round(QUIET_SHOW * 1000), lambda n=self._runs: self._slow(n))
         bridge.run_in_worker(first_run.run, self.st, _throttled(self.relay.call), self._cancel.is_set, source, fresh,
                              then=self._ran, failed=self._crashed)
+
+    def _slow(self, run):
+        """Quiet work still running: say so (a start with nothing on screen looks dead)."""
+        if not self.ended and self.working and run == self._runs and not self.isVisible():
+            self.show_screen("preparing")
 
     def _ran(self, result):
         self.working = False
@@ -228,7 +332,8 @@ class Gate(QWidget):
         if self.quit_after:
             self.finish(False)
             return
-        status = result["status"]
+        status, reason = result["status"], result.get("reason")
+        unfinished = self.st["state"] == first_run.IMPORT_UNFINISHED
         if status == "done":
             self.finish(True)
         elif status == "cancelled":
@@ -236,8 +341,19 @@ class Gate(QWidget):
             self.show_screen("unfinished")
         elif status == "blocked":
             self.show_screen("blocked", result["message"])
-        elif result.get("reason") == "library_missing":
+        elif reason == "library_missing":
             self.show_screen("missing")
+        elif reason == "library_new":
+            self.show_screen("new")
+        elif reason == "holds_program":
+            self.show_screen("program")
+        elif unfinished and reason in ("missing", "not_2x", "other_import"):
+            self.show_screen("lost", result["message"] if reason == "other_import" else None)
+        elif reason in ("missing", "not_2x", "same_folder"):  # Try again can't fix these: the ask's ways out
+            self.st = dict(self.st, state=first_run.ASK_FOLDER)
+            self.show_screen("ask", result["message"])
+        elif reason == "set_aside":
+            self.show_screen("stopped", SET_ASIDE_FAILED.format(error=result["message"]))
         else:
             self.show_screen("stopped", result["message"])
 
@@ -258,7 +374,7 @@ class Gate(QWidget):
         bridge.run_in_worker(first_run.state, then=self._looked_again, failed=self._look_failed)
 
     def _looking(self):
-        for b in (self.choose_button, self.fresh_button, self.try_button):
+        for b in [self.choose_button, self.fresh_button, self.try_button] + self.pick_buttons:
             b.setEnabled(False)
         self._set(self.stage, LOOKING)
 
@@ -266,7 +382,7 @@ class Gate(QWidget):
         if self.ended:
             return
         self.st, self.error = st, None
-        if st["state"] == first_run.IMPORT_UNFINISHED:
+        if st["state"] == first_run.IMPORT_UNFINISHED and not st.get("lost"):
             self._run()
         else:
             self.start()
@@ -277,13 +393,20 @@ class Gate(QWidget):
             self.start()
 
     def choose(self):
-        """The old folder, chosen (the system's folder picker), checked on a worker, then brought over."""
+        """The old folder, chosen (the system's folder picker), then checked and brought over (`pick`)."""
         if self.working:
             return
-        folder = QFileDialog.getExistingDirectory(self, ASK_PICK)
-        if not folder:
+        st = self.st or {}
+        installs = st.get("installs") or []
+        start = installs[0].get("data_root") if installs else st.get("source") if st.get("lost") else ""
+        folder = QFileDialog.getExistingDirectory(self, ASK_PICK, start or "")
+        if folder:
+            self.pick(os.path.normpath(folder))
+
+    def pick(self, folder):
+        """`folder` (chosen, or one of the ask's installs) checked on a worker, then brought over."""
+        if self.working:
             return
-        folder = os.path.normpath(folder)
         self._looking()
         bridge.run_in_worker(import_2x.check_source, folder, then=lambda c: self._checked(folder, c),
                              failed=lambda info: self._checked(folder, {"ok": False, "message": str(info[0])}))
@@ -294,7 +417,7 @@ class Gate(QWidget):
         if check["ok"]:
             self._run(source=folder)
         else:
-            self.show_screen("ask", check["message"])
+            self.show_screen("lost" if self.screen == "lost" else "ask", check["message"])
 
     def fresh(self):
         if not self.working:

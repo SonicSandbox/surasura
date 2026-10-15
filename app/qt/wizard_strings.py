@@ -117,6 +117,9 @@ LATER_TIPS = {"leave": "Leaves them as they are, after the cards for words on yo
 OPEN_ANKI = "Open Anki when Surasura opens"
 OPEN_ANKI_LINE = "So the reviews from your phone count"
 OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone is read in."
+ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
+ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
+ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
 
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"
@@ -142,6 +145,7 @@ UPDATE_MINER = "Update Anki Miner…"
 UPDATE_MINER_TIP = ("Get the newest Anki Miner, free: its installer, from its GitHub release.\n"
                     "• Asks before it downloads")
 INSTALL_OPENED = "Install Anki Miner from the page in your browser, then check again."
+INSTALL_STOPPED = "Download stopped."
 INSTALL_BUSY = "Anki Miner or Surasura's card making is running: close it, then try again."
 INSTALL_ASK_TITLE = "Download Anki Miner?"
 INSTALL_ASK_BODY = ("About 180 MB, from Anki Miner's own GitHub release, checked before it opens.\n"

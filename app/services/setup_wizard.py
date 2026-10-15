@@ -57,15 +57,26 @@ def _later_of(settings):
     return "leave"
 
 
+def _pair(settings):
+    """The recorded pair's language ("" when no deck is recorded): 順's switch was turned on for that language."""
+    from app import replan_preview
+    if not str(settings.get(replan_preview.DECK) or "").strip():
+        return ""
+    return str(settings.get(replan_preview.LANGUAGE) or "").strip().lower() or "?"
+
+
 def preselect(settings, language):
     """Every page's starting answers -> {page: answers} (the answers' shapes are `writes`'). A profile that never
     finished setup: the draft's preselects (From Anki, covers on, kept in order, *Leave them*, cards made, Automatic);
-    *Set up again*: what the settings say now. The language, the saved decks and 順's deck are always the settings'."""
-    from app import anki_window
+    *Set up again*: what the settings say now. The language, the saved decks and 順's deck are always the settings' —
+    never 順's deck while it is the one recorded for the other language (one `junban_deck` for both: AD-1)."""
+    from app import anki_window, replan_preview
     settings = settings or {}
     language = language if language in LANGUAGES else "ja"
     decks = anki_window.saved(settings, language)[0]
     deck = str(settings.get("junban_deck") or "").strip() or None
+    if _pair(settings) not in ("", language) and deck == str(settings.get(replan_preview.DECK) or "").strip():
+        deck = None
     band = ((settings.get("logic") or {}).get("selection") or {}).get("band")
     if should_open(settings):
         return {"language": {"language": language},
@@ -74,9 +85,10 @@ def preselect(settings, language):
                 "order": {"keep_in_order": True, "deck": deck, "later": "leave", "open_anki": False},
                 "cards": {"make_cards": True},
                 "level": {"automatic": True, "band": band}}
-    from app import replan_preview
-    kept = settings.get("junban_auto_actions") is True and replan_preview.recorded_deck(settings, language) is not None
-    auto = ((settings.get("logic") or {}).get("selection") or {}).get("auto") is True
+    # The consent reads back on while it is given for this language — though 順's deck moved since (AD-2: the host
+    # stands aside until the pair is recorded again; a *Next* never revokes the yes).
+    kept = settings.get("junban_auto_actions") is True and _pair(settings) == language
+    auto =((settings.get("logic") or {}).get("selection") or {}).get("auto") is True
     return {"language": {"language": language},
             "known": {"how": "anki" if decks else "fresh", "decks": decks},
             "shows": {"covers": settings.get("covers_download") is True},
@@ -107,7 +119,8 @@ def writes(page, answers, settings, language):
             return {}
         per_language = {k: list(v) for k, v in dict(settings.get("anki_sync_decks") or {}).items()}
         per_language[language] = decks          # this language's entry; another language's kept (`anki_window.merge`)
-        return {"anki_sync_decks": per_language}
+        # The page's "stays in sync" (IK): the automatic known-words sync is gated on `anki_sync_auto`, off by default.
+        return {"anki_sync_decks": per_language, "anki_sync_auto": True}
     if page == "shows":
         return {"covers_download": bool(answers.get("covers"))}
     if page == "order":
@@ -116,14 +129,25 @@ def writes(page, answers, settings, language):
             raise ValueError(f"not a choice for cards not on your list: {later!r}")
         tag, flag, suspend = LATER_FLAGS[later]
         deck = str(answers.get("deck") or "").strip()
-        kept = bool(answers.get("keep_in_order")) and bool(deck)
-        out = {"junban_auto_actions": bool(answers.get("keep_in_order")),
-               replan_preview.DECK: deck if kept else "",
-               replan_preview.LANGUAGE: language if kept else "",
-               "junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend,
-               "connect_open_anki": bool(answers.get("open_anki"))}
-        if deck:
-            out["junban_deck"] = deck
+        keep = bool(answers.get("keep_in_order"))
+        kept = keep and bool(deck)
+        open_anki = bool(answers.get("open_anki"))
+        # *Set up again* writes only what the user changed on the page (AD-1…3): a choice shown as it was — a mix of
+        # later actions shown as its nearest, a consent given for the other language — is never written over.
+        was = None if should_open(settings) else preselect(settings, language)["order"]
+        out = {}
+        if was is None or keep != was["keep_in_order"] or deck != (was["deck"] or ""):
+            if kept:
+                out.update({"junban_auto_actions": True, replan_preview.DECK: deck, replan_preview.LANGUAGE: language,
+                            "junban_deck": deck})
+            elif _pair(settings) in ("", language):   # never the other language's consent, pair or 順's deck
+                out.update({"junban_auto_actions": keep, replan_preview.DECK: "", replan_preview.LANGUAGE: ""})
+                if deck:
+                    out["junban_deck"] = deck
+        if was is None or later != was["later"]:
+            out.update({"junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend})
+        if was is None or open_anki != was["open_anki"]:
+            out["connect_open_anki"] = open_anki
         return out
     if page == "cards":
         if answers.get("make_cards") is None:
@@ -139,12 +163,30 @@ def writes(page, answers, settings, language):
     raise ValueError(f"not a page: {page!r}")
 
 
+def _decks_update(language, decks):
+    """The settings service's `update` for the known page: `language`'s decks written onto the file's own
+    `anki_sync_decks` as it is when written — another language's entry, and another program's save meanwhile, kept
+    (`anki_window.merge`'s rule, for the decks alone: the wizard never writes `anki_sync_fields`)."""
+    decks = [str(d) for d in decks]
+
+    def update(settings):
+        per_language = dict(settings.get("anki_sync_decks") or {})
+        per_language[language] = list(decks)
+        settings["anki_sync_decks"] = per_language
+    return update
+
+
 def save(settings_service, page, answers, language):
     """*Next* on `page`: its keys (`writes`, merged onto the settings now) in one `set` call -> the dict written.
-    Safe on a window's thread (`set` queues)."""
+    The known page's decks go as an `update=` (AD-4): merged onto the file as it is when written, never the window's
+    copy. Safe on a window's thread (`set` queues)."""
     from app.services.settings import thaw
     changes = writes(page, answers, thaw(settings_service.get()), language)
-    if changes:
+    if page == "known" and changes:
+        language = _language(language)
+        settings_service.set({k: v for k, v in changes.items() if k != "anki_sync_decks"},
+                             update=_decks_update(language, changes["anki_sync_decks"][language]))
+    elif changes:
         settings_service.set(changes)
     return changes
 
@@ -157,28 +199,67 @@ def finish(settings_service):
 
 
 # --- the reads (a worker's) ----------------------------------------------------------------------------------- #
+SAMPLE = 20                     # notes read per preselected deck to tell its language (Backfill's kana rule)
+
+
+def _studied(url, names, suspended):
+    """{deck: [its studied note ids]} in ONE request — `anki_sync.deck_study_counts`' query, the ids kept so the
+    language can be read from them (a failed slot is no notes). Raises AnkiError."""
+    from app import anki_connect, anki_sync
+    replies = anki_connect.multi([{"action": "findNotes", "params": {"query": anki_sync.scope_query([d], suspended)}}
+                                  for d in names], url)
+    out = {}
+    for deck, reply in zip(names, list(replies) + [None] * (len(names) - len(replies))):
+        result = reply.get("result") if isinstance(reply, dict) and reply.get("error") is None else None
+        out[deck] = result if isinstance(result, list) else []
+    return out
+
+
+def _reads_as(notes):
+    """A deck's language from its notes: "ja" when more than half hold kana in a field (Backfill's rule,
+    `modules/junban/backfill.note_language`: every real Japanese note type does), "zh" when more than half hold Han
+    and it isn't Japanese, else None (another language, or nothing to read)."""
+    import re
+    from app.unicode_ranges import HAN, KANA_LETTERS
+    kana_re, han_re = re.compile(f"[{KANA_LETTERS}]"), re.compile(f"[{HAN}]")
+    texts = [" ".join(str(f.get("value") if isinstance(f, dict) else f or "") for f in (n.get("fields") or {}).values())
+             for n in notes if isinstance(n, dict)]
+    if not texts:
+        return None
+    if sum(1 for t in texts if kana_re.search(t)) * 2 > len(texts):
+        return "ja"
+    return "zh" if sum(1 for t in texts if han_re.search(t)) * 2 > len(texts) else None
+
+
 def anki_look(settings, language):
     """(A worker.) Is Anki open, and which decks has it -> {"open", "say" (None, or what Anki said that the user can
     act on, as written: a permission prompt, an add-on to update), "decks" [(name, studied cards)], "preselected"
-    [names]} — the saved decks, else the Anki window's first-open pick (every deck with studied cards, largest first).
-    Never raises."""
-    from app import anki_connect, anki_sync, anki_window
+    [names]} — the saved decks, else the Anki window's first-open pick (every deck with studied cards, largest first:
+    `anki_window.preselect`) of the decks that read as this language (the draft; AD-5: a Japanese deck is never
+    preselected for Chinese). One read: every deck counted once, a few notes of the picked ones (AD-10). Never raises."""
+    from app import anki_connect, anki_window
     settings = settings or {}
     saved, _fields, suspended = anki_window.saved(settings, language)
     url = anki_connect.address(settings)
-    probe = anki_window.read_probe(url, saved, suspended)
-    state, said = anki_window.connection(probe.report)
-    if state != "connected":
-        return {"open": False, "say": said if state == "problem" else None, "decks": [], "preselected": []}
-    counts = dict(probe.counts)
-    missing = [name for name in probe.decks if name not in counts]
-    try:
-        counts.update(anki_sync.deck_study_counts(url, missing, suspended) if missing else {})
-    except anki_connect.AnkiError as e:
-        print(f"Setup: Anki's deck counts couldn't be read ({e})")
-    decks = [(name, int(counts.get(name) or 0)) for name in probe.decks]
-    picked = probe.preselected if probe.preselected is not None else list(saved)
-    return {"open": True, "say": None, "decks": decks, "preselected": list(picked)}
+    report = anki_connect.probe(url)
+    if report.get("ok"):
+        try:
+            names = anki_connect.deck_names(url)
+            studied = _studied(url, names, suspended)
+            picked = list(saved)
+            if not picked:
+                picked = anki_window.preselect({deck: len(ids) for deck, ids in studied.items()})
+                sample = {deck: list(studied[deck][:SAMPLE]) for deck in picked}
+                wanted = sorted({i for ids in sample.values() for i in ids})
+                by_id = {n.get("noteId"): n for n in anki_connect.notes_info(url, wanted) if isinstance(n, dict)}
+                picked = [deck for deck in picked
+                          if _reads_as([by_id.get(i) for i in sample[deck]]) == language]
+            decks = [(name, len(studied.get(name) or ())) for name in names]
+            return {"open": True, "say": None, "decks": decks, "preselected": picked}
+        except anki_connect.AnkiError as e:
+            report = {"ok": False, "error": f"Anki stopped answering: {e}"}       # `read_probe`'s report
+    state, said = anki_window.connection(report)
+    return {"open": False, "say": said if state == "problem" else None, "decks": [], "preselected": []}
 
 
 def library_rows(settings, language):
@@ -290,9 +371,30 @@ def first_sync(registry, settings, language, decks, on_end, automation=None):
     settings = settings or {}
     _saved, chosen, suspended = anki_window.saved(settings, language)
     url = anki_connect.address(settings)
-    return anki_window.submit(registry, SYNC_LABEL,
-                              lambda: anki_window.run_sync(language, url, decks, chosen, suspended),
+    return anki_window.submit(registry, SYNC_LABEL, lambda: _first_sync(language, url, decks, chosen, suspended),
                               on_end, automation, language)
+
+
+def _first_sync(language, url, decks, chosen, suspended):
+    """(The job's thread.) The sync, after a dated copy of the user's KnownWord.json (CLAUDE.md §4,
+    `path_utils.backup_to_trash`; AD-5): `anki_sync.sync` only appends and keeps none, and this first one runs on a
+    *Next* over decks the wizard preselected. Taken under the known-words lock the sync then holds itself (a
+    thread holding it is never refused), so the copy is the file the sync writes onto. No copy, no sync."""
+    from app import anki_sync, anki_window, path_utils
+    held, refused = anki_sync.hold_known_words(language, "Anki known-words sync")
+    if refused is not None:
+        return anki_sync.SyncResult(mode="full", error=refused[0], busy=True, held_by=refused[1],
+                                    total_known=anki_sync.count_known(language))
+    try:
+        try:
+            path_utils.backup_to_trash(os.path.join(path_utils.get_user_files_path(language), anki_sync.KNOWN_FILE))
+        except OSError as e:
+            return anki_sync.SyncResult(mode="full", error=f"Could not keep a copy of your known words first, so "
+                                        f"nothing was changed: {e}", total_known=anki_sync.count_known(language))
+        return anki_window.run_sync(language, url, decks, chosen, suspended)
+    finally:
+        if held is not None:
+            held.release()
 
 
 def open_content_manager(registry, language, on_end=None):

@@ -14,10 +14,10 @@ has them).
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QObject, QPointF, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 from app.qt import windows
 from app.qt import wizard as W
@@ -25,6 +25,7 @@ from app.qt import wizard_strings as S
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
 
+REAL_LAUNCH = windows.launch                     # (the fixture stands in for it; a door's failure needs the real one)
 BANDS = ["core", "common", "occasional", "uncommon", "rare", "very_rare", "native"]
 DECKS = [("日本語::Mining", 2140), ("Core 2k", 1980), ("Kanji Practice", 610)]
 
@@ -139,10 +140,11 @@ class FakeMiner:
     RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
     SIZE = 188_000_000
 
-    def __init__(self, look, route="installer-closed", gate=None):
+    def __init__(self, look, route="installer-closed", gate=None, on_cancel="opened-releases"):
         self.answer = look
         self.route = route                 # what the install ends with once the user said yes
         self.gate = gate                   # a threading.Event the download waits on (to see it mid-way)
+        self.on_cancel = on_cancel         # what a cancelled download ends with (M's route as built: the releases page)
         self.looks = 0
         self.installs = 0
         self.asked = []
@@ -168,7 +170,7 @@ class FakeMiner:
             if self.gate is not None:
                 self.gate.wait(5)
             if cancel.is_set():
-                result = "opened-releases"
+                result = self.on_cancel
             else:
                 on_progress(self.SIZE, self.SIZE)
         on_end(result)
@@ -185,6 +187,7 @@ def miner_look(state, version=None, fix=None):
 class FakeBridge(QObject):
     generate_changed = pyqtSignal(object)
     settings_written = pyqtSignal(object)
+    indexed = pyqtSignal(object)
 
 
 class FakeServices:
@@ -195,7 +198,8 @@ class FakeServices:
 
 
 class FakeShell(QMainWindow):
-    """What the wizard reads of the main window: its services, its bridge, its bar."""
+    """What the wizard reads of the main window: its services, its bridge, its bar, its `closing`."""
+    closing = pyqtSignal()
 
     def __init__(self, settings):
         super().__init__()
@@ -259,6 +263,11 @@ def go_to(wiz, page_id):
         assert wiz.index == before + 1
 
 
+def settle(wiz):
+    """Until the page shown takes a press (painted, and its settle time gone: AD-3)."""
+    assert wait_until(wiz.settled, 3.0)
+
+
 # --- the frame ------------------------------------------------------------------------------------------------------------ #
 def test_page_one_preselects_japanese_with_no_back_or_skip_and_enter_goes_on(make):
     wiz, _shell, api, settings, _m = make()
@@ -266,6 +275,7 @@ def test_page_one_preselects_japanese_with_no_back_or_skip_and_enter_goes_on(mak
     assert page.id == "language" and page.channel.value() == "ja"
     assert wiz.btn_back.isHidden() and wiz.btn_skip.isHidden() and not wiz.btn_next.isHidden()
     assert wiz.btn_next.text() == S.NEXT
+    settle(wiz)
     QTest.keyClick(wiz.focusWidget() or wiz, Qt.Key.Key_Return)
     assert wiz.index == 1
     assert settings.calls == [{"target_language": "ja"}]           # exactly the page's key, once
@@ -397,7 +407,7 @@ def test_anki_closed_preselects_import_a_list_and_check_again_looks_again(make):
     page = wiz.page
     assert wait_until(lambda: wiz.anki is not None)
     assert page.channel.value() == "import" and not page.anki.recommended and page.anki.dot == "off"
-    assert not page.import_part.isHidden() and page.closed_part.isHidden()
+    assert not page.import_part.isHidden() and not page.closed_part.isHidden()   # Check again stays (IK-17)
     page.channel.choose("anki", user=True)                         # From Anki picked anyway: Anki isn't open
     assert not page.closed_part.isHidden() and wiz.btn_next.isHidden()
     looks = len([c for c in api.calls if c[0] == "anki_look"])
@@ -673,6 +683,7 @@ def test_generate_finishes_setup_runs_generate_and_closes_onto_current_when_it_e
     wiz.finished.connect(seen.append)
     go_to(wiz, "level")
     settings.calls.clear()
+    settle(wiz)
     QTest.keyClick(wiz, Qt.Key.Key_Return)                         # Enter = Generate
     assert settings.calls == [{"logic.selection.auto": True}, {"onboarding_completed": True}]
     assert wait_until(lambda: ("generate",) in api.calls)
@@ -747,10 +758,399 @@ def test_the_real_rules_take_every_pages_answers_as_the_contract_says(make):
         go_to(wiz, W.PAGES[W.PAGES.index(page) + 1])
     keys = [set(c) for c in settings.calls]
     assert keys[0] == {"target_language"}
-    assert keys[1] == {"anki_sync_decks"} and settings.calls[1]["anki_sync_decks"]["ja"] == ["日本語::Mining", "Core 2k"]
+    assert keys[1] == {"anki_sync_decks", "anki_sync_auto"} and settings.calls[1]["anki_sync_auto"] is True
+    assert settings.calls[1]["anki_sync_decks"]["ja"] == ["日本語::Mining", "Core 2k"]
     assert keys[2] == {"covers_download"}
     assert {"junban_auto_actions", "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend",
             "connect_open_anki"} <= keys[3] and "logic.automation" not in keys[3]
     assert keys[4] == {"connect_enabled"}
     wiz.next()
     assert set(settings.calls[5]) == {"logic.selection.auto"} and settings.calls[6] == {"onboarding_completed": True}
+
+
+# --- one action per press (the adversary's AD-1 … AD-3) ---------------------------------------------------------------- #
+# What a wrong answer would cost: a page saved that the learner never saw — page 4's consent to re-order, tag and
+# suspend their cards among them — by a held key, a double click, or an Enter meant for *Skip*.
+def test_no_button_in_the_wizard_is_a_default_one(make):
+    # Enter is Next only through the wizard's own key handling: no button takes it as a default would
+    wiz, *_ = make(miner=FakeMiner(miner_look("missing")))
+    for page in W.PAGES[1:]:
+        go_to(wiz, page)
+    buttons = wiz.findChildren(QPushButton)
+    assert len(buttons) >= 10
+    assert [b.text() for b in buttons if b.autoDefault() or b.isDefault()] == []
+
+
+def test_enter_on_skip_back_or_finish_later_saves_nothing_and_moves_nothing(make):
+    wiz, _shell, api, settings, _m = make()
+    go_to(wiz, "shows")
+    settle(wiz)
+    settings.calls.clear()
+    seen = []
+    wiz.finished.connect(seen.append)
+    for b in (wiz.btn_skip, wiz.btn_back, wiz.btn_later, wiz.page.btn_add):
+        b.setFocus(Qt.FocusReason.TabFocusReason)
+        QTest.keyClick(b, Qt.Key.Key_Return)
+        QTest.keyClick(b, Qt.Key.Key_Enter)
+    assert W.PAGES[wiz.index] == "shows" and settings.calls == [] and seen == []
+    assert ("content", "ja") not in api.calls                     # Enter isn't a click on another button either
+    wiz.btn_next.setFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(wiz.btn_next, Qt.Key.Key_Return)                # on Next itself, Enter is Next
+    assert W.PAGES[wiz.index] == "order" and settings.calls == [{"covers_download": True}]
+
+
+def test_enter_on_skip_on_your_list_never_generates(make):
+    wiz, _shell, api, settings, _m = make(api=FakeApi(numbers=NUMBERS))
+    go_to(wiz, "level")
+    settle(wiz)
+    settings.calls.clear()
+    wiz.btn_skip.setFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(wiz.btn_skip, Qt.Key.Key_Return)
+    QApplication.processEvents()
+    assert ("generate",) not in api.calls and ("finish",) not in api.calls and settings.calls == []
+
+
+def test_holding_enter_down_never_walks_the_pages(make):
+    wiz, _shell, api, settings, _m = make()
+    settle(wiz)
+    target = wiz.focusWidget() or wiz
+    QApplication.sendEvent(target, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier,
+                                             "\r", False))         # the press itself: Next
+    assert wiz.index == 1
+    settle(wiz)
+    for _ in range(12):                                            # the key held: the repeats Windows sends
+        QApplication.sendEvent(wiz.focusWidget() or wiz, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                                                   Qt.KeyboardModifier.NoModifier, "\r", True))
+        QApplication.processEvents()
+    assert wiz.index == 1 and settings.calls == [{"target_language": "ja"}]
+
+
+def test_a_double_click_on_next_never_saves_the_page_it_brings_up(make):
+    wiz, _shell, api, settings, _m = make()
+    go_to(wiz, "shows")                                            # Anki already read: card order could go on
+    settle(wiz)
+    settings.calls.clear()
+    QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # the first click: Your shows saved
+    assert W.PAGES[wiz.index] == "order"
+    QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # the second, at once
+    QTest.mouseDClick(wiz.btn_next, Qt.MouseButton.LeftButton)     # and a double click as Qt sends one
+    QApplication.processEvents()
+    assert W.PAGES[wiz.index] == "order" and settings.calls == [{"covers_download": True}]   # no consent unseen
+    settle(wiz)
+    QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # a fresh press once the page was seen
+    assert W.PAGES[wiz.index] == "cards" and "junban_auto_actions" in settings.calls[-1]
+
+
+def test_a_page_not_painted_yet_takes_no_press_however_long_ago_it_changed(make):
+    wiz, _shell, api, settings, _m = make()
+    go_to(wiz, "shows")                                            # no event loop since: never painted
+    wiz._shown_at -= 10.0
+    assert not wiz.settled()
+    settings.calls.clear()
+    wiz.btn_next.click()
+    assert W.PAGES[wiz.index] == "shows" and settings.calls == []
+    settle(wiz)                                                    # painted: it takes the next press
+    wiz.btn_next.click()
+    assert W.PAGES[wiz.index] == "order"
+
+
+def test_a_double_click_on_skip_never_skips_the_page_after_it(make):
+    wiz, _shell, api, settings, _m = make()
+    go_to(wiz, "cards")
+    settle(wiz)
+    QTest.mouseClick(wiz.btn_skip, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(wiz.btn_skip, Qt.MouseButton.LeftButton)      # on Your list, Skip would finish setup
+    QApplication.processEvents()
+    assert W.PAGES[wiz.index] == "level" and ("finish",) not in api.calls
+
+
+# --- the install question at quit (AD-4) ----------------------------------------------------------------------------------- #
+def _release_asks(wiz):
+    for ask in wiz.findChildren(W._AskFromWorker):                 # (a failing run leaves no worker waiting)
+        ask._event.set()
+
+
+def test_the_window_closing_while_the_install_asks_answers_no_at_once(make):
+    miner = FakeMiner(miner_look("missing"))
+    wiz, shell, *_ = make(miner=miner)
+    try:
+        go_to(wiz, "cards")
+        assert wait_until(lambda: wiz.page.look is not None)
+        QTest.mouseClick(wiz.page.btn_install, Qt.MouseButton.LeftButton)
+        _question(wiz)
+        shell.closing.emit()                                       # the quit began (the window's close)
+        assert wait_until(lambda: miner.asked == [False], 2.0)
+    finally:
+        _release_asks(wiz)
+
+
+def test_a_question_dropped_with_its_window_answers_the_worker_no(make):
+    miner = FakeMiner(miner_look("missing"))
+    wiz, *_ = make(miner=miner)
+    try:
+        go_to(wiz, "cards")
+        assert wait_until(lambda: wiz.page.look is not None)
+        QTest.mouseClick(wiz.page.btn_install, Qt.MouseButton.LeftButton)
+        _question(wiz).drop()                                      # the window hid with it open: no callback
+        # its deletion is the No (a deferred delete: the app's loop runs it; processEvents alone never does)
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        assert wait_until(lambda: miner.asked == [False], 2.0)
+    finally:
+        _release_asks(wiz)
+
+
+def test_the_install_question_keeps_its_first_answer(make):
+    # *Download*, then the card's deletion: the worker reads yes, never the No its card's end would add
+    wiz, *_ = make()
+    ask = W._AskFromWorker(wiz)
+    ask.answer_now(True)
+    ask.answer_now(False)
+    assert ask._answer is True
+
+
+# --- the install's shoulds (AD-5, AD-6) ------------------------------------------------------------------------------------ #
+def test_cancel_leaves_once_the_download_is_done(make):
+    wiz, *_ = make()
+    go_to(wiz, "cards")
+    page = wiz.page
+    wiz.installing = object()
+    page.show_progress(FakeMiner.SIZE // 2, FakeMiner.SIZE)
+    assert not page.btn_cancel.isHidden()
+    page.show_progress(FakeMiner.SIZE, FakeMiner.SIZE)             # his installer opens now: nothing to cancel
+    assert page.btn_cancel.isHidden() and not page.loading.isHidden()
+    wiz.installing = None
+
+
+def test_a_cancelled_download_says_it_stopped_and_offers_install_again(make):
+    import threading
+    gate = threading.Event()
+    miner = FakeMiner(miner_look("missing"), gate=gate, on_cancel="cancelled")
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None)
+    QTest.mouseClick(page.btn_install, Qt.MouseButton.LeftButton)
+    _question(wiz).yes.click()
+    assert wait_until(lambda: not page.loading.isHidden())
+    QTest.mouseClick(page.btn_cancel, Qt.MouseButton.LeftButton)
+    gate.set()
+    assert wait_until(lambda: wiz.installing is None)
+    assert wiz.say_line.text() == S.INSTALL_STOPPED and not wiz.install_opened
+    assert wait_until(lambda: page.btn_install.isEnabled() and not page.btn_install.isHidden())
+
+
+# --- Generate's end is the learner's run (AD-7) ---------------------------------------------------------------------------- #
+def test_an_automatic_generate_never_closes_the_wizard(make):
+    wiz, shell, api, *_ = make(api=FakeApi(numbers=NUMBERS))
+    seen = []
+    wiz.finished.connect(seen.append)
+    go_to(wiz, "level")
+    wiz.next()
+    assert wait_until(lambda: ("generate",) in api.calls)
+    quiet = GenState("running", "Counting words", 3, 10)
+    quiet.quiet = True
+    shell.bridge.generate_changed.emit(quiet)                      # the journey keeper's run, already under way
+    ended = GenState("current")
+    ended.quiet = True
+    shell.bridge.generate_changed.emit(ended)
+    assert seen == [] and wiz.generating
+    shell.bridge.generate_changed.emit(GenState("running", "Counting words", 1, 10))
+    shell.bridge.generate_changed.emit(GenState("current"))
+    assert seen == ["generated"]
+
+
+# --- a language switch, a second pass (AD-9, AD-10) ----------------------------------------------------------------------- #
+def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
+    wiz, _shell, api, settings, _m = make(miner=FakeMiner(miner_look("ready", "3.7")))
+    go_to(wiz, "shows")
+    QTest.mouseClick(wiz.page.covers.switch, Qt.MouseButton.LeftButton)          # covers off
+    go_to(wiz, "cards")
+    assert wait_until(lambda: wiz.page.look is not None)
+    QTest.mouseClick(wiz.page.make, Qt.MouseButton.LeftButton)                   # card making off
+    while wiz.index:
+        wiz.back()
+    wiz.pages[0].channel.choose("zh", user=True)
+    wiz.next()
+    assert wiz.language == "zh"
+    assert wiz.pages[2].covers.switch.isChecked() is False
+    assert wiz.pages[4].make.isChecked() is False
+    assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
+
+
+def test_a_second_pass_through_what_you_know_syncs_again_only_for_other_decks(make):
+    wiz, _shell, api, *_ = make()
+    wiz.next()
+    assert wait_until(lambda: wiz.anki is not None)
+    wiz.next()
+    assert wait_until(lambda: len(api.synced) == 1)
+    wiz.back()
+    wiz.next()                                                     # the same decks: no second sync
+    QApplication.processEvents()
+    assert len(api.synced) == 1
+    wiz.back()
+    QTest.mouseClick(wiz.page.chips["Kanji Practice"], Qt.MouseButton.LeftButton)
+    wiz.next()
+    assert wait_until(lambda: len(api.synced) == 2)
+
+
+# --- what the bar alone said (AD-11) -------------------------------------------------------------------------------------- #
+def test_a_failed_save_is_said_in_the_wizard_too(make):
+    class Failing(FakeApi):
+        def save(self, settings_service, page, answers, language):
+            raise OSError("settings.json is held by another program")
+    wiz, shell, *_ = make(api=Failing())
+    wiz.next()
+    assert wiz.say_line.text() == "settings.json is held by another program" and not wiz.say_line.isHidden()
+    assert shell.bar == ["settings.json is held by another program"]
+
+
+def test_a_first_sync_that_cant_start_is_said_in_the_wizard(make):
+    class NoSync(FakeApi):
+        def first_sync(self, registry, settings, language, decks, on_end, automation=None):
+            raise RuntimeError("Anki's add-on didn't answer")
+    wiz, *_ = make(api=NoSync())
+    wiz.next()
+    assert wait_until(lambda: wiz.anki is not None)
+    wiz.next()
+    assert wait_until(lambda: wiz.say_line.text() == "Anki's add-on didn't answer")
+
+
+def test_the_first_syncs_result_is_said_even_after_another_line(make, monkeypatch):
+    held = []
+
+    class Later(FakeApi):
+        def first_sync(self, registry, settings, language, decks, on_end, automation=None):
+            held.append(on_end)
+            return object()
+    monkeypatch.setattr(W, "sync_line", lambda result: "Anki: 214 words you know added")
+    wiz, *_ = make(api=Later())
+    wiz.next()
+    assert wait_until(lambda: wiz.anki is not None)
+    wiz.next()
+    assert wait_until(lambda: held)
+    wiz.say(S.CONTENT_OPEN)                                        # another line came since
+    held[0]("the sync's result")
+    assert wait_until(lambda: wiz.say_line.text() == "Anki: 214 words you know added")
+
+
+def test_a_door_that_cant_open_is_said_in_the_wizard(make, monkeypatch):
+    from app.qt import strings
+
+    def broken(_shell):
+        raise OSError("the importer's window couldn't be made")
+    door = windows.Opener("migaku", "Migaku", "Import from Migaku", lambda _s, _l: True, broken)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(windows, "launch", REAL_LAUNCH)
+    monkeypatch.setattr(wiz, "door", lambda name: door)
+    wiz.open_door("migaku")
+    said = strings.OPEN_FAILED.format(name="Migaku", why="the importer's window couldn't be made")
+    assert wiz.say_line.text() == said and shell.bar == [said]
+
+
+# --- the Content Manager's line and second press (AD-12, AD-13) ---------------------------------------------------------- #
+def test_the_content_managers_line_leaves_when_it_closes_and_a_second_press_waits(make):
+    wiz, _shell, api, *_ = make()
+    go_to(wiz, "shows")
+    page = wiz.page
+    QTest.mouseClick(page.btn_add, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.say_line.text() == S.CONTENT_OPEN)
+    assert not page.btn_add.isEnabled() and not page.btn_samples.isEnabled()      # one Content Manager at a time
+    QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert len(api.content_ends) == 1
+    api.content_ends[0](0)
+    assert wait_until(lambda: page.btn_add.isEnabled() and page.btn_samples.isEnabled())
+    assert wiz.say_line.isHidden()
+
+
+def test_the_content_managers_line_leaves_with_its_page(make):
+    wiz, *_ = make()
+    go_to(wiz, "shows")
+    QTest.mouseClick(wiz.page.btn_add, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.say_line.text() == S.CONTENT_OPEN)
+    wiz.skip()
+    assert wiz.say_line.isHidden()
+
+
+# --- page 6's counting (AD-14, the intent keeper's IK-18) ------------------------------------------------------------------ #
+def test_counting_asks_again_less_and_less_often_and_never_while_minimised(make, monkeypatch):
+    waits = []
+    api = FakeApi(numbers=None)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: waits.append((ms, fn)))       # the wizard's own timer
+    go_to(wiz, "level")
+    assert wait_until(lambda: len(waits) == 1)
+    for _ in range(5):
+        _ms, fn = waits[-1]
+        fn()
+        assert wait_until(lambda n=len(waits): len(waits) == n + 1)
+    assert [ms for ms, _fn in waits] == [3000, 6000, 12000, 24000, 30000, 30000]
+    asked = api.calls.count(("level_numbers", "ja"))
+    monkeypatch.setattr(shell, "isMinimized", lambda: True)
+    waits[-1][1]()
+    QApplication.processEvents()
+    assert api.calls.count(("level_numbers", "ja")) == asked and len(waits) == 7      # minimised: not asked
+
+
+def test_counting_asks_again_when_the_indexer_ran(make, monkeypatch):
+    api = FakeApi(numbers=None)
+    wiz, shell, *_ = make(api=api)
+    monkeypatch.setattr(wiz, "later", lambda ms, fn: None)
+    go_to(wiz, "level")
+    assert wait_until(lambda: ("level_numbers", "ja") in api.calls)
+    asked = api.calls.count(("level_numbers", "ja"))
+    api.numbers = NUMBERS
+    shell.bridge.indexed.emit("zh")                                 # another language's: nothing
+    shell.bridge.indexed.emit("ja")
+    assert wait_until(lambda: wiz.page.numbers is not None)
+    assert api.calls.count(("level_numbers", "ja")) == asked + 1
+
+
+# --- S19 on page 5 (AD-15) -------------------------------------------------------------------------------------------------- #
+def test_the_same_look_sets_no_tooltip_again(make):
+    wiz, *_ = make()
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None)
+    tips = []
+    page.btn_install.setToolTip = lambda tip: tips.append(tip)
+    page.show_look(miner_look("missing"))
+    page.show_look(miner_look("missing"))
+    assert tips == []
+    page.show_look(miner_look("too-old", "3.2"))
+    assert tips == [S.UPDATE_MINER_TIP]
+
+
+# --- the intent keeper's page rows (IK-14, IK-20) ---------------------------------------------------------------------------- #
+def test_card_order_without_junban_offers_no_control_and_enter_is_skip(make):
+    wiz, _shell, api, settings, _m = make(data={"enable_junban": False})
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not wiz._anki_looking)
+    assert page.controls.isHidden() and not page.off_line.isHidden() and wiz.btn_next.isHidden()
+    assert page.off_line.text() == S.ORDER_OFF
+    settings.calls.clear()
+    wiz.enter()
+    assert W.PAGES[wiz.index] == "cards" and settings.calls == []
+
+
+def test_card_order_when_junbans_module_is_absent_offers_no_control(make, monkeypatch):
+    monkeypatch.setattr(windows, "module_present", lambda name: name != "junban")
+    wiz, *_ = make()
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.off_line.isHidden())
+    assert page.controls.isHidden() and not page.next_offered()
+
+
+def test_card_order_says_when_automatic_actions_are_off(make):
+    wiz, *_ = make(data={"logic": {"automation": False}})
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert not page.automation_line.isHidden() and page.automation_line.text() == S.ORDER_AUTOMATION_OFF
+    other, *_ = make()
+    go_to(other, "order")
+    assert wait_until(lambda: not other.page.controls.isHidden())
+    assert other.page.automation_line.isHidden()

@@ -92,10 +92,22 @@ def test_each_page_writes_its_own_keys_on_a_real_settings_file(language, page, a
 def test_from_anki_writes_this_languages_decks_and_keeps_the_others(language):
     deck = "日本語::Mining" if language == "ja" else "中文::新词"
     returned, before, after = _saved_through_service("known", {"how": "anki", "decks": [deck]}, language)
-    assert _changed(before, after) == {"anki_sync_decks"}
+    assert _changed(before, after) == {"anki_sync_decks", "anki_sync_auto"}
     expected = dict(BEFORE["anki_sync_decks"], **{language: [deck]})
     assert after["anki_sync_decks"] == expected == returned["anki_sync_decks"], "another language's decks are kept"
     assert "anki_sync_fields" not in after, "the fields are the Anki window's: the wizard never writes them"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_from_anki_turns_the_automatic_sync_on_so_the_page_stays_in_sync(language):
+    """IK (page 2 promises "stays in sync"): the automatic known-words sync is gated on `anki_sync_auto`, off by
+    default, and nothing else turns it on — *From Anki* with a deck does. Import, Start fresh and no deck never do
+    (`test_a_page_with_nothing_to_write_leaves_the_file_byte_for_byte`)."""
+    deck = "日本語::Mining" if language == "ja" else "中文::新词"
+    assert settings_manager.load_settings().get("anki_sync_auto") is not True, "off by default"
+    returned, _before, after = _saved_through_service("known", {"how": "anki", "decks": [deck]}, language)
+    assert after["anki_sync_auto"] is True and returned["anki_sync_auto"] is True
+    assert "automation" not in (after.get("logic") or {}), "never D29's switch"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -428,3 +440,144 @@ def test_generate_asks_the_windows_generate_and_says_whether_it_was_taken():
     assert SW.generate(taken) is True and taken.asked == 1
     assert SW.generate(Services(None)) is False, "closing: nothing asked for"
     assert SW.generate(Services(RuntimeError("closed"))) is False
+
+
+# --- the review's rows (W3.5-wiz-SM adversary): Set up again changes only what the user changed ------------------ #
+JA_KEPT = {"onboarding_completed": True, "junban_auto_actions": True, "junban_deck": "日本語::Mining",
+           replan_preview.DECK: "日本語::Mining", replan_preview.LANGUAGE: "ja",
+           "junban_later_tag": True, "junban_later_flag": False, "junban_later_suspend": True}
+ORDER_KEYS = ("junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE, "junban_deck", "junban_later_tag",
+              "junban_later_flag", "junban_later_suspend", "connect_open_anki")
+
+
+def test_set_up_again_in_chinese_keeps_japanese_card_order_and_its_consent():
+    """AD-1: ja is kept in order (the pair recorded for ja); *Set up again* in 中文 shows the page off and with no deck
+    (順's deck is Japanese's), and *Next* — untouched, or with a Chinese deck picked but the switch left off — never
+    clears ja's consent, its pair or 順's deck."""
+    before = dict(BEFORE, **JA_KEPT)
+    order = SW.preselect(before, "zh")["order"]
+    assert order["keep_in_order"] is False and order["deck"] is None, "never Japanese's deck shown as Chinese's"
+    for answers in (order, dict(order, deck="中文::新词")):
+        _r, _b, after = _saved_through_service("order", answers, "zh", before)
+        assert {k: after.get(k) for k in ORDER_KEYS} == {k: before.get(k) for k in ORDER_KEYS}
+        assert replan_preview.recorded_deck(after, "ja") == "日本語::Mining"
+    # The user's own act: the switch turned on for a Chinese deck records Chinese (one 順 deck for both languages).
+    _r, _b, after = _saved_through_service("order", dict(order, keep_in_order=True, deck="中文::新词"), "zh", before)
+    assert replan_preview.recorded_deck(after, "zh") == "中文::新词" and after["junban_auto_actions"] is True
+
+
+def test_next_keeps_a_consent_given_though_juns_deck_moved_since():
+    """AD-2: the consent and the pair are ja's, but 順's deck was changed in 順 since (the host stands aside). The page
+    reads back on, with 順's deck now; *Next* untouched revokes nothing."""
+    before = dict(BEFORE, **dict(JA_KEPT, junban_deck="日本語::Sentences"))
+    order = SW.preselect(before, "ja")["order"]
+    assert order["keep_in_order"] is True and order["deck"] == "日本語::Sentences"
+    _r, _b, after = _saved_through_service("order", order, "ja", before)
+    assert {k: after.get(k) for k in ORDER_KEYS} == {k: before.get(k) for k in ORDER_KEYS}
+    # Picking the deck again is a new yes for it: the pair follows 順's deck.
+    _r, _b, after = _saved_through_service("order", dict(order, deck="日本語::Mining"), "ja", before)
+    assert replan_preview.recorded_deck(after, "ja") == "日本語::Mining"
+
+
+@pytest.mark.parametrize("mix", [{"junban_later_flag": True}, {"junban_later_suspend": True},
+                                 {"junban_later_tag": True}])
+def test_set_up_again_never_rewrites_a_mixed_later_choice_it_only_shows(mix):
+    """AD-3: a mix set in 順 (a flag alone, suspend without the tag) is shown as its nearest choice; *Next* untouched
+    leaves it as 順 holds it. Another choice picked is written as the three-way choice says."""
+    later = {"junban_later_tag": False, "junban_later_flag": False, "junban_later_suspend": False}
+    before = dict(BEFORE, onboarding_completed=True, **dict(later, **mix))
+    order = SW.preselect(before, "ja")["order"]
+    _r, _b, after = _saved_through_service("order", order, "ja", before)
+    assert {k: after.get(k) for k in later} == {k: before.get(k) for k in later}
+    other = next(choice for choice in SW.LATER if choice != order["later"])
+    _r, _b, after = _saved_through_service("order", dict(order, later=other), "ja", before)
+    assert (after["junban_later_tag"], after["junban_later_flag"], after["junban_later_suspend"]) == \
+        SW.LATER_FLAGS[other]
+
+
+def test_from_anki_merges_onto_the_file_as_it_is_never_a_stale_copy():
+    """AD-4: the decks are merged onto settings.json as it is when written (the service's `update=`), never from the
+    window's copy: Chinese decks another program saved after the window read the file survive, and an older pick of
+    the same language queued by the Anki window before *Next* never wins over the wizard's."""
+    h.write_settings(BEFORE)
+    service = SettingsService()                                         # the window's copy: zh = 中文::挖掘
+    settings_manager.save_keys({"anki_sync_decks": {"zh": ["中文::新词"]}})    # 2.x's Anki window, meanwhile
+    SW.save(service, "known", {"how": "anki", "decks": ["日本語::Mining"]}, "ja")
+    assert service.flush(10)
+    assert h.read_settings()["anki_sync_decks"] == {"zh": ["中文::新词"], "ja": ["日本語::Mining"]}
+
+    from app import anki_window
+    service.set({}, update=anki_window.merge("ja", ["日本語::Old"], []))   # the Qt Anki window's older pick
+    SW.save(service, "known", {"how": "anki", "decks": ["日本語::Sentences"]}, "ja")
+    assert service.flush(10)
+    assert h.read_settings()["anki_sync_decks"] == {"zh": ["中文::新词"], "ja": ["日本語::Sentences"]}
+
+
+def _zh_note(word):
+    """A Chinese note as a Chinese learner's deck holds it: no kana in any field."""
+    return {"word": word, "deck": "中文::挖掘", "model": "Chinese",
+            "fields": [("Hanzi", word), ("Sentence", f"我们需要{word}。"), ("Meaning", "an English gloss")]}
+
+
+def test_the_look_preselects_only_the_decks_that_read_as_this_language_and_counts_each_deck_once(ja_words):
+    """AD-5 (the draft: "the ones that look like this language's preselected") and AD-10: an Anki with a Japanese and
+    a Chinese deck preselects each language's own, by the Backfill rule (most notes with kana -> Japanese); every
+    deck is counted in one request, and no note type is read."""
+    zh = _words("zh")
+    fake = FakeAnki([{"word": w, "deck": "日本語::Mining"} for w in ja_words[:3]] + [_zh_note(w) for w in zh[:4]]
+                    + [{"word": "Bonjour", "deck": "Français", "fields": [("Front", "Bonjour"), ("Back", "Hello")]}])
+    with mock.patch("urllib.request.urlopen", fake):
+        ja_look = SW.anki_look({}, "ja")
+        zh_look = SW.anki_look({}, "zh")
+        saved = SW.anki_look({"anki_sync_decks": {"zh": ["日本語::Mining"]}}, "zh")
+    assert ja_look["preselected"] == ["日本語::Mining"]
+    assert zh_look["preselected"] == ["中文::挖掘"], "a Japanese deck is never preselected for Chinese"
+    assert dict(zh_look["decks"]) == {"Français": 1, "中文::挖掘": len(zh[:4]), "日本語::Mining": 3}
+    assert saved["preselected"] == ["日本語::Mining"], "the user's own saved pick is kept as it is"
+    queries = [sub["params"]["query"] for r in fake.requests if r["action"] == "multi"
+               for sub in r["params"]["actions"] if sub["action"] == "findNotes"]
+    assert len(queries) == 9 and len(set(queries)) == 3, "each deck's studied notes asked once a look"
+    assert "modelNames" not in fake.actions and not any(
+        r["action"].startswith(("add", "update", "delete", "change")) for r in fake.requests)
+
+
+def test_the_first_sync_keeps_a_dated_copy_of_the_known_words_before_it_writes(ja_words):
+    """AD-5 / CLAUDE.md §4: the first sync onto an existing KnownWord.json keeps a byte-for-byte copy in .trash first
+    (`anki_sync.sync` keeps none: it only appends); no file, no copy; a copy that can't be made writes nothing."""
+    from app import path_utils
+    path = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": ja_words[0], "knownStatus": "KNOWN"}]}, f, ensure_ascii=False)
+    with open(path, "rb") as f:
+        mine = f.read()
+    trash = os.path.join(os.path.dirname(path), ".trash")
+
+    def run(language, deck, notes):
+        ended, done = [], threading.Event()
+        with mock.patch("urllib.request.urlopen", FakeAnki(notes)):
+            SW.first_sync(JobRegistry(), {}, language, [deck], lambda r: (ended.append(r), done.set()))
+            assert done.wait(10)
+        return ended[0]
+    ja_notes = [{"word": w, "deck": "日本語::Mining"} for w in ja_words[:4]]
+
+    assert run("ja", "日本語::Mining", ja_notes).added == 3
+    [copy] = os.listdir(trash)
+    assert copy.startswith("KnownWord.") and copy.endswith(".json")
+    with open(os.path.join(trash, copy), "rb") as f:
+        assert f.read() == mine, "the user's file as it was before the sync"
+
+    with open(path, "rb") as f:
+        now = f.read()
+
+    def refused(_path, move=False):
+        raise OSError("the disk is full")
+    with mock.patch.object(path_utils, "backup_to_trash", refused):    # never monkeypatch.undo(): it undoes the sandbox
+        result = run("ja", "日本語::Sentences", ja_notes + [{"word": ja_words[5], "deck": "日本語::Sentences"}])
+    assert result.error and "copy" in result.error.lower()
+    with open(path, "rb") as f:
+        assert f.read() == now, "no copy, no write"
+
+    assert os.environ.get("SURASURA_TEST_ROOT") and get_user_files_path("zh").startswith(os.environ["SURASURA_TEST_ROOT"])
+    run("zh", "中文::挖掘", [_zh_note(w) for w in _words("zh")[:2]])
+    assert not os.path.exists(os.path.join(get_user_files_path("zh"), ".trash")), "no known words yet: nothing to keep"

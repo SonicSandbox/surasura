@@ -799,6 +799,10 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             result.total_known = count_known(language)
             return result
         known_path = _known_path(language)
+        refusal = known_file_refusal(language)
+        if refusal is not None:
+            result.error = refusal
+            return result
         if dry_run:
             _count_replacement(result, known_path, language, words)
             return result
@@ -827,6 +831,10 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
                   expect=None):
     """`replace`'s write, holding KnownWord.json's lock: the numbers checked against the confirmed ones, the backup,
     then the write."""
+    refusal = known_file_refusal(language)                # changed since the dry run: still never written over
+    if refusal is not None:
+        result.error = refusal
+        return result
     words = _count_replacement(result, known_path, language, words)
     if expect is not None and tuple(confirmed(result)) != tuple(expect):
         result.mode, result.changed = "dry-run", True       # nothing written: the window asks again
@@ -935,25 +943,25 @@ def replace_numbers(language, words):
 def restore_previous(language, expect=None, now=None):
     """Undo the last replace: back up the CURRENT file the same way (so this is undoable too), copy
     the backup back atomically, and clear the seen note ids so the next sync re-evaluates cleanly.
-    `expect`: the backup the user confirmed putting back; another one by now (a Replace meanwhile) restores nothing
-    and the result says `changed`."""
+    `expect`: the backup the user confirmed putting back, and `now` the known total they saw; another backup by now
+    (a Replace meanwhile) or another total (a sync meanwhile) restores nothing and the result says `changed`."""
     with _LOCK:
         held, refused = _hold_known(language, "restore")
         if refused is not None:
             return refused
         try:
-            return _restore_held(language, expect)
+            return _restore_held(language, expect, now)
         finally:
             if held is not None:
                 held.release()
 
 
-def _restore_held(language, expect=None):
+def _restore_held(language, expect=None, now=None):
     """`restore_previous`, holding KnownWord.json's lock."""
     result = SyncResult(mode="restore")
     state = load_state(language)
     name = state.get("last_backup")
-    if expect is not None and name != expect:
+    if (expect is not None and name != expect) or (now is not None and count_known(language) != now):
         result.changed = True
         result.total_known = count_known(language)
         return result

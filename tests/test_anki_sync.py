@@ -892,6 +892,38 @@ def test_restore_without_a_previous_replace_is_an_error():
     assert result.error and result.mode == "restore" and result.backup is None
 
 
+def test_replace_over_a_known_words_file_that_cannot_be_read_is_refused_the_dry_run_and_the_write(ja_words,
+                                                                                                  migaku_file):
+    """AD3-2: a KnownWord.json with one bad byte would count as "0 known now" and keep none of its dismissed or
+    Graduates' words — the confirmation's numbers false. Replace refuses it as Sync does: nothing backed up, nothing
+    written, the reason said (row 2's `known_file_refusal`, the rule of every replacing import)."""
+    with open(migaku_file, "rb") as f:
+        good = f.read()
+    broken = good[: len(good) // 2]                           # truncated mid-file, as a crash or a hand edit leaves it
+    with open(migaku_file, "wb") as f:
+        f.write(broken)
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert dry.error and dry.total_after == 0, "no numbers to confirm"
+    result = _replace(fake, expect=(3, 0, 0, 0, 3))           # the numbers the old dry run would have given
+    assert result.error and not result.changed
+    assert _read_bytes(migaku_file) == broken and _trash_files() == [] and not os.path.exists(_state_path())
+
+
+def test_restore_whose_known_total_changed_since_the_confirmation_writes_nothing(ja_words, migaku_file):
+    """AD3-8: "now N → then M" was confirmed; a sync that appended words meanwhile would be undone silently. The
+    total is checked with the backup's name: changed, nothing restored, and the window asks again."""
+    first = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    now = anki_sync.count_known("ja")
+    fake = FakeCollection([{"word": w} for w in ja_words[:4]])
+    _sync(fake)                                               # the automatic sync appends one word meanwhile
+    assert anki_sync.count_known("ja") == now + 1
+    before = _read_bytes(migaku_file)
+    result = anki_sync.restore_previous("ja", expect=first.backup, now=now)
+    assert result.changed and result.error is None and _read_bytes(migaku_file) == before
+    assert anki_sync.restore_previous("ja", expect=first.backup, now=now + 1).error is None
+
+
 # --------------------------------------------------------------------------- #
 # Settings (I9)
 # --------------------------------------------------------------------------- #

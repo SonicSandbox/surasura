@@ -764,3 +764,41 @@ def test_the_apkg_link_opens_row_2s_deck_importer_and_this_window_stays(main, an
     deck = windows.opened(main, "apkg_known")
     assert deck is not None and deck is not w and windows.opened(main, QAW.NAME) is w and w.isVisible()
     deck.close()
+
+
+def test_replace_over_a_file_that_cannot_be_read_never_asks_and_says_why(main, anki, ja_resources_dir):
+    """AD3-2: no false "0 known now" question; the reason in the status line, nothing written."""
+    _migaku(ja_resources_dir)
+    broken = _bytes(_file())[:200]
+    with open(_file(), "wb") as f:
+        f.write(broken)
+    _choose(main)
+    w = _open(main)
+    w.btn_replace.click()
+    _idle(main, w)
+    assert getattr(w, "question", None) is None and w.status.text()
+    assert _bytes(_file()) == broken and _trash() == []
+
+
+def test_restore_asks_again_when_a_sync_changed_the_total_meanwhile(main, anki, ja_resources_dir):
+    """AD3-8: the "now" total the user confirmed is checked too: a sync meanwhile restores nothing, asks again."""
+    _migaku(ja_resources_dir)
+    _choose(main)
+    w = _open(main)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    w.question.yes.click()
+    _idle(main, w)
+    w.question = None
+    w.btn_restore.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    first = w.question
+    anki.add(WORDS[3], deck="TheBank")
+    anki_sync.sync("ja", "http://127.0.0.1:8765", ["TheBank"], [])        # the automatic sync, meanwhile
+    meanwhile = _bytes(_file())
+    first.yes.click()
+    assert wait_until(lambda: w.question is not first and w.question.isVisible(), 10)
+    assert w.status.text() == strings.ANKI_RESTORE_CHANGED and _bytes(_file()) == meanwhile
+    assert w.question.body.text().startswith("Known words: 4 →")
+    w.question.no.click()
+    assert wait_until(lambda: not w.busy())

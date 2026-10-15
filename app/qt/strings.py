@@ -542,4 +542,4 @@ ANKI_RESTORE_BODY_UNREAD = ("Known words now: {now:,}. The previous list couldn'
                             "backed up first, so this can be undone too.")
 ANKI_RESTORE_YES = "Restore"
 ANKI_RESTORE_YES_TIP = "Put it back. Your current list is backed up first"
-ANKI_RESTORE_CHANGED = "Your previous list changed since you asked; here it is now."
+ANKI_RESTORE_CHANGED = "Your known words changed since you asked; here are the numbers now."

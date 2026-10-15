@@ -696,7 +696,7 @@ class AnkiWindow(windows.SecondaryWindow):
             self._done()
             return
         self.say(strings.ANKI_RESTORING)
-        if not self._submit(strings.ANKI_JOB_RESTORE, lambda: AW.run_restore(language, point.name),
+        if not self._submit(strings.ANKI_JOB_RESTORE, lambda: AW.run_restore(language, point.name, point.now),
                             lambda result: self._restored(result, language), on_quit="wait"):
             self._done()
 

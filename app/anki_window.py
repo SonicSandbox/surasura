@@ -261,9 +261,9 @@ def run_replace(language, url, decks, chosen, suspended, expect):
     return anki_sync.replace(language, url, decks, chosen, include_suspended=suspended, expect=expect)
 
 
-def run_restore(language, expect):
-    """(The job's thread.) Restore previous, putting back only the confirmed backup."""
-    return anki_sync.restore_previous(language, expect=expect)
+def run_restore(language, expect, now=None):
+    """(The job's thread.) Restore previous, putting back only the confirmed backup over the known total confirmed."""
+    return anki_sync.restore_previous(language, expect=expect, now=now)
 
 
 def tells(result):

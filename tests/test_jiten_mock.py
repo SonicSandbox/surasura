@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from app.jiten_converter import fetch_jiten_vocabulary
 
@@ -167,3 +168,194 @@ def test_no_key_at_all_exits_with_an_error(monkeypatch):
         jiten_converter.main()
     assert done.value.code == 1
     fetch.assert_not_called()
+
+
+# --- W3.4 row 2: Japanese only, fetch then confirm, the ignored words kept --------------------------------------- #
+def test_a_chinese_import_is_refused_before_any_fetch(tmp_path):
+    """Jiten stamps every word 'ja': a zh import would replace the Chinese list with Japanese words (inv §4.9)."""
+    from app import jiten_converter
+    known = tmp_path / "KnownWord.json"
+    known.write_text('{"words": [{"dictForm": "学习", "knownStatus": "KNOWN"}]}', encoding="utf-8")
+    before = known.read_bytes()
+    with patch("requests.get") as get:
+        assert fetch_jiten_vocabulary("key", str(known), language="zh") is False
+        assert jiten_converter.save_cards("key", str(tmp_path / "cards.json"), language="zh") is False
+        assert jiten_converter.replace_known([{"dictForm": "猫", "knownStatus": "KNOWN"}], "zh", str(known)) is False
+    get.assert_not_called()
+    assert known.read_bytes() == before
+
+
+def test_the_converter_refuses_chinese_before_reading_a_key(monkeypatch):
+    from app import jiten_converter
+    monkeypatch.setenv(jiten_converter.API_KEY_ENV, "jiten-secret-key-123")
+    with patch("requests.get") as get, pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "zh"])
+    assert done.value.code == 1
+    get.assert_not_called()
+
+
+def test_step_one_keeps_the_cards_and_changes_no_known_words(tmp_path, mock_jiten_response, monkeypatch, capsys):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+    cards = tmp_path / "cards.json"
+    monkeypatch.setenv(jiten_converter.API_KEY_ENV, "jiten-secret-key-123")
+    with _jiten_returns(mock_jiten_response), pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--save-cards", str(cards)])
+    assert done.value.code == 0
+    assert jiten_converter.load_cards(str(cards)) == mock_jiten_response
+    assert known.read_bytes() == before and not (known.parent / ".trash").exists()
+    assert "jiten-secret-key-123" not in capsys.readouterr().out
+
+
+def test_step_two_replaces_from_the_kept_cards_with_no_fetch_and_keeps_ignored_and_graduated_words(
+        tmp_path, mock_jiten_response):
+    from app import jiten_converter
+    known = tmp_path / "User Files" / "ja" / "KnownWord.json"
+    known.parent.mkdir(parents=True)
+    known.write_text(json.dumps({"words": [
+        {"dictForm": "冒険", "knownStatus": "KNOWN", "hasCard": 1},
+        {"dictForm": "えっと", "knownStatus": "IGNORED", "hasCard": 0},          # dismissed in Migaku
+        {"dictForm": "猫", "knownStatus": "IGNORED", "hasCard": 0},              # Jiten names it: Jiten's entry wins
+        {"dictForm": "旅", "knownStatus": "KNOWN", "source": "GraduatedList"},   # a past Graduate's word
+    ]}, ensure_ascii=False), encoding="utf-8")
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps(mock_jiten_response, ensure_ascii=False), encoding="utf-8")
+    with patch("requests.get") as get:
+        assert jiten_converter.replace_from_cards(str(cards), "ja", str(known)) is True
+    get.assert_not_called()
+    words = {w["dictForm"]: w["knownStatus"] for w in json.loads(known.read_text(encoding="utf-8"))["words"]}
+    assert words == {"猫": "KNOWN", "犬": "LEARNING", "旅": "KNOWN", "えっと": "IGNORED"}   # 冒険 (Anki's) replaced
+    assert len(list((known.parent / ".trash").iterdir())) == 1
+
+
+def test_step_two_with_unreadable_cards_changes_nothing(tmp_path):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+    bad = tmp_path / "cards.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert jiten_converter.replace_from_cards(str(bad), "ja", str(known)) is False
+    assert known.read_bytes() == before
+
+
+def test_a_held_known_words_lock_refuses_the_replace_and_writes_nothing(tmp_path, mock_jiten_response, monkeypatch):
+    from app import anki_sync, jiten_converter
+    from tests.test_cli_locks import Holder
+    monkeypatch.setattr(anki_sync, "KNOWN_LOCK_WAIT", 0.2)
+    known = tmp_path / "User Files" / "ja" / "KnownWord.json"
+    known.parent.mkdir(parents=True)
+    known.write_text('{"words": [{"dictForm": "冒険", "knownStatus": "KNOWN"}]}', encoding="utf-8")
+    before = known.read_bytes()
+    with Holder("known-words-ja", "Anki known-words sync"):
+        assert jiten_converter.replace_known(jiten_converter.words_from_cards(mock_jiten_response), "ja",
+                                             str(known)) is False
+    assert known.read_bytes() == before
+
+
+def test_the_command_lines_step_two_needs_no_key_and_never_fetches(tmp_path, mock_jiten_response, monkeypatch):
+    from app import jiten_converter
+    monkeypatch.delenv(jiten_converter.API_KEY_ENV, raising=False)
+    from app.path_utils import get_user_files_path
+    known = Path(get_user_files_path("ja")) / "KnownWord.json"           # the command line's own default
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps(mock_jiten_response, ensure_ascii=False), encoding="utf-8")
+    with patch("requests.get") as get, pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards)])
+    assert done.value.code == 0
+    get.assert_not_called()
+    assert {w["dictForm"] for w in json.loads(known.read_text(encoding="utf-8"))["words"]} == {"猫", "犬"}
+
+
+def test_a_failed_backup_leaves_the_known_words_untouched_by_jiten(tmp_path, mock_jiten_response):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+    with patch("app.jiten_converter.backup_to_trash", side_effect=OSError("disk full")):
+        assert jiten_converter.replace_known(jiten_converter.words_from_cards(mock_jiten_response), "ja",
+                                             str(known)) is False
+    assert known.read_bytes() == before
+
+
+# --- AD2-1: a known-words file that exists but can't be read is never replaced #
+# Its past Graduates' and dismissed words can't be kept from a file no one can read, and the confirmation would say
+# "0 → N": the replace refuses, writing nothing — the rule the .apkg import's merge follows.
+UNREADABLE = ['{"words": [{"dictForm": "冒険"', '"冒険"', '{"words": "冒険"}']
+
+
+@pytest.mark.parametrize("content", UNREADABLE)
+def test_an_unreadable_known_words_file_refuses_jitens_replace_and_writes_nothing(tmp_path, content):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    known.write_text(content, encoding="utf-8")
+    words = jiten_converter.words_from_cards([{"wordText": "猫", "state": 5}])
+    assert jiten_converter.replace_known(words, "ja", str(known)) is False
+    assert known.read_bytes() == content.encode("utf-8")
+    assert not (known.parent / ".trash").exists()          # refused before any backup
+
+
+def test_step_one_refuses_before_any_fetch_when_the_known_words_cant_be_read(monkeypatch, tmp_path):
+    from app import jiten_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        f.write(UNREADABLE[0])
+    fetched = []
+    monkeypatch.setattr(jiten_converter, "fetch_cards", lambda key: fetched.append(key) or ([], None))
+    cards = tmp_path / "cards.json"
+    assert jiten_converter.save_cards("key", str(cards), "ja") is False
+    assert fetched == [] and not cards.exists()
+
+
+def test_an_error_page_is_cut_short_to_one_line(monkeypatch):
+    """AD2-4: a 502 with a long HTML page put the whole page on the window's status line (the last line it says)."""
+    from app import jiten_converter
+    page = MagicMock(status_code=502, text="<html>\n" + "<p>Bad gateway</p>\n" * 200 + "</html>")
+    monkeypatch.setattr("requests.get", lambda *a, **k: page)
+    cards, error = jiten_converter.fetch_cards("key")
+    assert cards is None and "\n" not in error and len(error) < 200 and "502" in error
+
+
+# --- IK-56: the replace writes only the numbers its confirmation stated ------------------------------------------ #
+def test_a_replace_whose_numbers_moved_since_the_confirmation_writes_nothing_and_exits_changed(tmp_path, monkeypatch):
+    """A sync appended words while the question stood: the replace re-counts under the lock and refuses (exit 4), so
+    the window reads again and asks again; with the numbers as confirmed it writes."""
+    from app import anki_sync, jiten_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "hasCard": 1},
+                             {"dictForm": "えっと", "knownStatus": "IGNORED"}]}, f, ensure_ascii=False)
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps([{"wordText": "猫", "state": 5}], ensure_ascii=False), encoding="utf-8")
+    numbers = anki_sync.replace_numbers("ja", jiten_converter.words_from_cards(json.loads(cards.read_text("utf-8"))))
+    before = open(known, "rb").read()
+    stale = ",".join(str(n) for n in (numbers[0] + 1,) + tuple(numbers[1:]))
+    with pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards), "--expect", stale])
+    assert done.value.code == anki_sync.EXIT_CHANGED
+    assert open(known, "rb").read() == before and not os.path.exists(os.path.join(os.path.dirname(known), ".trash"))
+    with pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards), "--expect", ",".join(map(str, numbers))])
+    assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_failed_write_leaves_the_known_words_as_they_were_and_no_temp_file(tmp_path, monkeypatch):
+    """The replace writes a temp file, flushes it, then swaps it in: a swap that fails leaves the old file whole (an
+    in-place write would leave it half-written or replaced)."""
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    def refuse(*_a, **_k):
+        raise PermissionError("the file is held open")
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr("app.anki_sync.time.sleep", lambda _s: None)
+    words = jiten_converter.words_from_cards([{"wordText": "猫", "state": 5}])
+    with pytest.raises(PermissionError):
+        jiten_converter.replace_known(words, "ja", str(known))
+    assert known.read_bytes() == before
+    assert not [n for n in os.listdir(known.parent) if n.endswith(".tmp")]

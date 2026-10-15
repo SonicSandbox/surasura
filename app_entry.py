@@ -127,6 +127,20 @@ def main():
                     log_error(f"library_maintain failed:\n{traceback.format_exc()}")
                 sys.exit(code)
 
+            elif command == 'apkg_known_import' or command == 'extract':
+                # The 3.0 window's tools (W3.4 row 2): the .apkg known-words import (app/anki_db_import.py) and Extract
+                # (app/extract.py), each a child of the window. Dialog-free; it ends with its exit code.
+                code = 1
+                try:
+                    if command == 'extract':
+                        from app import extract as tool
+                    else:
+                        from app import anki_db_import as tool
+                    code = tool.main(sys.argv[2:])
+                except Exception:
+                    log_error(f"{command} failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
             elif command == 'replan_helper':
                 # The fast re-plan's helper (E3.1-B1, app/replan_preview.py): one window's re-order jobs in a process
                 # of its own, talking to that window over a local pipe. Dialog-free; it ends when its window goes.

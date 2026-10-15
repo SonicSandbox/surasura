@@ -58,6 +58,10 @@ RESOURCES = {
     # it) and the library store's helper (detached: it outlives the window).
     "anki-backlog": set(),
     "library-maintain": set(),
+    # W3.4 row 2: a known-words import (.apkg, Migaku, Jiten) writes KnownWord.json — never beside a sync; Extract
+    # adds its parts through the store's own lock — never two at once.
+    "known-import": {"known-words"},
+    "extract": set(),
     # W3.4 row 4: the YouTube module's runs (a transcript download, the cue-time fill, yt-dlp's update, a preview's
     # fetch and scoring): one yt-dlp run at a time across its windows, beside everything else.
     "youtube": set(),

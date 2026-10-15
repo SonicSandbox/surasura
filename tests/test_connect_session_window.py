@@ -172,3 +172,24 @@ def test_the_window_start_keeps_a_sync_connects_verbs_left_pending(monkeypatch):
     monkeypatch.setattr(main.settings_manager, "load_settings", lambda: {"junban_replan_preview": False})
     _dash()._replan_start()
     assert anki_sync_rule.read_state().get("front_pending") is False, "both previews off: let go, as before"
+
+
+def test_a_second_look_while_one_runs_returns_at_once(looks, monkeypatch):
+    """While a look is running (its worker hasn't ended), the window marks it looking: a second look — the window's
+    start and a focus a moment later — returns at once, so two looks never overlap (two sessions' syncs, a
+    known-words sync reading Anki during the first look). Once the first look ends, the next may look again."""
+    from app.connect import anki_session
+    window = Window()
+    seen = []
+
+    def at_window(settings, opening=False, say=None):
+        seen.append(window._connect_looking)
+        if len(seen) == 1:
+            window.look(opening=True)               # a second look arrives while the first is still at Anki
+        return looks.answer
+    monkeypatch.setattr(anki_session, "at_window", at_window)
+    window.look(opening=True)
+    assert seen == [True], seen
+    assert window._connect_looking is False
+    window.look(opening=True)
+    assert seen == [True, True]

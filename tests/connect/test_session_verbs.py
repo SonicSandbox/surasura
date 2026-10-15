@@ -333,3 +333,19 @@ def test_connect_with_nothing_pending_asks_anki_nothing(monkeypatch):
     with mock.patch("urllib.request.urlopen", anki):
         code, line = h.call("connect", "--consume-only")
     assert code == 0 and anki.log == [], anki.log
+
+
+def test_a_kick_that_fails_never_fails_the_writer_verb(monkeypatch):
+    """A writer verb's S3 sync is Connect's to send (`_sync_pending` kicks it). Connect can't be started — any error,
+    not only a missing module: the verb's own work is done and it returns as it would; the next Surasura program that
+    looks sends the sync. No sync pending: Connect isn't kicked at all."""
+    from app.cli import verbs
+    kicked = []
+
+    def broken(loaded):
+        kicked.append(loaded)
+        raise RuntimeError("Connect's run file can't be written")
+    monkeypatch.setattr(kick, "kick", broken)
+    assert verbs._sync_pending({"connect_enabled": True}, 1_800_000_060.0) is None
+    assert len(kicked) == 1
+    assert verbs._sync_pending({"connect_enabled": True}, None) is None and len(kicked) == 1

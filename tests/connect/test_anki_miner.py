@@ -495,3 +495,33 @@ def test_every_bound_process_joins_the_one_job_this_process_keeps(monkeypatch):
             proc.wait(10)
         if anki_miner._job_handle is not None:
             kernel32.CloseHandle(wintypes.HANDLE(anki_miner._job_handle))
+
+
+@pytest.mark.parametrize("version, answer", [("3.7.0", None), ("3.5.0", None), ("3.4.2", "3.4.2")])
+def test_only_an_install_older_than_3_5_is_reported_too_old(tmp_path, monkeypatch, version, answer):
+    """The installer's own build at the path Connect runs: 3.5.0 and later have `--api` and run; only an older one is
+    named (it would open its window instead of answering). A current 3.7.0 reported as too old would stop Connect."""
+    monkeypatch.setattr(anki_miner, "_registry_location", lambda: str(tmp_path))
+    monkeypatch.setattr(anki_miner, "installed_version", lambda: version)
+    assert anki_miner.too_old_install(os.path.join(str(tmp_path), anki_miner.EXE)) == answer
+
+
+def test_under_a_test_root_the_registry_is_never_read(tmp_path, monkeypatch):
+    """A test run never reads the real user's Anki Miner install from the registry: under SURASURA_TEST_ROOT the
+    installed version is None, and winreg is never opened."""
+    import types
+    opened = []
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+    fake = types.SimpleNamespace(HKEY_CURRENT_USER=object(),
+                                 OpenKey=lambda *a, **k: opened.append(a) or Key(),
+                                 QueryValueEx=lambda key, name: ("3.7.0", 1))
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(anki_miner, "sys", types.SimpleNamespace(platform="win32"))     # this module's look only
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path))
+    assert anki_miner.installed_version() is None and opened == []

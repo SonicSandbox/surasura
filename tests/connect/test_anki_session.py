@@ -496,3 +496,66 @@ def test_a_sync_that_worked_elsewhere_since_breaks_the_row(anki, clock, monkeypa
     anki_sync_rule._update(synced_at=clock.at + 5, sync="synced")
     assert not anki_session.failing()
     assert _ankiweb_check(monkeypatch)["state"] == "ok"
+
+
+# --------------------------------------------------------------------------- #
+# The mutant round's gaps (P2.3): Anki not plainly open, settle's wait, the window's look
+# --------------------------------------------------------------------------- #
+def test_a_session_never_starts_on_an_anki_that_answers_but_isnt_usable(anki, clock, monkeypatch):
+    """Only an Anki seen `open` starts a session: one showing a permission prompt (`unusable`) is no session, and no
+    sync is asked of it — the next look, once it answers properly, starts the session then."""
+    real = anki.answer
+    monkeypatch.setattr(anki, "answer", lambda action, params: ({"permission": "denied"}, None)
+                        if action == "requestPermission" else real(action, params))
+    assert anki_session.look(URL) == "unusable"
+    assert anki_session.begin(URL, ON) is None
+    assert anki.syncs == 0 and "sync" not in anki.actions
+    monkeypatch.setattr(anki, "answer", real)
+    assert anki_session.begin(URL, ON) == "synced"
+
+
+def test_settle_waits_the_rules_whole_delay_before_its_margin_runs_out(anki, clock, monkeypatch):
+    """`settle` waits the pending sync's delay plus its margin: its first look may wait for a writer that long. With
+    the delay left out, a sync due in a minute would be given up on after the margin alone."""
+    anki_session.begin(URL, ON)
+    anki_session.after_write(ON, True)
+    waits = []
+
+    def sync_if_due(url, settings, wait=None, cancel=None):
+        waits.append(wait)
+        return None, clock.at + 30
+    monkeypatch.setattr(anki_sync_rule, "sync_if_due", sync_if_due)
+    start = clock.at
+    assert anki_session.settle(URL, ON, sleep=clock.sleep, clock=clock.time) is None
+    assert waits[0] == pytest.approx(60 + anki_session.SETTLE_MARGIN_S)        # the one-minute delay + the margin
+    assert clock.at - start >= 60 + anki_session.SETTLE_MARGIN_S
+
+
+def test_a_cancelled_settle_stops_at_once_and_sends_nothing(anki, clock, monkeypatch):
+    """The process is told to stop (`cancel` set): `settle` returns None at its next look, without sleeping again or
+    asking for another sync."""
+    import threading
+    anki_session.begin(URL, ON)
+    anki_session.after_write(ON, True)
+    cancel, asked, slept = threading.Event(), [], []
+    cancel.set()
+
+    def sync_if_due(url, settings, wait=None, cancel=None):
+        asked.append(wait)
+        return None, clock.at + 30
+    monkeypatch.setattr(anki_sync_rule, "sync_if_due", sync_if_due)
+    def sleep(seconds):
+        slept.append(seconds)
+        clock.sleep(seconds)
+    assert anki_session.settle(URL, ON, cancel=cancel, sleep=sleep, clock=clock.time) is None
+    assert len(asked) == 1 and slept == []
+
+
+def test_the_windows_look_never_waits_for_another_writer(anki, clock, monkeypatch):
+    """The window's look starts the session with `wait=0.0`: another Surasura program holding Anki leaves the session
+    due for the next look, never a window worker blocked for the opening wait."""
+    seen = []
+    monkeypatch.setattr(anki_session, "begin", lambda url, settings, wait=None, cancel=None: seen.append(wait))
+    assert anki_session.at_window(ON)["anki"] == "open"
+    assert anki_session.at_window(ON, opening=True)["anki"] == "open"
+    assert seen == [0.0, 0.0]

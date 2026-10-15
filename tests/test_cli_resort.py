@@ -14,6 +14,7 @@ import os
 
 import pytest
 
+from app import anki_connect
 from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 
@@ -268,3 +269,17 @@ def test_a_dry_run_previews_while_the_junban_window_is_open(deck, monkeypatch):
         code, preview = h.call("resort", "--dry-run")
     assert code == 0 and "skipped" not in preview and preview["moves"] > 0, preview
     assert fake.writes == []
+
+
+@pytest.mark.parametrize("report", [{"reviewing": True}, {"problems": [anki_connect.REVIEWING]}],
+                         ids=["asked-again", "writer-lock"])
+def test_a_reorder_stopped_by_a_review_while_it_waited_is_anki_busy_never_another_writer(deck, monkeypatch, report):
+    """The automatic reorder comes back `busy` because you started reviewing — asked again inside the writer's hold,
+    or found by the writer lock after its wait: the answer is `anki-busy` (you, reviewing), never another program's
+    `busy` naming the Anki writer."""
+    auto = pytest.importorskip("modules.junban.auto")
+    monkeypatch.setattr(auto, "reorder", lambda *a, **k: {"outcome": "busy", "report": dict(report, busy=True)})
+    fake, patched = deck(connect_enabled=True)
+    with patched:
+        code, line = h.call("resort")
+    assert code == 3 and line["code"] == "anki-busy" and fake.writes == [], line

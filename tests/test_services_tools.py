@@ -167,9 +167,12 @@ def test_a_child_that_cant_start_is_a_failed_job_and_its_owner_hears_the_end(tmp
 def test_a_second_tool_of_its_kind_waits_for_the_first_and_shows_in_the_bar(tmp_path):
     from app.services import status as status_service
     gate = tmp_path / "go"
+    # The child gives up by itself after 2 minutes, and the gate opens whatever the asserts say: a failed assert (or a
+    # planted bug in a mutant run) never leaves the child running after the test.
     slow = _script(tmp_path, f"""
         import os, time
-        while not os.path.exists({str(gate)!r}):
+        deadline = time.monotonic() + 120
+        while not os.path.exists({str(gate)!r}) and time.monotonic() < deadline:
             time.sleep(0.01)
         print("first done")
     """, "slow.py")
@@ -178,10 +181,12 @@ def test_a_second_tool_of_its_kind_waits_for_the_first_and_shows_in_the_bar(tmp_
     status = status_service.StatusService(registry)
     first = tools.run(registry, "sentence-corpus", "Building the sentence dictionary", [slow], frozen=False)
     second = tools.run(registry, "sentence-corpus", "Building the sentence dictionary", [quick], frozen=False)
-    assert _wait(lambda: first.view().pid is not None)
-    assert first.view().state == jobs_module.RUNNING and second.view().state == jobs_module.WAITING
-    assert any("Building the sentence dictionary" in line for line in status.snapshot().lines)
-    gate.write_text("1")
+    try:
+        assert _wait(lambda: first.view().pid is not None)
+        assert first.view().state == jobs_module.RUNNING and second.view().state == jobs_module.WAITING
+        assert any("Building the sentence dictionary" in line for line in status.snapshot().lines)
+    finally:
+        gate.write_text("1")
     assert first.wait(60) and second.wait(60)
     assert first.view().ended_at <= second.view().started_at
     assert second.view().state == jobs_module.DONE

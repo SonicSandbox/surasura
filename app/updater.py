@@ -926,7 +926,7 @@ def launch_installer(staged):
 # library's folders and settings should they sit there (an installed copy whose library.json can't be read runs
 # portable) — KEPT_ENTRIES, which a release may never name either.
 OWNED_ENTRIES = ("_internal", EXE_NAME, CLI_EXE_NAME, UPDATER_EXE_NAME, "README.md", "RELEASE_NOTES.md",
-                 "UPDATE_INSTRUCTIONS.md")
+                 "UPDATE_INSTRUCTIONS.md", "LICENSE")
 KEPT_ENTRIES = ("User Files", "data", "results", "settings.json")
 _VERSION_RE = re.compile(r"\d{1,6}(\.\d{1,6}){0,3}\Z")
 

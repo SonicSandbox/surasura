@@ -42,6 +42,7 @@ STATE_FILE = "window_state.json"
 STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
+JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -269,9 +270,10 @@ class Services:
         return automation_module.moves_level(keys)
 
     def journey_exists(self):
-        """(A worker.) Whether a journey (the report) is on disk to open."""
-        from app import static_html_generator
-        return os.path.exists(static_html_generator.OUTPUT_FILE)
+        """(A worker.) Whether a journey (the report) is on disk to open: `static_html_generator.OUTPUT_FILE`, named
+        without importing the generator (its pandas → numpy cost ~0.6 s and OpenBLAS's buffers, a few hundred MB, at
+        every start; the start-light fix)."""
+        return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
     def open_journey(self):
         """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`). -> False with none."""

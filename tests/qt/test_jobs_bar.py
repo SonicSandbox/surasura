@@ -13,6 +13,7 @@ Behaviour only (the looks are Sonic's to re-skin): what a click asks the service
 The services are stand-ins that record what the window asks; their own rules are their suites' (tests/test_services_*).
 """
 import os
+import pathlib
 import threading
 import time
 
@@ -295,10 +296,15 @@ def test_header_a_failed_generate_reaches_the_bar_and_needs_you_and_opens_its_lo
         assert opened[0][0] == "C:/logs/gen.log" and opened[0][1] is not threading.main_thread()
 
 
-def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, monkeypatch, tmp_path):
-    from app import static_html_generator
-    report = tmp_path / "reading_list_static.html"
-    monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(report))
+def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, monkeypatch):
+    """The journey is looked for where the generator writes it (`static_html_generator.OUTPUT_FILE`), by name, without
+    importing the generator (the start-light fix: its pandas → numpy cost every start ~0.6 s and a few hundred MB)."""
+    from app import path_utils, static_html_generator
+    assert os.path.basename(static_html_generator.OUTPUT_FILE) == shell.JOURNEY_FILE
+    assert os.path.basename(os.path.dirname(static_html_generator.OUTPUT_FILE)) == "results"   # (its root: per process)
+    results = path_utils.get_user_file("results")              # under this test's root
+    os.makedirs(results, exist_ok=True)
+    report = pathlib.Path(results) / shell.JOURNEY_FILE
     opened = []
     monkeypatch.setattr(static_html_generator, "open_report",
                         lambda app_mode=False: opened.append((app_mode, threading.current_thread())) or True)

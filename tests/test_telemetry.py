@@ -7,10 +7,12 @@ import json
 # Ensure app can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import requests  # the heartbeat imports it on its own thread (never at the module's import): patched as requests.get
+
 from app import telemetry
 
 class TestTelemetry(unittest.TestCase):
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
@@ -48,7 +50,7 @@ class TestTelemetry(unittest.TestCase):
             self.assertEqual(params['status'], "Multilingual-beta")
             self.assertEqual(params['open_count'], 5)
 
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
@@ -80,7 +82,7 @@ class TestTelemetry(unittest.TestCase):
             self.assertEqual(params['lang'], "ja")
             self.assertEqual(params['status'], "Multilingual-beta")
 
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
@@ -112,7 +114,7 @@ class TestTelemetry(unittest.TestCase):
             self.assertEqual(params['status'], "Onboard Complete")
             self.assertGreaterEqual(params['open_count'], 5)
 
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
@@ -130,7 +132,7 @@ class TestTelemetry(unittest.TestCase):
 
         mock_get.assert_not_called()
 
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
@@ -156,7 +158,7 @@ class TestTelemetry(unittest.TestCase):
         # The persistent identity was never read.
         mock_get_state.assert_not_called()
 
-    @patch('app.telemetry.requests.get')
+    @patch('requests.get')
     @patch('app.telemetry.path_utils.get_user_file')
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')

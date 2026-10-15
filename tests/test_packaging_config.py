@@ -378,6 +378,19 @@ def test_a_build_stamps_its_install_shape_and_hands_the_override_to_its_release(
     assert seen["release"]["needs_installer"] is needs_installer
 
 
+def test_a_build_puts_the_repos_license_at_the_top_byte_for_byte_in_the_app_part(tmp_path, monkeypatch):
+    """Settings › App reads its licence line from the LICENSE beside the program (app/credits.py): the build's step 3
+    copies the repo's LICENSE to the top of the program folder as it is, before the checks read the folder, and the
+    release sends it in the app part with README.md (left out, it would fall into runtime, "")."""
+    with open(os.path.join(PROJECT, "LICENSE"), "rb") as f:
+        licence = f.read()
+    (tmp_path / "LICENSE").write_bytes(licence)
+    _frozen, seen = _stubbed_build(tmp_path, monkeypatch, release=False)
+    assert seen["returned"] is True and "LICENSE" in seen["checked"]
+    assert (tmp_path / "dist" / "Surasura" / "LICENSE").read_bytes() == licence
+    assert package_app.part_of("LICENSE", package_app.load_build_config()["parts"]) == "app"
+
+
 def test_the_command_line_hands_needs_installer_to_the_build(monkeypatch):
     """--needs-installer (the release's manual override, S3.1 D7) reaches build(): package_app.py's __main__ block run
     in the module's namespace with build() recorded."""
@@ -512,10 +525,10 @@ def test_a_program_without_qt_needs_no_qt_licences(tmp_path):
 
 def test_every_document_a_build_puts_at_the_top_is_owned_by_the_updater(tmp_path):
     """U-S2 / IK-8: a one-click update moves only app.updater.OWNED_ENTRIES (and what the new release names), so the
-    documents the build copies to the top (README.md, UPDATE_INSTRUCTIONS.md, RELEASE_NOTES.md) must be owned: else
-    the update after the one that stops shipping one would leave it behind."""
+    documents the build copies to the top (README.md, UPDATE_INSTRUCTIONS.md, RELEASE_NOTES.md, LICENSE) must be
+    owned: else the update after the one that stops shipping one would leave it behind."""
     folder, config = _program(tmp_path)
-    for name in ("README.md", "UPDATE_INSTRUCTIONS.md", "RELEASE_NOTES.md"):
+    for name in ("README.md", "UPDATE_INSTRUCTIONS.md", "RELEASE_NOTES.md", "LICENSE"):
         (folder / name).write_text("# すらすら 3.0\n", encoding="utf-8")
     failures, _facts = package_app.check_program(str(folder), config)
     assert failures == []

@@ -275,3 +275,34 @@ def test_a_failed_backup_leaves_the_known_words_untouched_by_jiten(tmp_path, moc
         assert jiten_converter.replace_known(jiten_converter.words_from_cards(mock_jiten_response), "ja",
                                              str(known)) is False
     assert known.read_bytes() == before
+
+
+# --- AD2-1: a known-words file that exists but can't be read is never replaced #
+# Its past Graduates' and dismissed words can't be kept from a file no one can read, and the confirmation would say
+# "0 → N": the replace refuses, writing nothing — the rule the .apkg import's merge follows.
+UNREADABLE = ['{"words": [{"dictForm": "冒険"', '"冒険"', '{"words": "冒険"}']
+
+
+@pytest.mark.parametrize("content", UNREADABLE)
+def test_an_unreadable_known_words_file_refuses_jitens_replace_and_writes_nothing(tmp_path, content):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    known.write_text(content, encoding="utf-8")
+    words = jiten_converter.words_from_cards([{"wordText": "猫", "state": 5}])
+    assert jiten_converter.replace_known(words, "ja", str(known)) is False
+    assert known.read_bytes() == content.encode("utf-8")
+    assert not (known.parent / ".trash").exists()          # refused before any backup
+
+
+def test_step_one_refuses_before_any_fetch_when_the_known_words_cant_be_read(monkeypatch, tmp_path):
+    from app import jiten_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        f.write(UNREADABLE[0])
+    fetched = []
+    monkeypatch.setattr(jiten_converter, "fetch_cards", lambda key: fetched.append(key) or ([], None))
+    cards = tmp_path / "cards.json"
+    assert jiten_converter.save_cards("key", str(cards), "ja") is False
+    assert fetched == [] and not cards.exists()

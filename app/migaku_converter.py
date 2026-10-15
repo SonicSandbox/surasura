@@ -156,6 +156,12 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             print(f"Error: {refused[0]}")
             return False
         try:
+            # A file that exists but can't be read is never replaced: what it keeps can't be kept (AD2-1).
+            from app.anki_sync import known_file_refusal
+            unreadable = known_file_refusal(lock_language, output_json)
+            if unreadable:
+                print(f"Error: {unreadable}")
+                return False
             # This import REPLACES the file. Keep a dated copy of what it replaces first
             # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
             try:

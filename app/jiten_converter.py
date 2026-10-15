@@ -151,6 +151,12 @@ def replace_known(words, language=LANGUAGE, output_json=None):
         print(f"Error: {refused[0]}")
         return False
     try:
+        # A file that exists but can't be read is never replaced: what it keeps can't be kept (AD2-1).
+        from app.anki_sync import known_file_refusal
+        unreadable = known_file_refusal(language, output_json)
+        if unreadable:
+            print(f"Error: {unreadable}")
+            return False
         # This import REPLACES the file. Keep a dated copy of what it replaces first
         # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
         try:
@@ -213,10 +219,16 @@ def fetch_jiten_vocabulary(api_key, output_json=None, language='ja'):
 
 def save_cards(api_key, path, language='ja'):
     """The window's first step (W3.4 row 2): fetch the cards and keep them at `path` (atomically), so the replace
-    the user then confirms writes exactly what its confirmation counted. Changes no known words. -> True when kept."""
+    the user then confirms writes exactly what its confirmation counted. Changes no known words. -> True when kept.
+    Known words that can't be read refuse it before anything is fetched (AD2-1: their replace would be refused)."""
     refused_language = refuse_language(language)
     if refused_language:
         print(refused_language)
+        return False
+    from app.anki_sync import known_file_refusal
+    unreadable = known_file_refusal(language)
+    if unreadable:
+        print(f"Error: {unreadable}")
         return False
     try:
         cards, error = fetch_cards(api_key)

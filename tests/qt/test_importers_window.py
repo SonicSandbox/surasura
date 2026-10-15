@@ -231,6 +231,30 @@ def test_a_replace_with_no_dismissed_words_says_no_ignored_line(main, runs):
     _card(j).no.click()
 
 
+def _unreadable_known():
+    folder = get_user_files_path("ja")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "KnownWord.json"), "w", encoding="utf-8") as f:
+        f.write('{"words": [{"dictForm": "冒険"')
+
+
+def test_an_unreadable_known_words_file_is_said_before_any_question_or_replace(main, runs):
+    """AD2-1: Migaku's and Jiten's plans refuse a known-words file that exists but can't be read — the window says so,
+    asks nothing and starts no replace (Jiten's fetched cards are removed)."""
+    _unreadable_known()
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: w.status.text() == strings.KNOWN_UNREADABLE)
+    assert _card(w) is None and runs.calls == []
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: j.status.text() == strings.KNOWN_UNREADABLE)
+    assert _card(j) is None and len(runs.calls) == 1 and not os.path.exists(folder)
+
+
 def test_choose_a_file_asks_too(main, runs, monkeypatch):
     """The Tk window's *Select File Manually…* replaced the known words with no question at all (inv §3.9)."""
     _known(CURRENT)

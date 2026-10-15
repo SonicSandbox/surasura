@@ -220,3 +220,17 @@ def test_the_words_read_for_the_confirmation_are_the_words_the_import_writes(ja_
     out = tmp_path / "KnownWord.json"
     assert convert_db_to_json(db, str(out), language="ja") is True
     assert len(json.loads(out.read_text(encoding="utf-8"))["words"]) == len(words)
+
+
+# --- AD2-1: a known-words file that exists but can't be read is never replaced #
+@pytest.mark.parametrize("content", ['{"words": [{"dictForm": "冒険"', '"冒険"', '{"words": "冒険"}'])
+def test_an_unreadable_known_words_file_refuses_migakus_replace_and_writes_nothing(tmp_path, content):
+    """Its past Graduates' and dismissed words can't be kept from a file no one can read: refused, nothing written,
+    no backup (the .apkg merge's rule)."""
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    known.write_text(content, encoding="utf-8")
+    assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == content.encode("utf-8")
+    assert not (known.parent / ".trash").exists()

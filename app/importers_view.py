@@ -15,6 +15,17 @@ from app import anki_db_import, extract
 Plan = namedtuple("Plan", "path words now after graduated ignored saved")
 
 
+class KnownUnreadable(Exception):
+    """The known-words file exists but can't be read: a replace would write nothing, so nothing is asked (AD2-1)."""
+
+
+def _refuse_unreadable(language):
+    from app import anki_sync
+    why = anki_sync.known_file_refusal(language)
+    if why:
+        raise KnownUnreadable(why)
+
+
 def is_deck(path):
     return str(path or "").lower().endswith(".apkg")
 
@@ -51,8 +62,9 @@ def error_of(line):
 def migaku_plan(db_path, language):
     """Migaku's export at `db_path` read for `language` -> Plan (its replace keeps the dismissed words Migaku doesn't
     name, as every replace: W3.4-1). Raises `migaku_converter.NotMigaku` when it holds no
-    word list, sqlite3.Error when it can't be read. A worker's call."""
+    word list, sqlite3.Error when it can't be read, KnownUnreadable when the known words can't be. A worker's call."""
     from app import anki_sync, migaku_converter
+    _refuse_unreadable(language)
     words = migaku_converter.read_words(db_path, language)
     now, after, graduated, ignored = anki_sync.replace_numbers(language, words)
     try:
@@ -69,9 +81,10 @@ def find_migaku(folder=None):
 
 
 def jiten_plan(cards_path, language):
-    """The cards Jiten's first step kept at `cards_path` -> Plan (None when they can't be read). A worker's
-    call."""
+    """The cards Jiten's first step kept at `cards_path` -> Plan (None when they can't be read). Raises
+    KnownUnreadable when the known words can't be read. A worker's call."""
     from app import anki_sync, jiten_converter
+    _refuse_unreadable(language)
     cards = jiten_converter.load_cards(cards_path)
     if cards is None:
         return None

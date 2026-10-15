@@ -209,3 +209,22 @@ def test_a_known_words_import_never_runs_beside_a_sync_and_extract_beside_genera
     from app.services import jobs
     assert jobs.conflicts("known-import", "anki-sync") and jobs.conflicts("known-import", "known-import")
     assert not jobs.conflicts("extract", "generate") and jobs.conflicts("extract", "extract")
+
+
+# --- AD2-1: the plans refuse a known-words file that can't be read, before anything is confirmed #
+def test_both_plans_refuse_a_known_words_file_that_cant_be_read(ja_resources_dir, tmp_path):
+    folder = get_user_files_path("ja")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "KnownWord.json"), "w", encoding="utf-8") as f:
+        f.write('{"words": "冒険"}')
+    with pytest.raises(importers_view.KnownUnreadable):
+        importers_view.migaku_plan(os.path.join(ja_resources_dir, "MigakuDb.db"), "ja")
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps([{"wordText": "猫", "state": 5}], ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(importers_view.KnownUnreadable):
+        importers_view.jiten_plan(str(cards), "ja")
+
+
+def test_a_missing_known_words_file_is_no_refusal(ja_resources_dir):
+    # A first import has no file at all: nothing to keep, nothing refused.
+    assert importers_view.migaku_plan(os.path.join(ja_resources_dir, "MigakuDb.db"), "ja").now == 0

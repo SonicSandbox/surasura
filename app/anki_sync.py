@@ -168,10 +168,10 @@ def _atomic_write_json(path, data, indent=2):
     _atomic_write_bytes(path, json.dumps(data, ensure_ascii=False, indent=indent).encode("utf-8"))
 
 
-def _read_known_file(language):
-    """(data, words) for the current KnownWord.json; (None, None) when it does not exist.
+def _read_known_file(language, path=None):
+    """(data, words) for the current KnownWord.json (or the one at `path`); (None, None) when it does not exist.
     Raises _KnownFileError when it exists but cannot be used — the caller must then write nothing."""
-    path = _known_path(language)
+    path = path or _known_path(language)
     if not os.path.exists(path):
         return None, None
     try:
@@ -189,6 +189,17 @@ def _read_known_file(language):
             return data, words
     raise _KnownFileError(f"Your known words file is not in a format Surasura recognises, so "
                           f"nothing was changed ({KNOWN_FILE}).")
+
+
+def known_file_refusal(language, path=None):
+    """Why a replacing import must write nothing over KnownWord.json (or the one at `path`): it exists but can't be
+    read, so its past Graduates' and dismissed words can't be kept and its known words can't be counted (AD2-1: the
+    rule the .apkg merge follows). -> that plain sentence, or None (missing or usable)."""
+    try:
+        _read_known_file(language, path)
+    except _KnownFileError as e:
+        return str(e)
+    return None
 
 
 def _norm(term):

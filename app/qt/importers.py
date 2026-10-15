@@ -294,6 +294,7 @@ class MigakuWindow(ToolWindow):
         from app import migaku_converter
         error = info[0]
         self.say(strings.MIGAKU_NOT_A_DB if isinstance(error, migaku_converter.NotMigaku)
+                 else strings.KNOWN_UNREADABLE if isinstance(error, importers_view.KnownUnreadable)
                  else strings.IMPORTERS_READ_FAILED.format(why=error))
 
     def _ask(self, plan):
@@ -389,7 +390,14 @@ class JitenWindow(ToolWindow):
             return
         self.end_write()
         bridge.run_in_worker(importers_view.jiten_plan, cards, "ja", then=self.alive(self._ask),
-                             failed=self.alive(lambda info: self.say(strings.IMPORTERS_READ_FAILED.format(why=info[0]))))
+                             failed=self.alive(self._unplanned))
+
+    def _unplanned(self, info):
+        """The fetched cards or the known words couldn't be read: said, nothing asked, the cards removed."""
+        error = info[0]
+        self.say(strings.KNOWN_UNREADABLE if isinstance(error, importers_view.KnownUnreadable)
+                 else strings.IMPORTERS_READ_FAILED.format(why=error))
+        self._drop_folder()
 
     def _ask(self, plan):
         if plan is None or not plan.words:

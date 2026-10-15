@@ -1,4 +1,5 @@
-"""The harness's own guards (tests/conftest.py) against the three flakes that forced full re-runs (2026-10-14):
+"""The harness's own guards (tests/harness_guards.py; tests/conftest.py and each module suite's conftest import them)
+against the three flakes that forced full re-runs (2026-10-14):
 
 * a worker thread that outlived its test reached a per-user path in the gap pytest leaves between two tests (no
   PYTEST_CURRENT_TEST, no test root) and made the real, empty %APPDATA%\\Houseki\\Surasura — every test running then,
@@ -17,14 +18,14 @@ import threading
 
 import pytest
 
-from tests import conftest
+from tests import harness_guards
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBE = "SURASURA_HARNESS_PROBE"        # set only for the nested run below: its two helper tests run there alone
 
 
 def _held(interp_id):
-    return any(id(t) == interp_id for t in conftest._TK_INTERPS)
+    return any(id(t) == interp_id for t in harness_guards._TK_INTERPS)
 
 
 def _tk_root():
@@ -55,12 +56,12 @@ def test_the_gap_after_a_tests_teardown_still_names_no_test(monkeypatch):
     # The order inside the teardown wrapper: pytest clears PYTEST_CURRENT_TEST at the end of a test's teardown; the
     # wrapper runs after that and names the gap.
     monkeypatch.setenv("PYTEST_CURRENT_TEST", os.environ.get("PYTEST_CURRENT_TEST", "x (call)"))  # put back after
-    wrapper = conftest.pytest_runtest_teardown(None, None)
+    wrapper = harness_guards.pytest_runtest_teardown(None, None)
     next(wrapper)
     os.environ.pop("PYTEST_CURRENT_TEST")                       # what pytest's own teardown does last
     with pytest.raises(StopIteration):
         next(wrapper)
-    assert os.environ["PYTEST_CURRENT_TEST"] == conftest.BETWEEN_TESTS
+    assert os.environ["PYTEST_CURRENT_TEST"] == harness_guards.BETWEEN_TESTS
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the child watch is Windows-only")
@@ -102,7 +103,7 @@ def test_a_real_run_names_the_gap_and_fails_on_a_child_left_running(tmp_path):
         assert "2 passed" in text and "1 leaked child" in text, text
         gap = [n["current"] for n in notes if n.get("when") in ("after test_helper_leaves_a_child_running",
                                                                  "session end")]
-        assert gap == [conftest.BETWEEN_TESTS, conftest.BETWEEN_TESTS], notes
+        assert gap == [harness_guards.BETWEEN_TESTS, harness_guards.BETWEEN_TESTS], notes
         assert not _running(child), "the leaked child was ended"
     finally:
         if _running(child):
@@ -136,7 +137,7 @@ def test_an_interpreter_dropped_last_by_a_worker_thread_is_deleted_on_the_main_t
     t.start()
     t.join(30)
     assert _held(interp), "the interpreter outlived the worker's drop: still held for the main thread"
-    conftest._free_tk_interpreters()
+    harness_guards._free_tk_interpreters()
     assert not _held(interp), "deleted by the main thread once nothing else held it"
 
 
@@ -155,7 +156,7 @@ def test_a_root_in_a_cycle_collected_on_a_worker_leaves_its_interpreter_to_the_m
     gc.disable()                                                        # no automatic collection in between
     try:
         del root, window
-        conftest._free_tk_interpreters()
+        harness_guards._free_tk_interpreters()
         assert _held(interp), "the cycle still holds it"
         t = threading.Thread(target=gc.collect)
         t.start()
@@ -164,7 +165,7 @@ def test_a_root_in_a_cycle_collected_on_a_worker_leaves_its_interpreter_to_the_m
         if was:
             gc.enable()
     assert _held(interp), "collected on the worker, the interpreter still held"
-    conftest._free_tk_interpreters()
+    harness_guards._free_tk_interpreters()
     assert not _held(interp)
 
 
@@ -172,10 +173,10 @@ def test_a_destroyed_root_still_held_keeps_its_interpreter_until_let_go():
     root = _tk_root()
     interp = id(root.tk)
     root.destroy()
-    conftest._free_tk_interpreters()
+    harness_guards._free_tk_interpreters()
     assert _held(interp), "a test still holds the root: its interpreter stays"
     del root
-    conftest._free_tk_interpreters()
+    harness_guards._free_tk_interpreters()
     assert not _held(interp)
 
 
@@ -185,10 +186,10 @@ def test_a_destroyed_root_still_held_keeps_its_interpreter_until_let_go():
 def test_a_child_still_running_at_the_end_is_ended_and_named():
     slow = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])   # stands in for slow.py
     try:
-        assert any(c[0] == slow.pid for c in conftest._CHILDREN), "every Popen of this process is watched"
+        assert any(c[0] == slow.pid for c in harness_guards._CHILDREN), "every Popen of this process is watched"
         children = []
-        conftest._watch_child(children, slow.pid, "slow.py")
-        leaked = conftest._end_leaked_children(children, grace_ms=200)
+        harness_guards._watch_child(children, slow.pid, "slow.py")
+        leaked = harness_guards._end_leaked_children(children, grace_ms=200)
         assert [(pid, command) for pid, command, _test in leaked] == [(slow.pid, "slow.py")]
         assert "test_a_child_still_running_at_the_end_is_ended_and_named" in leaked[0][2]
         assert slow.wait(30) is not None and children == []
@@ -202,7 +203,28 @@ def test_a_child_that_ended_is_forgotten():
     quick = subprocess.Popen([sys.executable, "-c", "print('done')"], stdout=subprocess.DEVNULL)
     quick.wait(60)
     children = []
-    conftest._watch_child(children, quick.pid, "quick.py")
-    assert conftest._end_leaked_children(children, grace_ms=2000) == []
-    conftest._forget_ended_children(conftest._CHILDREN)
-    assert not any(c[0] == quick.pid for c in conftest._CHILDREN)
+    harness_guards._watch_child(children, quick.pid, "quick.py")
+    assert harness_guards._end_leaked_children(children, grace_ms=2000) == []
+    harness_guards._forget_ended_children(harness_guards._CHILDREN)
+    assert not any(c[0] == quick.pid for c in harness_guards._CHILDREN)
+
+# --- every module suite takes the guards ------------------------------------------------------------------------- #
+
+def test_every_module_suite_on_disk_takes_the_harness_guards():
+    # A module suite is a pytest process of its own (`run_tests.py --all`, or `python -m pytest modules/<name>/tests`)
+    # and never loads tests/conftest.py: its own conftest imports the guards, or its threads and children go unguarded
+    # (an empty real %LOCALAPPDATA%\Houseki\Surasura\<key> made by a module suite failed whole --all runs).
+    import ast
+    import glob
+    suites = sorted(glob.glob(os.path.join(PROJECT, "modules", "*", "tests")))
+    if not suites:
+        pytest.skip("no module suites in this checkout (the private parts are absent)")
+    wanted = set(harness_guards.EVERY_SUITE) | {"pytest_sessionfinish"}
+    for suite in suites:
+        path = os.path.join(suite, "conftest.py")
+        assert os.path.isfile(path), f"{suite} has no conftest.py: it runs without the harness guards"
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        taken = {alias.asname or alias.name for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module == "tests.harness_guards" for alias in node.names}
+        assert wanted <= taken, f"{path} does not import {sorted(wanted - taken)} from tests.harness_guards"

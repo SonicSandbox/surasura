@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from app import path_utils
-from tests import conftest
+from tests import harness_guards
 
 
 def _outside_pytest(monkeypatch):
@@ -89,18 +89,18 @@ def test_the_guard_watches_the_folder_the_app_would_write(monkeypatch):
     # get_local_data_path() resolves to outside a test (computed here without creating it).
     _outside_pytest(monkeypatch)
     monkeypatch.setattr(os, "makedirs", lambda *a, **k: None)
-    assert path_utils.get_local_data_path() == conftest._REAL_LOCAL_DATA
+    assert path_utils.get_local_data_path() == harness_guards._REAL_LOCAL_DATA
 
 
 def test_the_guard_sees_a_new_file(tmp_path):
     # The guard's comparison notices a folder appearing and a file written into it.
     folder = tmp_path / "local"
-    empty = conftest._folder_state(str(folder))
+    empty = harness_guards._folder_state(str(folder))
     folder.mkdir()
-    assert conftest._folder_state(str(folder)) != empty
-    made = conftest._folder_state(str(folder))
+    assert harness_guards._folder_state(str(folder)) != empty
+    made = harness_guards._folder_state(str(folder))
     (folder / "cli.log").write_text("2026-10-04 ログ\n", encoding="utf-8")
-    assert conftest._folder_state(str(folder)) != made
+    assert harness_guards._folder_state(str(folder)) != made
 
 
 # --- the Houseki roaming root (S3.1): a test's read once made the real %APPDATA%\Houseki\Surasura -------------------
@@ -136,24 +136,24 @@ def test_the_guard_watches_the_houseki_roots_the_app_would_use(monkeypatch):
     # very folders the app resolves outside a test (computed here without creating either).
     _outside_pytest(monkeypatch)
     monkeypatch.setattr(os, "makedirs", lambda *a, **k: None)
-    assert (path_utils.local_data_root(), path_utils.get_persistent_user_data_path()) == conftest._REAL_HOUSEKI_ROOTS
+    assert (path_utils.local_data_root(), path_utils.get_persistent_user_data_path()) == harness_guards._REAL_HOUSEKI_ROOTS
 
 
 def test_the_guard_sees_a_root_made_and_a_name_at_its_top(tmp_path):
     root = tmp_path / "Houseki" / "Surasura"
-    missing = conftest._root_state(str(root))
+    missing = harness_guards._root_state(str(root))
     root.mkdir(parents=True)
-    made = conftest._root_state(str(root))
+    made = harness_guards._root_state(str(root))
     assert made != missing
     (root / "patterns_ja.db").write_bytes(b"")
-    assert conftest._root_state(str(root)) != made
+    assert harness_guards._root_state(str(root)) != made
 
 
 def test_the_guard_fails_a_test_that_makes_a_houseki_root(tmp_path, monkeypatch):
     # The guard itself, run around a stand-in for a test that makes the root (pointed into tmp_path).
     root = tmp_path / "Roaming" / "Houseki" / "Surasura"
-    monkeypatch.setattr(conftest, "_REAL_HOUSEKI_ROOTS", (str(root),))
-    guard = conftest._guard_real_local_data.__wrapped__()
+    monkeypatch.setattr(harness_guards, "_REAL_HOUSEKI_ROOTS", (str(root),))
+    guard = harness_guards._guard_real_local_data.__wrapped__()
     next(guard)
     root.mkdir(parents=True)
     with pytest.raises(AssertionError, match="real Houseki root"):

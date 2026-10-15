@@ -846,3 +846,23 @@ def test_a_replace_whose_numbers_moved_ends_its_job_saying_nothing_was_replaced(
     assert view.message == strings.ANKI_REPLACE_MOVED_JOB
     w.question.no.click()
     assert wait_until(lambda: not w.busy())
+
+
+def test_a_replace_question_open_across_a_language_switch_writes_only_the_language_it_was_asked_in(
+        main, anki, ja_resources_dir):
+    """IK-53's shape (row 1's AD1-12): the window holds its write from the click through the question, so a switch
+    waits; the Yes replaces the Japanese list it showed, then the window follows to Chinese (nothing written there)."""
+    _migaku(ja_resources_dir)
+    _choose(main, **{"anki_sync_decks": {"ja": ["TheBank"], "zh": ["中文"]}})
+    w = _open(main)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    main.services.settings.set({"target_language": "zh"})
+    assert main.services.settings.flush(5)
+    QTest.qWait(100)
+    assert w.language == "ja" and w.question.isVisible(), "the question still speaks of the Japanese list"
+    w.question.yes.click()
+    _idle(main, w)
+    assert wait_until(lambda: w.language == "zh")
+    assert [x["dictForm"] for x in _words("ja") if x.get("source") == "AnkiConnect"] == WORDS[:3]
+    assert not os.path.exists(_file("zh"))

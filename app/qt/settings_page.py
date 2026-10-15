@@ -46,7 +46,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                              QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from app import theme
@@ -305,7 +305,8 @@ class RowView(QWidget):
         self.slot.setObjectName("settingsslot")
         slot = QHBoxLayout(self.slot)
         slot.setContentsMargins(0, 0, 0, 0)
-        line.addWidget(self.slot, 0, Qt.AlignmentFlag.AlignVCenter)
+        # a list grows downward from the row's top (a folder added never moves the control the click was on)
+        line.addWidget(self.slot, 0, Qt.AlignmentFlag.AlignTop if row.kind == "list" else Qt.AlignmentFlag.AlignVCenter)
         self.set_words(row.label, row.help)
         self.restyle()
 
@@ -372,6 +373,7 @@ class SettingsPage(QWidget):
         self._washed = None
         self._wash_timer = None
         self._reveal_wanted = None
+        self._revealed = None                 # a reveal made while the build goes on: aimed at again after each slice
         self.rows = {}                        # row id -> RowView, once built
         self.slabs = {}                       # section id -> Slab, once built
         self.nav = {}                         # section id -> its nav button
@@ -400,8 +402,6 @@ class SettingsPage(QWidget):
         self.nav_panel.setAccessibleName(S.NAV_NAME)
         nav = QVBoxLayout(self.nav_panel)
         nav.setSpacing(round(2 * _f()))
-        self.nav_group = QButtonGroup(self)
-        self.nav_group.setExclusive(True)
         for section in catalog.SECTIONS:
             b = QPushButton(section.name, self.nav_panel)
             b.setObjectName("settingsnavitem")
@@ -411,7 +411,6 @@ class SettingsPage(QWidget):
             b.setToolTip(S.CHANGE_TIP.format(section=section.name))
             b.setAccessibleName(section.name)
             b.clicked.connect(lambda _c=False, s=section.id: self.go_to(s))
-            self.nav_group.addButton(b)
             self.nav[section.id] = b
             nav.addWidget(b)
         nav.addStretch(1)
@@ -440,6 +439,7 @@ class SettingsPage(QWidget):
         self.scroll.setWidget(self.body)
         line.addWidget(self.scroll, 1)
         self.scroll.verticalScrollBar().valueChanged.connect(self._light_nav)
+        self.scroll.verticalScrollBar().actionTriggered.connect(self._let_go)     # a wheel, a drag, a key: the user's
         self._apply_sizes()
         settings, ctx = self._settings(), self._ctx()
         for section in catalog.SECTIONS:
@@ -543,6 +543,7 @@ class SettingsPage(QWidget):
                 self._build_row(index, row, settings)
                 self._show_section(row.section, settings, ctx, matches)       # shown in the slice that built it
             self._show_nothing(matches)
+        self._aim()
         self._slice_end = time.perf_counter()
         self.slice_ms.append((self._slice_end - t0) * 1000)
         if self._reveal_wanted is not None and self._section_built(catalog.locate(self._reveal_wanted)[0]):
@@ -552,6 +553,7 @@ class SettingsPage(QWidget):
             QTimer.singleShot(0, self._slice)
             return
         self.built = True
+        self._revealed = None
         if self.built_order != [s.id for s in catalog.SECTIONS if s.id in self.slabs]:
             self._tab_order()                 # built out of order (a reveal first): Tab follows the page, not the build
         self._light_nav()
@@ -580,10 +582,30 @@ class SettingsPage(QWidget):
         first = [item for item in self._queue if item[1].section == section_id]
         self._queue = first + [item for item in self._queue if item[1].section != section_id]
 
+    def _aim(self):
+        """A reveal made while the build goes on: its row put at the top third again once the slabs above it are built
+        (the page could not scroll that far before). Held until the build ends or the user scrolls or acts."""
+        widget = self._revealed
+        if widget is None or not _alive(widget) or not widget.isVisible():
+            return
+        if self._scroll_anim is not None and self._scroll_anim.alive:
+            return                                         # the glide asks the row's place each frame itself
+        self._settle()
+        bar = self.scroll.verticalScrollBar()
+        end = max(0, min(bar.maximum(), round(self._y_in_body(widget) - self.scroll.viewport().height() / 3)))
+        if bar.value() != end:
+            bar.setValue(end)
+
+    def _let_go(self, *_args):
+        """The user scrolled, went to a section or changed a setting: a reveal stops aiming at its row."""
+        self._revealed = None
+
     def _anchor_for_build(self):
-        """What a slice keeps in place: a revealed row, else the first row in view (slabs built above it later)."""
-        if self._washed is not None and _alive(self._washed) and self._washed.isVisible():
-            return self._washed
+        """What a slice keeps in place: a revealed row (its wash may be over: held until the build ends), else the
+        first row in view (slabs built above it later)."""
+        for widget in (self._revealed, self._washed):
+            if self._in_view(widget):
+                return widget
         if self.scroll.verticalScrollBar().value() > 0:
             return self._top_widget()
         return None
@@ -775,6 +797,7 @@ class SettingsPage(QWidget):
     def _changed(self, row, value, control):
         """A control's change → the catalog's keys → the settings service (only what there is to write)."""
         self._last = control
+        self._let_go()
         if row.id == "known_road":
             self._road = f"road:{value}"
             self._refresh_visibility(anchor=control)
@@ -941,6 +964,7 @@ class SettingsPage(QWidget):
 
     def focus_search(self):
         """`/`: the search, brought into view (it stands first) and focused."""
+        self._let_go()
         self.scroll.ensureWidgetVisible(self.search)
         self.search.edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.edit.selectAll()
@@ -967,11 +991,14 @@ class SettingsPage(QWidget):
                 continue
             if lit is None or self._y_in_body(slab) <= line:
                 lit = section.id
-        if lit is not None and not self.nav[lit].isChecked():
-            self.nav[lit].setChecked(True)
+        for section_id, b in self.nav.items():       # one lit, by hand: a QButtonGroup takes Tab from all but one
+            if b.isChecked() != (section_id == lit):
+                b.setChecked(section_id == lit)
 
     def go_to(self, section_id):
         """The nav's click: the page glides so the section's slab stands at the top (reduced motion: a jump)."""
+        self._let_go()
+        self._light_nav()                     # a click toggled its button: the lit one is the section in view until the glide
         self._finish_build_of(section_id)
         slab = self.slabs.get(section_id)
         if slab is None or slab.isHidden():
@@ -1037,6 +1064,8 @@ class SettingsPage(QWidget):
         if widget is None or widget.isHidden():
             return False
         self._glide(widget, lambda: self._y_in_body(widget) - self.scroll.viewport().height() / 3)
+        if not self.built:
+            self._revealed = widget
         if view is not None:
             self._wash(view)
         return True

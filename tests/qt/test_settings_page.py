@@ -681,6 +681,22 @@ def test_a_reveal_before_the_build_ends_has_its_slab_built_first(qapp):
     assert _at_third(page, page.rows["max_contexts"])     # kept in place while the slabs above it were built
 
 
+def test_a_user_scroll_during_the_build_lets_the_reveal_go(qapp):
+    # the reveal aims at its row after each slice until the build ends: a wheel / drag / key is the user's, and wins
+    store = Recorder(ALL_ON)
+    page = sp.SettingsPage(SimpleNamespace(settings=store), "ja", found=EVERYTHING)
+    page.resize(1100, 700)
+    page.show()
+    page.reveal("logic.context.max_contexts")
+    assert wait_until(lambda: page._revealed is not None, 20)
+    bar = page.scroll.verticalScrollBar()
+    bar.triggerAction(bar.SliderAction.SliderToMinimum)
+    assert page._revealed is None
+    assert wait_until(lambda: page.built, 20)
+    assert bar.value() == 0                               # never pulled back to the row
+    assert store.calls == []
+
+
 # --- contrast (S5), tooltips, wiring, keyboard ------------------------------------------------------------------------ #
 @pytest.mark.parametrize("role", sorted(theme.SETTINGS_PAGE_GROUNDS))
 def test_every_text_role_of_the_page_clears_its_floor_where_it_stands(role):

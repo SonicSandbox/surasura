@@ -866,3 +866,15 @@ def test_a_replace_question_open_across_a_language_switch_writes_only_the_langua
     assert wait_until(lambda: w.language == "zh")
     assert [x["dictForm"] for x in _words("ja") if x.get("source") == "AnkiConnect"] == WORDS[:3]
     assert not os.path.exists(_file("zh"))
+
+
+def test_after_a_choice_was_saved_a_switch_still_saves_its_own_key_alone(main, anki, monkeypatch):
+    """Mutant F12 (IK-47): what was saved last is what "unchanged" is measured against, not what the window opened with."""
+    _choose(main, **{"anki_sync_fields": {"ja": ["Expression"]}})
+    w = _open(main)
+    w.box_field1.activated.emit(0)                         # Auto: saved once
+    writes = []
+    real = main.services.settings.set
+    monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append((a, sorted(k))), real(*a, **k))[1])
+    w.chk_suspended.click()
+    assert writes == [(({"anki_sync_include_suspended": True},), [])]

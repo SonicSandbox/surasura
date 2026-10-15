@@ -924,6 +924,92 @@ def test_restore_whose_known_total_changed_since_the_confirmation_writes_nothing
     assert anki_sync.restore_previous("ja", expect=first.backup, now=now + 1).error is None
 
 
+def test_a_chinese_replace_and_restore_back_up_the_chinese_list_and_never_touch_the_japanese_one(migaku_file,
+                                                                                                 zh_resources_dir):
+    """Mutant H01 / H17 (row 3's Haiku list): the backup and the restore take the replaced language's own
+    KnownWord.json — a Chinese Replace that copied the Japanese list as its backup would leave the Chinese words with no
+    way back."""
+    with open(os.path.join(zh_resources_dir, "context_test.txt"), encoding="utf-8") as f:
+        assert "冒险" in f.read()
+    ja_before = _read_bytes(migaku_file)
+    _write_json(_known_path("zh"), {"words": [
+        {"dictForm": w, "knownStatus": "KNOWN", "language": "zh"} for w in ("勇敢", "坚强")]})
+    zh_before = _read_bytes(_known_path("zh"))
+    fake = FakeCollection()
+    for w in ("冒险", "挑战"):
+        fake.add(w, deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", w)])
+
+    result = _replace(fake, decks=["中文"], language="zh")
+
+    assert result.error is None and _anki_forms("zh") == ["冒险", "挑战"]
+    backup = os.path.join(get_user_files_path("zh"), ".trash", result.backup)
+    assert _read_bytes(backup) == zh_before, "the Chinese list's own bytes"
+    assert _read_bytes(migaku_file) == ja_before
+    restored = anki_sync.restore_previous("zh")
+    assert restored.error is None and _read_bytes(_known_path("zh")) == zh_before
+    assert _read_bytes(migaku_file) == ja_before, "the Japanese list untouched by the Chinese restore"
+
+
+def test_replace_aborts_when_the_backup_copy_differs_at_the_same_length(ja_words, migaku_file):
+    """Mutant H04: the backup is checked byte for byte, not by size — a copy of the right length with other bytes
+    (a sector gone bad) is no backup."""
+    before = _read_bytes(migaku_file)
+
+    def bad_copy(src, dst):
+        with open(src, "rb") as a, open(dst, "wb") as b:
+            data = a.read()
+            b.write(data[:-1] + (b"x" if data[-1:] != b"x" else b"y"))
+
+    with mock.patch("app.anki_sync.shutil.copyfile", bad_copy):
+        result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+
+    assert result.error and "Nothing was replaced" in result.error
+    assert _read_bytes(migaku_file) == before and not os.path.exists(_state_path())
+
+
+def test_a_known_words_file_broken_after_the_first_check_is_still_never_replaced(ja_words, migaku_file):
+    """Mutant H07: Replace checks the file again under the known-words lock — one broken between the first check and
+    the lock (another program's half write) is still refused, nothing backed up or written."""
+    real = anki_sync._hold_known
+
+    def broken_first(language, verb, *a, **k):
+        with open(_known_path(language), "wb") as f:
+            f.write(b'{"words": [{"dictForm": "')          # cut mid-entry
+        return real(language, verb, *a, **k)
+
+    with mock.patch.object(anki_sync, "_hold_known", broken_first):
+        result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error and not result.changed
+    assert _read_bytes(migaku_file) == b'{"words": [{"dictForm": "' and _trash_files() == []
+
+
+def test_replace_keeps_the_dismissed_words_of_a_bare_list_known_words_file(ja_words, migaku_file):
+    """Mutant H12: an older KnownWord.json is a bare list; its IGNORED entries are kept by Replace too."""
+    with open(migaku_file, encoding="utf-8") as f:
+        entries = json.load(f)["words"]
+    ignored = [w for w in entries if w["knownStatus"] == "IGNORED"]
+    assert ignored
+    _write_json(migaku_file, entries)                        # the bare-list form
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert dry.kept_ignored == len(ignored)
+    result = _replace(fake)
+    assert result.error is None
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == ignored
+
+
+def test_a_dismissed_word_a_past_graduate_names_is_written_once_as_the_graduates(ja_words, migaku_file):
+    """Mutant H15: a word both graduated (kept known) and dismissed in the old file is written once — the Graduate's
+    KNOWN entry — never known and ignored at once."""
+    word = ja_words[5]
+    _write_json(migaku_file, {"words": [
+        {"dictForm": word, "knownStatus": "KNOWN", "source": anki_sync.GRADUATED_SOURCE, "language": "ja"},
+        {"dictForm": word, "knownStatus": "IGNORED", "language": "ja"}]})
+    result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error is None and result.kept_graduated == 1 and result.kept_ignored == 0
+    assert [(w["dictForm"], w["knownStatus"]) for w in _words() if w["dictForm"] == word] == [(word, "KNOWN")]
+
+
 # --------------------------------------------------------------------------- #
 # Settings (I9)
 # --------------------------------------------------------------------------- #

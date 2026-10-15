@@ -379,6 +379,41 @@ def test_a_sync_that_added_nothing_asks_for_nothing(live, monkeypatch):
     auto.close()
 
 
+# --- the Anki window's own sync (W3.4 row 3: the Tk window's `_on_anki_sync_result(result, auto=False, …)`) -------- #
+@pytest.mark.parametrize("mode, added, generates", [("delta", 4, True), ("full", 0, False), ("replace", 30, True),
+                                                    ("restore", 0, True)])
+def test_the_anki_windows_result_asks_for_generate_as_the_dashboard_did(live, mode, added, generates):
+    """`anki_synced(result, language)`: words came in (or the list was replaced or restored) → the quiet Generate for
+    the language the window synced; nothing came → nothing asked. The known-words count is read again either way."""
+    h.seed_library("ja")
+    seen = []
+    auto, registry, controller, launches = _make(_settings())
+    auto.subscribe(seen.append)
+    auto.anki_synced(anki_sync.SyncResult(mode=mode, added=added, total_known=7), "ja")
+    assert auto.worker.idle(5)
+    if generates:
+        assert h.until(lambda: launches.count() == 1, seconds=10)
+        launches.runs[0].ended(0)
+        assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    assert launches.count() == (1 if generates else 0)
+    assert auto.state().known == anki_sync.count_known("ja") and seen, "the bar's count read again"
+    assert not registry.live("anki-sync"), "the window's own sync: the service starts none of its own"
+    auto.close()
+
+
+def test_the_anki_windows_failed_result_asks_for_nothing_and_after_close_nothing_at_all(live):
+    h.seed_library("ja")
+    indexes = []
+    auto, registry, _c, launches = _make(_settings(anki_auto_generate=False), indexes=indexes)
+    auto.anki_synced(anki_sync.SyncResult(mode="delta", error="Anki stopped answering"), "ja")
+    assert auto.worker.idle(5) and indexes == [] and launches.count() == 0
+    auto.anki_synced(anki_sync.SyncResult(mode="delta", added=2), "ja")
+    assert auto.worker.idle(5) and indexes == [1], "words without automatic Generate: the indexer"
+    auto.close()
+    auto.anki_synced(anki_sync.SyncResult(mode="delta", added=2), "ja")
+    assert indexes == [1]
+
+
 def test_the_ten_minute_limit_and_its_alarm(live):
     """`_maybe_auto_generate`'s 600 s and `_auto_generate_alarm`: words 100 s after an automatic run wait; one alarm
     for the moment the limit is up (replaced, never stacked); it rings and the run goes."""

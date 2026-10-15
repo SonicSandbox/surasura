@@ -571,6 +571,16 @@ class Automation:
                 self.worker.put(self.check, timer)
             timer = self._check_timer = self.timer(CHECK_SETTLE, ring)
 
+    def anki_synced(self, result, language):
+        """The Anki window's own Sync, Replace or Restore ended (W3.4 row 3; the Tk window's
+        `_on_anki_sync_result(result, auto=False, language=…)`): what a sync's result asks for — the quiet Generate for
+        the language it read, or the indexer, and the journey asked again (`AutoSync.result`) — and the bar's count
+        read again. Any thread; returns at once. Nothing once closed."""
+        if self.closed:
+            return
+        self.worker.put(self.sync.result, result, language)
+        self.worker.put(self._read_known)
+
     def update_cancelled(self):
         """An update that held everything was cancelled: a Generate it held back asks again."""
         self.worker.put(self.generate.maybe)

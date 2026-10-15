@@ -12,9 +12,11 @@ of the window around the pages, in the redesign's flat look.
 - **The vein** (`Vein`): an uneven iris line under the current tab, from a fixed set of pre-drawn shapes (seeded,
   cached per width × ratio), its two ends travelling on springs (`vein-lead` ω 34, `vein-tail` ω 22); Reduced motion
   jumps it.
-- **The footer's corner**: the emerald and *Anki* (`AnkiMark`: lit while Anki answers, dark when it is closed, failed
-  or off; the AnkiWeb mark's words in its hover) and the known number (`KnownCorner`: large and dim, a hairline under it
-  toward the next 2,500, its progress in the hover).
+- **The footer's corner**: the emerald and *Anki · N waiting* (`AnkiMark`: lit while Anki answers, dark when it is
+  closed, failed or off; N the new cards waiting in Anki, once the sync saved a backlog; the AnkiWeb mark's words in its
+  hover) and the known number (`KnownCorner`: large and dim, a hairline under it toward the next 2,500, its progress in
+  the hover). The re-order's and Connect's lines are quiet marks beside it (`QuietMark`: a dim glyph, the words in the
+  hover).
 - **The Goal dock** (`GoalDock`): Goal's bar (its lift kept: the edge and a short cached shadow, L14) with the loose hand
   of covers, greyed once into its picture; while a drag runs, three wells — Soon · Goal · Finished — that package F
   drives through `begin_drag` / `well_at` / `hover` / `end_drag` / `set_unlit`.
@@ -65,6 +67,12 @@ def milestone(n):
 def hand_angles(n):
     """The loose hand's turns, degrees: cover i at (i − 4) · `dock-cover-turn`, at most `dock-covers` of them."""
     return [(i - 4) * F["dock-cover-turn"] for i in range(min(n, F["dock-covers"]))]
+
+
+def cover_grey(generated):
+    """The loose hand's brightness for a cover (S4): a generated one — already a dark gradient — greyed lighter
+    (`dock-cover-grey-generated`), real cover art at the reference's .62 (`dock-cover-grey`)."""
+    return F["dock-cover-grey-generated"] if generated else F["dock-cover-grey"]
 
 
 def wells_for(source):
@@ -572,7 +580,8 @@ class Vein(QWidget):
 # --- the footer's corner -------------------------------------------------------------------------------------------- #
 class AnkiMark(QWidget):
     """The footer's Anki: the emerald — flat, a filled circle with one facet highlight, lit while Anki answers, the dark
-    emerald while it is closed, failed or off (its hover says which) — and *Anki*. The AnkiWeb mark's words live in its
+    emerald while it is closed, failed or off (its hover says which) — and *Anki*, or *Anki · N waiting* once the sync
+    has saved a backlog (W31A-2: the new cards waiting in Anki; `set_waiting`). The AnkiWeb mark's words live in its
     hover. A status, no click (W3.3). Shown while it has something to say."""
 
     def __init__(self, parent=None):
@@ -580,12 +589,23 @@ class AnkiMark(QWidget):
         self.setObjectName("ankimark")
         self.key = None
         self.words = self.tip = self.ankiweb = ""
+        self.waiting = None              # the cards waiting in Anki (None: no backlog saved — just *Anki*)
         self.lit = False
         self.paints = 0
         self.setVisible(False)
 
     def text(self):
-        return strings.FOOT_ANKI
+        return strings.FOOT_ANKI if self.waiting is None else strings.FOOT_ANKI_WAITING.format(n=self.waiting)
+
+    def set_waiting(self, n):
+        """The new cards waiting in Anki (the status service's `backlog`: a count, or None while no backlog file
+        exists). -> True when it changed (and the mark repainted)."""
+        n = None if n is None else max(0, int(n))
+        if n == self.waiting:
+            return False
+        self.waiting = n
+        self._refresh()
+        return True
 
     def show_state(self, key, words="", tip=""):
         """The sync's state (`strings.BAR_ANKI`'s key, or None: nothing to say). -> True when it changed."""
@@ -609,11 +629,16 @@ class AnkiMark(QWidget):
         tip = strings.FOOT_ANKI_TIP.format(words=self.words, tip=self.tip) if self.key is not None else ""
         if self.ankiweb:
             tip = strings.FOOT_ANKI_ANKIWEB.format(tip=tip, ankiweb=self.ankiweb) if tip else self.ankiweb
+        words = self.words or self.ankiweb
+        if self.waiting is not None:                        # what N counts, last in the hover
+            said = strings.FOOT_ANKI_WAITING_TIP.format(n=self.waiting)
+            tip = f"{tip}\n\n{said}" if tip else said
+            words = f"{words} · {said}" if words else said
         if Qt.mightBeRichText(tip):                         # a provider's words are never markup: shown as written
             tip = "<p>" + html.escape(tip).replace("\n", "<br>") + "</p>"
         self.setToolTip(tip)
-        self.setAccessibleName(strings.FOOT_ANKI_NAME.format(words=self.words or self.ankiweb))
-        self.setVisible(self.key is not None or bool(self.ankiweb))
+        self.setAccessibleName(strings.FOOT_ANKI_NAME.format(words=words))
+        self.setVisible(self.key is not None or bool(self.ankiweb) or self.waiting is not None)
         self.updateGeometry()
         self.paints += 1
         self.update()
@@ -715,6 +740,27 @@ class KnownCorner(QWidget):
         p.fillRect(QRectF(2, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
         p.fillRect(QRectF(2, y, span * share, 1), style.qcolor(theme.IRIS["night"][1][1]))
         p.end()
+
+
+class QuietMark(QLabel):
+    """W31A-1: a status the redesign doesn't draw, kept quietly — the re-order's line, Connect's: a small dim glyph in
+    the footer, its words in the hover and the accessible description (`full()`), shown only while it has something
+    to say. A status, no click."""
+
+    def __init__(self, glyph, name, parent=None):
+        super().__init__(glyph, parent)
+        self.setObjectName("barmark")
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setAccessibleName(name)
+        self._full = ""
+        self.setVisible(False)
+
+    def set_full(self, text):
+        self._full = text or ""
+        self.setAccessibleDescription(self._full)
+
+    def full(self):
+        return self._full
 
 
 # --- the Goal dock -------------------------------------------------------------------------------------------------- #
@@ -1007,7 +1053,9 @@ class GoalDock(QWidget):
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
         q.drawImage(0, 0, img)                              # the covers' own shape back (grey has no alpha)
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-        q.fillRect(QRectF(0, 0, w, h), _alpha(style.qcolor(theme.STONE["black"]), 1 - F["dock-cover-grey"]))
+        # every cover in the hand is generated today (`rows.cover`: real art arrives with AniList's covers): greyed
+        # lighter, or its dark gradient goes black (S4)
+        q.fillRect(QRectF(0, 0, w, h), _alpha(style.qcolor(theme.STONE["black"]), 1 - cover_grey(generated=True)))
         q.end()
         pix = QPixmap.fromImage(grey)
         pix.setDevicePixelRatio(dpr)

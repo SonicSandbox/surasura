@@ -20,6 +20,9 @@ What it holds, refreshed off the window's thread:
   *Generate first*) and the journey dot (`journey`, G10: True while the store's `journey_pending()` says the sentences
   are owed), from providers the window registers (W3.5 row 7): `None` without one. The host says when its line moved
   (`refresh_soon("replan")`); the dot is asked again with every refresh of everything.
+- the new cards waiting in Anki (`backlog`, W31A-2: the footer's *Anki · N waiting*), counted from the Anki sync's
+  saved backlog by a provider the window registers (`anki_backlog`), ticking every 3 s with a stat: `None` without
+  one, or while no backlog has been saved.
 
 `poll()` is safe on a window's thread (a stat and a clock compare, nothing read); it starts a refresh on a worker when
 the file changed, and a look at the ticking providers when their period is up (G5): Connect's line every 3 s (the Tk
@@ -40,12 +43,12 @@ from collections import namedtuple
 from app.services import jobs as jobs_module
 
 Entry = namedtuple("Entry", "text at seen")
-Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey",
-                      defaults=(None, None))
+Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey backlog",
+                      defaults=(None, None, None))
 NEEDS_YOU_KEPT = 50
-LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey")         # `journey`'s answer is True / False, not words
-TICKS = {"connect": 3.0, "ankiweb": 1.0}  # seconds between a ticking provider's looks (`poll`); a provider with an
-                                          # `every()` says its own now (None: not ticking now)
+LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey", "backlog")   # `journey`: True / False; `backlog`: a count
+TICKS = {"connect": 3.0, "ankiweb": 1.0, "backlog": 3.0}  # seconds between a ticking provider's looks (`poll`); a
+                                          # provider with an `every()` says its own now (None: not ticking now)
 FAILURE_PROVIDERS = ("update", "generate")
 LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their own service, with their actions
 
@@ -245,7 +248,7 @@ class StatusService:
     def _make(self):
         return Snapshot(self._lines, self._failure, tuple(self._needs), self._extra.get("ankiweb"),
                         self._extra.get("connect"), self._logs_path, time.time(), self._extra.get("replan"),
-                        self._extra.get("journey"))
+                        self._extra.get("journey"), self._extra.get("backlog"))
 
     def _publish(self):
         """A new snapshot, delivered one at a time and only while it is the newest (never an older one last), and only
@@ -323,6 +326,30 @@ def ankiweb_line(settings, now=None):
         last["due"] = anki_sync_rule.due_at(values, state) is not None
         return anki_sync_rule.status(values, now=None if now is None else now(), state=state) or None
     provider.every = lambda: TICKS["ankiweb"] if last["due"] else TICKS["connect"]
+    return provider
+
+
+def anki_backlog(language):
+    """*Anki · N waiting* (W31A-2) -> a provider: the new cards waiting in Anki — the Anki sync's saved backlog
+    (`User Files/<lang>/anki_backlog.json`), its notes counted as `anki_sync.count_backlog` counts them — never a call
+    to Anki. None while no backlog file exists (someone who never synced sees *Anki*, never *0 waiting*), and for one
+    that can't be read or holds no notes table (not a count: *Anki*, not a false 0); a read file with no notes is 0.
+    Ticking every 3 s, it stats the file and reads it again only when its stamp (mtime, size) moved: the count is
+    kept. A worker's call, one at a time (the service's refresh)."""
+    last = {"stamp": None, "n": None}
+
+    def provider():
+        from app import anki_sync
+        stamp = _stamp(anki_sync._backlog_path(language))
+        if stamp is None:
+            last["stamp"] = last["n"] = None            # gone (or never written): *Anki*
+            return None
+        if stamp != last["stamp"]:
+            notes = anki_sync.load_backlog(language).get("notes")
+            last["n"] = len(notes) if isinstance(notes, dict) else None
+            last["stamp"] = stamp
+        return last["n"]
+    provider.every = lambda: TICKS["backlog"]
     return provider
 
 

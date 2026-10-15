@@ -488,6 +488,7 @@ FRAME = MappingProxyType({
     "goal-bar-radius": 10,
     "dock-cover": (26, 37), "dock-cover-overlap": 12, "dock-cover-turn": 2.0, "dock-covers": 9,
     "dock-cover-grey": 0.62, "dock-cover-alpha": 0.8,      # the loose hand: grey at 62 % and .8, made once
+    "dock-cover-grey-generated": 0.9,   # a generated cover (already a dark gradient) greyed lighter (S4); .62: real art
     "well-gap": 10, "well-covers": 3, "well-slot": 6, "well-cover-gap": 5, "well-wall": 2,
     "slot-fill-alpha": 0.08,        # an open slot's fill: its gem's light at 8 %
 })

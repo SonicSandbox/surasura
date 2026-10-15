@@ -8,7 +8,8 @@ stone here is the stone the reference page draws for the same seed.
 
 **The sheet.** Every picture a row can show is drawn once per (device-pixel ratio, text size) into one `QImage` atlas
 (premultiplied ARGB, antialiased), off the GUI thread (`bridge.run_in_worker`), at the first paint that asks for it —
-never before the first frame. A fixed set of variants:
+never before the first frame: a window holds every build back until its first frame is flushed (`hold` / `release`;
+the shell asks for its sheet then, S1), and its rows paint stoneless meanwhile. A fixed set of variants:
 - singles: rock / raw / cut × the three gems × `VARIANTS` seeds × three sizes (watched, next — big, waiting — small);
 - the cut groups 12 / 60 / 120 × the gems, their count baked in (a row's groups are always whole);
 - ores: the gems × four size buckets × four mined shares (none, some, most, all) × with or without cut points;
@@ -918,6 +919,8 @@ BUDGET_BYTES = 16 * 1024 * 1024
 _SHEETS = OrderedDict()                         # (dpr, text size) -> Sheet, oldest first
 _BUILDING = {}                                  # (dpr, text size) -> [one-shot callbacks]
 _FAILED = set()                                 # a build that raised is not tried again this session
+_HELD = set()                                   # windows whose first frame hasn't come yet: no build starts (S1)
+_DEFERRED = []                                  # keys asked for while held, started at the release
 _notifier = []
 
 
@@ -942,9 +945,27 @@ def held_bytes():
     return sum(s.bytes for s in _SHEETS.values())
 
 
+def hold(token):
+    """S1: a window not yet past its first frame holds every build back (its rows may paint before it: stoneless) —
+    `release(token)` once its first frame is flushed (the shell's `first_frame`), or when it goes. GUI thread."""
+    _HELD.add(token)
+
+
+def release(token):
+    """`token` lets go; with no window holding, the builds asked for meanwhile start. GUI thread."""
+    _HELD.discard(token)
+    if _HELD:
+        return
+    while _DEFERRED:
+        key = _DEFERRED.pop(0)
+        if key in _BUILDING:
+            _start(key)
+
+
 def get(dpr, text_size, ready=None):
-    """The sheet for (dpr, text size), or None while it is being built (the first ask starts the build on a worker;
-    `ready(sheet)`, if given, runs once on the GUI thread when it lands, and `notifier().ready` fires). GUI thread."""
+    """The sheet for (dpr, text size), or None while it is being built (the first ask starts the build on a worker —
+    or, while a window's first frame is still coming, once it has come (`hold`); `ready(sheet)`, if given, runs once on
+    the GUI thread when it lands, and `notifier().ready` fires). GUI thread."""
     key = _key(dpr, text_size)
     sheet = _SHEETS.get(key)
     if sheet is not None:
@@ -958,10 +979,18 @@ def get(dpr, text_size, ready=None):
         return None
     _BUILDING[key] = [ready] if ready is not None else []
     notifier()
+    if _HELD:
+        _DEFERRED.append(key)                   # never inside the first frame (S1): asked again at its release
+    else:
+        _start(key)
+    return None
+
+
+def _start(key):
+    """The build of `key`'s sheet, on a worker."""
     from app.qt import bridge
     bridge.run_in_worker(build, key[0], key[1], then=lambda s, key=key: _landed(key, s),
                          failed=lambda info, key=key: _broke(key, info))
-    return None
 
 
 def _landed(key, sheet):
@@ -977,9 +1006,11 @@ def _landed(key, sheet):
 
 def _broke(key, info):
     import sys
+    from app.qt import applog
     _BUILDING.pop(key, None)
     _FAILED.add(key)
     print(f"The stones' sheet could not be drawn: {info[1]}", file=sys.stderr)
+    applog.log("stones", f"the sheet at {key} could not be drawn: {info[1]}")    # L4: the frozen app has no stderr
 
 
 def clear():

@@ -119,7 +119,6 @@ GENERATE_AUTO_TIP = ("Generating by itself, because Anki brought in words you kn
 GENERATE_LOG = "Open the log"
 GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
 GENERATE_PROGRESS_NAME = "Generate's progress"
-JOURNEY = "Your journey ↗"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
@@ -155,7 +154,6 @@ BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generat
 # The re-order's tip promises nothing: the line beside it may say it stands aside.
 BAR_REPLAN_TIP = "{line}\n\nAnki's new cards in your list's order: what Surasura is doing about it, or why it waits"
 BAR_CONNECT_TIP = "What Surasura Connect is doing with your cards in this language"
-BAR_ANKIWEB_TIP = "Surasura's own syncs of Anki with AnkiWeb: when the last one ran, or when the next one starts"
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
@@ -263,3 +261,25 @@ ROWS_JOURNEY_TIP = "Open your journey at this episode\n• It opens in its own w
 ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
+
+# --- W3.1a footer (W31A-1 / W31A-2): the re-order's and Connect's lines as quiet marks (their words in the hover), and
+# the cards waiting in Anki beside the emerald.
+FOOT_REPLAN_MARK = "⇅"
+FOOT_REPLAN_NAME = "Anki's re-order"
+FOOT_CONNECT_MARK = "⇄"
+FOOT_CONNECT_NAME = "Surasura Connect"
+FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
+FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
+FOOT_ANKI_WAITING_TIP = "{n:,} new cards wait in Anki, in the decks the sync reads"
+
+# --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
+MOVE_WORDS = {
+    "saving": "Saving your moves…",
+    "cant_undo": "Can't undo — that item changed since",
+    "nearest": "That spot changed meanwhile — placed next to the nearest item instead",
+    "top": "That spot changed meanwhile — placed at the top instead",
+    "crash_one": "1 move from before the crash couldn't be applied",
+    "crash_many": "{n} moves from before the crash couldn't be applied",
+    "read_only": "Your library can't be saved right now: {reason}",
+    "failed": "That change couldn't be saved: {error}",
+}

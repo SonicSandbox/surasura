@@ -511,3 +511,105 @@ def test_coming_forward_raises_and_activates_the_window(window):
     window.showMinimized()
     window.bring_to_front(["--from", "a second start"])
     assert calls == ["raise", "activate"] and not window.isMinimized()
+
+
+# --- W3.1a: the stones' sheet after the first frame (S1), Up Next's ↗ opens the journey (S5) ---------------------- #
+def _seeded_window(qapp):
+    from app.services import library_reader
+    from tests.fixtures import window_seed
+    seed = window_seed.build(files=window_seed.SMALL, language="ja")
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    win.resize(1280, 800)
+    return win, services
+
+
+def test_no_stones_sheet_build_starts_before_the_first_frame_and_one_is_asked_right_after(qapp, monkeypatch):
+    """S1 (C-scope §5: no stone or art work before the first frame): a row asking for the sheet inside the first paint
+    gets None — it paints stoneless — and no build starts; the first frame flushed, the shell asks for the sheet and its
+    build starts on a worker, and lands."""
+    from app.qt import stones
+    started, framed = [], []
+    real = stones._start
+    monkeypatch.setattr(stones, "_start", lambda key: (started.append((key, bool(framed))), real(key)))
+    win, services = _seeded_window(qapp)
+    win.first_frame.connect(lambda: framed.append(1))
+    key = stones._key(win.devicePixelRatioF() or 1.0, style.current()[1])
+    kept = stones._SHEETS.pop(key, None)
+    try:
+        assert stones.get(win.devicePixelRatioF() or 1.0, style.current()[1]) is None    # a row's ask: stoneless
+        assert started == [] and key in stones._BUILDING                                  # ... and nothing built yet
+        win.show()
+        assert wait_until(lambda: framed, 10)
+        assert wait_until(lambda: started, 5)
+        assert started[0] == (key, True), started                       # asked once the first frame came, not before
+        assert all(after for _key, after in started)
+        assert wait_until(lambda: key in stones._SHEETS, 20)             # it lands
+    finally:
+        win.close()
+        services.shutdown(0.5)
+        wait_until(lambda: key not in stones._BUILDING, 20)
+        if key not in stones._SHEETS and kept is not None:
+            stones._landed(key, kept)
+
+
+def test_a_window_without_a_library_asks_for_no_sheet(qapp, monkeypatch):
+    """No library, no row: the first frame lets other windows' builds go, and asks for nothing itself."""
+    from app.qt import stones
+    started = []
+    monkeypatch.setattr(stones, "_start", lambda key: started.append(key))
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    framed = []
+    win.first_frame.connect(lambda: framed.append(1))
+    try:
+        win.show()
+        assert wait_until(lambda: framed, 10)
+        QTest.qWait(30)
+        assert started == []
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_up_nexts_new_words_link_opens_the_journey_on_a_worker_and_says_why_when_there_is_none(qapp, monkeypatch):
+    """S5: *N new words ↗* on Up Next is wired to the journey opener (never a click that does nothing); with no journey
+    on disk yet, the bar says it appears after the first Generate."""
+    import threading
+    win, services = _seeded_window(qapp)
+    opened = []
+    answer = [True]
+    monkeypatch.setattr(services, "open_journey",
+                        lambda: opened.append(threading.current_thread() is threading.main_thread()) or answer[0])
+    try:
+        win.show()
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and not page.view_model.loading, 10)
+        assert page.on_journey is not None
+        row = page.view_model.rows[0]
+        page.list.journey_requested.emit(row, row.episodes[0] if row.episodes else None)
+        assert wait_until(lambda: opened == [False])                    # opened, off the window's thread
+        assert win.bar_line.full() != strings.JOURNEY_NONE_TIP
+        answer[0] = False
+        page.list.journey_requested.emit(row, None)
+        assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NONE_TIP)
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_a_stones_sheet_that_fails_to_draw_is_written_to_the_apps_log(monkeypatch):
+    """L4: the frozen app has no stderr — a failed sheet build goes through `applog`, and is not tried again."""
+    from app.qt import applog, stones
+    logged = []
+    monkeypatch.setattr(applog, "log", lambda area, msg: logged.append((area, msg)))
+    key = (3.0, "M")                                    # a ratio no other test holds
+    stones._BUILDING[key] = []
+    try:
+        stones._broke(key, (RuntimeError("out of memory"), "RuntimeError: out of memory"))
+        assert logged and logged[0][0] == "stones" and "out of memory" in logged[0][1]
+        assert key in stones._FAILED and key not in stones._BUILDING
+    finally:
+        stones._FAILED.discard(key)

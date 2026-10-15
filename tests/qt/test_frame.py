@@ -471,3 +471,70 @@ def test_the_dock_takes_the_goal_the_strip_takes_from_the_readers_view(qapp):
     finally:
         win.close()
         services.shutdown(0.5)
+
+
+# --- W3.1a: the footer's quiet functions, the start path, the cover treatment --------------------------------------- #
+def test_the_level_mark_shows_failed_over_stale_over_the_journey_all_at_once(world):
+    """With the journey's sentences owed all along, a failed Generate is the amber mark, a stale one the accent mark,
+    and only with Generate clean is the mark the journey's (a failure is never hidden behind the other two)."""
+    level, win = world.d.level, world.win
+    win._poll.stop()
+    world.status.providers["journey"] = lambda: True
+    world.status.refresh_soon("journey")
+    assert wait_until(lambda: level.mark == "journey")
+    world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).")
+    assert wait_until(lambda: level.mark == "failed")
+    arr = rgb_array(level.grab())
+    assert count(arr, theme.STATUS["warn"], 12) > 0 and strings.LEVEL_MARKS["failed"] in level.toolTip()
+    world.controller.push(state=G.STALE)
+    assert wait_until(lambda: level.mark == "stale")
+    assert count(rgb_array(level.grab()), theme.STATUS["warn"], 12) == 0
+    assert strings.LEVEL_MARKS["stale"] in level.toolTip() and strings.LEVEL_MARKS["journey"] not in level.toolTip()
+    world.controller.push(state=G.CURRENT)
+    assert wait_until(lambda: level.mark == "journey")
+
+
+@pytest.mark.parametrize("sync, auto, key", [(None, False, "off"), ("syncing", True, "syncing"),
+                                             ("synced", True, "synced"), ("anki-closed", True, "anki-closed"),
+                                             ("failed", True, "failed")])
+def test_each_anki_state_has_its_emerald_and_its_hover_says_which(world, sync, auto, key):
+    """A failed, closed or switched-off Anki is the dark emerald; its hover says which, in the sync's own words."""
+    from app.services import automation as A
+    mark = world.d.anki
+    world.services.settings.set({"anki_sync_auto": auto}, now=True)
+    if sync is not None:
+        world.automation.push(sync=sync, message="AnkiConnect didn't answer")
+    assert wait_until(lambda: mark.key == key)
+    assert mark.lit is (key in ("syncing", "synced")) and not mark.isHidden()
+    assert strings.BAR_ANKI[key] in mark.toolTip()
+    tip = strings.BAR_ANKI_TIP[key]
+    assert (tip.format(message="AnkiConnect didn't answer") if key == "failed" else tip) in mark.toolTip()
+    assert mark.toolTip() and mark.accessibleName()
+
+
+def test_the_covers_grey_is_lighter_for_a_generated_cover_than_for_real_art():
+    assert frame.cover_grey(generated=False) == theme.FRAME["dock-cover-grey"] == 0.62     # the reference's, real art
+    assert 0.85 <= frame.cover_grey(generated=True) <= 1.0                                # S4: lighter
+
+
+def _hand_luminance(dock):
+    """The mean luminance (0–255) of the hand's opaque pixels, greyed as the dock draws them."""
+    import numpy as np
+    dock._hand_key = None
+    hand, _room = dock._hand_picture(1.0)
+    img = hand.toImage()
+    arr = rgb_array(img)
+    alpha = np.array([[img.pixelColor(x, y).alpha() for x in range(img.width())] for y in range(img.height())])
+    luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
+    return float(luma[alpha > 250].mean())
+
+
+HAND_FLOOR = 40          # 0–255: at the reference's .62 a generated hand measures ~32 (three black tiles); at .9, ~46
+
+
+def test_a_generated_cover_in_the_hand_stays_above_the_luminance_floor(dock, monkeypatch):
+    """S4: the generated covers are already dark gradients — greyed at the reference's .62 they read as black tiles,
+    their characters gone. Greyed lighter, the hand stays above a floor; the floor is one the old value falls under."""
+    assert _hand_luminance(dock) >= HAND_FLOOR
+    monkeypatch.setattr(frame, "F", dict(theme.FRAME, **{"dock-cover-grey-generated": theme.FRAME["dock-cover-grey"]}))
+    assert _hand_luminance(dock) < HAND_FLOOR                                  # the floor tells the two apart

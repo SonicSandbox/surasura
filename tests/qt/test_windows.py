@@ -224,10 +224,12 @@ def test_the_modules_are_looked_for_once_and_never_on_the_windows_thread(main, m
     for _ in range(3):
         main.show_tab("current")
         main.show_tab("settings")
-    assert looks == [("no_such_module_w34", False)]
+    # each module a door names looked for once, on a worker (the rows' own doors name modules too)
+    assert sorted(looks) == sorted({(op.module, False) for op in windows.OPENERS if op.module})
     assert row.buttons["ghost"].isHidden()
+    seen = len(looks)
     again = windows.launchers(main, main.page_widgets["settings"])     # a row made after the look ended: no new look
-    assert not wait_until(lambda: len(looks) > 1, timeout=1.0)          # (a second look would run on a worker)
+    assert not wait_until(lambda: len(looks) > seen, timeout=1.0)          # (a second look would run on a worker)
     assert again.buttons["ghost"].isHidden()
 
 

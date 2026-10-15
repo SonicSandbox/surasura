@@ -45,6 +45,9 @@ TEXT_EXTENSIONS = (".epub", ".txt", ".md", ".srt", ".ass", ".ssa")
 RESULT_MARK = "RESULT "
 EXIT_DONE, EXIT_FAILED, EXIT_REFUSED, EXIT_PROCESSED_ONLY = 0, 1, 2, 3
 NAME_LIMIT = 120                                # characters: a folder name, and its parts' names after it
+# Set (by a test running the real child): the child adds its parts but starts no store helper — a detached helper would
+# outlive the test's folders. The window's runs never set it.
+NO_HELPER_ENV = "SURASURA_EXTRACT_NO_HELPER"
 
 _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEVICE = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$", re.IGNORECASE)
@@ -436,6 +439,8 @@ def add_to_library(source, name, rels, language, section, spawn=True):
             _trash_copies(data_dir, dest)
             return False, "insert"
     if change is None or not change.added:
+        print("The library didn't take the parts, so they stay in Processed.")
+        _trash_copies(data_dir, dest)
         return False, "insert"
     if spawn:
         library_store.spawn_maintain(language)             # the copy, written by the helper
@@ -443,7 +448,8 @@ def add_to_library(source, name, rels, language, section, spawn=True):
 
 
 def _trash_copies(data_dir, dest):
-    """The copies made in a section's folder, each to the library's trash (its clock restarted), never deleted."""
+    """The copies made in a section's folder, each to the library's trash (its clock restarted), never deleted; then
+    the folders the copy made (`dest`, ours alone), each removed only once empty."""
     from app import library_store
     for where, _dirs, files in os.walk(dest):
         for name in files:
@@ -452,6 +458,11 @@ def _trash_copies(data_dir, dest):
                 library_store.trash_file(data_dir, rel)
             except OSError:
                 pass
+    for where, _dirs, _files in sorted(os.walk(dest), key=lambda w: -len(w[0])):
+        try:
+            os.rmdir(where)                                  # refused while anything is left in it
+        except OSError:
+            pass
 
 
 def result_line(result):
@@ -492,7 +503,7 @@ def main(argv=None):
     os.makedirs(os.path.join(get_data_path(args.language), "Processed"), exist_ok=True)
     try:
         result = extract(args.file, args.name, args.language, args.section, args.split, args.value, args.parts,
-                         args.field, _settings_overflow())
+                         args.field, _settings_overflow(), spawn=not os.environ.get(NO_HELPER_ENV))
     except Exception as e:
         print(f"Error: {e}")
         result = Result(EXIT_FAILED, 0, None, args.section, False, "error")

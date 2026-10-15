@@ -635,8 +635,9 @@ def test_extract_glues_every_value_to_its_option(main, runs, tmp_path):
     assert "--value=---" in argv and "--name=-draft" in argv and f"--file={src}" in argv
 
 
-def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path):
+def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path, monkeypatch):
     from tests.test_library_store_support import library, write_manifest
+    monkeypatch.setenv(extract.NO_HELPER_ENV, "1")      # the child's detached helper would outlive this test's folders
     from app import library_store as ls
     data_dir, user_files_dir, doc = library("ja", shows=1, episodes=2, loose=0)
     write_manifest(user_files_dir, doc)

@@ -233,3 +233,19 @@ def test_a_missing_known_words_file_is_no_refusal(ja_resources_dir):
 def test_a_replace_that_found_its_numbers_moved_is_its_own_end():
     assert importers_view.replace_outcome(anki_sync.EXIT_CHANGED, None)[0] == "changed"
     assert importers_view.expect_arg(importers_view.Plan("p", 3, 2, 5, 1, 0, None)) == "2,5,1,0"
+
+
+# --- IK-59: the window decides nothing --------------------------------------------------------------------------- #
+def test_the_split_value_follows_the_method_as_the_tk_window_did():
+    # By length: a pattern in the field gives way to the saved length; by pattern: an empty or digit field to the default.
+    assert importers_view.split_value(True, r"\n\d+\n", "1500") == "1500"
+    assert importers_view.split_value(True, "800", "1500") is None             # a length stays
+    assert importers_view.split_value(False, "800", "1500") == extract.DEFAULT_DELIMITER
+    assert importers_view.split_value(False, "", "1500") == extract.DEFAULT_DELIMITER
+    assert importers_view.split_value(False, "第.章", "1500") is None           # a pattern stays
+
+
+def test_extract_picks_a_decks_sentence_or_expression_field_only():
+    assert importers_view.extract_field(["Expression", "Sentence", "Meaning"]) == "Sentence"
+    assert importers_view.extract_field(["Expression", "Meaning"]) == "Expression"
+    assert importers_view.extract_field(["Front", "Back"]) is None             # the Tk window chose these two only

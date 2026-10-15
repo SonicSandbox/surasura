@@ -49,6 +49,22 @@ def can_extract(path, name, field, understood, busy, deck=None):
     return True
 
 
+def split_value(by_length, value, length):
+    """The split's value when its method changes (the Tk window's reset) -> the new value, or None to keep it: by length,
+    a pattern gives way to the saved `length`; by pattern, an empty field or a number to the default pattern."""
+    if by_length and not value.isdigit():
+        return length
+    if not by_length and (not value or value.isdigit()):
+        return extract.DEFAULT_DELIMITER
+    return None
+
+
+def extract_field(fields):
+    """The deck field Extract offers first: Sentence, else Expression, else none (the Tk window chose these two only)."""
+    default = anki_db_import.pick_field(fields, ("Sentence", "Expression"))
+    return default if default in ("Sentence", "Expression") else None
+
+
 def error_of(line):
     """A child's printed line -> its words when it says why something failed ("Error: …"), else None."""
     line = (line or "").strip()

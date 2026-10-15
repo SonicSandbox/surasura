@@ -199,7 +199,7 @@ class DeckWindow(ToolWindow):
         self.field.clear()
         self.sample.setPlainText("")
         self.refresh()
-        if not importers_view.is_deck(path) or not os.path.isfile(path):
+        if not importers_view.is_deck(path):
             self._reading = None
             self.say(strings.APKG_NOT_A_DECK if path else "")
             return
@@ -247,7 +247,8 @@ class DeckWindow(ToolWindow):
         if not self.go.isEnabled():
             return
         field, deck, path, language = self.field.currentText(), self.deck, self._deck_path, self.language
-        self.ask(strings.APKG_ASK_TITLE, strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
+        self.ask(strings.APKG_ASK_TITLE.format(language=strings.LANGUAGE_NAMES.get(language, language)),
+                 strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
                  strings.APKG_ASK_YES, strings.APKG_ASK_YES_TIP,
                  on_answer=lambda yes: yes and self.start(path, field, language))
 
@@ -326,10 +327,11 @@ class MigakuWindow(ToolWindow):
         if not plan.words:
             self.say(strings.MIGAKU_EMPTY)
             return
-        saved = plan.saved.strftime("%Y-%m-%d %H:%M") if plan.saved else "?"
+        saved = plan.saved.strftime(strings.MIGAKU_SAVED) if plan.saved else strings.MIGAKU_SAVED_UNKNOWN
         body = strings.MIGAKU_ASK_BODY.format(file=os.path.basename(plan.path), time=saved, now=plan.now,
                                               after=plan.after, kept=_kept(plan))
-        self.ask(strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
+        self.ask(strings.MIGAKU_ASK_TITLE.format(language=strings.LANGUAGE_NAMES.get(language, language)), body,
+                 strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
                  default_no=True, danger=True,
                  on_answer=lambda yes: yes and self.start(plan.path, language, importers_view.expect_arg(plan)))
 
@@ -620,7 +622,7 @@ class ExtractWindow(ToolWindow):
         self.field.clear()
         self.sample.setPlainText("")
         self._reading = None
-        if importers_view.is_deck(path) and os.path.isfile(path):
+        if importers_view.is_deck(path):
             self._reading = path
             self.say(strings.APKG_READING)
             bridge.run_in_worker(anki_db_import.read_deck, path, 10,
@@ -637,8 +639,8 @@ class ExtractWindow(ToolWindow):
         self.deck, self._deck_path = deck, path
         self.field.blockSignals(True)
         self.field.addItems(deck.fields)
-        default = anki_db_import.pick_field(deck.fields, ("Sentence", "Expression"))
-        if default in ("Sentence", "Expression"):          # the Tk window chose these two only
+        default = importers_view.extract_field(deck.fields)
+        if default:
             self.field.setCurrentText(default)
         else:
             self.field.setCurrentIndex(-1)
@@ -660,11 +662,9 @@ class ExtractWindow(ToolWindow):
         self.refresh()
 
     def _method_changed(self, by_length):
-        value = self.value.text()
-        if by_length and not value.isdigit():
-            self.value.setText(self._length)
-        elif not by_length and (not value or value.isdigit()):
-            self.value.setText(extract.DEFAULT_DELIMITER)
+        value = importers_view.split_value(by_length, self.value.text(), self._length)
+        if value is not None:
+            self.value.setText(value)
 
     def refresh(self):
         path = self.path.text().strip()

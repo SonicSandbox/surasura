@@ -122,6 +122,14 @@ def test_the_deck_window_reads_the_deck_on_a_worker_and_shows_its_fields_and_fir
     assert strings.APKG_EVERY_NOTE in labels                  # the tested sentence, kept (inv §2.1 #8)
 
 
+def test_a_deck_that_isnt_there_is_said_by_the_read_on_a_worker(main, runs, tmp_path):
+    """IK-59: the window's thread never looks at the disk; the worker's read says the deck can't be read."""
+    w = importers.open_deck(main)
+    w.choose(str(tmp_path / "無い.apkg"))
+    assert wait_until(lambda: w.status.text().startswith(strings.IMPORTERS_READ_FAILED.split("{")[0]))
+    assert w.deck is None and not w.go.isEnabled()
+
+
 def test_the_deck_import_runs_only_after_a_yes_that_names_what_it_adds(main, runs):
     w = importers.open_deck(main)
     w.choose(DECK)
@@ -341,6 +349,22 @@ def test_a_replace_whose_numbers_moved_reads_again_and_asks_again(main, runs):
     assert os.path.exists(folder) and len(runs.calls) == 3
     _card(j).no.click()
     assert not os.path.exists(folder)
+
+
+def test_each_question_names_its_language(main, runs):
+    """IK-53: a question never says which list it writes; now its title names it (日本語 / 中文), and the deck's says
+    that words still being learned become known."""
+    _known(CURRENT)
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    assert strings.LANGUAGE_NAMES["ja"] in _card(w).accessibleName()
+    _card(w).no.click()
+    d = importers.open_deck(main)
+    d.choose(DECK)
+    assert wait_until(lambda: d.deck is not None)
+    d.go.click()
+    assert strings.LANGUAGE_NAMES["ja"] in _card(d).accessibleName() and "still learning" in _card(d).body.text()
 
 
 def test_choose_a_file_asks_too(main, runs, monkeypatch):

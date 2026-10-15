@@ -37,7 +37,14 @@ services = shell.Services()
 win = shell.open_window(app, services)
 win.show()
 win.show_tab("settings")
+import time
 app.processEvents()
+deadline = time.monotonic() + 20
+def looking():                                       # the doors' modules are looked for on a worker
+    return windows._LOOKING or any(op.module and op.module not in windows._FOUND for op in windows.OPENERS)
+while looking() and time.monotonic() < deadline:
+    app.processEvents()
+    time.sleep(0.01)
 doors, opened = {}, {}
 for op in windows.OPENERS:
     shown = not win.launchers.buttons[op.name].isHidden()

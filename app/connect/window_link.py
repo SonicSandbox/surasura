@@ -74,10 +74,7 @@ def _unread_event(conn, reader):
 def _on(settings):
     """Connect may start: its switch and D29's automation (P3.3 C1; 4.1.1's `connect_on` is the one predicate)."""
     from app import settings_manager
-    predicate = getattr(settings_manager, "connect_on", None)
-    if predicate is not None:
-        return bool(predicate(settings))
-    return bool(settings.get("connect_enabled")) and settings_manager.automation(settings)
+    return settings_manager.connect_on(settings)
 
 
 class Link:

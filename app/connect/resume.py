@@ -62,9 +62,7 @@ def watermarks(languages=CONNECT_LANGUAGES):
             with book.Ledger() as ledger:
                 level.forget(lang, ledger)
                 with ledger.transaction():
-                    # the store's own time format (`mine_asked` is the store's `_now()`): the two compare as strings
-                    ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                                        (book.ASKS_FROM + lang, library_store._now()))
+                    ledger.set_asks_from(lang)      # the store's own stamp format: compared with `mine_asked`
         except Exception as e:
             failed.append(f"{name}: {e}")
     return "; ".join(failed) or None

@@ -355,7 +355,7 @@ def test_e14_a_chinese_library(qapp, seeded):
         fam = rows.TEXT.font("row-title").families()
         assert "Microsoft YaHei UI" in fam and "Yu Gothic UI" not in fam
     finally:
-        style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size, not the language
+        style.apply(qapp, "night", "M", "ja")                 # the harness puts back theme and size, not the language
 
 
 def test_e16_large_text_at_1024_keeps_every_column_inside_the_row(qapp, seeded):
@@ -980,7 +980,7 @@ def test_a_relayout_reuses_each_rows_height_and_only_an_opened_row_or_a_new_look
         assert calls[0][1] is True
 
         calls.clear()
-        style.apply(qapp, "hb", "L", "ja")                 # a new text size: the heights are worked out again
+        style.apply(qapp, "night", "L", "ja")                 # a new text size: the heights are worked out again
         lst.doItemsLayout()
         assert len(calls) >= 1, len(calls)
         calls.clear()
@@ -992,7 +992,7 @@ def test_a_relayout_reuses_each_rows_height_and_only_an_opened_row_or_a_new_look
             kept = lst.delegate.sizeHint(None, lst.model().index(n, 0))
             assert kept.height() == real(e, is_open).height(), (n, kept.height())
     finally:
-        style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size
+        style.apply(qapp, "night", "M", "ja")                 # the harness puts back theme and size
 
 
 def test_a_file_arriving_below_the_screen_draws_no_row_afresh_and_moves_nothing_on_screen(seeded):
@@ -1148,7 +1148,7 @@ def test_a_row_takes_each_colour_from_the_theme_now_applied_and_asking_twice_giv
                 assert rows.c(name).rgba() == want, (t, name)
                 assert rows.c(name).rgba() == want, (t, name, "second ask")
     finally:
-        style.apply(qapp, "hb", "M", "ja")                 # the harness puts back theme and size
+        style.apply(qapp, "night", "M", "ja")                 # the harness puts back theme and size
 
 
 def test_the_pointer_resting_on_a_closed_row_paints_its_open_head_ahead_so_opening_it_draws_no_head_afresh(seeded):

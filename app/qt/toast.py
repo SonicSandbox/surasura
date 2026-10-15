@@ -10,8 +10,8 @@ the buckets): no input, its time still running; after the drop it is back, unani
 The message is plain text (a title is never read as markup). The window never waits on a toast; what Undo does is the
 caller's (W3.1's undo stack).
 """
-from PyQt6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
-from PyQt6.QtGui import QFontMetrics, QPainter, QPen
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
+from PyQt6.QtGui import QFontMetrics, QPainter
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy
 
 from app import theme
@@ -94,13 +94,8 @@ class ToastCard(motion.Overlay):
         self.fit_text()
 
     def paintEvent(self, _event):
-        c = style.colours()
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setPen(QPen(style.qcolor(c["line-hi"]), 1))
-        p.setBrush(style.qcolor(theme.FIXED["toast"]))
-        radius = theme.RADII["toast"]
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        style.paint_overlay(p, self.rect(), theme.RADII["toast"])
         p.end()
 
 

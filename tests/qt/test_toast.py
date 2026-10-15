@@ -184,5 +184,5 @@ def test_its_fill_and_border_are_the_tokens(clock, stage):
     want = theme.parse(theme.FIXED["toast"])
     assert abs(fill.red() - want[0]) <= 3 and abs(fill.green() - want[1]) <= 3 and abs(fill.blue() - want[2]) <= 3
     edge = img.pixelColor(img.width() // 2, 0)
-    line = theme.parse(theme.colours("hb")["line-hi"])
+    line = theme.parse(theme.colours("night")["line-hi"])
     assert abs(edge.red() - line[0]) <= 12 and abs(edge.green() - line[1]) <= 12

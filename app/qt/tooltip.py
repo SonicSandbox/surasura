@@ -10,8 +10,8 @@ With the freeze switch on (tests, captures) it shows at once.
 """
 import time
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt, QTimer
-from PyQt6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QPen, QTextDocument
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer
+from PyQt6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QTextDocument
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app import theme
@@ -74,13 +74,8 @@ class Bubble(QWidget):
         self.resize(int(size_.width() + 2 * PAD[0] + 2), int(size_.height() + 2 * PAD[1] + 2))
 
     def paintEvent(self, _event):
-        c = style.colours()
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setPen(QPen(style.qcolor(c["line-hi"]), 1))
-        p.setBrush(style.qcolor(theme.FIXED["tooltip"]))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), theme.RADII["tooltip"],
-                          theme.RADII["tooltip"])
+        style.paint_overlay(p, self.rect(), theme.RADII["tooltip"])
         p.translate(PAD[0] + 1, PAD[1] + 1)
         self._doc.drawContents(p)
         p.end()

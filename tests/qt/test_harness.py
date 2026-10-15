@@ -12,6 +12,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtGui import QGuiApplication
 
+from app import theme
 from app.qt import freeze, style
 
 _names = []
@@ -47,15 +48,15 @@ class _Swallow(QObject):
 
 
 def test_a_test_that_changes_the_look_and_leaves_a_filter(qapp):
-    # This one leaves Sapphire at L and a key-swallowing filter parented to the app; the next test must see neither.
-    style.apply(qapp, "sapphire", "L", "ja")
+    # This one leaves Large text and a key-swallowing filter parented to the app; the next test must see neither.
+    style.apply(qapp, "night", "L", "ja")
     qapp.installEventFilter(_Swallow(qapp))
-    assert style.current()[:2] == ("sapphire", "L")
+    assert style.current()[:2] == ("night", "L")
 
 
 def test_the_next_test_gets_the_defaults_back(qapp):
-    assert style.current()[:2] == ("hb", "M")
-    assert qapp.palette().window().color().name() == "#111419"
+    assert style.current()[:2] == ("night", "M")
+    assert qapp.palette().window().color().name() == theme.colours()["bg"]
     assert not [c for c in qapp.children() if isinstance(c, _Swallow)]
 
 

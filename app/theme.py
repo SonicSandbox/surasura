@@ -1,126 +1,118 @@
-"""The 3.0 window's look as data: three themes, every colour the mock mixes, the type scale, sizes, radii, shadows and
-the motion tokens (W1.3; the window's spec 04 §4.2, 05 §5.5, A4).
+"""The 3.0 window's look as data: one theme (the redesign's night palette, flat), every colour it mixes, the type
+scale, sizes, radii, shadows and the motion tokens (W1.3; the window's spec 04 §4.2, 05 §5.5, A4; the redesign scope).
 
 Qt-free and Tk-free (a test imports this module alone and checks): the Qt shell builds its stylesheet and its dark
 palette from these plain values (W2.1), the painters read the same names, and nothing else spells a colour.
 
-Sources: the look test's `theme.css` (G1.6 round 3: `tracks/window/work/w02/mock-g16/theme.css`) for the token sets,
-its `mock.html` for every `color-mix(in oklab, …)` (the line each mix comes from is named beside it), and A4 for the
-type, sizes, radii, shadows and motion. Qt has no colour mixing, so each mix is worked out here once per theme, the way
-a browser does it (CSS Color 5: OKLab, premultiplied alpha); a mix with `transparent` keeps its alpha (`#rrggbbaa`), and
-`over()` lays such a colour on a ground when an opaque one is needed.
+**One theme in 3.0** (Sonic, 2026-10-14, RS-1: new layout + the new palette flat, one theme): Blue, Lighter blue and
+Sapphire are retired with their picker; themes (a light one included) return in 3.1, with the stone texture, the light
+and the celebrations. Sources: the redesign's foundation brief (Design Doctrine `trials/surasura-2026-10-09/
+95-foundation-brief.md` §3–4: the room, the surfaces, the iris, the gems, the % bands; its ✍ values used as written,
+slate navy ✅), its reference page `worlds/list-r14m.html` (the night token set it lays over the mock, line 651; the
+overlays' stone, `.f-sv1`, line 1975; the frame, `.f-near`, lines 1741–1746) and `worlds/gem-kit.js` (`GEM`, line 31).
+Qt has no colour mixing, so each mix is worked out here once, the way a browser does it (CSS Color 5: OKLab,
+premultiplied alpha); a mix with `transparent` keeps its alpha (`#rrggbbaa`), and `over()` lays such a colour on a
+ground when an opaque one is needed. A theme argument anywhere still reads the one theme: an old settings.json naming
+Sapphire paints the night, and never fails.
 """
 import math
 from types import MappingProxyType
 
-THEMES = ("hb", "sky", "sapphire")          # `am` (Amethyst) is not shipped
-DEFAULT_THEME = "sapphire"                  # Sonic, 2026-10-08 (G2.3): Sapphire first; Blue and Lighter blue stay
-THEME_NAMES = {"hb": "Blue", "sky": "Lighter blue", "sapphire": "Sapphire"}
+THEMES = ("night",)                         # one theme in 3.0 (RS-1); themes return in 3.1
+DEFAULT_THEME = "night"
+THEME_NAMES = {"night": "Night"}
 
-# --- Colours: each theme's own (theme.css) ------------------------------------------------------------------------- #
+# --- Colours: the theme's own tokens ---------------------------------------------------------------------------- #
+# The names every painter and the stylesheet read: the night set the reference lays over the mock (list-r14m :651,
+# `#win.theme-hb`), whose accents are the mock's Blue ones; `bg` is the content's ground (`.f-near .body`, :1742):
+# the list, Finished, Needs you and Settings sit deepest.
 _OWN = {
-    "hb": {
-        "bg": "#111419", "surface": "#171b22", "raised": "#1f242d", "line": "#2a303a", "line-hi": "#3a4250",
-        "ink": "#e9ecf1", "ink-dim": "#939cab", "ink-faint": "#626b79",
+    "night": {
+        "bg": "#04060a", "surface": "#0a0e14", "raised": "#101621", "line": "#161e2a", "line-hi": "#243044",
+        "ink": "#e6ecf5", "ink-dim": "#7d8aa2", "ink-faint": "#56627a",
         "accent": "#62b6f2", "accent-2": "#b894ff", "accent-deep": "#2a6fa8", "accent-wash": "#1a2a3a",
     },
-    "sky": {
-        "bg": "#1a2533", "surface": "#21303f", "raised": "#2a3b4e", "line": "#34485e", "line-hi": "#456079",
-        "ink": "#eef4fb", "ink-dim": "#a6b8cc", "ink-faint": "#7f93aa",
-        "accent": "#8fd0fa", "accent-2": "#c7abff", "accent-deep": "#3a86c4", "accent-wash": "#24405a",
-    },
-    "sapphire": {
-        "bg": "#0a1628", "surface": "#0f1f36", "raised": "#162a46", "line": "#1f3a5c", "line-hi": "#2c5079",
-        "ink": "#eaf2fc", "ink-dim": "#9db5d3", "ink-faint": "#7894b6",
-        "accent": "#4fb0f0", "accent-2": "#bc9cff", "accent-deep": "#1b67b0", "accent-wash": "#13355a",
-    },
 }
-# The iris (90°): the mark's run carried into the purple — the Up next edge, progress fills and the wordmark only.
-IRIS = {
-    "hb": ((0.0, "#36c9cf"), (0.45, "#4f9cf0"), (1.0, "#a98bff")),
-    "sky": ((0.0, "#4fd6dc"), (0.45, "#6fb4f6"), (1.0, "#b9a0ff")),
-    "sapphire": ((0.0, "#26d1cf"), (0.45, "#2f8fe0"), (1.0, "#a98bff")),
-}
-# The glow (`--glow`): a 1 px ring, then a soft drop (x, y, blur, spread, colour).
-GLOW = {
-    "hb": ("#62b6f255", (0, 10, 34, -10, "#3f8fe07a")),
-    "sky": ("#8fd0fa55", (0, 10, 34, -10, "#5aa8ec7a")),
-    "sapphire": ("#4fb0f055", (0, 10, 34, -10, "#1e83b97a")),
-}
-# Windows 11's title bar per theme: caption, border, caption text (05 §5.5). Windows 10 takes the dark bar.
-TITLE_BAR = {
-    "hb": {"caption": "#191f27", "border": "#2a303a", "text": "#e9ecf1"},
-    "sky": {"caption": "#21303f", "border": "#34485e", "text": "#eef4fb"},
-    "sapphire": {"caption": "#0f1f36", "border": "#1f3a5c", "text": "#eaf2fc"},
-}
+# The room and its surfaces by layer (brief §4): 0 the content's ground; 1 the frame (header, tabs, footer, the dock),
+# nearer and a shade lighter; 1 cut (New arrivals, search, the buckets' wells), darker than its surface; 2 the overlays
+# in slate navy (✅) with their cuts and the item under the hand; 3 a dialog, dimming the room. Nearer is lighter and
+# bluer, never darker than what it lies on (rule 1); edges top and bottom only (rule 3).
+ROOM = MappingProxyType({
+    "ground": "#070a0f",                    # the room itself, behind everything
+    "content": "#04060a",                   # layer 0: the list's ground (= `bg`)
+    "frame": "#0c1017",                     # layer 1: header, tabs, footer, the dock
+    "goal-bar": "#10151e",                  # Goal's bar, lifted very slightly off the dock
+    "goal-bar-edge": "#1a2230",             # its edge (list-r14m :1746)
+    "slab": "#0a0e15",                      # layer 0 slab: a Needs-you card
+    "cut": "#05070c",                       # layer 1 cut: a floor (New arrivals, search, a bucket's well)
+    "overlay": "#111a2b",                   # layer 2: menus, the level pop, the tray, results, tooltips, toasts ✅
+    "overlay-cut": "#090e18",               # layer 2 cut: the pop's well, a dialog's input
+    "overlay-hover": "#182439",             # layer 2: a menu item or tray row under the hand
+    "overlay-edge-top": "#283752",          # an overlay's lit top edge (`.f-sv1` --ov-et)
+    "overlay-edge-side": "#1a253a",         # its sides' hairline, as quiet as the face (--ov-es)
+    "overlay-edge-bottom": "#0a101b",       # its darkest, bottom edge (--ov-eb)
+    "ring": "#26d1cf",                      # the cyan ring: next (✅)
+    "dim": "#04060acc",                     # a dialog dims the room: the content's colour at 80 %
+})
+# The iris (90°): Surasura's run carried into the purple — the wordmark's second half, the tab's vein, progress (✅).
+IRIS = {"night": ((0.0, "#36c9cf"), (0.45, "#4f9cf0"), (1.0, "#a98bff"))}
+# The glow (`--glow`): a 1 px ring, then a soft drop (x, y, blur, spread, colour) — on the active thing only.
+GLOW = {"night": ("#62b6f255", (0, 10, 34, -10, "#3f8fe07a"))}
+# Windows 11's title bar: caption, border, caption text (05 §5.5), in the frame's colour. Windows 10 takes the dark bar.
+TITLE_BAR = {"night": {"caption": "#0c1017", "border": "#161e2a", "text": "#e6ecf5"}}
 
 # Never themed: the status colours (glyph + label, no accent may look like them) and the source chips (theme.css
-# :113–121; mock.html :519–521). `bad` is a fill only, with `bad-type` on it.
+# :113–121; mock.html :519–521). `ok` and `warn` are also the % bands (brief §3 ✅: ≥ 97 learned, 93–96 ink, < 93
+# heads-up; `view_rows.pct_tone`), and amber is *needs you*. `bad` is a fill only, with `bad-type` on it.
 STATUS = MappingProxyType({"ok": "#7fcf9f", "warn": "#e7bf72", "bad": "#c02040", "bad-type": "#f8f0e0"})
 SOURCE_INK = MappingProxyType({"hato": "#f8a890", "youtube": "#ff6f7a", "anilist": "#5ec6ff"})
-# Hard-coded in the mock, not tokens (A4): the same in every theme.
+# The gems, by kind (brief §3: ✅ kinds, ✍ hexes; gem-kit.js `GEM`): base, light, edge. Sapphire = shows, emerald =
+# reading (and Anki's *connected* light), ruby = videos.
+GEM = MappingProxyType({
+    "sapphire": ("#1d4fae", "#4b8ff0", "#d6e7ff"),
+    "emerald": ("#13744f", "#3cc48f", "#d8f8ea"),
+    "ruby": ("#98203a", "#e2546f", "#ffdbe3"),
+})
+KIND_GEM = MappingProxyType({"shows": "sapphire", "reading": "emerald", "videos": "ruby"})
+# Hard-coded, not tokens: the same whatever the theme. Tooltips and toasts are overlays: slate navy, solid (brief §4).
 FIXED = MappingProxyType({
-    "tooltip": "#0c0f14f5", "toast": "#0d1015f0", "scrim": "#05070acc", "on-accent": "#0b1018",
+    "tooltip": "#111a2b", "toast": "#111a2b", "scrim": "#04060acc", "on-accent": "#0b1018",
     "cover-badge": "#000000b0", "cover-badge-hi": "#000000b8", "cover-badge-border": "#ffffff40",
-    "watched-track": "#00000070", "cover-ink": "#f4efe6", "mark-shadow": "#1e83b940", "page": "#0a0b0f",
-    "cover-ground": "#0c0d11",
+    "watched-track": "#00000070", "cover-ink": "#f4efe6", "mark-shadow": "#1e83b940", "page": "#070a0f",
+    "cover-ground": "#04060a",
 })
 
-# Every color-mix the mock computes: name -> (mock.html line, expression). An expression is a colour (a token name, a
-# fixed name, `#hex` or "transparent") or ("mix", a, pa, b, pb) — `pb` None when CSS leaves it out.
+# The mixes the painters read: name -> (where it comes from, expression). An expression is a colour (a token, room or
+# fixed name, `#hex` or "transparent") or ("mix", a, pa, b, pb) — `pb` None when CSS leaves it out. The old mock's
+# mixes for parts the redesign drops are retired with the themes (git history keeps them).
 MIXES = {
-    "header-top": (166, ("mix", "surface", 70, "accent", 5)),       # sums to 75 %: 75 % alpha (laid over `bg`)
-    "arrivals-border": (210, ("mix", "accent", 45, "line", None)),
-    "arrivals-fill": (210, ("mix", "accent", 10, "surface", None)),
-    "arrivals-pressed": (214, ("mix", "accent", 22, "surface", None)),
-    "generate-hover": (228, ("mix", "raised", 70, "accent", 12)),   # sums to 82 %
-    "generate-stale-glow": (230, ("mix", "accent", 70, "transparent", None)),
-    "tab-bar": (235, ("mix", "surface", 55, "bg", None)),
-    "tab-drop": (241, ("mix", "ok", 12, "transparent", None)),
-    "status-in": (321, ("mix", "ok", 12, "transparent", None)),
-    "status-part-ring": (322, ("mix", "ok", 40, "transparent", None)),
-    "status-mining": (323, ("mix", "accent", 12, "transparent", None)),
-    "status-nomedia-border": (334, ("mix", "warn", 55, "transparent", None)),
-    "top20-line": (348, ("mix", "accent", 38, "line", None)),
-    "watched-chip-fill": (375, ("mix", "accent", 20, "bg", None)),
-    "watched-chip-border": (375, ("mix", "accent", 45, "line", None)),
-    "side-column": (428, ("mix", "surface", 70, "bg", None)),
-    "finished-bucket-lit": (467, ("mix", "ok", 12, "surface", None)),
-    "mine-inset-lit": (471, ("mix", "ok", 14, "bg", None)),
-    "source-hato": (519, ("mix", "#f8a890", 16, "transparent", None)),
-    "source-youtube": (520, ("mix", "#ff3347", 17, "transparent", None)),
-    "source-anilist": (521, ("mix", "#02a9ff", 16, "transparent", None)),
-    "needs-row-border": (548, ("mix", "line", 60, "transparent", None)),
-    "join-candidate-ring": (577, ("mix", "ok", 55, "transparent", None)),
-    "join-candidate-outline": (577, ("mix", "ok", 70, "transparent", None)),
-    "join-on": (578, ("mix", "ok", 9, "surface", None)),
-    "settings-nav": (586, ("mix", "surface", 45, "bg", None)),
-    "settings-row-border": (604, ("mix", "line", 60, "transparent", None)),
-    "settings-even": (607, ("mix", "surface", 93, "accent", 7)),
-    "settings-even-more": (608, ("mix", "bg", 50, ("mix", "surface", 93, "accent", 7), None)),
-    "settings-group-border": (617, ("mix", "line", 60, "transparent", None)),
-    "settings-more": (622, ("mix", "bg", 55, "surface", None)),
-    "switch-on": (625, ("mix", "accent", 35, "bg", None)),
-    "ok-icon": (645, ("mix", "ok", 16, "transparent", None)),
-    "anilist-note": (658, ("mix", "#02a9ff", 9, "bg", None)),
-    "anilist-note-border": (658, ("mix", "#02a9ff", 30, "line", None)),
-    "level-stop-ring": (674, ("mix", "accent", 25, "transparent", None)),
-    "placeholder-ring": (716, ("mix", "accent", 60, "transparent", None)),
-    "slot-ring": (718, ("mix", "accent", 60, "transparent", None)),
-    "wizard-steps": (737, ("mix", "surface", 45, "bg", None)),
-    "wizard-done": (746, ("mix", "ok", 16, "transparent", None)),
-    "star-border": (765, ("mix", "accent-2", 40, "transparent", None)),
-    "star-fill": (766, ("mix", "accent-2", 10, "transparent", None)),
-    "badge-new": (777, ("mix", "accent", 13, "transparent", None)),
+    # the frame meets the list along its edge (top and bottom only); a divider is a groove: 1 px dark, then a lit lip
+    "frame-edge": ("brief §4 rule 3", ("mix", "frame", 55, "#000000", None)),
+    "groove": ("brief §4 rule 4", ("mix", "content", 45, "#000000", None)),
+    "groove-lip": ("brief §4 rule 4", ("mix", "line-hi", 45, "transparent", None)),
+    # a cut (New arrivals, search, a bucket's well): the top wall in shadow, the lower wall lit (brief §5: in a hole)
+    "cut-wall-top": ("brief §5", ("mix", "cut", 40, "#000000", None)),
+    "cut-wall-low": ("brief §5", ("mix", "line-hi", 55, "frame", None)),
+    "well-lit": ("brief §2, the buckets", ("mix", "ok", 12, "cut", None)),
+    # a row under the hand catches a little light (list-r14m :663's #0d121a); it lifts, never a hover fill (rule 5)
+    "row-hover": ("list-r14m :663", ("mix", "surface", 80, "line-hi", None)),
+    # Generate (W3.1a moves it into the level pop) and its stale state
+    "generate-hover": ("mock.html :228", ("mix", "raised", 70, "accent", 12)),       # sums to 82 %
+    "generate-stale-glow": ("mock.html :230", ("mix", "accent", 70, "transparent", None)),
+    # the statuses (glyph + label; W3.1a makes them icons and stones)
+    "status-in": ("mock.html :321", ("mix", "ok", 12, "transparent", None)),
+    "status-part-ring": ("mock.html :322", ("mix", "ok", 40, "transparent", None)),
+    "status-mining": ("mock.html :323", ("mix", "accent", 12, "transparent", None)),
+    "status-nomedia-border": ("mock.html :334", ("mix", "warn", 55, "transparent", None)),
+    # the top-20 line (W3.1a: a groove, really subtle) and the watched chips (W3.1a: the string's stones)
+    "top20-line": ("mock.html :348", ("mix", "accent", 38, "line", None)),
+    "watched-chip-fill": ("mock.html :375", ("mix", "accent", 20, "bg", None)),
+    "watched-chip-border": ("mock.html :375", ("mix", "accent", 45, "line", None)),
+    "needs-row-border": ("mock.html :548", ("mix", "line", 60, "transparent", None)),
 }
-# --- W2.2: the first screens ----------------------------------------------------------------------------------- #
-# The "Studying its cards first" pill's inset ring (mock.html :777, the line's second mix: found at W2.2).
-MIXES["study-first-ring"] = (777, ("mix", "accent", 30, "transparent", None))
-# --- end W2.2 -------------------------------------------------------------------------------------------------------- #
 
-# Opaque versions of the alpha mixes, laid on the ground the mock shows them on (research/09's table).
-OVER = {"header-top": "bg", "status-in": "surface", "status-mining": "surface", "source-hato": "surface",
-        "source-youtube": "surface", "source-anilist": "surface"}
+# Opaque versions of the alpha mixes, laid on the ground they show on.
+OVER = {"status-in": "surface", "status-mining": "surface"}
 
 
 # --- Colour arithmetic (CSS Color 4 / 5) --------------------------------------------------------------------------- #
@@ -236,6 +228,8 @@ def _resolve(expr, own, exact=False):
         return expr
     if expr in own:
         return own[expr]
+    if expr in ROOM:
+        return ROOM[expr]
     if expr in STATUS:
         return STATUS[expr]
     return FIXED[expr]
@@ -244,6 +238,7 @@ def _resolve(expr, own, exact=False):
 def _build(theme):
     own = dict(_OWN[theme])
     colours = dict(own)
+    colours.update(ROOM)
     colours.update(STATUS)
     for name, (_line, expr) in MIXES.items():
         colours[name] = _resolve(expr, own)
@@ -280,6 +275,10 @@ FAMILY_BY_LANGUAGE = {"ja": ("Yu Gothic UI", "Yu Gothic", "Meiryo", "Hiragino Sa
                       "zh-hans": ("Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC"),
                       "zh-hant": ("Microsoft JhengHei UI", "PingFang TC", "Noto Sans CJK TC")}
 MONO = ("Consolas", "Cascadia Mono")
+# A file's path, wherever the window shows one: never a Japanese family first — Yu Gothic UI and Meiryo draw the
+# backslash as ¥ (a path reads `E:¥Shows¥…`; found by the wizard's draft, 2026-10-14). Segoe UI, whatever family the
+# rest of the window takes (the brief's Yu Gothic UI for everything else, W3.1a).
+PATH_FAMILY = ("Segoe UI", "Consolas")
 LINE_HEIGHT = 1.45
 TEXT_SIZES = {"S": 1.0, "M": 1.15, "L": 1.3}
 DEFAULT_TEXT_SIZE = "M"

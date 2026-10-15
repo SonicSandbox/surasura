@@ -1089,7 +1089,7 @@ class RowDelegate(QStyledItemDelegate):
     def _iris(self, r, vertical=False):
         grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left(), r.bottom()) if vertical else
                                QPointF(r.right(), r.top()))
-        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS["hb"]):
+        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]):
             grad.setColorAt(pos, style.qcolor(colour))
         return QBrush(grad)
 

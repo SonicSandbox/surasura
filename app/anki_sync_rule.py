@@ -1,6 +1,8 @@
 """When Surasura asks Anki to sync with AnkiWeb — the sync rule (E1.1 04 §3, S1–S4; Sonic's Q4-4 and G1.5-7; one rule
-with Connect, P1.5's N11). Only while the fast re-plan's preview is on, or Connect's: off, nothing here runs and no
-sync is asked.
+with Connect, P1.5's N11), for every Junban write that carries a job and every Connect write. 3.0 (04 §5, IK-11): the 順
+window's own run always carries one (`modules/junban/gui.window_job`), so a manual re-order gets S1 and S3's mark
+whatever the automation or Connect say; S3 is sent only by what runs while on (the re-order host, Connect), else Anki's
+close carries it (S2). 2.x: only while the fast re-plan's preview is on, or Connect's; off, nothing here runs.
 
   S1 · a session's first write — before Surasura's first Anki write of a session, one sync, so reviews made on another
        device arrive first: a position written over a card studied on the phone would otherwise win the next sync

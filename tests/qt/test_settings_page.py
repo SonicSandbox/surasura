@@ -359,6 +359,8 @@ def test_a_choice_never_moves_the_page_at_150_and_175_percent(scale, tmp_path):
             "settings_manager = t.settings_manager\n"
             "settings_manager.save_settings = settings_manager.save_keys = None\n"
             "problems, checked = t.never_moves('M')\n"
+            "from app.qt import bridge\n"
+            "bridge.wait_for_workers(10000)\n"     # as the app's quit: a live row's read (P4) ends before the exit
             "dpr = app.primaryScreen().devicePixelRatio()\n"
             "print('RESULT ' + json.dumps([problems, checked, dpr]))\n")
     done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True,

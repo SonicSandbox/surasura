@@ -16,7 +16,6 @@ every button and toggle. The tooltip is handed in (`tooltip(widget, text)`), so 
 Every Connect call and every file look runs on a worker; the widgets are touched only on the Tk thread (`after`).
 """
 import datetime
-import json
 import os
 import threading
 import tkinter as tk
@@ -27,12 +26,13 @@ from tkinter import filedialog, ttk
 # the 3.0 window's Settings reads them too.
 from app.connect.settings_values import (FLAG_COLOURS, KNOWN, LANGUAGES, SYNC, WORDS, cap_of,  # noqa: F401
                                          cap_value, folders_value, known_value, sync_choices, sync_label)
+# The Anki Miner card's state and the star's answer (U5, U6): there too since W3.3 P8, for the 3.0 window's card
+from app.connect.settings_values import (STAR_FILE, STAR_URL, answer_star, card_state,  # noqa: F401
+                                         star_answered, star_path)
 
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
 DIM = "#aaaaaa"
 WRAP = 300
-STAR_URL = "https://github.com/0xzerolight/anki_miner"
-STAR_FILE = "star.json"
 
 # The keys the panel shows: another window writing one (順's sync minute, its two switches) makes the panel stale
 SHOWN = ("connect_mine_words", "connect_send_grammar", "anki_sync_delay_min", "connect_open_anki",
@@ -49,58 +49,6 @@ def save(key, value=None, merge=None):
         return settings_manager.save_keys({key: value}, strict=True)
     return settings_manager.save_keys(update=lambda on_disk: on_disk.__setitem__(key, merge(on_disk.get(key))),
                                       strict=True)
-
-
-# --------------------------------------------------------------------------- #
-# The star's answer (U6): local data, never settings.json
-# --------------------------------------------------------------------------- #
-def star_path():
-    from app.connect import ledger
-    return os.path.join(ledger.folder(), STAR_FILE)
-
-
-def star_answered():
-    try:
-        with open(star_path(), "r", encoding="utf-8") as f:
-            return bool((json.load(f) or {}).get("answer"))
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
-def answer_star(answer):
-    """`starred` or `not-now`, kept so the suggestion doesn't come back. Never raises."""
-    try:
-        path = star_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        temp = f"{path}.{os.getpid()}.tmp"
-        with open(temp, "w", encoding="utf-8") as f:
-            json.dump({"answer": answer, "at": datetime.datetime.now().isoformat(timespec="seconds")}, f)
-        os.replace(temp, path)
-        return True
-    except Exception as e:
-        print(f"The star's answer wasn't kept: {e}")
-        return False
-
-
-def card_state(result):
-    """What the Anki Miner card shows, from `setup.checks` -> {"state": "missing" | "setup" | "ready", "say",
-    "missing": [plain sentences], "steps": bool (the two guided steps), "path", "version"}."""
-    checks = {c["id"]: c for c in (result or {}).get("checks") or ()}
-    found = (result or {}).get("anki_miner") or {}
-    first = checks.get("anki_miner") or {}
-    if first.get("state") != "ok":
-        return {"state": "missing", "say": "Not installed", "missing": [first.get("say")] if first.get("say") else [],
-                "steps": False, "path": None, "version": None}
-    version = found.get("app")
-    pieces = [checks.get(i) for i in ("anki_miner_version", "anki_miner_profile", "anki_miner_setup")]
-    missing = [c for c in pieces if c and c.get("state") != "ok"]
-    if not missing:
-        return {"state": "ready", "say": f"Ready — Anki Miner {version}" if version else "Ready", "missing": [],
-                "steps": False, "path": found.get("path"), "version": version}
-    profile = checks.get("anki_miner_profile") or {}
-    return {"state": "setup", "say": f"Installed {version or ''} — needs setup".replace("  ", " "),
-            "missing": [c["say"] for c in missing if c.get("say")], "steps": profile.get("state") == "needs-you",
-            "path": found.get("path"), "version": version}
 
 
 def open_folder(folder):

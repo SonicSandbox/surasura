@@ -6,10 +6,19 @@ own names; their tests read them through it.
   language's, a dict each its own. Setting one language keeps each other language's value as it was.
 - `anki_sync_delay_min`: Settings' three choices, and a held value outside them (順's "5 minutes after") kept as itself.
 - `known_from_anki`: the picked card states in the setting's order ("and": every one must hold); none is off.
+- The Anki Miner card's state (`card_state`, from `setup.checks`) and the star's answer (U6: `star_answered`,
+  `answer_star`, kept in local data `star.json`, never settings.json) — moved here too (W3.3 P8, a pure move), so the
+  3.0 window's card reads them without Tk.
 
 No Tk, no Qt.
 """
+import datetime
+import json
+import os
+
 LANGUAGES = ("ja", "zh")
+STAR_URL = "https://github.com/0xzerolight/anki_miner"
+STAR_FILE = "star.json"
 
 # connect_mine_words: (value, label, the line under it)
 WORDS = (("list", "Your list", "Words on your list that you don't know and have no card yet."),
@@ -73,3 +82,55 @@ def sync_label(choices, held):
 def known_value(picked):
     """`known_from_anki`: the picked terms in the setting's order ("and": every one must hold); none → [] (off)."""
     return [term for term, _label in KNOWN if term in picked]
+
+
+# --------------------------------------------------------------------------- #
+# The Anki Miner card (U5) and the star's answer (U6): local data, never settings.json
+# --------------------------------------------------------------------------- #
+def star_path():
+    from app.connect import ledger
+    return os.path.join(ledger.folder(), STAR_FILE)
+
+
+def star_answered():
+    try:
+        with open(star_path(), "r", encoding="utf-8") as f:
+            return bool((json.load(f) or {}).get("answer"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def answer_star(answer):
+    """`starred` or `not-now`, kept so the suggestion doesn't come back. Never raises."""
+    try:
+        path = star_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temp = f"{path}.{os.getpid()}.tmp"
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump({"answer": answer, "at": datetime.datetime.now().isoformat(timespec="seconds")}, f)
+        os.replace(temp, path)
+        return True
+    except Exception as e:
+        print(f"The star's answer wasn't kept: {e}")
+        return False
+
+
+def card_state(result):
+    """What the Anki Miner card shows, from `setup.checks` -> {"state": "missing" | "setup" | "ready", "say",
+    "missing": [plain sentences], "steps": bool (the two guided steps), "path", "version"}."""
+    checks = {c["id"]: c for c in (result or {}).get("checks") or ()}
+    found = (result or {}).get("anki_miner") or {}
+    first = checks.get("anki_miner") or {}
+    if first.get("state") != "ok":
+        return {"state": "missing", "say": "Not installed", "missing": [first.get("say")] if first.get("say") else [],
+                "steps": False, "path": None, "version": None}
+    version = found.get("app")
+    pieces = [checks.get(i) for i in ("anki_miner_version", "anki_miner_profile", "anki_miner_setup")]
+    missing = [c for c in pieces if c and c.get("state") != "ok"]
+    if not missing:
+        return {"state": "ready", "say": f"Ready — Anki Miner {version}" if version else "Ready", "missing": [],
+                "steps": False, "path": found.get("path"), "version": version}
+    profile = checks.get("anki_miner_profile") or {}
+    return {"state": "setup", "say": f"Installed {version or ''} — needs setup".replace("  ", " "),
+            "missing": [c["say"] for c in missing if c.get("say")], "steps": profile.get("state") == "needs-you",
+            "path": found.get("path"), "version": version}

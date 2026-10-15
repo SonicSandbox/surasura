@@ -474,3 +474,117 @@ OPTION_TIPS = {
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
 }
+
+# --- P4: the live rows (settings_live.py): Your setup, the level readout, the statuses, App's rows, the credits, Export
+SEP = " · "
+# Your setup's lines (each says less when a fact can't be read: never a wrong number)
+SETUP_KNOWN = "{n:,} known"
+SETUP_FROM_ANKI = "from Anki ({decks})"
+SETUP_IMPORTED = "from an imported list"
+SETUP_CONNECT_OFF = "Connect is off: you make your cards yourself"
+SETUP_AUTOMATIC = "Automatic"
+SETUP_WORDS = "≈{words:,} words"
+SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
+SETUP_ORDER = {"content": "ordered as you’ll meet them", "priority": "ordered by leverage"}
+SETUP_NOT_ORDERED = "not reordered"
+SETUP_FILLED = "{fills} filled {how}"
+SETUP_FILLED_AUTO = "automatically"
+SETUP_FILLED_HAND = "by hand"
+SETUP_NOTHING_FILLED = "nothing filled"
+# The level readout under the slider, when the time between meetings is under an hour, or unknown
+READOUT_HOURS = "≈{words} words · {coverage}% of your content · about every {hours} hours"   # S4
+READOUT_MINUTES = "≈{words} words · {coverage}% of your content · about every {minutes} minutes"
+READOUT_NO_TIME = "≈{words} words · {coverage}% of your content"
+# Connection (Anki): the emerald's words (S6: never colour alone)
+ANKI_WORDS = {
+    "connected": "connected", "closed": "Anki is closed", "busy": "Anki is open but isn’t answering",
+    "denied": "Anki hasn’t let Surasura in yet", "failed": "the last sync from Anki didn’t finish",
+    "syncing": "reading Anki…", "checking": "checking…", "unknown": "not checked yet",
+}
+ANKI_TIP = "Whether Surasura reaches Anki now, through AnkiConnect"
+CHECK_LIVE_TIP = "Asks Anki now whether AnkiConnect answers"
+INSTALLED_PLAIN = "installed"
+# App's rows
+LOGS_OPEN = "View"
+DATA_FOLDER = "Data folder"
+DATA_FOLDER_TIP = "Opens the data folder"
+CREDITS_VIEW = "View"
+CREDITS_TITLE = "Data credits"
+CREDITS_NAME = "Data credits: every source, with its licence"
+CREDITS_DONE = "Done"
+CREDITS_DONE_TIP = "Closes the credits (Esc)"
+CREDITS_README_ALSO = "README's Data Credits also names: {names}"
+OFFER_AGAIN_NAME = "Offer the skipped version again"
+# Export: the format pop, the outcome in the bar
+EXPORT = "Export"
+EXPORT_NEXT = "Save as…"
+EXPORT_NEXT_TIP = "Choose where the file goes"
+EXPORT_FORMAT_NAME = "Format"
+EXPORT_CONFIRM_TIP = "Goes on to choose where the CSV goes"
+EXPORT_RUNNING = "Exporting {name}…"
+EXPORT_BUSY = "Another export is running: one at a time"
+
+# --- P8: Connect's switch, the Anki Miner card, *New cards a day* (settings_connect.py) ------------------------------ #
+# Connect's switch: its outcome in the bar (the Tk log's words, `app/connect/switch.py`) and 2.x's two questions
+SWITCH_NOT_ON = "Connect wasn't switched on: {}. Nothing changed; try again."
+SWITCH_NOT_OFF = "Connect wasn't switched off: {}. It stays on; try again."
+SWITCH_BROKE = "Connect's switch didn't finish: {}. It shows what is saved."
+PUT_BACK_ASK = "Put the {n} shelved {cards} back into your new cards?"
+PUT_BACK_BODY = "Connect turns off either way. Left on the shelf, they stay suspended until you put them back."
+PUT_BACK_YES = "Put them back"
+PUT_BACK_YES_TIP = "Your shelved cards go back into your new cards, then Connect turns off"
+PUT_BACK_NO = "Leave them"
+PUT_BACK_NO_TIP = "Connect turns off; the shelved cards stay suspended (Esc does the same)"
+OFF_ANYWAY_ASK = "Turn Connect off anyway?"
+OFF_ANYWAY_BODY = ("Some shelved cards weren't put back:\n{failed}\n\nThe cards on the shelf stay suspended until you "
+                   "put them back.")
+OFF_ANYWAY_YES = "Turn Connect off"
+OFF_ANYWAY_YES_TIP = "Connect turns off; the cards still on the shelf stay suspended"
+OFF_ANYWAY_NO = "Keep it on"
+OFF_ANYWAY_NO_TIP = "Connect stays on (Esc does the same)"
+STAYS_ON = "Connect stays on: put the shelved cards back from its window, or turn it off again."
+# The Anki Miner card (U5, U6; AM★: the star line beside Install). The Tk panel's words.
+MINER_CHECKING = "Checking…"
+MINER_NOT_CHECKED = "Couldn't check Anki Miner: {}"
+MINER_STEP_1 = "1. In Anki Miner: Manage profiles… → New, and name it Surasura."
+MINER_STEP_2 = "2. In that profile's Settings: Whitelist → choose file, and pick this file:"
+MINER_STEP_BOLD = "Also turn on Bold the word in the sentence."
+MINER_PATH_NAME = "The whitelist file's path"
+COPY_PATH = "Copy path"
+COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
+PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."
+INSTALL_MINER = "Install Anki Miner…"
+INSTALL_MINER_TIP = "Open Anki Miner's releases page in your browser: download the Windows Setup file and run it."
+BROWSE_MINER = "Browse…"
+BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where."
+BROWSE_MINER_TITLE = "Where is Anki Miner?"
+BROWSE_MINER_FILTER = "Anki Miner (AnkiMiner.exe);;Programs (*.exe);;All files (*)"
+OPEN_MINER = "Open Anki Miner"
+OPEN_MINER_TIP = "Start Anki Miner, to finish its setup."
+MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"
+CHECK_AGAIN = "Check again"
+CHECK_AGAIN_TIP = "Look at Anki Miner's setup again."
+STAR_LINE = "Like Anki Miner? Star it on GitHub ★"
+STAR_LINE_TIP = ("Opens Anki Miner's page on GitHub in your browser. The Star button is at the top right; it needs "
+                 "a GitHub account.")
+STAR_ASK = "Anki Miner is free and made by one person. A ⭐ on GitHub helps other learners find it."
+STAR_BUTTON = "⭐ Star Anki Miner on GitHub"
+STAR_BUTTON_TIP = "The Star button is at the top right; it needs a GitHub account."
+NOT_NOW = "Not now"
+NOT_NOW_TIP = "Hide this suggestion."
+STAR_LINK = "⭐ Anki Miner on GitHub"
+STAR_LINK_TIP = "Open Anki Miner's page on GitHub in your browser."
+MINER_UPDATE = "Anki Miner {version} is out"
+MINER_UPDATE_TIP = "Opens Anki Miner's releases page in your browser"
+# *New cards a day* (G1.2-5; NEW_CARDS_FROM_ANKI, CHANGE_IN_ANKI and its tip are above)
+NEW_CARDS_READING = "Reading Anki…"
+NEW_CARDS_NO_DECK = "Junban’s deck"
+NEW_CARDS_DECK = "“{deck}”"
+NEW_CARDS_FIELD_TIP = "The number to set in Anki: nothing changes there until you press Change in Anki… and say yes"
+NEW_CARDS_UNREAD_TIP = "{why} Until Anki can be read, this is the report's pace: new words a day."
+NEW_CARDS_ASK = "Change New cards a day in Anki?"
+NEW_CARDS_YES = "Set it to {n}"
+NEW_CARDS_YES_TIP = "Writes the new number into the deck's options group in Anki"
+NEW_CARDS_SAME = "Anki's New cards a day for “{deck}” is already {n}."
+NEW_CARDS_WAITING = "Waiting for Anki…"
+NEW_CARDS_BROKE = "New cards a day wasn't changed: {}"

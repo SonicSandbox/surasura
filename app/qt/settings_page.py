@@ -50,9 +50,10 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLi
                              QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from app import theme
-from app.qt import applog, bridge, motion, style, windows
+from app.qt import applog, bridge, logos, motion, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
+from app.qt import settings_live
 from app.qt import settings_strings as S
 from app.services import settings as settings_service
 
@@ -325,6 +326,8 @@ class RowView(QWidget):
         self.slot.layout().setSpacing(round(8 * f))
         for c in self.controls:
             c.restyle()
+        if self.row.id in logos.ROWS:         # PL: the service's cleared logo before its words, at this size
+            logos.show(self)
 
     def set_wash(self, level):
         level = max(0.0, min(1.0, level))
@@ -349,6 +352,8 @@ class SettingsPage(QWidget):
 
     ready = pyqtSignal()                      # every row built
     door_asked = pyqtSignal(str)              # a door's opener name, when the page has no shell to open it in
+    row_built = pyqtSignal(str)               # a row's widget placed (P4: its live words filled then)
+    language_set = pyqtSignal(str)            # `set_language` done (P4: the live rows read again)
 
     def __init__(self, shell_or_services, language=None, parent=None, found=None):
         super().__init__(parent)
@@ -386,7 +391,9 @@ class SettingsPage(QWidget):
         self.built = False
         self._build_frame()
         self._queue = list(enumerate(catalog.ROWS))
+        self.takes = {}                       # row id -> fn(value) -> True when it handled the change itself (P4)
         self.bridge.settings_written.connect(self._written)
+        self.live = settings_live.Live(self)  # P4: the live rows (after `_written`: its repaint comes second)
         windows._ROWS.add(self)               # told when the doors' modules have been looked for (`refresh`)
         if self._found is None:
             QTimer.singleShot(0, self._look)
@@ -653,6 +660,7 @@ class SettingsPage(QWidget):
         slab.place(view, index, row.adv)
         self.rows[row.id] = view
         view.ensurePolished()                 # the style's work done in this slice, not when its slab first shows
+        self.row_built.emit(row.id)
 
     def _make_controls(self, view, row, settings):
         kind, tip, name = row.kind, row.tip or None, row.label or None
@@ -798,6 +806,9 @@ class SettingsPage(QWidget):
         """A control's change → the catalog's keys → the settings service (only what there is to write)."""
         self._last = control
         self._let_go()
+        take = self.takes.get(row.id)
+        if take is not None and take(value):
+            return                            # its owner wrote it (P4: the shell's text size)
         if row.id == "known_road":
             self._road = f"road:{value}"
             self._refresh_visibility(anchor=control)
@@ -859,6 +870,7 @@ class SettingsPage(QWidget):
                 self.paints[view.row.id] += 1
         self._refresh_visibility(anchor=self._last)
         self.refresh()
+        self.language_set.emit(language)
 
     # --- what shows ------------------------------------------------------------------------------------------------ #
     def _matches(self, settings, ctx):

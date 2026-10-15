@@ -243,3 +243,28 @@ def test_on_3_0_a_switched_off_junban_is_the_reason_before_the_deck(deck):
             code, line = h.call(*verb)
             assert code == 0 and line["skipped"] == "順 is switched off" and line["moves"] == 0, (verb, line)
     assert fake.requests == [] and fake.writes == []
+
+
+def test_a_dry_runs_unchanged_count_is_the_cards_it_would_leave_where_they_are(deck):
+    """The dry run's `unchanged` is the deck's new cards less the moves it plans — the same count the run then answers.
+    A wrong sum (the moves added instead of taken off) would tell the window more cards stay put than the deck holds."""
+    fake, patched = deck(connect_enabled=True)
+    with patched:
+        code, preview = h.call("resort", "--dry-run")
+        assert code == 0 and preview["moves"] > 0, preview
+        code, line = h.call("resort")
+    assert code == 0 and line["moves"] == preview["moves"], line
+    assert preview["unchanged"] == line["unchanged"], (preview, line)
+    assert preview["unchanged"] + preview["moves"] <= len(fake.cards)
+
+
+def test_a_dry_run_previews_while_the_junban_window_is_open(deck, monkeypatch):
+    """A dry run only reads: the 順 window being open is the run's wait (`--wait`, then `busy`), never a reason for the
+    dry run to skip — it asks the unattended run's guards (`window=False`) and still previews the moves."""
+    auto = pytest.importorskip("modules.junban.auto")
+    monkeypatch.setattr(auto, "window_open", lambda: True)
+    fake, patched = deck(connect_enabled=True)
+    with patched:
+        code, preview = h.call("resort", "--dry-run")
+    assert code == 0 and "skipped" not in preview and preview["moves"] > 0, preview
+    assert fake.writes == []

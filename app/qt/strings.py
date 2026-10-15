@@ -289,3 +289,7 @@ JUNBAN_DOOR_TIP = "Reorder Anki's new cards to Surasura's learn order: preview f
 PUT_BACK_DOOR = "Put Anki back…"
 PUT_BACK_DOOR_TIP = ("Put Anki's new cards back the way they were before Surasura changed them. Asks first, with the "
                      "counts. Needs Anki open.")
+
+# --- W3.4 row 5: Backfill (its door; the window's own words are Junban's: modules/junban/qt_strings.py)
+BACKFILL_DOOR = "Anki Backfill"
+BACKFILL_DOOR_TIP = "Fill fields on your Anki cards from Surasura: パターン and 例文"
